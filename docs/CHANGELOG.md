@@ -2,17 +2,17 @@
 
 ## V10.0.0
 
-- **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码的图纸可正确读写。
+- **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码和以 \M+ 转义保存中文的图纸可正确读写；自动识别时按文字实际语种判断是否需要翻译；macOS 上不再把正常图纸误判为损坏。
 
-  **CAD drawing translation**: DWG and DXF drawings are supported with the same workflow as Excel, Word and PDF, including pause, stop and resume. DWG requires ODA File Converter on the new Plugins page. GBK and other Chinese encodings are read and written correctly.
+  **CAD drawing translation**: DWG and DXF drawings are supported with the same workflow as Excel, Word and PDF, including pause, stop and resume. DWG requires ODA File Converter on the new Plugins page. GBK and other Chinese encodings, and Chinese stored as \M+ escapes, are read and written correctly; auto-detect judges each text by its actual language; macOS no longer reports valid drawings as corrupt.
 
 - **英语和法语界面**：「设置 → 外观与语言」可切换中文、英语和法语，页面、运行日志、提示和错误信息随之切换；输出文件夹名、报告文件和写入文档的复核标记仍为中文。默认主题改为浅色，原先「跟随系统」的设置在升级时改为浅色（settings schema v30）。
 
   **English and French interface**: Settings > Appearance & language switches between Chinese, English and French; pages, the run log, notifications and error messages follow the selection. Output folder names, report files and review markers in documents stay Chinese. The default theme is now light; a stored "follow system" setting is migrated to light (settings schema v30).
 
-- **配色与文案**：浅色模式改为暖米白，深色模式层次更清晰；界面、日志、报错和报告统一用语并改为正式书面说法，三种语言同步；「深度清洗」更名为「清洗记忆库」并在执行前提示费用。
+- **配色与文案**：「设置 → 外观与语言」新增五套配色方案（素雅灰、暖调纸感、冷调柔光、青瓷、琥珀护眼），浅色和深色模式分别选择，默认素雅灰（settings schema v31）；界面、日志、报错和报告统一用语并改为正式书面说法，三种语言同步；「深度清洗」更名为「清洗记忆库」并在执行前提示费用。
 
-  **Colors and wording**: Light mode uses a warm off-white and dark mode has clearer layering. Wording across the interface, logs, errors and reports is unified and made formal in all three languages. "Deep clean" is renamed "Clean up memory" and warns about model charges first.
+  **Colors and wording**: Settings > Appearance & language offers five color schemes (Neutral grey, Warm paper, Soft cool, Celadon, Amber comfort), chosen separately for light and dark mode, Neutral grey by default (settings schema v31). Wording across the interface, logs, errors and reports is unified and made formal in all three languages. "Deep clean" is renamed "Clean up memory" and warns about model charges first.
 
 - **停止与续译**：Excel 停止时保存已完成译文并标记「部分翻译」，可从中断处继续；手动停止不再记为接口错误，也不再产生额外模型调用；重新扫描不再误报「源文件已变化」。
 
