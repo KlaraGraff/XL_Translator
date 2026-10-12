@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -25,6 +26,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from loguru import logger
+
+from core.request_progress import (
+    BATCH_EVENT_DONE,
+    BATCH_EVENT_PLAN,
+    BatchRequestEvent,
+    InFlightRequestTracker,
+)
 
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
 _UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成"}
@@ -42,6 +50,12 @@ CAD_STAGE_WEIGHTS: dict[str, int] = {
     "write": 8,
     "verify": 2,
 }
+
+# AI 翻译阶段：在途进度每隔多久估一次；多久没有请求返回就在运行日志里说一声。
+_TICK_SECONDS = 0.5
+_WAIT_LOG_SECONDS = 30.0
+# 在途估计每秒最多把「AI 翻译」这一段推进多少（真正返回的条数不受此限）。
+_ESTIMATE_RATE = 0.04
 
 _TEXT_ENTITY_TYPES = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION", "MINSERT"})
 # MLEADER text lives in group 304 inside CONTEXT_DATA.  Group 302 and 303 are
@@ -315,6 +329,8 @@ class CadProgress:
     total: int
     percent: float
     message: str = ""
+    # 运行日志的级别（INFO / OK / WARN / ERROR），只在有 message 时有意义。
+    level: str = "INFO"
 
 
 @dataclass
@@ -880,6 +896,7 @@ class CadTranslationPipeline:
         # 暂停闸门：用户点了暂停时阻塞到继续或停止为止。由任务 runner 提供；
         # 不传就是不支持文件内暂停（老调用方、测试替身）。
         self.pause_gate = pause_gate
+        self.last_translate_seconds = 0.0
 
     def _wait_if_paused(self) -> None:
         if self.pause_gate is not None:
@@ -892,13 +909,30 @@ class CadTranslationPipeline:
         if self.stop_requested and self.stop_requested():
             raise CadStopRequested("已停止；已完成的部分已保留。")
 
-    def _emit(self, stage: str, done: int, total: int, message: str = "") -> None:
+    def _emit(
+        self,
+        stage: str,
+        done: int,
+        total: int,
+        message: str = "",
+        *,
+        fraction: float | None = None,
+        level: str = "INFO",
+    ) -> None:
+        """Report a stage step.  ``fraction`` overrides ``done / total`` for the bar.
+
+        The AI translation step passes an estimate that also credits requests
+        still in flight, while ``done`` stays the real number of returned texts
+        (that is the count the file row shows).
+        """
         stage_total = max(1, total)
-        fraction = min(1.0, max(0.0, done / stage_total))
+        if fraction is None:
+            fraction = done / stage_total
+        fraction = min(1.0, max(0.0, fraction))
         before = sum(CAD_STAGE_WEIGHTS[name] for name in CAD_STAGE_WEIGHTS if list(CAD_STAGE_WEIGHTS).index(name) < list(CAD_STAGE_WEIGHTS).index(stage))
         percent = before + CAD_STAGE_WEIGHTS[stage] * fraction
         if self.progress:
-            self.progress(CadProgress(stage, done, total, round(percent, 2), message))
+            self.progress(CadProgress(stage, done, total, round(percent, 2), message, level))
 
     def _call_translator(
         self,
@@ -908,21 +942,69 @@ class CadTranslationPipeline:
         already: int,
         total: int,
     ) -> Mapping[str, str]:
-        """调用翻译器，并把它逐批的进度折算进「AI 翻译」阶段。
+        """调用翻译器，把请求的发送、返回和在途进度折算进「AI 翻译」阶段并写进运行日志。
 
-        翻译是整张图纸里最慢的一步（真实 DWG 要等一分多钟），以前只在全部批次返回后
-        报一次进度，进度条就停在这一步开头一动不动、最后一下跳过去。翻译器肯接
-        ``progress`` 参数时（api/task_manager 里接的是 translate_texts 的批次回调），
-        每完成一批就推一次；老式只收两个参数的翻译器照旧调用。
+        翻译是整张图纸里最慢的一步。以前只在一批请求返回后推一次进度：同时发出的
+        几十批请求差不多同时回来，进度条就先停住、再一下子加满，运行日志里也看不到
+        请求的情况。现在翻译器肯接 ``request_callback`` 时（api/surfaces/cad.py 接的是
+        translate_texts 的逐批事件），每批发出、返回都记下来：运行日志写明分几批、
+        每批返回了多少条、用了多久，等得久了也说一声；进度条按已返回的条数加上在途
+        请求的估计推进（估计永远不会算满，只有真的返回才补齐）。老式翻译器照旧调用。
         """
-        self._emit("translate", already, max(1, total))
+        tracker = InFlightRequestTracker()
+        emit_lock = threading.Lock()
+        shown = {"fraction": 0.0, "at": time.monotonic()}
+        stage_total = max(1, total)
+
+        def emit(message: str = "", level: str = "INFO", *, force: bool = False) -> None:
+            with emit_lock:
+                now = time.monotonic()
+                done = already + tracker.done_items()
+                returned = done / stage_total
+                estimate = (already + min(len(remaining), tracker.estimated_items())) / stage_total
+                # 估计值本身也会跳（第一批返回、有了实际用时那一刻），限速推进；
+                # 真正返回的条数不受限，进度条至少到那里。
+                allowed = shown["fraction"] + _ESTIMATE_RATE * max(0.0, now - shown["at"])
+                fraction = max(shown["fraction"], returned, min(1.0, estimate, allowed))
+                # 在途估计每半秒算一次；变化不到千分之二就不发，免得事件刷屏。
+                if not message and not force and fraction - shown["fraction"] < 0.002:
+                    return
+                shown["fraction"] = fraction
+                shown["at"] = now
+                self._emit("translate", min(done, total), stage_total, message, fraction=fraction, level=level)
 
         def report(done: int, batch_total: int) -> None:
             fraction = min(1.0, max(0.0, done / max(1, batch_total)))
-            self._emit("translate", already + int(len(remaining) * fraction), max(1, total))
+            tracker.note_reported_done(int(len(remaining) * fraction))
+            emit(force=True)
             # 批次回调跑在提交批次的那个线程里：在这里等着，就不会再发新的一批请求，
             # 已经发出去的几批照常收回来。这就是「文件内暂停」，不用丢弃任何已付费的结果。
             self._wait_if_paused()
+
+        def on_request(event: BatchRequestEvent) -> None:
+            tracker.on_event(event)
+            if event.kind == BATCH_EVENT_PLAN:
+                emit(
+                    f"开始翻译 {event.items} 条文字（相同内容只翻译一次）："
+                    f"分 {event.batch_total} 批发送，每次同时发送 {event.concurrency} 批",
+                    force=True,
+                )
+            elif event.kind == BATCH_EVENT_DONE and event.stopped < event.items:
+                seconds = f"{event.elapsed:.1f}"
+                if event.failed:
+                    emit(
+                        f"第 {event.index}/{event.batch_total} 批已返回：{event.items} 条中 "
+                        f"{event.failed} 条未获得译文，用时 {seconds} 秒",
+                        "WARN",
+                    )
+                else:
+                    emit(
+                        f"第 {event.index}/{event.batch_total} 批已返回：{event.items} 条，用时 {seconds} 秒"
+                    )
+
+        def on_error(message: str) -> None:
+            # 与 Excel 相同：整批放弃记 ERROR，拆小重试、限流降速等记 WARN。
+            emit(message, "ERROR" if re.search(r"条内容未能翻译", message) else "WARN")
 
         try:
             parameters = inspect.signature(self.translator).parameters
@@ -934,7 +1016,38 @@ class CadTranslationPipeline:
         # 停止也要在批次之间生效，不然点了停止还得等整张图的请求全部发完。
         if "should_stop" in parameters and self.stop_requested is not None:
             kwargs["should_stop"] = self.stop_requested
-        return self.translator(remaining, glossary, **kwargs)
+        if "error_callback" in parameters:
+            kwargs["error_callback"] = on_error
+        ticker_stop = threading.Event()
+        ticker: threading.Thread | None = None
+        if "request_callback" in parameters:
+            kwargs["request_callback"] = on_request
+
+            def tick() -> None:
+                next_wait_log = _WAIT_LOG_SECONDS
+                while not ticker_stop.wait(_TICK_SECONDS):
+                    emit()
+                    waiting = tracker.in_flight_count()
+                    quiet = tracker.seconds_since_last_return()
+                    if not waiting or quiet < next_wait_log:
+                        if quiet < _WAIT_LOG_SECONDS:
+                            next_wait_log = _WAIT_LOG_SECONDS
+                        continue
+                    emit(f"正在等待 {waiting} 批请求返回，已等待 {int(quiet)} 秒")
+                    next_wait_log = quiet + _WAIT_LOG_SECONDS
+
+            ticker = threading.Thread(target=tick, name="cad-translate-progress", daemon=True)
+        emit(force=True)
+        started = time.monotonic()
+        if ticker is not None:
+            ticker.start()
+        try:
+            return self.translator(remaining, glossary, **kwargs)
+        finally:
+            ticker_stop.set()
+            if ticker is not None:
+                ticker.join(timeout=2)
+            self.last_translate_seconds = time.monotonic() - started
 
     def translate_file(
         self,
@@ -1062,9 +1175,28 @@ class CadTranslationPipeline:
                     else:
                         invalid_reasons[text] = _reason
                 stats.ai_translated = sum(1 for text in remaining if text in translations)
+                missing = len(remaining) - stats.ai_translated
+                seconds = f"{self.last_translate_seconds:.1f}"
+                # 翻译这一步已经结束：进度条补满这一段（未获得译文的也已经有了结果），
+                # 计数仍是真正拿到译文的条数。
+                if missing:
+                    self._emit(
+                        "translate", len(translations), max(1, len(texts)),
+                        f"模型翻译结束：{stats.ai_translated} 条获得译文，{missing} 条未获得译文，用时 {seconds} 秒",
+                        fraction=1.0,
+                        level="WARN",
+                    )
+                else:
+                    self._emit(
+                        "translate", len(translations), max(1, len(texts)),
+                        f"模型翻译完成：{stats.ai_translated} 条获得译文，用时 {seconds} 秒",
+                        fraction=1.0,
+                        level="OK",
+                    )
+            else:
+                self._emit("translate", len(translations), max(1, len(texts)), "翻译完成", fraction=1.0)
             stats.untranslated = sum(1 for text in texts if text not in translations)
             timings["translate"] = round(time.perf_counter() - started_at - timings["scan"] - timings["match"], 4)
-            self._emit("translate", len(translations), max(1, len(texts)), "翻译完成")
             self._check_stop()
             for unit in reversed(candidates):
                 changed_unit = any(run.text in translations for run in unit.runs)

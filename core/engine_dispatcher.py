@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from core.text_transport import bounded_text_operation
+from core.request_progress import (
+    BATCH_EVENT_DONE,
+    BATCH_EVENT_PLAN,
+    BATCH_EVENT_SENT,
+    BatchRequestEvent,
+)
 from config import (
     DOMAIN_PRESETS,
     CHUNK_CLOUD_MAX,
@@ -64,6 +70,43 @@ _CONCURRENCY_RETRY_MAX_DELAY = 8.0
 # Failed source samples are attached to the task result for the UI; the counts
 # stay exact while the sample list stays bounded.
 _FAILED_ITEM_SAMPLE_LIMIT = 200
+
+
+def _notify_batch_event(callback, event: BatchRequestEvent) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception as exc:  # noqa: BLE001 - a log hook must never break translation
+        logger.debug(f"批次请求事件回调出错：{exc!r}")
+
+
+def _run_batch_with_events(
+    run, batch: list[str], *, index: int, batch_total: int, callback, stats: "TranslationBatchRunStats"
+) -> dict[str, str]:
+    """Wrap one top-level batch with ``sent`` / ``done`` events."""
+    if callback is None:
+        return run(batch)
+    _notify_batch_event(
+        callback, BatchRequestEvent(BATCH_EVENT_SENT, index=index, batch_total=batch_total, items=len(batch))
+    )
+    started = time.monotonic()
+    partial = run(batch)
+    stopped = sum(1 for text in batch if text in stats.stopped_sources)
+    failed = sum(1 for text in batch if text in stats.untranslated_sources)
+    _notify_batch_event(
+        callback,
+        BatchRequestEvent(
+            BATCH_EVENT_DONE,
+            index=index,
+            batch_total=batch_total,
+            items=len(batch),
+            elapsed=time.monotonic() - started,
+            failed=failed,
+            stopped=stopped,
+        ),
+    )
+    return partial
 
 
 def _backoff_sleep(
@@ -489,6 +532,7 @@ def translate_texts(
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: TranslationBatchRunStats | None = None,
     throughput_unlocked: bool = False,
+    request_callback=None,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -497,6 +541,8 @@ def translate_texts(
       此处保持串行逐批调用，避免与 asyncio.run() 冲突。
     - 云端引擎：使用 ThreadPoolExecutor 并发提交所有批次，
       progress_callback 通过 Lock 保证线程安全。
+    - request_callback（可选）收到每一批的 BatchRequestEvent：开始前一次 plan，
+      每批发出时 sent、返回时 done（在执行该批的线程里调用，需自行线程安全）。
     """
     if not texts:
         return {}
@@ -524,22 +570,33 @@ def translate_texts(
 
     # Ollama 走原有串行路径，不引入线程池（内部已有 asyncio 并发）
     if is_local:
+        _notify_batch_event(
+            request_callback,
+            BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=len(batches), items=total, concurrency=1),
+        )
         results: dict[str, str] = {}
         done = 0
-        for batch in batches:
+        for batch_index, batch in enumerate(batches, start=1):
             if should_stop and should_stop():
                 logger.info("翻译任务收到停止信号，停止提交后续本地批次。")
                 break
-            partial = _translate_batch_with_fallback(
+            partial = _run_batch_with_events(
+                lambda current: _translate_batch_with_fallback(
+                    current,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    source_lang=source_lang,
+                    api_scheduler=None,
+                    request_category=request_category,
+                    should_stop=should_stop,
+                    error_callback=error_callback,
+                    stats=run_stats,
+                ),
                 batch,
-                engine=engine,
-                target_lang=target_lang,
-                system_prompt=system_prompt,
-                source_lang=source_lang,
-                api_scheduler=None,
-                request_category=request_category,
-                should_stop=should_stop,
-                error_callback=error_callback,
+                index=batch_index,
+                batch_total=len(batches),
+                callback=request_callback,
                 stats=run_stats,
             )
             results.update(partial)
@@ -559,33 +616,49 @@ def translate_texts(
     scheduler = api_scheduler or WeightedApiScheduler(max_workers)
     run_stats.weighted_scheduler_used = True
 
-    def _submit_batch(batch: list[str]) -> tuple[list[str], dict[str, str]]:
+    def _submit_batch(batch_index: int, batch: list[str]) -> tuple[list[str], dict[str, str]]:
         """单批次执行，返回 (原始词条列表, 翻译结果)。失败时会缩小批次重试。"""
-        return batch, _translate_batch_with_fallback(
+        return batch, _run_batch_with_events(
+            lambda current: _translate_batch_with_fallback(
+                current,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=run_stats,
+            ),
             batch,
-            engine=engine,
-            target_lang=target_lang,
-            system_prompt=system_prompt,
-            source_lang=source_lang,
-            api_scheduler=scheduler,
-            request_category=request_category,
-            should_stop=should_stop,
-            error_callback=error_callback,
+            index=batch_index,
+            batch_total=len(batches),
+            callback=request_callback,
             stats=run_stats,
         )
 
+    _notify_batch_event(
+        request_callback,
+        BatchRequestEvent(
+            BATCH_EVENT_PLAN,
+            batch_total=len(batches),
+            items=total,
+            concurrency=min(max_workers, len(batches)),
+        ),
+    )
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map: dict = {}
-        batch_iter = iter(batches)
+        batch_iter = iter(enumerate(batches, start=1))
 
         def _submit_next() -> bool:
             if should_stop and should_stop():
                 return False
             try:
-                batch = next(batch_iter)
+                batch_index, batch = next(batch_iter)
             except StopIteration:
                 return False
-            future = executor.submit(_submit_batch, batch)
+            future = executor.submit(_submit_batch, batch_index, batch)
             future_map[future] = batch
             return True
 
