@@ -119,3 +119,19 @@ def test_text_outside_tables_is_not_touched():
 def test_paragraph_heights_follow_relative_and_absolute_codes():
     assert _mtext_paragraphs("基础板\\P{\\H0.8x;Base Plate}", 250) == [(1.0, "基础板"), (0.8, "Base Plate")]
     assert _mtext_paragraphs("{\\H125;小字}\\P{\\W0.8;300×300}", 250) == [(0.5, "小字"), (1.0, "300×300")]
+
+
+def test_bilingual_skips_codes_and_sizes_that_translate_to_themselves(tmp_path):
+    """编号、规格译前译后一样（M1、300×300×20 → 300X300X20），双语时不再在下面重复一遍。"""
+    result, output, _messages = _translate(
+        tmp_path, _drawing(*_table(), blocks=_table_block()),
+        {**TRANSLATIONS, "M1": "M1", "护边角铁": "护边角铁 "},
+        display_mode="source_first", translation_font="original",
+    )
+    texts = {_field(body, 1) for body in _entities(output, "MTEXT")}
+    assert "M1" in texts
+    assert "护边角铁" in texts
+    assert "基础板\\P{\\H0.8x;Base Plate}" in texts
+    table = _entities(output, "ACAD_TABLE")[0]
+    assert {record.value for record in table if record.code == 1} >= {"M1", "护边角铁"}
+    assert result.stats.changed == 1
