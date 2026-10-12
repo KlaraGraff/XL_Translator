@@ -109,6 +109,57 @@ export type PdfPageFile = {
   pages: PdfPage[];
 };
 
+/** CAD 译文对照表（任务中心「查看与修改译文」）。同一段原文在图上出现多次时只列一行。 */
+export type CadReviewRow = {
+  source: string;
+  /** 第一次（或上次写回）写进图纸的译文；未译出、保留原文时为空。 */
+  original: string;
+  /** 当前译文：改过就是改后的。 */
+  translation: string;
+  status: "translated" | "kept" | "unresolved";
+  count: number;
+  crowded: boolean;
+  edited: boolean;
+};
+
+export type CadReviewFile = {
+  key: string;
+  name: string;
+  output_name?: string;
+  rows: CadReviewRow[];
+  available: boolean;
+  rewritable: boolean;
+  /** 不能重新写回时说清原因（原图已移走、旧版本翻译的……）。 */
+  reason: string;
+  edited?: number;
+};
+
+export type CadReviewRewriteResult = {
+  file: string;
+  name: string;
+  ok: boolean;
+  message: string;
+  changed?: number;
+  untranslated?: number;
+  layout_unresolved?: number;
+};
+
+export type CadReviewRewrite = {
+  active: boolean;
+  done?: number;
+  total?: number;
+  current?: string;
+  results?: CadReviewRewriteResult[];
+};
+
+export type CadReviewSnapshot = {
+  task_id: string;
+  terminal: boolean;
+  target_lang: string;
+  rewrite: CadReviewRewrite;
+  files: CadReviewFile[];
+};
+
 /** actionable（= 暂停中且未终态）是页级操作按钮唯一的可用性开关，不要用 task 本身的 state/terminal
  *  代替——这份快照的 state/terminal/actionable 是后端针对页操作单独算出来的。 */
 export type PdfPagesSnapshot = {
@@ -377,6 +428,34 @@ export class ApiClient {
 
   async getTaskResult(taskId: string): Promise<TaskStatus> {
     return this.request<TaskStatus>(`/api/tasks/${taskId}/results`);
+  }
+
+  async getCadReview(taskId: string): Promise<CadReviewSnapshot> {
+    return this.request<CadReviewSnapshot>(`/api/tasks/${taskId}/cad-review`);
+  }
+
+  /** 一张图纸里改过的译文；值为空表示改回第一次的译文。改过的会顺手存进记忆库。 */
+  async saveCadReviewEdits(taskId: string, file: string, edits: Record<string, string>): Promise<{ saved: number; remembered: number }> {
+    return this.request(`/api/tasks/${taskId}/cad-review/edits`, {
+      method: "PUT",
+      body: JSON.stringify({ file, edits }),
+    });
+  }
+
+  /** 导回改好的 Excel；data 为 base64（不带 data: 前缀）。 */
+  async importCadReview(taskId: string, data: string): Promise<{ files: number; rows: number; remembered: number }> {
+    return this.request(`/api/tasks/${taskId}/cad-review/import`, {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    });
+  }
+
+  /** 按对照表重新写回这些图纸：后台进行，进度从 getCadReview().rewrite 读。 */
+  async rewriteCadReview(taskId: string, files: string[]): Promise<{ accepted: number }> {
+    return this.request(`/api/tasks/${taskId}/cad-review/rewrite`, {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    });
   }
 
   async getPdfPages(taskId: string): Promise<PdfPagesSnapshot> {

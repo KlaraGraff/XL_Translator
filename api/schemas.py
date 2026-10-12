@@ -60,6 +60,25 @@ class CadScanRequest(BaseModel):
         return normalize_user_paths(value)
 
 
+class CadReviewEditsRequest(BaseModel):
+    """译文对照表：一张图纸里改过的译文 ``{原文: 新译文}``，清空即改回原译文。"""
+
+    file: str = Field(min_length=1)
+    edits: dict[str, str] = Field(default_factory=dict)
+
+
+class CadReviewImportRequest(BaseModel):
+    """导回改好的 Excel：base64，不带 data: 前缀。"""
+
+    data: str = Field(min_length=1)
+
+
+class CadReviewRewriteRequest(BaseModel):
+    """按对照表重新写回的图纸（对照表里每张图纸的 key）。"""
+
+    files: list[str] = Field(default_factory=list)
+
+
 class CadInspectRequest(BaseModel):
     """逐张统计 / 扫描图块名：一次只开一张图（DWG 会转换并缓存给翻译任务用）。"""
 
