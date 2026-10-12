@@ -10,7 +10,7 @@ from typing import Any
 from loguru import logger
 
 from config import APP_DATA_DIR, KEYS_PATH, LOG_PATH, SETTINGS_PATH
-from core import diagnostics, tm_manager
+from core import diagnostics, feedback, tm_manager
 from core.task_history import TASK_HISTORY_RECOVERY_SCOPE, TaskHistoryStore, default_history_path
 from core.task_logger import clear_log_files
 import settings as settings_module
@@ -359,6 +359,8 @@ def _reset_paths() -> list[Path]:
         # 启动自检模块已经删掉，现在没有任何代码再写这个文件；旧版本装过的机器上
         # 它还躺着，恢复出厂得连它一起清，所以这条留着。
         API_HEALTH_STATE_PATH,
+        # 反馈页记住的邮箱，恢复出厂后不该再自动填上。读得晚，理由同上。
+        feedback.saved_contact_path(),
         # Read late: tests point the settings module at a temporary directory.
         settings_module.RECOVERY_PATH,
         settings_module.RECOVERY_PATH.with_name(

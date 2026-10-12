@@ -27,6 +27,7 @@ def register(app: FastAPI) -> None:
             "max_attachment_bytes": feedback.MAX_ATTACHMENT_BYTES,
             "max_files": feedback.MAX_PICKED_FILES,
             "max_tasks": feedback.MAX_TASKS,
+            "saved_email": feedback.saved_email(),
         }
 
     @app.post("/api/feedback/files")

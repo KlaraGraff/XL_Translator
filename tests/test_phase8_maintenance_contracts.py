@@ -95,6 +95,7 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         owned_workspace = self.app_data / "workspaces" / "task-1"
         owned_workspace.mkdir(parents=True)
         owned_workspace.joinpath(".translator-workspace.json").write_text("{}", encoding="utf-8")
+        self.app_data.joinpath("feedback_contact.json").write_text('{"email":"a@example.com"}', encoding="utf-8")
 
         result = maintenance.reset_all_local_data()
 
@@ -104,6 +105,7 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         self.assertFalse(settings_module.RECOVERY_PATH.exists())
         self.assertFalse(recovery_lock.exists())
         self.assertFalse(settings_module.BACKUPS_DIR.exists())
+        self.assertFalse(self.app_data.joinpath("feedback_contact.json").exists())
         self.assertEqual(unrelated_recovery.read_bytes(), b"outside current app data")
         self.assertTrue(self.source.exists())
         self.assertTrue(self.output.exists())
