@@ -1197,8 +1197,6 @@ class SubprocessCadConverter:
     bundled by this module.
     """
 
-    _POLL_INTERVAL = 0.5
-
     def __init__(self, executable: str | Path, *, timeout: int = 600) -> None:
         self.executable = str(executable)
         self.timeout = timeout
@@ -1241,61 +1239,57 @@ class SubprocessCadConverter:
             return False
         return _DXF_EOF_RE.search(tail) is not None
 
-    def _run_macos_app(self, app_bundle: Path, args: list[str], output_dir: Path, stem: str, output_type: str) -> Path:
-        """Launch ODA through LaunchServices and wait for its output.
+    def _run_macos_app(
+        self, app_bundle: Path, args: list[str], output_dir: Path, stem: str, output_type: str, timeout: int
+    ) -> Path:
+        """Launch ODA through LaunchServices and wait until it has exited.
 
         ODA's macOS build is a Cocoa application.  Invoking the binary inside
         ``Contents/MacOS`` directly can fail before conversion with a
         PasteBoard ``Connection Invalid`` error, even in an interactive user
         session.  LaunchServices supplies the application session correctly;
         ``-n`` forces a fresh instance so command-line arguments are honored;
-        ``-g`` keeps that helper window out of the user's foreground.
+        ``-g`` keeps that helper window out of the user's foreground; ``-W``
+        makes ``open`` return only when that instance quits, i.e. when the
+        conversion is finished.
         """
         launcher = shutil.which("open") or "/usr/bin/open"
-        command = [launcher, "-n", "-g", "-a", str(app_bundle), "--args", *args]
+        command = [launcher, "-n", "-g", "-W", "-a", str(app_bundle), "--args", *args]
         try:
             subprocess.run(
                 command,
                 check=True,
-                timeout=30,
+                timeout=timeout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
         except subprocess.TimeoutExpired as exc:
-            raise CadPipelineError("图纸转换工具启动超时。") from exc
+            # 卡住的那个 ODA 实例不会随 open 一起退出；它的参数里带着本次独有的
+            # 临时目录，按它结束，不碰用户自己开着的其他实例。
+            subprocess.run(["pkill", "-f", args[0]], check=False, capture_output=True)
+            raise CadPipelineError(f"图纸转换超时（{timeout} 秒）。") from exc
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
             logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
             raise CadPipelineError("图纸转换工具未能启动，请在「插件」中重新连接后重试。") from exc
 
-        # open 一启动就返回，ODA 在后台边转边写。文件刚出现时往往只写了前半截，
-        # 拿去解析就成了「图纸文件不完整」，大图纸几乎必中。要等它写完：DXF 看到
-        # 结尾的 EOF 记录，且大小在相邻两次轮询间不再变化；DWG 没有结尾标记，
-        # 就等大小连续几次不变（译后图纸还会再转回 DXF 校验一遍）。
-        required_stable = 1 if output_type.upper() == "DXF" else 4
-        deadline = time.monotonic() + self.timeout
-        last_size: int | None = None
-        stable = 0
-        seen = False
-        while time.monotonic() < deadline:
-            produced = self._produced_file(output_dir, stem, output_type)
-            if produced is not None:
-                seen = True
-                size = produced.stat().st_size
-                if size == last_size and self._output_complete(produced, output_type):
-                    stable += 1
-                    if stable >= required_stable:
-                        return produced
-                else:
-                    stable = 0
-                last_size = size
-            time.sleep(self._POLL_INTERVAL)
-        if seen:
-            raise CadPipelineError(f"图纸转换工具在 {self.timeout} 秒内未写完文件。")
-        raise CadPipelineError(
-            f"图纸转换工具在 {self.timeout} 秒内未生成文件。"
-        )
+        # 进程已经退出，文件就是最终结果；再核对一次：没有文件是没转出来，DXF
+        # 缺结尾的 EOF 记录是 ODA 中途崩了，都不能当成图纸本身损坏去解析。
+        produced = self._produced_file(output_dir, stem, output_type)
+        if produced is None:
+            raise CadPipelineError("图纸转换工具未生成文件。")
+        if not self._output_complete(produced, output_type):
+            raise CadPipelineError("图纸转换工具中途退出，这张图纸没有转换完整。")
+        return produced
+
+    def _timeout_for(self, source: Path) -> int:
+        """总超时只用来防卡死：在基础时长上按图纸大小每 MB 再加 30 秒。"""
+        try:
+            size_mb = source.stat().st_size // (1024 * 1024)
+        except OSError:
+            size_mb = 0
+        return self.timeout + 30 * size_mb
 
     def _run(self, source: Path, destination: Path, output_type: str) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1315,17 +1309,18 @@ class SubprocessCadConverter:
             # it is needed to run without a display server.
             if platform.system().lower() == "linux":
                 env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            timeout = self._timeout_for(source)
             app_bundle = self._macos_app_bundle()
             if app_bundle is not None:
-                produced = self._run_macos_app(app_bundle, command[1:], out_dir, source.stem, output_type)
+                produced = self._run_macos_app(app_bundle, command[1:], out_dir, source.stem, output_type, timeout)
             else:
                 try:
                     subprocess.run(
-                        command, check=True, timeout=self.timeout, cwd=str(temp), env=env,
+                        command, check=True, timeout=timeout, cwd=str(temp), env=env,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     )
                 except subprocess.TimeoutExpired as exc:
-                    raise CadPipelineError(f"图纸转换超时（{self.timeout} 秒）。") from exc
+                    raise CadPipelineError(f"图纸转换超时（{timeout} 秒）。") from exc
                 except subprocess.CalledProcessError as exc:
                     detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
                     logger.warning(f"[CAD] 图纸转换失败：{detail}")
