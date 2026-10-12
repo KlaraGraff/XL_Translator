@@ -42,7 +42,12 @@ Windows 构建产出 NSIS 安装器（`installMode: currentUser`，不需要管�
    - 用 `GITHUB_TOKEN` 创建的标签不会触发 push 事件，所以这里显式 dispatch 构建；`release=true` 让它走与 tag push 完全相同的判定（只认稳定 `vX.Y.Z` 标签，Apple 密钥齐全才是 formal-release）。
    - 如果标签已建好但构建没触发起来，直接对该标签运行 `build-distributions.yml` 并勾选 `release` 即可，不要删标签重打。
 3. 构建完成后，把发布说明写进 `docs/release-notes/vX.Y.Z.md`（写法见该目录的 README），走 PR 合进 main。
-4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与草稿里的构建渠道一致），再替换草稿正文、读回逐字比对，最后才 `--draft=false`。
+4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与 Release 上实际挂着的安装包一致），再替换草稿正文、读回逐字比对，然后才 `--draft=false`，最后用 `scripts/check_release_latest.py` 确认 `releases/latest` 和 `latest.json` 都已指向新版本（GitHub 有缓存，会重试几分钟）。
+
+发布之后：
+
+- 修订说明：改 `docs/release-notes/vX.Y.Z.md` 合进 main，运行 `step=notes`。核对规则同上，只换正文，不改变草稿状态。
+- 撤回：运行 `step=retract`。只把 Release 改回草稿，产物、标签、正文都保留；改完确认 `releases/latest` 和 `latest.json` 都已回到上一个正式版，已安装的应用不会再收到这个版本的更新。修好后用 `step=publish` 重新发布（签名渠道按安装包文件名判断，不依赖草稿里那行渠道说明）。
 
 仓库简介、topics 这类仓库设置不在 `GITHUB_TOKEN` 的权限内，仍需在 GitHub 网页上手动修改。
 

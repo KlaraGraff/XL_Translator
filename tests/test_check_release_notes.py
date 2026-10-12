@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scripts.check_release_latest import evaluate
 from scripts.check_release_notes import (
+    channel_from_assets,
     extract_channel,
     main,
     notes_errors,
+    resolve_channel,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +32,53 @@ def _notes(version: str = "10.0.1", mac_note: str = "（Developer ID 签名并�
 def test_channel_is_read_from_the_draft_written_by_the_build():
     assert extract_channel(DRAFT_BODY.format(channel="formal-release")) == "formal-release"
     assert extract_channel("手动改过的正文") is None
+
+
+FORMAL_ASSETS = [
+    "Translator_macOS_arm64_10.0.1.dmg",
+    "Translator_macOS_arm64_10.0.1.dmg.sha256",
+    "Translator_Windows_x64_10.0.1_Setup.exe",
+    "latest.json",
+]
+TEMP_ASSETS = [
+    "Translator_macOS_arm64_10.0.1_TEMP_SIGNED_TEST.dmg",
+    "Translator_Windows_x64_10.0.1_Setup.exe",
+]
+
+
+def test_channel_comes_from_the_installer_actually_attached():
+    assert channel_from_assets(FORMAL_ASSETS, "10.0.1") == "formal-release"
+    assert channel_from_assets(TEMP_ASSETS, "10.0.1") == "temporary-test"
+    assert channel_from_assets(["Translator_Windows_x64_10.0.1_Setup.exe"], "10.0.1") is None
+    assert channel_from_assets(FORMAL_ASSETS + TEMP_ASSETS, "10.0.1") is None
+
+
+def test_republishing_after_a_retract_works_without_the_channel_line():
+    # 撤回后正文早已是正式说明，没有 Channel 行，只能靠文件名判断。
+    channel, error = resolve_channel(FORMAL_ASSETS, _notes(), "10.0.1")
+    assert (channel, error) == ("formal-release", None)
+
+
+def test_channel_line_and_installer_must_agree():
+    channel, error = resolve_channel(TEMP_ASSETS, DRAFT_BODY.format(channel="formal-release"), "10.0.1")
+    assert channel is None and "temporary-test" in error and "formal-release" in error
+    channel, error = resolve_channel(["latest.json"], None, "10.0.1")
+    assert channel is None and "找不到唯一" in error
+
+
+def test_latest_check_after_publish():
+    assert evaluate("v10.0.1", "10.0.1", expect="v10.0.1") == []
+    assert len(evaluate("v10.0.0", "10.0.0", expect="v10.0.1")) == 2
+    # 临时签名包本来就不带 latest.json
+    assert evaluate("v10.0.1", "10.0.0", expect="v10.0.1", expect_manifest=False) == []
+
+
+def test_latest_check_after_retract():
+    assert evaluate("v9.5.9", "9.5.9", not_tag="v10.0.0") == []
+    assert evaluate("v9.5.9", None, not_tag="v10.0.0") == []
+    assert any("仍然是 10.0.0" in p for p in evaluate("v9.5.9", "10.0.0", not_tag="v10.0.0"))
+    assert any("仍然是 v10.0.0" in p for p in evaluate("v10.0.0", "9.5.9", not_tag="v10.0.0"))
+    assert any("不一致" in p for p in evaluate("v9.5.9", "9.5.8", not_tag="v10.0.0"))
 
 
 def test_well_formed_formal_notes_pass():
@@ -86,6 +136,11 @@ def test_cli_check_and_compare(tmp_path, capsys):
 
     draft.write_text("没有渠道行", encoding="utf-8")
     assert main(["--notes", str(notes), "--version", "10.0.1", "--draft-body", str(draft)]) == 1
+    assets = tmp_path / "assets.txt"
+    assets.write_text("\n".join(FORMAL_ASSETS), encoding="utf-8")
+    assert main(["--notes", str(notes), "--version", "10.0.1", "--assets", str(assets), "--draft-body", str(draft)]) == 0
+    assets.write_text("\n".join(TEMP_ASSETS), encoding="utf-8")
+    assert main(["--notes", str(notes), "--version", "10.0.1", "--assets", str(assets)]) == 1
 
     readback = tmp_path / "readback.md"
     readback.write_text(_notes().replace("\n", "\r\n").rstrip(), encoding="utf-8")
@@ -103,6 +158,11 @@ def test_release_workflow_replaces_body_before_publishing():
     # 用 GITHUB_TOKEN 建的 tag 不会触发 push，必须显式 dispatch 正式构建。
     assert 'gh workflow run build-distributions.yml --ref "v${VERSION}" -f release=true' in workflow
     assert "refs/heads/main" in workflow
+    # 发布后核对、撤回后核对已安装应用看到的最新版
+    assert 'check_release_latest.py --expect "v${VERSION}"' in workflow
+    assert 'gh release edit "$tag" --draft=true' in workflow
+    assert 'check_release_latest.py --not "v${VERSION}"' in workflow
+    assert "gh release delete" not in workflow and "git push --delete" not in workflow
 
 
 def test_build_workflow_accepts_dispatched_tag_releases_only_when_asked():

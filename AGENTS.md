@@ -41,7 +41,10 @@
      PR checks 已通过（Python 3.11 + 锁定依赖、无 Office，即第 8 条在云端的等价
      检查）；本机的 `run_release_env_tests.sh` 有条件时照跑。
    - `step=publish`：正文放在 `docs/release-notes/v{version}.md`，先合进 main。
-     工作流先核对正文，再替换草稿正文、读回比对，最后取消草稿，顺序固定。
+     工作流先核对正文，再替换草稿正文、读回比对，然后取消草稿，顺序固定；
+     最后确认已安装的应用看到的最新版（`releases/latest`、`latest.json`）已切过去。
+   - `step=notes`：发布后修订正文；`step=retract`：撤回为草稿（不删产物、不动
+     标签），并确认最新版已回到上一个正式版。撤回同样要 maple 确认。
    - 步骤细节见 `docs/TAURI_DISTRIBUTION_WORKFLOW.md`「发版步骤」。
 
 本地 Tauri 界面测试收尾动作：
