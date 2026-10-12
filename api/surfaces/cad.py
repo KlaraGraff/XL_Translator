@@ -26,8 +26,10 @@ from core.cad_translation import (
     CadPipelineOptions,
     SubprocessCadConverter,
     list_cad_files,
+    parse_lock_patterns,
     scan_cad_paths,
 )
+from core.cad_cache import default_cad_cache
 from core.task_runner import user_facing_reason
 from core.engine_dispatcher import TranslationBatchRunStats, build_role_engine
 from core.file_progress import file_progress_id
@@ -46,7 +48,33 @@ _CAD_OPTION_FIELDS = (
     "cad_check_entity_counts",
     "cad_scan_residual",
     "cad_translate_output_filename",
+    "cad_fit_layout",
+    "cad_fit_default_scale",
+    "cad_fit_min_scale",
+    "cad_display_mode",
+    "cad_locked_blocks",
+    "cad_locked_layers",
+    "cad_translation_font",
 )
+
+
+def cad_layout_options(options: TaskOptions) -> dict[str, Any]:
+    """任务选项里排版、显示模式、锁定名单和译文字体对应的 ``CadPipelineOptions`` 参数。"""
+    from core.cad_layout import FitSettings
+
+    fit = FitSettings(options.cad_fit_default_scale, options.cad_fit_min_scale).normalized()
+    display_mode = options.cad_display_mode
+    if display_mode not in {"translation", "source_first", "translation_first"}:
+        display_mode = "translation"
+    return {
+        "fit_layout": bool(options.cad_fit_layout),
+        "fit_default_scale": fit.default_scale,
+        "fit_min_scale": fit.min_scale,
+        "display_mode": display_mode,
+        "locked_blocks": parse_lock_patterns(options.cad_locked_blocks),
+        "locked_layers": parse_lock_patterns(options.cad_locked_layers),
+        "translation_font": "original" if options.cad_translation_font == "original" else "compatible",
+    }
 
 
 class CadSurface(Surface):
@@ -131,6 +159,8 @@ class CadSurface(Surface):
                     source_lang=str(request.source_language or "auto"),
                     target_lang=str(request.target_language or "zh"),
                     include_block_text=bool(request.include_block_text),
+                    locked_blocks=parse_lock_patterns(getattr(request, "locked_blocks", "")),
+                    locked_layers=parse_lock_patterns(getattr(request, "locked_layers", "")),
                 ),
                 skipped=cad_skipped,
             )
@@ -151,6 +181,7 @@ class CadSurface(Surface):
                 "needs_conversion": item.needs_conversion,
                 "uncertain_count": item.uncertain_count,
                 "counts_pending": item.counts_pending,
+                "size": _file_size(item.path),
                 "file_id": file_progress_id(item.path),
             }
             for item in summaries
@@ -219,6 +250,13 @@ class CadSurface(Surface):
                 "include_block_text": options.cad_include_block_text,
                 "glossary_path": options.cad_glossary_path or "",
                 "glossary_sha256": glossary_signature,
+                "fit_layout": options.cad_fit_layout,
+                "fit_default_scale": options.cad_fit_default_scale,
+                "fit_min_scale": options.cad_fit_min_scale,
+                "display_mode": options.cad_display_mode,
+                "locked_blocks": options.cad_locked_blocks,
+                "locked_layers": options.cad_locked_layers,
+                "translation_font": options.cad_translation_font,
             },
             "tm": {"enabled": options.cad_use_memory, "priority": "user_memory_first"},
             "target_lang_display": get_target_lang_display(settings.target_lang),
@@ -398,7 +436,10 @@ class CadSurface(Surface):
                 copy_related_files=options.cad_copy_related_files,
                 check_entity_counts=options.cad_check_entity_counts,
                 scan_residual=options.cad_scan_residual,
+                **cad_layout_options(options),
             ),
+            # 扫描页逐张统计时转换好的 DWG 存在这里，任务直接复用，不再转一遍。
+            dxf_cache=default_cad_cache(),
             resume_output_dir=options.resume_output_dir,
             translate_output_filename=options.cad_translate_output_filename,
             translation_identity={
@@ -408,6 +449,13 @@ class CadSurface(Surface):
                 "source_lang": source_lang,
             },
         )
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return None
 
 
 def load_cad_glossary(path: str | None) -> dict[str, str]:

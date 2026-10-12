@@ -140,8 +140,10 @@ class CadTaskRunner(BaseTaskRunner):
         options: CadPipelineOptions | None = None,
         resume_output_dir: Path | None = None,
         translation_identity: Mapping[str, Any] | None = None,
+        dxf_cache: Any = None,
     ) -> None:
         self._files = files
+        self._dxf_cache = dxf_cache
         self._source_root = Path(source_root)
         # ``output_dir`` is already the unique task root selected by the
         # shared output-directory builder.  Keep the deliverable files at
@@ -604,6 +606,7 @@ class CadTaskRunner(BaseTaskRunner):
                     language_translator=self._language_translator,
                     progress=progress,
                     pause_gate=lambda: self._wait_while_paused(CAD_PAUSED_IN_FILE_STATUS),
+                    dxf_cache=self._dxf_cache,
                 )
                 try:
                     work_output = self._run_dir / relative.parent / output.name
@@ -657,6 +660,7 @@ class CadTaskRunner(BaseTaskRunner):
                     or stats.residual_foreign_text_count
                     or stats.unsupported_entities
                     or stats.unknown_entity_count
+                    or stats.layout_unresolved
                     else "succeeded",
                     "stats": {
                         "candidate_entities": stats.candidate_entities,
@@ -669,6 +673,8 @@ class CadTaskRunner(BaseTaskRunner):
                         "residual_foreign_text_count": stats.residual_foreign_text_count,
                         "unsupported_entities": stats.unsupported_entities,
                         "unknown_entity_count": stats.unknown_entity_count,
+                        "layout_fitted": stats.layout_fitted,
+                        "layout_unresolved": stats.layout_unresolved,
                     },
                     "unresolved": result.unresolved,
                 }
@@ -684,6 +690,8 @@ class CadTaskRunner(BaseTaskRunner):
                     issues.append({"file": source.name, "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
                 if stats.residual_foreign_text_count:
                     issues.append({"file": source.name, "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
+                if stats.layout_unresolved:
+                    issues.append({"file": source.name, "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字"})
                 if stats.unsupported_entities or stats.unknown_entity_count:
                     issues.append({"file": source.name, "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)

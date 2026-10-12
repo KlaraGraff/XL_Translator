@@ -11,7 +11,11 @@
 
 没有字体文件可量，宽度按字体类型粗估（SHX 单线字体与 TrueType 各一套系数，
 系数取自真实图纸的实测）。估算宁可偏宽：多缩一点只是字窄一些，少缩了就还是叠在
-一起。缩放有下限（字高不低于原来的一半），空间实在太小时仍可能有少量重叠。
+一起。
+
+缩多少由用户设置决定（见 :class:`FitSettings`）：放不下时先缩到「默认比例」，同一张
+图里缩过的字大小一致；还放不下就每次再缩 0.1，直到放下或到「最小比例」。到了最小
+比例仍放不下的停在最小比例，并记进报告请人复核。
 """
 from __future__ import annotations
 
@@ -31,11 +35,14 @@ _SHX_METRICS = {"wide": 0.75, "narrow": 0.6, "space": 0.5}
 _TTF_METRICS = {"wide": 1.0, "narrow": 0.56, "space": 0.3}
 _TTF_SUFFIXES = (".ttf", ".ttc", ".otf")
 
-# 缩放下限：字高不低于原来的一半，字宽比例不低于原来的 0.35。
-# 只需要收一点（不小于 0.7）时只收字宽，字高不变；再多才开始降字高。
-_MIN_HEIGHT_SCALE = 0.5
-_MIN_WIDTH_SCALE = 0.35
+# 整体缩放（字高缩放 × 字宽缩放）不小于 0.7 时只收字宽，字高不变，和旁边的文字、
+# 标注线还对得齐；再多才开始降字高，字宽停在原来的 0.7。
 _WIDTH_ONLY_SCALE = 0.7
+# 默认比例之后每档再缩多少。
+_SCALE_STEP = 0.1
+# 设置的取值范围（界面同样限制，这里兜底旧数据和手改的 settings.json）。
+DEFAULT_SCALE_RANGE = (0.5, 1.0)
+MIN_SCALE_RANGE = (0.3, 1.0)
 # 收缩后与相邻文字之间留的空隙（按原字高 × 原宽度比例计）。
 _PAD_EM = 0.3
 
@@ -45,6 +52,31 @@ _NEIGHBOR_TYPES = frozenset({"TEXT", "ATTRIB", "MTEXT"})
 _PERCENT_SYMBOL_RE = re.compile(r"%%[cdpCDP]")
 _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
+
+
+@dataclass(frozen=True)
+class FitSettings:
+    """放不下时缩到多少：先到 ``default_scale``，再按 0.1 一档降到 ``min_scale``。"""
+
+    default_scale: float = 0.7
+    min_scale: float = 0.4
+
+    def normalized(self) -> "FitSettings":
+        default = min(max(_float(self.default_scale, 0.7), DEFAULT_SCALE_RANGE[0]), DEFAULT_SCALE_RANGE[1])
+        minimum = min(max(_float(self.min_scale, 0.4), MIN_SCALE_RANGE[0]), default)
+        return FitSettings(round(default, 2), round(minimum, 2))
+
+    def tiers(self) -> list[float]:
+        """从大到小的各档整体缩放比例，第一档是默认比例，最后一档是最小比例。"""
+        settings = self.normalized()
+        tiers = [settings.default_scale]
+        current = settings.default_scale
+        while current - _SCALE_STEP > settings.min_scale + 1e-9:
+            current = round(current - _SCALE_STEP, 2)
+            tiers.append(current)
+        if tiers[-1] > settings.min_scale + 1e-9:
+            tiers.append(settings.min_scale)
+        return tiers
 
 
 @dataclass(frozen=True)
@@ -267,13 +299,24 @@ def _box(entity: _TextEntity) -> _TextBox:
     return _TextBox(entity.entity_no, left, right, bottom, top)
 
 
-def _scales(fit: float) -> tuple[float, float]:
-    """``(字高缩放, 字宽缩放)``，两者相乘尽量等于 ``fit``。"""
-    if fit >= _WIDTH_ONLY_SCALE:
-        return 1.0, fit
-    height_scale = max(_MIN_HEIGHT_SCALE, fit / _WIDTH_ONLY_SCALE)
-    width_scale = max(_MIN_WIDTH_SCALE, fit / height_scale)
-    return height_scale, width_scale
+def _scales(scale: float) -> tuple[float, float]:
+    """``(字高缩放, 字宽缩放)``，两者相乘等于 ``scale``：先收字宽，收到 0.7 再降字高。"""
+    if scale >= _WIDTH_ONLY_SCALE:
+        return 1.0, scale
+    return scale / _WIDTH_ONLY_SCALE, _WIDTH_ONLY_SCALE
+
+
+def _pick_scale(fit: float, settings: FitSettings) -> tuple[float, bool]:
+    """按档位挑整体缩放比例：``(比例, 是否放得下)``。
+
+    ``fit`` 是刚好放下需要的比例。能放下的最大一档就是答案；连最小比例都放不下时
+    停在最小比例。
+    """
+    tiers = settings.tiers()
+    for tier in tiers:
+        if tier <= fit + 1e-9:
+            return tier, True
+    return tiers[-1], False
 
 
 def _format_number(value: float) -> str:
@@ -284,15 +327,20 @@ def fit_translated_texts(
     records: list[Any],
     originals: Mapping[int, str],
     plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
 ) -> int:
     """Shrink translated TEXT/ATTRIB entities that would overlap a neighbour.
 
     ``originals`` maps the ordinal of each translated entity (its position
     among ``0`` records, stable across MTEXT write-back) to its source text.
     Edits ``records`` in place and returns how many entities were shrunk.
+    Entities that still overlap at the minimum scale are appended to
+    ``unresolved`` as ``{"source", "translation"}``.
     """
     if not originals:
         return 0
+    settings = (settings or FitSettings()).normalized()
     entities = _collect_entities(records, plain_text)
     groups: dict[tuple[tuple[str, str], float], list[_TextBox]] = {}
     for entity in entities:
@@ -349,7 +397,10 @@ def fit_translated_texts(
         room = allowed - _PAD_EM * height * width_factor
         if needed <= room:
             continue
-        height_scale, width_scale = _scales(max(room, 0.0) / needed)
+        scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
+        if not fits and unresolved is not None:
+            unresolved.append({"source": plain_text(original), "translation": entity.text})
+        height_scale, width_scale = _scales(scale)
         edits.append((entity, height * height_scale, width_factor * width_scale))
 
     for entity, new_height, new_width_factor in sorted(edits, key=lambda item: item[0].start, reverse=True):

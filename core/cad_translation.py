@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import codecs
 import json
+import fnmatch
 import hashlib
 import os
 import platform
@@ -27,7 +28,25 @@ from typing import Any, Protocol
 
 from loguru import logger
 
-from core.cad_layout import fit_translated_texts
+from core.cad_cache import CadDxfCache
+from core.cad_layout import FitSettings, fit_translated_texts
+from core.cad_writeback import (
+    MARK_ADDED,
+    MARK_COMBINED,
+    TRANSLATION_STYLE,
+    HandleAllocator,
+    LinePlacement,
+    added_line,
+    append_marker,
+    compatible_font,
+    ensure_app_id,
+    ensure_translation_style,
+    has_cjk,
+    marker_records,
+    restore_previous_run,
+    set_style,
+    shx_safe,
+)
 from core.cad_language import (
     LATIN_TARGET_LANGS,
     NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
@@ -293,9 +312,18 @@ def scan_cad_file(
             uncertain_count=None,
             counts_pending=True,
         )
-    records = _read_scan_records(source)
+    return _summarize_records(source, _read_scan_records(source), options)
+
+
+def _summarize_records(source: Path, records: Sequence[DxfRecord], options: CadPipelineOptions) -> CadScanSummary:
+    """文字实体数、待翻译数和拿不准语种的条数（与翻译时的口径一致）。"""
     needs_conversion = False
-    units = extract_cad_text_units(records, include_block_text=options.include_block_text)
+    units = extract_cad_text_units(
+        records,
+        include_block_text=options.include_block_text,
+        locked_blocks=options.locked_blocks,
+        locked_layers=options.locked_layers,
+    )
     candidate_count = 0
     uncertain_count = 0
     for unit in units:
@@ -323,6 +351,103 @@ def scan_cad_file(
         needs_conversion=needs_conversion,
         uncertain_count=uncertain_count,
     )
+
+
+def list_cad_text_containers(records: Sequence[DxfRecord]) -> dict[str, list[dict[str, Any]]]:
+    """含文字的图块和图层，供「锁定不翻译」清单勾选。
+
+    图块：有名字的图块（匿名图块 ``*U``/``*D`` 等用户不认识，不列）里直接放了几段
+    文字（含属性定义），以及在整张图里被插入了几次；没有文字的图块不列。
+    图层：每个图层上有几段文字。
+    """
+    starts = [index for index, record in enumerate(records) if record.code == 0]
+    starts.append(len(records))
+    block_texts: dict[str, int] = {}
+    block_inserts: dict[str, int] = {}
+    layer_texts: dict[str, int] = {}
+    display_names: dict[str, str] = {}
+    current_block: str | None = None
+    for start, end in zip(starts, starts[1:]):
+        if start >= end:
+            continue
+        typ = records[start].value.strip().upper()
+        body = records[start + 1:end]
+        if typ == "BLOCK":
+            name = next((r.value.strip() for r in body if r.code == 2), "")
+            current_block = name.upper() if name and not name.startswith("*") else None
+            if current_block:
+                display_names.setdefault(current_block, name)
+            continue
+        if typ == "ENDBLK":
+            current_block = None
+            continue
+        if typ in {"INSERT", "MINSERT"}:
+            name = next((r.value.strip() for r in body if r.code == 2), "")
+            if name and not name.startswith("*"):
+                block_inserts[name.upper()] = block_inserts.get(name.upper(), 0) + 1
+                display_names.setdefault(name.upper(), name)
+            continue
+        if typ not in _TEXT_ENTITY_TYPES and typ not in {"MLEADER", "MULTILEADER"}:
+            continue
+        if typ == "MINSERT":
+            continue
+        if current_block:
+            block_texts[current_block] = block_texts.get(current_block, 0) + 1
+        layer = next((r.value.strip() for r in body if r.code == 8), "0") or "0"
+        layer_texts[layer] = layer_texts.get(layer, 0) + 1
+    blocks = [
+        {"name": display_names.get(key, key), "texts": count, "inserts": block_inserts.get(key, 0)}
+        for key, count in block_texts.items()
+        if block_inserts.get(key, 0)
+    ]
+    blocks.sort(key=lambda item: (-item["inserts"] * item["texts"], item["name"]))
+    layers = [{"name": name, "texts": count} for name, count in layer_texts.items()]
+    layers.sort(key=lambda item: (-item["texts"], item["name"]))
+    return {"blocks": blocks, "layers": layers}
+
+
+@dataclass(frozen=True)
+class CadInspection:
+    summary: CadScanSummary
+    blocks: list[dict[str, Any]]
+    layers: list[dict[str, Any]]
+    # 这次是否真的调用了转换器（False：DXF，或用了缓存）。
+    converted: bool = False
+
+
+def inspect_cad_file(
+    path: str | Path,
+    *,
+    converter: CadConverter | None,
+    cache: CadDxfCache | None = None,
+    options: CadPipelineOptions | None = None,
+) -> CadInspection:
+    """Open one drawing (converting a DWG, via ``cache`` when given) and count it.
+
+    这是扫描页「逐张统计」和「扫描图块名」用的：一次只处理一张，界面每处理完一张就
+    更新一行，可以随时停下。转换结果存进 ``cache``，开始翻译时直接复用。
+    """
+    options = options or CadPipelineOptions()
+    source = Path(path)
+    converted = False
+    if source.suffix.lower() == ".dwg":
+        cached = cache.lookup(source) if cache else None
+        if cached is None:
+            if converter is None:
+                raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
+            with tempfile.TemporaryDirectory(prefix="xl-cad-inspect-") as temporary:
+                dxf_path = Path(temporary) / f"{source.stem}.dxf"
+                converter.dwg_to_dxf(source, dxf_path)
+                converted = True
+                stored = cache.store(source, dxf_path) if cache else None
+                records = _parse_dxf(_read_dxf_text(stored or dxf_path))
+        else:
+            records = _parse_dxf(_read_dxf_text(cached))
+    else:
+        records = _read_scan_records(source)
+    summary = _summarize_records(source, records, options)
+    containers = list_cad_text_containers(records)
+    return CadInspection(summary, containers["blocks"], containers["layers"], converted)
 
 
 def list_cad_files(paths: Iterable[str | Path]) -> list[Path]:
@@ -406,6 +531,14 @@ class CadTranslationStats:
     skipped_codes: int = 0
     # 译文比原文长、会压到同一行相邻文字，写回时缩小了字宽或字高的条数。
     layout_fitted: int = 0
+    # 其中缩到最小比例仍放不下、需要人看一眼的条数。
+    layout_unresolved: int = 0
+    # 落在锁定图块 / 锁定图层里、按用户要求原样保留的文字条数（不计入文字实体）。
+    locked_texts: int = 0
+    # 双语显示时新增的译文文字条数（单行文字的译文另起一行）。
+    bilingual_added: int = 0
+    # 改用兼容字体写回的译文条数。
+    restyled: int = 0
 
 
 @dataclass
@@ -447,6 +580,16 @@ class CadPipelineOptions:
     copy_related_files: bool = False
     # 译文会压到同一行相邻文字时缩小字宽/字高（见 core.cad_layout）。
     fit_layout: bool = True
+    # 放不下时先缩到默认比例，再按 0.1 一档缩到最小比例（字高 × 字宽的整体比例）。
+    fit_default_scale: float = 0.7
+    fit_min_scale: float = 0.4
+    # 锁定不翻译的图块名 / 图层名（大小写不敏感，可用 * ? 通配），见 parse_lock_patterns。
+    locked_blocks: tuple[str, ...] = ()
+    locked_layers: tuple[str, ...] = ()
+    # translation 纯译文；source_first 原文在上、译文在下；translation_first 译文在上。
+    display_mode: str = "translation"
+    # compatible：译文改用 AutoCAD 自带字体（见 core.cad_writeback）；original：沿用原样式。
+    translation_font: str = "original"
 
 
 def _parse_dxf(text: str) -> list[DxfRecord]:
@@ -594,10 +737,41 @@ def _looks_like_metadata(entity_type: str, text: str, codes: Sequence[int]) -> b
     return stripped.startswith("((") or stripped.startswith("(setq")
 
 
+# 用户写锁定名单时常用的分隔符。图块名、图层名本身不能含这些字符（AutoCAD 的命名规则
+# 不允许 , ; / 等），所以可以放心拆；中文逗号、顿号也照收。
+_LOCK_SPLIT_RE = re.compile(r"[,;/\n\r\t，、；]+")
+
+
+def parse_lock_patterns(value: str | Iterable[str] | None) -> tuple[str, ...]:
+    """把用户写的锁定名单拆成去重后的名字/通配符（统一大写）。"""
+    if not value:
+        return ()
+    parts = _LOCK_SPLIT_RE.split(value) if isinstance(value, str) else [str(item) for item in value]
+    return tuple(dict.fromkeys(part.strip().upper() for part in parts if part and part.strip()))
+
+
+def _matches_any(name: str, patterns: Sequence[str]) -> bool:
+    upper = name.strip().upper()
+    return any(fnmatch.fnmatchcase(upper, pattern) for pattern in patterns)
+
+
+@dataclass
+class CadLockReport:
+    """锁定名单在一张图里的命中情况，用来在报告里提醒「名字写错、一个都没匹配到」。"""
+
+    locked_texts: int = 0
+    # 每个锁定名命中了几个图块 / 几段文字（图层）。
+    block_matches: dict[str, int] = field(default_factory=dict)
+    layer_matches: dict[str, int] = field(default_factory=dict)
+
+
 def extract_cad_text_units(
     records: Sequence[DxfRecord],
     *,
     include_block_text: bool = True,
+    locked_blocks: Sequence[str] = (),
+    locked_layers: Sequence[str] = (),
+    lock_report: CadLockReport | None = None,
 ) -> list[CadTextUnit]:
     """Extract visible text without flattening or rewriting the drawing.
 
@@ -650,6 +824,9 @@ def extract_cad_text_units(
             table_name = None
     block_ranges: dict[str, tuple[int, int]] = {}
     referenced_blocks: set[str] = set()
+    # 图块里又插了哪些图块（嵌套），以及每个图块被插在哪些图层上。
+    nested_inserts: dict[str, set[str]] = {}
+    insert_layers: dict[str, set[str]] = {}
     current_block: str | None = None
     block_start = 0
     for start, end in zip(starts, starts[1:]):
@@ -667,10 +844,81 @@ def extract_cad_text_units(
             name = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), "")
             if name:
                 referenced_blocks.add(name)
+                if current_block:
+                    nested_inserts.setdefault(current_block, set()).add(name)
+                layer = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 8), "0")
+                insert_layers.setdefault(name, set()).add(layer)
     reachable_ranges = [block_ranges[name] for name in referenced_blocks if name in block_ranges]
     reachable_ranges.extend(
         block_ranges[name] for name in ("*MODEL_SPACE", "*PAPER_SPACE") if name in block_ranges
     )
+    block_patterns = tuple(locked_blocks)
+    layer_patterns = tuple(locked_layers)
+    # 锁定的图块连同它里面嵌套的子图块整个不翻（图框里的徽标、签名栏常是子图块）。
+    locked_block_names: set[str] = set()
+    if block_patterns:
+        pending = []
+        for name in block_ranges:
+            if name.startswith("*"):
+                continue
+            hits = [pattern for pattern in block_patterns if fnmatch.fnmatchcase(name, pattern)]
+            if hits:
+                pending.append(name)
+                if lock_report is not None:
+                    for pattern in hits:
+                        lock_report.block_matches[pattern] = lock_report.block_matches.get(pattern, 0) + 1
+        while pending:
+            name = pending.pop()
+            if name in locked_block_names:
+                continue
+            locked_block_names.add(name)
+            pending.extend(nested_inserts.get(name, ()))
+    if lock_report is not None:
+        for pattern in block_patterns:
+            lock_report.block_matches.setdefault(pattern, 0)
+        for pattern in layer_patterns:
+            lock_report.layer_matches.setdefault(pattern, 0)
+    locked_ranges = [block_ranges[name] for name in locked_block_names if name in block_ranges]
+    # 图块里画在 0 层的东西随插入它的图层显示：这个图块只插在锁定图层上时，一并锁定。
+    layer_locked_ranges = [
+        block_ranges[name]
+        for name, layers in insert_layers.items()
+        if layer_patterns and name in block_ranges and layers and all(_matches_any(layer, layer_patterns) for layer in layers)
+    ]
+    # ATTRIB 跟在所属 INSERT 后面，直到 SEQEND：记下每段属性归哪个插入。
+    owner_insert: dict[int, tuple[str, str]] = {}
+    current_insert: tuple[str, str] | None = None
+    for start, end in zip(starts, starts[1:]):
+        if start >= end:
+            continue
+        typ = records[start].value.strip().upper()
+        if typ in {"INSERT", "MINSERT"}:
+            current_insert = (
+                next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), ""),
+                next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 8), "0"),
+            )
+        elif typ == "ATTRIB" and current_insert is not None:
+            owner_insert[start] = current_insert
+        else:
+            current_insert = None
+
+    def lock_reason(start: int, entity_type: str, layer: str) -> str | None:
+        """这段文字被哪个锁定名单挡下（返回命中的图层名单项，或 ``"block"``）；不锁返回 None。"""
+        if any(lo <= start < hi for lo, hi in locked_ranges):
+            return "block"
+        owner = owner_insert.get(start) if entity_type == "ATTRIB" else None
+        if owner and owner[0] in locked_block_names:
+            return "block"
+        if layer_patterns:
+            for candidate in (layer, owner[1] if owner else None):
+                if candidate is None:
+                    continue
+                for pattern in layer_patterns:
+                    if fnmatch.fnmatchcase(candidate, pattern):
+                        return pattern
+            if layer in {"", "0"} and any(lo <= start < hi for lo, hi in layer_locked_ranges):
+                return next(iter(layer_patterns))
+        return None
 
     for entity_no, (start, end) in enumerate(zip(starts, starts[1:])):
         if start >= end:
@@ -695,6 +943,14 @@ def extract_cad_text_units(
         layer = next((record.value.strip().upper() for record in records[start + 1:end] if record.code == 8), "")
         if layer in hidden_layers:
             continue
+        if block_patterns or layer_patterns:
+            reason = lock_reason(start, entity_type, layer)
+            if reason is not None:
+                if lock_report is not None:
+                    lock_report.locked_texts += 1
+                    if reason != "block":
+                        lock_report.layer_matches[reason] = lock_report.layer_matches.get(reason, 0) + 1
+                continue
         fields: list[int] = []
         if entity_type in {"MLEADER", "MULTILEADER"}:
             # MLEADER stores displayed text in CONTEXT_DATA as the first 304
@@ -938,15 +1194,19 @@ def _replace_unit(records: list[DxfRecord], unit: CadTextUnit, translated: str, 
         records[index] = _record_copy(records[index], value="")
 
 
-def _replace_unit_runs(
-    records: list[DxfRecord], unit: CadTextUnit, translations: Mapping[str, str], *, escape: bool = True,
-) -> None:
-    """Replace MTEXT runs while preserving controls and paragraph topology."""
-    if not unit.runs or unit.entity_type not in {"MTEXT", "MLEADER", "MULTILEADER"}:
-        value = translations.get(unit.plain_text)
-        if value:
-            _replace_unit(records, unit, value, escape=escape)
-        return
+# MTEXT 里切换 SHX 字体的内联代码（\F...;）。译文改用兼容字体时去掉，否则它会盖过新样式；
+# TrueType 的 \f...; 照留（TrueType 字体本来就有重音字母，还带着粗体、斜体设置）。
+_MTEXT_SHX_FONT_RE = re.compile(r"\\F[^;]*;")
+
+
+def _assemble_runs(
+    records: Sequence[DxfRecord],
+    unit: CadTextUnit,
+    translations: Mapping[str, str],
+    *,
+    escape: bool = True,
+) -> str:
+    """The MTEXT / MLEADER value with every translated run replaced (controls kept)."""
     assembled = "".join(records[index].value for index in unit.record_indices)
     for run in reversed(unit.runs):
         target = translations.get(run.text)
@@ -961,11 +1221,16 @@ def _replace_unit_runs(
             escape=escape,
         )
         assembled = assembled[:run.start] + replacement + assembled[run.end:]
+    return assembled
+
+
+def _write_mtext_value(records: list[DxfRecord], unit: CadTextUnit, value: str, *, escape: bool = True) -> None:
+    """Write an MTEXT / MLEADER value back over the unit's records, chunking MTEXT."""
     if unit.entity_type in {"MLEADER", "MULTILEADER"}:
         index = unit.record_indices[0]
-        records[index] = _record_copy(records[index], value=assembled, code=304)
+        records[index] = _record_copy(records[index], value=value, code=304)
         return
-    encoded = _encode_dxf_text(assembled, multiline=True, escape=escape)
+    encoded = _encode_dxf_text(value, multiline=True, escape=escape)
     chunks = _ascii_chunks(encoded)
     final = next((index for index in reversed(unit.record_indices) if records[index].code == 1), None)
     if final is None:
@@ -979,6 +1244,110 @@ def _replace_unit_runs(
     for offset, chunk in enumerate(extra):
         records.insert(final + offset, _record_copy(records[final], value=chunk, code=3))
     records[final + len(extra)] = _record_copy(records[final + len(extra)], value=chunks[-1], code=1)
+
+
+def _replace_unit_runs(
+    records: list[DxfRecord],
+    unit: CadTextUnit,
+    translations: Mapping[str, str],
+    *,
+    escape: bool = True,
+    strip_shx_fonts: bool = False,
+) -> None:
+    """Replace MTEXT runs while preserving controls and paragraph topology."""
+    if not unit.runs or unit.entity_type not in {"MTEXT", "MLEADER", "MULTILEADER"}:
+        value = translations.get(unit.plain_text)
+        if value:
+            _replace_unit(records, unit, value, escape=escape)
+        return
+    assembled = _assemble_runs(records, unit, translations, escape=escape)
+    if strip_shx_fonts:
+        assembled = _MTEXT_SHX_FONT_RE.sub("", assembled)
+    _write_mtext_value(records, unit, assembled, escape=escape)
+
+
+def _entity_start(records: Sequence[DxfRecord], index: int) -> int:
+    while index > 0 and records[index].code != 0:
+        index -= 1
+    return index
+
+
+def _entity_end(records: Sequence[DxfRecord], start: int) -> int:
+    for index in range(start + 1, len(records)):
+        if records[index].code == 0:
+            return index
+    return len(records)
+
+
+def _translated_plain(unit: CadTextUnit, translations: Mapping[str, str]) -> str:
+    if not unit.runs:
+        return translations.get(unit.plain_text, unit.plain_text)
+    return " ".join(translations.get(run.text, run.text) for run in unit.runs)
+
+
+_BILINGUAL_MODES = frozenset({"source_first", "translation_first"})
+_CJK_TRANSLATION_FONT = compatible_font("zh")
+# 双语时译文比原文小一号；多行文字里用相对字高写。
+_BILINGUAL_SCALE = 0.8
+_ATTRIB_SEPARATOR = " / "
+
+
+def _write_bilingual(
+    records: list[DxfRecord],
+    unit: CadTextUnit,
+    translations: Mapping[str, str],
+    start: int,
+    *,
+    below: bool,
+    handles: HandleAllocator,
+    style: str | None,
+    can_mark: bool,
+    escape: bool,
+) -> DxfRecord | None:
+    """Write 原文 + 译文 for one unit; returns the ``0`` record of an added TEXT.
+
+    * TEXT：原文不动，在下方（译文在上时为上方）新增一段译文文字，字高为原文的 0.8；
+    * MTEXT / 引线：同一段里换行追加译文（相对字高 0.8），由 CAD 自己排版；
+    * 尺寸标注的替代文字：同一段里换行追加；
+    * 图块属性：没法另加一行，同一行写「原文 / 译文」。
+
+    改成双语的实体都带一个隐藏标记，同一张图再翻一次时先恢复原样（见 core.cad_writeback）。
+    """
+    end = _entity_end(records, start)
+    entity_type = unit.entity_type
+    if entity_type == "TEXT":
+        translation = translations.get(unit.plain_text)
+        if not translation:
+            return None
+        value = _encode_dxf_text(_safe_translation(unit.original, translation), multiline=False, escape=escape)
+        marker = marker_records(records[start], MARK_ADDED) if can_mark else []
+        line = added_line(
+            records[start:end], value, handles.next(), LinePlacement(below=below, scale=_BILINGUAL_SCALE), style, marker,
+        )
+        records[end:end] = line
+        return line[0]
+    original = "".join(records[index].value for index in unit.record_indices)
+    if entity_type in {"MTEXT", "MLEADER", "MULTILEADER"}:
+        translated = _assemble_runs(records, unit, translations, escape=escape)
+        part = "{\\H%sx;%s}" % (_BILINGUAL_SCALE, translated)
+        _write_mtext_value(records, unit, f"{original}\\P{part}" if below else f"{part}\\P{original}", escape=escape)
+    else:
+        translation = translations.get(unit.plain_text)
+        if not translation:
+            return None
+        encoded = _encode_dxf_text(_safe_translation(unit.original, translation), multiline=False, escape=escape)
+        joiner = _ATTRIB_SEPARATOR if entity_type in {"ATTRIB", "ATTDEF"} else "\\P"
+        value = f"{original}{joiner}{encoded}" if below else f"{encoded}{joiner}{original}"
+        index = unit.record_indices[0]
+        records[index] = _record_copy(records[index], value=value)
+        for extra in unit.record_indices[1:]:
+            records[extra] = _record_copy(records[extra], value="")
+    if can_mark:
+        end = _entity_end(records, start)
+        records[start + 1:end] = append_marker(
+            list(records[start + 1:end]), marker_records(records[start], MARK_COMBINED, original),
+        )
+    return None
 
 
 def scan_replacement_characters(records: Sequence[DxfRecord]) -> list[str]:
@@ -998,8 +1367,11 @@ class CadTranslationPipeline:
         stop_requested: Callable[[], bool] | None = None,
         pause_gate: Callable[[], None] | None = None,
         language_translator: CadLanguageTranslator | None = None,
+        dxf_cache: CadDxfCache | None = None,
     ) -> None:
         self.converter = converter
+        # 扫描时转换过的 DWG 留在这里，翻译时直接复用，不再转第二遍。
+        self.dxf_cache = dxf_cache
         self.memory_lookup = memory_lookup
         self.translator = translator
         # 程序判断不了语种的文字走这个翻译器：模型同时回报每条原文的语种代码，
@@ -1222,6 +1594,9 @@ class CadTranslationPipeline:
             if source.suffix.lower() == ".dxf":
                 self._emit("scan", 0, 1)
                 shutil.copy2(source, work_dxf)
+            elif (cached := self.dxf_cache.lookup(source) if self.dxf_cache else None) is not None:
+                shutil.copyfile(cached, work_dxf)
+                self._emit("scan", 0, 1, "使用扫描时已转换好的图纸，跳过格式转换")
             elif self.converter is not None:
                 # DWG 转 DXF 要调用外部转换器，大图纸要几秒到几分钟：开始和结束各记一行
                 # 运行日志，进度在转换真正完成时才前进。
@@ -1233,6 +1608,8 @@ class CadTranslationPipeline:
                     started="正在转换图纸格式（DWG → DXF）",
                     finished="图纸格式转换完成，用时 {0} 秒",
                 )
+                if self.dxf_cache is not None:
+                    self.dxf_cache.store(source, work_dxf)
             else:
                 raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
             # Keep a recoverable input/work copy even if a later provider or
@@ -1247,10 +1624,39 @@ class CadTranslationPipeline:
             records = _parse_dxf(dxf_text)
             # 新格式（UTF-8）DXF 的译文直接写字符；老格式按代码页读，仍写 \U+XXXX。
             escape_unicode = not _writes_real_unicode(records, dxf_encoding)
+            restored = restore_previous_run(records)
+            if restored:
+                self._emit("scan", 0, 1, f"图纸里有 {restored} 处上次写入的双语译文，已先恢复原文再重新翻译")
+            bilingual = options.display_mode in _BILINGUAL_MODES
+            handles = HandleAllocator(records)
+            font = compatible_font(options.target_lang) if options.translation_font == "compatible" else None
+            # 表记录要在取文字之前加：之后再插记录，取出的文字位置就全错开了。
+            style_name = TRANSLATION_STYLE if font and ensure_translation_style(records, handles, font) else None
+            can_mark = ensure_app_id(records, handles) if bilingual else False
             stats = CadTranslationStats(scanned_entities=sum(1 for r in records if r.code == 0))
             self._emit("scan", 1, 1, "已读取图纸")
-            units = extract_cad_text_units(records, include_block_text=options.include_block_text)
+            lock_report = CadLockReport()
+            units = extract_cad_text_units(
+                records,
+                include_block_text=options.include_block_text,
+                locked_blocks=options.locked_blocks,
+                locked_layers=options.locked_layers,
+                lock_report=lock_report,
+            )
             stats.candidate_entities = len(units)
+            stats.locked_texts = lock_report.locked_texts
+            if options.locked_blocks or options.locked_layers:
+                self._emit("scan", 1, 1, f"锁定不翻译的图块和图层里有 {lock_report.locked_texts} 处文字，保持原样")
+                unmatched = [
+                    *(f"图块 {name}" for name, count in lock_report.block_matches.items() if not count),
+                    *(f"图层 {name}" for name, count in lock_report.layer_matches.items() if not count),
+                ]
+                if unmatched:
+                    self._emit(
+                        "scan", 1, 1,
+                        f"这张图里没有找到：{'、'.join(unmatched)}，请检查锁定名单是否写错",
+                        level="WARN",
+                    )
             candidates: list[CadTextUnit] = []
             # 整条文字程序拿不准语种的那些（只在「已是目标语言的不翻译」打开时有意义）。
             uncertain_units: set[str] = set()
@@ -1412,29 +1818,72 @@ class CadTranslationPipeline:
             stats.untranslated = sum(1 for text in texts if text not in translations and text not in kept_texts)
             timings["translate"] = round(time.perf_counter() - started_at - timings["scan"] - timings["match"], 4)
             self._check_stop()
+            # 写进图纸的译文：用兼容的 SHX 字体时，弯引号、长破折号、œ 这类字体里可能没有的
+            # 字符换成同义写法（报告里仍是模型给的原样）。
+            written = {key: shx_safe(value) for key, value in translations.items()} if font == compatible_font("en") else translations
+            fit_sources: dict[int, str] = {}
             for unit in reversed(candidates):
-                changed_unit = any(run.text in translations for run in unit.runs)
-                if not unit.runs and unit.plain_text in translations:
-                    changed_unit = True
-                _replace_unit_runs(records, unit, translations, escape=escape_unicode)
-                if changed_unit:
-                    stats.changed += 1
+                fully = bool(unit.runs) and all(run.text in written for run in unit.runs if _has_translatable_content(run.text))
+                changed_unit = any(run.text in written for run in unit.runs)
+                if not unit.runs and unit.plain_text in written:
+                    changed_unit = fully = True
+                if not changed_unit:
+                    continue
+                stats.changed += 1
+                start = _entity_start(records, unit.record_indices[0])
+                if bilingual:
+                    added = _write_bilingual(
+                        records, unit, written, start,
+                        below=options.display_mode == "source_first",
+                        handles=handles,
+                        style=style_name if fully else None,
+                        can_mark=can_mark,
+                        escape=escape_unicode,
+                    )
+                    if added is not None:
+                        stats.bilingual_added += 1
+                        fit_sources[id(added)] = unit.plain_text
+                    elif unit.entity_type == "ATTRIB":
+                        fit_sources[id(records[start])] = unit.plain_text
+                    continue
+                restyle = (
+                    style_name is not None
+                    and fully
+                    and unit.entity_type in {"TEXT", "ATTRIB", "MTEXT"}
+                    and (font == _CJK_TRANSLATION_FONT or not has_cjk(_translated_plain(unit, written)))
+                )
+                _replace_unit_runs(records, unit, written, escape=escape_unicode, strip_shx_fonts=restyle)
+                if restyle:
+                    end = _entity_end(records, start)
+                    records[start + 1:end] = set_style(list(records[start + 1:end]), TRANSLATION_STYLE)
+                    stats.restyled += 1
+                if unit.entity_type in {"TEXT", "ATTRIB"}:
+                    fit_sources[id(records[start])] = unit.plain_text
+            handles.finish()
+            layout_unresolved: list[dict[str, str]] = []
             if options.fit_layout:
                 # 单行文字的译文伸出去会压到同一行紧挨着的另一段文字（「设备基坑：」后面的
                 # 「2830X1700mm」）：这些译文按能用的空间缩小字宽/字高。
+                # 实体按 0 记录对象认：双语新增的文字会让后面实体的序号整体后移。
+                ordinals = {id(record): number for number, record in enumerate(r for r in records if r.code == 0)}
                 stats.layout_fitted = fit_translated_texts(
                     records,
-                    {
-                        int(unit.unit_id.split(":", 1)[0]): unit.plain_text
-                        for unit in candidates
-                        if unit.entity_type in {"TEXT", "ATTRIB"} and unit.plain_text in translations
-                    },
+                    {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
                     _plain_text,
+                    FitSettings(options.fit_default_scale, options.fit_min_scale),
+                    layout_unresolved,
                 )
+                stats.layout_unresolved = len(layout_unresolved)
                 if stats.layout_fitted:
                     self._emit(
                         "write", 0, 1,
                         f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字，已缩小字宽或字高",
+                    )
+                if layout_unresolved:
+                    self._emit(
+                        "write", 0, 1,
+                        f"{len(layout_unresolved)} 处译文缩到最小比例仍会压到旁边的文字，已列入报告，请复核",
+                        level="WARN",
                     )
             write_started = time.perf_counter()
             translated_dxf = temp_root / f"{source.stem}_translated.dxf"
@@ -1478,12 +1927,22 @@ class CadTranslationPipeline:
             if options.verify_roundtrip:
                 self._check_stop()
                 output_records = _parse_dxf(_read_dxf_text(verification_dxf))
-                output_units = extract_cad_text_units(output_records, include_block_text=options.include_block_text)
-                if options.check_entity_counts and len(output_units) != len(units):
+                output_units = extract_cad_text_units(
+                    output_records,
+                    include_block_text=options.include_block_text,
+                    locked_blocks=options.locked_blocks,
+                    locked_layers=options.locked_layers,
+                )
+                if options.check_entity_counts and len(output_units) != len(units) + stats.bilingual_added:
                     raise CadPipelineError("写回后的图纸文字数量不一致，为安全起见未输出。")
             else:
                 output_records = records
-                output_units = extract_cad_text_units(output_records, include_block_text=options.include_block_text)
+                output_units = extract_cad_text_units(
+                    output_records,
+                    include_block_text=options.include_block_text,
+                    locked_blocks=options.locked_blocks,
+                    locked_layers=options.locked_layers,
+                )
             stats.unknown_entity_count = sum(
                 1 for record in output_records
                 if record.code == 0 and (record.value.upper().startswith("ACAD_PROXY") or record.value.upper().startswith("PROXY"))
@@ -1497,13 +1956,19 @@ class CadTranslationPipeline:
                 unsupported_features.append("xrefs")
             if any(record.code in {3, 7} and (".SHX" in record.value.upper() or ".TTF" in record.value.upper()) for record in output_records):
                 unsupported_features.append("fonts")
-            output_units = extract_cad_text_units(output_records, include_block_text=options.include_block_text)
-            if options.scan_residual:
+            output_units = extract_cad_text_units(
+                    output_records,
+                    include_block_text=options.include_block_text,
+                    locked_blocks=options.locked_blocks,
+                    locked_layers=options.locked_layers,
+                )
+            # 双语图纸本来就留着原文，残留原文扫描对它没有意义。
+            if options.scan_residual and not bilingual:
                 stats.residual_foreign_text_count = sum(
                     1 for unit in output_units
                     if _is_residual_foreign_text(unit.plain_text, options.target_lang)
                 )
-            translated_targets = {str(value).strip() for value in translations.values() if value}
+            translated_targets = {str(value).strip() for value in written.values() if value}
             replacements = [
                 unit.plain_text
                 for unit in output_units
@@ -1552,6 +2017,7 @@ class CadTranslationPipeline:
                 "replacement_character_count": len(replacements),
                 "timings": timings,
                 "units": unit_reports,
+                "layout_overflow": layout_unresolved,
                 "summary": str(summary_path),
                 "unsupported_features": unsupported_features,
             }
@@ -1560,7 +2026,8 @@ class CadTranslationPipeline:
             summary_lines = [
                 f"# CAD 翻译摘要：{source.name}", "",
                 f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
-                f"- 未完成：{len(unresolved)} 处", f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处", "",
+                f"- 未完成：{len(unresolved)} 处", f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
+                f"- 缩到最小比例仍会压到旁边文字：{stats.layout_unresolved} 处", "",
                 "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
             for item in unit_reports:

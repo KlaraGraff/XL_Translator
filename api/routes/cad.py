@@ -15,13 +15,18 @@ from api.cad_plugin import (
     probe_status,
     uninstall,
 )
+from core.cad_cache import default_cad_cache
 from core.cad_translation import (
     CadPipelineError,
     CadPipelineOptions,
+    SubprocessCadConverter,
+    inspect_cad_file,
+    parse_lock_patterns,
     scan_cad_paths,
 )
 from core.task_runner import user_facing_reason
 from api.schemas import (
+    CadInspectRequest,
     CadScanRequest,
 )
 
@@ -77,6 +82,8 @@ def register(app: FastAPI) -> None:
             source_lang=str(payload.source_language or "auto"),
             target_lang=str(payload.target_language or "zh"),
             include_block_text=bool(payload.include_block_text),
+            locked_blocks=parse_lock_patterns(payload.locked_blocks),
+            locked_layers=parse_lock_patterns(payload.locked_layers),
         )
         skipped: list[dict[str, str]] = []
         try:
@@ -103,3 +110,47 @@ def register(app: FastAPI) -> None:
             for item in summaries
         ]
         return {"items": items, "skipped": skipped, "capability": status}
+
+    @app.post("/api/cad/inspect")
+    def inspect_cad(payload: CadInspectRequest) -> dict[str, Any]:
+        """Open one drawing: its counts plus the blocks and layers that hold text.
+
+        扫描页「逐张统计」和「扫描图块名」一张一张地调用它，界面每回来一张就更新一行。
+        DWG 在这里转换一次并存进缓存，开始翻译时直接复用。
+        """
+        status = probe_status()
+        converter_path = str(status.get("converter") or "").strip()
+        options = CadPipelineOptions(
+            source_lang=str(payload.source_language or "auto"),
+            target_lang=str(payload.target_language or "zh"),
+            include_block_text=bool(payload.include_block_text),
+            locked_blocks=parse_lock_patterns(payload.locked_blocks),
+            locked_layers=parse_lock_patterns(payload.locked_layers),
+        )
+        try:
+            inspection = inspect_cad_file(
+                payload.path,
+                converter=SubprocessCadConverter(converter_path) if converter_path else None,
+                cache=default_cad_cache(),
+                options=options,
+            )
+        except CadPipelineError as exc:
+            raise HTTPException(422, str(exc) or "图纸读取失败。") from exc
+        except Exception as exc:  # noqa: BLE001 - return a user-facing error for this one drawing
+            logger.opt(exception=exc).warning(f"[CAD] 图纸统计失败：{exc!r}")
+            raise HTTPException(
+                422, user_facing_reason(exc, fallback="图纸读取失败，出现了未预期的问题。")
+            ) from exc
+        summary = inspection.summary
+        return {
+            "path": str(summary.path),
+            "name": summary.filename,
+            "format": summary.format,
+            "text_count": summary.text_entity_count,
+            "candidate_count": summary.candidate_count,
+            "uncertain_count": summary.uncertain_count,
+            "counts_pending": False,
+            "converted": inspection.converted,
+            "blocks": inspection.blocks,
+            "layers": inspection.layers,
+        }
