@@ -2,6 +2,16 @@ name: Build Translator distributions
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        # 只给 release.yml 用：它用 GITHUB_TOKEN 建的 tag 不会触发 push 事件，
+        # 所以由它在 tag 上 dispatch 本工作流，并打开这个开关，走与 tag push
+        # 完全相同的正式发布路径（同样只认稳定 vX.Y.Z 标签）。
+        # 手动运行保持默认 false：产出未签名测试包，不碰 Release。
+        description: "Treat this run as a tag release (used by release.yml)"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -14,6 +24,7 @@ jobs:
     name: Validate release eligibility
     runs-on: ubuntu-latest
     env:
+      TAG_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release) }}
       # Secret 名与 lantern 仓库保持一致：证书走 .p12（base64），公证走
       # Apple ID + App 专用密码 + Team ID，同一套值可在两个仓库直接复用。
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -40,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+          if [[ "$TAG_RELEASE" == "true" ]]; then
             if [[ "$GITHUB_REF_TYPE" != "tag" || ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
               echo "Only stable vX.Y.Z tags can create a formal release; got $GITHUB_REF_NAME." >&2
               exit 1
@@ -61,7 +72,8 @@ jobs:
             fi
           else
             # A manual run is intentionally an unsigned test artifact.  It
-            # never reaches the release job, even when dispatched from a tag.
+            # never reaches the release job, even when dispatched from a tag,
+            # unless release.yml asked for a tag release explicitly.
             formal_release=0
             channel=unsigned-test
             temporary_signing=0
@@ -97,7 +109,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+          if [[ "$TAG_RELEASE" == "true" ]]; then
             python scripts/verify_release_metadata.py --tag "$GITHUB_REF_NAME"
           else
             python scripts/verify_release_metadata.py
@@ -407,6 +419,9 @@ jobs:
           cat release-assets/latest.json
       - uses: softprops/action-gh-release@v3.0.0
         with:
+          # 显式给出：release.yml 以 workflow_dispatch 在 tag 上触发时，也要
+          # 落到这个 tag 上（validate-release 已保证这里一定是稳定 vX.Y.Z 标签）。
+          tag_name: ${{ github.ref_name }}
           # 工作流只产出草稿。草稿对外不可见、不占 Latest、不发通知，所以
           # 「说明还没写」这个中间状态永远不会被用户看到；写完说明的人执行
           # `gh release edit <tag> --draft=false` 才算发布。以前这里是直接

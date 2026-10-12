@@ -22,8 +22,7 @@
    拉起 Excel 的测试在本地有 Office 的机器上会悄悄通过。V9.1.0 就是各栽了一次
    才发现的。
 9. 打 tag 后工作流产出的是**草稿 Release**，不是已发布的 Release。正文由人手工
-   写好、替换掉那句「整理中」的占位之后，才执行 `gh release edit <tag>
-   --draft=false` 正式发布。顺序不许颠倒：草稿对外不可见，写说明写到一半断了也
+   写好、替换掉那句「整理中」的占位之后，才正式发布（取消草稿）。顺序不许颠倒：草稿对外不可见，写说明写到一半断了也
    不会有人看到半成品；一旦先发布再补正文，中间那段时间挂在 Latest 上的就是一
    句「发布说明整理中」，而且没人保证补得上。V9.2.0 就这样露了 11 分钟。
    不要拿 `docs/CHANGELOG.md` 直接拼——changelog 是写给开发者看的，搬上去就是
@@ -35,6 +34,15 @@
    - 签名和公证状态必须查当次构建的实际结果（macOS 任务里 `Configure Developer
      ID` 那步是 skipped 还是 success），不许照抄上一版。V8.1.0 和 V8.0.1 的旧说明
      写着 `formal-release`，实物其实既没签名也没公证。
+10. 打标签和正式发布都用 `.github/workflows/release.yml`（workflow_dispatch），
+   不要再请本机代推 tag 或代跑 `gh release edit`。云端会话推不了 tag、也改不了
+   Release，但可以触发这个工作流；每一步都要 maple 先在对话里确认。
+   - `step=tag`：在 main 上打 `v{version}` 并触发正式构建。它要求 main 当前提交的
+     PR checks 已通过（Python 3.11 + 锁定依赖、无 Office，即第 8 条在云端的等价
+     检查）；本机的 `run_release_env_tests.sh` 有条件时照跑。
+   - `step=publish`：正文放在 `docs/release-notes/v{version}.md`，先合进 main。
+     工作流先核对正文，再替换草稿正文、读回比对，最后取消草稿，顺序固定。
+   - 步骤细节见 `docs/TAURI_DISTRIBUTION_WORKFLOW.md`「发版步骤」。
 
 本地 Tauri 界面测试收尾动作：
 - 只要本地修改了 `ui/`、`src-tauri/`、Tauri 启动路径或会影响界面状态的代码，完成自测后必须主动关闭旧的 `Translator` / `tauri dev` / `api.launcher` 进程，再用当前源码启动一个新进程。
