@@ -888,7 +888,7 @@ class TaskRunner(BaseTaskRunner):
             smart_mode = is_smart_preset(getattr(settings, "excel_domain_preset", settings.domain_preset))
             self._smart_mode = smart_mode
             if smart_mode and global_unique_texts and engine_supports_chat(engine):
-                # 「智能」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
+                # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
                 system_prompt = append_profile(
                     system_prompt,
@@ -960,7 +960,7 @@ class TaskRunner(BaseTaskRunner):
                 if dropped:
                     self._log(
                         "INFO",
-                        f"智能模式：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
+                        f"自动识别场景：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
                     )
             misses = [text for text in normal_texts if text not in hits]
 
@@ -3230,7 +3230,7 @@ class TaskRunner(BaseTaskRunner):
         )
 
     def _smart_skips_tm(self, source_text: str) -> bool:
-        """「智能」模式下，离开上下文就会译错的短词不自动存进记忆库。"""
+        """「自动识别场景」下，离开上下文就会译错的短词不自动存进记忆库。"""
         return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 
     def _log_tm_hygiene(self, hygiene) -> None:

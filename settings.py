@@ -1004,7 +1004,7 @@ class PdfSettings(BaseModel):
     # 翻译模型，直接从源 PDF 矢量原样导入输出——这类页经不起栅格化，且大多数
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
-    # 「智能」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
+    # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
     # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字
     # 层时这一步自动跳过。v33 新增，默认开。
     smart_context: bool = True
@@ -1159,6 +1159,10 @@ class AppSettings(BaseModel):
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
+        # 「自动识别场景」在开发版里试用时叫过「智能」，已存下的设置跟着改名。
+        for field in _PRE_V33_DEFAULT_DOMAINS:
+            if str(migrated.get(field) or "").strip() == "智能":
+                migrated[field] = "自动识别场景"
         # This destructive migration belongs to v27.  Later additive schema
         # bumps must not re-map a user's explicit v27 model selection.
         if _extract_settings_version(migrated) >= 27:
@@ -1204,12 +1208,12 @@ class AppSettings(BaseModel):
             if field in migrated:
                 migrated[field] = migrate_model(migrated[field])
         return migrated
-    domain_preset: str = "智能"
+    domain_preset: str = "自动识别场景"
     custom_prompt: str = ""
     # Excel and Word intentionally own separate domain/prompt state.  The
     # legacy global fields remain as an inert compatibility surface for CLI
     # callers; page-aware task code reads the fields below.
-    excel_domain_preset: str = "智能"
+    excel_domain_preset: str = "自动识别场景"
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     # Prompt 覆盖新版本按「预设名 → {_base: Prompt}」保存；旧版目标语言映射仍可
@@ -1219,13 +1223,13 @@ class AppSettings(BaseModel):
     # legacy/plain string; the API normalizes writes while reads stay tolerant.
     excel_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     excel_domain_disabled_presets: list[str] = Field(default_factory=list)
-    word_domain_preset: str = "智能"
+    word_domain_preset: str = "自动识别场景"
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     word_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     word_domain_disabled_presets: list[str] = Field(default_factory=list)
-    cad_domain_preset: str = "智能"
+    cad_domain_preset: str = "自动识别场景"
     cad_custom_prompt: str = ""
     cad_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     cad_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -1709,11 +1713,11 @@ _PRE_V33_DEFAULT_DOMAINS = {
 
 
 def _migrate_smart_domain_default(payload: dict, stored_version: int) -> dict:
-    """v33: every page's default domain became 「智能」; carry old defaults along.
+    """v33: every page's default domain became 「自动识别场景」; carry old defaults along.
 
     Same reasoning as the theme migration above: an old file cannot tell the
     default apart from a deliberate pick, and almost nobody changed it, so a
-    page still on its pre-v33 default moves to 「智能」.  A page set to any
+    page still on its pre-v33 default moves to 「自动识别场景」.  A page set to any
     other domain (or a named prompt) keeps it.
     """
     if stored_version >= 33:
@@ -1721,7 +1725,7 @@ def _migrate_smart_domain_default(payload: dict, stored_version: int) -> dict:
     migrated = dict(payload)
     for key, old_default in _PRE_V33_DEFAULT_DOMAINS.items():
         if str(migrated.get(key, old_default) or old_default).strip() == old_default:
-            migrated[key] = "智能"
+            migrated[key] = "自动识别场景"
     return migrated
 
 

@@ -54,7 +54,7 @@ def _settings(*, source_lang: str = "zh", target_lang: str = "en") -> AppSetting
         ),
         source_lang=source_lang,
         target_lang=target_lang,
-        # 语种预检数模型调用次数；「智能」的文档说明请求另有测试。
+        # 语种预检数模型调用次数；「自动识别场景」的文档说明请求另有测试。
         excel_domain_preset="无",
     )
     # This contract suite uses mocked writers and tests the legacy sheet set.
@@ -205,7 +205,7 @@ class ExcelCompatibilityContractTests(unittest.TestCase):
 
 
 class _ProfileEngine:
-    """「智能」模式下只会收到文档说明这一次请求（源语言已指定，不做语种预检）。"""
+    """「自动识别场景」下只会收到文档说明这一次请求（源语言已指定，不做语种预检）。"""
 
     engine_name = "phase4/mock"
 
@@ -218,7 +218,7 @@ class _ProfileEngine:
 
 
 class ExcelSmartModeContractTests(unittest.TestCase):
-    """「智能」：先写文档说明带进提示词；短词不套自动存下的记忆、也不存回去。"""
+    """「自动识别场景」：先写文档说明带进提示词；短词不套自动存下的记忆、也不存回去。"""
 
     def test_profile_reaches_the_prompt_and_short_auto_memory_is_retranslated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -237,7 +237,7 @@ class ExcelSmartModeContractTests(unittest.TestCase):
                 return {value: memory.get(value) for value in values}
 
             settings = _settings(source_lang="zh", target_lang="en")
-            settings.excel_domain_preset = "智能"
+            settings.excel_domain_preset = "自动识别场景"
             with ExitStack() as stack:
                 ExcelTaskRunnerContractTests._run_patches(
                     self,

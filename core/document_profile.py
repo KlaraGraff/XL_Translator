@@ -1,10 +1,10 @@
-"""「智能」领域模式：翻译前先让模型读一遍文档，写一段文档说明。
+"""「自动识别场景」领域模式：翻译前先让模型读一遍文档，写一段文档说明。
 
 逐批翻译时模型一次只看到二十来条文字，看不到整份文档在讲什么。图纸里单独
 出现的「甲」「乙」、表格里的「详建施」「FM」，离开上下文只能猜：防火门等级
 的「甲」被译成了合同甲方的「Party A」。
 
-「智能」模式在正式翻译前多发一次请求：从这批文档去重后的文字里挑几百条有
+「自动识别场景」在正式翻译前多发一次请求：从这批文档去重后的文字里挑几百条有
 代表性的（出现最多的短标签，加上最长的几段说明），让模型写两三句话——这是
 什么文档、什么专业，以及文中有歧义的短词在这里是什么意思。之后每一批翻译的
 提示词都带上这段说明。
@@ -14,7 +14,7 @@
 就按没有说明继续翻译，不让任务卡住。
 
 记忆库里的短词同样依赖上下文：以前自动存下的「甲 → Party A」不能套到图纸上。
-:func:`is_context_sensitive` 判断一条文字是不是这种短词；「智能」模式下，这类
+:func:`is_context_sensitive` 判断一条文字是不是这种短词；「自动识别场景」下，这类
 文字只认用户手动录入或置顶的记忆，自动存下的不直接套用，新译文也不自动存入。
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
-SMART_PRESET = "智能"
+SMART_PRESET = "自动识别场景"
 
 # 送去概括的样本：出现次数最多的短标签 + 最长的几段说明，合计不超过这么多字。
 _SAMPLE_CHAR_BUDGET = 6000
@@ -164,13 +164,13 @@ def request_document_profile(
         profile = _clean_profile(chat(system, user))
     except Exception as exc:  # noqa: BLE001 - the profile is optional, translation goes on
         if log:
-            log("WARN", f"智能模式：文档说明没有生成（{exc.__class__.__name__}），按普通方式继续翻译")
+            log("WARN", f"自动识别场景：文档说明没有生成（{exc.__class__.__name__}），按普通方式继续翻译")
         return ""
     if log:
         if profile:
-            log("INFO", f"智能模式：已读过 {len(sample)} 条文字，文档说明：{profile}")
+            log("INFO", f"自动识别场景：已读过 {len(sample)} 条文字，文档说明：{profile}")
         else:
-            log("WARN", "智能模式：模型没有返回文档说明，按普通方式继续翻译")
+            log("WARN", "自动识别场景：模型没有返回文档说明，按普通方式继续翻译")
     return profile
 
 
@@ -192,7 +192,7 @@ def drop_unlocked_short_hits(
     texts_by_pair: Mapping[str, Iterable[str]],
     lookup_locked: Callable[[list[str], str], Mapping[str, str | None]],
 ) -> int:
-    """「智能」模式下的记忆库命中：短词只认用户定下的词条。
+    """「自动识别场景」下的记忆库命中：短词只认用户定下的词条。
 
     ``hits`` 是普通查询的命中（原文 → 译文），就地修改：离开上下文会译错的短词，
     改用 ``lookup_locked(texts, lang_pair)``（只查置顶、手动录入、清洗锁定的词条）

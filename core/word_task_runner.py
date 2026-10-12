@@ -984,7 +984,7 @@ class WordTaskRunner(BaseTaskRunner):
             smart_mode = is_smart_preset(getattr(settings, "word_domain_preset", settings.domain_preset))
             self._smart_mode = smart_mode
             if smart_mode and global_unique_texts and engine_supports_chat(engine):
-                # 「智能」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
+                # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
                 system_prompt = append_profile(
                     system_prompt,
@@ -1048,7 +1048,7 @@ class WordTaskRunner(BaseTaskRunner):
                 if dropped:
                     self._log(
                         "INFO",
-                        f"智能模式：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
+                        f"自动识别场景：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
                     )
             misses = [text for text in normal_texts if text not in hits]
             tm_hit_count = len(hits)

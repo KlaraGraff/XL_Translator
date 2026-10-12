@@ -1467,36 +1467,36 @@
     "en": "{0} {0|translation was|translations were} longer than the original and would overlap nearby text; text width or height reduced",
     "fr": "{0} {0|traduction plus longue|traductions plus longues} que l'original {0|chevauchait|chevauchaient} le texte voisin ; largeur ou hauteur du texte réduite"
   },
-  "智能模式：文档翻译模型不可用，不生成文档说明，PDF 照常翻译": {
-    "en": "Smart mode: the document translation model is unavailable, so no document summary was written; the PDF is translated as usual",
-    "fr": "Mode intelligent : le modèle de traduction de documents est indisponible, aucun résumé du document n'a été rédigé ; le PDF est traduit normalement"
+  "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译": {
+    "en": "Auto-detect: the document translation model is unavailable, so no document summary was written; the PDF is translated as usual",
+    "fr": "Détection automatique : le modèle de traduction de documents est indisponible, aucun résumé du document n'a été rédigé ; le PDF est traduit normalement"
   },
   "正在通读图纸，概括图纸说明": {
     "en": "Reading through the drawing to summarize it",
     "fr": "Lecture du dessin pour en rédiger un résumé"
   },
-  "智能模式：文档说明没有生成（{0}），按普通方式继续翻译": {
-    "en": "Smart mode: the document summary could not be written ({0}); continuing with normal translation",
-    "fr": "Mode intelligent : le résumé du document n'a pas pu être rédigé ({0}) ; la traduction continue normalement"
+  "自动识别场景：文档说明没有生成（{0}），按普通方式继续翻译": {
+    "en": "Auto-detect: the document summary could not be written ({0}); continuing with normal translation",
+    "fr": "Détection automatique : le résumé du document n'a pas pu être rédigé ({0}) ; la traduction continue normalement"
   },
-  "智能模式：已读过 {0} 条文字，文档说明：{1}": {
-    "en": "Smart mode: read {0} {0|text|texts}; document summary: {1}",
-    "fr": "Mode intelligent : {0} {0|texte lu|textes lus} ; résumé du document : {1}"
+  "自动识别场景：已读过 {0} 条文字，文档说明：{1}": {
+    "en": "Auto-detect: read {0} {0|text|texts}; document summary: {1}",
+    "fr": "Détection automatique : {0} {0|texte lu|textes lus} ; résumé du document : {1}"
   },
-  "智能模式：模型没有返回文档说明，按普通方式继续翻译": {
-    "en": "Smart mode: the model returned no document summary; continuing with normal translation",
-    "fr": "Mode intelligent : le modèle n'a renvoyé aucun résumé du document ; la traduction continue normalement"
+  "自动识别场景：模型没有返回文档说明，按普通方式继续翻译": {
+    "en": "Auto-detect: the model returned no document summary; continuing with normal translation",
+    "fr": "Détection automatique : le modèle n'a renvoyé aucun résumé du document ; la traduction continue normalement"
   },
-  "智能模式：{0} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译": {
-    "en": "Smart mode: {0} short {0|word or abbreviation was|words and abbreviations were} not taken from automatically saved memory entries and {0|is|are} translated again for this document",
-    "fr": "Mode intelligent : {0} {0|mot court ou abréviation|mots courts et abréviations} ne {0|reprend|reprennent} pas les traductions enregistrées automatiquement dans la mémoire et {0|est retraduit|sont retraduits} pour ce document"
+  "自动识别场景：{0} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译": {
+    "en": "Auto-detect: {0} short {0|word or abbreviation was|words and abbreviations were} not taken from automatically saved memory entries and {0|is|are} translated again for this document",
+    "fr": "Détection automatique : {0} {0|mot court ou abréviation|mots courts et abréviations} ne {0|reprend|reprennent} pas les traductions enregistrées automatiquement dans la mémoire et {0|est retraduit|sont retraduits} pour ce document"
   },
   "状态：[阶段 2/{0}] 正在通读文档…": {
     "en": "Status: [Step 2/{0}] Reading through the document…",
     "fr": "État : [Étape 2/{0}] Lecture du document…"
   },
-  "[{0}] 智能模式：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明": {
-    "en": "[{0}] Smart mode: this PDF has no readable text layer (a scan, or text converted to lines); no document summary written",
-    "fr": "[{0}] Mode intelligent : ce PDF n'a pas de couche texte lisible (scan ou texte converti en traits) ; aucun résumé du document rédigé"
+  "[{0}] 自动识别场景：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明": {
+    "en": "[{0}] Auto-detect: this PDF has no readable text layer (a scan, or text converted to lines); no document summary written",
+    "fr": "[{0}] Détection automatique : ce PDF n'a pas de couche texte lisible (scan ou texte converti en traits) ; aucun résumé du document rédigé"
   }
 }

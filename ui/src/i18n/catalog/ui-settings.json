@@ -1151,13 +1151,9 @@
     "en": "The theme above decides whether light or dark mode is shown. Each mode can use a different scheme, for example Neutral grey by day and Amber comfort at night.",
     "fr": "Le thème ci-dessus détermine si le mode clair ou sombre s'affiche. Chaque mode peut utiliser une palette différente, par exemple Gris neutre le jour et Ambre confort le soir."
   },
-  "智能": {
-    "en": "Smart",
-    "fr": "Intelligent"
-  },
-  "智能理解术语": {
-    "en": "Smart terminology",
-    "fr": "Terminologie intelligente"
+  "自动识别场景": {
+    "en": "Auto-detect",
+    "fr": "Détection automatique"
   },
   "翻译前先用文档翻译模型读一遍 PDF 里的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，每页按这个理解翻译。每份文件多调用一次文档翻译模型；扫描件没有可读文字时自动跳过。": {
     "en": "Before translating, the document translation model reads the text in the PDF and sums up what kind of document it is and what short standalone words (such as 甲) mean here; every page is then translated with that understanding. One extra call to the document translation model per file; skipped automatically for scans without readable text.",

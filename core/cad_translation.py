@@ -975,7 +975,7 @@ class CadTranslationPipeline:
         # 程序判断不了语种的文字走这个翻译器：模型同时回报每条原文的语种代码，
         # 回报的就是目标语言时保留原文。不传时这些文字和其余文字一起照常翻译。
         self.language_translator = language_translator
-        # 「智能」模式：翻译前先让模型读一遍这张图的文字，写一段图纸说明
+        # 「自动识别场景」：翻译前先让模型读一遍这张图的文字，写一段图纸说明
         # （core.document_profile）。``(全部文字, 写日志, neighbor_rows=短词连读) -> 说明``，
         # 拿不到时返回空串。
         # 说明交给肯接 ``context`` 参数的翻译器，带进每一批的提示词。

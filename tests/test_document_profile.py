@@ -1,4 +1,4 @@
-"""「智能」领域模式：翻译前的文档说明、短词的记忆库规则、旧设置升级。
+"""「自动识别场景」领域模式：翻译前的文档说明、短词的记忆库规则、旧设置升级。
 
 各页面的整条流程另在 Excel / Word / PDF 的契约测试里；这里钉住共用的部分。
 """
@@ -98,7 +98,7 @@ class RequestProfileTests(unittest.TestCase):
             request_document_profile(chat, ["甲"], target_language="英文", log=lambda *args: logs.append(args)),
             "",
         )
-        self.assertEqual(logs, [("WARN", "智能模式：文档说明没有生成（TimeoutError），按普通方式继续翻译")])
+        self.assertEqual(logs, [("WARN", "自动识别场景：文档说明没有生成（TimeoutError），按普通方式继续翻译")])
 
     def test_nothing_to_read_makes_no_request(self) -> None:
         def chat(_system: str, _user: str) -> str:
@@ -197,6 +197,13 @@ class SmartDomainMigrationTests(IsolatedAppDataTestCase):
         self.assertEqual(loaded.cad_domain_preset, SMART_PRESET)
         self.assertEqual(loaded.domain_preset, SMART_PRESET)
 
+    def test_trial_name_is_renamed(self) -> None:
+        # 开发版试用时这个领域叫「智能」，已存进 v33 设置文件的跟着改名。
+        self._write({"settings_version": 33, "word_domain_preset": "智能", "excel_domain_preset": "无"})
+        loaded = settings_module.load_settings()
+        self.assertEqual(loaded.word_domain_preset, SMART_PRESET)
+        self.assertEqual(loaded.excel_domain_preset, "无")
+
     def test_current_version_keeps_an_explicit_old_default(self) -> None:
         self._write({"settings_version": settings_module.SETTINGS_SCHEMA_VERSION, "cad_domain_preset": "同步工程场景"})
         self.assertEqual(settings_module.load_settings().cad_domain_preset, "同步工程场景")
@@ -232,7 +239,7 @@ class CadSmartModeTests(unittest.TestCase):
             def profile(texts: list[str], log, *, neighbor_rows=()) -> str:
                 requested.append(list(texts))
                 rows.extend(neighbor_rows)
-                log("INFO", "智能模式：已读过 2 条文字，文档说明：门窗图")
+                log("INFO", "自动识别场景：已读过 2 条文字，文档说明：门窗图")
                 return "门窗图。「甲」指甲级防火门。"
 
             def translate(texts, glossary, context=""):

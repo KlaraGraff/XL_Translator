@@ -166,7 +166,7 @@ class PdfSurface(Surface):
 
 
 def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str, ...]):
-    """「智能」：用文档翻译模型（不是生图模型）读 PDF 文字层、写文档说明。
+    """「自动识别场景」：用文档翻译模型（不是生图模型）读 PDF 文字层、写文档说明。
 
     引擎在第一次用到时才建，并在任务线程里建，这样拿到的是任务开始时的密钥快照；
     建不起来（没配文档翻译模型）就记一行日志、不写说明，PDF 照常翻译。
@@ -187,11 +187,11 @@ def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str
             try:
                 engine = build_role_engine(settings, "translation", connection_ids=connection_ids)
             except Exception as exc:  # noqa: BLE001 - the description is optional.
-                logger.debug(f"[PDF] 智能模式建文档翻译引擎失败：{exc!r}")
+                logger.debug(f"[PDF] 自动识别场景：建文档翻译引擎失败：{exc!r}")
                 engine = None
             state["engine"] = engine if engine is not None and engine_supports_chat(engine) else None
             if state["engine"] is None:
-                log("WARN", "智能模式：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
+                log("WARN", "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
         engine = state["engine"]
         if engine is None:
             return ""

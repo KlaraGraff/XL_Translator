@@ -362,7 +362,7 @@ def build_pdf_image_translation_prompt(
     ).strip()
     context = str(document_context or "").strip()
     if context:
-        # 「智能」模式翻译前读过整份 PDF 的文字层写的说明：单独一页上的「甲」「FM」
+        # 「自动识别场景」翻译前读过整份 PDF 的文字层写的说明：单独一页上的「甲」「FM」
         # 该按什么意思译，靠它。
         prompt = (
             f"{prompt} Document context, summarized from the whole document's text before "

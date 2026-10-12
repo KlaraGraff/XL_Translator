@@ -1151,7 +1151,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
     ) -> None:
         self._files = file_items
         self._settings = settings
-        # 「智能」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
+        # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
         # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
         self._profile_requester = profile_requester
         self._document_contexts: dict[str, str] = {}
@@ -4107,7 +4107,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
 
     def _request_document_context(self, path: Path) -> None:
-        """「智能」：读这份 PDF 的文字层，请文档翻译模型概括成一段文档说明。"""
+        """「自动识别场景」：读这份 PDF 的文字层，请文档翻译模型概括成一段文档说明。"""
         try:
             lines = _pdf_text_lines(path)
         except Exception as exc:  # noqa: BLE001 - the description is optional.
@@ -4116,7 +4116,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if not lines:
             self._log(
                 "INFO",
-                f"[{path.name}] 智能模式：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明",
+                f"[{path.name}] 自动识别场景：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明",
             )
             return
         try:
@@ -5212,7 +5212,7 @@ def _open_pdf_document(path: Path):
     return _load_pdfium().PdfDocument(str(path))
 
 
-# 「智能」模式概括文档时最多读这么多页的文字层；够判断文档类型，又不至于把
+# 「自动识别场景」概括文档时最多读这么多页的文字层；够判断文档类型，又不至于把
 # 几百页的册子整本读一遍。
 _PROFILE_TEXT_MAX_PAGES = 30
 

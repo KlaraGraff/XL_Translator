@@ -3986,7 +3986,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
 
 
 class PdfSmartContextTests(unittest.TestCase):
-    """「智能理解术语」：读文字层写文档说明，逐页带进生图请求。"""
+    """「自动识别场景」：读文字层写文档说明，逐页带进生图请求。"""
 
     def test_text_layer_lines_are_read_with_pdfium(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -392,7 +392,7 @@ class CadSurface(Surface):
                     break
                 current = tm_manager.lookup_batch(remaining, pair)
                 if smart_mode:
-                    # 「智能」：「甲」「FM」这类短词只认用户定下的记忆，自动存下的可能来自别的场景。
+                    # 「自动识别场景」：「甲」「FM」这类短词只认用户定下的记忆，自动存下的可能来自别的场景。
                     short = [text for text in remaining if is_context_sensitive(text)]
                     if short:
                         current.update(tm_manager.lookup_batch(short, pair, locked_only=True))
