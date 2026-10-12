@@ -27,7 +27,8 @@ from typing import Any, Protocol
 
 from loguru import logger
 
-from core.cad_layout import fit_translated_texts
+from core.cad_layout import fit_translated_texts, short_text_rows
+from core.document_profile import is_context_sensitive
 from core.cad_language import (
     LATIN_TARGET_LANGS,
     NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
@@ -966,7 +967,7 @@ class CadTranslationPipeline:
         stop_requested: Callable[[], bool] | None = None,
         pause_gate: Callable[[], None] | None = None,
         language_translator: CadLanguageTranslator | None = None,
-        profile_requester: Callable[[list[str], Callable[[str, str], None]], str] | None = None,
+        profile_requester: Callable[..., str] | None = None,
     ) -> None:
         self.converter = converter
         self.memory_lookup = memory_lookup
@@ -975,7 +976,8 @@ class CadTranslationPipeline:
         # 回报的就是目标语言时保留原文。不传时这些文字和其余文字一起照常翻译。
         self.language_translator = language_translator
         # 「智能」模式：翻译前先让模型读一遍这张图的文字，写一段图纸说明
-        # （core.document_profile）。``(全部文字, 写日志) -> 说明``，拿不到时返回空串。
+        # （core.document_profile）。``(全部文字, 写日志, neighbor_rows=短词连读) -> 说明``，
+        # 拿不到时返回空串。
         # 说明交给肯接 ``context`` 参数的翻译器，带进每一批的提示词。
         self.profile_requester = profile_requester
         self.document_profile = ""
@@ -1286,6 +1288,7 @@ class CadTranslationPipeline:
                     self.profile_requester(
                         [unit.plain_text for unit in units],
                         lambda level, message: self._emit("match", 0, 1, message, level=level),
+                        neighbor_rows=short_text_rows(records, _plain_text, is_context_sensitive),
                     )
                     or ""
                 ).strip()

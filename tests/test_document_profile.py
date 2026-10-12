@@ -77,6 +77,17 @@ class RequestProfileTests(unittest.TestCase):
         self.assertEqual(logs[0][0], "INFO")
         self.assertIn("甲级防火门", logs[0][1])
 
+    def test_neighbor_rows_follow_the_sample_under_their_own_heading(self) -> None:
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> str:
+            calls.append(user)
+            return "门窗图。"
+
+        request_document_profile(chat, ["甲", "FM"], target_language="英文", neighbor_rows=["FM 甲 1021"])
+        self.assertTrue(calls[0].startswith("甲\nFM\n\n"))
+        self.assertTrue(calls[0].endswith("（按出现次数）：\nFM 甲 1021"))
+
     def test_failure_returns_empty_and_translation_goes_on(self) -> None:
         logs: list[tuple[str, str]] = []
 
@@ -195,17 +206,32 @@ def _dxf(*texts: str) -> str:
     return "".join(f"0\nTEXT\n1\n{text}\n" for text in texts)
 
 
+def _placed(*items: tuple[str, float, float]) -> str:
+    """Single-line TEXT entities at (x, y), height 1, the way 天正 stores a door tag."""
+    return "".join(f"0\nTEXT\n10\n{x}\n20\n{y}\n40\n1\n1\n{text}\n" for text, x, y in items)
+
+
 class CadSmartModeTests(unittest.TestCase):
     def test_drawing_profile_is_requested_once_and_reaches_every_batch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "doors.dxf"
-            source.write_text(_dxf("甲", "防火门", "甲", "M1523"), encoding="utf-8")
+            # 门号「FM甲1021」拆成三段紧挨着的文字；「防火门」在远处单独一行。
+            source.write_text(
+                _placed(
+                    ("FM", 0, 0), ("甲", 1.6, 0), ("1021", 2.6, 0),
+                    ("FM", 0, 20), ("甲", 1.6, 20), ("1021", 2.6, 20),
+                    ("防火门", 0, 50), ("甲", 40, 80),
+                ),
+                encoding="utf-8",
+            )
             requested: list[list[str]] = []
+            rows: list[str] = []
             contexts: list[str] = []
 
-            def profile(texts: list[str], log) -> str:
+            def profile(texts: list[str], log, *, neighbor_rows=()) -> str:
                 requested.append(list(texts))
+                rows.extend(neighbor_rows)
                 log("INFO", "智能模式：已读过 2 条文字，文档说明：门窗图")
                 return "门窗图。「甲」指甲级防火门。"
 
@@ -219,6 +245,8 @@ class CadSmartModeTests(unittest.TestCase):
 
             self.assertEqual(len(requested), 1)
             self.assertIn("甲", requested[0])
+            # 两处门号连读成同一行；远处孤立的「甲」没有邻居，不算。
+            self.assertEqual(rows, ["FM 甲 1021"])
             self.assertEqual(contexts, ["门窗图。「甲」指甲级防火门。"])
             self.assertIn("Class A", (root / "doors_en.dxf").read_text(encoding="utf-8"))
             self.assertEqual(result.stats.ai_translated, 2)
@@ -231,7 +259,7 @@ class CadSmartModeTests(unittest.TestCase):
             result = CadTranslationPipeline(
                 converter=None,
                 translator=lambda texts, glossary: {"甲": "Class A"},
-                profile_requester=lambda texts, log: "门窗图。",
+                profile_requester=lambda texts, log, neighbor_rows=(): "门窗图。",
             ).translate_file(source, root / "doors_en.dxf", options=CadPipelineOptions(target_lang="en"))
             self.assertEqual(result.stats.ai_translated, 1)
 

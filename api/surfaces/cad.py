@@ -285,12 +285,15 @@ class CadSurface(Surface):
         system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
         smart_mode = is_smart_preset(settings.cad_domain_preset)
 
-        def profile_requester(texts: list[str], log: Callable[[str, str], None]) -> str:
+        def profile_requester(
+            texts: list[str], log: Callable[[str, str], None], *, neighbor_rows: list[str] = ()
+        ) -> str:
             return request_document_profile(
                 engine.chat,
                 texts,
                 target_language=get_target_lang_display(settings.target_lang),
                 log=log,
+                neighbor_rows=neighbor_rows,
             )
 
         def translate_batch(

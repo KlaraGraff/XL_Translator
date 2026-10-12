@@ -45,7 +45,9 @@ _PROFILE_SYSTEM = (
     "不超过 150 字，包含：\n"
     "1. 这是什么文档、属于什么专业或场景；\n"
     "2. 文中单独出现、离开上下文容易译错的单字、短词和缩写，在本文档里是什么意思，"
-    "可附上在{target}中的常用译法。只写确实有歧义的，最多 8 个；没有就不写。\n"
+    "可附上在{target}中的常用译法。只写确实有歧义的，最多 8 个；没有就不写。"
+    "如果后面附了「短词在原文中和相邻文字连起来的样子」，按这些连读判断短词的意思"
+    "（例如和门窗编号连在一起的字通常是等级或型号的一部分）。\n"
     "只输出说明正文，不要标题，不要翻译全文，不要解释你的推理。"
 )
 
@@ -141,17 +143,23 @@ def request_document_profile(
     *,
     target_language: str,
     log: Callable[[str, str], None] | None = None,
+    neighbor_rows: Iterable[str] = (),
 ) -> str:
     """Ask the model for a short description of the document; ``""`` on failure.
 
     ``chat(system, user)`` is the translation engine's single-call method.
     ``log(level, message)`` receives one line for the run log.
+    ``neighbor_rows`` are short labels read together with the text beside them
+    (CAD: 「FM 甲 1021」), appended under their own heading.
     """
     sample = select_profile_sample(texts)
     if not sample:
         return ""
     system = _PROFILE_SYSTEM.format(target=target_language or "目标语言")
     user = "\n".join(sample)
+    rows = [" ".join(str(row).split())[:_SAMPLE_ITEM_CHARS] for row in neighbor_rows if str(row).strip()]
+    if rows:
+        user += "\n\n短词在原文中和相邻文字连起来的样子（按出现次数）：\n" + "\n".join(rows)
     try:
         profile = _clean_profile(chat(system, user))
     except Exception as exc:  # noqa: BLE001 - the profile is optional, translation goes on
