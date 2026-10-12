@@ -169,7 +169,9 @@ def write_untranslated_docx(
         get_target_lang_display(target_lang, include_optional=True)
     )
     source_output_name = _normalize_word_output_name(output_name or source_path.name)
-    out_path = output_dir / bilingual_output_name(source_output_name, lang_display)
+    out_path = output_dir / bilingual_output_name(
+        source_output_name, lang_display, translation_only=output_translation_only
+    )
     shutil.copy2(source_path, out_path)
     _ensure_owner_writable(out_path)
 

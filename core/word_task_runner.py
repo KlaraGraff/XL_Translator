@@ -2810,6 +2810,7 @@ class WordTaskRunner(BaseTaskRunner):
                 output_source_name,
                 target_lang,
                 reserved_output_paths,
+                translation_only=settings.word_output.output_translation_only,
             )
             final_output_dir = output_dir / rel_subdir
             final_output_dir.mkdir(parents=True, exist_ok=True)

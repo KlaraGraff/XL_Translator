@@ -492,7 +492,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         shape_text_count = None
         comment_count = None
     else:
-        from openpyxl import load_workbook
+        from core.openpyxl_compat import load_workbook
         wb = load_workbook(str(path), read_only=True, data_only=True)
         try:
             sheets = wb.sheetnames

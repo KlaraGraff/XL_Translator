@@ -2455,6 +2455,7 @@ class TaskRunner(BaseTaskRunner):
                 output_basename,
                 target_lang,
                 reserved_output_paths,
+                translation_only=excel_output.output_translation_only,
             )
             file_review_positions: list[dict[str, str]] = []
             # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
@@ -3866,7 +3867,7 @@ class TaskRunner(BaseTaskRunner):
     def _validate_resume_baseline(path: Path) -> bool:
         """续译底稿只读探活：打得开才敢当底稿用，打不开就必须降级到源文件。"""
         try:
-            from openpyxl import load_workbook
+            from core.openpyxl_compat import load_workbook
             wb = load_workbook(str(path), read_only=True)
             wb.close()
             return True
@@ -3889,7 +3890,7 @@ class TaskRunner(BaseTaskRunner):
         显示值送去翻译——否则是白付一次 API 费用（审计 高-12），规则与
         excel_coverage 的补译计划保持一致。
         """
-        from openpyxl import load_workbook
+        from core.openpyxl_compat import load_workbook
         seen: set[str] = set()
         # 回填开着读缓存的显示值；关着则读公式本身，好按 data_type 认出公式格跳过
         wb = load_workbook(

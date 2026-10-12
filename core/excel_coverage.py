@@ -65,7 +65,7 @@ def build_excel_coverage_plan(
     在底稿里找不到同名母表，单靠底稿自己的分表名认不出它是副本——整张原文表
     就被当成待译内容重翻一遍。
     """
-    from openpyxl import load_workbook
+    from core.openpyxl_compat import load_workbook
 
     source_path = Path(path)
     wb = load_workbook(str(source_path), read_only=True, data_only=False)
@@ -172,7 +172,9 @@ def write_untranslated_excel_file(
     basename = output_basename or (original_path.name if original_path else source_path.name)
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"
-    out_path = output_dir / bilingual_writer.bilingual_output_name(basename, lang_display)
+    out_path = output_dir / bilingual_writer.bilingual_output_name(
+        basename, lang_display, translation_only=output_translation_only
+    )
 
     allowed_positions: dict[str, set[str]] = {}
     scoped_translations: dict[str, str] = {}
@@ -387,7 +389,7 @@ def _resolve_cell_text(
 
 def workbook_sheet_titles(path: str | Path) -> list[str]:
     """工作簿的分表名（按顺序）；读不出来返回空列表，调用方按「没有额外信息」处理。"""
-    from openpyxl import load_workbook
+    from core.openpyxl_compat import load_workbook
 
     try:
         wb = load_workbook(str(path), read_only=True)

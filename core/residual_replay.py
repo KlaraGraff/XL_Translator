@@ -160,11 +160,10 @@ def _pair_docx(path: Path, *, source_lang: str, target_lang: str) -> list[_Pair]
 
 
 def _pair_xlsx(path: Path, *, source_lang: str, target_lang: str) -> list[_Pair]:
-    import openpyxl
-
+    from core.openpyxl_compat import load_workbook
     from core.translation_coverage import split_existing_bilingual_text
 
-    workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    workbook = load_workbook(str(path), read_only=True, data_only=True)
     pairs: list[_Pair] = []
     try:
         for sheet in workbook.worksheets:

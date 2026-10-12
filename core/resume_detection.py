@@ -241,11 +241,17 @@ def match_previous_output(
         lang_display = _sanitize_bilingual_fragment(
             get_target_lang_display(target_lang, include_optional=True)
         )
-        candidate = target_dir / bilingual_output_name(basename, lang_display)
-        try:
-            return candidate if candidate.is_file() else None
-        except OSError:
-            return None
+        # 「仅显示译文」的产物不带「_双语」；旧版本不分模式一律带。两种名字都认。
+        for translation_only in (False, True):
+            candidate = target_dir / bilingual_output_name(
+                basename, lang_display, translation_only=translation_only
+            )
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
 
     if surface == "pdf":
         # 新命名的主产物没有“高清”后缀；保留旧 `_高清` 文件的兼容识别。
