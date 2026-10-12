@@ -275,6 +275,8 @@ async function refreshDomainBuiltinPrompts(): Promise<void> {
 // 就把用户当前的领域改掉，还会把空白 Prompt 当成覆盖写进另一个领域里。
 const ADD_PROMPT_PRESET = "__add_prompt__";
 const LEGACY_CUSTOM_PROMPT = "__legacy_custom__";
+// 「自动识别场景」的预设值（同 core/document_profile.py 的 SMART_PRESET），提示词按文档现写。
+const SMART_PRESET = "自动识别场景"; // i18n-ignore 领域预设值（发回后端），显示走 tx()
 
 export const MODEL_ROLE_LABELS: Record<string, string> = localized(() => ({
   translation: t("文档翻译（Excel / Word / CAD）"),
@@ -1585,7 +1587,14 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       if (value !== ADD_PROMPT_PRESET) selectPreset(value);
     },
   });
-  body.append(fieldWithHint(t("提示词名称"), presetDropdown.root, t("选择已有提示词，或选择「＋ 新增提示词」创建自定义提示词。名称可在下方编辑。删除内置提示词仅会将其停用，之后仍可重新启用。")));
+  body.append(fieldWithHint(t("提示词类型"), presetDropdown.root, t("选择已有提示词，或选择「＋ 新增提示词」创建自定义提示词。名称可在下方编辑。删除内置提示词仅会将其停用，之后仍可重新启用。")));
+
+  // 名称排在正文上面：先看清是哪一份提示词、叫什么，再看它的具体内容。
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = t("例如：电气图纸翻译");
+  const nameField = fieldWithHint(t("提示词名称"), nameInput, t("名称可修改，保存时将保留当前提示词内容。名称不能与内置提示词或其他自定义提示词重复。"));
+  body.append(nameField);
 
   let promptArea: HTMLTextAreaElement;
 
@@ -1594,6 +1603,24 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   promptArea.rows = 6;
   const promptField = fieldWithHint(t("提示词内容"), promptArea, undefined);
   body.append(promptField);
+
+  // 「自动识别场景」每次的提示词按实际文档现写（见 core/document_profile.py），没有一段
+  // 固定文字可改。这里放一段灰色、不可编辑的说明代替正文框，免得人以为框里那段就是全部。
+  const smartNote = document.createElement("div");
+  smartNote.className = "field smart-prompt-note";
+  const smartLabel = document.createElement("label");
+  smartLabel.textContent = t("工作方式");
+  const smartIntro = document.createElement("p");
+  smartIntro.textContent = t("这个场景没有固定的提示词。每次翻译前，先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。之后每一批翻译都带着这段说明，所以同一个词在不同文档里会按各自的意思翻译。");
+  const smartRulesTitle = document.createElement("p");
+  smartRulesTitle.className = "smart-prompt-rules-title";
+  smartRulesTitle.textContent = t("每次都会一并带上的通用规则：");
+  const smartRules = document.createElement("div");
+  smartRules.className = "smart-prompt-rules";
+  const smartTail = document.createElement("p");
+  smartTail.textContent = t("需要固定的提示词时，请在上方选择其他类型，或选择「＋ 新增提示词」。");
+  smartNote.append(smartLabel, smartIntro, smartRulesTitle, smartRules, smartTail);
+  body.append(smartNote);
 
   const refinementInput = document.createElement("textarea");
   refinementInput.className = "domain-prompt prompt-refinement";
@@ -1674,22 +1701,19 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     optimizationCompare.append(heading, columns, compareActions);
   };
 
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.placeholder = t("例如：电气图纸翻译");
-  const nameField = fieldWithHint(t("编辑名称"), nameInput, t("名称可修改，保存时将保留当前提示词内容。名称不能与内置提示词或其他自定义提示词重复。"));
-  body.append(nameField);
-
   const updateEditor = (preset: string): void => {
     const custom = customNames.includes(preset);
     const legacy = preset === LEGACY_CUSTOM_PROMPT;
     const none = preset === "无"; // i18n-ignore 领域预设值比较
     const add = preset === ADD_PROMPT_PRESET;
+    const smart = preset === SMART_PRESET;
     clearOptimization();
     refinementInput.value = "";
     promptArea.value = promptFor(preset);
     promptArea.placeholder = add ? t("请输入完整提示词") : isBuiltIn(preset) ? t("内置提示词会在此显示") : t("请输入提示词内容");
-    promptField.style.display = none ? "none" : "";
+    promptField.style.display = none || smart ? "none" : "";
+    smartNote.style.display = smart ? "" : "none";
+    smartRules.textContent = smart ? promptArea.value : "";
     nameField.style.display = none ? "none" : "";
     nameInput.value = add
       ? nextCustomPromptName()
@@ -1702,10 +1726,11 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     savedPrompt = promptArea.value;
     savedName = nameInput.value;
     if (optimizeBtn) {
-      optimizeBtn.style.display = none ? "none" : "";
+      optimizeBtn.style.display = none || smart ? "none" : "";
       optimizeBtn.disabled = false;
     }
-    if (restoreBtn) restoreBtn.style.display = isBuiltIn(preset) ? "" : "none";
+    // 自动识别场景没有正文可改；只有旧版本里改过它的通用规则时，才留「恢复内置默认」把改动清掉。
+    if (restoreBtn) restoreBtn.style.display = isBuiltIn(preset) && (!smart || overrideFor(preset) !== undefined) ? "" : "none";
   };
   updateEditor(selectedPreset);
 
@@ -1875,9 +1900,6 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       }
     }),
   });
-  if (selectedPreset === "无") optimizeBtn.style.display = "none"; // i18n-ignore 领域预设值比较
-  // 按钮是在编辑器首次填充后创建的，再同步一次初始文案和显隐状态。
-  updateEditor(selectedPreset);
   const actions: HTMLElement[] = [optimizeBtn];
   if (isBuiltIn(selectedPreset)) {
     restoreBtn = createButton({
@@ -1901,6 +1923,8 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     });
     actions.push(restoreBtn);
   }
+  // 按钮是在编辑器首次填充后创建的，再同步一次初始文案和显隐状态。
+  updateEditor(selectedPreset);
   const autoSaveNote = document.createElement("span");
   autoSaveNote.textContent = t("选择和修改均自动保存。");
   autoSaveNote.style.marginRight = "auto";

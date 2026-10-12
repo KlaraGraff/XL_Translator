@@ -403,6 +403,10 @@
     "en": "Prompt “{0}” deleted.",
     "fr": "Prompt « {0} » supprimé."
   },
+  "提示词类型": {
+    "en": "Prompt type",
+    "fr": "Type de prompt"
+  },
   "提示词名称": {
     "en": "Prompt name",
     "fr": "Nom du prompt"
@@ -459,10 +463,6 @@
     "en": "e.g. Electrical drawing translation",
     "fr": "Ex. : traduction de plans électriques"
   },
-  "编辑名称": {
-    "en": "Name",
-    "fr": "Nom"
-  },
   "名称可修改，保存时将保留当前提示词内容。名称不能与内置提示词或其他自定义提示词重复。": {
     "en": "The name can be changed; the prompt text is kept when saving. It cannot match a built-in prompt or another custom prompt.",
     "fr": "Vous pouvez le renommer ; le texte du prompt est conservé à l'enregistrement. Le nom ne peut pas reprendre celui d'un prompt intégré ou d'un autre prompt personnalisé."
@@ -486,6 +486,22 @@
   "内置提示词（可编辑覆盖）": {
     "en": "Built-in prompt (editable)",
     "fr": "Prompt intégré (modifiable)"
+  },
+  "工作方式": {
+    "en": "How it works",
+    "fr": "Fonctionnement"
+  },
+  "这个场景没有固定的提示词。每次翻译前，先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。之后每一批翻译都带着这段说明，所以同一个词在不同文档里会按各自的意思翻译。": {
+    "en": "This mode has no fixed prompt. Before each translation, the document translation model reads the whole document and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. Every batch is then translated with this summary, so the same word can be translated differently in different documents.",
+    "fr": "Ce mode n'a pas de prompt fixe. Avant chaque traduction, le modèle de traduction de documents lit tout le document et rédige un court résumé du document : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Chaque lot est ensuite traduit avec ce résumé ; un même mot peut donc être traduit différemment d'un document à l'autre."
+  },
+  "每次都会一并带上的通用规则：": {
+    "en": "General rules sent every time:",
+    "fr": "Règles générales envoyées à chaque fois :"
+  },
+  "需要固定的提示词时，请在上方选择其他类型，或选择「＋ 新增提示词」。": {
+    "en": "For a fixed prompt, choose another type above or “+ New prompt”.",
+    "fr": "Pour un prompt fixe, choisissez un autre type ci-dessus ou « + Nouveau prompt »."
   },
   "保存": {
     "en": "Save",
