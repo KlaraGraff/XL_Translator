@@ -92,9 +92,33 @@ class ConnectionAllocationTests(unittest.TestCase):
             (Exception("Failed to establish a new connection"), FAILURE_ENDPOINT),
             (Exception("something odd happened"), FAILURE_TRANSIENT),
         ]
+        cases += self._transport_cases()
         for exc, expected in cases:
             with self.subTest(exc=str(exc)):
                 self.assertEqual(classify_connection_failure(exc), expected)
+
+    @staticmethod
+    def _transport_cases() -> list[tuple[Exception, str]]:
+        # The OpenAI-compatible transport marks every error no_replay.  That
+        # marker used to be checked first, so a 503 or a 401 never moved a
+        # task to its backup connection.
+        import httpx
+
+        from core.text_transport import TextTransportError, TextTransportHTTPError
+
+        def http(status: int) -> Exception:
+            request = httpx.Request("POST", "https://a.example/v1/chat/completions")
+            return TextTransportHTTPError(
+                f"HTTP {status}", request=request,
+                response=httpx.Response(status, request=request), kind="transient",
+            )
+
+        return [
+            (http(503), FAILURE_ENDPOINT),
+            (http(401), FAILURE_CREDENTIAL),
+            (http(429), FAILURE_TRANSIENT),
+            (TextTransportError("read_timeout：请求超时", kind="read_timeout"), FAILURE_TRANSIENT),
+        ]
 
     def test_only_endpoint_and_credential_failures_move_the_task(self) -> None:
         self.assertTrue(should_switch_connection(FAILURE_ENDPOINT))

@@ -1831,6 +1831,7 @@ class TaskRunner(BaseTaskRunner):
                 "Excel 实际请求："
                 f"{batch_stats.batch_count} 批，"
                 f"缩小重试 {batch_stats.retry_count} 次，"
+                f"整批重发 {batch_stats.transient_retry_count} 次，"
                 f"未翻译 {batch_stats.untranslated_count} 条，"
                 f"最大请求权重 {batch_stats.max_request_weight}"
                 + (

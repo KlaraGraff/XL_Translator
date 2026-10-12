@@ -67,8 +67,10 @@ def _status_code(exc: BaseException) -> int:
 
 def classify_connection_failure(exc: BaseException) -> str:
     """Classify why a request failed, in pool terms."""
-    if getattr(exc, "no_replay", False):
-        return FAILURE_TRANSIENT
+    # The status comes first: the text transport marks every failure it
+    # raises no_replay (it never resends by itself), including a 503 or a
+    # 401.  Checking the marker first kept every OpenAI-compatible connection
+    # from ever handing over to its backup.
     status = _status_code(exc)
     if status in _CREDENTIAL_STATUS:
         return FAILURE_CREDENTIAL
@@ -76,6 +78,10 @@ def classify_connection_failure(exc: BaseException) -> str:
         return FAILURE_TRANSIENT
     if status in _ENDPOINT_STATUS:
         return FAILURE_ENDPOINT
+    if getattr(exc, "no_replay", False):
+        # A timeout or a cut-off answer: the server may have done the work, and
+        # one slow reply is no reason to burn the connection.
+        return FAILURE_TRANSIENT
 
     message = str(exc or "").casefold()
     if any(marker in message for marker in _CREDENTIAL_MARKERS):

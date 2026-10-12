@@ -1239,9 +1239,17 @@
     "en": "The custom domain prompt cannot be empty",
     "fr": "Le prompt de domaine personnalisé ne peut pas être vide"
   },
-  "一批翻译请求出错且无法通过重试解决，该批 {0} 条内容已保留原文：{1}": {
-    "en": "A batch of translation requests failed and cannot be resolved by retrying; these {0} items keep the source text: {1}",
-    "fr": "Un lot de requêtes de traduction a échoué et ne peut pas être résolu par une nouvelle tentative ; ces {0} éléments conservent le texte source : {1}"
+  "一批翻译请求暂时失败，稍后自动重试（第 {0}/{1} 次）：{2}": {
+    "en": "A translation batch request failed temporarily; retrying shortly (attempt {0}/{1}): {2}",
+    "fr": "Une requête de lot de traduction a échoué temporairement ; nouvel essai sous peu (tentative {0}/{1}) : {2}"
+  },
+  "一批翻译请求重试 {0} 次后仍失败，该批 {1} 条内容已保留原文：{2}": {
+    "en": "A translation batch request still failed after {0} {0|retry|retries}; these {1} items keep the source text: {2}",
+    "fr": "Une requête de lot de traduction a encore échoué après {0} {0|nouvel essai|nouveaux essais} ; ces {1} éléments conservent le texte source : {2}"
+  },
+  "一批翻译请求未成功，该批 {0} 条内容已保留原文：{1}": {
+    "en": "A translation batch request did not succeed; these {0} items keep the source text: {1}",
+    "fr": "Une requête de lot de traduction n'a pas abouti ; ces {0} éléments conservent le texte source : {1}"
   },
   "一批翻译出错，已拆分为更小的批次重试：{0}": {
     "en": "A translation batch failed; retrying in smaller batches: {0}",

@@ -24,6 +24,10 @@ CONNECT_TIMEOUT = 10.0
 READ_TIMEOUT = 120.0  # idle read, separately from the whole operation's deadline
 TOTAL_TIMEOUT = 180.0
 MAX_SENDS = 6  # includes protocol negotiation and authorized connection failover
+# A failed leader's error is handed to identical requests for this long, so a
+# burst of parallel batches does not stampede a server that just failed.  A
+# deliberate resend has to wait past it or it only gets the cached error back.
+FAILED_REQUEST_CACHE_SECONDS = 2.0
 
 
 class TextTransportError(ValueError):
@@ -471,7 +475,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
             if leader:
                 # Retain only sanitized failures; no request payloads or credentials.
                 entry.error = _sanitize_error(exc, api_key)
-                entry.expires = time.monotonic() + 2
+                entry.expires = time.monotonic() + FAILED_REQUEST_CACHE_SECONDS
             # A candidate promoted by this app can become unavailable
             # unavailable after startup.  Restore its predecessor only for a
             # definitive model error, then safely retry this same text request.
