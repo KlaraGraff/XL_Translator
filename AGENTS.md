@@ -46,7 +46,7 @@
    - `step=notes`：发布后修订正文；`step=retract`：撤回为草稿（不删产物、不动
      标签），并确认最新版已回到上一个正式版。撤回同样要 maple 确认。
    - `step=discard`：删掉还没发布的草稿和它的标签，以便用同一版本号重建；删之前
-     先建 `archive/v{version}-{短提交号}` 标签留存原提交。已发布的要先撤回，同样要
+     先留住原提交（archive 标签，或确认它已在 main 历史里）。已发布的要先撤回，同样要
      maple 确认。
    - 步骤细节见 `docs/TAURI_DISTRIBUTION_WORKFLOW.md`「发版步骤」。
 
