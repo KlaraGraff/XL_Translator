@@ -96,7 +96,7 @@ def test_dry_run_sends_and_changes_nothing():
 def test_message_headers():
     notice = notify.parse_notice(NOTICE)
     assert notice is not None
-    message = notify.build_message("xl.translator@gmail.com", "marie@example.fr", notice)
-    assert message["From"] == "XL Translator <xl.translator@gmail.com>"
+    message = notify.build_message("xltranslator.support@gmail.com", "marie@example.fr", notice)
+    assert message["From"] == "Translator <xltranslator.support@gmail.com>"
     assert message["Subject"] == "Votre retour est corrigé"
     assert "C'est corrigé" in message.get_content()

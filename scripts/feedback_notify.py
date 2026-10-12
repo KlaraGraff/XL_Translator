@@ -39,7 +39,7 @@ from typing import Any
 PENDING_LABEL = "待通知"
 DONE_LABEL = "已通知"
 NO_EMAIL_LABEL = "无邮箱"
-SENDER_NAME = "XL Translator"
+SENDER_NAME = "Translator"
 _MARKER_RE = re.compile(r"^\s*<!--\s*xl-notify\s+version=v?(\d+\.\d+\.\d+)\s*-->\s*$")
 _SUBJECT_RE = re.compile(r"^\s*(?:主题|Subject|Objet)\s*[:：]\s*(.+?)\s*$", re.IGNORECASE)
 _CONTACT_RE = re.compile(r"^\*\*联系方式\*\*：`([^`]*)`", re.MULTILINE)

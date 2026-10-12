@@ -31,11 +31,11 @@ issue 里只放一个带签名、90 天内有效的下载链接。
 
 反馈页写着「问题解决或功能上线时，我们会发邮件通知您」，由 `.github/workflows/feedback-notify.yml` 在新版本正式发布后自动发出（`release.yml` 的 `step=publish` 成功后调用；也可手动运行，默认只试运行）。
 
-1. 修好问题或做完功能时，在对应的反馈 issue 里加标签 `待通知`，并留一条通知评论，按用户的界面语言（issue 里「界面语言」）写：
+1. 修好问题或做完功能时，在对应的反馈 issue 里加标签 `待通知`，并留一条通知评论，按用户的界面语言（issue 里「界面语言」）写；邮件里软件一律叫「Translator」（XL Translator 只是项目名）：
 
    ```
    <!-- xl-notify version=10.0.1 -->
-   主题：XL Translator 10.0.1 已修复您反馈的问题
+   主题：Translator 10.0.1 已修复您反馈的问题
 
    您好，……
    ```
