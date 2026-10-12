@@ -1667,10 +1667,6 @@
     "en": "Search blocks or layers…",
     "fr": "Rechercher un bloc ou un calque…"
   },
-  "放不下时缩小字号": {
-    "en": "Shrink text that does not fit",
-    "fr": "Réduire le texte qui ne tient pas"
-  },
   "显示方式": {
     "en": "Display",
     "fr": "Affichage"
@@ -1727,14 +1723,6 @@
     "en": "Minimum text scale",
     "fr": "Échelle minimale du texte"
   },
-  "放不下时，先把译文字号缩到原文字号的这个比例。": {
-    "en": "When a translation does not fit, its text height is first reduced to this share of the original height.",
-    "fr": "Si une traduction ne tient pas, la hauteur du texte est d'abord réduite à cette part de la hauteur d'origine."
-  },
-  "仍放不下时每次再缩 0.1，最小缩到原文字号的这个比例；到这里还放不下的列入报告，请人工复核。": {
-    "en": "If it still does not fit, the height is reduced by 0.1 at a time down to this share of the original height. Text that still does not fit is listed in the report for manual review.",
-    "fr": "Si elle ne tient toujours pas, la hauteur est réduite par pas de 0,1 jusqu'à cette part de la hauteur d'origine. Le texte qui ne tient toujours pas est signalé dans le rapport pour vérification manuelle."
-  },
   "从图纸中挑选": {
     "en": "Pick from drawings",
     "fr": "Choisir dans les plans"
@@ -1759,10 +1747,6 @@
     "en": "Add more…",
     "fr": "Ajouter…"
   },
-  "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到「初始字号比例」，仍放不下再每次缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告。": {
-    "en": "When a translation is longer than the original and would overlap nearby text, it is first narrowed, then made smaller: first to the initial text scale, then by 0.1 at a time down to the minimum text scale. Text that still does not fit is listed in the report.",
-    "fr": "Si une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis réduite : d'abord à l'échelle initiale du texte, puis par pas de 0,1 jusqu'à l'échelle minimale. Le texte qui ne tient toujours pas est signalé dans le rapport."
-  },
   "这些图块和图层里的文字保持原样。输入名字后按回车添加，可以一次粘贴多行。": {
     "en": "Text in these blocks and layers is left as is. Type a name and press Enter to add it, or paste several lines at once.",
     "fr": "Le texte de ces blocs et calques reste tel quel. Saisissez un nom puis appuyez sur Entrée, ou collez plusieurs lignes d'un coup."
@@ -1774,5 +1758,13 @@
   "这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。* 代表任意字符，不分大小写。": {
     "en": "Text on these layers is left as is. Text drawn on layer 0 inside a block follows the layer of the block. * matches any characters. Case does not matter.",
     "fr": "Le texte de ces calques reste tel quel. Le texte dessiné sur le calque 0 dans un bloc suit le calque du bloc. * remplace n'importe quels caractères. La casse est ignorée."
+  },
+  "超长译文自动缩小": {
+    "en": "Auto-shrink long translations",
+    "fr": "Réduction automatique des traductions longues"
+  },
+  "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。": {
+    "en": "When a translation is longer than the original and would overlap nearby text, it is first narrowed, then its text height is reduced. The initial text scale is the share of the original height used first; if it still does not fit, the height is reduced by 0.1 at a time down to the minimum text scale. Text that still does not fit is listed in the report for manual review.",
+    "fr": "Si une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis sa hauteur est réduite. L'échelle initiale du texte est la part de la hauteur d'origine appliquée en premier ; si elle ne tient toujours pas, la hauteur est réduite par pas de 0,1 jusqu'à l'échelle minimale. Le texte qui ne tient toujours pas est signalé dans le rapport pour vérification manuelle."
   }
 }
