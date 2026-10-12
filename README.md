@@ -104,9 +104,9 @@ Jobs of different types can run concurrently. Any job can be stopped (PDF and CA
 
 ### 反馈 · Feedback
 
-侧栏的「反馈」页用于报告问题或提出建议。可填写描述并直接粘贴截图，按需附带系统与版本信息、所选任务的日志、原文件和译文（原文件和译文默认不附带）；失败的任务也可在任务中心通过「反馈此问题」进入。发送前可查看将发送的全部内容，发送时显示上传进度，也可改为保存为 ZIP 文件。日志中的 API 密钥和文件路径已去除，随反馈上传的文件保存 90 天后自动删除。
+侧栏的「反馈」页用于报告问题或提出建议。可填写描述并直接粘贴截图，按需附带系统与版本信息、所选任务的日志、原文件和译文（原文件和译文默认不附带）；失败的任务也可在任务中心通过「反馈此问题」进入。发送前可查看将发送的全部内容，发送时显示上传进度，也可改为保存为 ZIP 文件。日志中的 API 密钥和文件路径已去除，随反馈上传的文件保存 90 天后自动删除。填写邮箱后，问题解决或相关功能上线时会收到邮件通知。
 
-The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the task center with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days.
+The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the task center with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days. If an email address is provided, a notification is sent when the issue is resolved or the feature is released.
 
 ![反馈页 · Feedback page](docs/images/readme/app-feedback.png)
 
