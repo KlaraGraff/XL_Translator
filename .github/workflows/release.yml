@@ -272,52 +272,68 @@ jobs:
           fi
           tag="v${VERSION}"
           repo="$GITHUB_REPOSITORY"
-          if gh release view "$tag" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
-            if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
-              echo "::error::$tag 已经发布，不能直接删除。先用 step=retract 撤回为草稿。"
+          # 撤回过的草稿按标签名查不到（网页地址变成 untagged-…），
+          # 所以列出全部 Release 按 tag_name 找，按 id 删。
+          list_releases() {
+            gh api --paginate "repos/$repo/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$tag\") | \"\(.id) \(.draft)\""
+          }
+          list_releases > "$RUNNER_TEMP/releases.txt"
+          if grep -q ' false$' "$RUNNER_TEMP/releases.txt"; then
+            echo "::error::$tag 已经发布，不能直接删除。先用 step=retract 撤回为草稿。"
+            exit 1
+          fi
+          has_tag=0
+          if gh api "repos/$repo/git/ref/tags/$tag" > "$RUNNER_TEMP/ref.json" 2>/dev/null; then
+            has_tag=1
+          fi
+          if [[ "$has_tag" == "0" && ! -s "$RUNNER_TEMP/releases.txt" ]]; then
+            echo "::error::找不到 $tag 的标签，也找不到它的草稿 Release。"
+            exit 1
+          fi
+          kept="（标签此前已删除，没有需要保留的提交）"
+          sha=""
+          if [[ "$has_tag" == "1" ]]; then
+            # 轻量标签直接指向提交；附注标签要再解一层。
+            sha="$(jq -r '.object.sha' "$RUNNER_TEMP/ref.json")"
+            if [[ "$(jq -r '.object.type' "$RUNNER_TEMP/ref.json")" == "tag" ]]; then
+              sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha')"
+            fi
+            archive="archive/${tag}-${sha:0:7}"
+            if gh api "repos/$repo/git/ref/tags/$archive" >/dev/null 2>&1; then
+              echo "归档标签 $archive 已存在。"
+            elif ! gh api "repos/$repo/git/refs" -f "ref=refs/tags/$archive" -f "sha=$sha" >/dev/null 2> "$RUNNER_TEMP/archive.err"; then
+              echo "::warning::建不了归档标签 $archive：$(cat "$RUNNER_TEMP/archive.err")"
+            fi
+            if [[ "$(gh api "repos/$repo/git/ref/tags/$archive" --jq '.object.sha' 2>/dev/null || true)" == "$sha" ]]; then
+              kept="原提交 \`$sha\` 保留在归档标签 \`$archive\`。"
+            else
+              # 提交已在 main 的历史里（main 比它新或与它相同），删标签后也一直找得到。
+              status="$(gh api "repos/$repo/compare/${sha}...main" --jq '.status')"
+              if [[ "$status" != "ahead" && "$status" != "identical" ]]; then
+                echo "::error::$sha 既没有归档标签，也不在 main 的历史里（compare 结果 $status），停止，不删除任何东西。"
+                exit 1
+              fi
+              kept="原提交 \`$sha\` 保留在 main 的历史里（没有建成归档标签）。"
+            fi
+          fi
+          while read -r id _draft; do
+            [[ -n "$id" ]] || continue
+            if ! gh api -X DELETE "repos/$repo/releases/$id" 2> "$RUNNER_TEMP/delete.err"; then
+              echo "::error::删除草稿 Release $tag（id $id）失败，标签没有动：$(cat "$RUNNER_TEMP/delete.err")"
               exit 1
             fi
-            has_release=1
-          else
-            has_release=0
-          fi
-          if ! gh api "repos/$repo/git/ref/tags/$tag" > "$RUNNER_TEMP/ref.json" 2>/dev/null; then
-            echo "::error::找不到标签 $tag。"
-            exit 1
-          fi
-          # 轻量标签直接指向提交；附注标签要再解一层。
-          sha="$(jq -r '.object.sha' "$RUNNER_TEMP/ref.json")"
-          if [[ "$(jq -r '.object.type' "$RUNNER_TEMP/ref.json")" == "tag" ]]; then
-            sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha')"
-          fi
-          archive="archive/${tag}-${sha:0:7}"
-          kept=""
-          if gh api "repos/$repo/git/ref/tags/$archive" >/dev/null 2>&1; then
-            echo "归档标签 $archive 已存在。"
-          elif ! gh api "repos/$repo/git/refs" -f "ref=refs/tags/$archive" -f "sha=$sha" >/dev/null 2> "$RUNNER_TEMP/archive.err"; then
-            echo "::warning::建不了归档标签 $archive：$(cat "$RUNNER_TEMP/archive.err")"
-          fi
-          if [[ "$(gh api "repos/$repo/git/ref/tags/$archive" --jq '.object.sha' 2>/dev/null || true)" == "$sha" ]]; then
-            kept="归档标签 \`$archive\`"
-          else
-            # 提交已在 main 的历史里（main 比它新或与它相同），删标签后也一直找得到。
-            status="$(gh api "repos/$repo/compare/${sha}...main" --jq '.status')"
-            if [[ "$status" != "ahead" && "$status" != "identical" ]]; then
-              echo "::error::$sha 既没有归档标签，也不在 main 的历史里（compare 结果 $status），停止，不删除任何东西。"
+            echo "已删除草稿 Release $tag（id $id）。"
+          done < "$RUNNER_TEMP/releases.txt"
+          if [[ "$has_tag" == "1" ]]; then
+            if ! gh api -X DELETE "repos/$repo/git/refs/tags/$tag" 2> "$RUNNER_TEMP/delete.err"; then
+              echo "::error::删除标签 $tag 失败：$(cat "$RUNNER_TEMP/delete.err")"
               exit 1
             fi
-            kept="main 的历史（没有建成归档标签）"
+            echo "已删除标签 $tag。"
           fi
-          if [[ "$has_release" == "1" ]] && ! gh release delete "$tag" --yes; then
-            echo "::error::删除草稿 Release $tag 失败，标签没有动。"
-            exit 1
-          fi
-          if ! gh api -X DELETE "repos/$repo/git/refs/tags/$tag" 2> "$RUNNER_TEMP/delete.err"; then
-            echo "::error::删除标签 $tag 失败：$(cat "$RUNNER_TEMP/delete.err")"
-            exit 1
-          fi
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::error::删除后仍能读到 $tag 的 Release。"
+          if [[ -n "$(list_releases)" ]]; then
+            echo "::error::删除后仍能列出 $tag 的 Release。"
             exit 1
           fi
           if gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
@@ -327,6 +343,6 @@ jobs:
           {
             echo "### 已删除草稿 $tag"
             echo
-            echo "原提交 \`$sha\` 保留在$kept。"
+            echo "$kept"
             echo "现在可以用 step=tag 以同一版本号重新打标签和构建。"
           } >> "$GITHUB_STEP_SUMMARY"

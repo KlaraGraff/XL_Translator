@@ -48,7 +48,7 @@ Windows 构建产出 NSIS 安装器（`installMode: currentUser`，不需要管�
 
 - 修订说明：改 `docs/release-notes/vX.Y.Z.md` 合进 main，运行 `step=notes`。核对规则同上，只换正文，不改变草稿状态。
 - 撤回：运行 `step=retract`。只把 Release 改回草稿，产物、标签、正文都保留；改完确认 `releases/latest` 和 `latest.json` 都已回到上一个正式版，已安装的应用不会再收到这个版本的更新。修好后用 `step=publish` 重新发布（签名渠道按安装包文件名判断，不依赖草稿里那行渠道说明）。
-- 同号重建：运行 `step=discard`。只接受草稿（已发布的先 `step=retract`）；先建 `archive/v{version}-{短提交号}` 标签指向原提交并读回确认，再删草稿 Release 和 `v{version}` 标签，之后可以用 `step=tag` 以同一版本号重新打标签。
+- 同号重建：运行 `step=discard`。只接受草稿（已发布的先 `step=retract`）；先建 `archive/v{version}-{短提交号}` 标签指向原提交并读回确认，再删草稿 Release 和 `v{version}` 标签，之后可以用 `step=tag` 以同一版本号重新打标签。草稿按 `tag_name` 从 Release 列表里找（撤回过的草稿用 `gh release view` 按标签查不到）；标签已删、只剩草稿时也能单独清掉。
 
 仓库简介、topics 这类仓库设置不在 `GITHUB_TOKEN` 的权限内，仍需在 GitHub 网页上手动修改。
 
