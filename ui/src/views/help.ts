@@ -17,6 +17,8 @@ async function openExternalUrl(url: string): Promise<void> {
   await invoke("open_external_url", { url });
 }
 
+const IS_MAC = /Mac/i.test(navigator.userAgent);
+
 interface HelpCardSpec {
   iconName: IconName;
   title: string;
@@ -72,17 +74,22 @@ const CARDS: HelpCardSpec[] = [
     iconName: "folder",
     title: t("输出与兼容格式"),
     body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「插件」中连接图纸转换工具。"),
-    footer: (host) => {
-      const details = document.createElement("details");
-      details.className = "help-details";
-      const summary = document.createElement("summary");
-      summary.textContent = t("macOS 自动化权限");
-      const note = document.createElement("p");
-      note.textContent =
-        t("macOS 12：系统偏好设置 → 安全性与隐私 → 隐私 → 自动化。macOS 13 及以上：系统设置 → 隐私与安全性 → 自动化。允许 Translator 控制 Microsoft Excel 或 Word 后再重试。");
-      details.append(summary, note);
-      host.append(details);
-    },
+    // 用本机 Office 转旧版文件时，macOS 会弹窗问是否允许 Translator 控制 Excel / Word；
+    // 当时点了「不允许」，之后转换就一直失败。这里写的是事后怎么改回来。
+    // 标题直接写用户碰到的现象，不写「自动化权限」这种系统术语；Windows 没有这项设置，不显示。
+    footer: IS_MAC
+      ? (host) => {
+          const details = document.createElement("details");
+          details.className = "help-details";
+          const summary = document.createElement("summary");
+          summary.textContent = t("转换旧版文件时提示没有权限？");
+          const note = document.createElement("p");
+          note.textContent =
+            t("用本机 Office 转换旧版 .xls / .doc 时，macOS 会询问是否允许 Translator 控制 Excel 或 Word。如果当时选了「不允许」，转换会失败。可在「系统设置 → 隐私与安全性 → 自动化」（macOS 12 为「系统偏好设置 → 安全性与隐私 → 隐私 → 自动化」）中为 Translator 勾选 Microsoft Excel 或 Word，然后重试。");
+          details.append(summary, note);
+          host.append(details);
+        }
+      : undefined,
   },
   {
     iconName: "ext",
@@ -115,7 +122,7 @@ function buildHero(container: HTMLElement): void {
 
   const label = document.createElement("span");
   label.className = "section-label";
-  label.textContent = t("本地离线帮助");
+  label.textContent = t("使用指南");
   hero.append(label);
 
   const heading = document.createElement("h2");
@@ -167,8 +174,9 @@ function buildCard(spec: HelpCardSpec): HTMLElement {
 
 export function mount(container: HTMLElement, _params: ViewParams): void {
   setTopbar({
+    // 这里不放状态胶囊：别的页面的胶囊显示的是真实状态（任务数、扫描进度），
+    // 帮助页原来挂一个固定的「本地离线」，看着像应用断网了。
     title: t("帮助"),
-    status: { label: t("本地离线"), tone: "idle" },
     subtitle: t("快速开始清单与常见问题"),
   });
 
