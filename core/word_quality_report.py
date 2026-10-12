@@ -127,6 +127,29 @@ def _word_cell_line_mismatch_issue(*, file_name: str, info: dict) -> dict:
     }
 
 
+def _word_textbox_overflow_issue(*, file_name: str, info: dict) -> dict:
+    """文本框的字缩到下限仍放不下译文。文本框的大小是作者定的，不替他改。"""
+    location = str(info.get("location") or "textbox")
+    return {
+        "file": file_name,
+        "kind": "textbox",
+        "location": location,
+        "location_label": _format_location_label(location),
+        "section_path": str(info.get("label") or "文本框"),
+        "snippet": _build_source_excerpt(str(info.get("source") or "")),
+        "problem": "文本框放不下译文",
+        "status": "已把文本框里的字缩到原来的 60%，仍可能有文字被遮住，请在 Word 里调大文本框。",
+        "severity": "needs_review",
+    }
+
+
+def _word_write_issue(*, file_name: str, info: dict) -> dict:
+    """写入器回报的问题，按种类分给对应的报告条目。"""
+    if info.get("kind") == "textbox_overflow":
+        return _word_textbox_overflow_issue(file_name=file_name, info=info)
+    return _word_cell_line_mismatch_issue(file_name=file_name, info=info)
+
+
 def _append_post_write_coverage_issues(
     *,
     issues: list[dict],
@@ -428,6 +451,15 @@ def _format_location_label(location: str) -> str:
     cell_match = re.match(r"table\[(\d+)\]\.cell\[(\d+)\]", str(location or ""))
     if cell_match:
         return f"表格 {int(cell_match.group(1)) + 1} / 单元格 {int(cell_match.group(2)) + 1}"
+
+    story_match = re.match(r"(textbox|footnote|endnote)\[(-?\d+)\]\.paragraph\[(\d+)\]", str(location or ""))
+    if story_match:
+        kind, number, paragraph = story_match.groups()
+        if kind == "textbox":
+            return f"文本框 {int(number) + 1} / 段落 {int(paragraph) + 1}"
+        if kind == "footnote":
+            return f"脚注 {number} / 段落 {int(paragraph) + 1}"
+        return f"尾注 {number} / 段落 {int(paragraph) + 1}"
 
     return location or "未知位置"
 
