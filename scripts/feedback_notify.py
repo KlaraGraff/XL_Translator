@@ -87,10 +87,12 @@ def feedback_reference(issue_body: str) -> str:
 
 
 def with_reference(notice: Notice, reference: str) -> Notice:
-    """Put the feedback number in front of the subject so mail can be searched by it."""
+    """Add the feedback number after the subject so mail can be searched by it."""
     if not reference or reference in notice.subject:
         return notice
-    return Notice(notice.version, f"[{reference}] {notice.subject}", notice.body)
+    # 给人看的标题在前，编号放在后面；中文主题用全角括号。
+    suffix = f"（{reference}）" if re.search(r"[\u4e00-\u9fff]", notice.subject) else f" ({reference})"
+    return Notice(notice.version, f"{notice.subject}{suffix}", notice.body)
 
 
 def contact_email(issue_body: str) -> str:
