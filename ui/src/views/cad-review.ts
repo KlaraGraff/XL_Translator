@@ -65,6 +65,10 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
   let pollTimer: number | null = null;
   let closed = false;
   let busy = false;
+  // 点了「按修改重新写回」、还没报告结果；写回很快时第一次读回就已经结束了。
+  let awaitingRewrite = false;
+  // 上一次写回的结果，留在底栏上（提示条几秒就消失，容易错过）。
+  let lastRewrite: { text: string; error: boolean } | null = null;
   // 还没保存的修改：图纸 key → 原文 → 当前输入框里的译文。
   const dirty = new Map<string, Map<string, string>>();
 
@@ -151,16 +155,19 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
       fileKey = (snapshot.files.find((file) => file.available) ?? snapshot.files[0])?.key ?? "";
     }
     render();
-    if (rewriting()) schedulePoll();
+    if (rewriting()) {
+      schedulePoll();
+    } else if (awaitingRewrite) {
+      awaitingRewrite = false;
+      reportRewrite();
+    }
   }
 
   function schedulePoll(): void {
     if (pollTimer !== null) window.clearTimeout(pollTimer);
     pollTimer = window.setTimeout(async () => {
       pollTimer = null;
-      const wasActive = rewriting();
       await load({ quiet: true });
-      if (wasActive && snapshot && !snapshot.rewrite.active) reportRewrite();
     }, POLL_MS);
   }
 
@@ -168,16 +175,19 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
     const results = snapshot?.rewrite.results ?? [];
     const failed = results.filter((item) => !item.ok);
     const done = results.length - failed.length;
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     if (!failed.length) {
-      showToast({ message: t("已按修改重新写回 {0} 张图纸。", done) });
+      const message = t("已按修改重新写回 {0} 张图纸。", done);
+      lastRewrite = { text: t("{0} 已重新写回 {1} 张图纸，输出文件已更新。", time, done), error: false };
+      renderFooter();
+      showToast({ message });
       return;
     }
     const first = failed[0];
-    showToast({
-      message: t("{0} 张图纸没有写回：{1}", failed.length, `${first.name ? `${first.name}：` : ""}${tx(first.message)}`),
-      error: true,
-      duration: 8000,
-    });
+    const message = t("{0} 张图纸没有写回：{1}", failed.length, `${first.name ? `${first.name}：` : ""}${tx(first.message)}`);
+    lastRewrite = { text: `${time} ${message}`, error: true };
+    renderFooter();
+    showToast({ message, error: true, duration: 8000 });
   }
 
   async function saveDirty(): Promise<boolean> {
@@ -217,6 +227,8 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
     renderFooter();
     try {
       await client.rewriteCadReview(taskId, keys);
+      awaitingRewrite = true;
+      lastRewrite = null;
     } catch (error) {
       showToast({ message: errorText(error, t("重新写回失败。")), error: true });
     } finally {
@@ -458,11 +470,15 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
     const pending = dirtyCount();
     const saved = (snapshot?.files ?? []).reduce((sum, file) => sum + (file.rewritable ? file.edited ?? 0 : 0), 0);
     const summary = el("span", "cr-sum");
+    const result = !pending && !saved && !rewriting() ? lastRewrite : null;
+    if (result) summary.classList.add(result.error ? "error" : "ok");
     summary.textContent = pending
       ? t("{0} 处修改还没保存", pending)
       : saved
         ? t("{0} 处修改待写回图纸", saved)
-        : t("改完译文后先保存，再重新写回图纸。");
+        : result
+          ? result.text
+          : t("改完译文后先保存，再重新写回图纸。");
     footer.append(summary);
     footer.append(
       createButton({ label: t("关闭"), onClick: () => requestClose() }),

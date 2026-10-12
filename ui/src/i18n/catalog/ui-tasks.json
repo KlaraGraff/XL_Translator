@@ -235,6 +235,7 @@
   "已修改": {"en": "Edited", "fr": "Modifiée"},
   "已导入 {0} 处修改。": {"en": "Imported {0} edits.", "fr": "{0} modifications importées."},
   "已导出到 {0}": {"en": "Exported to {0}", "fr": "Exporté vers {0}"},
+  "{0} 已重新写回 {1} 张图纸，输出文件已更新。": {"en": "{0} Rewrote {1} drawings; the output files are updated.", "fr": "{0} {1} plans réécrits ; les fichiers de sortie sont à jour."},
   "已按修改重新写回 {0} 张图纸。": {"en": "Rewrote {0} drawings with your edits.", "fr": "{0} plans réécrits avec vos modifications."},
   "按修改重新写回": {"en": "Rewrite with edits", "fr": "Réécrire avec les modifications"},
   "排版拥挤": {"en": "Crowded layout", "fr": "Mise en page serrée"},
