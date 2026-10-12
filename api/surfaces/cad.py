@@ -451,6 +451,10 @@ class CadSurface(Surface):
             translator=translate_batch,
             language_translator=translate_batch_with_sources,
             profile_requester=profile_requester if smart_mode else None,
+            # 几张图纸的图纸说明提前同时请求，沿用翻译的并发设置；本地模型一次一个。
+            profile_concurrency=(
+                max(1, int(settings.engine.concurrency)) if settings.engine.mode != "local" else 1
+            ),
             filename_translator=engine,
             glossary=load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
             options=CadPipelineOptions(

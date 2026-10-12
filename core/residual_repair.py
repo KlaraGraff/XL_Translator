@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -262,6 +264,10 @@ def repair_unit(
 DEFAULT_REPAIR_MAX_UNITS = 120
 DEFAULT_REPAIR_BREAKER_THRESHOLD = 4
 
+# 单元没有开跑的两种原因（run_repair_ladder 内部记账用）。
+_STOPPED = object()
+_BREAKER = object()
+
 
 @dataclass
 class RepairLadderResult:
@@ -289,6 +295,7 @@ def run_repair_ladder(
     breaker_threshold: int = DEFAULT_REPAIR_BREAKER_THRESHOLD,
     should_stop=None,
     on_progress=None,
+    max_workers: int = 1,
 ) -> RepairLadderResult:
     """
     对一批残留单元（带 source_text / target_text 属性）跑修复阶梯，
@@ -298,8 +305,13 @@ def run_repair_ladder(
     - 熔断：send 连续 breaker_threshold 次拿不到回复（抛异常或返回
       None）就停止后续请求——引擎已经不通，逐条硬撞只会拖长任务；
       协议外回复不算传输失败（那是模型的问题，不是通道的问题）；
-    - 停止：should_stop() 为真时剩余单元原样进 remaining；
-    - on_progress(done, total)：每个单元开跑前回调一次，供界面报进度。
+    - 停止：should_stop() 为真时还没开跑的单元原样进 remaining；
+    - 并发：max_workers 个单元同时修（调用方传翻译的并发设置）；停止和
+      熔断在每个单元开跑前检查，已经发出的请求照常收回；
+    - on_progress(done, total)：每修完一个单元回调一次（只数真正返回的），
+      供界面报进度。
+
+    结果里 accepted / remaining 的顺序与输入一致，和并发完成的先后无关。
 
     convention 为主流程投出的文档级序号惯例：验收通过的重译稿如果把
     「（三）」写成了另一族序号（如「3.」而全篇是「(III)」），在这里按
@@ -313,7 +325,11 @@ def run_repair_ladder(
         queue = queue[:max_units]
         result.over_cap_count = len(over_cap)
 
+    lock = threading.Lock()
     consecutive_failures = 0
+    done = 0
+    # 每个单元的结局，按输入下标存：_STOPPED / _BREAKER / RepairOutcome。
+    outcomes: list = [None] * len(queue)
 
     def guarded_send(system: str, user: str):
         nonlocal consecutive_failures
@@ -321,32 +337,57 @@ def run_repair_ladder(
             reply = send(system, user)
         except Exception as send_exc:
             logger.debug(f"残留修复请求失败：{send_exc!r}")
-            consecutive_failures += 1
+            with lock:
+                consecutive_failures += 1
             return None
-        if reply is None:
-            consecutive_failures += 1
-        else:
-            consecutive_failures = 0
+        with lock:
+            if reply is None:
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
         return reply
 
-    for index, unit in enumerate(queue, start=1):
+    def repair_one(index: int, unit) -> None:
+        nonlocal done
         if should_stop is not None and should_stop():
-            result.stopped_count += 1
-            result.remaining.append(unit)
-            continue
-        if consecutive_failures >= breaker_threshold:
-            result.breaker_tripped = True
-            result.remaining.append(unit)
-            continue
-        if on_progress is not None:
-            on_progress(index, len(queue))
-        outcome = repair_unit(
+            outcomes[index] = _STOPPED
+            return
+        with lock:
+            tripped = consecutive_failures >= breaker_threshold
+        if tripped:
+            outcomes[index] = _BREAKER
+            return
+        outcomes[index] = repair_unit(
             unit.source_text,
             unit.target_text,
             target_lang=target_lang,
             surgical_send=guarded_send,
             retranslate_send=guarded_send,
         )
+        with lock:
+            done += 1
+            if on_progress is not None:
+                on_progress(done, len(queue))
+
+    workers = min(max(1, int(max_workers or 1)), len(queue))
+    if workers <= 1:
+        for index, unit in enumerate(queue):
+            repair_one(index, unit)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="repair") as executor:
+            futures = [executor.submit(repair_one, index, unit) for index, unit in enumerate(queue)]
+            for future in futures:
+                future.result()
+
+    for unit, outcome in zip(queue, outcomes):
+        if outcome is _STOPPED:
+            result.stopped_count += 1
+            result.remaining.append(unit)
+            continue
+        if outcome is _BREAKER:
+            result.breaker_tripped = True
+            result.remaining.append(unit)
+            continue
         if outcome.accepted and outcome.method:
             accepted_text = outcome.text
             if outcome.method == METHOD_FEEDBACK_RETRANSLATION and convention:

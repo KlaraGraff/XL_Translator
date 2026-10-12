@@ -11,6 +11,7 @@ import shutil
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,7 +24,9 @@ from core.cad_translation import (
     CadProgress,
     CadStopRequested,
     CadTranslationPipeline,
+    read_profile_inputs,
 )
+from core.concurrent_calls import wait_result
 from core.file_progress import FileProgressReporter, file_progress_id
 from core.language_registry import get_target_lang_display
 from core.output_name_translation import translate_names, output_stem_from_translation
@@ -135,6 +138,7 @@ class CadTaskRunner(BaseTaskRunner):
         translator: Any = None,
         language_translator: Any = None,
         profile_requester: Any = None,
+        profile_concurrency: int = 1,
         filename_translator: Any = None,
         translate_output_filename: bool = False,
         glossary: Mapping[str, str] | None = None,
@@ -176,6 +180,7 @@ class CadTaskRunner(BaseTaskRunner):
         self._translator = translator
         self._language_translator = language_translator
         self._profile_requester = profile_requester
+        self._profile_concurrency = max(1, int(profile_concurrency or 1))
         self._filename_translator = filename_translator
         self._translate_output_filename = bool(translate_output_filename)
         self._glossary = dict(glossary or {})
@@ -522,6 +527,22 @@ class CadTaskRunner(BaseTaskRunner):
                     "图纸文件名未能翻译，已保留原文件名："
                     + user_facing_reason(exc, fallback="本次未获得可用的译名。"),
                 )
+        # 「自动识别场景」：后面几张图纸的图纸说明提前同时请求，翻到哪张时直接取用，
+        # 不用每张图纸都先停下来等一次通读。接着上次继续的批次不提前请求：沿用
+        # 上次结果的图纸用不着说明，提前请求就白花了。
+        prefetch = (
+            _ProfilePrefetch(
+                self._profile_requester,
+                [Path(item.path) for item in self._files[1:]],
+                options=self._options,
+                dxf_cache=self._dxf_cache,
+                max_workers=self._profile_concurrency,
+                stop_requested=self._stop_event.is_set,
+                paused=self._pause_event.is_set,
+            )
+            if self._profile_requester is not None and len(self._files) > 1 and not previous_files
+            else None
+        )
         try:
             self._log("INFO", f"共 {len(self._files)} 个图纸文件")
             for file_index, item in enumerate(self._files):
@@ -606,7 +627,9 @@ class CadTaskRunner(BaseTaskRunner):
                     memory_lookup=self._memory_lookup,
                     translator=self._translator,
                     language_translator=self._language_translator,
-                    profile_requester=self._profile_requester,
+                    profile_requester=(
+                        prefetch.requester_for(source) if prefetch is not None else self._profile_requester
+                    ),
                     progress=progress,
                     pause_gate=lambda: self._wait_while_paused(CAD_PAUSED_IN_FILE_STATUS),
                     dxf_cache=self._dxf_cache,
@@ -761,3 +784,97 @@ class CadTaskRunner(BaseTaskRunner):
                     **batch_paths,
                 )
             )
+        finally:
+            if prefetch is not None:
+                prefetch.close()
+
+
+class _ProfilePrefetch:
+    """「自动识别场景」：提前、同时请求后面几张图纸的图纸说明。
+
+    图纸一张接一张翻译，每张开译前要先等模型通读、写好说明。这里在任务开始时
+    就把后面每张图纸的通读请求按并发设置同时发出去；翻到那张时说明多半已经
+    回来了，直接取用，并把当时的运行日志原样补上。
+
+    提前读到的文字和翻译时取的不一样（或者没法提前读，比如没有转换缓存的
+    DWG）时，就按原来的方式当场请求，结果不受影响。
+    """
+
+    def __init__(
+        self,
+        requester: Any,
+        sources: list[Path],
+        *,
+        options: CadPipelineOptions,
+        dxf_cache: Any,
+        max_workers: int,
+        stop_requested: Any,
+        paused: Any,
+    ) -> None:
+        self._requester = requester
+        self._options = options
+        self._dxf_cache = dxf_cache
+        self._stop_requested = stop_requested
+        self._paused = paused
+        # 读 DXF 很吃内存和 CPU：一次只读一张，模型请求才同时发。
+        self._read_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=max(1, int(max_workers or 1)), thread_name_prefix="cad-profile"
+        )
+        self._futures: dict[str, Future] = {
+            str(source): self._executor.submit(self._prefetch, source) for source in sources
+        }
+
+    def _dxf_for(self, source: Path) -> Path | None:
+        if source.suffix.lower() == ".dxf":
+            return source
+        if self._dxf_cache is not None:
+            return self._dxf_cache.lookup(source)
+        return None
+
+    def _prefetch(self, source: Path) -> tuple[list[str], list[str], str, list[tuple[str, str]]] | None:
+        while self._paused() and not self._stop_requested():
+            time.sleep(0.1)
+        if self._stop_requested():
+            return None
+        dxf = self._dxf_for(source)
+        if dxf is None:
+            return None
+        with self._read_lock:
+            if self._stop_requested():
+                return None
+            inputs = read_profile_inputs(dxf, self._options)
+        if inputs is None:
+            return None
+        texts, rows = inputs
+        logs: list[tuple[str, str]] = []
+        profile = self._requester(
+            texts,
+            lambda level, message: logs.append((level, message)),
+            neighbor_rows=rows,
+        )
+        return texts, rows, str(profile or ""), logs
+
+    def requester_for(self, source: Path) -> Any:
+        """The ``profile_requester`` for this drawing's pipeline."""
+        future = self._futures.get(str(source))
+
+        def requester(texts: list[str], log: Any, *, neighbor_rows: Any = ()) -> str:
+            prefetched = None
+            if future is not None:
+                try:
+                    prefetched = wait_result(future, should_stop=self._stop_requested, default=None)
+                except Exception as exc:  # noqa: BLE001 - fall back to asking now.
+                    logger.debug(f"[CAD] 提前请求图纸说明失败：{exc!r}")
+            if prefetched is not None:
+                early_texts, early_rows, profile, logs = prefetched
+                if early_texts == list(texts) and early_rows == list(neighbor_rows):
+                    for level, message in logs:
+                        log(level, message)
+                    return profile
+            return self._requester(texts, log, neighbor_rows=neighbor_rows)
+
+        return requester
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)

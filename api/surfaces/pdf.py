@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from core.language_registry import get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
+    ROLE_TRANSLATION,
     ModelRoleConfigError,
     provider_supports_capability,
     resolve_effective_model_config,
@@ -148,11 +150,13 @@ class PdfSurface(Surface):
     def build_runner(self, request: RunnerRequest) -> Runner:
         settings = request.settings
         profile_requester = None
+        profile_concurrency = 1
         if getattr(settings.pdf, "smart_context", False):
             profile_requester = _document_profile_requester(
                 settings,
                 tuple(request.connection_chains.get("translation") or ()),
             )
+            profile_concurrency = _document_profile_concurrency(settings)
         return PdfImageTranslationRunner(
             request.files,
             settings,
@@ -162,7 +166,21 @@ class PdfSurface(Surface):
             review_api_scheduler=request.api_schedulers.get("pdf_review"),
             resume_output_dir=request.options.resume_output_dir,
             profile_requester=profile_requester,
+            profile_concurrency=profile_concurrency,
         )
+
+
+def _document_profile_concurrency(settings: AppSettings) -> int:
+    """几份 PDF 的文档说明同时请求几个：沿用文档翻译模型的并发设置；本地模型一次一个。"""
+    if settings.engine.mode == "local":
+        return 1
+    try:
+        from core.model_throughput import get_model_throughput
+
+        return max(1, int(get_model_throughput(settings, resolve_effective_model_config(settings, ROLE_TRANSLATION)).concurrency))
+    except Exception as exc:  # noqa: BLE001 - fall back to one at a time.
+        logger.debug(f"[PDF] 读取文档翻译模型并发设置失败：{exc!r}")
+        return 1
 
 
 def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str, ...]):
@@ -181,18 +199,21 @@ def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str
         include_optional=True,
     )
     state: dict[str, Any] = {}
+    # 几份 PDF 同时请求说明时，引擎只建一次。
+    engine_lock = threading.Lock()
 
     def requester(texts: list[str], log) -> str:
-        if "engine" not in state:
-            try:
-                engine = build_role_engine(settings, "translation", connection_ids=connection_ids)
-            except Exception as exc:  # noqa: BLE001 - the description is optional.
-                logger.debug(f"[PDF] 自动识别场景：建文档翻译引擎失败：{exc!r}")
-                engine = None
-            state["engine"] = engine if engine is not None and engine_supports_chat(engine) else None
-            if state["engine"] is None:
-                log("WARN", "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
-        engine = state["engine"]
+        with engine_lock:
+            if "engine" not in state:
+                try:
+                    engine = build_role_engine(settings, "translation", connection_ids=connection_ids)
+                except Exception as exc:  # noqa: BLE001 - the description is optional.
+                    logger.debug(f"[PDF] 自动识别场景：建文档翻译引擎失败：{exc!r}")
+                    engine = None
+                state["engine"] = engine if engine is not None and engine_supports_chat(engine) else None
+                if state["engine"] is None:
+                    log("WARN", "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
+            engine = state["engine"]
         if engine is None:
             return ""
         return request_document_profile(engine.chat, texts, target_language=target_language, log=log)
