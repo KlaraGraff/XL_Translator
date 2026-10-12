@@ -58,11 +58,25 @@ Each page is redrawn in the target language by an image model, preserving the or
 
 ### CAD 图纸 · CAD drawings
 
-DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter。图块内的文字可一并翻译。GBK 等中文编码的旧图纸可正确读写，旧版 CAD 以特殊编码保存的中文也能正确识别。
+DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter，格式转换在任务中进行。图块内的文字可一并翻译。GBK 等中文编码的旧图纸可正确读写，旧版 CAD 以特殊编码保存的中文也能正确识别。
 
-DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
+译文写回方式可在页面右侧「译文写回」中设置：
 
-![CAD 翻译完成 · CAD translation completed](docs/images/readme/app-cad.png)
+- 显示方式：仅译文、原文在上译文在下，或译文在上原文在下；双语时译文与原文位于同一图层。
+- 译文字体：默认使用 AutoCAD 自带字体写入译文，在其他电脑上打开也能正常显示；也可沿用原文字体。
+- 超长译文自动缩小：译文较长、会压到相邻文字时，先收窄字宽，再缩小字号（默认先缩至 70%，最小 40%）；仍放不下的列入报告供复核。
+- 锁定不翻译：指定图框、标题栏等图块和图层，其中的文字保持原样；名称可直接输入，也可从图纸中挑选。
+
+DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
+
+How translations are written back is set under Writing translations on the right of the page:
+
+- Display: Translation only, Source above translation, or Translation above source. In bilingual mode, the translation is placed on the same layer as the source.
+- Translation font: translations are written in AutoCAD's built-in fonts by default, so they display correctly on other computers; the original font can be kept instead.
+- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is listed in the report for review.
+- Do not translate: text in specified blocks and layers, such as title blocks and frames, is left unchanged. Names can be typed in or picked from the drawings.
+
+![CAD 翻译完成，右侧为译文写回选项 · CAD translation completed, with the write-back options on the right](docs/images/readme/app-cad.png)
 
 ![CAD 原图（中文） · Original drawing (Chinese)](docs/images/readme/result-cad-original.png)
 
@@ -88,23 +102,45 @@ Jobs of different types can run concurrently. Any job can be stopped (PDF and CA
 
 ![任务中心（深色模式） · Task center in dark mode](docs/images/readme/app-tasks-dark.png)
 
+### 反馈 · Feedback
+
+侧栏的「反馈」页用于报告问题或提出建议。可填写描述并直接粘贴截图，按需附带系统与版本信息、所选任务的日志、原文件和译文（原文件和译文默认不附带）；失败的任务也可在任务中心通过「反馈此问题」进入。发送前可查看将发送的全部内容，发送时显示上传进度，也可改为保存为 ZIP 文件。日志中的 API 密钥和文件路径已去除，随反馈上传的文件保存 90 天后自动删除。
+
+The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the task center with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days.
+
+![反馈页 · Feedback page](docs/images/readme/app-feedback.png)
+
 ### 外观 · Appearance
 
 界面提供浅色与深色模式，可跟随系统自动切换。在「设置 → 外观与语言」中可选择五套配色方案：素雅灰（默认）、暖调纸感、冷调柔光、青瓷和琥珀护眼；浅色和深色模式可分别选用不同的方案，例如白天使用素雅灰、夜间使用琥珀护眼。
 
 Light and dark modes are available and can follow the system setting. Five color schemes can be selected under Settings → Appearance & language: Neutral grey (default), Warm paper, Soft cool, Celadon and Amber comfort. Light and dark mode can each use a different scheme, for example Neutral grey by day and Amber comfort at night.
 
-### 语言与领域 · Languages and domains
+### 语言与提示词 · Languages and prompts
 
-内置 59 种语言，支持自动识别源语言及自定义目标语言。提供工程、资料管理、行政办公等领域的预设提示词，也可自定义提示词。
+内置 59 种语言，支持自动识别源语言及自定义目标语言。
 
-59 built-in languages, automatic source-language detection and custom target languages are supported. Preset prompts are provided for engineering, document control and general administration, and custom prompts can be defined.
+各翻译页面提供「自动识别场景」开关，默认开启：翻译前先通读一遍文档，判断文档类型和所属专业，再据此理解单独出现的短词，例如图纸门号中的「甲」不会被译成合同中的「甲方」。开启后每份文件多调用一次模型。
+
+提示词由固定的内置规则和可选的「补充要求」组成：内置规则每次都会发送，补充要求只追加在其后，不会替换内置规则。补充要求可在「设置 → 翻译参数」中按 Excel、Word、CAD 分别设置，并可导出和导入。
+
+59 built-in languages, automatic source-language detection and custom target languages are supported.
+
+Each translation page has an Auto-detect switch, on by default. Before translation, the document is read once to identify its type and field, and short standalone words are interpreted accordingly; for example, 甲 in a drawing's door number is not translated as "Party A" as in a contract. With the switch on, each file uses one additional model request.
+
+Prompts consist of fixed built-in rules and optional Extra instructions. The built-in rules are always sent, and extra instructions are only appended after them, never replacing them. Extra instructions are set separately for Excel, Word and CAD under Settings → Translation options, and can be exported and imported.
+
+![提示词设置：内置规则、自动识别场景与补充要求 · Prompt settings: built-in rules, Auto-detect and extra instructions](docs/images/readme/app-prompts.png)
 
 ## 模型服务 · Model services
 
 在「设置 → 模型服务」中填写服务商、模型名称和 API 密钥，测试连接成功后即可使用。文档翻译、PDF 与图片翻译、记忆库清洗可分别配置不同的模型。
 
 Configure the provider, model name and API key under Settings → Models and test the connection before use. Document translation, PDF and image translation, and memory cleanup can each use a different model.
+
+服务暂时出错或超时时，该批内容会自动重新发送，仍失败时改用备用连接。Excel 和 CAD 的重发次数可在「设置 → 翻译参数」中调整（0 至 5 次，默认 2 次）。API 密钥无效或额度用尽时，任务立即停止并说明原因。
+
+If the service briefly fails or times out, the batch is resent automatically and moves to a backup connection if it still fails. For Excel and CAD, the number of resends can be set under Settings → Translation options (0 to 5, default 2). If the API key is rejected or the quota is exhausted, the job stops immediately with an explanation.
 
 | | 中文 | English |
 |---|---|---|
@@ -120,19 +156,25 @@ Files are read and written locally. Only the text to be translated (page images 
 
 ## V10.0.0 主要更新 · What's new in V10.0.0
 
-- 新增 CAD 图纸翻译，操作流程与 Excel、Word、PDF 一致
+- 新增 CAD 图纸翻译，操作流程与 Excel、Word、PDF 一致；可设置译文显示方式、译文字体、超长译文自动缩小及锁定不翻译的图块和图层
+- 新增「自动识别场景」：翻译前先通读文档，按文档类型理解单独出现的短词
+- 提示词改为固定的内置规则加可选的补充要求；原有的三个场景预设已删除，升级时旧设置自动迁移
+- 侧栏新增「反馈」页，可附带截图、日志和文件，发送前可查看全部内容
 - 新增英语和法语界面，可在「设置 → 外观与语言」中切换
 - 新增五套配色方案（素雅灰、暖调纸感、冷调柔光、青瓷、琥珀护眼），浅色与深色模式可分别选择
 - 统一界面、运行日志、错误信息和报告中的用语，不再出现程序内部术语
-- API 密钥无效或额度用尽时，任务立即停止并说明原因；持续限流时，先保存已完成的部分
+- API 密钥无效或额度用尽时，任务立即停止并说明原因；Excel 和 CAD 的失败重试次数可调整；持续限流时，先保存已完成的部分
 
 <!-- English -->
 
-- CAD drawing translation, with the same workflow as Excel, Word and PDF
+- CAD drawing translation, with the same workflow as Excel, Word and PDF; translation display, translation font, auto-shrinking of long translations and blocks and layers to leave untranslated can be set
+- Auto-detect: the document is read once before translation, and short standalone words are interpreted according to the document type
+- Prompts now consist of fixed built-in rules plus optional extra instructions; the three former scene presets have been removed, and existing settings are migrated automatically on upgrade
+- A new Feedback page in the sidebar, with screenshots, logs and files attachable and everything reviewable before sending
 - English and French interface, selectable under Settings → Appearance & language
 - Five color schemes (Neutral grey, Warm paper, Soft cool, Celadon and Amber comfort), selectable separately for light and dark mode
 - Consistent terminology across the interface, run log, error messages and reports, without internal technical terms
-- Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; under sustained rate limiting, completed work is saved first
+- Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; the number of retries for Excel and CAD can be adjusted; under sustained rate limiting, completed work is saved first
 
 详见[发布页面](https://github.com/KlaraGraff/XL_Translator/releases/latest)及 [CHANGELOG](docs/CHANGELOG.md)。For details, see the [release page](https://github.com/KlaraGraff/XL_Translator/releases/latest) and the [CHANGELOG](docs/CHANGELOG.md).
 
