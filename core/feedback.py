@@ -15,7 +15,7 @@ what they ticked:
 * optionally the source files and/or generated files of the chosen tasks
   (see ``task_files``), and files they picked themselves. None by default.
 
-``send`` posts the ZIP to the feedback relay (``feedback-relay/`` in the repo).
+``start_send`` posts the ZIP to the feedback relay (``feedback-relay/`` in the repo).
 When no relay is configured, or it cannot be reached, the UI offers the same
 ZIP to save locally, so a user is never left with nothing to do.
 """
@@ -27,7 +27,10 @@ import json
 import os
 import platform
 import re
+import threading
+import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -155,7 +158,7 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
     if len(draft.description) > MAX_DESCRIPTION_CHARS:
         raise FeedbackError("反馈内容过长，请精简到 5000 字以内。", reason="description_too_long")
     if len(draft.contact) > MAX_CONTACT_CHARS:
-        raise FeedbackError("联系方式过长。", reason="contact_too_long")
+        raise FeedbackError("邮箱过长。", reason="contact_too_long")
     if len(draft.task_records) > MAX_TASKS:
         raise FeedbackError("一次最多附上 5 次任务的日志。", reason="too_many_tasks")
     if len(draft.file_paths) > MAX_FILES:
@@ -438,8 +441,13 @@ def package_filename(now: datetime | None = None) -> str:
     return f"translator-feedback-{stamp}.zip"
 
 
-def send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
-    """Post the package to the relay and return its reference number."""
+def start_send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
+    """Build the package, then upload it in the background; poll ``send_status``.
+
+    Problems the user can fix (empty text, too large, task gone) and a missing
+    relay are raised here, before anything is uploaded. The upload itself runs
+    on a thread so the page can show how many bytes have actually gone out.
+    """
     endpoint = feedback_endpoint()
     if not endpoint:
         raise FeedbackError("此版本尚未开通在线发送，请保存为 ZIP。", reason="not_configured")
@@ -449,12 +457,99 @@ def send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
         "platform": diagnostics._runtime_platform_label(),
         "package_bytes": len(data),
     }
+    job_id = uuid.uuid4().hex
+    job = _SendJob(total=len(data))
+    with _jobs_lock:
+        finished = [key for key, item in _jobs.items() if item.state != "uploading"]
+        for key in finished[: max(0, len(finished) - _KEEP_FINISHED_JOBS)]:
+            del _jobs[key]
+        _jobs[job_id] = job
+        started = {"job_id": job_id, **job.snapshot()}
+    threading.Thread(
+        target=_run_send_job, args=(job, endpoint, data, meta), name="feedback-send", daemon=True
+    ).start()
+    return started
+
+
+def send_status(job_id: str) -> dict[str, Any] | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return job.snapshot() if job else None
+
+
+@dataclass
+class _SendJob:
+    total: int
+    sent: int = 0
+    # uploading → done / error
+    state: str = "uploading"
+    reference: str = ""
+    message: str = ""
+    reason: str = ""
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "sent": self.sent,
+            "total": self.total,
+            "id": self.reference,
+            "message": self.message,
+            "reason": self.reason,
+        }
+
+
+_jobs: dict[str, _SendJob] = {}
+_jobs_lock = threading.Lock()
+_KEEP_FINISHED_JOBS = 20
+
+
+def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any]) -> None:
+    def progress(sent: int) -> None:
+        with _jobs_lock:
+            job.sent = sent
+
+    try:
+        reference = _upload(endpoint, data, meta, on_progress=progress)
+    except FeedbackError as exc:
+        with _jobs_lock:
+            job.state, job.message, job.reason = "error", str(exc), exc.reason
+    except Exception:  # noqa: BLE001 - 线程里的意外不能让界面一直停在「正在上传」
+        with _jobs_lock:
+            job.state, job.reason = "error", "server"
+            job.message = "反馈服务暂时不可用，请稍后重试，或保存为 ZIP。"
+    else:
+        with _jobs_lock:
+            job.state, job.reference, job.sent = "done", reference, job.total
+
+
+class _CountingReader(io.BytesIO):
+    """The package as a file, so httpx streams it in chunks we can count.
+
+    httpx pulls the next chunk only after the previous one was written to the
+    connection, so the position *before* each read is what has really gone out;
+    nothing is estimated.
+    """
+
+    def __init__(self, data: bytes, on_progress: Callable[[int], None]) -> None:
+        super().__init__(data)
+        self._on_progress = on_progress
+
+    def read(self, size: int | None = -1) -> bytes:
+        self._on_progress(self.tell())
+        return super().read(size)
+
+
+def _upload(
+    endpoint: str, data: bytes, meta: dict[str, Any], *, on_progress: Callable[[int], None] | None = None
+) -> str:
+    """Post the package to the relay and return its reference number."""
+    package: bytes | _CountingReader = _CountingReader(data, on_progress) if on_progress else data
     try:
         with _open_client() as client:
             response = client.post(
                 f"{endpoint}/v1/feedback",
                 data={"meta": json.dumps(meta, ensure_ascii=False)},
-                files={"package": (package_filename(), data, "application/zip")},
+                files={"package": (package_filename(), package, "application/zip")},
                 headers={"User-Agent": f"{APP_UPDATE_USER_AGENT}/{APP_VERSION}"},
             )
     except httpx.TimeoutException as exc:
@@ -472,7 +567,7 @@ def send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
     reference = str(body.get("id") or "") if isinstance(body, dict) else ""
     if response.status_code != 200 or not reference:
         raise FeedbackError("反馈服务暂时不可用，请稍后重试，或保存为 ZIP。", reason="server")
-    return {"ok": True, "id": reference}
+    return reference
 
 
 def _open_client() -> httpx.Client:

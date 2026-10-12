@@ -2,7 +2,7 @@
 
 ## V10.0.0
 
-- **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和选填的联系方式，描述框可直接粘贴截图；附带内容按类别勾选，勾了哪些就上传哪些：系统与版本信息、任务日志默认勾选，原文件、译文默认不勾，日志、原文件和译文取自下方选中的一次或多次任务；另可添加其他文件，添加即上传（附件总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
+- **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和建议填写的邮箱（问题解决或功能上线时邮件通知），描述框可直接粘贴截图；附带内容按类别勾选，勾了哪些就上传哪些：系统与版本信息、任务日志默认勾选，原文件、译文默认不勾，日志、原文件和译文取自下方选中的一次或多次任务；另可添加其他文件，添加即上传（附件总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后底栏显示按实际已发出字节计算的上传进度，经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
 
   **In-app feedback**: A new Feedback page in the sidebar takes a problem, suggestion or other note with an optional contact. Screenshots can be pasted straight into the description. Attachments are ticked by kind and only ticked kinds are uploaded: system and version information and task logs are on by default, originals and translations are off. Logs, originals and translations come from one or more tasks chosen below; other files can be added and are uploaded as added (50 MB in total). File names in logs are replaced with placeholders before sending, and everything can be reviewed first. "Send" posts through a relay (feedback-relay/, Cloudflare Workers) into an issue in a private repository, and attachments are deleted after 90 days; when sending fails the package can be saved as a ZIP. Failed tasks in the task center offer "Report this problem", and the Help page's "Report a problem" opens this page instead of public GitHub Issues.
 

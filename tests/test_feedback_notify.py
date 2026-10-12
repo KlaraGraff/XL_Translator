@@ -1,0 +1,100 @@
+"""Release-time emails to users whose feedback was resolved."""
+
+from __future__ import annotations
+
+import smtplib
+from typing import Any
+
+from scripts import feedback_notify as notify
+
+ISSUE_BODY = "\n".join([
+    "**编号**：FB-20261012-ABCD",
+    "**类型**：问题",
+    "**版本**：10.0.0 · macOS · 界面语言 fr",
+    "**联系方式**：`marie@example.fr`",
+])
+NOTICE = "<!-- xl-notify version=10.0.1 -->\nObjet : Votre retour est corrigé\n\nBonjour,\n\nC'est corrigé dans la 10.0.1.\n"
+
+
+class FakeGitHub:
+    def __init__(self, issues: list[dict[str, Any]], comments: dict[int, list[str]]) -> None:
+        self.issues = issues
+        self._comments = comments
+        self.finished: list[tuple[int, str, str]] = []
+
+    def pending_issues(self) -> list[dict[str, Any]]:
+        return self.issues
+
+    def comments(self, number: int) -> list[dict[str, Any]]:
+        return [{"body": body} for body in self._comments.get(number, [])]
+
+    def finish(self, number: int, label: str, note: str) -> None:
+        self.finished.append((number, label, note))
+
+
+def test_parse_notice_and_contact():
+    notice = notify.parse_notice(NOTICE)
+    assert notice is not None
+    assert notice.version == (10, 0, 1)
+    assert notice.subject == "Votre retour est corrigé"
+    assert notice.body.startswith("Bonjour,")
+    assert notify.parse_notice("普通评论") is None
+    assert notify.parse_notice("<!-- xl-notify version=10.0.1 -->\n没有主题行\n\n正文") is None
+    assert notify.contact_email(ISSUE_BODY) == "marie@example.fr"
+    assert notify.contact_email(ISSUE_BODY.replace("`marie@example.fr`", "`微信 abc`")) == ""
+    assert notify.contact_email("**联系方式**：未填写") == ""
+
+
+def test_due_notices_are_sent_and_issues_closed(capsys):
+    github = FakeGitHub(
+        [
+            {"number": 1, "body": ISSUE_BODY},
+            {"number": 2, "body": ISSUE_BODY},
+            {"number": 3, "body": "**联系方式**：未填写"},
+            {"number": 4, "body": ISSUE_BODY},
+        ],
+        {
+            1: ["先看一下", NOTICE],
+            2: [NOTICE.replace("10.0.1", "10.1.0")],
+            3: [NOTICE],
+            4: ["还没写通知"],
+        },
+    )
+    sent: list[tuple[str, str]] = []
+
+    failures = notify.run(github, (10, 0, 1), send=lambda to, n: sent.append((to, n.subject)), dry_run=False)
+
+    assert failures == 0
+    assert sent == [("marie@example.fr", "Votre retour est corrigé")]
+    assert [(number, label) for number, label, _ in github.finished] == [(1, "已通知"), (3, "无邮箱")]
+    output = capsys.readouterr().out
+    # 公开仓库的日志里不能出现完整邮箱或邮件正文。
+    assert "marie@example.fr" not in output
+    assert "corrigé dans" not in output
+    assert "m***@example.fr" in output
+
+
+def test_failed_send_keeps_the_issue_pending():
+    github = FakeGitHub([{"number": 1, "body": ISSUE_BODY}], {1: [NOTICE]})
+
+    def broken(to: str, notice: notify.Notice) -> None:
+        raise smtplib.SMTPAuthenticationError(535, b"bad credentials")
+
+    assert notify.run(github, (10, 0, 1), send=broken, dry_run=False) == 1
+    assert github.finished == []
+
+
+def test_dry_run_sends_and_changes_nothing():
+    github = FakeGitHub([{"number": 1, "body": ISSUE_BODY}], {1: [NOTICE]})
+    sent: list[str] = []
+    assert notify.run(github, (10, 0, 1), send=lambda to, n: sent.append(to), dry_run=True) == 0
+    assert sent == [] and github.finished == []
+
+
+def test_message_headers():
+    notice = notify.parse_notice(NOTICE)
+    assert notice is not None
+    message = notify.build_message("xl.translator@gmail.com", "marie@example.fr", notice)
+    assert message["From"] == "XL Translator <xl.translator@gmail.com>"
+    assert message["Subject"] == "Votre retour est corrigé"
+    assert "C'est corrigé" in message.get_content()
