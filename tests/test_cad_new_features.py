@@ -368,3 +368,21 @@ def test_cache_misses_after_the_drawing_changes_and_prunes_to_its_size_limit(tmp
     assert cache.lookup(source) is None
     cache.store(source, dxf)
     assert len(list((tmp_path / "cache").glob("*.dxf"))) == 1
+
+
+def test_scan_counts_a_dwg_from_the_cache_and_lists_others_as_pending(tmp_path):
+    from core.cad_translation import scan_cad_paths
+
+    counted = tmp_path / "counted.dwg"
+    counted.write_text(_framed_drawing(), encoding="utf-8")
+    pending = tmp_path / "pending.dwg"
+    pending.write_text(_framed_drawing(), encoding="utf-8")
+    cache = CadDxfCache(tmp_path / "cache")
+    inspect_cad_file(counted, converter=CountingConverter(), cache=cache, options=CadPipelineOptions(target_lang="fr"))
+    summaries = {
+        item.filename: item
+        for item in scan_cad_paths([tmp_path], converter_available=True, options=CadPipelineOptions(target_lang="fr"), cache=cache)
+    }
+    assert summaries["counted.dwg"].text_entity_count == 7 and not summaries["counted.dwg"].counts_pending
+    assert summaries["counted.dwg"].format == "dwg"
+    assert summaries["pending.dwg"].counts_pending

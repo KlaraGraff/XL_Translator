@@ -163,6 +163,8 @@ class CadSurface(Surface):
                     locked_layers=parse_lock_patterns(getattr(request, "locked_layers", "")),
                 ),
                 skipped=cad_skipped,
+                # 已经逐张统计过（转换过）的 DWG 直接从缓存里数，重扫时不用再等一遍。
+                cache=default_cad_cache(),
             )
         except CadPipelineError as exc:
             raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc

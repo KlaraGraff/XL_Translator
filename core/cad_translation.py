@@ -292,16 +292,21 @@ def scan_cad_file(
     *,
     converter_available: bool = False,
     options: CadPipelineOptions | None = None,
+    cache: CadDxfCache | None = None,
 ) -> CadScanSummary:
     """Scan one CAD file without modifying it or creating a translation task.
 
     DXF is parsed and counted.  DWG is only listed (see ``CadScanSummary``);
     ``converter_available`` says whether a converter is connected, which
-    decides ``needs_conversion``.
+    decides ``needs_conversion``.  A DWG already converted into ``cache`` (by
+    an earlier per-drawing count) is counted from that conversion.
     """
     options = options or CadPipelineOptions()
     source = Path(path)
     if source.suffix.lower() == ".dwg":
+        cached = cache.lookup(source) if cache else None
+        if cached is not None:
+            return _summarize_records(source, _parse_dxf(_read_dxf_text(cached)), options)
         return CadScanSummary(
             path=source,
             filename=source.name,
@@ -483,6 +488,7 @@ def scan_cad_paths(
     converter_available: bool = False,
     options: CadPipelineOptions | None = None,
     skipped: list[dict[str, str]] | None = None,
+    cache: CadDxfCache | None = None,
 ) -> list[CadScanSummary]:
     """Scan selected CAD files and recursively expand selected directories.
 
@@ -494,13 +500,13 @@ def scan_cad_paths(
     unique_files = list_cad_files(paths)
     if skipped is None:
         return [
-            scan_cad_file(path, converter_available=converter_available, options=options)
+            scan_cad_file(path, converter_available=converter_available, options=options, cache=cache)
             for path in unique_files
         ]
     summaries: list[CadScanSummary] = []
     for path in unique_files:
         try:
-            summaries.append(scan_cad_file(path, converter_available=converter_available, options=options))
+            summaries.append(scan_cad_file(path, converter_available=converter_available, options=options, cache=cache))
         except Exception as exc:  # noqa: BLE001 - one unreadable drawing must not hide the others
             skipped.append({"path": str(path), "name": path.name, "reason": str(exc) or exc.__class__.__name__})
     return summaries

@@ -88,7 +88,11 @@ def register(app: FastAPI) -> None:
         skipped: list[dict[str, str]] = []
         try:
             summaries = scan_cad_paths(
-                payload.paths, converter_available=bool(converter_path), options=options, skipped=skipped
+                payload.paths,
+                converter_available=bool(converter_path),
+                options=options,
+                skipped=skipped,
+                cache=default_cad_cache(),
             )
         except CadPipelineError as exc:
             raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc
