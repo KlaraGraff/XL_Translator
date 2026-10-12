@@ -588,3 +588,187 @@ def short_text_rows(
             rows[text] = rows.get(text, 0) + 1
     ranked = sorted(rows, key=lambda text: (-rows[text], text))
     return ranked[:limit]
+
+
+# ── 表格格子里的文字 ─────────────────────────────────────────
+#
+# ACAD_TABLE 显示的是一个匿名图块（*T…）：格线是 LINE，每格一段多行文字，宽度（组码 41）
+# 就是格子宽度减去边距，CAD 按这个宽度自动换行。译文写进去以后（双语多了一行，英文又比
+# 中文长、会折成两三行），格子本身不会跟着变高，字就压到下一行格子里。这里按格子高度
+# 把这段多行文字整体缩小（字高，组码 40；双语那行是相对字高，跟着一起缩），档位和别处
+# 防重叠一样，到最小比例还放不下的记进报告。
+
+# 格子里文字最多占格子高度的多少（留出上下边距）。
+_TABLE_CELL_FILL = 0.92
+# 自动换行按估算宽度算，单词不能从中间断开，宁可多算一点。
+_WRAP_SLACK = 1.08
+_MTEXT_TOKEN_RE = re.compile(
+    r"(?P<para>\\P)"
+    r"|\\H(?P<height>[0-9.]+)(?P<rel>[xX]?);"
+    r"|\\[fFwWcCaAtTqQsSp][^;]*;"
+    r"|\\[LlOoKk]"
+    r"|\\(?P<escaped>.)"
+    r"|(?P<open>\{)|(?P<close>\})"
+    r"|(?P<text>[^\\{}]+)",
+    re.S,
+)
+
+
+def _table_block_names(records: Sequence[Any]) -> set[str]:
+    """ACAD_TABLE 显示用的匿名图块名（大写）。AcDbTable 部分里的组码 2 是长文字分段，不算。"""
+    names: set[str] = set()
+    for start, end in _entity_ranges(records):
+        if records[start].value.strip().upper() != "ACAD_TABLE":
+            continue
+        for record in records[start + 1:end]:
+            if record.code == 100 and record.value.strip() == "AcDbTable":
+                break
+            if record.code == 2:
+                names.add(record.value.strip().upper())
+                break
+    return names
+
+
+def _mtext_paragraphs(raw: str, height: float) -> list[tuple[float, str]]:
+    """多行文字按 ``\\P`` 分段：``[(这一段的字高倍数, 段落文字)]``。
+
+    字高倍数取这一段里文字用到的最大字高（``\\H0.8x;`` 相对、``\\H120;`` 绝对），
+    大括号里设的字高出了括号就恢复。
+    """
+    paragraphs: list[tuple[float, str]] = []
+    stack: list[float] = []
+    factor = 1.0
+    line_factor = 0.0
+    parts: list[str] = []
+    for match in _MTEXT_TOKEN_RE.finditer(raw):
+        if match.group("para") is not None:
+            paragraphs.append((line_factor or factor, "".join(parts)))
+            parts, line_factor = [], 0.0
+        elif match.group("height") is not None:
+            value = _float(match.group("height"), 1.0)
+            if value > 0:
+                factor = factor * value if match.group("rel") else (value / height if height > 0 else 1.0)
+        elif match.group("open") is not None:
+            stack.append(factor)
+        elif match.group("close") is not None:
+            factor = stack.pop() if stack else factor
+        else:
+            text = match.group("text") if match.group("text") is not None else match.group("escaped")
+            if text is not None:
+                parts.append(text)
+                if text.strip():
+                    line_factor = max(line_factor, factor)
+    paragraphs.append((line_factor or factor, "".join(parts)))
+    return paragraphs
+
+
+def _cell_content_height(
+    paragraphs: Sequence[tuple[float, str]], height: float, ref_width: float, font_class: str,
+) -> float:
+    """按格子宽度自动换行后，这段多行文字从第一行顶到最后一行底大约多高。"""
+    lines: list[float] = []
+    for factor, text in paragraphs:
+        line_height = height * factor
+        width = estimate_text_width(text, line_height, 1.0, font_class) * _WRAP_SLACK
+        count = max(1, math.ceil(width / ref_width)) if ref_width > 0 and width > 0 else 1
+        lines.extend([line_height] * count)
+    if not lines:
+        return 0.0
+    return lines[0] + _MTEXT_LINE_SPACING * sum(lines[1:])
+
+
+def fit_table_cells(
+    records: list[Any],
+    originals: Mapping[int, str],
+    plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
+) -> int:
+    """Shrink translated MTEXT in table cells so it stays inside its row.
+
+    ``originals`` maps the ordinal of each translated MTEXT entity (its position
+    among ``0`` records) to its source text; only the ones inside a table's
+    display block are looked at. 格子上下边界取这段文字上方、下方最近的横向格线。
+    原文本来就放不下的格子按原文的高度算，不为译文多缩。返回缩小了几格。
+    """
+    if not originals:
+        return 0
+    settings = (settings or FitSettings()).normalized()
+    blocks = _table_block_names(records)
+    if not blocks:
+        return 0
+    fonts = _style_fonts(records)
+    rules: dict[str, list[tuple[float, float, float]]] = {}
+    candidates: list[tuple[str, int, int, int, dict[int, str], str]] = []
+    block = ""
+    for entity_no, (start, end) in enumerate(_entity_ranges(records)):
+        entity_type = records[start].value.strip().upper()
+        if entity_type == "BLOCK":
+            block = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), "")
+            continue
+        if entity_type == "ENDBLK":
+            block = ""
+            continue
+        if block not in blocks:
+            continue
+        fields: dict[int, str] = {}
+        raw: list[str] = []
+        for record in records[start + 1:end]:
+            if record.code == 101:
+                break
+            if entity_type == "MTEXT" and record.code in {1, 3}:
+                raw.append(record.value)
+                continue
+            fields.setdefault(record.code, record.value)
+        if entity_type == "LINE":
+            y1, y2 = _float(fields.get(20)), _float(fields.get(21))
+            x1, x2 = _float(fields.get(10)), _float(fields.get(11))
+            if abs(y1 - y2) <= 1e-6 * max(1.0, abs(y1)) and abs(x2 - x1) > 0:
+                rules.setdefault(block, []).append((y1, min(x1, x2), max(x1, x2)))
+        elif entity_type == "MTEXT" and entity_no in originals:
+            candidates.append((block, entity_no, start, end, fields, "".join(raw)))
+
+    edits: list[tuple[int, int, float]] = []
+    for block, entity_no, start, end, fields, raw in candidates:
+        if abs(_float(fields.get(50))) > 1e-6 or abs(_float(fields.get(21))) > 1e-6:
+            continue  # 竖排、斜放的格子不管
+        height = _float(fields.get(40))
+        if height <= 0:
+            continue
+        x, y = _float(fields.get(10)), _float(fields.get(20))
+        span = max(height * 0.01, 1e-6)
+        crossing = [rule for rule, left, right in rules.get(block, []) if left - span <= x <= right + span]
+        above = [rule for rule in crossing if rule > y + span]
+        below = [rule for rule in crossing if rule < y - span]
+        if not above or not below:
+            continue
+        available = (min(above) - max(below)) * _TABLE_CELL_FILL
+        ref_width = _float(fields.get(41))
+        font_class = fonts.get(str(fields.get(7, "STANDARD")).strip().upper(), "shx")
+        paragraphs = _mtext_paragraphs(raw, height)
+        original = originals[entity_no]
+        limit = max(available, _cell_content_height([(1.0, original)], height, ref_width, font_class))
+        if _cell_content_height(paragraphs, height, ref_width, font_class) <= limit:
+            continue
+        tiers = settings.tiers()
+        scale = next(
+            (tier for tier in tiers if _cell_content_height(paragraphs, height * tier, ref_width, font_class) <= limit),
+            None,
+        )
+        if scale is None:
+            scale = tiers[-1]
+            if unresolved is not None and not any(item.get("entity") == entity_no for item in unresolved):
+                translation = " ".join(
+                    text.strip() for _factor, text in paragraphs if text.strip() and text.strip() != original.strip()
+                )
+                unresolved.append({"source": original, "translation": translation or plain_text(raw), "entity": entity_no})
+        edits.append((start, end, height * scale))
+
+    for start, end, new_height in sorted(edits, reverse=True):
+        for index in range(start + 1, end):
+            if records[index].code == 101:
+                break
+            if records[index].code == 40:
+                records[index] = replace(records[index], value=_format_number(new_height))
+                break
+    return len(edits)

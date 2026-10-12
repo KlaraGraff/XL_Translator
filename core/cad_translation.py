@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts, short_text_rows
+from core.cad_layout import FitSettings, fit_added_lines, fit_table_cells, fit_translated_texts, short_text_rows
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
@@ -2174,6 +2174,8 @@ class CadTranslationPipeline:
                 records, candidates, written, display_mode=options.display_mode, escape=escape_unicode,
             )
             fit_sources: dict[int, str] = {}
+            # 改过的多行文字 → 原文：表格格子里的放不下时整段缩小（见 fit_table_cells）。
+            cell_sources: dict[int, str] = {}
             # 双语新增的译文行 → (它的原文实体, 是否在原文下方)，按对象认。
             added_lines: dict[int, int] = {}
             for unit in reversed(candidates):
@@ -2185,6 +2187,8 @@ class CadTranslationPipeline:
                     continue
                 stats.changed += 1
                 start = _entity_start(records, unit.record_indices[0])
+                if unit.entity_type == "MTEXT":
+                    cell_sources[id(records[start])] = unit.plain_text
                 if bilingual:
                     added = _write_bilingual(
                         records, unit, written, start,
@@ -2244,6 +2248,14 @@ class CadTranslationPipeline:
                 stats.layout_fitted += fit_translated_texts(
                     records,
                     {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
+                    _plain_text,
+                    FitSettings(options.fit_default_scale, options.fit_min_scale),
+                    layout_unresolved,
+                )
+                # 表格格子不会跟着译文变高：双语多出的一行、折成几行的英文按格子高度整段缩小。
+                stats.layout_fitted += fit_table_cells(
+                    records,
+                    {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
                     _plain_text,
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,
