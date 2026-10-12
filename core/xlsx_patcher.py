@@ -1898,6 +1898,45 @@ def _strip_table_parts(sheet_xml: bytes) -> bytes:
     return _serialize(root)
 
 
+def _clear_tab_selected(sheet_xml: bytes) -> bytes:
+    """去掉分表视图上的 ``tabSelected``，没有就原字节返回。
+
+    Excel 保存时会给当前那张表写上 ``tabSelected="1"``。原文副本是整份照抄的，
+    不去掉的话一本工作簿里就有两张「选中」的表，Excel 打开时把它们当成一个工作组
+    （标题栏显示「[组]」），改一张会同时改掉另一张。
+    """
+    if b"tabSelected" not in sheet_xml:
+        return sheet_xml
+    root = _parse(sheet_xml)
+    views = root.find(_m("sheetViews"))
+    changed = False
+    if views is not None:
+        for view in views:
+            if _local(view) == "sheetView" and view.get("tabSelected") is not None:
+                del view.attrib["tabSelected"]
+                changed = True
+    return _serialize(root) if changed else sheet_xml
+
+
+def _active_sheet_name(workbook_root) -> str | None:
+    """工作簿打开时显示的那张表（``workbookView/@activeTab``，按 sheets 顺序数）。"""
+    index = 0
+    book_views = workbook_root.find(_m("bookViews"))
+    if book_views is not None:
+        for view in book_views:
+            if _local(view) == "workbookView":
+                try:
+                    index = int(view.get("activeTab") or 0)
+                except ValueError:
+                    index = 0
+                break
+    sheets_el = workbook_root.find(_m("sheets"))
+    if sheets_el is None:
+        return None
+    names = [str(el.get("name") or "") for el in sheets_el if _local(el) == "sheet"]
+    return names[index] if 0 <= index < len(names) else None
+
+
 def _clone_original_sheets(
     package: _Package,
     content_types: _ContentTypes,
@@ -1969,6 +2008,7 @@ def _clone_original_sheets(
 
         if has_tables:
             sheet_xml = _strip_table_parts(sheet_xml)
+        sheet_xml = _clear_tab_selected(sheet_xml)
         package.write(new_part, sheet_xml)
         content_types.add_override(new_part, CT_WORKSHEET)
 
@@ -2285,6 +2325,21 @@ def write_bilingual_workbook(
                 for other in all_sheet_names
                 if other != entry.name
             )
+
+        # 旧版本写出的原文副本带着原表的 tabSelected，续译时顺手去掉，否则这份
+        # 产物打开仍是成组状态。正好是当前显示的那张就不动（那是用户自己点开的）。
+        active_name = _active_sheet_name(workbook_root)
+        for entry in entries:
+            if entry.name == active_name or not is_generated_original_sheet_title(
+                entry.name, all_sheet_names
+            ):
+                continue
+            sheet_xml = package.read(entry.part)
+            if sheet_xml is None:
+                continue
+            cleaned = _clear_tab_selected(sheet_xml)
+            if cleaned is not sheet_xml:
+                package.write(entry.part, cleaned)
 
         snapshots = (
             [

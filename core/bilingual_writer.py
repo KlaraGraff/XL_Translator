@@ -214,7 +214,9 @@ def write_bilingual_file(
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"
         
-    out_name     = bilingual_output_name(basename, lang_display)
+    out_name     = bilingual_output_name(
+        basename, lang_display, translation_only=output_translation_only
+    )
     out_path     = output_dir / out_name
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -261,8 +263,10 @@ def _sanitize_filename_fragment(value: str) -> str:
 BILINGUAL_OUTPUT_FORM_LABEL = "双语"
 
 
-def bilingual_output_name(basename: str, lang_display: str) -> str:
-    """双语产物的文件名：`{原文件名}_{语言}_双语.ext`。
+def bilingual_output_name(
+    basename: str, lang_display: str, *, translation_only: bool = False
+) -> str:
+    """双语产物的文件名：`{原文件名}_{语言}_双语.ext`；「仅显示译文」时是 `{原文件名}_{语言}.ext`。
 
     以前是前缀式的「双语(中文)_合同报价表.xlsx」。前缀式有个实打实的毛病：在 Finder
     或资源管理器里按名字排序，所有译文会挤成一堆排到别处去，跟各自的原文完全脱节，
@@ -274,10 +278,13 @@ def bilingual_output_name(basename: str, lang_display: str) -> str:
     填的自定义语言名，可能带非法字符。
 
     与 PDF 的 translated_pdf_base_name 遵循同一条家族规则：{原名}_{语言}_{形态}。
+    「仅显示译文」的产物里没有原文，不是双语，形态标签不写——跟 PDF 译文同样只有
+    `{原名}_{语言}`。
     """
     source = Path(basename)
     lang = _sanitize_filename_fragment(lang_display)
-    return f"{source.stem}_{lang}_{BILINGUAL_OUTPUT_FORM_LABEL}{source.suffix}"
+    form = "" if translation_only else f"_{BILINGUAL_OUTPUT_FORM_LABEL}"
+    return f"{source.stem}_{lang}{form}{source.suffix}"
 
 
 def autofit_files_batch(

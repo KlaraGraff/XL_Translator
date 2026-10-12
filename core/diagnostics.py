@@ -849,7 +849,7 @@ def _collect_excel_locations(file_items: list[Any], source_texts: list[str]) -> 
 
 
 def _collect_xlsx_locations(path: Path, source_set: set[str]) -> list[dict[str, Any]]:
-    from openpyxl import load_workbook
+    from core.openpyxl_compat import load_workbook
     from openpyxl.utils import get_column_letter
 
     rows: list[dict[str, Any]] = []

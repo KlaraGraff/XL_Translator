@@ -86,8 +86,14 @@ def avoid_bilingual_name_collision(
     basename: str,
     target_lang: str,
     reserved_paths: set[Path] | None = None,
+    *,
+    translation_only: bool = False,
 ) -> str:
     """Choose and reserve a unique bilingual output name for one task.
+
+    ``translation_only`` must match the writer's mode: the 「仅显示译文」 file has
+    no 「_双语」 label, so checking the bilingual name would miss (and overwrite)
+    an existing translation-only file.
 
     ``reserved_paths`` also covers names selected earlier in the same task,
     before their files have been written. Existing outputs are never reused.
@@ -104,7 +110,9 @@ def avoid_bilingual_name_collision(
     candidate = source.stem
     index = 2
     while True:
-        output_path = output_dir / bilingual_output_name(candidate + extension, label)
+        output_path = output_dir / bilingual_output_name(
+            candidate + extension, label, translation_only=translation_only
+        )
         if not output_path.exists() and (
             reserved_paths is None or output_path not in reserved_paths
         ):
