@@ -5,16 +5,24 @@ import worker, { issueBody, issueTitle } from "../feedback-relay/src/index.js";
 
 function memoryKv() {
   const store = new Map();
+  const meta = new Map();
   return {
     store,
+    async getWithMetadata(key, options) {
+      const value = await this.get(key, options);
+      return { value, metadata: value === null ? null : meta.get(key) ?? null };
+    },
     async get(key, options) {
       if (!store.has(key)) return null;
       const value = store.get(key);
       if (options && options.type === "arrayBuffer") return value;
       return typeof value === "string" ? value : new TextDecoder().decode(value);
     },
-    async put(key, value) { store.set(key, value); },
-    async delete(key) { store.delete(key); },
+    async put(key, value, options) {
+      store.set(key, value);
+      if (options && options.metadata) meta.set(key, options.metadata);
+    },
+    async delete(key) { store.delete(key); meta.delete(key); },
   };
 }
 
@@ -71,6 +79,23 @@ const META = {
   assert.deepEqual(new Uint8Array(await download.arrayBuffer()), new Uint8Array([80, 75, 3, 4]));
   const forged = await worker.fetch(new Request(link.replace(/sig=[0-9a-f]+/, "sig=" + "0".repeat(64))), env);
   assert.equal(forged.status, 403);
+}
+
+// 超过 KV 单值上限的包拆段存，下载时拼回原样。
+{
+  const env = makeEnv();
+  const big = new Uint8Array(21 * 1024 * 1024);
+  big[0] = 7;
+  big[big.length - 1] = 9;
+  const response = await worker.fetch(feedbackRequest(META, big, "5.5.5.5"), env);
+  assert.equal(response.status, 200);
+  const { id } = await response.json();
+  assert.ok(env.FEEDBACK.store.has(`pkg:${id}:1`), "second chunk stored");
+  const link = issues.at(-1).body.match(/\((https:\/\/relay\.example\/v1\/files\/[^)]+)\)/)[1];
+  const download = new Uint8Array(await (await worker.fetch(new Request(link), env)).arrayBuffer());
+  assert.equal(download.length, big.length);
+  assert.equal(download[0], 7);
+  assert.equal(download[download.length - 1], 9);
 }
 
 // 没有附件包也能提交（只有文字），issue 里不出现下载链接。

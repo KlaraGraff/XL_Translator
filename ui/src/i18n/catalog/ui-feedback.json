@@ -18,7 +18,7 @@
   "正在读取任务记录…": {"en": "Loading tasks…", "fr": "Chargement des tâches…"},
   "无法读取任务记录：{0}": {"en": "Could not load tasks: {0}", "fr": "Impossible de charger les tâches : {0}"},
   "暂无已结束的任务。": {"en": "No finished tasks yet.", "fr": "Aucune tâche terminée pour le moment."},
-  "文件可能包含客户资料，默认不附带。仅在需要我们查看原文件或译文时添加，总大小不超过 20 MB。": {"en": "Files may contain client data and are not attached by default. Add them only when we need to see the original or the translation, up to 20 MB in total.", "fr": "Les fichiers peuvent contenir des données client et ne sont pas joints par défaut. Ajoutez-les uniquement si nous devons consulter l'original ou la traduction, dans la limite de 20 Mo au total."},
+  "文件可能包含客户资料，默认不附带。仅在需要我们查看原文件或译文时添加，总大小不超过 50 MB。": {"en": "Files may contain client data and are not attached by default. Add them only when we need to see the original or the translation, up to 50 MB in total.", "fr": "Les fichiers peuvent contenir des données client et ne sont pas joints par défaut. Ajoutez-les uniquement si nous devons consulter l'original ou la traduction, dans la limite de 50 Mo au total."},
   "文件不存在": {"en": "File not found", "fr": "Fichier introuvable"},
   "移除": {"en": "Remove", "fr": "Retirer"},
   "合计 {0} / {1}": {"en": "Total {0} / {1}", "fr": "Total {0} / {1}"},
@@ -58,10 +58,17 @@
   "联系方式过长。": {"en": "The contact details are too long.", "fr": "Les coordonnées sont trop longues."},
   "一次最多附上 5 次任务的日志。": {"en": "You can attach the logs of up to 5 tasks.", "fr": "Vous pouvez joindre les journaux de 5 tâches au maximum."},
   "找不到文件：{0}": {"en": "File not found: {0}", "fr": "Fichier introuvable : {0}"},
-  "附件总大小超过 20 MB，请只附上必要的文件。": {"en": "The attachments exceed 20 MB in total. Please attach only the files that are needed.", "fr": "Les pièces jointes dépassent 20 Mo au total. Veuillez joindre uniquement les fichiers nécessaires."},
+  "附件总大小超过 50 MB，请只附上必要的文件。": {"en": "The attachments exceed 50 MB in total. Please attach only the files that are needed.", "fr": "Les pièces jointes dépassent 50 Mo au total. Veuillez joindre uniquement les fichiers nécessaires."},
   "此版本尚未开通在线发送，请保存为 ZIP。": {"en": "Online sending is not available in this version yet. Please save the feedback as a ZIP.", "fr": "L'envoi en ligne n'est pas encore disponible dans cette version. Veuillez enregistrer le retour au format ZIP."},
   "发送超时，请检查网络后重试，或保存为 ZIP。": {"en": "Sending timed out. Check your network and try again, or save as a ZIP.", "fr": "L'envoi a expiré. Vérifiez votre connexion et réessayez, ou enregistrez en ZIP."},
   "无法连接反馈服务，请检查网络后重试，或保存为 ZIP。": {"en": "Could not reach the feedback service. Check your network and try again, or save as a ZIP.", "fr": "Impossible de joindre le service de retours. Vérifiez votre connexion et réessayez, ou enregistrez en ZIP."},
   "发送过于频繁，请稍后重试，或保存为 ZIP。": {"en": "Too many submissions. Try again later, or save as a ZIP.", "fr": "Trop d'envois. Réessayez plus tard, ou enregistrez en ZIP."},
-  "反馈服务暂时不可用，请稍后重试，或保存为 ZIP。": {"en": "The feedback service is temporarily unavailable. Try again later, or save as a ZIP.", "fr": "Le service de retours est momentanément indisponible. Réessayez plus tard, ou enregistrez en ZIP."}
+  "反馈服务暂时不可用，请稍后重试，或保存为 ZIP。": {"en": "The feedback service is temporarily unavailable. Try again later, or save as a ZIP.", "fr": "Le service de retours est momentanément indisponible. Réessayez plus tard, ou enregistrez en ZIP."},
+  "搜索文件名、类型、状态或日期…": {"en": "Search by file name, type, status or date…", "fr": "Rechercher par nom de fichier, type, état ou date…"},
+  "显示 {0} 条": {"en": "Show {0}", "fr": "Afficher {0}"},
+  "显示全部": {"en": "Show all", "fr": "Tout afficher"},
+  "找到 {0} 条，共 {1} 条": {"en": "{0} of {1} {1|task|tasks}", "fr": "{0} sur {1} {1|tâche|tâches}"},
+  "共 {0} 条": {"en": "{0} {0|task|tasks}", "fr": "{0} {0|tâche|tâches}"},
+  "没有匹配的任务。": {"en": "No matching tasks.", "fr": "Aucune tâche correspondante."},
+  "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} autres non affichées. Recherchez ou affichez-en davantage."}
 }

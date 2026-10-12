@@ -2,9 +2,9 @@
 
 ## V10.0.0
 
-- **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和选填的联系方式；应用与系统信息默认附带，任务日志和文件由用户逐项勾选（文件默认不附带，总计不超过 20 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
+- **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和选填的联系方式；应用与系统信息默认附带，任务日志和文件由用户逐项勾选（文件默认不附带，总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
 
-  **In-app feedback**: A new Feedback page in the sidebar takes a problem, suggestion or other note with an optional contact. App and system information is attached by default; task logs and files are ticked one by one (no files by default, 20 MB in total). File names in logs are replaced with placeholders before sending, and everything can be reviewed first. "Send" posts through a relay (feedback-relay/, Cloudflare Workers) into an issue in a private repository, and attachments are deleted after 90 days; when sending fails the package can be saved as a ZIP. Failed tasks in the task center offer "Report this problem", and the Help page's "Report a problem" opens this page instead of public GitHub Issues.
+  **In-app feedback**: A new Feedback page in the sidebar takes a problem, suggestion or other note with an optional contact. App and system information is attached by default; task logs and files are ticked one by one (no files by default, 50 MB in total). File names in logs are replaced with placeholders before sending, and everything can be reviewed first. "Send" posts through a relay (feedback-relay/, Cloudflare Workers) into an issue in a private repository, and attachments are deleted after 90 days; when sending fails the package can be saved as a ZIP. Failed tasks in the task center offer "Report this problem", and the Help page's "Report a problem" opens this page instead of public GitHub Issues.
 
 - **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码和以 \M+ 转义保存中文的图纸可正确读写；自动识别时按文字实际语种判断是否需要翻译；macOS 上不再把正常图纸误判为损坏。扫描只列出图纸清单，DWG 在任务中转换并逐张写入运行日志（每张转换 3 次，原先 5 次），DWG 进度份额按转换耗时调整，多张图纸按文件大小分配；校验通过后删除中间 DXF 副本，「另存一份 DXF」默认关闭。
 

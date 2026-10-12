@@ -13,7 +13,7 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createHintBadge, openModal, showToast } from "../components";
+import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
@@ -177,7 +177,11 @@ function render(): void {
   if (sentId) {
     column.append(buildSentCard());
   } else {
-    column.append(buildMessageCard(), buildAttachmentCard(), buildActions());
+    // 宽窗口左右两栏：左边写内容，右边挑附件；窄窗口退回上下排列。
+    const grid = document.createElement("div");
+    grid.className = "feedback-grid";
+    grid.append(buildMessageCard(), buildAttachmentCard());
+    column.append(grid, buildActions());
   }
   rootEl.append(column);
 }
@@ -225,7 +229,7 @@ function buildMessageCard(): HTMLElement {
   card.append(sectionTitle(t("描述")));
   const area = document.createElement("textarea");
   area.className = "feedback-text";
-  area.rows = 7;
+  area.rows = 12;
   area.maxLength = 5000;
   area.placeholder = t("请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。");
   area.value = draft.description;
@@ -290,38 +294,16 @@ function buildAttachmentCard(): HTMLElement {
     t("任务日志"),
     t("日志已去除 API 密钥和文件路径，文件名替换为「文件1」「文件2」等；为便于定位问题，可能保留少量原文片段。发送前可点击「查看将发送的内容」逐条核对。"),
   ));
-  const taskList = document.createElement("div");
-  taskList.className = "feedback-list";
-  const maxTasks = context?.max_tasks ?? 5;
-  if (!context && !contextError) {
-    taskList.append(note(t("正在读取任务记录…")));
-  } else if (contextError) {
-    taskList.append(note(t("无法读取任务记录：{0}", tx(contextError))));
-  } else if (!context?.tasks.length) {
-    taskList.append(note(t("暂无已结束的任务。")));
-  } else {
-    for (const task of context.tasks) {
-      const checked = draft.taskIds.has(task.task_id);
-      const label = [SURFACE_LABEL[task.surface] ?? task.surface, tx(task.source_label)].filter(Boolean).join(" · ");
-      taskList.append(checkRow({
-        checked,
-        disabled: !checked && draft.taskIds.size >= maxTasks,
-        title: label,
-        detail: `${taskStateWord(task.state)} · ${formatWhen(task.updated_at)}`,
-        onChange: (value) => {
-          if (value) draft.taskIds.add(task.task_id);
-          else draft.taskIds.delete(task.task_id);
-          render();
-        },
-      }));
-    }
-  }
-  card.append(taskList);
+  if (context?.tasks.length) card.append(buildTaskToolbar());
+  taskListEl = document.createElement("div");
+  taskListEl.className = "feedback-list feedback-task-list";
+  renderTaskList();
+  card.append(taskListEl);
 
   card.append(sectionTitle(t("文件")));
   const fileNote = document.createElement("p");
   fileNote.className = "feedback-warning";
-  fileNote.textContent = t("文件可能包含客户资料，默认不附带。仅在需要我们查看原文件或译文时添加，总大小不超过 20 MB。");
+  fileNote.textContent = t("文件可能包含客户资料，默认不附带。仅在需要我们查看原文件或译文时添加，总大小不超过 50 MB。");
   card.append(fileNote);
   const fileList = document.createElement("div");
   fileList.className = "feedback-list";
@@ -347,7 +329,7 @@ function buildAttachmentCard(): HTMLElement {
     fileList.append(row);
   }
   const total = draft.files.reduce((sum, file) => sum + file.bytes, 0);
-  const limit = context?.max_attachment_bytes ?? 20 * 1024 * 1024;
+  const limit = context?.max_attachment_bytes ?? 50 * 1024 * 1024;
   if (draft.files.length) {
     const summary = document.createElement("p");
     summary.className = total > limit ? "feedback-total over" : "feedback-total";
@@ -364,6 +346,100 @@ function buildAttachmentCard(): HTMLElement {
   }));
   card.append(fileList);
   return card;
+}
+
+// 任务多的时候按关键词筛、按条数截断。已勾选的任务始终排在最前面，不受筛选和条数影响，
+// 免得用户搜别的东西时以为之前勾的那一条被取消了。
+const TASK_LIMITS = [10, 20, 50, 0];
+let taskQuery = "";
+let taskLimit = 10;
+let taskListEl: HTMLElement | null = null;
+let taskCountEl: HTMLElement | null = null;
+
+function taskLabel(task: FeedbackTask): string {
+  return [SURFACE_LABEL[task.surface] ?? task.surface, tx(task.source_label)].filter(Boolean).join(" · ");
+}
+
+function taskDetail(task: FeedbackTask): string {
+  return `${taskStateWord(task.state)} · ${formatWhen(task.updated_at)}`;
+}
+
+function buildTaskToolbar(): HTMLElement {
+  const bar = document.createElement("div");
+  bar.className = "feedback-task-tools";
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "feedback-search";
+  const search = document.createElement("input");
+  search.type = "text";
+  search.placeholder = t("搜索文件名、类型、状态或日期…");
+  search.value = taskQuery;
+  search.addEventListener("input", () => {
+    taskQuery = search.value;
+    renderTaskList();
+  });
+  searchWrap.append(icon("search", { size: "sm" }), search);
+  const limit = createDropdown({
+    className: "feedback-limit",
+    options: TASK_LIMITS.map((value) => ({ value: String(value), label: value ? t("显示 {0} 条", value) : t("显示全部") })),
+    value: String(taskLimit),
+    onChange: (value) => {
+      taskLimit = Number(value) || 0;
+      renderTaskList();
+    },
+  });
+  taskCountEl = document.createElement("span");
+  taskCountEl.className = "feedback-task-count";
+  bar.append(searchWrap, limit.root, taskCountEl);
+  return bar;
+}
+
+function renderTaskList(): void {
+  const list = taskListEl;
+  if (!list) return;
+  list.replaceChildren();
+  if (!context && !contextError) {
+    list.append(note(t("正在读取任务记录…")));
+    return;
+  }
+  if (contextError) {
+    list.append(note(t("无法读取任务记录：{0}", tx(contextError))));
+    return;
+  }
+  const tasks = context?.tasks ?? [];
+  if (!tasks.length) {
+    list.append(note(t("暂无已结束的任务。")));
+    return;
+  }
+  const query = taskQuery.trim().toLowerCase();
+  const matches = (task: FeedbackTask): boolean =>
+    !query || `${taskLabel(task)} ${taskDetail(task)}`.toLowerCase().includes(query);
+  const selected = tasks.filter((task) => draft.taskIds.has(task.task_id));
+  const others = tasks.filter((task) => !draft.taskIds.has(task.task_id) && matches(task));
+  const matchedCount = selected.filter(matches).length + others.length;
+  const room = taskLimit ? Math.max(0, taskLimit - selected.length) : others.length;
+  const shown = [...selected, ...others.slice(0, room)];
+  if (taskCountEl) {
+    taskCountEl.textContent = query
+      ? t("找到 {0} 条，共 {1} 条", matchedCount, tasks.length)
+      : t("共 {0} 条", tasks.length);
+  }
+  const maxTasks = context?.max_tasks ?? 5;
+  for (const task of shown) {
+    const checked = draft.taskIds.has(task.task_id);
+    list.append(checkRow({
+      checked,
+      disabled: !checked && draft.taskIds.size >= maxTasks,
+      title: taskLabel(task),
+      detail: taskDetail(task),
+      onChange: (value) => {
+        if (value) draft.taskIds.add(task.task_id);
+        else draft.taskIds.delete(task.task_id);
+        renderTaskList();
+      },
+    }));
+  }
+  if (!others.length && query) list.append(note(t("没有匹配的任务。")));
+  else if (others.length > room) list.append(note(t("还有 {0} 条未显示，可搜索或调整显示条数。", others.length - room)));
 }
 
 function note(text: string): HTMLElement {

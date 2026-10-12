@@ -10,7 +10,10 @@
 // 不记录 IP：限流只用「LINK_SECRET + IP」的哈希做一小时计数，计数一小时后过期。
 // GitHub 令牌只存在 Worker 的密钥里，应用里没有任何凭据。
 
-const MAX_PACKAGE_BYTES = 24 * 1024 * 1024;
+// 应用端附件上限 50 MB，ZIP 头和日志另占一点。KV 单个值最多 25 MiB，所以大包按
+// CHUNK_BYTES 拆成几段存，下载时再按顺序拼回去。
+const MAX_PACKAGE_BYTES = 54 * 1024 * 1024;
+const CHUNK_BYTES = 20 * 1024 * 1024;
 const MAX_DESCRIPTION_CHARS = 5000;
 const MAX_CONTACT_CHARS = 200;
 const FILE_TTL_SECONDS = 90 * 24 * 3600;
@@ -64,10 +67,7 @@ async function handleFeedback(request, env, url) {
   const id = feedbackId(new Date());
   let link = "";
   if (hasPackage) {
-    await env.FEEDBACK.put(`pkg:${id}`, await pkg.arrayBuffer(), {
-      expirationTtl: FILE_TTL_SECONDS,
-      metadata: { size: pkg.size },
-    });
+    await storePackage(env, id, pkg);
     const expires = Math.floor(Date.now() / 1000) + FILE_TTL_SECONDS;
     const signature = await sign(env.LINK_SECRET, `${id}.${expires}`);
     link = `${url.origin}/v1/files/${id}?exp=${expires}&sig=${signature}`;
@@ -91,7 +91,7 @@ async function handleFeedback(request, env, url) {
   });
   if (!issue.ok) {
     console.error("github issue failed", issue.status);
-    if (hasPackage) await env.FEEDBACK.delete(`pkg:${id}`);
+    if (hasPackage) await deletePackage(env, id);
     return json({ error: "upstream" }, 502);
   }
   return json({ ok: true, id });
@@ -106,15 +106,42 @@ async function handleDownload(env, url) {
   }
   const expected = await sign(env.LINK_SECRET, `${id}.${expires}`);
   if (!timingSafeEqual(signature, expected)) return json({ error: "forbidden" }, 403);
-  const data = await env.FEEDBACK.get(`pkg:${id}`, { type: "arrayBuffer" });
-  if (!data) return json({ error: "not_found" }, 404);
-  return new Response(data, {
+  const head = await env.FEEDBACK.getWithMetadata(`pkg:${id}`, { type: "arrayBuffer" });
+  if (!head || !head.value) return json({ error: "not_found" }, 404);
+  const chunks = Math.max(1, Number(head.metadata && head.metadata.chunks) || 1);
+  const parts = [head.value];
+  for (let index = 1; index < chunks; index += 1) {
+    const part = await env.FEEDBACK.get(`pkg:${id}:${index}`, { type: "arrayBuffer" });
+    if (!part) return json({ error: "not_found" }, 404);
+    parts.push(part);
+  }
+  return new Response(new Blob(parts), {
     headers: {
       "Content-Type": "application/zip",
       "Content-Disposition": `attachment; filename="${id}.zip"`,
       "Cache-Control": "private, no-store",
     },
   });
+}
+
+// 第一段存在 pkg:<id>，元数据里记段数；其余段存在 pkg:<id>:1、pkg:<id>:2 …
+// 一段一段地读出再写入，Worker 内存里不会同时放两份整包。
+async function storePackage(env, id, pkg) {
+  const chunks = Math.max(1, Math.ceil(pkg.size / CHUNK_BYTES));
+  for (let index = chunks - 1; index >= 0; index -= 1) {
+    const part = await pkg.slice(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES).arrayBuffer();
+    const key = index === 0 ? `pkg:${id}` : `pkg:${id}:${index}`;
+    const options = { expirationTtl: FILE_TTL_SECONDS };
+    if (index === 0) options.metadata = { size: pkg.size, chunks };
+    await env.FEEDBACK.put(key, part, options);
+  }
+}
+
+async function deletePackage(env, id) {
+  const chunks = Math.ceil(MAX_PACKAGE_BYTES / CHUNK_BYTES);
+  for (let index = 0; index < chunks; index += 1) {
+    await env.FEEDBACK.delete(index === 0 ? `pkg:${id}` : `pkg:${id}:${index}`);
+  }
 }
 
 async function withinRateLimit(request, env) {

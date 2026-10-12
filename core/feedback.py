@@ -41,11 +41,13 @@ MAX_DESCRIPTION_CHARS = 5_000
 MAX_CONTACT_CHARS = 200
 MAX_TASKS = 5
 MAX_FILES = 10
-# 附件（用户自己挑的文件）原始大小上限。中转站把整个包存进 Cloudflare KV，单个值
-# 上限 25 MiB；ZIP 头和日志另占一点，所以这里留出余量。
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-MAX_PACKAGE_BYTES = 24 * 1024 * 1024
-RECENT_TASK_LIMIT = 10
+# 附件（用户自己挑的文件）原始大小上限。中转站把包分段存进 Cloudflare KV（单个值
+# 上限 25 MiB，免费额度共 1 GB、保留 90 天），整包上限另给 ZIP 头和日志留出余量，
+# 须与 feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
+MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+MAX_PACKAGE_BYTES = 54 * 1024 * 1024
+# 任务中心最多保留 200 条记录；界面上再按搜索和条数筛选。
+RECENT_TASK_LIMIT = 200
 
 _ENDPOINT_ENV = "TRANSLATOR_FEEDBACK_ENDPOINT"
 _SEND_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
@@ -132,7 +134,7 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
         total += path.stat().st_size
         files.append(path)
     if total > MAX_ATTACHMENT_BYTES:
-        raise FeedbackError("附件总大小超过 20 MB，请只附上必要的文件。", reason="too_large")
+        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
     return files
 
 
@@ -288,7 +290,7 @@ def build_package(draft: FeedbackDraft, *, settings: Any) -> tuple[bytes, dict[s
             archive.write(path, f"files/{_unique_name(path.name, used)}")
     data = buffer.getvalue()
     if len(data) > MAX_PACKAGE_BYTES:
-        raise FeedbackError("附件总大小超过 20 MB，请只附上必要的文件。", reason="too_large")
+        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
     return data, payload
 
 
@@ -347,7 +349,7 @@ def send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
     except httpx.HTTPError as exc:
         raise FeedbackError("无法连接反馈服务，请检查网络后重试，或保存为 ZIP。", reason="network") from exc
     if response.status_code == 413:
-        raise FeedbackError("附件总大小超过 20 MB，请只附上必要的文件。", reason="too_large")
+        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
     if response.status_code == 429:
         raise FeedbackError("发送过于频繁，请稍后重试，或保存为 ZIP。", reason="rate_limited")
     try:

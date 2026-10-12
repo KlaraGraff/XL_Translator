@@ -1,6 +1,15 @@
 /* 反馈视图：单列卡片，最宽 760px，沿用设置页的分段选择（.seg / .segc）与设计令牌。 */
-.feedback-content { display: flex; overflow: auto; justify-content: center; }
-.feedback-column { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 14px; }
+.feedback-content { display: flex; overflow: auto; }
+.feedback-column { width: 100%; display: flex; flex-direction: column; gap: 14px; }
+.feedback-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 14px; align-items: start; }
+@media (max-width: 1000px) { .feedback-grid { grid-template-columns: minmax(0, 1fr); } }
+.feedback-task-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.feedback-search { position: relative; flex: 1 1 200px; min-width: 160px; color: var(--ink-3); }
+.feedback-search svg { position: absolute; left: 10px; top: 8px; }
+.feedback-search input { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 10px 0 32px; }
+.feedback-limit { flex: none; width: 128px; }
+.feedback-task-count { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.feedback-task-list { max-height: 420px; overflow: auto; align-items: stretch; }
 .feedback-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 8px; }
 .feedback-section-title { margin: 6px 0 0; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
 .feedback-section-title:first-child { margin-top: 0; }
@@ -27,7 +36,7 @@
 .feedback-actions-wrap { display: flex; flex-direction: column; gap: 10px; }
 .feedback-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .feedback-banner { margin: 0; }
-.feedback-sent { align-items: center; text-align: center; padding: 32px 24px; gap: 6px; }
+.feedback-sent { max-width: 640px; width: 100%; align-self: center; align-items: center; text-align: center; padding: 32px 24px; gap: 6px; }
 .feedback-sent-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--ok-t); color: var(--ok); display: grid; place-items: center; font-size: 23px; }
 .feedback-sent h2 { margin: 6px 0 0; font-size: 17px; }
 .feedback-sent p { margin: 0; font-size: 13px; color: var(--ink-2); }
