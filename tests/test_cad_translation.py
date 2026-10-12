@@ -482,6 +482,10 @@ def test_numbers_next_to_chinese_characters_are_kept_in_the_check():
     assert _numeric_tokens("M10 螺栓 Q235") == []
     assert _valid_translation("Fire exit route 12345", "消防通道12345") == (True, "")
     assert _valid_translation("Room 101", "房间102")[0] is False
+    # 乘号后面的尺寸也要核对：2830X1700 改成 2830X2100 不能通过。
+    assert _numeric_tokens("设备基坑：2830X1700mm") == ["2830", "1700"]
+    assert _valid_translation("设备基坑：2830X1700mm", "Equipment pit: 2830X2100mm")[0] is False
+    assert _valid_translation("设备基坑：2830X1700mm", "Equipment pit: 2830 × 1700 mm") == (True, "")
 
 
 def test_truncated_dxf_is_rejected_instead_of_passing_as_empty_drawing():
@@ -512,3 +516,141 @@ def test_gbk_dxf_is_read_and_written_back_in_its_own_codepage(tmp_path):
     decoded = written.decode("gbk")
     assert "图层" in decoded
     assert "\\U+00E9" in decoded or "é" in decoded
+
+
+def _label_value_drawing(*, label_style="_TCH_DIM", font="SIMPLEX.shx", value_offset=1474.47, label_width=(41, "0.6")):
+    """天正常见的「标签 + 数值」：两段单行文字紧挨着（坐标、字高取自真实图纸）。"""
+    return _dxf(
+        (0, "SECTION"), (2, "TABLES"),
+        (0, "TABLE"), (2, "STYLE"), (70, "1"),
+        (0, "STYLE"), (2, label_style), (70, "0"), (40, "0"), (41, "0.6"), (3, font), (4, "GBCBIG.shx"),
+        (0, "ENDTAB"), (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"),
+        (0, "TEXT"), (8, "PUB_TEXT"), (10, "5280.6"), (20, "2167.9"), (40, "675.18"), *([label_width] if label_width else []),
+        (7, label_style), (1, "设备基坑："),
+        (0, "TEXT"), (8, "PUB_TEXT"), (10, str(5280.6 + value_offset)), (20, "2167.9"), (40, "595"), (41, "0.4235"),
+        (7, label_style), (1, "2830X1700mm"),
+        (0, "TEXT"), (8, "PUB_TEXT"), (10, "9000"), (20, "9000"), (40, "675.18"), (7, label_style), (1, "坑底标高"),
+        (0, "ENDSEC"), (0, "EOF"),
+    )
+
+
+def _text_fields(path):
+    records = _parse_dxf(path.read_text(encoding="utf-8"))
+    entities = []
+    current = None
+    for record in records:
+        if record.code == 0:
+            current = {} if record.value == "TEXT" else None
+            if current is not None:
+                entities.append(current)
+        elif current is not None:
+            current.setdefault(record.code, record.value)
+    return entities
+
+
+def _translate_label_value(tmp_path, drawing, **options):
+    source = tmp_path / "pit.dxf"
+    source.write_text(drawing, encoding="utf-8")
+    output = tmp_path / "pit_en.dxf"
+    messages = []
+    translations = {"设备基坑：": "Equipment pit:", "坑底标高": "Pit bottom elevation"}
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {text: translations[text] for text in texts},
+        progress=lambda event: messages.append(event.message),
+    ).translate_file(source, output, options=CadPipelineOptions(target_lang="en", **options))
+    return result, _text_fields(output), messages
+
+
+def test_translated_label_is_narrowed_instead_of_running_into_the_value(tmp_path):
+    from core.cad_layout import estimate_text_width
+
+    result, (label, value, lone), messages = _translate_label_value(tmp_path, _label_value_drawing())
+    assert label[1] == "Equipment pit:"
+    height, width_factor = float(label[40]), float(label[41])
+    assert height < 675.18 and width_factor < 1.0
+    # 缩小后的译文停在数值前面；数值本身原样不动。
+    assert 5280.6 + estimate_text_width("Equipment pit:", height, width_factor) < float(value[10])
+    assert (value[1], value[40], value[41]) == ("2830X1700mm", "595", "0.4235")
+    # 旁边没有别的文字的译文不缩。
+    assert lone[1] == "Pit bottom elevation" and lone[40] == "675.18" and 41 not in lone
+    assert result.stats.layout_fitted == 1
+    assert any("1 处译文比原文长" in message for message in messages)
+
+
+def test_missing_width_factor_is_added_next_to_the_height(tmp_path):
+    from core.cad_layout import estimate_text_width
+
+    # 没写 41 的单行文字宽度比例是 1：收缩时要补上这一项，并且紧跟在字高后面。
+    _result, (label, value, _lone), _messages = _translate_label_value(
+        tmp_path, _label_value_drawing(label_width=None, value_offset=2560),
+    )
+    width_factor = float(label[41])
+    assert width_factor < 1.0
+    assert 5280.6 + estimate_text_width("Equipment pit:", float(label[40]), width_factor) < float(value[10])
+    text = (tmp_path / "pit_en.dxf").read_text(encoding="utf-8")
+    assert f"40\n{label[40]}\n41\n{label[41]}\n" in text
+
+
+def test_label_with_room_to_spare_and_disabled_fitting_are_left_alone(tmp_path):
+    _result, (label, *_rest), _messages = _translate_label_value(
+        tmp_path, _label_value_drawing(value_offset=20000),
+    )
+    assert (label[40], label[41]) == ("675.18", "0.6")
+
+    (tmp_path / "pit_en.dxf").unlink()
+    for leftover in tmp_path.glob("pit_en.*"):
+        if leftover.is_file():
+            leftover.unlink()
+    result, (label, *_rest), _messages = _translate_label_value(
+        tmp_path, _label_value_drawing(), fit_layout=False,
+    )
+    assert (label[40], label[41]) == ("675.18", "0.6")
+    assert result.stats.layout_fitted == 0
+
+
+def test_text_on_another_line_or_in_another_block_is_not_a_neighbour():
+    from core.cad_layout import fit_translated_texts
+    from core.cad_translation import _plain_text
+
+    records = _parse_dxf(_dxf(
+        (0, "SECTION"), (2, "BLOCKS"),
+        (0, "BLOCK"), (2, "A"),
+        (0, "TEXT"), (10, "0"), (20, "0"), (40, "100"), (1, "Equipment pit:"),
+        (0, "ENDBLK"),
+        (0, "BLOCK"), (2, "B"),
+        (0, "TEXT"), (10, "400"), (20, "0"), (40, "100"), (1, "2830X1700mm"),
+        (0, "ENDBLK"),
+        (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"),
+        (0, "TEXT"), (10, "0"), (20, "0"), (40, "100"), (1, "Pit bottom elevation"),
+        (0, "TEXT"), (10, "400"), (20, "500"), (40, "100"), (1, "-0.090"),
+        (0, "ENDSEC"), (0, "EOF"),
+    ))
+    before = list(records)
+    # 实体序号：SECTION=0, BLOCK=1, TEXT=2, ...；ENTITIES 里的标签是第 9 个。
+    assert fit_translated_texts(records, {2: "设备基坑：", 9: "坑底标高"}, _plain_text) == 0
+    assert records == before
+
+
+def test_scan_log_explains_what_was_left_out(tmp_path):
+    drawing = _dxf(
+        (0, "SECTION"), (2, "ENTITIES"),
+        (0, "TEXT"), (1, "门窗表"),
+        (0, "TEXT"), (1, "-0.090"),
+        (0, "TEXT"), (1, "C1518"),
+        (0, "TEXT"), (1, "3100X2100mm"),
+        (0, "TEXT"), (1, "APPROVED BY"),
+        (0, "ENDSEC"), (0, "EOF"),
+    )
+    source = tmp_path / "plan.dxf"
+    source.write_text(drawing, encoding="utf-8")
+    messages = []
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {text: "Door and window schedule" for text in texts},
+        progress=lambda event: messages.append(event.message),
+    ).translate_file(source, tmp_path / "plan_en.dxf", options=CadPipelineOptions(target_lang="en"))
+    assert (result.stats.skipped_non_text, result.stats.skipped_codes, result.stats.skipped_target_language) == (1, 2, 3)
+    assert "共 5 处文字，不需要翻译的：纯数字和符号 1 处，编号、轴号、型号和尺寸 2 处，已是目标语言 1 处" in messages

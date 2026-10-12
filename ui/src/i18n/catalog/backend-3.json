@@ -1458,5 +1458,13 @@
   "多出 {0} 处、缺少 {1} 处内容": {
     "en": "{0} extra and {1} missing {1|item|items}",
     "fr": "{0} {0|élément|éléments} en trop et {1} {1|manquant|manquants}"
+  },
+  "共 {0} 处文字，不需要翻译的：纯数字和符号 {1} 处，编号、轴号、型号和尺寸 {2} 处，已是目标语言 {3} 处": {
+    "en": "{0} {0|text|texts} in total; not needing translation: {1} plain {1|number or symbol|numbers or symbols}, {2} {2|code|codes} (door/window marks, grid labels, models, sizes), {3} already in the target language",
+    "fr": "{0} {0|texte|textes} au total ; sans traduction nécessaire : {1} {1|nombre ou symbole seul|nombres ou symboles seuls}, {2} {2|code|codes} (repères de portes et fenêtres, axes, modèles, dimensions), {3} déjà dans la langue cible"
+  },
+  "{0} 处译文比原文长、会压到旁边的文字，已缩小字宽或字高": {
+    "en": "{0} {0|translation was|translations were} longer than the original and would overlap nearby text; text width or height reduced",
+    "fr": "{0} {0|traduction plus longue|traductions plus longues} que l'original {0|chevauchait|chevauchaient} le texte voisin ; largeur ou hauteur du texte réduite"
   }
 }

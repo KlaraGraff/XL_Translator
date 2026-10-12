@@ -27,6 +27,7 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from core.cad_layout import fit_translated_texts
 from core.cad_language import (
     LATIN_TARGET_LANGS,
     NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
@@ -401,6 +402,10 @@ class CadTranslationStats:
     # 纯数字/符号、标注占位符、不属于所选源语言的文字：正常跳过，不需要复核。
     skipped_non_text: int = 0
     skipped_other_language: int = 0
+    # 「已是目标语言」里其实没有成词文字的那部分：门窗编号、轴号、型号、尺寸（C1518、1/B、3100X2100mm）。
+    skipped_codes: int = 0
+    # 译文比原文长、会压到同一行相邻文字，写回时缩小了字宽或字高的条数。
+    layout_fitted: int = 0
 
 
 @dataclass
@@ -440,6 +445,8 @@ class CadPipelineOptions:
     check_entity_counts: bool = True
     scan_residual: bool = True
     copy_related_files: bool = False
+    # 译文会压到同一行相邻文字时缩小字宽/字高（见 core.cad_layout）。
+    fit_layout: bool = True
 
 
 def _parse_dxf(text: str) -> list[DxfRecord]:
@@ -770,6 +777,11 @@ def _has_translatable_content(text: str) -> bool:
     return bool(re.search(r"[A-Za-zÀ-ÿ\u3400-\u9fff]", text))
 
 
+def _has_real_words(text: str) -> bool:
+    """有成词的文字（汉字等非拉丁文字，或不是代号的拉丁单词）；C1518、1/B、3100X2100mm 没有。"""
+    return bool(_NON_LATIN_SCRIPT_RE.search(text)) or _has_latin_words(text)
+
+
 def _language_result(item: Any) -> tuple[str | None, str]:
     """``(译文, 原文语种)``；没拿到译文时译文为 ``None``。
 
@@ -792,7 +804,8 @@ def _numeric_tokens(text: str) -> list[str]:
     # 只排除紧跟在拉丁字母/数字/下划线后面的数字（Q235、M10 这类代号的一部分）。
     # 以前用 \w 判断，而 \w 也匹配汉字，于是「共12页」「译文12345」里的数字全被漏掉，
     # 中文译文一律判成「数字被改动」，整条译文被丢弃并标为需复核。
-    return re.findall(r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?", text)
+    # 「2830X1700mm」里乘号后面的 1700 也是数字，不是代号的一部分：前面是「数字+X/×/*」时照样算。
+    return re.findall(r"(?:(?<![A-Za-z0-9_])|(?<=\d[xX×*]))\d+(?:[.,]\d+)?", text)
 
 
 def _valid_translation(source: str, target: str) -> tuple[bool, str]:
@@ -1224,12 +1237,24 @@ class CadTranslationPipeline:
                     verdict = classify_text_language(unit.plain_text, options.target_lang)
                     if verdict == _LANG_TARGET:
                         stats.skipped_target_language += 1
+                        if not _has_real_words(unit.plain_text):
+                            stats.skipped_codes += 1
                         continue
                     if verdict == _LANG_UNSURE:
                         uncertain_units.add(unit.unit_id)
                 candidates.append(unit)
             timings["scan"] = round(time.perf_counter() - started_at, 4)
             self._emit("scan", 1, 1, f"找到 {len(candidates)} 处可翻译文字")
+            skipped_numbers = stats.skipped_non_text
+            skipped_codes = stats.skipped_codes
+            skipped_words = stats.skipped_target_language - stats.skipped_codes
+            if skipped_numbers or skipped_codes or skipped_words:
+                # 文字实体和待翻译差得多时，用户第一反应是「是不是识别错了」：把差在哪说清楚。
+                self._emit(
+                    "scan", 1, 1,
+                    f"共 {len(units)} 处文字，不需要翻译的：纯数字和符号 {skipped_numbers} 处，"
+                    f"编号、轴号、型号和尺寸 {skipped_codes} 处，已是目标语言 {skipped_words} 处",
+                )
             texts = list(dict.fromkeys(
                 run.text for unit in candidates for run in unit.runs if _has_translatable_content(run.text)
             ))
@@ -1360,6 +1385,23 @@ class CadTranslationPipeline:
                 _replace_unit_runs(records, unit, translations)
                 if changed_unit:
                     stats.changed += 1
+            if options.fit_layout:
+                # 单行文字的译文伸出去会压到同一行紧挨着的另一段文字（「设备基坑：」后面的
+                # 「2830X1700mm」）：这些译文按能用的空间缩小字宽/字高。
+                stats.layout_fitted = fit_translated_texts(
+                    records,
+                    {
+                        int(unit.unit_id.split(":", 1)[0]): unit.plain_text
+                        for unit in candidates
+                        if unit.entity_type in {"TEXT", "ATTRIB"} and unit.plain_text in translations
+                    },
+                    _plain_text,
+                )
+                if stats.layout_fitted:
+                    self._emit(
+                        "write", 0, 1,
+                        f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字，已缩小字宽或字高",
+                    )
             write_started = time.perf_counter()
             translated_dxf = temp_root / f"{source.stem}_translated.dxf"
             _write_dxf_text(translated_dxf, _serialize_dxf(records), dxf_encoding)
