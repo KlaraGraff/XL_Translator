@@ -14,6 +14,11 @@ export interface View {
   mount(container: HTMLElement, params: ViewParams): void;
   /** 切走前调用，用于取消订阅、清理定时器/SSE 连接等。可选。 */
   unmount?(): void;
+  /**
+   * 原地重画（切换界面语言）时用来回到同一处的参数，例如设置页当前的子页。
+   * 不提供就沿用上次 navigate() 的参数。可选。
+   */
+  remountParams?(): ViewParams;
 }
 
 type NavigateListener = (id: ViewId, params: ViewParams) => void;
@@ -56,6 +61,13 @@ export function navigate(id: ViewId, params: ViewParams = {}): void {
   for (const listener of listeners) {
     listener(id, params);
   }
+}
+
+/** 按当前语言重画当前视图，停在同一页（切换界面语言时用）。 */
+export function remountCurrentView(): void {
+  if (!current) return;
+  const params = registry.get(current.id)?.remountParams?.() ?? current.params;
+  navigate(current.id, params);
 }
 
 /** 当前视图 id 与参数；启动前尚未 navigate 过时为 null。 */

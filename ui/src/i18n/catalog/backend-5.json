@@ -51,5 +51,11 @@
   "{0}.dwg：{1}": {"en": "{0}.dwg: {1}", "fr": "{0}.dwg : {1}"},
   "{0}.DWG：{1}": {"en": "{0}.DWG: {1}", "fr": "{0}.DWG : {1}"},
   "{0}.dxf：{1}": {"en": "{0}.dxf: {1}", "fr": "{0}.dxf : {1}"},
-  "{0}.DXF：{1}": {"en": "{0}.DXF: {1}", "fr": "{0}.DXF : {1}"}
+  "{0}.DXF：{1}": {"en": "{0}.DXF: {1}", "fr": "{0}.DXF : {1}"},
+  "正在转换图纸格式（DWG → DXF）": {"en": "Converting the drawing (DWG → DXF)", "fr": "Conversion du plan (DWG → DXF)"},
+  "图纸格式转换完成，用时 {0} 秒": {"en": "Drawing converted in {0} s", "fr": "Plan converti en {0} s"},
+  "正在将译文转换回 DWG 图纸": {"en": "Converting the translated drawing back to DWG", "fr": "Reconversion du plan traduit en DWG"},
+  "已转换回 DWG 图纸，用时 {0} 秒": {"en": "Converted back to DWG in {0} s", "fr": "Reconverti en DWG en {0} s"},
+  "正在读回译文图纸以便校验": {"en": "Reading the translated drawing back for verification", "fr": "Relecture du plan traduit pour vérification"},
+  "译文图纸读回完成，用时 {0} 秒": {"en": "Translated drawing read back in {0} s", "fr": "Plan traduit relu en {0} s"}
 }

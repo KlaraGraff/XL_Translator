@@ -12,7 +12,7 @@
 // 这一点和它取代的那条通栏提示条不同——那条会把整个工作区推下去 40 多像素。
 
 import { openModal } from "./components";
-import { t, tx } from "./i18n";
+import { onLocaleChange, t, tx } from "./i18n";
 import { icon } from "./icons";
 import { renderReleaseNotes } from "./markdown";
 import { toastStackSlot } from "./shell";
@@ -92,6 +92,8 @@ export function mountUpdateToast(): void {
   if (host) return;
   host = toastStackSlot("update");
   subscribeUpdates(render);
+  // 切换界面语言后，正在显示的卡片按新语言重画。
+  onLocaleChange(() => render());
   // 主按钮写「更新」还是「下载安装包」取决于这台机器能不能自更新，卡片弹出来之前
   // 就得知道——探测很便宜，挂载时问一次。
   void ensureUpdaterEnvironment();

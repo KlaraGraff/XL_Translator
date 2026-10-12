@@ -64,7 +64,7 @@ import {
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
 import { el, formatSizeKb, formatTime, hasOwn, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
-import { currentLocale, fmtNum, t, tx } from "../i18n";
+import { currentLocale, fmtNum, t, tx, localized } from "../i18n";
 import "./workspace.css";
 
 // ---------------------------------------------------------------------------
@@ -93,9 +93,12 @@ type FileItem = JsonObject & {
    *  oversizedPageStats() 上方的整段说明，处理方式与 Excel 的 image_count 完全一致。 */
   oversized_page_count?: number | null;
   source_type?: string;
-  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。 */
-  text_count?: number;
-  candidate_count?: number;
+  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。
+   *  DWG 扫描时不转换（转换工具一张图要几秒到几分钟），这两个数是 null、counts_pending
+   *  为 true：开始翻译后由任务转换并统计，界面写「开始后统计」，不写 0。 */
+  text_count?: number | null;
+  candidate_count?: number | null;
+  counts_pending?: boolean;
   needs_conversion?: boolean;
   // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
@@ -162,7 +165,7 @@ interface ToggleDef {
   exclusiveWith?: string;
 }
 
-const EXCEL_TOGGLES: ToggleDef[] = [
+const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后工作表中仅保留译文。是否另存原文，由下方「另存原文工作表」决定。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
@@ -172,9 +175,9 @@ const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "excelAutofit", label: t("用 Excel 调整行高"), hint: t("需要本机安装 Excel。开启后由 Excel 按译文重新计算行高，结果更准确；Excel 不可用时保留估算行高，并在结果中提示。"), default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
   { key: "lockRowHeight", label: t("保持行高，缩小字号"), hint: t("保持行高不变，译文超出时缩小字号；缩至最小字号仍无法容纳的单元格标记为需复核。不能与「用 Excel 调整行高」同时使用。"), default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
   { key: "reviewMark", label: t("标记需复核内容"), hint: t("为保留原文或原文疑似夹杂错误外文的单元格添加底色，便于人工检查。已确认无问题的内容仅记入报告，不添加底色。"), default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
-];
+]));
 
-const WORD_TOGGLES: ToggleDef[] = [
+const WORD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后输出文件只保留译文；关闭时保留原文与译文。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
@@ -182,9 +185,9 @@ const WORD_TOGGLES: ToggleDef[] = [
   { key: "wordHighlight", label: t("标记需复核内容"), hint: t("为保留原文或质量校验未通过的段落加高亮，便于人工复核。"), default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
   { key: "protectFrontMatter", label: t("保护封面和目录"), hint: t("从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；未找到正文起点时不启用，并在日志中说明。"), default: true, pathKind: "none" },
   { key: "translateHeadersFooters", label: t("翻译页眉页脚"), hint: t("开启后同时翻译页眉页脚，译文以「 / 」接在原文同一行，以免页眉增高导致正文下移。页码和目录类页眉页脚不翻译。"), default: false, pathKind: "none" },
-];
+]));
 
-const PDF_TOGGLES: ToggleDef[] = [
+const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在常规输出之外，另生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
@@ -192,23 +195,23 @@ const PDF_TOGGLES: ToggleDef[] = [
   // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
   // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
   { key: "skipOversizedPages", label: t("跳过 A3 及更大的页面"), hint: t("长、宽均超出 A4 约 15% 以上的页面（A3 及更大，横向、纵向均适用）不翻译，按原样写入输出文件，清晰度不变。工程图纸常用此类幅面。略大于 A4 的页面（如带扫描白边）不受影响。"), default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
-];
+]));
 
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
 // 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
-const CAD_TOGGLES: ToggleDef[] = [
+const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
-  { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: true, pathKind: "output", path: "keep_work_dxf" },
+  { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
-];
+]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
 
 export const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
 const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
-const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: t("Excel 表格翻译"), word: t("Word 文档翻译"), pdf: t("PDF 与图片翻译"), cad: t("CAD 图纸翻译") };
-const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: t("表格文件"), word: t("文档"), pdf: t("PDF / 图片文件"), cad: t("DWG / DXF 图纸") };
+const SURFACE_PAGE_TITLE: Record<Surface, string> = localized(() => ({ excel: t("Excel 表格翻译"), word: t("Word 文档翻译"), pdf: t("PDF 与图片翻译"), cad: t("CAD 图纸翻译") }));
+const SURFACE_FILE_NOUN: Record<Surface, string> = localized(() => ({ excel: t("表格文件"), word: t("文档"), pdf: t("PDF / 图片文件"), cad: t("DWG / DXF 图纸") }));
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
 function fileNounPhrase(surface: Surface, count: number): string {
@@ -219,24 +222,24 @@ function fileNounPhrase(surface: Surface, count: number): string {
     default: return t("{0} 个 DWG / DXF 图纸", count);
   }
 }
-const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
+const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = localized(() => ({
   excel: t("选择文件或文件夹，扫描后勾选要翻译的表格"),
   word: t("选择文件或文件夹，扫描后勾选要翻译的文档"),
   pdf: t("选择文件或文件夹，扫描后勾选要翻译的 PDF 与图片"),
   cad: t("选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸"),
-};
-const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = {
+}));
+const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = localized(() => ({
   excel: { title: t("尚无可翻译的文件"), description: t("通过「浏览」选择文件或文件夹后将自动扫描，找到的表格将列于此处，可逐个勾选。") },
   word: { title: t("尚无可翻译的文件"), description: t("通过「浏览」选择文件或文件夹后将自动扫描，找到的文档将列于此处，可逐个勾选。") },
   pdf: { title: t("尚无可翻译的文件"), description: t("通过「浏览」选择文件或文件夹后将自动扫描，找到的 PDF 与图片将列于此处，可逐个勾选。") },
   cad: { title: t("尚无可翻译的文件"), description: t("通过「浏览」选择文件或文件夹后将自动扫描，找到的 DWG / DXF 图纸将列于此处，可逐个勾选。") },
-};
-const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = {
+}));
+const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = localized(() => ({
   excel: { title: t("可开始下一批"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
   word: { title: t("可开始下一批"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
   pdf: { title: t("可开始下一批"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
   cad: { title: t("可开始下一批"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
-};
+}));
 
 // ---------------------------------------------------------------------------
 // 每个 surface 的本地状态（模块级，跨 mount/unmount 存活，与 tasks.ts 的后台徽标循环
@@ -1362,13 +1365,28 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     ];
   }
   if (surface === "cad") {
-    const texts = files.reduce((sum, f) => sum + num(f.text_count), 0);
-    const candidates = files.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
+    // 合计只加扫描时数出来的（DXF）；DWG 开始后才统计，另起一行小字说明还有几张没算进来。
+    // 没连转换工具的 DWG 归「需转换工具」那一格，不算进「开始后统计」。
+    const counted = files.filter((f) => !cadCountsPending(f));
+    const pending = files.filter((f) => cadCountsPending(f) && !isRisky(surface, f)).length;
+    const texts = counted.reduce((sum, f) => sum + num(f.text_count), 0);
+    const candidates = counted.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
     const blocked = files.filter((f) => isRisky(surface, f)).length;
+    const noneCounted = counted.length === 0;
+    const pendingNote = pending
+      ? noneCounted
+        ? t("{0} 张 DWG 开始后统计", pending)
+        : t("另有 {0} 张 DWG 开始后统计", pending)
+      : undefined;
     return [
       { label: t("已扫描文件"), value: String(files.length) },
-      { label: t("文字实体"), value: fmtNum(texts) },
-      { label: t("待翻译"), value: fmtNum(candidates), sub: texts > candidates ? t("已是目标语言的不计入") : undefined },
+      { label: t("文字实体"), value: noneCounted ? "—" : fmtNum(texts), dim: noneCounted, sub: pendingNote },
+      {
+        label: t("待翻译"),
+        value: noneCounted ? "—" : fmtNum(candidates),
+        dim: noneCounted,
+        sub: texts > candidates ? t("已是目标语言的不计入") : undefined,
+      },
       { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
       { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
     ];
@@ -1393,6 +1411,11 @@ function isRisky(surface: Surface, f: FileItem): boolean {
   // DWG 要先经转换工具转成 DXF；转换工具没连上时这些文件开不了工。
   if (surface === "cad") return Boolean(f.needs_conversion) && !cadConverterReady(states.cad);
   return false;
+}
+
+/** CAD：这张图纸的文字数扫描时没数（DWG），开始翻译后由任务统计。老后端不带 counts_pending，按计数是否为 null 判断。 */
+function cadCountsPending(f: FileItem): boolean {
+  return Boolean(f.counts_pending) || (f.format === "dwg" && f.text_count === null);
 }
 
 function fileLabel(f: FileItem): string {
@@ -1917,10 +1940,19 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
     // 没连转换工具的 DWG 读不出内容，计数是 0 不代表图纸里没字——写「—」，不写 0。
     const unreadable = st.historyOnly || isRisky(surface, file);
-    const textCell = el("td", "num");
-    textCell.textContent = unreadable ? "—" : fmtNum(num(file.text_count));
-    const candidateCell = el("td", "num");
-    candidateCell.textContent = unreadable ? "—" : fmtNum(num(file.candidate_count, num(file.text_count)));
+    // DWG 扫描时不转换，文字数在开始翻译后由任务统计（运行日志里有每张图纸的转换用时）。
+    const pending = !unreadable && cadCountsPending(file);
+    const textCell = el("td", pending ? "num pending" : "num");
+    const candidateCell = el("td", pending ? "num pending" : "num");
+    if (pending) {
+      textCell.textContent = t("开始后统计");
+      candidateCell.textContent = t("开始后统计");
+      textCell.title = t("DWG 图纸在开始翻译后转换并统计文字");
+      candidateCell.title = textCell.title;
+    } else {
+      textCell.textContent = unreadable ? "—" : fmtNum(num(file.text_count));
+      candidateCell.textContent = unreadable ? "—" : fmtNum(num(file.candidate_count, num(file.text_count)));
+    }
     row.append(fmtCell, textCell, candidateCell);
   } else if (surface === "excel" || surface === "word") {
     const fmtCell = el("td");
@@ -1965,7 +1997,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   const liveProgress = file.file_id ? st.task?.fileProgress.get(file.file_id) : undefined;
   const outcome = (file.file_id ? st.fileOutcomes.get(file.file_id) : undefined) ?? st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
-    statusCell.append(createChip({ label: t("已排除"), tone: "mute" }));
+    statusCell.append(createChip({ label: t("未勾选"), tone: "mute" }));
   } else if (liveProgress) {
     statusCell.append(createChip({ label: fileProgressLabel(liveProgress, st.task?.task.state), tone: fileProgressTone(liveProgress, st.task?.task.state) }));
   } else if (outcome) {
@@ -2488,7 +2520,7 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
         st.customOutputDir = value;
       },
     });
-    input.addEventListener("change", () => {
+    const saveCustomDir = (): void => {
       // 落盘前的旧值要从「上一次成功落盘的值」取，不能取 st.customOutputDir 自己——
       // 打字过程中每敲一下 onInput 都已经把它改成了正在输入的新值，到这里已经晚了。
       // outputRecord() 读的是 settings 模块变量，只在 persistSettings 成功时才会更新，
@@ -2500,9 +2532,36 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
         () => { st.customOutputDir = prevDir; },
         t("自定义输出目录"),
       );
+    };
+    input.addEventListener("change", saveCustomDir);
+    // 和来源一栏一样：输入框后面跟一个「浏览」，在系统选择框里挑文件夹，不必手动粘贴路径。
+    const browseBtn = createButton({
+      label: t("浏览"),
+      icon: "folder",
+      onClick: () => void (async () => {
+        let picked: unknown;
+        try {
+          picked = await open({ title: t("选择输出文件夹"), directory: true, multiple: false, defaultPath: st.customOutputDir.trim() || undefined });
+        } catch (error) {
+          showToast({ message: redactedText((error as Error)?.message, t("选择输出文件夹失败。")), error: true });
+          return;
+        }
+        if (typeof picked !== "string" || !picked.trim()) return;
+        st.customOutputDir = picked;
+        input.value = picked;
+        saveCustomDir();
+      })(),
     });
-    root.style.marginTop = "6px";
-    container.append(root);
+    root.style.margin = "0";
+    root.style.flex = "1";
+    root.style.minWidth = "0";
+    const line = el("div");
+    line.style.display = "flex";
+    line.style.gap = "8px";
+    line.style.alignItems = "center";
+    line.style.marginTop = "6px";
+    line.append(root, browseBtn);
+    container.append(line);
   }
   return container;
 }

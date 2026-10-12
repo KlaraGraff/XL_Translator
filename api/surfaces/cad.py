@@ -25,6 +25,7 @@ from core.cad_translation import (
     CadPipelineError,
     CadPipelineOptions,
     SubprocessCadConverter,
+    list_cad_files,
     scan_cad_paths,
 )
 from core.task_runner import user_facing_reason
@@ -68,10 +69,10 @@ class CadSurface(Surface):
         *,
         selected_paths: set[str] | None = None,
     ) -> list[Any]:
-        status = probe_status()
-        converter_path = str(status.get("converter") or "").strip()
-        converter = SubprocessCadConverter(converter_path) if converter_path else None
-        scan_options = CadPipelineOptions(include_block_text=options.cad_include_block_text)
+        # Starting a task only lists the drawings: nothing is opened or
+        # converted here.  The runner reads (and for DWG converts) each drawing
+        # itself, with run-log lines and progress; doing it here as well made
+        # the start button hang for as long as converting every DWG took.
         output_root = Path(options.cad_output_dir).expanduser().resolve() if options.cad_output_dir else None
 
         def under(path: Path, parent: Path | None) -> bool:
@@ -101,30 +102,31 @@ class CadSurface(Surface):
         else:
             scan_inputs = [root]
 
-        summaries = []
-        for candidate in scan_inputs:
-            if under(candidate, output_root):
-                continue
-            try:
-                summaries.extend(scan_cad_paths([candidate], converter=converter, options=scan_options))
-            except Exception as exc:  # one malformed drawing must not abort the batch preflight
-                logger.warning("CAD 预检跳过文件 {}：{}", candidate, exc)
+        listed = [
+            path
+            for path in list_cad_files(candidate for candidate in scan_inputs if not under(candidate, output_root))
+            if not under(path, output_root)
+        ]
         return [
-            type("CadFile", (), {"path": summary.path, "name": summary.filename, "format": summary.format})()
-            for summary in summaries
+            type("CadFile", (), {"path": path, "name": path.name, "format": path.suffix.lower().lstrip(".")})()
+            for path in listed
         ]
 
     def scan_response(self, request: Any, roots: list[Path]) -> dict[str, Any] | None:
         """CAD lists text and candidate counts and the converter status instead
-        of the shared Excel/Word/PDF scan shape."""
+        of the shared Excel/Word/PDF scan shape.
+
+        DXF drawings are counted here.  DWG drawings are only listed: their
+        counts are ``None`` with ``counts_pending`` set and are counted by the
+        task, which converts them with progress and run-log lines.
+        """
         status = probe_status()
         converter_path = str(status.get("converter") or "").strip()
-        converter = SubprocessCadConverter(converter_path) if converter_path else None
         cad_skipped: list[dict[str, str]] = []
         try:
             summaries = scan_cad_paths(
                 roots,
-                converter=converter,
+                converter_available=bool(converter_path),
                 options=CadPipelineOptions(
                     source_lang=str(request.source_language or "auto"),
                     target_lang=str(request.target_language or "zh"),
@@ -148,10 +150,12 @@ class CadSurface(Surface):
                 "candidate_count": item.candidate_count,
                 "needs_conversion": item.needs_conversion,
                 "uncertain_count": item.uncertain_count,
+                "counts_pending": item.counts_pending,
                 "file_id": file_progress_id(item.path),
             }
             for item in summaries
         ]
+        known = [item for item in items if not item["counts_pending"]]
         return {
             "items": items,
             "skipped": cad_skipped,
@@ -160,13 +164,15 @@ class CadSurface(Surface):
             "capability": status,
             "summary": {
                 "file_count": len(items),
-                "text_entity_count": sum(item["text_count"] for item in items),
-                "candidate_count": sum(item["candidate_count"] for item in items),
+                # Only the drawings counted here; DWG drawings are counted by the task.
+                "text_entity_count": sum(item["text_count"] for item in known),
+                "candidate_count": sum(item["candidate_count"] for item in known),
+                "counts_pending_file_count": len(items) - len(known),
             },
             "risk": {
                 "capability": status,
                 "message": "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「插件」中连接转换工具。"
-                if not converter
+                if not converter_path
                 else "",
             },
             "previous_output": None,

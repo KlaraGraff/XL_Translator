@@ -793,7 +793,7 @@ class CadOutputSettings(BaseModel):
     # 以下三项是 CAD 页右栏「本类型选项」的开关，和 Excel/Word/PDF 一样改了就存。
     # 旧版 settings.json 没有这几个键时按默认值补齐（加法改动，无需迁移）。
     include_block_text: bool = True
-    keep_work_dxf: bool = True
+    keep_work_dxf: bool = False
     copy_related_files: bool = False
 
 

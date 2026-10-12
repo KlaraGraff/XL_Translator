@@ -2,13 +2,13 @@
 
 ## V10.0.0
 
-- **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码和以 \M+ 转义保存中文的图纸可正确读写；自动识别时按文字实际语种判断是否需要翻译；macOS 上不再把正常图纸误判为损坏。
+- **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码和以 \M+ 转义保存中文的图纸可正确读写；自动识别时按文字实际语种判断是否需要翻译；macOS 上不再把正常图纸误判为损坏。扫描只列出图纸清单，DWG 在任务中转换并逐张写入运行日志（每张转换 3 次，原先 5 次），DWG 进度份额按转换耗时调整，多张图纸按文件大小分配；校验通过后删除中间 DXF 副本，「另存一份 DXF」默认关闭。
 
-  **CAD drawing translation**: DWG and DXF drawings are supported with the same workflow as Excel, Word and PDF, including pause, stop and resume. DWG requires ODA File Converter on the new Plugins page. GBK and other Chinese encodings, and Chinese stored as \M+ escapes, are read and written correctly; auto-detect judges each text by its actual language; macOS no longer reports valid drawings as corrupt.
+  **CAD drawing translation**: DWG and DXF drawings are supported with the same workflow as Excel, Word and PDF, including pause, stop and resume. DWG requires ODA File Converter on the new Plugins page. GBK and other Chinese encodings, and Chinese stored as \M+ escapes, are read and written correctly; auto-detect judges each text by its actual language; macOS no longer reports valid drawings as corrupt. Scanning only lists drawings; DWG files are converted inside the task with a log line per drawing (3 conversions per drawing instead of 5), DWG progress shares reflect conversion time and several drawings are weighted by file size. Intermediate DXF copies are deleted once a drawing passes verification, and "Also save a DXF" is off by default.
 
-- **英语和法语界面**：「设置 → 外观与语言」可切换中文、英语和法语，页面、运行日志、提示和错误信息随之切换；输出文件夹名、报告文件和写入文档的复核标记仍为中文。默认主题改为浅色，原先「跟随系统」的设置在升级时改为浅色（settings schema v30）。
+- **英语和法语界面**：「设置 → 外观与语言」可切换中文、英语和法语，页面、运行日志、提示和错误信息随之切换；输出文件夹名、报告文件和写入文档的复核标记仍为中文。默认主题改为浅色，原先「跟随系统」的设置在升级时改为浅色（settings schema v30）。切换语言时原地更新，不再重新加载页面或跳回 Excel 页。
 
-  **English and French interface**: Settings > Appearance & language switches between Chinese, English and French; pages, the run log, notifications and error messages follow the selection. Output folder names, report files and review markers in documents stay Chinese. The default theme is now light; a stored "follow system" setting is migrated to light (settings schema v30).
+  **English and French interface**: Settings > Appearance & language switches between Chinese, English and French; pages, the run log, notifications and error messages follow the selection. Output folder names, report files and review markers in documents stay Chinese. The default theme is now light; a stored "follow system" setting is migrated to light (settings schema v30). Switching language updates in place instead of reloading the page and jumping back to the Excel page.
 
 - **配色与文案**：「设置 → 外观与语言」新增五套配色方案（素雅灰、暖调纸感、冷调柔光、青瓷、琥珀护眼），浅色和深色模式分别选择，默认素雅灰（settings schema v31）；界面、日志、报错和报告统一用语并改为正式书面说法，三种语言同步；「深度清洗」更名为「清洗记忆库」并在执行前提示费用。
 
@@ -30,9 +30,9 @@
 
   **Performance and progress**: Excel sends requests concurrently with auto-detect. Excel, Word and CAD progress follows model wait time and no longer stalls late in translation. PDF progress is smoother and the page list updates live.
 
-- **其他**：任务结束时保留匿名诊断记录，「导出诊断」恢复可用；Windows 关闭或更新时正在运行的任务正常收尾；提示消息移至顶部，窄窗口表格不再错位，未配置模型时引导至设置。
+- **其他**：任务结束时保留匿名诊断记录，「导出诊断」恢复可用；Windows 关闭或更新时正在运行的任务正常收尾；提示消息移至顶部，窄窗口表格不再错位，未配置模型时引导至设置；自定义输出目录可通过「浏览」选择；任务进度事件在 macOS 上不再比运行日志慢一拍。
 
-  **Other**: Each finished task keeps an anonymous diagnostic record and Export diagnostics works again. Running tasks end cleanly when the app closes or updates on Windows. Notifications appear at the top, tables keep their layout in narrow windows, and starting without a model opens the settings.
+  **Other**: Each finished task keeps an anonymous diagnostic record and Export diagnostics works again. Running tasks end cleanly when the app closes or updates on Windows. Notifications appear at the top, tables keep their layout in narrow windows, and starting without a model opens the settings. The custom output folder can be chosen with Browse, and task progress no longer lags one step behind the run log on macOS.
 
 ## V9.5.9
 

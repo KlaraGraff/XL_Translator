@@ -67,7 +67,7 @@ class TaskOptions:
     # file/directory and never exposes a filename-suffix option.
     cad_output_dir: str | None = None
     cad_use_terminology: bool = True
-    cad_keep_work_dxf: bool = True
+    cad_keep_work_dxf: bool = False
     cad_copy_related_files: bool = False
     cad_verify_roundtrip: bool = True
     cad_scan_replacement_chars: bool = True

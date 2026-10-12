@@ -679,8 +679,9 @@ class Phase7SseAndPrivacyContracts(unittest.TestCase):
                     time.sleep(0.01)
                     status = manager.task_status(started["task_id"])
 
-                replay = list(manager.iter_sse(started["task_id"], after_event_id=0))
-                resumed = list(manager.iter_sse(started["task_id"], after_event_id=1))
+                # 每批事件后的注释填充（SSE_FLUSH_PADDING）不是事件，不参与编号核对。
+                replay = [chunk for chunk in manager.iter_sse(started["task_id"], after_event_id=0) if chunk.startswith("id:")]
+                resumed = [chunk for chunk in manager.iter_sse(started["task_id"], after_event_id=1) if chunk.startswith("id:")]
 
             self.assertTrue(status["terminal"])
             ids = [int(chunk.split("\n", 1)[0].split(":", 1)[1].strip()) for chunk in replay]

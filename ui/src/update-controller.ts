@@ -11,7 +11,7 @@
 
 import { ApiClient } from "./api-client";
 import { openModal, showToast } from "./components";
-import { t, tx } from "./i18n";
+import { t, tx, localized } from "./i18n";
 import { setSettingsAlert } from "./shell";
 import {
   resolveUpdate,
@@ -170,7 +170,7 @@ export function canSelfUpdate(): boolean {
   return Boolean(state.env?.canSelfUpdate);
 }
 
-const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = {
+const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = localized(() => ({
   running_from_dmg: t("Translator 当前从磁盘映像运行，无法自行更新。请先将其拖入「应用程序」，或下载新版安装包。"),
   install_location_read_only: t("Translator 所在目录没有写入权限，无法安装更新。请将其移至「应用程序」，或下载新版安装包。"),
   unsupported_architecture: t("本机处理器架构没有对应的应用内更新包，请下载安装包。"),
@@ -180,7 +180,7 @@ const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = {
   dev_build: t("开发模式下不提供应用内更新。"),
   browser_preview: t("浏览器预览模式下不提供应用内更新。"),
   environment_probe_failed: t("无法确认本机是否支持应用内更新，请直接下载安装包。"),
-};
+}));
 
 export function selfUpdateBlockedCopy(reason: string): string {
   return SELF_UPDATE_BLOCKED_COPY[reason] ?? t("本机暂不支持应用内更新，请直接下载安装包。");

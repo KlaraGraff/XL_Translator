@@ -64,7 +64,7 @@ import {
   renderModelsPage,
 } from "./settings-models";
 import "./settings.css";
-import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, storeLocale, t, tx, type Locale } from "../i18n";
+import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLocale, t, tx, type Locale, localized } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 类型（本地精简版，对照 main.ts 的同名类型/字段）
@@ -276,18 +276,18 @@ async function refreshDomainBuiltinPrompts(): Promise<void> {
 const ADD_PROMPT_PRESET = "__add_prompt__";
 const LEGACY_CUSTOM_PROMPT = "__legacy_custom__";
 
-export const MODEL_ROLE_LABELS: Record<string, string> = {
+export const MODEL_ROLE_LABELS: Record<string, string> = localized(() => ({
   translation: t("文档翻译（Excel / Word / CAD）"),
   cleaner: t("记忆库清洗"),
   image: t("PDF 与图片翻译"),
   pdf_review: t("PDF 与图片审核"),
-};
+}));
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";
 
 export const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek"];
 export const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
-const PROVIDER_LABELS: Record<string, string> = {
+const PROVIDER_LABELS: Record<string, string> = localized(() => ({
   custom_openai: t("OpenAI 兼容"),
   openai: "OpenAI",
   claude: "Claude",
@@ -298,7 +298,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   ollama: "Ollama",
   lm_studio: "LM Studio",
   custom_local: t("自定义本地服务"),
-};
+}));
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
@@ -309,7 +309,11 @@ export function providerLabel(provider: string): string {
 export let providerBaseUrlDefaults: Record<string, string> = {};
 export let providerModelDefaults: Record<string, string> = {};
 export let providerBaseUrlDisabled = new Set<string>();
-export let disabledBaseUrlPlaceholder = t("当前服务商无需填写 Base URL");
+// 存后端原文，显示时再翻译：切换界面语言后跟着变。
+let disabledBaseUrlPlaceholderSource = "当前服务商无需填写 Base URL"; // i18n-ignore 后端原文，显示时由 tx() 翻译
+export function disabledBaseUrlPlaceholder(): string {
+  return tx(disabledBaseUrlPlaceholderSource);
+}
 
 // 本地运行器的 Base URL 预填表。上面「不留第二份硬编码」的约定只对云端成立——
 // /api/models/provider-defaults 下发的是 CLOUD_PROVIDER_BASE_URL_DEFAULTS，本地运行器
@@ -322,7 +326,7 @@ export const LOCAL_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
   lm_studio: "http://localhost:1234/v1",
 };
 
-const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = {
+const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = localized(() => ({
   task_history: { title: t("清空任务记录？"), message: t("将删除任务中心里的任务记录，不会删除任何翻译结果。"), confirm: t("清空任务记录") },
   logs: { title: t("清空运行日志？"), message: t("将删除 Translator 的运行日志，不会删除诊断记录、源文件或翻译结果。"), confirm: t("清空日志") },
   diagnostics: { title: t("清空全部诊断？"), message: t("将删除所有本地诊断记录。已导出的 ZIP 文件不会被删除。"), confirm: t("清空诊断") },
@@ -330,7 +334,7 @@ const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string
   settings: { title: t("重置设置？"), message: t("将恢复默认设置，API 密钥、记忆库和翻译结果都会保留。"), confirm: t("重置设置") },
   tm: { title: t("清空记忆库？"), message: t("此操作不会删除翻译结果。建议先在记忆库页面导出一份完整备份。"), confirm: t("清空记忆库") },
   full_reset: { title: t("完整重置本地数据？"), message: t("仅删除 Translator 自身保存的数据；应用本身、源文件和翻译结果均不会被删除。"), confirm: t("完整重置") },
-};
+}));
 
 /** 按钮上的动词要和点开后弹窗的标题一致：以前列表里写「清理」，弹窗却问「重置设置？」。 */
 function maintenanceVerb(category: string): string {
@@ -496,6 +500,11 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   void bootstrap(token);
 }
 
+/** 原地重画时回到当前子页（切换界面语言后仍停在「外观与语言」）。 */
+export function remountParams(): ViewParams {
+  return { page: currentPage, role: modelRole, paramsSurface: paramsTab };
+}
+
 export function unmount(): void {
   mountToken += 1; // 让任何仍在飞行中的异步回调失效
   // 同 workspace：这些浮层挂在 document.body 上，视图切走不会自动消失。
@@ -516,13 +525,13 @@ export function unmount(): void {
   unsubscribeUpdates = null;
 }
 
-const NAV_ITEMS: { id: SettingsPage; label: string; icon: IconName }[] = [
+const NAV_ITEMS: { id: SettingsPage; label: string; icon: IconName }[] = localized(() => ([
   { id: "models", label: t("模型服务"), icon: "gear" },
   { id: "params", label: t("翻译参数"), icon: "doc-file" },
   { id: "appearance", label: t("外观与语言"), icon: "book" },
   { id: "data", label: t("数据与维护"), icon: "folder" },
   { id: "about", label: t("更新与关于"), icon: "help" },
-];
+]));
 
 function highlightNav(): void {
   if (!navEls) return;
@@ -891,7 +900,7 @@ async function refreshProviderDefaults(): Promise<void> {
     providerBaseUrlDefaults = payload.base_url_defaults || {};
     providerModelDefaults = payload.model_defaults || {};
     providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
-    if (payload.disabled_placeholder) disabledBaseUrlPlaceholder = tx(payload.disabled_placeholder);
+    if (payload.disabled_placeholder) disabledBaseUrlPlaceholderSource = String(payload.disabled_placeholder);
   } catch (error) {
     providerBaseUrlDefaults = {};
     providerModelDefaults = {};
@@ -1944,7 +1953,8 @@ function currentLanguagePreference(): Locale {
   return isLocale(value) ? value : "zh";
 }
 
-// 界面语言：先落盘再写 localStorage，然后重载页面让全部文字一次换齐（见 i18n/index.ts）。
+// 界面语言：先落盘再写 localStorage，然后原地换语言（setLocale，见 i18n/index.ts），
+// app.ts 收到通知后重画侧栏和本页，停在「外观与语言」原处，不重新加载。
 // 选项名用各自语言的原名（中文 / English / Français），不跟着当前语言翻译——
 // 看不懂当前语言的人也要能找到自己的语言。
 function renderLanguageCard(host: HTMLElement): void {
@@ -1974,7 +1984,7 @@ function renderLanguageCard(host: HTMLElement): void {
       void reRenderAfter(async () => {
         await persistSettings({ appearance: { ...record(settings?.appearance), ui_language: option.value } });
         storeLocale(option.value);
-        window.location.reload();
+        setLocale(option.value);
       });
     });
     seg.append(segc);
@@ -1984,7 +1994,7 @@ function renderLanguageCard(host: HTMLElement): void {
   note.style.marginTop = "8px";
   note.style.fontSize = "12px";
   note.style.color = "var(--ink-3)";
-  note.textContent = t("切换后界面会重新加载。正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。");
+  note.textContent = t("正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。");
   body.append(note);
   card.append(body);
   host.append(card);

@@ -1,4 +1,4 @@
-import { t } from "./i18n";
+import { t, localized } from "./i18n";
 
 // 任务状态词的唯一出处。
 //
@@ -13,7 +13,7 @@ import { t } from "./i18n";
 //   completed_with_issues —— 工作区会往后接后缀（「· 需复核」），「完成但有问题」接得上，
 //                            「已完成，有问题 · 需复核」两个逗号级停顿叠在一起读不通。
 
-export const TASK_STATE_LABELS: Record<string, string> = {
+export const TASK_STATE_LABELS: Record<string, string> = localized(() => ({
   preflight: t("等待确认"),
   running: t("翻译中"),
   pausing: t("正在暂停"),
@@ -25,7 +25,7 @@ export const TASK_STATE_LABELS: Record<string, string> = {
   error: t("任务失败"),
   stopped: t("已停止"),
   interrupted: t("应用中断"),
-};
+}));
 
 /** 终态在横幅/徽标上的那个词。认不出来的 state 一律按「已完成」——终态分支只在任务
  *  真的跑完之后才走到，与其写一个「未知状态」吓人，不如沿用最常见的那一个。 */
@@ -35,7 +35,7 @@ export function taskStateWord(state: string): string {
 
 /** 「停止」确认框正文。工作区和任务中心弹的是同一个确认，所以只在这里写一份；
  *  以前任务中心那份写着「Excel、Word 会结束为终态」，还漏了 CAD。 */
-const STOP_CONFIRM_BODY: Record<string, string> = {
+const STOP_CONFIRM_BODY: Record<string, string> = localized(() => ({
   // Excel / Word 是整批先翻再逐个写文件：停止时把已经翻好的内容写进文件，没翻到的
   // 保留原文，之后可以接着翻译。以前写「当前文件写完后停止」，停在翻译中途时其实一个
   // 文件都没写，跟这句话对不上。
@@ -43,7 +43,7 @@ const STOP_CONFIRM_BODY: Record<string, string> = {
   word: t("停止翻译后，已翻译的内容将写入文件，未翻译的段落保留原文，之后可继续翻译。源文件不会被修改。"),
   pdf: t("已生成的页面将保留在输出目录中。如需稍后继续，请改用「暂停」，之后可选择继续或结束任务。"),
   cad: t("当前图纸完成后停止。已生成的图纸和报告将保留在输出目录中，源文件不会被修改；之后可从断点继续。"),
-};
+}));
 
 export function stopConfirmBody(surface: string): string {
   return STOP_CONFIRM_BODY[surface] ?? t("当前批次处理完成后停止，已完成的部分将保留。");
