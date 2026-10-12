@@ -2048,5 +2048,33 @@ class WordDocumentTests(unittest.TestCase):
         shd.set(qn("w:fill"), fill)
 
 
+
+class HiddenNumberingLevelTests(unittest.TestCase):
+    """编号级别写了空的 lvlText（LibreOffice 导出的标题样式就是这样）：不显示编号，不能补出「1.」。"""
+
+    def test_empty_level_text_and_none_format_add_no_label(self) -> None:
+        for number_format, level_text in (("none", ""), ("decimal", ""), ("none", "%1")):
+            with self.subTest(number_format=number_format, level_text=level_text):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source = root / "headings.docx"
+                    doc = Document()
+                    WordDocumentTests._set_default_num_id_9_level(
+                        doc, number_format=number_format, level_text_value=level_text
+                    )
+                    heading = doc.add_paragraph("施工说明")
+                    WordDocumentTests._set_paragraph_num_pr(heading, num_id="9", ilvl="0")
+                    doc.save(str(source))
+
+                    output = write_bilingual_docx(
+                        source_path=source,
+                        output_dir=root / "out",
+                        translations={"施工说明": "Notice de construction"},
+                        target_lang="fr",
+                    )
+                    texts = [paragraph.text for paragraph in Document(str(output)).paragraphs]
+                    self.assertEqual(texts, ["施工说明", "Notice de construction"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

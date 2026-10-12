@@ -2230,9 +2230,19 @@ def _read_numbering_level_definition(level) -> NumberingLevelDefinition:
     return NumberingLevelDefinition(
         start=_to_int(_child_val(level, "w:start"), fallback=1),
         number_format=_child_val(level, "w:numFmt", default="decimal"),
-        level_text=_child_val(level, "w:lvlText", default="%1."),
+        level_text=_level_text(level),
         legal_numbering=_on_off_value(level.find(qn("w:isLgl"))) is True,
     )
+
+
+def _level_text(level) -> str:
+    """编号格式串。写了 ``w:lvlText`` 但值为空，是「这一级不显示编号」（LibreOffice 导出的
+    标题样式就是这样），不能当成没写、退回默认的「%1.」——那样每个标题前都会凭空多出
+    「1.」「2.」。"""
+    element = level.find(qn("w:lvlText")) if level is not None else None
+    if element is None:
+        return "%1."
+    return str(element.get(qn("w:val")) or "")
 
 
 def _child_val(element, child_tag: str, default: str = "") -> str:
@@ -2338,7 +2348,9 @@ def _format_numbering_label(
     if definition is None:
         return ""
 
-    label = definition.level_text or "%1."
+    label = definition.level_text
+    if not label.strip() or (definition.number_format == "none" and "%" not in label):
+        return label.strip()
     if definition.number_format == "bullet":
         return _normalize_bullet_label(label)
 
@@ -2390,6 +2402,8 @@ def _number_format_for_level_text_placeholder(
 
 
 def _format_number(number: int, number_format: str) -> str:
+    if number_format == "none":
+        return ""
     if number <= 0:
         number = 1
     if number_format in _CHINESE_NUMBER_FORMATS:
