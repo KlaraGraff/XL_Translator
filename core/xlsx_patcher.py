@@ -2395,7 +2395,7 @@ def write_bilingual_workbook(
 
     ``embedded_text``：``core.xlsx_embedded_text.EmbeddedTextOptions``，翻译文本框和
     批注；None 表示不动它们（旧行为）。写入数记进 ``stats["shape_paragraphs"]`` /
-    ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]``。
+    ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]`` / ``stats["overflow_shapes"]``。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -2614,6 +2614,7 @@ def write_bilingual_workbook(
                 stats["comments"] = embedded_stats.comments
                 stats["shrunk_shapes"] = embedded_stats.shrunk_shapes
                 stats["grown_shapes"] = embedded_stats.grown_shapes
+                stats["overflow_shapes"] = embedded_stats.overflow_shapes
 
         if error_positions and log_callback:
             # 这些格子存的是 #N/A / #REF! 这类错误值。它们被抽取端当成普通文本

@@ -2581,6 +2581,12 @@ class TaskRunner(BaseTaskRunner):
             grown = int(write_stats.get("grown_shapes") or 0)
             if grown:
                 self._log("INFO", f"  → {file_item.name}：{grown} 个文本框缩小字号后仍放不下，已往下加高")
+            overflow = int(write_stats.get("overflow_shapes") or 0)
+            if overflow:
+                self._log(
+                    "WARN",
+                    f"  → {file_item.name}：{overflow} 个文本框缩小字号、往空白处加高后仍放不下，已列入复核清单",
+                )
             if excel_output.translate_sheet_names:
                 with ZipFile(out_path) as workbook_package:
                     workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))

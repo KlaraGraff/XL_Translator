@@ -118,6 +118,7 @@ class EmbeddedWriteStats:
     comments: int = 0
     shrunk_shapes: int = 0
     grown_shapes: int = 0
+    overflow_shapes: int = 0
 
 
 # ── 遍历 ──────────────────────────────────────────────────────────────────────
@@ -808,6 +809,7 @@ def _apply_shapes(
         if _grow_shape(sp, after, scale, grid):
             stats.grown_shapes += 1
             continue
+        stats.overflow_shapes += 1
         if review_positions is not None:
             review_positions.append(
                 {

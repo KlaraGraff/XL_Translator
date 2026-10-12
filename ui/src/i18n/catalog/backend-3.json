@@ -1562,5 +1562,9 @@
   "  → {0}：{1} 个文本框缩小字号后仍放不下，已往下加高": {
     "en": "  → {0}: {1} text {1|box|boxes} still too small after reducing the font size; made taller",
     "fr": "  → {0} : {1} {1|zone de texte encore trop petite après réduction de la police ; agrandie vers le bas|zones de texte encore trop petites après réduction de la police ; agrandies vers le bas}"
+  },
+  "  → {0}：{1} 个文本框缩小字号、往空白处加高后仍放不下，已列入复核清单": {
+    "en": "  → {0}: {1} text {1|box|boxes} still too small after reducing the font size and growing into the blank space below; listed for review",
+    "fr": "  → {0} : {1} {1|zone de texte encore trop petite après réduction de la police et agrandissement dans l'espace vide ; listée pour vérification|zones de texte encore trop petites après réduction de la police et agrandissement dans l'espace vide ; listées pour vérification}"
   }
 }
