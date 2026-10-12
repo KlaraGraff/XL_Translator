@@ -26,6 +26,7 @@ import {
 import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
+import { openCadReview } from "./cad-review";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
@@ -1616,6 +1617,17 @@ function renderDetail(): void {
         icon: "book",
         size: "mini",
         onClick: () => navigate("library", { reviewCleanTaskId: task.task_id }),
+      }),
+    );
+  }
+  if (task.surface === "cad" && task.terminal && typeof task.result?.manifest_path === "string" && task.result.manifest_path) {
+    // 译文对照表：逐句看、改译文，改完只重新写回图纸，不再调用模型。
+    actions.append(
+      createButton({
+        label: t("查看与修改译文"),
+        icon: "edit",
+        size: "mini",
+        onClick: () => void getClient().then((client) => openCadReview(client, task.task_id, titleText)),
       }),
     );
   }

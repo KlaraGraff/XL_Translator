@@ -1,0 +1,35 @@
+/* 任务中心 · CAD「查看与修改译文」弹窗（cad-review.ts）。比 .modal.wide 宽得多：
+   原文、译文两列都要放得下一整句。 */
+.modal.cad-review { width: min(1080px, calc(100vw - 48px)); height: calc(100vh - 72px); padding-bottom: 14px; }
+/* 弹窗定高：只让表格区伸缩滚动，标题、工具栏、底栏一律不被压扁。 */
+.modal.cad-review > * { flex-shrink: 0; }
+.cad-review .cr-intro { margin-bottom: 12px; }
+.cad-review .cr-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.cad-review .cr-toolbar .cr-file { flex: 0 1 280px; }
+.cad-review .cr-toolbar .cr-filter { flex: 0 0 132px; }
+.cad-review .cr-toolbar .btn { white-space: nowrap; }
+.cad-review .cr-spacer { flex: 1 1 0; }
+.cad-review .cr-search { flex: 1 1 180px; max-width: 320px; min-width: 150px; position: relative; }
+.cad-review .cr-search svg { position: absolute; left: 10px; top: 9px; color: var(--ink-3); }
+.cad-review .cr-search input[type="text"] { height: 34px; margin: 0; padding-left: 32px; font-size: 12.5px; }
+.cad-review .cr-notice { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-2); background: var(--warn-t); border: 1px solid var(--warn-l); border-radius: var(--r-sm); padding: 7px 11px; margin-bottom: 10px; }
+.cad-review .cr-notice[hidden] { display: none; }
+.cad-review .cr-notice svg { color: var(--warn); flex: none; }
+.modal.cad-review > .cr-table { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: var(--r-md); }
+.cad-review .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+.cad-review .tbl td { vertical-align: top; padding: 7px 10px; }
+.cad-review .tbl th.cr-src, .cad-review .tbl th.cr-dst { width: auto; }
+.cad-review .tbl th.cr-st { width: 150px; }
+.cad-review .tbl th.cr-n { width: 56px; text-align: right; }
+.cad-review td.cr-src { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); padding-top: 12px; }
+.cad-review td.cr-st { padding-top: 11px; }
+.cad-review td.cr-st .chip + .chip { margin-left: 4px; }
+.cad-review td.cr-n { padding-top: 12px; }
+.cad-review td.cr-dst textarea { display: block; width: 100%; min-height: 32px; resize: none; overflow: hidden; border: 1px solid transparent; border-radius: 7px; padding: 5px 8px; font: inherit; font-size: 12.5px; line-height: 1.5; background: transparent; color: var(--ink); field-sizing: content; }
+.cad-review td.cr-dst textarea:hover { border-color: var(--line-2); }
+.cad-review td.cr-dst textarea:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.cad-review td.cr-dst textarea:disabled { color: var(--ink-2); }
+.cad-review .cr-empty { padding: 36px 16px; text-align: center; color: var(--ink-3); font-size: 13px; }
+.cad-review .cr-more { display: block; margin: 10px auto; }
+.cad-review .cr-footer { display: flex; align-items: center; gap: 9px; margin-top: 12px; }
+.cad-review .cr-sum { margin-right: auto; font-size: 12.5px; color: var(--ink-3); }
