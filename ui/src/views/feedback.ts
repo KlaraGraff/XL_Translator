@@ -15,7 +15,7 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
+import { createButton, createCard, createDropdown, createHintBadge, createProgressBar, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
@@ -117,7 +117,15 @@ let context: FeedbackContext | null = null;
 let contextError = "";
 let busy: "" | "preview" | "save" | "send" = "";
 let sentId = "";
+/** 发出时填的邮箱，「已发送」页据此说明会发邮件到哪里。 */
+let sentEmail = "";
 let sendFailure = "";
+/** 正在上传时后端报回的已发字节；null 表示还在打包。 */
+let sendProgress: { sent: number; total: number } | null = null;
+// 进度每 300 ms 更新一次，只改这两处，不重画整页（否则正在输入的内容和滚动位置会丢）。
+let progressLabel: HTMLElement | null = null;
+let progressBar: { setPercent: (percent: number) => void } | null = null;
+let progressBarEl: HTMLElement | null = null;
 let mounted = false;
 let rootEl: HTMLElement | null = null;
 let clientPromise: Promise<ApiClient> | null = null;
@@ -174,6 +182,12 @@ async function loadContext(): Promise<void> {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 空着可以；填了就得像个邮箱，不然没法通知到。 */
+function emailLooksValid(value: string): boolean {
+  const text = value.trim();
+  return !text || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
 }
 
 function errorReason(error: unknown): string {
@@ -359,17 +373,32 @@ function buildMessageCard(): HTMLElement {
   card.append(composer);
   renderImages();
 
-  card.append(sectionTitle(t("联系方式（选填）")));
+  card.append(sectionTitle(t("邮箱（建议填写）")));
   const contact = document.createElement("input");
-  contact.type = "text";
+  contact.type = "email";
   contact.className = "feedback-input";
   contact.maxLength = 200;
-  contact.placeholder = t("邮箱或微信，便于我们回复您");
+  contact.autocomplete = "email";
+  contact.spellcheck = false;
+  contact.placeholder = "name@example.com";
   contact.value = draft.contact;
+  const contactNote = document.createElement("p");
+  contactNote.className = "feedback-note";
+  const syncContactNote = (): void => {
+    const invalid = !emailLooksValid(draft.contact);
+    contact.classList.toggle("invalid", invalid);
+    contactNote.classList.toggle("feedback-error", invalid);
+    contactNote.textContent = invalid
+      ? t("邮箱格式不正确，请检查后再发送。")
+      : t("留下邮箱后，问题解决或功能上线时，我们会发邮件通知您。");
+  };
   contact.addEventListener("input", () => {
     draft.contact = contact.value;
+    syncContactNote();
+    syncActionState();
   });
-  card.append(contact);
+  syncContactNote();
+  card.append(contact, contactNote);
   return card;
 }
 
@@ -767,9 +796,10 @@ let sendButton: HTMLButtonElement | null = null;
 function syncActionState(): void {
   const empty = !draft.description.trim();
   const configured = Boolean(context?.endpoint_configured);
+  const emailOk = emailLooksValid(draft.contact);
   if (previewButton) previewButton.disabled = empty || busy !== "";
-  if (saveButton) saveButton.disabled = empty || busy !== "";
-  if (sendButton) sendButton.disabled = empty || busy !== "" || !configured;
+  if (saveButton) saveButton.disabled = empty || busy !== "" || !emailOk;
+  if (sendButton) sendButton.disabled = empty || busy !== "" || !configured || !emailOk;
 }
 
 function buildActions(): HTMLElement {
@@ -798,16 +828,50 @@ function buildActions(): HTMLElement {
   sendButton = createButton({ label: busy === "send" ? t("正在发送…") : t("发送"), variant: "primary", onClick: () => void send() });
   actions.append(previewButton, saveButton, sendButton);
 
-  // 底栏一行：左边说明，右边按钮。
+  // 底栏一行：左边说明（发送时换成上传进度），右边按钮。
   const bar = document.createElement("div");
   bar.className = "feedback-bar";
   const configured = context ? context.endpoint_configured : true;
-  bar.append(note(configured
+  bar.append(busy === "send" ? buildProgress() : note(configured
     ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，保存 90 天后自动删除。")
     : t("此版本尚未开通在线发送，可先保存为 ZIP。")), actions);
   wrap.append(bar);
   syncActionState();
   return wrap;
+}
+
+function buildProgress(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "feedback-progress";
+  progressLabel = document.createElement("div");
+  progressLabel.className = "feedback-progress-label";
+  const handle = createProgressBar({ percent: 0 });
+  progressBar = handle;
+  progressBarEl = handle.root;
+  box.append(progressLabel, handle.root);
+  syncProgress();
+  return box;
+}
+
+function syncProgress(): void {
+  if (!progressLabel || !progressBar || !progressBarEl) return;
+  const progress = sendProgress;
+  // 打包和等服务器确认这两段拿不到字节数，用来回滑动的短条，不报百分比。
+  if (!progress) {
+    progressLabel.textContent = t("正在打包…");
+    progressBarEl.classList.add("indet");
+    return;
+  }
+  if (progress.total > 0 && progress.sent >= progress.total) {
+    progressLabel.textContent = t("已上传 {0}，正在等待服务器确认…", formatBytes(progress.total));
+    progressBarEl.classList.remove("indet");
+    progressBar.setPercent(100);
+    return;
+  }
+  const percent = progress.total > 0 ? Math.floor((progress.sent / progress.total) * 100) : 0;
+  progressLabel.textContent = t("正在上传 {0} / {1}（{2}%）", formatBytes(progress.sent), formatBytes(progress.total), String(percent));
+  progressBarEl.classList.remove("indet");
+  progressBar.setPercent(percent);
 }
 
 async function showPreview(): Promise<void> {
@@ -837,7 +901,7 @@ function openPreviewModal(preview: PreviewPayload): void {
     li.textContent = text;
     list.append(li);
   };
-  item(t("反馈内容与联系方式"));
+  item(draft.contact.trim() ? t("反馈内容与邮箱") : t("反馈内容"));
   if (preview.system) item(t("系统与版本信息"));
   for (const task of preview.tasks) item(t("任务日志：{0} · {1}", SURFACE_LABEL[task.surface] ?? task.surface, taskStateWord(task.state)));
   for (const image of preview.images ?? []) item(t("截图：{0}（{1}）", image.name, formatBytes(image.bytes)));
@@ -897,28 +961,59 @@ async function saveZip(): Promise<void> {
   }
 }
 
+interface SendStatus {
+  job_id?: string;
+  state: "uploading" | "done" | "error";
+  sent: number;
+  total: number;
+  id: string;
+  message: string;
+  reason: string;
+}
+
+const SEND_FAILURES = ["network", "server", "rate_limited", "not_configured", "job_missing"];
+
 async function send(): Promise<void> {
   busy = "send";
   sendFailure = "";
+  sendProgress = null;
   render();
   try {
     const client = await getClient();
-    const result = await client.request<{ id: string }>("/api/feedback/send", {
+    // 后端打好包就返回，上传在后台进行；这里按真实已发出的字节更新进度条。
+    const started = await client.request<SendStatus>("/api/feedback/send", {
       method: "POST",
       body: JSON.stringify(requestBody()),
     });
-    sentId = result.id;
-    draft = emptyDraft();
+    let status = started;
+    while (status.state === "uploading") {
+      sendProgress = { sent: status.sent, total: status.total };
+      syncProgress();
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      status = await client.request<SendStatus>(`/api/feedback/send/${encodeURIComponent(started.job_id ?? "")}`);
+    }
+    if (status.state === "error") {
+      if (SEND_FAILURES.includes(status.reason)) sendFailure = status.message;
+      else showToast({ message: tx(status.message), error: true });
+    } else {
+      sentId = status.id;
+      sentEmail = draft.contact.trim();
+      draft = emptyDraft();
+    }
   } catch (error) {
     const reason = errorReason(error);
     // 输入问题（内容为空、附件过大、任务记录已删）只提示，不出「未发出」横幅。
-    if (["network", "server", "rate_limited", "not_configured"].includes(reason) || !reason) {
+    if (SEND_FAILURES.includes(reason) || !reason) {
       sendFailure = error instanceof ApiError ? error.rawMessage : errorText(error);
     } else {
       showToast({ message: tx(errorText(error)), error: true });
     }
   } finally {
     busy = "";
+    sendProgress = null;
+    progressLabel = null;
+    progressBar = null;
+    progressBarEl = null;
     render();
   }
 }
@@ -933,7 +1028,9 @@ function buildSentCard(): HTMLElement {
   const ref = document.createElement("p");
   ref.textContent = t("反馈编号：{0}", sentId);
   const thanks = document.createElement("p");
-  thanks.textContent = t("感谢您的反馈。如留有联系方式，我们将尽快回复您。");
+  thanks.textContent = sentEmail
+    ? t("感谢您的反馈。问题解决或功能上线时，我们会发邮件到 {0}。", sentEmail)
+    : t("感谢您的反馈。");
   const actions = document.createElement("div");
   actions.className = "feedback-actions";
   actions.append(

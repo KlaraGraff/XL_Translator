@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import time
 import zipfile
 from typing import Any
 from unittest.mock import patch
@@ -178,12 +179,21 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["reason"], "not_configured")
 
-    def _send_with(self, handler: Any) -> httpx.Response:
+    def _send_with(self, handler: Any) -> dict[str, Any]:
         transport = httpx.MockTransport(handler)
         with patch.object(feedback, "FEEDBACK_ENDPOINT", "https://relay.example/"), patch.object(
             feedback, "_open_client", lambda: httpx.Client(transport=transport)
         ):
-            return self.client.post("/api/feedback/send", json=self._body())
+            started = self.client.post("/api/feedback/send", json=self._body())
+            self.assertEqual(started.status_code, 200, started.text)
+            job_id = started.json()["job_id"]
+            self.assertEqual(started.json()["sent"], 0)
+            deadline = time.monotonic() + 10
+            while True:
+                status = self.client.get(f"/api/feedback/send/{job_id}").json()
+                if status["state"] != "uploading" or time.monotonic() > deadline:
+                    return status
+                time.sleep(0.02)
 
     def test_send_posts_meta_and_package_and_returns_the_reference(self) -> None:
         seen: dict[str, Any] = {}
@@ -193,9 +203,10 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
             seen["body"] = request.read()
             return httpx.Response(200, json={"ok": True, "id": "FB-20261012-ABCD"})
 
-        response = self._send_with(handler)
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["id"], "FB-20261012-ABCD")
+        status = self._send_with(handler)
+        self.assertEqual(status["state"], "done", status)
+        self.assertEqual(status["id"], "FB-20261012-ABCD")
+        self.assertEqual(status["sent"], status["total"])
         self.assertEqual(seen["url"], "https://relay.example/v1/feedback")
         self.assertIn(b'name="meta"', seen["body"])
         self.assertIn(b'name="package"', seen["body"])
@@ -205,9 +216,36 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         def offline(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("offline", request=request)
 
-        self.assertEqual(self._send_with(offline).json()["reason"], "network")
-        self.assertEqual(self._send_with(lambda r: httpx.Response(429)).json()["reason"], "rate_limited")
-        self.assertEqual(self._send_with(lambda r: httpx.Response(500)).json()["reason"], "server")
+        self.assertEqual(self._send_with(offline)["reason"], "network")
+        self.assertEqual(self._send_with(lambda r: httpx.Response(429))["reason"], "rate_limited")
+        failed = self._send_with(lambda r: httpx.Response(500))
+        self.assertEqual((failed["state"], failed["reason"]), ("error", "server"))
+
+    def test_unknown_send_job_is_reported(self) -> None:
+        response = self.client.get("/api/feedback/send/nope")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["reason"], "job_missing")
+
+
+def test_upload_progress_counts_only_bytes_already_handed_over():
+    data = bytes(range(256)) * 1024  # 256 KiB，httpx 每次取 64 KiB
+    reported: list[int] = []
+    received: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        for chunk in request.stream:
+            # 服务端每收到一块时，进度不会超过已经收到的字节数。
+            received.append(len(chunk))
+        return httpx.Response(200, json={"id": "FB-1"})
+
+    with patch.object(feedback, "_open_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))):
+        reference = feedback._upload("https://relay.example", data, {"category": "problem"}, on_progress=reported.append)
+
+    assert reference == "FB-1"
+    assert reported == sorted(reported)
+    assert reported[0] == 0
+    assert reported[-1] == len(data)
+    assert len(reported) > 3
 
 
 class NameMaskerTests(IsolatedAppDataTestCase):
