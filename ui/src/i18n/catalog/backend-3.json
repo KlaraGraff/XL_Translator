@@ -1533,7 +1533,7 @@
   },
   "  → {0}：已翻译文本框 {1} 段": {
     "en": "  → {0}: translated {1} text box {1|paragraph|paragraphs}",
-    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de zones de texte traduits"
+    "fr": "  → {0} : {1} {1|paragraphe de zone de texte traduit|paragraphes de zones de texte traduits}"
   },
   "  → {0}：已翻译批注 {1} 条": {
     "en": "  → {0}: translated {1} {1|comment|comments}",
