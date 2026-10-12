@@ -117,19 +117,6 @@ Files are read and written locally. Only the text to be translated (page images 
 
 ![Model service settings](docs/images/readme/app-settings.png)
 
-## What's new in V10.0.0
-
-- CAD drawing translation, with the same workflow as Excel, Word and PDF; translation display, translation font, auto-shrinking of long translations and blocks and layers to leave untranslated can be set
-- Auto-detect: the document is read once before translation, and short standalone words are interpreted according to the document type
-- Prompts now consist of fixed built-in rules plus optional extra instructions; the three former scene presets have been removed, and existing settings are migrated automatically on upgrade
-- A new Feedback page in the sidebar, with screenshots, logs and files attachable and everything reviewable before sending
-- English and French interface, selectable under Settings → Appearance & language
-- Five color schemes (Neutral grey, Warm paper, Soft cool, Celadon and Amber comfort), selectable separately for light and dark mode
-- Consistent terminology across the interface, run log, error messages and reports, without internal technical terms
-- Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; the number of retries for Excel and CAD can be adjusted; under sustained rate limiting, completed work is saved first
-
-For details, see the [release page](https://github.com/KlaraGraff/XL_Translator/releases/latest) and the [CHANGELOG](docs/CHANGELOG.md).
-
 ## System requirements and downloads
 
 Two native installers are available:
