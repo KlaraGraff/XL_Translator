@@ -33,6 +33,7 @@ from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts, 
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
+    MARK_TABLE,
     TRANSLATION_STYLE,
     HandleAllocator,
     LinePlacement,
@@ -139,6 +140,50 @@ class CadConverter(Protocol):
     def dwg_to_dxf(self, source: Path, destination: Path) -> Path: ...
 
     def dxf_to_dwg(self, source: Path, destination: Path) -> Path: ...
+
+    # 实现可以另收 ``version``（ODA 的输出版本名，如 "ACAD2004"）：原图比 2018 格式
+    # 老时，流水线按原图版本写回，见 ``dwg_output_version``。
+
+
+# DWG 文件头前 6 字节 → ODA 输出版本名。比 2000 格式更老的图纸也存成 2000：
+# R14 及以前不认后来加的文字和扩展数据，而 2000 格式各版 AutoCAD 都能打开。
+_DWG_OUTPUT_VERSIONS = {
+    "AC1015": "ACAD2000",
+    "AC1018": "ACAD2004",
+    "AC1021": "ACAD2007",
+    "AC1024": "ACAD2010",
+    "AC1027": "ACAD2013",
+}
+_DWG_OLDEST_OUTPUT = "ACAD2000"
+DWG_DEFAULT_OUTPUT = "ACAD2018"
+
+
+CAD_OUTPUT_VERSIONS = ("source", "2018", "2013", "2010", "2007", "2004", "2000")
+
+
+def resolve_output_version(source: str | Path, choice: str) -> str | None:
+    """「输出图纸版本」设置 → 交给转换工具的版本名；None 表示用默认的 2018 格式。"""
+    if choice in CAD_OUTPUT_VERSIONS[1:]:
+        return None if f"ACAD{choice}" == DWG_DEFAULT_OUTPUT else f"ACAD{choice}"
+    return dwg_output_version(source)
+
+
+def dwg_output_version(source: str | Path) -> str | None:
+    """写回 DWG 用的版本：原图是 2018 以前的格式时返回对应版本名，否则 None（用默认的 2018）。
+
+    以前一律存成 2018 格式，用 AutoCAD 2017 及更早版本的人打不开译好的图纸。
+    """
+    try:
+        with Path(source).open("rb") as stream:
+            header = stream.read(6).decode("ascii", errors="replace").upper()
+    except OSError:
+        return None
+    match = re.fullmatch(r"AC(\d{4})", header)
+    if not match:
+        return None
+    if header in _DWG_OUTPUT_VERSIONS:
+        return _DWG_OUTPUT_VERSIONS[header]
+    return _DWG_OLDEST_OUTPUT if int(match.group(1)) < 1015 else None
 
 
 # R2007 之前的 DXF 按 $DWGCODEPAGE 声明的 ANSI 代码页存字，国内老图纸基本是
@@ -619,6 +664,8 @@ class CadPipelineOptions:
     display_mode: str = "translation"
     # compatible：译文改用 AutoCAD 自带字体（见 core.cad_writeback）；original：沿用原样式。
     translation_font: str = "original"
+    # DWG 译文图纸存成哪个版本：source 跟随原图（比 2000 老的存 2000），或 2018/2013/…/2000。
+    output_version: str = "source"
 
 
 def _parse_dxf(text: str) -> list[DxfRecord]:
@@ -680,7 +727,7 @@ def _plain_text(value: str) -> str:
     # MTEXT style commands carry parameters up to ``;`` (for example
     # ``\fArial|b0;``). Removing only the initial letter leaves font names in
     # the sentence and causes them to be sent to the translator.
-    value = re.sub(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;", "", value)
+    value = re.sub(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;", "", value)
     value = _DXF_FORMAT_RE.sub("", value)
     value = value.replace("{", "").replace("}", "")
     return value.strip()
@@ -709,7 +756,7 @@ def _mtext_runs(value: str) -> tuple[CadTextRun, ...]:
                 if plain:
                     runs.append(CadTextRun(start, i, plain))
                 start = None
-            m = re.match(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;", value[i:])
+            m = re.match(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;", value[i:])
             if m:
                 i += len(m.group(0))
                 continue
@@ -794,6 +841,19 @@ class CadLockReport:
     layer_matches: dict[str, int] = field(default_factory=dict)
 
 
+def _table_block_name(records: Sequence[DxfRecord], start: int, end: int) -> str:
+    """ACAD_TABLE 显示用的匿名图块名（AcDbBlockReference 里的组码 2），大写。
+
+    AcDbTable 部分里的组码 2 是单元格长文字的分段，不是图块名。
+    """
+    for record in records[start + 1:end]:
+        if record.code == 100 and record.value.strip() == "AcDbTable":
+            break
+        if record.code == 2:
+            return record.value.strip().upper()
+    return ""
+
+
 def extract_cad_text_units(
     records: Sequence[DxfRecord],
     *,
@@ -853,6 +913,7 @@ def extract_cad_text_units(
             table_name = None
     block_ranges: dict[str, tuple[int, int]] = {}
     referenced_blocks: set[str] = set()
+    table_blocks: set[str] = set()
     # 图块里又插了哪些图块（嵌套），以及每个图块被插在哪些图层上。
     nested_inserts: dict[str, set[str]] = {}
     insert_layers: dict[str, set[str]] = {}
@@ -869,15 +930,23 @@ def extract_cad_text_units(
         elif typ == "ENDBLK" and current_block:
             block_ranges[current_block] = (block_start, end)
             current_block = None
-        elif typ in {"INSERT", "MINSERT"}:
-            name = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), "")
+        elif typ in {"INSERT", "MINSERT", "ACAD_TABLE"}:
+            name = (
+                _table_block_name(records, start, end) if typ == "ACAD_TABLE"
+                else next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), "")
+            )
             if name:
                 referenced_blocks.add(name)
+                if typ == "ACAD_TABLE":
+                    table_blocks.add(name)
                 if current_block:
                     nested_inserts.setdefault(current_block, set()).add(name)
                 layer = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 8), "0")
                 insert_layers.setdefault(name, set()).add(layer)
     reachable_ranges = [block_ranges[name] for name in referenced_blocks if name in block_ranges]
+    # 表格显示的字在它自己的匿名图块（*T…）里：用户眼里这是图上的表格，不是「图块内文字」，
+    # 关掉「翻译图块内文字」也照翻。
+    table_ranges = [block_ranges[name] for name in table_blocks if name in block_ranges]
     reachable_ranges.extend(
         block_ranges[name] for name in ("*MODEL_SPACE", "*PAPER_SPACE") if name in block_ranges
     )
@@ -955,7 +1024,11 @@ def extract_cad_text_units(
         entity_type = records[start].value.strip().upper()
         if entity_type not in _TEXT_ENTITY_TYPES and entity_type not in {"MLEADER", "MULTILEADER"}:
             continue
-        if not include_block_text and section_by_record[start] == "BLOCKS":
+        if (
+            not include_block_text
+            and section_by_record[start] == "BLOCKS"
+            and not any(lo <= start < hi for lo, hi in table_ranges)
+        ):
             continue
         if include_block_text and section_by_record[start] == "BLOCKS":
             if not any(lo <= start < hi for lo, hi in reachable_ranges):
@@ -1126,7 +1199,7 @@ def _restore_format_codes(value: str, protected: Mapping[str, str]) -> str:
 
 def _safe_translation(original: str, translated: str) -> str:
     result = str(translated or "").strip()
-    control_re = re.compile(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;|\\P|[{}]")
+    control_re = re.compile(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;|\\P|[{}]")
     matches = list(control_re.finditer(original))
     if not matches:
         return result
@@ -1185,7 +1258,7 @@ def _ascii_chunks(value: str, limit: int = 240) -> list[str]:
     # Never split a DXF Unicode escape or formatting command across records.
     # The limit counts UTF-8 bytes, so a chunk of real CJK/accented
     # characters stays within the group-value length CAD readers accept.
-    tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
+    tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
     chunks: list[str] = []
     current = ""
     for token in tokens:
@@ -1237,7 +1310,17 @@ def _assemble_runs(
 ) -> str:
     """The MTEXT / MLEADER value with every translated run replaced (controls kept)."""
     assembled = "".join(records[index].value for index in unit.record_indices)
-    for run in reversed(unit.runs):
+    return _replace_runs(assembled, unit.runs, translations, escape=escape)
+
+
+def _replace_runs(
+    assembled: str,
+    runs: Sequence[CadTextRun],
+    translations: Mapping[str, str],
+    *,
+    escape: bool = True,
+) -> str:
+    for run in reversed(runs):
         target = translations.get(run.text)
         if not target:
             continue
@@ -1377,6 +1460,111 @@ def _write_bilingual(
             list(records[start + 1:end]), marker_records(records[start], MARK_COMBINED, original),
         )
     return None
+
+
+# ACAD_TABLE 里存单元格原值的组码：1 是单元格文字，302 是 CELL_VALUE 里的值（AutoCAD 2008 起）。
+# 表格显示的是它的 *T 图块，但 AutoCAD 重新生成表格（改单元格、调列宽）时按这些原值重画，
+# 只改 *T 图块的话，译文一编辑就变回原文。
+_TABLE_CELL_CODES = frozenset({1, 302})
+# 单元格文字超过 250 个字符要拆成组码 2 的分段；译文写不进一条记录时这一格不同步。
+_TABLE_CELL_LIMIT = 250
+
+
+def _cell_value(value: str, translations: Mapping[str, str], bilingual: str | None, escape: bool) -> str | None:
+    runs = _mtext_runs(value)
+    if not any(run.text in translations for run in runs):
+        return None
+    translated = _replace_runs(value, runs, translations, escape=escape)
+    if bilingual is None:
+        return translated
+    part = "{\\H%sx;%s}" % (_BILINGUAL_SCALE, translated)
+    return f"{value}\\P{part}" if bilingual == "source_first" else f"{part}\\P{value}"
+
+
+def plan_table_cells(
+    records: Sequence[DxfRecord],
+    units: Sequence[CadTextUnit],
+    translations: Mapping[str, str],
+    *,
+    display_mode: str = "translation",
+    escape: bool = True,
+) -> list[tuple[DxfRecord, dict[int, str]]]:
+    """表格单元格要改成的值：``[(表格的 0 记录, {实体内位置: 新值})]``。
+
+    只同步译好的 *T 图块里出现过的文字（锁定的表格、没译出的格子都不动），
+    写法和 *T 图块里的多行文字一致（双语时同一格里换行追加译文）。
+    """
+    starts = [i for i, record in enumerate(records) if record.code == 0]
+    starts.append(len(records))
+    block_ranges: dict[str, tuple[int, int]] = {}
+    tables: list[tuple[int, int, str]] = []
+    block: tuple[str, int] | None = None
+    for start, end in zip(starts, starts[1:]):
+        typ = records[start].value.strip().upper()
+        if typ == "BLOCK":
+            name = next((r.value.strip().upper() for r in records[start + 1:end] if r.code == 2), "")
+            block = (name, start)
+        elif typ == "ENDBLK" and block is not None:
+            block_ranges[block[0]] = (block[1], end)
+            block = None
+        elif typ == "ACAD_TABLE":
+            tables.append((start, end, _table_block_name(records, start, end)))
+    bilingual = display_mode if display_mode in _BILINGUAL_MODES else None
+    plans: list[tuple[DxfRecord, dict[int, str]]] = []
+    for start, end, name in tables:
+        span = block_ranges.get(name)
+        if span is None:
+            continue
+        local: dict[str, str] = {}
+        for unit in units:
+            if not span[0] <= unit.record_indices[0] < span[1]:
+                continue
+            for text in [run.text for run in unit.runs] or [unit.plain_text]:
+                if text in translations:
+                    local[text] = translations[text]
+        if not local:
+            continue
+        edits: dict[int, str] = {}
+        in_table = False
+        for index in range(start + 1, end):
+            record = records[index]
+            if record.code == 100:
+                in_table = record.value.strip() == "AcDbTable"
+                continue
+            if not in_table or record.code not in _TABLE_CELL_CODES:
+                continue
+            if record.code == 1 and records[index - 1].code == 2:
+                continue  # 长文字分了段，只看最后一段会改坏
+            value = _cell_value(record.value, local, bilingual, escape)
+            if value is None or value == record.value or len(value) > _TABLE_CELL_LIMIT:
+                continue
+            edits[index - start] = value
+        if edits:
+            plans.append((records[start], edits))
+    return plans
+
+
+def apply_table_cells(
+    records: list[DxfRecord], plans: Sequence[tuple[DxfRecord, dict[int, str]]], *, can_mark: bool
+) -> int:
+    """按 ``plan_table_cells`` 改单元格；表格按 0 记录对象认（前面的实体可能多了记录）。返回改了几个表格。"""
+    positions = {id(record): index for index, record in enumerate(records) if record.code == 0}
+    changed = 0
+    for entity, edits in plans:
+        start = positions.get(id(entity))
+        if start is None:
+            continue
+        originals: dict[str, str] = {}
+        for offset, value in edits.items():
+            originals[str(offset)] = records[start + offset].value
+            records[start + offset] = _record_copy(records[start + offset], value=value)
+        if can_mark:
+            end = _entity_end(records, start)
+            records[start + 1:end] = append_marker(
+                list(records[start + 1:end]), marker_records(records[start], MARK_TABLE, json.dumps(originals)),
+            )
+        changed += 1
+    return changed
 
 
 def scan_replacement_characters(records: Sequence[DxfRecord]) -> list[str]:
@@ -1915,6 +2103,9 @@ class CadTranslationPipeline:
             # 写进图纸的译文：用兼容的 SHX 字体时，弯引号、长破折号、œ 这类字体里可能没有的
             # 字符换成同义写法（报告里仍是模型给的原样）。
             written = {key: shx_safe(value) for key, value in translations.items()} if font == compatible_font("en") else translations
+            table_plans = plan_table_cells(
+                records, candidates, written, display_mode=options.display_mode, escape=escape_unicode,
+            )
             fit_sources: dict[int, str] = {}
             # 双语新增的译文行 → (它的原文实体, 是否在原文下方)，按对象认。
             added_lines: dict[int, int] = {}
@@ -1960,6 +2151,9 @@ class CadTranslationPipeline:
                     stats.restyled += 1
                 if unit.entity_type in {"TEXT", "ATTRIB"}:
                     fit_sources[id(records[start])] = unit.plain_text
+            tables_synced = apply_table_cells(records, table_plans, can_mark=can_mark)
+            if tables_synced:
+                self._emit("write", 0, 1, f"{tables_synced} 个表格的单元格内容已同步为译文，在 AutoCAD 里编辑表格也不会变回原文")
             handles.finish()
             layout_unresolved: list[dict[str, str]] = []
             if options.fit_layout:
@@ -2010,9 +2204,14 @@ class CadTranslationPipeline:
             if output.suffix.lower() == ".dwg":
                 if self.converter is None:
                     raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
+                converter = self.converter
+                output_version = resolve_output_version(source, options.output_version)
+                if output_version is not None:
+                    self._emit("write", 0, 1, f"译文图纸存成 AutoCAD {output_version[4:]} 格式")
                 self._convert(
                     "write",
-                    self.converter.dxf_to_dwg,
+                    converter.dxf_to_dwg if output_version is None
+                    else lambda src, dst: converter.dxf_to_dwg(src, dst, version=output_version),
                     translated_dxf,
                     staged_output,
                     started="正在将译文转换回 DWG 图纸",
@@ -2278,7 +2477,7 @@ class SubprocessCadConverter:
             size_mb = 0
         return self.timeout + 30 * size_mb
 
-    def _run(self, source: Path, destination: Path, output_type: str) -> Path:
+    def _run(self, source: Path, destination: Path, output_type: str, version: str = DWG_DEFAULT_OUTPUT) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="xl-cad-convert-") as temp:
             in_dir = Path(temp) / "in"
@@ -2287,7 +2486,7 @@ class SubprocessCadConverter:
             out_dir.mkdir()
             input_file = in_dir / source.name
             shutil.copy2(source, input_file)
-            command = [self.executable, str(in_dir), str(out_dir), "ACAD2018", output_type, "0", "1"]
+            command = [self.executable, str(in_dir), str(out_dir), version, output_type, "0", "1"]
             env = os.environ.copy()
             # ODA's macOS distribution is a Cocoa GUI application.  Forcing
             # Qt's offscreen plugin makes it fail before it even reaches the
@@ -2321,5 +2520,5 @@ class SubprocessCadConverter:
     def dwg_to_dxf(self, source: Path, destination: Path) -> Path:
         return self._run(source, destination, "DXF")
 
-    def dxf_to_dwg(self, source: Path, destination: Path) -> Path:
-        return self._run(source, destination, "DWG")
+    def dxf_to_dwg(self, source: Path, destination: Path, version: str = DWG_DEFAULT_OUTPUT) -> Path:
+        return self._run(source, destination, "DWG", version)

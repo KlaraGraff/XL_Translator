@@ -1766,5 +1766,21 @@
   "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。": {
     "en": "When a translation is longer than the original and would overlap nearby text, it is first narrowed, then its text height is reduced. The initial text scale is the share of the original height used first; if it still does not fit, the height is reduced by 0.1 at a time down to the minimum text scale. Text that still does not fit is listed in the report for manual review.",
     "fr": "Si une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis sa hauteur est réduite. L'échelle initiale du texte est la part de la hauteur d'origine appliquée en premier ; si elle ne tient toujours pas, la hauteur est réduite par pas de 0,1 jusqu'à l'échelle minimale. Le texte qui ne tient toujours pas est signalé dans le rapport pour vérification manuelle."
+  },
+  "输出图纸版本": {
+    "en": "Output drawing version",
+    "fr": "Version du plan en sortie"
+  },
+  "只对 DWG 图纸生效。「跟随原图」时译好的图纸和原图同一版本（比 2000 更早的存成 2000），用旧版 AutoCAD 的人也能打开；DXF 图纸始终保持原来的版本。": {
+    "en": "Applies to DWG drawings only. With \"Same as source\", the translated drawing keeps the source version (anything older than 2000 is saved as 2000), so people on older AutoCAD can still open it. DXF drawings always keep their original version.",
+    "fr": "Ne concerne que les plans DWG. Avec « Comme l'original », le plan traduit garde la version du plan source (les versions antérieures à 2000 sont enregistrées en 2000), pour qu'il s'ouvre aussi dans les anciennes versions d'AutoCAD. Les plans DXF gardent toujours leur version d'origine."
+  },
+  "跟随原图（推荐）": {
+    "en": "Same as source (recommended)",
+    "fr": "Comme l'original (recommandé)"
+  },
+  "AutoCAD {0} 格式": {
+    "en": "AutoCAD {0} format",
+    "fr": "Format AutoCAD {0}"
   }
 }

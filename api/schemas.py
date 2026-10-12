@@ -120,6 +120,8 @@ class TaskStartRequest(BaseModel):
     cad_locked_blocks: str = ""
     cad_locked_layers: str = ""
     cad_translation_font: str = "compatible"
+    # DWG 译文图纸的版本：source 跟随原图，或 2018/2013/2010/2007/2004/2000。
+    cad_output_version: str = "source"
 
     @field_validator(
         "source_path",

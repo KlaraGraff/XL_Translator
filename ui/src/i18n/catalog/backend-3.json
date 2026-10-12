@@ -1518,5 +1518,13 @@
   "{0}（旧版修改）": {
     "en": "{0} (old edited version)",
     "fr": "{0} (ancienne version modifiée)"
+  },
+  "译文图纸存成 AutoCAD {0} 格式": {
+    "en": "Saving the translated drawing in AutoCAD {0} format",
+    "fr": "Enregistrement du plan traduit au format AutoCAD {0}"
+  },
+  "{0} 个表格的单元格内容已同步为译文，在 AutoCAD 里编辑表格也不会变回原文": {
+    "en": "Cell contents of {0} table(s) updated with the translation, so editing the table in AutoCAD keeps the translation",
+    "fr": "Contenu des cellules de {0} tableau(x) mis à jour avec la traduction : modifier le tableau dans AutoCAD conserve la traduction"
   }
 }

@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -26,6 +27,7 @@ TRANSLATION_STYLE = "XLT_TRANSLATION"
 # 扩展数据里第一个字符串说明这段文字是怎么来的。
 MARK_ADDED = "added"          # 双语时新增的译文文字：再翻一次时整个删掉
 MARK_COMBINED = "combined"    # 原文和译文写在同一段里：后面跟着原文，再翻一次时恢复
+MARK_TABLE = "table"          # 表格单元格改成了双语：后面跟着 {实体内位置: 原值} 的 JSON
 _XDATA_CHUNK = 240
 
 # 译文专用样式的字体：都是 AutoCAD 安装自带的（AutoCAD 2026 for Mac 的安装清单与
@@ -340,8 +342,23 @@ def restore_previous_run(records: list[Any]) -> int:
         cleaned = strip_marker(list(body))
         if kind == MARK_COMBINED and payload:
             cleaned = _restore_text(records[start].value.strip().upper(), cleaned, payload)
+        elif kind == MARK_TABLE and payload:
+            cleaned = _restore_cells(cleaned, payload)
         records[start + 1:end] = cleaned
     return touched
+
+
+def _restore_cells(body: list[Any], payload: str) -> list[Any]:
+    """表格单元格写回原值；位置按实体的 ``0`` 记录算起（1 是 body 的第一条）。"""
+    try:
+        originals = json.loads(payload)
+    except ValueError:
+        return body
+    for offset, value in originals.items():
+        index = int(offset) - 1
+        if 0 <= index < len(body) and isinstance(value, str):
+            body[index] = _copy(body[index], value=value)
+    return body
 
 
 def _restore_text(entity_type: str, body: list[Any], source: str) -> list[Any]:

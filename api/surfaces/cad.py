@@ -27,6 +27,7 @@ from core.document_profile import (
     request_document_profile,
 )
 from core.cad_translation import (
+    CAD_OUTPUT_VERSIONS,
     CadPipelineError,
     CadPipelineOptions,
     SubprocessCadConverter,
@@ -60,6 +61,7 @@ _CAD_OPTION_FIELDS = (
     "cad_locked_blocks",
     "cad_locked_layers",
     "cad_translation_font",
+    "cad_output_version",
 )
 
 
@@ -79,6 +81,7 @@ def cad_layout_options(options: TaskOptions) -> dict[str, Any]:
         "locked_blocks": parse_lock_patterns(options.cad_locked_blocks),
         "locked_layers": parse_lock_patterns(options.cad_locked_layers),
         "translation_font": "original" if options.cad_translation_font == "original" else "compatible",
+        "output_version": options.cad_output_version if options.cad_output_version in CAD_OUTPUT_VERSIONS else "source",
     }
 
 
@@ -264,6 +267,7 @@ class CadSurface(Surface):
                 "locked_blocks": options.cad_locked_blocks,
                 "locked_layers": options.cad_locked_layers,
                 "translation_font": options.cad_translation_font,
+                "output_version": options.cad_output_version,
             },
             "tm": {"enabled": options.cad_use_memory, "priority": "user_memory_first"},
             "target_lang_display": get_target_lang_display(settings.target_lang),
