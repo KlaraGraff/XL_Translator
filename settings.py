@@ -1925,6 +1925,17 @@ def _raw_settings_payload() -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _raw_prompt_choices(stored_version: int) -> dict | None:
+    """The stored file with pre-v33 default scenes already read as 自动识别场景.
+
+    A v30–v32 file that still names 同步工程场景 is on the old default, not a
+    choice; v33 would have moved it to 自动识别场景 anyway, so it must not
+    trigger the v35 backup on its own.
+    """
+    raw = _raw_settings_payload()
+    return None if raw is None else _migrate_smart_domain_default(raw, stored_version)
+
+
 def _migrate_prompt_layers(payload: dict, stored_version: int) -> dict:
     """Read-time hook for :func:`migrate_prompt_layers` (files older than v35)."""
     if stored_version >= 35:
@@ -2413,7 +2424,7 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # 旧字段清空），第一次写回前同样留一份原文件。
             if (
                 AppSettings._migrate_legacy_image_model(_payload) != _payload
-                or (stored_version < 35 and _has_legacy_prompt_data(_raw_settings_payload()))
+                or (stored_version < 35 and _has_legacy_prompt_data(_raw_prompt_choices(stored_version)))
             ):
                 _backup_settings_file(f"settings_v{stored_version}_before_upgrade")
         # An explicit reset deliberately discards whatever is on disk, so it

@@ -178,6 +178,22 @@ class SettingsFileUpgradeTests(IsolatedAppDataTestCase):
         self.assertTrue(settings_module.load_settings().excel_smart_context)
 
 
+    def test_pre_v33_default_scene_needs_no_backup(self) -> None:
+        # v30 时 Word/CAD 默认就是同步工程场景：没选过、没改过，不算用户的数据。
+        self._write({"settings_version": 30, "domain_preset": "同步工程场景", "word_domain_preset": "同步工程场景",
+                     "cad_domain_preset": "同步工程场景", "excel_domain_preset": "无"})
+        settings_module.save_settings(settings_module.load_settings())
+        self.assertEqual(self._backups(), [])
+        loaded = settings_module.load_settings()
+        self.assertTrue(loaded.word_smart_context)
+        self.assertEqual(loaded.word_domain_preset, "无")
+
+    def test_v34_deliberate_retired_scene_is_backed_up(self) -> None:
+        self._write({"settings_version": 34, "word_domain_preset": "资料管理场景"})
+        settings_module.save_settings(settings_module.load_settings())
+        self.assertEqual(len(self._backups()), 1)
+
+
 class DocumentBundleTests(unittest.TestCase):
     def test_v3_bundle_is_converted_page_by_page(self) -> None:
         bundle = {
