@@ -205,7 +205,7 @@ def test_scan_counts_leave_out_locked_text_and_translation_warns_about_unmatched
 def test_text_containers_list_named_blocks_with_text_and_layers():
     containers = list_cad_text_containers(_parse_dxf(_framed_drawing()))
     names = {item["name"]: item for item in containers["blocks"]}
-    assert names["TK-A1"] == {"name": "TK-A1", "texts": 2, "inserts": 1}
+    assert names["TK-A1"] == {"name": "TK-A1", "texts": 2, "inserts": 1, "sample": "设计单位 · 图名"}
     assert names["DOOR"]["texts"] == 1 and "LOGO" in names
     layers = {item["name"]: item["texts"] for item in containers["layers"]}
     assert layers["说明"] == 1 and layers["签字"] == 1
@@ -386,3 +386,36 @@ def test_scan_counts_a_dwg_from_the_cache_and_lists_others_as_pending(tmp_path):
     assert summaries["counted.dwg"].text_entity_count == 7 and not summaries["counted.dwg"].counts_pending
     assert summaries["counted.dwg"].format == "dwg"
     assert summaries["pending.dwg"].counts_pending
+
+
+def test_bilingual_line_in_a_tight_table_shrinks_into_the_gap_above_the_next_row(tmp_path):
+    drawing = _drawing(
+        *_text("20", "木门", x=0, y=100),
+        *_text("21", "钢门", x=0, y=96),
+        *_text("22", "窗", x=0, y=93.2),
+    )
+    translations = {"木门": "Porte bois", "钢门": "Porte acier", "窗": "Fenetre"}
+    result, output, messages = _translate(tmp_path, drawing, translations, display_mode="source_first")
+    texts = {_field(body, 1): body for body in _entities(output, "TEXT")}
+    wood = texts["Porte bois"]
+    # 原文底边 100，下一行顶边 98.5：译文行缩到 0.4 倍原文字高（1.0），放在 98.5–99.5。
+    assert float(_field(wood, 40)) == pytest.approx(1.0)
+    assert float(_field(wood, 20)) == pytest.approx(98.5)
+    # 「钢门」下一行顶边 95.7，只剩 0.3：缩到最小比例仍放不下，列入报告。
+    assert result.stats.layout_unresolved == 1
+    assert any("缩到最小比例仍会压到旁边的文字" in message for message in messages)
+    # 最后一行下面没有别的文字，保持 0.8 倍、原来的位置。
+    window = texts["Fenetre"]
+    assert float(_field(window, 40)) == pytest.approx(2.0)
+    assert float(_field(window, 20)) == pytest.approx(93.2 - 1.0 - 2.0)
+
+
+def test_bilingual_line_that_still_contains_chinese_keeps_the_source_style(tmp_path):
+    drawing = _drawing(*_text("20", "盛泰大厦", x=0, y=100), *_text("21", "设备基坑", x=0, y=50))
+    _result, output, _messages = _translate(
+        tmp_path, drawing, {"盛泰大厦": "Immeuble 盛泰", "设备基坑": "Fosse"},
+        display_mode="source_first", translation_font="compatible",
+    )
+    texts = {_field(body, 1): body for body in _entities(output, "TEXT")}
+    assert _field(texts["Immeuble 盛泰"], 7) == "Standard"
+    assert _field(texts["Fosse"], 7) == TRANSLATION_STYLE

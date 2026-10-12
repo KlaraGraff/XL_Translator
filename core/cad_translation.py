@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, fit_translated_texts
+from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
@@ -358,12 +358,19 @@ def _summarize_records(source: Path, records: Sequence[DxfRecord], options: CadP
     )
 
 
+_BLOCK_SAMPLE_COUNT = 3
+_BLOCK_SAMPLE_LENGTH = 24
+
+
 def list_cad_text_containers(records: Sequence[DxfRecord]) -> dict[str, list[dict[str, Any]]]:
     """含文字的图块和图层，供「锁定不翻译」清单勾选。
 
     图块：有名字的图块（匿名图块 ``*U``/``*D`` 等用户不认识，不列）里直接放了几段
     文字（含属性定义），以及在整张图里被插入了几次；没有文字的图块不列。
     图层：每个图层上有几段文字。
+
+    转换工具会把一些图块改名成 ``$TD_AUDIT_GENERATED_(187B)`` 这样的名字，图框也不例外，
+    光看名字认不出是哪个块：每个图块另附 ``sample``，块里的前几段文字，界面列在名字旁边。
     """
     starts = [index for index, record in enumerate(records) if record.code == 0]
     starts.append(len(records))
@@ -371,6 +378,7 @@ def list_cad_text_containers(records: Sequence[DxfRecord]) -> dict[str, list[dic
     block_inserts: dict[str, int] = {}
     layer_texts: dict[str, int] = {}
     display_names: dict[str, str] = {}
+    block_samples: dict[str, list[str]] = {}
     current_block: str | None = None
     for start, end in zip(starts, starts[1:]):
         if start >= end:
@@ -398,10 +406,24 @@ def list_cad_text_containers(records: Sequence[DxfRecord]) -> dict[str, list[dic
             continue
         if current_block:
             block_texts[current_block] = block_texts.get(current_block, 0) + 1
+            samples = block_samples.setdefault(current_block, [])
+            if len(samples) < _BLOCK_SAMPLE_COUNT:
+                raw = "".join(r.value for r in body if r.code == 3 and typ == "MTEXT")
+                raw += next((r.value for r in body if r.code == 1), "")
+                if typ == "ATTDEF" and not raw.strip():
+                    raw = next((r.value for r in body if r.code == 2), "")
+                sample = " ".join(_plain_text(raw).split())[:_BLOCK_SAMPLE_LENGTH]
+                if sample and sample not in samples:
+                    samples.append(sample)
         layer = next((r.value.strip() for r in body if r.code == 8), "0") or "0"
         layer_texts[layer] = layer_texts.get(layer, 0) + 1
     blocks = [
-        {"name": display_names.get(key, key), "texts": count, "inserts": block_inserts.get(key, 0)}
+        {
+            "name": display_names.get(key, key),
+            "texts": count,
+            "inserts": block_inserts.get(key, 0),
+            "sample": " · ".join(block_samples.get(key, [])),
+        }
         for key, count in block_texts.items()
         if block_inserts.get(key, 0)
     ]
@@ -1832,6 +1854,8 @@ class CadTranslationPipeline:
             # 字符换成同义写法（报告里仍是模型给的原样）。
             written = {key: shx_safe(value) for key, value in translations.items()} if font == compatible_font("en") else translations
             fit_sources: dict[int, str] = {}
+            # 双语新增的译文行 → (它的原文实体, 是否在原文下方)，按对象认。
+            added_lines: dict[int, int] = {}
             for unit in reversed(candidates):
                 fully = bool(unit.runs) and all(run.text in written for run in unit.runs if _has_translatable_content(run.text))
                 changed_unit = any(run.text in written for run in unit.runs)
@@ -1846,13 +1870,18 @@ class CadTranslationPipeline:
                         records, unit, written, start,
                         below=options.display_mode == "source_first",
                         handles=handles,
-                        style=style_name if fully else None,
+                        # SHX 西文字体没有汉字：译文里还留着中文（专有名词、没译出的词）时，
+                        # 这一行沿用原文样式，否则显示成一串问号。
+                        style=style_name if fully and (
+                            font == _CJK_TRANSLATION_FONT or not has_cjk(written.get(unit.plain_text, ""))
+                        ) else None,
                         can_mark=can_mark,
                         escape=escape_unicode,
                     )
                     if added is not None:
                         stats.bilingual_added += 1
                         fit_sources[id(added)] = unit.plain_text
+                        added_lines[id(added)] = id(records[start])
                     elif unit.entity_type == "ATTRIB":
                         fit_sources[id(records[start])] = unit.plain_text
                     continue
@@ -1876,7 +1905,20 @@ class CadTranslationPipeline:
                 # 「2830X1700mm」）：这些译文按能用的空间缩小字宽/字高。
                 # 实体按 0 记录对象认：双语新增的文字会让后面实体的序号整体后移。
                 ordinals = {id(record): number for number, record in enumerate(r for r in records if r.code == 0)}
-                stats.layout_fitted = fit_translated_texts(
+                below = options.display_mode == "source_first"
+                # 表格、逐行说明里行距紧：新增的译文行先收进原文和下一行之间。
+                stats.layout_fitted = fit_added_lines(
+                    records,
+                    {
+                        ordinals[line]: (ordinals[source], below)
+                        for line, source in added_lines.items()
+                        if line in ordinals and source in ordinals
+                    },
+                    _plain_text,
+                    FitSettings(options.fit_default_scale, options.fit_min_scale),
+                    layout_unresolved,
+                )
+                stats.layout_fitted += fit_translated_texts(
                     records,
                     {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
                     _plain_text,

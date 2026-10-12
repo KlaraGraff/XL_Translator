@@ -4440,7 +4440,9 @@ const CAD_AUTO_COUNT_MAX_FILES = 10;
 const CAD_AUTO_COUNT_MAX_BYTES = 50 * 1024 * 1024;
 
 type CadLockKind = "blocks" | "layers";
-type CadContainer = { name: string; texts: number; files: number };
+/** sample：图块里的前几段文字。转换工具会把图框这类块改名成「$TD_AUDIT_GENERATED_(187B)」，
+ *  光看名字认不出，列在名字下面帮着认。 */
+type CadContainer = { name: string; texts: number; files: number; sample: string };
 
 interface CadInspectState {
   /** 每次开始/取消统计都加一；回来的结果对不上号就丢掉。 */
@@ -4676,7 +4678,7 @@ function buildCadContainerList(active: boolean): HTMLElement {
   let shown = 0;
   for (const [kind, title, items] of groups) {
     const matches = [...items.values()]
-      .filter((item) => !query || item.name.toUpperCase().includes(query))
+      .filter((item) => !query || item.name.toUpperCase().includes(query) || item.sample.toUpperCase().includes(query))
       .sort((a, b) => b.texts - a.texts || a.name.localeCompare(b.name));
     if (!matches.length) continue;
     const head = el("div");
@@ -4693,9 +4695,15 @@ function buildCadContainerList(active: boolean): HTMLElement {
       box.disabled = active;
       box.addEventListener("change", () => toggleCadLockName(kind, item.name, box.checked));
       const name = el("span");
-      name.textContent = item.name;
       name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-      name.title = item.name;
+      name.textContent = item.name;
+      name.title = item.sample ? `${item.name}\n${item.sample}` : item.name;
+      if (item.sample) {
+        const sample = el("span");
+        sample.style.cssText = "display:block;font-size:11px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis";
+        sample.textContent = item.sample;
+        name.append(sample);
+      }
       const count = el("span");
       count.style.cssText = "color:var(--ink-3);font-size:11px;white-space:nowrap";
       count.textContent = item.files > 1
@@ -4817,8 +4825,9 @@ function mergeCadContainers(target: Map<string, CadContainer>, raw: unknown): vo
     if (existing) {
       existing.texts += num(entry.texts);
       existing.files += 1;
+      existing.sample ||= text(entry.sample);
     } else {
-      target.set(name, { name, texts: num(entry.texts), files: 1 });
+      target.set(name, { name, texts: num(entry.texts), files: 1, sample: text(entry.sample) });
     }
   }
 }

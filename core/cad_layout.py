@@ -398,8 +398,8 @@ def fit_translated_texts(
         if needed <= room:
             continue
         scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
-        if not fits and unresolved is not None:
-            unresolved.append({"source": plain_text(original), "translation": entity.text})
+        if not fits and unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
+            unresolved.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
         height_scale, width_scale = _scales(scale)
         edits.append((entity, height * height_scale, width_factor * width_scale))
 
@@ -431,3 +431,106 @@ def _write_size(records: list[Any], start: int, end: int, height: float, width_f
         height_index + 1,
         replace(template, code=41, value=_format_number(width_factor), code_text=code_text),
     )
+
+
+# 双语新增的译文行和原文之间至少留这么多空（按原文字高计）；原本的空是 0.4。
+_MIN_LINE_GAP = 0.15
+
+
+def fit_added_lines(
+    records: list[Any],
+    added: Mapping[int, tuple[int, bool]],
+    plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
+) -> int:
+    """Shrink and move bilingual translation lines that would cover the next line.
+
+    ``added`` maps the ordinal of each added translation TEXT to
+    ``(ordinal of its source TEXT, placed below)``.  表格和逐行说明里行距很紧，
+    原文下方另起的一行会压到下一行的原文上：这时先把两行之间的空收窄，再按设置的
+    档位（相对原文字号）缩小译文行，让它落在原文和下一行之间。到最小比例仍放不下的
+    停在最小比例，记进 ``unresolved``。返回调整过的行数。
+    """
+    if not added:
+        return 0
+    settings = (settings or FitSettings()).normalized()
+    entities = _collect_entities(records, plain_text)
+    by_no = {entity.entity_no: entity for entity in entities}
+    groups: dict[tuple[tuple[str, str], float], list[_TextBox]] = {}
+    for entity in entities:
+        groups.setdefault((entity.container, round(entity.rotation, 1)), []).append(_box(entity))
+
+    edits: list[tuple[_TextEntity, float, float]] = []
+    for added_no, (source_no, below) in added.items():
+        line, source = by_no.get(added_no), by_no.get(source_no)
+        if line is None or source is None:
+            continue
+        line_box, source_box = _box(line), _box(source)
+        source_height = source.height
+        obstacles = []
+        for box in groups.get((line.container, round(line.rotation, 1)), []):
+            if box.entity_no in {added_no, source_no}:
+                continue
+            # 和原文在同一行的（左右相邻的文字）不算，那是横向防重叠管的。
+            same_line = min(box.top, source_box.top) - max(box.bottom, source_box.bottom)
+            if same_line > 0.3 * min(box.top - box.bottom, source_height):
+                continue
+            if min(box.right, line_box.right) - max(box.left, line_box.left) <= 0.1 * source_height:
+                continue
+            if below and box.top > line_box.bottom and box.bottom < source_box.bottom:
+                obstacles.append(box.top)
+            elif not below and box.bottom < line_box.top and box.top > source_box.top:
+                obstacles.append(box.bottom)
+        if not obstacles:
+            continue
+        if below:
+            available = source_box.bottom - max(obstacles)
+        else:
+            available = min(obstacles) - source_box.top
+        line_height = line.height
+        min_gap = _MIN_LINE_GAP * source_height
+        if available - min_gap >= line_height:
+            new_height = line_height
+            fits = True
+        else:
+            fit = max(available - min_gap, 0.0) / source_height
+            tiers = [tier * source_height for tier in settings.tiers() if tier * source_height < line_height]
+            tiers = tiers or [min(line_height, settings.min_scale * source_height)]
+            new_height = next((height for height in tiers if height <= fit * source_height + 1e-9), tiers[-1])
+            fits = new_height <= fit * source_height + 1e-9
+        if not fits and unresolved is not None:
+            unresolved.append({"source": source.text, "translation": line.text, "entity": added_no})
+        current_gap = source_box.bottom - line_box.top if below else line_box.bottom - source_box.top
+        gap = min(current_gap, available - new_height) if fits else min_gap
+        if below:
+            new_top = source_box.bottom - gap
+            new_bottom = new_top - new_height
+        else:
+            new_bottom = source_box.top + gap
+            new_top = new_bottom + new_height
+        bottom, top = _vertical_span(line.valign, _local(line)[1], line_height)
+        new_anchor = {3: new_top, 2: (new_bottom + new_top) / 2}.get(line.valign, new_bottom)
+        old_anchor = {3: top, 2: (bottom + top) / 2}.get(line.valign, bottom)
+        edits.append((line, new_height, new_anchor - old_anchor))
+
+    for line, new_height, shift in sorted(edits, key=lambda item: item[0].start, reverse=True):
+        _shift_entity(records, line.start, line.end, line.rotation, shift)
+        _write_size(records, line.start, line.end, new_height, line.width_factor)
+    return len(edits)
+
+
+def _shift_entity(records: list[Any], start: int, end: int, rotation: float, shift: float) -> None:
+    """把单行文字沿它自己的「上下」方向移动 ``shift``（两个插入点一起移）。"""
+    if not shift:
+        return
+    angle = math.radians(rotation)
+    dx, dy = -shift * math.sin(angle), shift * math.cos(angle)
+    for index in range(start + 1, end):
+        record = records[index]
+        if record.code == 101:
+            break
+        if record.code in {10, 11}:
+            records[index] = replace(record, value=_format_number(_float(record.value) + dx))
+        elif record.code in {20, 21}:
+            records[index] = replace(record, value=_format_number(_float(record.value) + dy))

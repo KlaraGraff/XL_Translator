@@ -190,7 +190,7 @@ def test_cad_inspect_returns_counts_blocks_and_layers_and_honours_locks(tmp_path
     assert plain.status_code == 200, plain.text
     body = plain.json()
     assert (body["text_count"], body["converted"]) == (2, False)
-    assert body["blocks"] == [{"name": "TK-A1", "texts": 1, "inserts": 1}]
+    assert body["blocks"] == [{"name": "TK-A1", "texts": 1, "inserts": 1, "sample": "设计单位"}]
     assert {layer["name"] for layer in body["layers"]} == {"0", "说明"}
     assert locked.json()["text_count"] == 1
     assert scanned.json()["items"][0]["text_count"] == 1
