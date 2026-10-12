@@ -1,0 +1,209 @@
+"""Email the users whose feedback a release resolves.
+
+Runs after ``release.yml`` publishes a version (and by hand for a dry run).
+Works on the private feedback repository the relay files issues into:
+
+* an issue waiting for a notice carries the label ``待通知`` and a comment
+  that starts with ``<!-- xl-notify version=X.Y.Z -->``, then a line
+  ``主题：…`` (or ``Subject: …``), a blank line and the email body, written
+  in the user's interface language;
+* once the published version is at least X.Y.Z, the body goes to the address
+  in the issue's ``**联系方式**`` line, from the app's own mailbox over SMTP;
+* the issue then gets a short comment (without the address), the label
+  ``已通知`` instead of ``待通知``, and is closed as completed.
+
+Issues without a usable address are labelled ``无邮箱`` and closed. Logs of
+this public repository never show an address or the email text.
+
+Environment: FEEDBACK_GITHUB_TOKEN, FEEDBACK_REPO (default
+KlaraGraff/XL_Translator-feedback), FEEDBACK_SMTP_USER,
+FEEDBACK_SMTP_PASSWORD, FEEDBACK_SMTP_HOST (default smtp.gmail.com),
+FEEDBACK_SMTP_PORT (default 465).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import smtplib
+import sys
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from email.message import EmailMessage
+from email.utils import formataddr, make_msgid
+from typing import Any
+
+PENDING_LABEL = "待通知"
+DONE_LABEL = "已通知"
+NO_EMAIL_LABEL = "无邮箱"
+SENDER_NAME = "XL Translator"
+_MARKER_RE = re.compile(r"^\s*<!--\s*xl-notify\s+version=v?(\d+\.\d+\.\d+)\s*-->\s*$")
+_SUBJECT_RE = re.compile(r"^\s*(?:主题|Subject|Objet)\s*[:：]\s*(.+?)\s*$", re.IGNORECASE)
+_CONTACT_RE = re.compile(r"^\*\*联系方式\*\*：`([^`]*)`", re.MULTILINE)
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+@dataclass
+class Notice:
+    version: tuple[int, int, int]
+    subject: str
+    body: str
+
+
+def parse_version(text: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", text.strip())
+    if not match:
+        raise ValueError(f"版本号格式应为 X.Y.Z：{text}")
+    return int(match[1]), int(match[2]), int(match[3])
+
+
+def parse_notice(comment: str) -> Notice | None:
+    lines = comment.replace("\r\n", "\n").split("\n")
+    if not lines:
+        return None
+    marker = _MARKER_RE.match(lines[0])
+    if not marker or len(lines) < 2:
+        return None
+    subject = _SUBJECT_RE.match(lines[1])
+    body = "\n".join(lines[2:]).strip()
+    if not subject or not body:
+        return None
+    return Notice(parse_version(marker[1]), subject[1], body + "\n")
+
+
+def contact_email(issue_body: str) -> str:
+    match = _CONTACT_RE.search(issue_body or "")
+    address = match[1].strip() if match else ""
+    return address if _EMAIL_RE.match(address) else ""
+
+
+def mask(address: str) -> str:
+    name, _, domain = address.partition("@")
+    return f"{name[:1]}***@{domain}" if domain else "***"
+
+
+def build_message(sender: str, to: str, notice: Notice) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = formataddr((SENDER_NAME, sender))
+    message["To"] = to
+    message["Subject"] = notice.subject
+    message["Message-ID"] = make_msgid(domain=sender.partition("@")[2] or None)
+    message.set_content(notice.body)
+    return message
+
+
+class GitHub:
+    def __init__(self, token: str, repo: str) -> None:
+        self.token = token
+        self.repo = repo
+
+    def request(self, method: str, path: str, payload: Any = None) -> Any:
+        url = f"https://api.github.com/repos/{self.repo}{path}"
+        data = json.dumps(payload).encode() if payload is not None else None
+        request = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "xl-translator-feedback-notify",
+        })
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read()
+        return json.loads(raw) if raw else None
+
+    def pending_issues(self) -> list[dict[str, Any]]:
+        label = urllib.parse.quote(PENDING_LABEL)
+        issues: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            batch = self.request("GET", f"/issues?state=open&labels={label}&per_page=100&page={page}")
+            issues.extend(item for item in batch if "pull_request" not in item)
+            if len(batch) < 100:
+                return issues
+            page += 1
+
+    def comments(self, number: int) -> list[dict[str, Any]]:
+        return self.request("GET", f"/issues/{number}/comments?per_page=100")
+
+    def finish(self, number: int, label: str, note: str) -> None:
+        self.request("POST", f"/issues/{number}/comments", {"body": note})
+        labels = [item["name"] for item in self.request("GET", f"/issues/{number}/labels")]
+        labels = [name for name in labels if name != PENDING_LABEL] + [label]
+        self.request("PUT", f"/issues/{number}/labels", {"labels": labels})
+        self.request("PATCH", f"/issues/{number}", {"state": "closed", "state_reason": "completed"})
+
+
+def latest_notice(comments: list[dict[str, Any]]) -> Notice | None:
+    for comment in reversed(comments):
+        notice = parse_notice(str(comment.get("body") or ""))
+        if notice:
+            return notice
+    return None
+
+
+def run(github: GitHub, released: tuple[int, int, int], *, send: Any, dry_run: bool) -> int:
+    """Send every due notice; return how many failed."""
+    version_text = ".".join(map(str, released))
+    failures = 0
+    for issue in github.pending_issues():
+        number = int(issue["number"])
+        notice = latest_notice(github.comments(number))
+        if notice is None:
+            print(f"#{number}：有「{PENDING_LABEL}」标签但还没写通知，跳过。")
+            continue
+        if notice.version > released:
+            print(f"#{number}：通知属于 {'.'.join(map(str, notice.version))}，本次 {version_text} 不发。")
+            continue
+        address = contact_email(str(issue.get("body") or ""))
+        if not address:
+            print(f"#{number}：用户没留可用的邮箱，标为「{NO_EMAIL_LABEL}」并关闭。")
+            if not dry_run:
+                github.finish(number, NO_EMAIL_LABEL, f"v{version_text} 已发布。用户没有留下可用的邮箱，未发送通知。")
+            continue
+        if dry_run:
+            print(f"#{number}：将发给 {mask(address)}（试运行，未发送）。")
+            continue
+        try:
+            send(address, notice)
+        except (smtplib.SMTPException, OSError) as exc:
+            failures += 1
+            print(f"::error::#{number}：发给 {mask(address)} 失败（{type(exc).__name__}），保留「{PENDING_LABEL}」，下次发布再发。")
+            continue
+        github.finish(number, DONE_LABEL, f"v{version_text} 已发布，已发邮件通知用户（{mask(address)}）。")
+        print(f"#{number}：已发给 {mask(address)}。")
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--version", required=True, help="刚发布的版本号 X.Y.Z")
+    parser.add_argument("--dry-run", action="store_true", help="只列出将发送的通知，不发邮件、不改 issue")
+    args = parser.parse_args(argv)
+    released = parse_version(args.version)
+
+    token = os.environ.get("FEEDBACK_GITHUB_TOKEN", "")
+    if not token:
+        print("::warning::没有 FEEDBACK_GITHUB_TOKEN，跳过反馈通知。")
+        return 0
+    github = GitHub(token, os.environ.get("FEEDBACK_REPO") or "KlaraGraff/XL_Translator-feedback")
+    user = os.environ.get("FEEDBACK_SMTP_USER", "")
+    password = os.environ.get("FEEDBACK_SMTP_PASSWORD", "")
+    dry_run = args.dry_run or not (user and password)
+    if dry_run and not args.dry_run:
+        print("::warning::还没配置发信邮箱（FEEDBACK_SMTP_USER / FEEDBACK_SMTP_PASSWORD），只试运行。")
+
+    host = os.environ.get("FEEDBACK_SMTP_HOST") or "smtp.gmail.com"
+    port = int(os.environ.get("FEEDBACK_SMTP_PORT") or 465)
+
+    def send(address: str, notice: Notice) -> None:
+        with smtplib.SMTP_SSL(host, port, timeout=60) as smtp:
+            smtp.login(user, password)
+            smtp.send_message(build_message(user, address, notice))
+
+    return 1 if run(github, released, send=send, dry_run=dry_run) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

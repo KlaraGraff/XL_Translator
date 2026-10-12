@@ -1,0 +1,58 @@
+# 新版本发布后，给反馈已在这一版解决的用户发邮件。
+#
+# 发布流程（release.yml step=publish）发布成功后自动调用本工作流；也可以手动运行，
+# 勾 dry_run 只列出将发送的通知。规则见 scripts/feedback_notify.py：反馈仓库里带
+# 「待通知」标签、且有 <!-- xl-notify version=X.Y.Z --> 通知评论的 issue，版本已发布
+# 就发给 issue 里留的邮箱，然后标「已通知」并关闭。
+#
+# 密钥：FEEDBACK_GITHUB_TOKEN（已有，读写反馈仓库 issue）、FEEDBACK_SMTP_USER、
+# FEEDBACK_SMTP_PASSWORD（软件专用邮箱和它的应用专用密码）。还没配邮箱时只试运行。
+# 本仓库公开，日志里只出现打码后的邮箱，不打印邮件正文。
+name: Notify feedback users
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 已发布的版本号（X.Y.Z，不带 v）
+        type: string
+        required: true
+      dry_run:
+        description: 只列出将发送的通知，不发邮件、不改 issue
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Send due notices
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            flags+=(--dry-run)
+          fi
+          python scripts/feedback_notify.py --version "$VERSION" "${flags[@]}"
+        env:
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          FEEDBACK_GITHUB_TOKEN: ${{ secrets.FEEDBACK_GITHUB_TOKEN }}
+          FEEDBACK_SMTP_USER: ${{ secrets.FEEDBACK_SMTP_USER }}
+          FEEDBACK_SMTP_PASSWORD: ${{ secrets.FEEDBACK_SMTP_PASSWORD }}
+          # 不用 Gmail 时在仓库变量里设 FEEDBACK_SMTP_HOST / FEEDBACK_SMTP_PORT（SSL）。
+          FEEDBACK_SMTP_HOST: ${{ vars.FEEDBACK_SMTP_HOST }}
+          FEEDBACK_SMTP_PORT: ${{ vars.FEEDBACK_SMTP_PORT }}
