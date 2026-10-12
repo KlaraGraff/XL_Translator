@@ -1615,25 +1615,9 @@
     "en": "Translation only",
     "fr": "Traduction seule"
   },
-  "仍放不下时每次再缩 0.1，最小缩到这个比例；到这里还放不下的列入报告，请人工复核。": {
-    "en": "If it still does not fit, the size is reduced by 0.1 at a time down to this ratio. Text that still does not fit is listed in the report for review.",
-    "fr": "Si le texte ne tient toujours pas, la taille diminue de 0,1 à chaque fois jusqu'à ce rapport. Le texte qui ne tient toujours pas est signalé dans le rapport, à vérifier."
-  },
-  "例如：TK*, 图框A1, 签名栏": {
-    "en": "For example: TK*, Frame-A1, Signatures",
-    "fr": "Par exemple : TK*, Cadre-A1, Signatures"
-  },
-  "例如：签字, TITLE*": {
-    "en": "For example: SIGN, TITLE*",
-    "fr": "Par exemple : SIGN, TITLE*"
-  },
   "停止统计": {
     "en": "Stop counting",
     "fr": "Arrêter le comptage"
-  },
-  "先缩到": {
-    "en": "Shrink first to",
-    "fr": "Réduire d'abord à"
   },
   "全部统计": {
     "en": "Count all",
@@ -1679,17 +1663,9 @@
     "en": "{0} {0|drawing|drawings} scanned",
     "fr": "{0} {0|plan analysé|plans analysés}"
   },
-  "扫描图块名": {
-    "en": "Scan block names",
-    "fr": "Analyser les noms de blocs"
-  },
   "搜索图块或图层名…": {
     "en": "Search blocks or layers…",
     "fr": "Rechercher un bloc ou un calque…"
-  },
-  "放不下时先缩到这个比例（相对原文字号）。": {
-    "en": "When text does not fit, it is first reduced to this ratio of the original size.",
-    "fr": "Si le texte ne tient pas, il est d'abord réduit à ce rapport de la taille d'origine."
   },
   "放不下时缩小字号": {
     "en": "Shrink text that does not fit",
@@ -1698,10 +1674,6 @@
   "显示方式": {
     "en": "Display",
     "fr": "Affichage"
-  },
-  "最小比例": {
-    "en": "Minimum ratio",
-    "fr": "Rapport minimal"
   },
   "正在读取第 {0} / {1} 张图纸…": {
     "en": "Reading drawing {0} of {1}…",
@@ -1719,10 +1691,6 @@
     "en": "Keep the original font",
     "fr": "Conserver la police d'origine"
   },
-  "缩小比例": {
-    "en": "Shrink ratio",
-    "fr": "Rapport de réduction"
-  },
   "译文写回": {
     "en": "Writing translations",
     "fr": "Écriture des traductions"
@@ -1735,25 +1703,9 @@
     "en": "Translation font",
     "fr": "Police de la traduction"
   },
-  "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到默认比例，仍放不下再每次缩 0.1，直到最小比例。缩到最小仍放不下的列入报告。": {
-    "en": "When a translation is longer than the source and would run into nearby text, it is first narrowed, then reduced: first to the default ratio, then by 0.1 at a time down to the minimum ratio. Text that still does not fit at the minimum is listed in the report.",
-    "fr": "Quand une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis réduite : d'abord au rapport par défaut, puis de 0,1 à chaque fois jusqu'au rapport minimal. Le texte qui ne tient toujours pas est signalé dans le rapport."
-  },
-  "请先选择图纸": {
-    "en": "Select drawings first",
-    "fr": "Sélectionnez d'abord des plans"
-  },
   "读取已勾选的 {0} 张图纸，列出其中带文字的图块和图层": {
     "en": "Reads the {0} selected {0|drawing|drawings} and lists blocks and layers that contain text",
     "fr": "Lit {0|le plan coché|les {0} plans cochés} et liste les blocs et calques qui contiennent du texte"
-  },
-  "这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。多个名字用逗号或换行分开，* 代表任意字符，如 TK*。不分大小写。": {
-    "en": "Text in these blocks (including attributes and nested blocks) is left unchanged. Typical uses: drawing frames, title blocks, signature boxes, logos. Separate names with commas or line breaks; * matches any characters, as in TK*. Not case-sensitive.",
-    "fr": "Le texte de ces blocs (attributs et blocs imbriqués compris) reste inchangé. Usage courant : cadres, cartouches, cases de signature, logos. Séparez les noms par des virgules ou des retours à la ligne ; * remplace n'importe quels caractères, comme TK*. Sans distinction de casse."
-  },
-  "这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。写法同上。": {
-    "en": "Text on these layers is left unchanged. Text drawn on layer 0 inside a block follows the layer of the block. Same notation as above.",
-    "fr": "Le texte de ces calques reste inchangé. Le texte dessiné sur le calque 0 dans un bloc suit le calque du bloc. Même notation que ci-dessus."
   },
   "锁定不翻译": {
     "en": "Do not translate",
@@ -1766,5 +1718,61 @@
   "锁定的图层": {
     "en": "Locked layers",
     "fr": "Calques verrouillés"
+  },
+  "初始字号比例": {
+    "en": "Initial text scale",
+    "fr": "Échelle initiale du texte"
+  },
+  "最小字号比例": {
+    "en": "Minimum text scale",
+    "fr": "Échelle minimale du texte"
+  },
+  "放不下时，先把译文字号缩到原文字号的这个比例。": {
+    "en": "When a translation does not fit, its text height is first reduced to this share of the original height.",
+    "fr": "Si une traduction ne tient pas, la hauteur du texte est d'abord réduite à cette part de la hauteur d'origine."
+  },
+  "仍放不下时每次再缩 0.1，最小缩到原文字号的这个比例；到这里还放不下的列入报告，请人工复核。": {
+    "en": "If it still does not fit, the height is reduced by 0.1 at a time down to this share of the original height. Text that still does not fit is listed in the report for manual review.",
+    "fr": "Si elle ne tient toujours pas, la hauteur est réduite par pas de 0,1 jusqu'à cette part de la hauteur d'origine. Le texte qui ne tient toujours pas est signalé dans le rapport pour vérification manuelle."
+  },
+  "从图纸中挑选": {
+    "en": "Pick from drawings",
+    "fr": "Choisir dans les plans"
+  },
+  "例如：TK*、图框A1": {
+    "en": "For example: TK*, Frame-A1",
+    "fr": "Par exemple : TK*, Cadre-A1"
+  },
+  "例如：签字、TITLE*": {
+    "en": "For example: Signatures, TITLE*",
+    "fr": "Par exemple : Signatures, TITLE*"
+  },
+  "勾选图纸后，可从图纸里列出的图块和图层中勾选": {
+    "en": "After selecting drawings, you can pick from the blocks and layers found in them",
+    "fr": "Après avoir sélectionné des plans, vous pouvez choisir parmi les blocs et calques qu'ils contiennent"
+  },
+  "移除 {0}": {
+    "en": "Remove {0}",
+    "fr": "Retirer {0}"
+  },
+  "继续添加…": {
+    "en": "Add more…",
+    "fr": "Ajouter…"
+  },
+  "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到「初始字号比例」，仍放不下再每次缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告。": {
+    "en": "When a translation is longer than the original and would overlap nearby text, it is first narrowed, then made smaller: first to the initial text scale, then by 0.1 at a time down to the minimum text scale. Text that still does not fit is listed in the report.",
+    "fr": "Si une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis réduite : d'abord à l'échelle initiale du texte, puis par pas de 0,1 jusqu'à l'échelle minimale. Le texte qui ne tient toujours pas est signalé dans le rapport."
+  },
+  "这些图块和图层里的文字保持原样。输入名字后按回车添加，可以一次粘贴多行。": {
+    "en": "Text in these blocks and layers is left as is. Type a name and press Enter to add it, or paste several lines at once.",
+    "fr": "Le texte de ces blocs et calques reste tel quel. Saisissez un nom puis appuyez sur Entrée, ou collez plusieurs lignes d'un coup."
+  },
+  "这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。* 代表任意字符，如 TK* 锁定所有以 TK 开头的图块。不分大小写。": {
+    "en": "Text in these blocks (including attributes and nested blocks) is left as is. Useful for frames, title blocks, approval boxes and logos. * matches any characters, so TK* locks every block whose name starts with TK. Case does not matter.",
+    "fr": "Le texte de ces blocs (attributs et blocs imbriqués compris) reste tel quel. Utile pour les cadres, cartouches, cases de visa et logos. * remplace n'importe quels caractères : TK* verrouille tous les blocs dont le nom commence par TK. La casse est ignorée."
+  },
+  "这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。* 代表任意字符，不分大小写。": {
+    "en": "Text on these layers is left as is. Text drawn on layer 0 inside a block follows the layer of the block. * matches any characters. Case does not matter.",
+    "fr": "Le texte de ces calques reste tel quel. Le texte dessiné sur le calque 0 dans un bloc suit le calque du bloc. * remplace n'importe quels caractères. La casse est ignorée."
   }
 }

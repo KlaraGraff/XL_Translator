@@ -209,7 +209,7 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
-  { key: "cadFitLayout", label: t("放不下时缩小字号"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到默认比例，仍放不下再每次缩 0.1，直到最小比例。缩到最小仍放不下的列入报告。"), default: true, pathKind: "output", path: "fit_layout" },
+  { key: "cadFitLayout", label: t("放不下时缩小字号"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到「初始字号比例」，仍放不下再每次缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告。"), default: true, pathKind: "output", path: "fit_layout" },
 ]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
@@ -2362,6 +2362,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
 
   const resumeAuto = Boolean(activeResumeDir(st));
   for (const toggle of TOGGLES[surface]) {
+    // 缩小字号的开关和它的两档比例放在一起，挪到下面「译文写回」里画。
+    if (surface === "cad" && toggle.key === "cadFitLayout") continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
     // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
     // 角标说明，想全译走横幅上的「改为全部重译」。
@@ -4459,8 +4461,8 @@ interface CadInspectState {
   /** 收集结果属于哪一次选择的来源；换了来源就清空。 */
   sourceKey: string;
   search: string;
-  /** 正在输入、还没存的锁定名单。null 表示没有草稿，显示已保存的值。 */
-  draft: Record<CadLockKind, string | null>;
+  /** 锁定名单输入框里打了一半、还没变成标签的字。重绘会换掉输入框，靠它把字放回去。 */
+  pending: Record<CadLockKind, string>;
 }
 
 const cadInspect: CadInspectState = {
@@ -4474,7 +4476,7 @@ const cadInspect: CadInspectState = {
   failures: new Map(),
   sourceKey: "",
   search: "",
-  draft: { blocks: null, layers: null },
+  pending: { blocks: "", layers: "" },
 };
 
 function cadOutputValue(key: string): unknown {
@@ -4491,18 +4493,29 @@ function cadChoice<T extends string>(key: string, choices: readonly T[], fallbac
   return typeof value === "string" && (choices as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
+function cadLockNames(kind: CadLockKind): string[] {
+  return splitLockNames(text(cadOutputValue(kind === "blocks" ? "locked_blocks" : "locked_layers")));
+}
+
+/** 发给后端的锁定名单：已存的标签，加上输入框里还没按回车的字（点「开始翻译」前不一定按过回车）。 */
 function cadLockText(kind: CadLockKind): string {
-  return cadInspect.draft[kind] ?? text(cadOutputValue(kind === "blocks" ? "locked_blocks" : "locked_layers"));
+  return mergeLockNames(cadLockNames(kind), splitLockNames(cadInspect.pending[kind])).join(", ");
 }
 
-/** 锁定名单按逗号、顿号、分号、斜杠、换行拆开（与后端 parse_lock_patterns 一致），比较时不分大小写。 */
+/** 锁定名单按逗号、顿号、分号、斜杠、换行拆开（与后端 parse_lock_patterns 一致），比较时不分大小写。
+ *  AutoCAD 的图块名、图层名里不允许出现这些符号，拆开不会误伤。 */
+const LOCK_SEPARATORS = /[,;/\n\r\t，、；]+/;
+
 function splitLockNames(value: string): string[] {
-  return value.split(/[,;/\n\r\t，、；]+/).map((part) => part.trim()).filter(Boolean);
+  return value.split(LOCK_SEPARATORS).map((part) => part.trim()).filter(Boolean);
 }
 
-function lockListHas(value: string, name: string): boolean {
-  const wanted = name.toUpperCase();
-  return splitLockNames(value).some((part) => part.toUpperCase() === wanted);
+function mergeLockNames(base: string[], extra: string[]): string[] {
+  const out = [...base];
+  for (const name of extra) {
+    if (!out.some((part) => part.toUpperCase() === name.toUpperCase())) out.push(name);
+  }
+  return out;
 }
 
 function persistCadOutput(key: string, value: unknown, what: string, after?: () => void): void {
@@ -4515,14 +4528,14 @@ function persistCadOutput(key: string, value: unknown, what: string, after?: () 
   }, what).then(() => after?.());
 }
 
-function saveCadLock(kind: CadLockKind, value: string): void {
+function saveCadLock(kind: CadLockKind, names: string[]): void {
   const key = kind === "blocks" ? "locked_blocks" : "locked_layers";
-  cadInspect.draft[kind] = null;
+  const value = names.join(", ");
   if (value === text(cadOutputValue(key))) return;
   persistCadOutput(key, value, kind === "blocks" ? t("锁定的图块") : t("锁定的图层"), () => rescanAfterScanInputChange("cad"));
 }
 
-function buildCadWritebackFields(_st: SurfaceState, active: boolean): HTMLElement[] {
+function buildCadWritebackFields(st: SurfaceState, active: boolean): HTMLElement[] {
   const nodes: HTMLElement[] = [];
   const sec = el("div", "rp-sec");
   sec.textContent = t("译文写回");
@@ -4555,38 +4568,52 @@ function buildCadWritebackFields(_st: SurfaceState, active: boolean): HTMLElemen
   });
   nodes.push(font.root);
 
-  if (states.cad.toggles.get("cadFitLayout")) {
-    const defaultScale = cadScale("fit_default_scale", 0.7);
-    const minScale = cadScale("fit_min_scale", 0.4);
-    const scaleLabel = (value: string) => `${Math.round(Number(value) * 100)}%`;
-    const row = el("div");
-    row.style.cssText = "display:flex;gap:8px";
-    const first = createSelectField({
-      label: t("先缩到"),
-      hint: t("放不下时先缩到这个比例（相对原文字号）。"),
-      options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
-      value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? "0.7",
+  // 开关和它的两档比例画成一组：开着时比例缩进挂在开关下面，关掉就只剩开关。
+  const fitToggle = TOGGLES.cad.find((toggle) => toggle.key === "cadFitLayout");
+  if (fitToggle) {
+    const fitOn = Boolean(st.toggles.get(fitToggle.key));
+    nodes.push(createSwitchRow({
+      label: fitToggle.label,
+      hint: fitToggle.hint,
+      checked: fitOn,
       disabled: active,
-      onChange: (value) => {
-        const scale = Number(value);
-        persistCadOutput("fit_default_scale", scale, t("缩小比例"));
-        // 最小比例不能大于默认比例；后端也会这样收，界面先对齐，免得显示一个不生效的值。
-        if (cadScale("fit_min_scale", 0.4) > scale) persistCadOutput("fit_min_scale", scale, t("最小比例"));
-      },
-    });
-    const last = createSelectField({
-      label: t("最小比例"),
-      hint: t("仍放不下时每次再缩 0.1，最小缩到这个比例；到这里还放不下的列入报告，请人工复核。"),
-      options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
-      value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
-      disabled: active,
-      onChange: (value) => persistCadOutput("fit_min_scale", Number(value), t("最小比例")),
-    });
-    for (const field of [first.root, last.root]) field.style.flex = "1";
-    row.append(first.root, last.root);
-    nodes.push(row);
+      onChange: (checked) => void handleToggleChange("cad", st, fitToggle, checked),
+    }));
+    if (fitOn) nodes.push(buildCadScaleFields(active));
   }
   return nodes;
+}
+
+function buildCadScaleFields(active: boolean): HTMLElement {
+  const defaultScale = cadScale("fit_default_scale", 0.7);
+  const minScale = cadScale("fit_min_scale", 0.4);
+  const scaleLabel = (value: string) => `${Math.round(Number(value) * 100)}%`;
+  const group = el("div", "rp-sub");
+  const row = el("div", "rp-pair");
+  const first = createSelectField({
+    label: t("初始字号比例"),
+    hint: t("放不下时，先把译文字号缩到原文字号的这个比例。"),
+    options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
+    value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? "0.7",
+    disabled: active,
+    onChange: (value) => {
+      const scale = Number(value);
+      persistCadOutput("fit_default_scale", scale, t("初始字号比例"));
+      // 最小字号比例不能大于初始比例；后端也会这样收，界面先对齐，免得显示一个不生效的值。
+      if (cadScale("fit_min_scale", 0.4) > scale) persistCadOutput("fit_min_scale", scale, t("最小字号比例"));
+    },
+  });
+  const last = createSelectField({
+    label: t("最小字号比例"),
+    hint: t("仍放不下时每次再缩 0.1，最小缩到原文字号的这个比例；到这里还放不下的列入报告，请人工复核。"),
+    options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
+    value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
+    disabled: active,
+    onChange: (value) => persistCadOutput("fit_min_scale", Number(value), t("最小字号比例")),
+  });
+  row.append(first.root, last.root);
+  group.append(row);
+  return group;
 }
 
 function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {
@@ -4595,39 +4622,33 @@ function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {
   sec.textContent = t("锁定不翻译");
   nodes.push(sec);
 
-  const makeArea = (kind: CadLockKind, label: string, hint: string, placeholder: string): HTMLElement => {
-    const area = document.createElement("textarea");
-    area.rows = 2;
-    area.value = cadLockText(kind);
-    area.placeholder = placeholder;
-    area.disabled = active;
-    area.dataset.keepFocus = `cad-lock-${kind}`;
-    area.style.cssText = "display:block;width:100%;min-height:52px;resize:vertical;border:1px solid var(--line-2);border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px;line-height:1.5;background:var(--surface);color:var(--ink)";
-    area.addEventListener("input", () => { cadInspect.draft[kind] = area.value; });
-    area.addEventListener("change", () => saveCadLock(kind, area.value));
-    const field = createField(label, area);
+  const intro = el("p", "rp-note");
+  intro.textContent = t("这些图块和图层里的文字保持原样。输入名字后按回车添加，可以一次粘贴多行。");
+  nodes.push(intro);
+
+  const makeField = (kind: CadLockKind, label: string, hint: string, placeholder: string): HTMLElement => {
+    const field = createField(label, buildCadLockInput(kind, placeholder, active));
     field.querySelector("label")?.append(createHintBadge(hint));
     return field;
   };
-  nodes.push(makeArea(
+  nodes.push(makeField(
     "blocks",
     t("图块名"),
-    t("这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。多个名字用逗号或换行分开，* 代表任意字符，如 TK*。不分大小写。"),
-    t("例如：TK*, 图框A1, 签名栏"),
+    t("这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。* 代表任意字符，如 TK* 锁定所有以 TK 开头的图块。不分大小写。"),
+    t("例如：TK*、图框A1"),
   ));
-  nodes.push(makeArea(
+  nodes.push(makeField(
     "layers",
     t("图层名"),
-    t("这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。写法同上。"),
-    t("例如：签字, TITLE*"),
+    t("这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。* 代表任意字符，不分大小写。"),
+    t("例如：签字、TITLE*"),
   ));
 
-  const scanRow = el("div");
-  scanRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:-2px 0 10px";
   const selected = st.files.filter((f) => st.selected.has(f.path) && !isRisky("cad", f));
   const remaining = selected.filter((f) => !cadInspect.inspected.has(f.path));
+  const scanRow = el("div", "rp-action");
   scanRow.append(createButton({
-    label: cadInspect.running ? t("停止") : t("扫描图块名"),
+    label: cadInspect.running ? t("停止") : t("从图纸中挑选"),
     size: "mini",
     icon: cadInspect.running ? undefined : "search",
     disabled: active || (!cadInspect.running && remaining.length === 0),
@@ -4637,20 +4658,96 @@ function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {
       else void inspectCadDrawings(st, remaining.map((f) => f.path));
     },
   }));
-  const note = el("span");
-  note.style.cssText = "font-size:11.5px;color:var(--ink-3)";
+  const note = el("span", "rp-action-note");
   note.textContent = cadInspect.running
     ? t("正在读取第 {0} / {1} 张图纸…", Math.min(cadInspect.done + 1, cadInspect.total), cadInspect.total)
     : cadInspect.inspected.size
       ? t("已扫描 {0} 张图纸", cadInspect.inspected.size)
       : selected.length
         ? t("读取已勾选的 {0} 张图纸，列出其中带文字的图块和图层", selected.length)
-        : t("请先选择图纸");
+        : t("勾选图纸后，可从图纸里列出的图块和图层中勾选");
   scanRow.append(note);
   nodes.push(scanRow);
 
   if (cadInspect.blocks.size || cadInspect.layers.size) nodes.push(buildCadContainerList(active));
   return nodes;
+}
+
+/** 锁定名单编辑框：一个名字一枚标签。回车或输入分隔符（逗号、顿号、分号）把打的字变成标签，
+ *  一次粘贴多行会拆成多枚；输入框为空时按退格删掉最后一枚，点标签上的 × 删掉这一枚。 */
+function buildCadLockInput(kind: CadLockKind, placeholder: string, active: boolean): HTMLElement {
+  const box = el("div", "tag-input");
+  const names = cadLockNames(kind);
+  for (const name of names) {
+    const tag = el("span", "tag");
+    const label = el("span", "tag-label");
+    label.textContent = name;
+    label.title = name;
+    tag.append(label);
+    if (!active) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "tag-x";
+      remove.textContent = "×";
+      remove.title = t("移除 {0}", name);
+      remove.setAttribute("aria-label", t("移除 {0}", name));
+      // 按下时不让输入框失焦：失焦会先提交打了一半的字并重绘，这一下点击就落空了。
+      remove.addEventListener("mousedown", (event) => event.preventDefault());
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        saveCadLock(kind, cadLockNames(kind).filter((part) => part !== name));
+      });
+      tag.append(remove);
+    }
+    box.append(tag);
+  }
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = cadInspect.pending[kind];
+  input.placeholder = names.length ? t("继续添加…") : placeholder;
+  input.disabled = active;
+  input.dataset.keepFocus = `cad-lock-${kind}`;
+  input.setAttribute("aria-label", kind === "blocks" ? t("图块名") : t("图层名"));
+  const add = (typed: string[], rest: string) => {
+    cadInspect.pending[kind] = rest;
+    input.value = rest;
+    if (typed.length) saveCadLock(kind, mergeLockNames(cadLockNames(kind), typed));
+  };
+  input.addEventListener("input", () => {
+    if (!LOCK_SEPARATORS.test(input.value)) {
+      cadInspect.pending[kind] = input.value;
+      return;
+    }
+    // 分隔符前面的部分立刻变成标签，最后一段留在框里接着打。
+    const parts = input.value.split(LOCK_SEPARATORS);
+    const rest = (parts.pop() ?? "").trimStart();
+    add(parts.map((part) => part.trim()).filter(Boolean), rest);
+  });
+  input.addEventListener("paste", (event) => {
+    const pasted = event.clipboardData?.getData("text") ?? "";
+    if (!LOCK_SEPARATORS.test(pasted)) return;
+    // 单行输入框会把粘进来的换行吞掉，多行名单得自己拆。
+    event.preventDefault();
+    add(splitLockNames(`${input.value}\n${pasted}`), "");
+  });
+  input.addEventListener("keydown", (event) => {
+    // 中文输入法选词时的回车不算提交。
+    if (event.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      add(splitLockNames(input.value), "");
+    } else if (event.key === "Backspace" && !input.value && names.length) {
+      event.preventDefault();
+      saveCadLock(kind, names.slice(0, -1));
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (input.value.trim()) add(splitLockNames(input.value), "");
+  });
+  box.addEventListener("click", () => input.focus());
+  box.append(input);
+  return box;
 }
 
 function buildCadContainerList(active: boolean): HTMLElement {
@@ -4686,13 +4783,13 @@ function buildCadContainerList(active: boolean): HTMLElement {
     head.style.cssText = "font-size:11px;color:var(--ink-3);margin:6px 0 2px";
     head.textContent = `${title}（${matches.length}）`;
     list.append(head);
-    const current = cadLockText(kind);
+    const current = cadLockNames(kind).map((part) => part.toUpperCase());
     for (const item of matches) {
       const row = el("label");
       row.style.cssText = "display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer";
       const box = document.createElement("input");
       box.type = "checkbox";
-      box.checked = lockListHas(current, item.name);
+      box.checked = current.includes(item.name.toUpperCase());
       box.disabled = active;
       box.addEventListener("change", () => toggleCadLockName(kind, item.name, box.checked));
       const name = el("span");
@@ -4726,11 +4823,10 @@ function buildCadContainerList(active: boolean): HTMLElement {
 }
 
 function toggleCadLockName(kind: CadLockKind, name: string, checked: boolean): void {
-  const current = splitLockNames(cadLockText(kind));
   const wanted = name.toUpperCase();
-  const kept = current.filter((part) => part.toUpperCase() !== wanted);
+  const kept = cadLockNames(kind).filter((part) => part.toUpperCase() !== wanted);
   if (checked) kept.push(name);
-  saveCadLock(kind, kept.join(", "));
+  saveCadLock(kind, kept);
 }
 
 function cancelCadInspection(st: SurfaceState): void {
