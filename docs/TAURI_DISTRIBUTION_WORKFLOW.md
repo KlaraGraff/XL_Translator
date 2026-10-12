@@ -42,7 +42,7 @@ Windows 构建产出 NSIS 安装器（`installMode: currentUser`，不需要管�
    - 用 `GITHUB_TOKEN` 创建的标签不会触发 push 事件，所以这里显式 dispatch 构建；`release=true` 让它走与 tag push 完全相同的判定（只认稳定 `vX.Y.Z` 标签，Apple 密钥齐全才是 formal-release）。
    - 如果标签已建好但构建没触发起来，直接对该标签运行 `build-distributions.yml` 并勾选 `release` 即可，不要删标签重打。
 3. 构建完成后，把发布说明写进 `docs/release-notes/vX.Y.Z.md`（写法见该目录的 README），走 PR 合进 main。
-4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与 Release 上实际挂着的安装包一致），再替换草稿正文、读回逐字比对，然后才 `--draft=false`，最后用 `scripts/check_release_latest.py` 确认 `releases/latest` 和 `latest.json` 都已指向新版本（GitHub 有缓存，会重试几分钟）。
+4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与 Release 上实际挂着的安装包一致），再替换草稿正文、读回逐字比对，然后才 `--draft=false`，最后用 `scripts/check_release_latest.py` 确认 `releases/latest` 和 `latest.json` 都已指向新版本（GitHub 有缓存，会重试几分钟）。发布成功后接着运行 `feedback-notify.yml`：反馈仓库里带「待通知」标签、通知版本不晚于本版的 issue，按 issue 里留的邮箱发邮件，再标「已通知」并关闭（规则见 `feedback-relay/README.md`「通知用户」）。邮件发不出不影响已发布的版本，issue 保留「待通知」，下次发布再发。
 
 发布之后：
 

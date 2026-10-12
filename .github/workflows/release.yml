@@ -12,7 +12,8 @@ name: Release (tag / publish)
 #   step=publish  用仓库里的 docs/release-notes/v{version}.md 替换草稿正文，
 #                 读回核对一致后再取消草稿（AGENTS.md 第 9 条的顺序），
 #                 最后确认 releases/latest 和 latest.json 都指向新版本。
-#                 撤回过的版本改好后也用它重新发布。
+#                 撤回过的版本改好后也用它重新发布。发布成功后自动运行
+#                 feedback-notify.yml，给反馈已在这一版解决的用户发邮件。
 #   step=notes    只换正文（草稿或已发布都可以），核对规则同 publish，
 #                 不改变草稿状态。用于发布后修订说明。
 #   step=retract  把已发布的版本改回草稿：不删产物、不动标签。改完确认
@@ -212,6 +213,17 @@ jobs:
             flags+=(--no-manifest)
           fi
           python scripts/check_release_latest.py --expect "v${VERSION}" "${flags[@]}"
+
+  # 发布成功后给反馈已在这一版解决的用户发邮件（见 feedback-notify.yml）。邮件发不出
+  # 不影响已发布的版本，issue 保留「待通知」，下次发布再发。
+  notify-feedback:
+    name: Notify feedback users of v${{ inputs.version }}
+    needs: publish
+    if: inputs.step == 'publish'
+    uses: ./.github/workflows/feedback-notify.yml
+    with:
+      version: ${{ inputs.version }}
+    secrets: inherit
 
   retract:
     name: Retract v${{ inputs.version }} to draft
