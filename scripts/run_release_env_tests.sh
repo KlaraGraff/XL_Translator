@@ -67,6 +67,8 @@ if [[ ! -f "$STAMP" || "$CONSTRAINTS" -nt "$STAMP" ]]; then
   PYTHON_BIN="$VENV_DIR/bin/python3" bash "$ROOT_DIR/scripts/install_macos_dependencies.sh"
   touch "$STAMP"
 fi
+# 测试用的 pytest 不在发布依赖里，单独装；已装好时 pip 一秒内返回。
+"$VENV_DIR/bin/python3" -m pip install --quiet --requirement "$ROOT_DIR/requirements-test.txt"
 
 # 绝不能碰用户真实的应用数据目录：测试会写设置、密钥和翻译记忆库。
 APP_DATA_DIR="$(mktemp -d)"

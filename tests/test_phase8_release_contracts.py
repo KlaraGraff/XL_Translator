@@ -102,7 +102,10 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("python -m venv .venv", workflow)
         self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
         self.assertIn("PYTHON_BIN=./.venv/Scripts/python.exe", workflow)
-        self.assertIn("./.venv/bin/python3 -m unittest discover -s tests", workflow)
+        # tests/ 里有 pytest 风格的用例，unittest discover 会在导入时报错。
+        self.assertIn("./.venv/bin/python3 -m pip install --requirement requirements-test.txt", workflow)
+        self.assertIn("./.venv/bin/python3 scripts/release_env_tests.py", workflow)
+        self.assertNotIn("unittest discover", workflow)
 
     def test_build_script_scans_before_signing_and_marks_manual_artifacts(self) -> None:
         script = (ROOT / "scripts" / "build_macos_package.sh").read_text(encoding="utf-8")
