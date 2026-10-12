@@ -62,11 +62,14 @@ class BuiltinDomainPromptsEndpointTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.client = TestClient(create_app())
 
-    def test_endpoint_returns_the_full_config_presets_verbatim(self) -> None:
-        """回归签名：整份 dict 必须原样吐出，不能是精简/摘要过的版本。"""
+    def test_endpoint_returns_the_core_prompt_verbatim(self) -> None:
+        """回归签名：内置规则必须原样吐出，不能是精简/摘要过的版本。"""
         response = self.client.get("/api/domains/builtin-prompts")
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json(), {"presets": config.DOMAIN_PRESETS})
+        self.assertEqual(
+            response.json(),
+            {"core_prompt": config.CORE_TRANSLATION_PROMPT, "extra_header": config.EXTRA_PROMPT_HEADER},
+        )
 
     def test_route_is_registered_ahead_of_the_surface_route_and_not_shadowed(self) -> None:
         """`/api/domains/{surface}` 声明在后面就会把这条路由吃掉，变成
@@ -76,18 +79,11 @@ class BuiltinDomainPromptsEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.json().get("detail"), "Unknown translation surface.")
 
-    def test_serves_one_canonical_prompt_with_the_two_required_rules(self) -> None:
-        """领域提示词只维护一份中文主版本；其中两条关键规则必须继续存在。"""
-        preset = config.DOMAIN_PRESETS["同步工程场景"]
-        self.assertEqual(set(preset), {"_base"})
-        self.assertIn("一个字符都不能改动", preset["_base"])
-        self.assertIn("中文计量用语", preset["_base"])
-
-        response = self.client.get("/api/domains/builtin-prompts")
-        served = response.json()["presets"]["同步工程场景"]
-        self.assertEqual(set(served), {"_base"})
-        self.assertIn("一个字符都不能改动", served["_base"])
-        self.assertIn("中文计量用语", served["_base"])
+    def test_core_prompt_keeps_the_two_required_rules(self) -> None:
+        """内置规则只有一份中文主版本；其中两条关键规则必须继续存在。"""
+        served = self.client.get("/api/domains/builtin-prompts").json()["core_prompt"]
+        self.assertIn("一个字符都不能改动", served)
+        self.assertIn("中文计量用语", served)
 
     def test_unknown_surface_still_404s_after_adding_the_sibling_route(self) -> None:
         """确认新路由没有反过来抢占 `/api/domains/{surface}` 的合法请求。"""

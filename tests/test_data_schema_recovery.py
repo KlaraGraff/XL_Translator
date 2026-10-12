@@ -559,7 +559,7 @@ class DataHealthApiTests(_IsolatedDataDirTestCase):
             json.dumps(
                 {
                     "settings_version": settings_module.SETTINGS_SCHEMA_VERSION - 2,
-                    "custom_prompt": "keep-me",
+                    "last_source_folder": "keep-me",
                 }
             ),
             encoding="utf-8",
@@ -577,7 +577,7 @@ class DataHealthApiTests(_IsolatedDataDirTestCase):
         self.assertEqual(
             persisted["settings_version"], settings_module.SETTINGS_SCHEMA_VERSION
         )
-        self.assertEqual(persisted["custom_prompt"], "keep-me")
+        self.assertEqual(persisted["last_source_folder"], "keep-me")
 
 
 if __name__ == "__main__":

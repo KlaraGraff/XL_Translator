@@ -24,7 +24,6 @@ from core.cad_task_runner import CadTaskRunner
 from core.document_profile import (
     append_profile,
     is_context_sensitive,
-    is_smart_preset,
     request_document_profile,
 )
 from core.cad_translation import (
@@ -319,11 +318,12 @@ class CadSurface(Surface):
         )
         from core.engine_dispatcher import (
             get_system_prompt,
+            smart_context_enabled,
             translate_texts,
             translate_texts_with_sources,
         )
         system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
-        smart_mode = is_smart_preset(settings.cad_domain_preset)
+        smart_mode = smart_context_enabled(settings, "cad")
 
         def profile_requester(
             texts: list[str], log: Callable[[str, str], None], *, neighbor_rows: list[str] = ()

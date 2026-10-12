@@ -43,13 +43,13 @@ from core.word_coverage import (
 from core.engine_dispatcher import (
     build_engine,
     get_system_prompt,
+    smart_context_enabled,
     is_local_engine_name,
 )
 from core.document_profile import (
     append_profile,
     drop_unlocked_short_hits,
     is_context_sensitive,
-    is_smart_preset,
     lookup_locked_tm,
     request_document_profile,
 )
@@ -981,7 +981,7 @@ class WordTaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
-            smart_mode = is_smart_preset(getattr(settings, "word_domain_preset", settings.domain_preset))
+            smart_mode = smart_context_enabled(settings, "word")
             self._smart_mode = smart_mode
             if smart_mode and global_unique_texts and engine_supports_chat(engine):
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。

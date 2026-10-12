@@ -22,12 +22,22 @@ from __future__ import annotations
 from typing import Any
 
 from app_meta import APP_NAME, APP_VERSION
-from settings import AppSettings
+from settings import AppSettings, migrate_prompt_layers
 
 DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
 # v2：领域 Prompt 覆盖曾升级为按目标语言分层；v3 收敛为每个预设一份 `_base`
-# 主 Prompt。导入侧仍接受 v1/v2 的旧结构，并在设置写入时折叠为统一主版本。
-DOCUMENT_CONFIG_EXPORT_VERSION = 3
+# 主 Prompt。v4：提示词拆成内置规则 + 「自动识别场景」开关 + 补充要求（设置 v35），
+# v3 及以前的包导入时按 settings.migrate_prompt_layers 转换。
+DOCUMENT_CONFIG_EXPORT_VERSION = 4
+# 包里出现这些字段之一，就说明带了那个页面的提示词设置。
+_PROMPT_PAGE_FIELDS = (
+    "domain_preset",
+    "custom_prompt",
+    "domain_name_overrides",
+    "domain_prompt_overrides",
+    "domain_custom_prompts",
+    "domain_disabled_presets",
+)
 
 # Nested setting objects that describe document translation behaviour.
 DOCUMENT_CONFIG_SECTIONS = (
@@ -60,22 +70,26 @@ DOCUMENT_CONFIG_FIELDS = (
     "word_target_lang",
     "custom_target_langs",
     "domain_preset",
+    "domain_smart_context",
     "custom_prompt",
     "domain_name_overrides",
     "domain_prompt_overrides",
     "excel_domain_preset",
+    "excel_smart_context",
     "excel_custom_prompt",
     "excel_domain_name_overrides",
     "excel_domain_prompt_overrides",
     "excel_domain_custom_prompts",
     "excel_domain_disabled_presets",
     "word_domain_preset",
+    "word_smart_context",
     "word_custom_prompt",
     "word_domain_name_overrides",
     "word_domain_prompt_overrides",
     "word_domain_custom_prompts",
     "word_domain_disabled_presets",
     "cad_domain_preset",
+    "cad_smart_context",
     "cad_custom_prompt",
     "cad_domain_name_overrides",
     "cad_domain_prompt_overrides",
@@ -226,6 +240,21 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
             parsed[field] = document[field]
     if not parsed:
         raise ValueError("此文件中没有可导入的文档翻译配置。")
+    if version < 4:
+        # 旧包里是场景预设：带了哪个页面的提示词，就把那个页面按 v35 的规则转换，
+        # 转换结果（含新的开关字段）整页写入；没带的页面保持导入方自己的设置。
+        prefixes = [
+            prefix
+            for prefix in ("", "excel_", "word_", "cad_")
+            if any(f"{prefix}{field}" in parsed for field in _PROMPT_PAGE_FIELDS)
+        ]
+        if prefixes:
+            migrated = migrate_prompt_layers(parsed, prefixes)
+            for prefix in prefixes:
+                for field in (*_PROMPT_PAGE_FIELDS, "smart_context" if prefix else "domain_smart_context"):
+                    key = f"{prefix}{field}"
+                    if key in migrated:
+                        parsed[key] = migrated[key]
     return parsed
 
 

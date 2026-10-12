@@ -56,6 +56,7 @@ def _settings(*, source_lang: str = "zh", target_lang: str = "en") -> AppSetting
         target_lang=target_lang,
         # 语种预检数模型调用次数；「自动识别场景」的文档说明请求另有测试。
         excel_domain_preset="无",
+        excel_smart_context=False,
     )
     # This contract suite uses mocked writers and tests the legacy sheet set.
     settings.excel_output.translate_sheet_names = False
@@ -237,7 +238,7 @@ class ExcelSmartModeContractTests(unittest.TestCase):
                 return {value: memory.get(value) for value in values}
 
             settings = _settings(source_lang="zh", target_lang="en")
-            settings.excel_domain_preset = "自动识别场景"
+            settings.excel_smart_context = True
             with ExitStack() as stack:
                 ExcelTaskRunnerContractTests._run_patches(
                     self,

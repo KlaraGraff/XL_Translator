@@ -8,7 +8,7 @@
 1. core/translation_filter.py 新增的 residual_cn_date_unit 规则校验——正例
    （该抓的中文日期/数量单位残留）与反例（编号、国际单位、中文目标语言，绝不
    能误伤）。
-2. config.py DOMAIN_PRESETS 与 core/mixed_language.py 的提示词措辞不再把
+2. config.py CORE_TRANSLATION_PROMPT 与 core/mixed_language.py 的提示词措辞不再把
    「编号原样保留」和「日期原样保留」捆在一起表述。
 """
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import unittest
 
-from config import DOMAIN_PRESETS
+from config import CORE_TRANSLATION_PROMPT
 from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
@@ -182,16 +182,9 @@ class PromptWordingSplitsNumberingFromDateUnitsTests(unittest.TestCase):
         # 日期应明确要求换成目标语言书写习惯，而不是原样保留。
         self.assertIn("目标语言的书写习惯", text)
 
-    def test_sync_engineering_preset_base(self) -> None:
-        self._assert_split_wording(DOMAIN_PRESETS["同步工程场景"]["_base"])
-
-    def test_document_management_preset_base(self) -> None:
-        self._assert_split_wording(DOMAIN_PRESETS["资料管理场景"]["_base"])
-
-    def test_admin_daily_preset_base_keeps_identifiers_literal(self) -> None:
-        text = DOMAIN_PRESETS["行政生活化场景"]["_base"]
-        self.assertIn("原样保留", text)
-        self.assertIn("目标语言的书写习惯", text)
+    def test_core_prompt(self) -> None:
+        self._assert_split_wording(CORE_TRANSLATION_PROMPT)
+        self.assertIn("原样保留", CORE_TRANSLATION_PROMPT)
 
 
 class MixedLanguagePromptWordingTests(unittest.TestCase):

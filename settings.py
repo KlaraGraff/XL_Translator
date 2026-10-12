@@ -12,7 +12,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +45,9 @@ from config import (
     get_default_concurrency,
     get_local_concurrency_bounds,
     KEYS_PATH,
+    LEGACY_DOMAIN_PRESET_NAMES,
+    NO_EXTRA_PROMPT,
+    RESERVED_EXTRA_PROMPT_NAMES,
     SETTINGS_SCHEMA_VERSION,
     SETTINGS_PATH,
     WORD_BATCH_CHARS_DEFAULT,
@@ -1236,12 +1239,20 @@ class AppSettings(BaseModel):
             if field in migrated:
                 migrated[field] = migrate_model(migrated[field])
         return migrated
-    domain_preset: str = "自动识别场景"
+    # v35 起提示词分两层（见 config.CORE_TRANSLATION_PROMPT）：内置规则固定，
+    # ``*_smart_context`` 是「自动识别场景」开关，``*_domain_preset`` 只表示选中的
+    # 「补充要求」——「无」或 ``*_domain_custom_prompts`` 里的一个名字。
+    # ``*_custom_prompt``、``*_domain_name_overrides``、``*_domain_prompt_overrides``、
+    # ``*_domain_disabled_presets`` 是 v34 及以前的场景预设数据，读到旧文件时由
+    # ``migrate_prompt_layers`` 转换后清空，字段本身留着，旧文件和旧导出包才读得进来。
+    domain_preset: str = "无"
+    domain_smart_context: bool = True
     custom_prompt: str = ""
     # Excel and Word intentionally own separate domain/prompt state.  The
     # legacy global fields remain as an inert compatibility surface for CLI
     # callers; page-aware task code reads the fields below.
-    excel_domain_preset: str = "自动识别场景"
+    excel_domain_preset: str = "无"
+    excel_smart_context: bool = True
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     # Prompt 覆盖新版本按「预设名 → {_base: Prompt}」保存；旧版目标语言映射仍可
@@ -1251,13 +1262,15 @@ class AppSettings(BaseModel):
     # legacy/plain string; the API normalizes writes while reads stay tolerant.
     excel_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     excel_domain_disabled_presets: list[str] = Field(default_factory=list)
-    word_domain_preset: str = "自动识别场景"
+    word_domain_preset: str = "无"
+    word_smart_context: bool = True
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     word_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     word_domain_disabled_presets: list[str] = Field(default_factory=list)
-    cad_domain_preset: str = "自动识别场景"
+    cad_domain_preset: str = "无"
+    cad_smart_context: bool = True
     cad_custom_prompt: str = ""
     cad_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     cad_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -1757,6 +1770,168 @@ def _migrate_smart_domain_default(payload: dict, stored_version: int) -> dict:
     return migrated
 
 
+# 提示词各层所在的字段，按页面分：前缀 "" 是给 CLI 和任务快照用的全局兼容字段。
+_PROMPT_LAYER_SURFACES = {
+    "": "domain_smart_context",
+    "excel_": "excel_smart_context",
+    "word_": "word_smart_context",
+    "cad_": "cad_smart_context",
+}
+# V9 旧版单条自定义提示词转成补充要求时用的名字。
+LEGACY_CUSTOM_PROMPT_NAME = "旧版自定义提示词"
+
+
+def _prompt_text(value: object) -> str:
+    """One prompt out of a stored value: ``{"_base": ...}``, an old language map, or a string."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        text = str(value.get("_base") or "").strip()
+        if text:
+            return text
+        return next(
+            (str(item).strip() for item in value.values() if isinstance(item, str) and item.strip()),
+            "",
+        )
+    return ""
+
+
+def _unique_extra_name(name: str, taken: set[str]) -> str:
+    """A name for a converted prompt that clashes with neither reserved names nor existing ones."""
+    base = name.strip() or LEGACY_CUSTOM_PROMPT_NAME
+    if base in RESERVED_EXTRA_PROMPT_NAMES:
+        base = f"{base}（旧版修改）"
+    candidate = base
+    index = 2
+    while candidate in taken or candidate in RESERVED_EXTRA_PROMPT_NAMES:
+        candidate = f"{base}{index}"
+        index += 1
+    return candidate
+
+
+def migrate_prompt_layers(payload: dict, prefixes: Iterable[str] | None = None) -> dict:
+    """v35: turn the old per-page 「场景预设」 into 内置规则 + 自动识别开关 + 补充要求.
+
+    Up to v34 each page picked one whole prompt: 「无」, one of four built-in
+    scenes (any of them editable), a named prompt of the user's, or the V9
+    single custom prompt.  From v35 the built-in rules are fixed in code, so:
+
+    * a page on 「自动识别场景」 or one of the three retired scenes keeps
+      auto-detect on; 「无」, a named prompt or the V9 custom prompt turns it off,
+      which is what those pages were doing before;
+    * every edited built-in scene and the V9 custom prompt becomes a named
+      补充要求 so nothing the user wrote is lost, and a page that was on an
+      edited scene keeps that text selected;
+    * the old override / rename / disable fields are emptied.
+
+    Pure: works on a copy of a settings (or export-bundle) dict.  Only the
+    page prefixes passed in are touched; a key the payload does not carry reads
+    as that version's default.
+    """
+    migrated = dict(payload)
+    if prefixes is None:
+        # 页面拆分前的文件只有全局字段：先照 AppSettings 的校验器那样分给各页面，
+        # 再逐页转换，否则各页面会按缺省值处理，丢掉用户当时的选择。
+        for field in ("domain_preset", "custom_prompt", "domain_name_overrides", "domain_prompt_overrides"):
+            if field in migrated:
+                for page in ("excel_", "word_", "cad_"):
+                    migrated.setdefault(f"{page}{field}", migrated[field])
+    for prefix in (prefixes if prefixes is not None else _PROMPT_LAYER_SURFACES):
+        smart_key = _PROMPT_LAYER_SURFACES[prefix]
+        preset_key = f"{prefix}domain_preset"
+        custom_key = f"{prefix}custom_prompt"
+        names_key = f"{prefix}domain_name_overrides"
+        overrides_key = f"{prefix}domain_prompt_overrides"
+        named_key = f"{prefix}domain_custom_prompts"
+        disabled_key = f"{prefix}domain_disabled_presets"
+
+        preset = str(migrated.get(preset_key, "自动识别场景") or "").strip() or "自动识别场景"
+        if preset == "智能":
+            preset = "自动识别场景"
+        raw_named = migrated.get(named_key)
+        extras: dict[str, dict[str, str]] = {}
+        for raw_name, raw_value in (raw_named.items() if isinstance(raw_named, dict) else ()):
+            name = str(raw_name or "").strip()
+            text = _prompt_text(raw_value)
+            if name and text:
+                if name in RESERVED_EXTRA_PROMPT_NAMES:
+                    name = _unique_extra_name(name, set(extras))
+                extras[name] = {"_base": text}
+        name_overrides = migrated.get(names_key)
+        name_overrides = name_overrides if isinstance(name_overrides, dict) else {}
+        overrides = migrated.get(overrides_key)
+        converted: dict[str, str] = {}
+        for scene in LEGACY_DOMAIN_PRESET_NAMES:
+            text = _prompt_text(overrides.get(scene)) if isinstance(overrides, dict) else ""
+            if not text:
+                continue
+            shown = str(name_overrides.get(scene) or "").strip() or scene
+            name = _unique_extra_name(shown, set(extras))
+            extras[name] = {"_base": text}
+            converted[scene] = name
+        legacy_text = str(migrated.get(custom_key) or "").strip()
+        if legacy_text:
+            legacy_name = _unique_extra_name(LEGACY_CUSTOM_PROMPT_NAME, set(extras))
+            extras[legacy_name] = {"_base": legacy_text}
+            converted["自定义"] = legacy_name
+
+        if preset in LEGACY_DOMAIN_PRESET_NAMES:
+            smart, selected = True, converted.get(preset, NO_EXTRA_PROMPT)
+        elif preset == "自定义":
+            smart, selected = False, converted.get("自定义", NO_EXTRA_PROMPT)
+        elif preset in extras:
+            smart, selected = False, preset
+        elif preset == NO_EXTRA_PROMPT:
+            smart, selected = False, NO_EXTRA_PROMPT
+        else:
+            # 指向一个已经不存在的提示词：按新默认来。
+            smart, selected = True, NO_EXTRA_PROMPT
+
+        migrated[smart_key] = smart
+        migrated[preset_key] = selected
+        migrated[named_key] = extras
+        migrated[custom_key] = ""
+        migrated[names_key] = {}
+        migrated[overrides_key] = {}
+        migrated[disabled_key] = []
+    return migrated
+
+
+def _has_legacy_prompt_data(payload: dict | None) -> bool:
+    """Whether the v35 prompt migration rewrites something the user chose or wrote.
+
+    A file still on the old defaults carries nothing worth a backup; one with an
+    edited scene, a renamed or disabled scene, the V9 custom prompt, or a page on
+    one of the retired scenes does.
+    """
+    if not isinstance(payload, dict):
+        return False
+    for prefix in _PROMPT_LAYER_SURFACES:
+        for field in ("custom_prompt", "domain_name_overrides", "domain_prompt_overrides", "domain_disabled_presets"):
+            if payload.get(f"{prefix}{field}"):
+                return True
+        preset = str(payload.get(f"{prefix}domain_preset") or "").strip()
+        if preset in LEGACY_DOMAIN_PRESET_NAMES[1:] or preset == "自定义":
+            return True
+    return False
+
+
+def _raw_settings_payload() -> dict | None:
+    """The settings file as stored, before any read-time migration (None if unreadable)."""
+    try:
+        payload = json.loads(SETTINGS_PATH.read_bytes().decode("utf-8-sig"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _migrate_prompt_layers(payload: dict, stored_version: int) -> dict:
+    """Read-time hook for :func:`migrate_prompt_layers` (files older than v35)."""
+    if stored_version >= 35:
+        return payload
+    return migrate_prompt_layers(payload)
+
+
 class SettingsSchemaError(ValueError):
     """The settings file could not be read *and* could not be backed up.
 
@@ -1866,11 +2041,14 @@ def _timestamped_backup_name(prefix: str, suffix: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{suffix}"
 
 
-def _backup_settings_file() -> str:
-    """Copy the unusable settings file aside; return the backup path."""
+def _backup_settings_file(stem: str = "settings_unusable") -> str:
+    """Copy the settings file aside; return the backup path.
+
+    ``stem`` names why: an unusable file, or a good one about to be upgraded.
+    """
     target_dir = BACKUPS_DIR / "settings"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / _timestamped_backup_name("settings_unusable", ".json")
+    target = target_dir / _timestamped_backup_name(stem, ".json")
     # Copy rather than move: a rename that fails halfway would take the only
     # copy of the user's configuration with it.
     shutil.copy2(SETTINGS_PATH, target)
@@ -1917,8 +2095,11 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, _migrate_smart_domain_default(
-            _migrate_theme_default(payload, stored_version), stored_version,
+        return "adopted", stored_version, _migrate_prompt_layers(
+            _migrate_smart_domain_default(
+                _migrate_theme_default(payload, stored_version), stored_version,
+            ),
+            stored_version,
         )
     return "current", stored_version, payload
 
@@ -2228,8 +2409,13 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # Model upgrades are destructive to the on-disk representation.
             # Keep the exact pre-upgrade file before the first write; subsequent
             # saves see the current schema and do not create repeat backups.
-            if AppSettings._migrate_legacy_image_model(_payload) != _payload:
-                _backup_settings_file()
+            # v35 的提示词迁移会改写用户自己写的内容（场景改写转成补充要求、
+            # 旧字段清空），第一次写回前同样留一份原文件。
+            if (
+                AppSettings._migrate_legacy_image_model(_payload) != _payload
+                or (stored_version < 35 and _has_legacy_prompt_data(_raw_settings_payload()))
+            ):
+                _backup_settings_file(f"settings_v{stored_version}_before_upgrade")
         # An explicit reset deliberately discards whatever is on disk, so it
         # must never be merged with it.
         merged = None if replace_incompatible else _merged_settings_payload(settings)

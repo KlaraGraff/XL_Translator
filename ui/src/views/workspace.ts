@@ -170,6 +170,7 @@ interface ToggleDef {
 }
 
 const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
+  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "excel_smart_context" },
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后工作表中仅保留译文。是否另存原文，由下方「另存原文工作表」决定。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
@@ -182,6 +183,7 @@ const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
 ]));
 
 const WORD_TOGGLES: ToggleDef[] = localized(() => ([
+  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "word_smart_context" },
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后输出文件只保留译文；关闭时保留原文与译文。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
@@ -205,6 +207,7 @@ const PDF_TOGGLES: ToggleDef[] = localized(() => ([
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
 // 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
 const CAD_TOGGLES: ToggleDef[] = localized(() => ([
+  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "cad_smart_context" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
@@ -213,6 +216,9 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
 ]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
+
+// 「补充要求」选「无」时存的值（同 config.NO_EXTRA_PROMPT）：只发内置规则。显示走 tx()。
+const NO_EXTRA_PROMPT = "无"; // i18n-ignore 发回后端的值
 
 export const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
 const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
@@ -381,7 +387,7 @@ function freshState(surface: Surface): SurfaceState {
     toggles: freshToggles(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
-    domainPreset: "自动识别场景", // i18n-ignore 发给后端的专业领域预设值
+    domainPreset: NO_EXTRA_PROMPT,
     useCustomOutputDir: false,
     customOutputDir: "",
     task: null,
@@ -623,7 +629,7 @@ function applySettingsToStates(): void {
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
-      st.domainPreset = text(settings[`${surface}_domain_preset`], "自动识别场景"); // i18n-ignore 专业领域预设值，存进设置
+      st.domainPreset = text(settings[`${surface}_domain_preset`], NO_EXTRA_PROMPT);
     }
     for (const toggle of TOGGLES[surface]) {
       if (toggle.pathKind === "flat" && toggle.path) {
@@ -1000,9 +1006,9 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     const state = st.task.task.state;
     const meta = runningStatusMeta(state);
     const fileCount = st.selected.size || st.files.length;
-    // 专业领域选「无」时不写：单独一个「无」挂在语言后面，看不出指的是什么。
-    const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== "无" // i18n-ignore 与后端预设值比较
-      ? " · " + t("专业领域：{0}", tx(st.domainPreset))
+    // 补充要求选「无」时不写：单独一个「无」挂在语言后面，看不出指的是什么。
+    const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT
+      ? " · " + t("补充要求：{0}", st.domainPreset)
       : "";
     // PDF 没有源语言选择，只说目标语言；其余三页同一句式。
     const subtitle = surface === "pdf"
@@ -2471,12 +2477,12 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
   if (surface !== "pdf") {
     const domainField = el("div", "field");
     const label = el("label");
-    label.textContent = t("专业领域") + " ";
-    // 即使当前选的是「无」也保留入口：进入设置后会落到「＋新增提示词」，
-    // 让用户可以从空配置直接建立自己的提示词。
+    label.textContent = t("补充要求") + " ";
+    // 即使当前选的是「无」也保留入口：进入设置后会落到「＋ 新增补充要求」，
+    // 让用户可以从空配置直接写一条自己的补充要求。
     const link = el("span", "linklike");
     link.style.fontSize = "11px";
-    link.textContent = t("编辑提示词 ↗ 设置");
+    link.textContent = t("编辑 ↗ 设置");
     link.addEventListener("click", () => navigate("settings", {
       page: "params",
       paramsSurface: surface,
@@ -2486,14 +2492,14 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
     domainField.append(label);
     const select = createSelectField({
       label: "",
-      // 「无」放在第一项，让「不加任何领域限定」一眼可见。
-      options: domainOptionsFor(surface, st.domainPreset).map((v) => ({ value: v, label: tx(v) })),
+      // 「无」放在第一项：只发内置规则，不加任何补充要求。
+      options: domainOptionsFor(surface, st.domainPreset).map((v) => ({ value: v, label: v === NO_EXTRA_PROMPT ? tx(v) : v })),
       value: st.domainPreset,
       onChange: (value) => {
         const prev = st.domainPreset;
         st.domainPreset = value;
         rerender(surface);
-        void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, t("专业领域"));
+        void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, t("补充要求"));
       },
     });
     domainField.append(select.root);
@@ -2506,16 +2512,11 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
 }
 
 function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
-  const builtIns = ["无", "自动识别场景", "同步工程场景", "资料管理场景", "行政生活化场景"]; // i18n-ignore 发给后端的专业领域预设值，显示时 tx()
-  const disabled = Array.isArray(settings[`${surface}_domain_disabled_presets`])
-    ? (settings[`${surface}_domain_disabled_presets`] as unknown[]).filter((value): value is string => typeof value === "string")
-    : [];
   const custom = settings[`${surface}_domain_custom_prompts`];
   const customNames = custom && typeof custom === "object" && !Array.isArray(custom)
     ? Object.keys(custom as JsonObject)
     : [];
-  const options = builtIns.filter((name) => name === "无" || !disabled.includes(name)); // i18n-ignore 与预设值比较
-  for (const name of customNames) if (!options.includes(name)) options.push(name);
+  const options = [NO_EXTRA_PROMPT, ...customNames];
   if (current && !options.includes(current)) options.push(current);
   return options;
 }

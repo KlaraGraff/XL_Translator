@@ -1174,5 +1174,121 @@
   "翻译前先用文档翻译模型读一遍 PDF 里的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，每页按这个理解翻译。每份文件多调用一次文档翻译模型；扫描件没有可读文字时自动跳过。": {
     "en": "Before translating, the document translation model reads the text in the PDF and sums up what kind of document it is and what short standalone words (such as 甲) mean here; every page is then translated with that understanding. One extra call to the document translation model per file; skipped automatically for scans without readable text.",
     "fr": "Avant la traduction, le modèle de traduction de documents lit le texte du PDF et résume de quel type de document il s'agit et ce que signifient ici les mots courts isolés (comme 甲) ; chaque page est ensuite traduite selon cette compréhension. Un appel supplémentaire au modèle de traduction de documents par fichier ; ignoré automatiquement pour les scans sans texte lisible."
+  },
+  "CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；提示词可以在下方设置。": {
+    "en": "Other CAD options are on the right of the CAD drawings page; prompts are set below.",
+    "fr": "Les autres options CAO se trouvent à droite de la page Plans CAO ; les prompts se règlent ci-dessous."
+  },
+  "两侧均可直接修改，确认后写回上方的补充要求。": {
+    "en": "Both sides can be edited. Confirm your choice to write it back to the extra instructions above.",
+    "fr": "Les deux côtés sont modifiables. Validez votre choix pour le reporter dans les consignes supplémentaires ci-dessus."
+  },
+  "例如：电气图纸": {
+    "en": "e.g. Electrical drawings",
+    "fr": "Ex. : plans électriques"
+  },
+  "例如：这是电气施工图，保留电气专业术语，不要增加解释": {
+    "en": "e.g. These are electrical construction drawings; keep electrical terms and do not add explanations",
+    "fr": "Ex. : il s'agit de plans d'exécution électriques ; conserver les termes d'électricité, ne pas ajouter d'explications"
+  },
+  "内置规则": {
+    "en": "Built-in rules",
+    "fr": "Règles intégrées"
+  },
+  "内置规则读取失败，请稍后重新打开此页。": {
+    "en": "Could not load the built-in rules. Please reopen this page later.",
+    "fr": "Impossible de charger les règles intégrées. Rouvrez cette page plus tard."
+  },
+  "可选。选一条自己写的补充要求，或选择「＋ 新增补充要求」新建一条。补充要求接在内置规则后面一起发送，只能追加要求，不能替换内置规则。": {
+    "en": "Optional. Pick one of your own extra instructions, or choose “+ New extra instructions” to write one. They are sent after the built-in rules and can only add requirements, never replace the built-in rules.",
+    "fr": "Facultatif. Choisissez l'une de vos consignes supplémentaires ou « + Nouvelles consignes » pour en rédiger. Elles sont envoyées après les règles intégrées : elles ajoutent des exigences, sans jamais remplacer les règles intégrées."
+  },
+  "名称不能为空，也不能与「无」、原来的场景名称或其他补充要求重复。": {
+    "en": "The name cannot be empty or match “None”, a former preset name or other extra instructions.",
+    "fr": "Le nom ne peut pas être vide ni reprendre « Aucun », le nom d'un ancien préréglage ou celui d'autres consignes."
+  },
+  "名称可修改，不能与「无」、原来的场景名称或其他补充要求重复。": {
+    "en": "You can rename it. The name cannot match “None”, a former preset name or other extra instructions.",
+    "fr": "Vous pouvez le renommer. Le nom ne peut pas reprendre « Aucun », le nom d'un ancien préréglage ou celui d'autres consignes."
+  },
+  "已不使用补充要求，只发送内置规则。": {
+    "en": "No extra instructions; only the built-in rules are sent.",
+    "fr": "Aucune consigne supplémentaire : seules les règles intégrées sont envoyées."
+  },
+  "已关闭自动识别场景。": {
+    "en": "Auto-detect turned off.",
+    "fr": "Détection automatique désactivée."
+  },
+  "已开启自动识别场景。": {
+    "en": "Auto-detect turned on.",
+    "fr": "Détection automatique activée."
+  },
+  "已删除补充要求“{0}”。": {
+    "en": "Extra instructions “{0}” deleted.",
+    "fr": "Consignes « {0} » supprimées."
+  },
+  "已改用补充要求「{0}」。": {
+    "en": "Now using extra instructions “{0}”.",
+    "fr": "Consignes « {0} » désormais utilisées."
+  },
+  "开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明附在内置规则后面，所以同一个词在不同文档里会按各自的意思翻译。每份文件多调用一次模型。": {
+    "en": "When on, the document translation model reads each document before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is sent after the built-in rules, so the same word can be translated differently in different documents. Each file uses one extra model request.",
+    "fr": "Une fois activée, le modèle de traduction de documents lit chaque document avant de le traduire et rédige un court résumé : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Ce résumé est envoyé après les règles intégrées ; un même mot peut donc être traduit différemment d'un document à l'autre. Chaque fichier demande une requête supplémentaire au modèle."
+  },
+  "提示词": {
+    "en": "Prompt",
+    "fr": "Prompt"
+  },
+  "整理时的额外说明（可选）": {
+    "en": "Notes for refining (optional)",
+    "fr": "Remarques pour l'amélioration (facultatif)"
+  },
+  "整理时，这些说明将一并发送给文档翻译模型。整理结果需经您确认后保存。": {
+    "en": "These notes are sent to the document translation model when refining. The result must be reviewed before it is saved.",
+    "fr": "Ces remarques sont transmises au modèle de traduction de documents lors de l'amélioration. Le résultat doit être validé avant d'être enregistré."
+  },
+  "每次翻译都会发送这些规则，不能修改。补充要求写什么都只会追加在它们后面。返回格式（只回译文、条数与原文一致）另由程序固定附上。": {
+    "en": "These rules are sent with every translation and cannot be changed. Extra instructions are always added after them. The reply format (translations only, one per source item) is added separately by the app.",
+    "fr": "Ces règles accompagnent chaque traduction et ne sont pas modifiables. Les consignes supplémentaires s'ajoutent toujours après elles. Le format de réponse (traductions seules, une par élément source) est ajouté séparément par l'application."
+  },
+  "编辑 ↗ 设置": {
+    "en": "Edit ↗ Settings",
+    "fr": "Modifier ↗ Paramètres"
+  },
+  "翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。": {
+    "en": "Before translating, the document translation model reads the file's text and summarizes what kind of document it is and what standalone short words (such as “甲”) mean here, then translates accordingly. Each file uses one extra request to the document translation model.",
+    "fr": "Avant la traduction, le modèle de traduction de documents lit le texte du fichier et résume de quel type de document il s'agit et ce que signifient ici les mots courts isolés (comme « 甲 »), puis traduit en conséquence. Chaque fichier demande une requête supplémentaire au modèle de traduction de documents."
+  },
+  "补充要求": {
+    "en": "Extra instructions",
+    "fr": "Consignes supplémentaires"
+  },
+  "补充要求{0}": {
+    "en": "Extra instructions {0}",
+    "fr": "Consignes {0}"
+  },
+  "补充要求内容": {
+    "en": "Extra instructions text",
+    "fr": "Texte des consignes"
+  },
+  "补充要求内容不能为空。不需要时请在上方选择「无」，或在下拉中删除这一条。": {
+    "en": "Extra instructions cannot be empty. If you don't need them, choose “None” above or delete this entry from the list.",
+    "fr": "Les consignes ne peuvent pas être vides. Si vous n'en avez pas besoin, choisissez « Aucun » ci-dessus ou supprimez cette entrée de la liste."
+  },
+  "补充要求名称": {
+    "en": "Name",
+    "fr": "Nom des consignes"
+  },
+  "补充要求已自动保存。": {
+    "en": "Extra instructions saved automatically.",
+    "fr": "Consignes enregistrées automatiquement."
+  },
+  "补充要求：{0}": {
+    "en": "Extra instructions: {0}",
+    "fr": "Consignes : {0}"
+  },
+  "＋ 新增补充要求": {
+    "en": "+ New extra instructions",
+    "fr": "+ Nouvelles consignes"
   }
 }

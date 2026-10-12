@@ -333,7 +333,7 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
     @staticmethod
     def _settings() -> AppSettings:
         # 这组契约数的是语种预检的模型调用；「自动识别场景」多出的那次文档说明请求另有测试。
-        return AppSettings(source_lang="zh", target_lang="en", word_domain_preset="无")
+        return AppSettings(source_lang="zh", target_lang="en", word_domain_preset="无", word_smart_context=False)
 
     @staticmethod
     def _terminal_message(runner: WordTaskRunner, message_type):
@@ -812,7 +812,7 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
                 numbering_fallback_messages=(),
             )
             settings = self._settings()
-            settings.word_domain_preset = "自动识别场景"
+            settings.word_smart_context = True
             runner = WordTaskRunner(
                 [WordFileItem(path=source, name=source.name, size_kb=1.0)],
                 settings,

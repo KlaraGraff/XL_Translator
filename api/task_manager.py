@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from config import CORE_TRANSLATION_PROMPT
 from core import diagnostics, tm_manager
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
@@ -427,9 +428,9 @@ class TranslationTaskManager:
         )
         prompt_source = "|".join(
             (
-                str(getattr(settings, "domain_preset", "") or ""),
-                str(getattr(settings, "custom_prompt", "") or ""),
-                str(getattr(settings, "domain_prompt_overrides", {}) or {}),
+                CORE_TRANSLATION_PROMPT,
+                str(getattr(settings, f"{normalized_surface}_smart_context", "")),
+                str(getattr(settings, f"{normalized_surface}_domain_preset", "") or ""),
                 str(
                     getattr(
                         settings,
@@ -437,14 +438,6 @@ class TranslationTaskManager:
                         {},
                     )
                     or {}
-                ),
-                str(
-                    getattr(
-                        settings,
-                        f"{normalized_surface}_domain_disabled_presets",
-                        [],
-                    )
-                    or []
                 ),
             )
         )
@@ -460,6 +453,11 @@ class TranslationTaskManager:
                 getattr(settings, f"{normalized_surface}_domain_preset", "")
                 if spec.domain_preset_in_snapshot
                 else ""
+            ),
+            "smart_context": (
+                bool(getattr(settings, f"{normalized_surface}_smart_context", True))
+                if spec.domain_preset_in_snapshot
+                else None
             ),
             "prompt_signature": hashlib.sha256(prompt_source.encode("utf-8")).hexdigest()[:12],
             "connections": self._connection_summaries(context),
