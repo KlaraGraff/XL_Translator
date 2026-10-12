@@ -435,10 +435,6 @@
     "en": "Use your version",
     "fr": "Utiliser votre version"
   },
-  "已保留您的版本，请确认后保存。": {
-    "en": "Your version was kept. Review it, then save.",
-    "fr": "Votre version est conservée. Vérifiez-la, puis enregistrez."
-  },
   "整理后": {
     "en": "Refined",
     "fr": "Version améliorée"
@@ -446,10 +442,6 @@
   "使用这一版": {
     "en": "Use this version",
     "fr": "Utiliser cette version"
-  },
-  "已将整理版放回提示词内容，请确认后保存。": {
-    "en": "The refined version was placed in the prompt text. Review it, then save.",
-    "fr": "La version améliorée a été placée dans le texte du prompt. Vérifiez-la, puis enregistrez."
   },
   "整理结果不会自动保存": {
     "en": "The refined version is not saved automatically",
@@ -507,25 +499,25 @@
     "en": "Domain prompt turned off.",
     "fr": "Prompt de domaine désactivé."
   },
-  "新提示词已保存。": {
-    "en": "New prompt saved.",
-    "fr": "Nouveau prompt enregistré."
+  "提示词已自动保存。": {
+    "en": "Prompt saved automatically.",
+    "fr": "Prompt enregistré automatiquement."
   },
-  "提示词已保存。": {
-    "en": "Prompt saved.",
-    "fr": "Prompt enregistré."
+  "已改用提示词「{0}」。": {
+    "en": "Now using the prompt “{0}”.",
+    "fr": "Le prompt « {0} » est désormais utilisé."
   },
-  "保存选择": {
-    "en": "Save",
-    "fr": "Enregistrer"
+  "选择和修改均自动保存。": {
+    "en": "Selections and edits are saved automatically.",
+    "fr": "Les choix et les modifications sont enregistrés automatiquement."
   },
   "整理": {
     "en": "Refine",
     "fr": "Améliorer"
   },
-  "模型已生成优化建议，请确认后保存。": {
-    "en": "The model suggested an improved version. Review it, then save.",
-    "fr": "Le modèle a proposé une version améliorée. Vérifiez-la, puis enregistrez."
+  "模型已生成优化建议，请选择要采用的版本。": {
+    "en": "The model suggested an improved version. Choose which version to use.",
+    "fr": "Le modèle a proposé une version améliorée. Choisissez la version à utiliser."
   },
   "提示词优化失败：{0}": {
     "en": "Could not refine the prompt: {0}",
