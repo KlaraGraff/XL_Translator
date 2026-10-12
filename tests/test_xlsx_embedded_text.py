@@ -284,6 +284,49 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual(frozen, 0)
         self.assertIsNotNone(drawing.find(f"{{{NS_XDR}}}twoCellAnchor"))
 
+    def test_text_box_keeps_its_height_when_rows_shrink(self) -> None:
+        # 第 2 行原来 40 磅高、写译文后被改成 15 磅：文本框仍是两格锚定（宽度跟着列走），
+        # 右下角往下挪，高度保持 40 磅，不跟着行变矮把字裁掉。
+        from core.xlsx_patcher import _SheetGeometry, fix_drawing_anchors
+
+        def sheet(height: float):
+            return etree.fromstring(
+                f'<worksheet xmlns="{NS_MAIN}"><sheetData><row r="2" ht="{height}" customHeight="1"/></sheetData></worksheet>'.encode()
+            )
+
+        drawing = etree.fromstring(_drawing_xml(["图例说明"], anchor_box=(1097280, 40 * 12700)))
+        to = drawing.find(f".//{{{NS_XDR}}}to")
+        to.find(f"{{{NS_XDR}}}row").text = "2"
+        to.find(f"{{{NS_XDR}}}rowOff").text = "0"
+        changed = fix_drawing_anchors(
+            drawing, _SheetGeometry(sheet(40)), {2}, new_geometry=_SheetGeometry(sheet(15))
+        )
+        self.assertEqual(changed, 1)
+        self.assertIsNotNone(drawing.find(f"{{{NS_XDR}}}twoCellAnchor"))
+        self.assertEqual(to.find(f"{{{NS_XDR}}}row").text, "3")
+        self.assertEqual(to.find(f"{{{NS_XDR}}}rowOff").text, str(10 * 12700))
+
+    def test_text_box_stops_above_content_when_rows_shrink(self) -> None:
+        # 同上，但第 4 行（D4）有内容：框最多到第 4 行顶部，截短的记下来列入复核。
+        from core.xlsx_patcher import _SheetGeometry, fix_drawing_anchors
+
+        def sheet(height: float):
+            return etree.fromstring(
+                f'<worksheet xmlns="{NS_MAIN}"><sheetData><row r="2" ht="{height}" customHeight="1"/>'
+                '<row r="4"><c r="D4" t="inlineStr"><is><t>表头</t></is></c></row></sheetData></worksheet>'.encode()
+            )
+
+        drawing = etree.fromstring(_drawing_xml(["图例说明"], anchor_box=(1097280, 40 * 12700)))
+        to = drawing.find(f".//{{{NS_XDR}}}to")
+        to.find(f"{{{NS_XDR}}}row").text = "2"
+        to.find(f"{{{NS_XDR}}}rowOff").text = "0"
+        shortened: list[str] = []
+        fix_drawing_anchors(
+            drawing, _SheetGeometry(sheet(40)), {2}, new_geometry=_SheetGeometry(sheet(15)), shortened=shortened
+        )
+        self.assertEqual((to.find(f"{{{NS_XDR}}}row").text, to.find(f"{{{NS_XDR}}}rowOff").text), ("3", "0"))
+        self.assertEqual(shortened, ["TextBox 1"])
+
     def test_rotated_box_that_cannot_grow_is_listed_for_review(self) -> None:
         build_workbook(self.source, box=(1097280, 457200))
         with zipfile.ZipFile(self.source) as source:

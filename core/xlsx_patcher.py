@@ -1157,8 +1157,13 @@ def fix_drawing_anchors(
     changed_rows: set[int],
     *,
     freeze_all: bool = False,
+    new_geometry: _SheetGeometry | None = None,
+    shortened: list[str] | None = None,
 ) -> int:
     """把受行高变化影响的悬浮图片锚点改写成定尺寸 / 定位置的 oneCellAnchor。
+
+    文本框另算：仍是两格锚定，右下角按 ``new_geometry``（调整行高之后）挪到原来的高度；
+    碰到下面有内容的行只能截短，截短的文本框名字记进 ``shortened``。
 
     ``geometry`` 必须是**调整行高之前**的几何，这样算出的 ext 才是原渲染尺寸。
 
@@ -1185,7 +1190,12 @@ def fix_drawing_anchors(
         tag = _local(anchor)
         if tag == "twoCellAnchor":
             frozen += _freeze_two_cell_anchor(
-                anchor, geometry, changed_rows, freeze_all=freeze_all
+                anchor,
+                geometry,
+                changed_rows,
+                freeze_all=freeze_all,
+                new_geometry=new_geometry,
+                shortened=shortened,
             )
         elif tag == "absoluteAnchor":
             frozen += _freeze_absolute_anchor(
@@ -1200,6 +1210,8 @@ def _freeze_two_cell_anchor(
     changed_rows: set[int],
     *,
     freeze_all: bool,
+    new_geometry: _SheetGeometry | None = None,
+    shortened: list[str] | None = None,
 ) -> int:
     start = _anchor_position(anchor, "from")
     end = _anchor_position(anchor, "to")
@@ -1207,10 +1219,6 @@ def _freeze_two_cell_anchor(
         return 0
     from_col, from_col_off, from_row, from_row_off = start
     to_col, to_col_off, to_row, to_row_off = end
-    if _is_text_box_anchor(anchor):
-        # 文本框跟着行变高只会多出空白，不会变形；冻结反而把宽度写死成按 Windows
-        # 字宽算的磅值，Mac 上列比这宽，框就窄了一截、折行变多（Mac 实测窄约 6%）。
-        return 0
     # drawing 里的行列是 0-based；图片高度只取决于 [from_row, to_row) 这些行。
     if not freeze_all and not any(
         (row + 1) in changed_rows for row in range(from_row, to_row)
@@ -1223,6 +1231,23 @@ def _freeze_two_cell_anchor(
     cy += to_row_off - from_row_off
     cx = max(int(cx), 1)
     cy = max(int(cy), 1)
+
+    if _is_text_box_anchor(anchor):
+        # 文本框不改成定尺寸：宽度会被写死成按 Windows 字宽算的磅值，Mac 上列比这宽，
+        # 框就窄了一截、折行变多（Mac 实测窄约 6%）。仍用两格锚定、宽度跟着列走，
+        # 只把右下角挪到新行高下同样的高度，行变矮时框不跟着变矮、把字裁掉。
+        if new_geometry is None:
+            return 0
+        last_col = to_col if to_col_off > 0 else to_col - 1
+        if _reanchor_bottom(
+            anchor,
+            new_geometry,
+            from_row,
+            from_row_off + cy,
+            stop=_first_filled_row(new_geometry, to_row + 1, from_col, max(from_col, last_col)),
+        ) and shortened is not None:
+            shortened.append(_anchor_shape_name(anchor))
+        return 1
 
     one_cell = etree.Element(_xdr("oneCellAnchor"))
     from_node = anchor.find(_xdr("from"))
@@ -1241,6 +1266,56 @@ def _freeze_two_cell_anchor(
     parent = anchor.getparent()
     parent.replace(anchor, one_cell)
     return 1
+
+
+def _reanchor_bottom(
+    anchor, geometry: _SheetGeometry, row: int, offset_emu: int, *, stop: int | None = None
+) -> bool:
+    """把两格锚定的右下角放到第 ``row`` 行（0 起）顶部往下 ``offset_emu`` 处，按 ``geometry`` 的行高走。
+
+    ``stop``：最多到这一行（0 起）的顶部为止——那一行有内容，框不能盖过去。返回是否被它截短。
+    """
+    capped = False
+    for _ in range(1_048_576):
+        if stop is not None and row >= stop:
+            capped = row > stop or offset_emu > 0
+            row, offset_emu = stop, 0
+            break
+        height = geometry.row_emu(row + 1)
+        if height > 0 and offset_emu < height:
+            break
+        offset_emu -= max(0, height)
+        row += 1
+    end = anchor.find(_xdr("to"))
+    end.find(_xdr("row")).text = str(row)
+    end.find(_xdr("rowOff")).text = str(max(0, int(offset_emu)))
+    return capped
+
+
+def _first_filled_row(geometry: _SheetGeometry, first_row: int, first_col: int, last_col: int) -> int | None:
+    """从第 ``first_row`` 行（0 起）往下，框所在列（0 起）里第一行有内容的行号；没有返回 None。"""
+    best: int | None = None
+    for cell in geometry._root.iter(_m("c")):
+        match = re.fullmatch(r"\$?([A-Za-z]{1,3})\$?(\d+)", str(cell.get("r") or ""))
+        if not match:
+            continue
+        row, col = int(match.group(2)) - 1, _column_index(match.group(1)) - 1
+        if row < first_row or not (first_col <= col <= last_col) or (best is not None and row >= best):
+            continue
+        value = cell.find(_m("v"))
+        inline = cell.find(_m("is"))
+        if (
+            cell.find(_m("f")) is not None
+            or (value is not None and (value.text or "").strip())
+            or (inline is not None and any((t.text or "").strip() for t in inline.iter(_m("t"))))
+        ):
+            best = row
+    return best
+
+
+def _anchor_shape_name(anchor) -> str:
+    props = anchor.find(f"{_xdr('sp')}/{_xdr('nvSpPr')}/{_xdr('cNvPr')}")
+    return str(props.get("name") or "") if props is not None else ""
 
 
 def _is_text_box_anchor(anchor) -> bool:
@@ -1615,9 +1690,26 @@ def _process_sheet(
     # 只能整表冻结；不跑 autofit 时仍然只冻结自己改过的那些行。
     freeze_all = external_autofit_planned and not lock_row_height
     if changed_rows or freeze_all:
+        shortened: list[str] = []
         outcome.anchor_frozen_count = _patch_sheet_drawing(
-            package, entry, root, geometry, changed_rows, freeze_all=freeze_all
+            package, entry, root, geometry, changed_rows, freeze_all=freeze_all, shortened=shortened
         )
+        # 行变矮后文本框保不住原高度（下面紧挨着内容）：字可能被裁，列入复核。
+        if review_positions is not None and shortened:
+            from core.xlsx_embedded_text import (
+                REVIEW_ACTION_LISTED_ONLY,
+                REVIEW_CATEGORY_SHAPE_OVERFLOW,
+            )
+
+            for name in shortened:
+                item = {
+                    "worksheet": entry.name,
+                    "cell": name,
+                    "category": REVIEW_CATEGORY_SHAPE_OVERFLOW,
+                    "action": REVIEW_ACTION_LISTED_ONLY,
+                }
+                if item not in review_positions:
+                    review_positions.append(item)
 
     if dirty:
         package.write(entry.part, _serialize(root))
@@ -1838,6 +1930,7 @@ def _patch_sheet_drawing(
     changed_rows: set[int],
     *,
     freeze_all: bool = False,
+    shortened: list[str] | None = None,
 ) -> int:
     """返回本分表被冻结/改写的悬浮图片锚点数量。"""
     drawing_el = root.find(_m("drawing"))
@@ -1866,7 +1959,12 @@ def _patch_sheet_drawing(
 
     drawing_root = _parse(drawing_data)
     frozen = fix_drawing_anchors(
-        drawing_root, geometry, changed_rows, freeze_all=freeze_all
+        drawing_root,
+        geometry,
+        changed_rows,
+        freeze_all=freeze_all,
+        new_geometry=_SheetGeometry(root),
+        shortened=shortened,
     )
     if frozen:
         package.write(drawing_part, _serialize(drawing_root))
