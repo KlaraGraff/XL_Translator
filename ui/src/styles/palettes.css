@@ -1,8 +1,8 @@
 /*
  * 可选配色方案（设置 → 外观与语言 → 配色方案）。
  *
- * 默认方案「暖调纸感」直接写在 tokens.css 的 :root / [data-theme="dark"] 里，
- * 不需要 data-palette 属性。这里的每个方案都给浅色和深色各一整套 token，
+ * 「暖调纸感」直接写在 tokens.css 的 :root / [data-theme="dark"] 里，不需要单独的
+ * 块。默认方案是「素雅灰」（id graphite）。这里的每个方案都给浅色和深色各一整套 token，
  * 由 <html data-palette="…"> 选中；浅色块的特异性 (0,2,0) 与 tokens.css 的
  * 深色块相同、写在它后面，所以深色块 (0,3,0) 必须把浅色块里的每个 token
  * 都重新定义一遍，否则深色下会漏出浅色值。阴影、圆角、字体沿用 tokens.css。
@@ -12,7 +12,7 @@
  * 方案 id 与 ui/src/palette.ts、settings.py 的 PALETTES 保持一致。
  */
 
-/* B 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */
+/* 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */
 :root[data-palette="cool"] {
   --ground: #e6e9f0;
   --ground-2: #dce0e9;
@@ -78,7 +78,7 @@
   --surface-clear: rgb(30 36 49 / 0%);
 }
 
-/* C 青瓷：灰绿中性色配青绿主色，整体最柔和。 */
+/* 青瓷：灰绿中性色配青绿主色，整体最柔和。 */
 :root[data-palette="celadon"] {
   --ground: #e2e8e4;
   --ground-2: #d7dfda;
@@ -144,7 +144,7 @@
   --surface-clear: rgb(31 39 36 / 0%);
 }
 
-/* D 石墨：纯中性灰，不带色偏，主色为标准蓝，接近系统原生界面。 */
+/* 素雅灰（id graphite，默认方案）：纯中性灰，不带色偏，主色为标准蓝，接近系统原生界面。 */
 :root[data-palette="graphite"] {
   --ground: #e5e5e5;
   --ground-2: #dbdbdb;
@@ -210,7 +210,7 @@
   --surface-clear: rgb(34 34 34 / 0%);
 }
 
-/* E 琥珀护眼：米黄纸色配焦糖主色，蓝光成分最少，适合夜间长时间使用。 */
+/* 琥珀护眼：米黄纸色配焦糖主色，蓝光成分最少，适合夜间长时间使用。 */
 :root[data-palette="amber"] {
   --ground: #e8dfcf;
   --ground-2: #ddd3c0;

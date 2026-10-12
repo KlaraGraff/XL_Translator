@@ -1103,10 +1103,6 @@
     "en": "Warm paper",
     "fr": "Papier chaud"
   },
-  "暖米白纸色，夜间不刺眼（默认）": {
-    "en": "Warm off-white, easy on the eyes at night (default)",
-    "fr": "Blanc cassé chaud, doux pour les yeux le soir (par défaut)"
-  },
   "冷调柔光": {
     "en": "Soft cool",
     "fr": "Froid doux"
@@ -1123,14 +1119,6 @@
     "en": "Grey-green tones with a teal accent, the softest",
     "fr": "Tons gris-vert et accent sarcelle, le plus doux"
   },
-  "石墨": {
-    "en": "Graphite",
-    "fr": "Graphite"
-  },
-  "纯中性灰，不带色偏": {
-    "en": "Pure neutral grey with no color cast",
-    "fr": "Gris neutre, sans dominante de couleur"
-  },
   "琥珀护眼": {
     "en": "Amber comfort",
     "fr": "Ambre confort"
@@ -1139,8 +1127,28 @@
     "en": "Beige paper tones with the least blue light, for long evening sessions",
     "fr": "Tons papier beige, le moins de lumière bleue, pour les longues soirées"
   },
-  "每个配色方案都有浅色和深色两套，跟随上面的主题设置切换。": {
-    "en": "Each color scheme has a light and a dark version, chosen by the theme setting above.",
-    "fr": "Chaque palette existe en version claire et sombre, selon le thème choisi ci-dessus."
+  "暖米白纸色，夜间不刺眼": {
+    "en": "Warm off-white, easy on the eyes at night",
+    "fr": "Blanc cassé chaud, doux pour les yeux le soir"
+  },
+  "纯中性灰，不带色偏（默认）": {
+    "en": "Pure neutral grey with no color cast (default)",
+    "fr": "Gris neutre, sans dominante de couleur (par défaut)"
+  },
+  "浅色模式使用": {
+    "en": "In light mode",
+    "fr": "En mode clair"
+  },
+  "深色模式使用": {
+    "en": "In dark mode",
+    "fr": "En mode sombre"
+  },
+  "素雅灰": {
+    "en": "Neutral grey",
+    "fr": "Gris neutre"
+  },
+  "界面处于浅色还是深色由上面的主题决定；两种模式可以选不同的方案，例如白天用素雅灰、晚上用琥珀护眼。": {
+    "en": "The theme above decides whether light or dark mode is shown. Each mode can use a different scheme, for example Neutral grey by day and Amber comfort at night.",
+    "fr": "Le thème ci-dessus détermine si le mode clair ou sombre s'affiche. Chaque mode peut utiliser une palette différente, par exemple Gris neutre le jour et Ambre confort le soir."
   }
 }
