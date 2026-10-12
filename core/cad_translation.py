@@ -93,6 +93,7 @@ _DXF_CODEPAGES = {
     "ANSI_1257": "cp1257",
     "ANSI_1258": "cp1258",
 }
+_DXF_EOF_RE = re.compile(rb"(?:^|\n)[ \t]*0[ \t]*\r?\n[ \t]*EOF[ \t]*(?:\r?\n)*\Z")
 _DWGCODEPAGE_RE = re.compile(rb"\$DWGCODEPAGE[ \t]*\r?\n[ \t]*3[ \t]*\r?\n[ \t]*([A-Za-z0-9_]+)")
 
 
@@ -345,7 +346,12 @@ class CadPipelineOptions:
 
 
 def _parse_dxf(text: str) -> list[DxfRecord]:
-    raw_lines = text.splitlines(keepends=True)
+    # DXF 只按 \n（或 \r\n）分行。str.splitlines 还会在 \x0b、\x1c、\x85、
+    # 和单独的 \r 处断开，文字里带这类字符的正常图纸会被错位成「格式无法识别」。
+    lines = text.split("\n")
+    raw_lines = [line + "\n" for line in lines[:-1]]
+    if lines[-1]:
+        raw_lines.append(lines[-1])
     if len(raw_lines) % 2:
         raise CadPipelineError("图纸中有一段内容格式无法识别，可能已损坏，未处理。")
     records: list[DxfRecord] = []
@@ -1191,6 +1197,8 @@ class SubprocessCadConverter:
     bundled by this module.
     """
 
+    _POLL_INTERVAL = 0.5
+
     def __init__(self, executable: str | Path, *, timeout: int = 600) -> None:
         self.executable = str(executable)
         self.timeout = timeout
@@ -1220,6 +1228,19 @@ class SubprocessCadConverter:
         )
         return candidates[0] if candidates else None
 
+    @staticmethod
+    def _output_complete(path: Path, output_type: str) -> bool:
+        """DXF 必须以 ``0 / EOF`` 记录收尾；其他格式只靠大小稳定判断。"""
+        if output_type.upper() != "DXF":
+            return True
+        try:
+            with path.open("rb") as stream:
+                stream.seek(max(0, path.stat().st_size - 64))
+                tail = stream.read()
+        except OSError:
+            return False
+        return _DXF_EOF_RE.search(tail) is not None
+
     def _run_macos_app(self, app_bundle: Path, args: list[str], output_dir: Path, stem: str, output_type: str) -> Path:
         """Launch ODA through LaunchServices and wait for its output.
 
@@ -1248,12 +1269,30 @@ class SubprocessCadConverter:
             logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
             raise CadPipelineError("图纸转换工具未能启动，请在「插件」中重新连接后重试。") from exc
 
+        # open 一启动就返回，ODA 在后台边转边写。文件刚出现时往往只写了前半截，
+        # 拿去解析就成了「图纸文件不完整」，大图纸几乎必中。要等它写完：DXF 看到
+        # 结尾的 EOF 记录，且大小在相邻两次轮询间不再变化；DWG 没有结尾标记，
+        # 就等大小连续几次不变（译后图纸还会再转回 DXF 校验一遍）。
+        required_stable = 1 if output_type.upper() == "DXF" else 4
         deadline = time.monotonic() + self.timeout
+        last_size: int | None = None
+        stable = 0
+        seen = False
         while time.monotonic() < deadline:
             produced = self._produced_file(output_dir, stem, output_type)
             if produced is not None:
-                return produced
-            time.sleep(0.5)
+                seen = True
+                size = produced.stat().st_size
+                if size == last_size and self._output_complete(produced, output_type):
+                    stable += 1
+                    if stable >= required_stable:
+                        return produced
+                else:
+                    stable = 0
+                last_size = size
+            time.sleep(self._POLL_INTERVAL)
+        if seen:
+            raise CadPipelineError(f"图纸转换工具在 {self.timeout} 秒内未写完文件。")
         raise CadPipelineError(
             f"图纸转换工具在 {self.timeout} 秒内未生成文件。"
         )
