@@ -5,12 +5,19 @@ name: Release (tag / publish)
 # 现在云端 Claude 用 workflow_dispatch 触发本工作流即可，maple 也可以在
 # GitHub 网页 Actions 页手动点 Run workflow。
 #
-# 两步，分开触发，每一步都要 maple 先在对话里确认：
+# 分开触发，打标签、发布、撤回每一步都要 maple 先在对话里确认：
 #
 #   step=tag      在 main 最新提交上打 v{version} 标签，并触发
 #                 build-distributions.yml 出草稿 Release。
 #   step=publish  用仓库里的 docs/release-notes/v{version}.md 替换草稿正文，
-#                 读回核对一致后再取消草稿（AGENTS.md 第 9 条的顺序）。
+#                 读回核对一致后再取消草稿（AGENTS.md 第 9 条的顺序），
+#                 最后确认 releases/latest 和 latest.json 都指向新版本。
+#                 撤回过的版本改好后也用它重新发布。
+#   step=notes    只换正文（草稿或已发布都可以），核对规则同 publish，
+#                 不改变草稿状态。用于发布后修订说明。
+#   step=retract  把已发布的版本改回草稿：不删产物、不动标签。改完确认
+#                 releases/latest 和 latest.json 都已回到上一个正式版，
+#                 已安装的应用不会再收到这个版本的更新。
 #
 # 用 GITHUB_TOKEN 创建的 tag 不会触发 push 事件（GitHub 防止工作流互相
 # 连锁触发），所以 tag 步骤显式 dispatch 构建工作流，并传 release=true 让它
@@ -20,12 +27,14 @@ on:
   workflow_dispatch:
     inputs:
       step:
-        description: "tag = 打标签并开始构建；publish = 换正文并正式发布"
+        description: "tag = 打标签并开始构建；publish = 换正文并正式发布；notes = 只换正文；retract = 撤回为草稿"
         required: true
         type: choice
         options:
           - tag
           - publish
+          - notes
+          - retract
       version:
         description: "版本号，例如 10.0.1（不带 v）"
         required: true
@@ -106,15 +115,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
-    name: Publish v${{ inputs.version }}
-    if: inputs.step == 'publish'
+    name: ${{ inputs.step == 'notes' && 'Update notes of' || 'Publish' }} v${{ inputs.version }}
+    if: inputs.step == 'publish' || inputs.step == 'notes'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
-      - name: Read the draft release
+      - name: Read the release
         shell: bash
         run: |
           set -euo pipefail
@@ -123,15 +132,19 @@ jobs:
             exit 1
           fi
           tag="v${VERSION}"
-          if ! gh release view "$tag" --json isDraft,body > "$RUNNER_TEMP/release.json"; then
+          if ! gh release view "$tag" --json isDraft,body,assets > "$RUNNER_TEMP/release.json"; then
             echo "::error::找不到 $tag 的 Release。构建可能还没跑完，或者标签没打。"
             exit 1
           fi
-          if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
-            echo "::error::$tag 已经不是草稿，不会再改它。"
+          if [[ "$STEP" == "publish" && "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
+            echo "::error::$tag 已经发布，不是草稿。只改正文请用 step=notes。"
             exit 1
           fi
-          jq -r '.body' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/draft-body.md"
+          jq -r '.body' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/current-body.md"
+          jq -r '.assets[].name' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/assets.txt"
+          cat "$RUNNER_TEMP/assets.txt"
+        env:
+          STEP: ${{ inputs.step }}
       - name: Check the release notes against this build
         shell: bash
         run: |
@@ -144,9 +157,10 @@ jobs:
           python scripts/check_release_notes.py \
             --notes "$notes" \
             --version "$VERSION" \
-            --draft-body "$RUNNER_TEMP/draft-body.md"
+            --assets "$RUNNER_TEMP/assets.txt" \
+            --draft-body "$RUNNER_TEMP/current-body.md"
       # 顺序不能换：先替换正文、读回核对，最后才取消草稿。
-      - name: Replace the draft body and read it back
+      - name: Replace the body and read it back
         shell: bash
         run: |
           set -euo pipefail
@@ -155,7 +169,13 @@ jobs:
           gh release edit "$tag" --notes-file "$notes" >/dev/null
           gh release view "$tag" --json body --jq '.body' > "$RUNNER_TEMP/readback.md"
           python scripts/check_release_notes.py --notes "$notes" --compare "$RUNNER_TEMP/readback.md"
+          if [[ "$STEP" == "notes" ]]; then
+            echo "### v${VERSION} 的正文已更新，草稿状态未变" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          STEP: ${{ inputs.step }}
       - name: Publish
+        if: inputs.step == 'publish'
         shell: bash
         run: |
           set -euo pipefail
@@ -173,4 +193,59 @@ jobs:
             echo "$url"
             echo
             jq -r '.assets[] | "- \(.name)"' "$RUNNER_TEMP/published.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # 已安装的应用从这两处得知新版本。临时签名包不带 latest.json，只核对前者。
+      - name: Confirm installed apps now see this version
+        if: inputs.step == 'publish'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if ! grep -qx 'latest.json' "$RUNNER_TEMP/assets.txt"; then
+            flags+=(--no-manifest)
+          fi
+          python scripts/check_release_latest.py --expect "v${VERSION}" "${flags[@]}"
+
+  retract:
+    name: Retract v${{ inputs.version }} to draft
+    if: inputs.step == 'retract'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Turn the release back into a draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::版本号格式应为 X.Y.Z（不带 v），收到的是 $VERSION。"
+            exit 1
+          fi
+          tag="v${VERSION}"
+          if ! gh release view "$tag" --json isDraft > "$RUNNER_TEMP/release.json"; then
+            echo "::error::找不到 $tag 的 Release。"
+            exit 1
+          fi
+          if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" == "true" ]]; then
+            echo "$tag 已经是草稿，不再改动，只核对对外的最新版。"
+          else
+            # 只改草稿状态：产物、标签、正文都保留，改好后用 step=publish 原样重新发布。
+            gh release edit "$tag" --draft=true >/dev/null
+          fi
+          if [[ "$(gh release view "$tag" --json isDraft --jq '.isDraft')" != "true" ]]; then
+            echo "::error::改回草稿后读回仍不是草稿。"
+            exit 1
+          fi
+      - name: Confirm installed apps no longer see this version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/check_release_latest.py --not "v${VERSION}"
+          {
+            echo "### v${VERSION} 已撤回为草稿"
+            echo
+            echo "产物和标签都保留。releases/latest 与 latest.json 已回到上一个正式版。"
+            echo "修好后：如需改正文，更新 \`docs/release-notes/v${VERSION}.md\` 合进 main，再用 step=publish 重新发布。"
           } >> "$GITHUB_STEP_SUMMARY"

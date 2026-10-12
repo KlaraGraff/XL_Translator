@@ -10,8 +10,10 @@ AGENTS.md 第 9 条要求：正文由人写好、替换掉草稿里的「整理�
 - 渠道是 formal-release 时不许写「未公证」，是 temporary-test 时必须写明「未公证」。
   V8.1.0 / V8.0.1 的说明写着已签名，实物其实没签——这一条就是防那种情况。
 
-渠道从草稿正文里构建工作流写下的那一行 ``Channel: `...` `` 读出来，那一行是
-build-distributions.yml 按 Apple 密钥是否齐全当场决定的，不靠人记。
+渠道以 Release 上实际挂着的 macOS 安装包文件名为准（临时签名包带
+``_TEMP_SIGNED_TEST``）；草稿正文里构建工作流写的那一行 ``Channel: `...` ``
+若还在，也必须与之一致。只看文件名，是因为撤回后重新发布时，正文早已换成
+正式说明，那一行已经不在了。
 
 另有 ``--compare`` 模式：替换正文后从 GitHub 读回，和仓库里的文件逐字比对。
 """
@@ -39,6 +41,39 @@ def normalize(text: str) -> str:
 def extract_channel(draft_body: str) -> str | None:
     match = CHANNEL_RE.search(draft_body)
     return match.group("channel") if match else None
+
+
+def channel_from_assets(asset_names: list[str], version: str) -> str | None:
+    """按 Release 上实际的 macOS 安装包判断这次构建的签名渠道。"""
+    names = {name.strip() for name in asset_names if name.strip()}
+    formal = f"Translator_macOS_arm64_{version}.dmg" in names
+    temporary = f"Translator_macOS_arm64_{version}_TEMP_SIGNED_TEST.dmg" in names
+    if formal == temporary:
+        # 两个都没有（产物缺失）或两个都有（不该发生），都不能凭此判断。
+        return None
+    return "formal-release" if formal else "temporary-test"
+
+
+def resolve_channel(
+    asset_names: list[str] | None, draft_body: str | None, version: str
+) -> tuple[str | None, str | None]:
+    """返回 (渠道, 错误)。文件名优先，正文里的渠道行只用来交叉核对。"""
+    from_assets = channel_from_assets(asset_names, version) if asset_names is not None else None
+    from_body = extract_channel(draft_body) if draft_body is not None else None
+    if asset_names is not None and from_assets is None:
+        return None, (
+            f"Release 上找不到唯一的 macOS 安装包 Translator_macOS_arm64_{version}[_TEMP_SIGNED_TEST].dmg，"
+            "无法判断这次构建是否签名和公证。"
+        )
+    if from_assets and from_body and from_assets != from_body:
+        return None, f"安装包文件名显示渠道是 {from_assets}，草稿正文里写的却是 {from_body}。"
+    channel = from_assets or from_body
+    if channel is None:
+        return None, (
+            "无法判断构建渠道：既没有安装包列表，草稿正文里也没有 Channel 行。"
+            "请到 Actions 里查这次构建 macOS 任务的「Configure Developer ID」是否执行。"
+        )
+    return channel, None
 
 
 def expected_asset_names(version: str, channel: str) -> list[str]:
@@ -89,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--notes", type=Path, required=True, help="仓库里的发布说明文件")
     parser.add_argument("--version", help="版本号，例如 10.0.1（不带 v）")
-    parser.add_argument("--draft-body", type=Path, help="草稿 Release 当前正文，用来读构建渠道")
+    parser.add_argument("--draft-body", type=Path, help="Release 当前正文，用来交叉核对构建渠道")
+    parser.add_argument("--assets", type=Path, help="Release 上的产物文件名，每行一个")
     parser.add_argument(
         "--compare",
         type=Path,
@@ -106,19 +142,20 @@ def main(argv: list[str] | None = None) -> int:
         print("读回核对通过：Release 正文与仓库文件一致。")
         return 0
 
-    if not args.version or args.draft_body is None:
-        parser.error("核对正文需要 --version 和 --draft-body")
+    if not args.version or (args.draft_body is None and args.assets is None):
+        parser.error("核对正文需要 --version，以及 --assets 或 --draft-body")
 
-    channel = extract_channel(args.draft_body.read_text(encoding="utf-8"))
-    if channel is None:
-        print(
-            "草稿正文里找不到构建渠道那一行（Channel: `...`）。草稿可能已被手动改过，"
-            "请到 Actions 里查这次构建 macOS 任务的「Configure Developer ID」是否执行。",
-            file=sys.stderr,
-        )
+    version = args.version.strip().removeprefix("v")
+    channel, error = resolve_channel(
+        args.assets.read_text(encoding="utf-8").splitlines() if args.assets else None,
+        args.draft_body.read_text(encoding="utf-8") if args.draft_body else None,
+        version,
+    )
+    if error:
+        print(error, file=sys.stderr)
         return 1
 
-    errors = notes_errors(notes, args.version.strip().removeprefix("v"), channel)
+    errors = notes_errors(notes, version, channel)
     if errors:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
