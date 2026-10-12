@@ -127,3 +127,45 @@ def test_without_language_translator_uncertain_text_is_translated_normally(tmp_p
         source, tmp_path / "plan_en.dxf", options=CadPipelineOptions(target_lang="en")
     )
     assert calls == [["SCALE 1:100", "PLAN DE MASSE"]]
+
+
+def test_multibyte_escaped_chinese_is_decoded_and_translated(tmp_path: Path):
+    """本机实测：电气总说明图 3250 条文字里 2223 条是 \\M+5XXXX 存的 GBK 中文。
+
+    以前不解码，「\\M+5B5A5\\M+5CFF2」看起来是一串 ASCII，目标英文时被当成
+    「已是英文」跳过，整张图的中文一处没翻。
+    """
+    source = tmp_path / "notes.dxf"
+    source.write_text(
+        "0\nTEXT\n1\n\\M+5B5A5\\M+5CFF2\n"
+        "0\nMTEXT\n1\n{\\fSimSun|b0;\\M+5B5A5\\M+5CFF2}\\PMEB\n"
+        "0\nTEXT\n1\nE\n",
+        encoding="utf-8",
+    )
+    summary = scan_cad_file(source, options=CadPipelineOptions(target_lang="en"))
+    assert summary.candidate_count == 2
+    # 目标是中文时，这些已经是中文，不再送去翻译。
+    assert scan_cad_file(source, options=CadPipelineOptions(target_lang="zh")).candidate_count == 1
+
+    seen: list[list[str]] = []
+
+    def translate(texts, glossary):
+        seen.append(list(texts))
+        return {"单向": "One-way"}
+
+    result = CadTranslationPipeline(converter=None, translator=translate).translate_file(
+        source, tmp_path / "notes_en.dxf", options=CadPipelineOptions(target_lang="en")
+    )
+    assert seen == [["单向", "MEB"]]
+    output = (tmp_path / "notes_en.dxf").read_text(encoding="utf-8")
+    assert "\\M+5B5A5" not in output
+    assert output.count("One-way") == 2
+    # 格式命令照旧保留。
+    assert "{\\fSimSun|b0;One-way}\\PMEB" in output
+    assert result.stats.residual_foreign_text_count == 0
+
+
+def test_undecodable_multibyte_escape_is_left_as_is():
+    from core.cad_translation import _plain_text
+
+    assert _plain_text("\\M+5FFFF") == "\\M+5FFFF"

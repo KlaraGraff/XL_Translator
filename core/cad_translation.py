@@ -62,6 +62,13 @@ _DXF_FORMAT_RE = re.compile(r"\\[A-Za-z]+(?!\+)")
 # expression consumes the first letters of an ASCII word after the escape
 # (``\\U+4E00Door`` used to become one invalid code point).
 _DXF_UNICODE_RE = re.compile(r"\\U\+([0-9A-Fa-f]{4})")
+# 老图纸（R2007 之前）里的东亚文字常以「多字节转义」存：\M+ 后一位代码页编号、
+# 四位十六进制的双字节编码，例如 \M+5B5A5 是 GBK 的「单」。以前不解码，这些文字
+# 看起来是一串 ASCII：语种判定把它当成「已是英文」跳过，整张图的中文一处没翻。
+_DXF_MBCS_RE = re.compile(r"\\M\+([1-5])([0-9A-Fa-f]{4})")
+_DXF_MBCS_CODECS = {"1": "cp932", "2": "cp950", "3": "cp949", "4": "cp1361", "5": "gbk"}
+# 两种转义合在一起：MTEXT 切分时它们都属于正文，不是格式命令。
+_DXF_CHAR_ESCAPE_RE = re.compile(r"\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}")
 _REPLACEMENT_CHARS = frozenset({"�", "�", "□"})
 
 
@@ -420,9 +427,18 @@ def _serialize_dxf(records: Iterable[DxfRecord]) -> str:
     return "".join(result)
 
 
+def _decode_mbcs_escape(match: re.Match[str]) -> str:
+    try:
+        return bytes.fromhex(match.group(2)).decode(_DXF_MBCS_CODECS[match.group(1)])
+    except (UnicodeDecodeError, ValueError):
+        # 解不出来就原样留着：宁可当成看不懂的文字，也不能凭空变成别的字。
+        return match.group(0)
+
+
 def _plain_text(value: str) -> str:
-    """Decode DXF Unicode escapes and remove inline formatting for matching."""
+    """Decode DXF Unicode/multibyte escapes and remove inline formatting for matching."""
     value = _DXF_UNICODE_RE.sub(lambda match: chr(int(match.group(1), 16)), value)
+    value = _DXF_MBCS_RE.sub(_decode_mbcs_escape, value)
     value = value.replace("\\P", "\n")
     # MTEXT style commands carry parameters up to ``;`` (for example
     # ``\fArial|b0;``). Removing only the initial letter leaves font names in
@@ -445,7 +461,7 @@ def _mtext_runs(value: str) -> tuple[CadTextRun, ...]:
     start: int | None = None
     while i < len(value):
         if value[i] == "\\":
-            unicode_escape = _DXF_UNICODE_RE.match(value, i)
+            unicode_escape = _DXF_CHAR_ESCAPE_RE.match(value, i)
             if unicode_escape:
                 if start is None:
                     start = i
@@ -784,7 +800,7 @@ def _encode_dxf_text(value: str, *, multiline: bool) -> str:
 
 def _ascii_chunks(value: str, limit: int = 240) -> list[str]:
     # Never split a DXF Unicode escape or formatting command across records.
-    tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
+    tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
     chunks: list[str] = []
     current = ""
     for token in tokens:
