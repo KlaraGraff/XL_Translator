@@ -118,7 +118,12 @@ class EmbeddedWriteStats:
     comments: int = 0
     shrunk_shapes: int = 0
     grown_shapes: int = 0
+    # 往空白处长还不够、把框覆盖的几行一起加高后放下的。
+    row_grown_shapes: int = 0
     overflow_shapes: int = 0
+    # 为放下文本框加高过的行：分表部件 → {行号（1 起）: 至少要这么高（磅）}。
+    # 单元格那一轮调行高时取两者较大的，不能把它改回去。
+    row_heights: dict[str, dict[int, float]] = field(default_factory=dict)
 
 
 # ── 遍历 ──────────────────────────────────────────────────────────────────────
@@ -763,6 +768,7 @@ def _apply_shapes(
     review_marks: dict[str, str],
     review_positions: list[dict[str, str]] | None,
     stats: EmbeddedWriteStats,
+    grown_rows: dict[int, float] | None = None,
 ) -> None:
     data = package.read(parts.drawing)
     if data is None:
@@ -804,10 +810,15 @@ def _apply_shapes(
         stats.shrunk_shapes += 1
         if fits:
             continue
-        # 缩到下限还放不下：框往下加高（maple 2026-10-12 选的做法），只长进下面的空白。
-        # 空白不够、或加不了的（竖排、旋转、组合里的形状、非两格锚定）列入复核。
-        if _grow_shape(sp, after, scale, grid):
-            stats.grown_shapes += 1
+        # 缩到下限还放不下：框往下加高（maple 2026-10-12 选的做法），先长进下面的空白；
+        # 空白不够，把框覆盖的几行一起平均加高，下面的内容跟着下移（maple 19:53）。
+        # 锁定了行高、行已到上限、或加不了的（竖排、旋转、组合里的形状、非两格锚定）列入复核。
+        fits, rows_grown = _grow_shape(sp, after, scale, grid, grown_rows)
+        if fits:
+            if rows_grown:
+                stats.row_grown_shapes += 1
+            else:
+                stats.grown_shapes += 1
             continue
         stats.overflow_shapes += 1
         if review_positions is not None:
@@ -822,39 +833,47 @@ def _apply_shapes(
     package.write(parts.drawing, _serialize(root))
 
 
-def _grow_shape(sp, layout: _ShapeLayout, scale: float, grid: _SheetGrid | None) -> bool:
-    """把形状往下加高到按 ``scale`` 缩过的文字放得下（多留一行），放下了返回 True。
+def _grow_shape(
+    sp,
+    layout: _ShapeLayout,
+    scale: float,
+    grid: _SheetGrid | None,
+    grown_rows: dict[int, float] | None = None,
+) -> tuple[bool, bool]:
+    """把形状往下加高到按 ``scale`` 缩过的文字放得下（多留一行）。返回 ``(放下了, 加高过行)``。
 
-    下面空白不够时只长到空白用完为止，返回 False（调用方列入复核）。
+    先只长进下面的空白；还不够、且 ``grown_rows`` 不是 None（没锁行高）时，把框覆盖的
+    几行平均加高补足，加高后的行高记进 ``grown_rows``（行号 0 起）并同步到 ``grid``。
     """
     if layout.width is None or layout.height is None or not layout.wrap:
-        return False
+        return False, False
     tx_body = sp.find(_x("txBody"))
     body_pr = tx_body.find(_a("bodyPr")) if tx_body is not None else None
     if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
-        return False
+        return False, False
     xfrm = sp.find(f"{_x('spPr')}/{_a('xfrm')}")
     if xfrm is not None and xfrm.get("rot") not in (None, "0"):
-        return False
+        return False, False
     anchor = sp.getparent()
     if anchor is None or anchor.tag not in {_x("twoCellAnchor"), _x("oneCellAnchor"), _x("absoluteAnchor")}:
-        return False  # 组合里的形状：加高会和组合的坐标对不上
+        return False, False  # 组合里的形状：加高会和组合的坐标对不上
     paragraphs = list(layout.paragraphs)
     margin = max((p.size_pt for p in paragraphs), default=0.0) * scale * 1.4
     extra = paragraphs_height(paragraphs, layout.width, scale) + margin - layout.height
     if extra <= 0:
-        return False
+        return False, False
     if anchor.tag != _x("twoCellAnchor") or grid is None:
-        return False  # 单格/绝对锚定量不出框下面是哪几格，不冒险盖住内容
+        return False, False  # 单格/绝对锚定量不出框下面是哪几格，不冒险盖住内容
     start, end = anchor.find(_x("from")), anchor.find(_x("to"))
     try:
+        first_row = int(start.find(_x("row")).text)
         first_col = int(start.find(_x("col")).text)
         to_col = int(end.find(_x("col")).text)
         last_col = to_col if int(end.find(_x("colOff")).text) > 0 else to_col - 1
         row_el, off_el = end.find(_x("row")), end.find(_x("rowOff"))
         row, offset = int(row_el.text), int(off_el.text)
     except (AttributeError, TypeError, ValueError):
-        return False
+        return False, False
     # 偏移超过本行行高的锚点（有的程序这样写）先折算到真正所在的行。
     offset_pt = offset / _EMU_PER_PT
     for _ in range(10000):
@@ -865,23 +884,84 @@ def _grow_shape(sp, layout: _ShapeLayout, scale: float, grid: _SheetGrid | None)
         row += 1
     # 只往空白处长：长到下面第一行有内容的地方为止，不盖住表头和数据。
     room = _blank_room_below(grid, row, offset_pt, first_col, max(first_col, last_col))
-    grow = min(extra, room)
-    if grow <= 0:
-        return False
-    extra_emu = int(math.ceil(grow * _EMU_PER_PT))
-    remaining = grow + offset_pt
-    for _ in range(10000):
-        height = grid.row(row)
-        if height > 0 and remaining < height:
-            break
-        remaining -= max(0.0, height)
-        row += 1
+    grow = max(0.0, min(extra, room))
+    if grow > 0:
+        offset_pt += grow
+        for _ in range(10000):
+            height = grid.row(row)
+            if height > 0 and offset_pt < height:
+                break
+            offset_pt -= max(0.0, height)
+            row += 1
+    added = 0.0
+    if extra - grow > _GROW_EPSILON_PT and grown_rows is not None:
+        bottom_row_before = grid.row(row)
+        added = _grow_covered_rows(grid, first_row, row, offset_pt, extra - grow, grown_rows)
+        # 下边钉在末行里的跟着这一行变高往下挪；正好在某行顶上的，上面几行一变高自然就下去了。
+        if offset_pt > 0:
+            offset_pt += grid.row(row) - bottom_row_before
+    total = grow + added
+    if total <= 0:
+        return False, False
     row_el.text = str(row)
-    off_el.text = str(int(math.ceil(remaining * _EMU_PER_PT)))
+    off_el.text = str(int(math.ceil(offset_pt * _EMU_PER_PT)))
     ext = xfrm.find(_a("ext")) if xfrm is not None else None
     if ext is not None:
-        ext.set("cy", str(_emu_attr(ext, "cy", 0) + extra_emu))
-    return grow >= extra
+        ext.set("cy", str(_emu_attr(ext, "cy", 0) + int(math.ceil(total * _EMU_PER_PT))))
+    return total >= extra - _GROW_EPSILON_PT, added > 0
+
+
+_GROW_EPSILON_PT = 0.01
+# Excel 行高上限 409.5 磅；行高按 0.75 磅（1 像素）取整，免得屏幕上舍掉一截。
+_MAX_ROW_HEIGHT_PT = 409.5
+_ROW_HEIGHT_STEP_PT = 0.75
+
+
+def _covered_rows(grid: _SheetGrid, first_row: int, row: int, offset_pt: float) -> list[int]:
+    """框（从 first_row 起、下边在第 row 行 offset_pt 处）占到的可见行，0 起。"""
+    last = row if offset_pt > 0 else row - 1
+    return [index for index in range(first_row, last + 1) if grid.row(index) > 0]
+
+
+def _grow_covered_rows(
+    grid: _SheetGrid,
+    first_row: int,
+    row: int,
+    offset_pt: float,
+    need: float,
+    grown_rows: dict[int, float],
+) -> float:
+    """把框覆盖的几行平均加高共 ``need`` 磅（到上限的行不再加，余量摊给其它行），返回实际加了多少。
+
+    框的上边钉在首行里、下边钉在末行里，每一行加高多少框就跟着高多少。
+    """
+    rows = _covered_rows(grid, first_row, row, offset_pt)
+    if not rows:
+        return 0.0
+    heights = {index: grid.row(index) for index in rows}
+    adds = dict.fromkeys(rows, 0.0)
+    open_rows = [index for index in rows if heights[index] < _MAX_ROW_HEIGHT_PT]
+    left = need
+    while left > _GROW_EPSILON_PT and open_rows:
+        share = left / len(open_rows)
+        still_open = []
+        for index in open_rows:
+            take = min(share, _MAX_ROW_HEIGHT_PT - heights[index] - adds[index])
+            adds[index] += take
+            left -= take
+            if _MAX_ROW_HEIGHT_PT - heights[index] - adds[index] > _GROW_EPSILON_PT:
+                still_open.append(index)
+        open_rows = still_open
+    total = 0.0
+    for index in rows:
+        if adds[index] <= 0:
+            continue
+        target = math.ceil((heights[index] + adds[index]) / _ROW_HEIGHT_STEP_PT - 1e-9) * _ROW_HEIGHT_STEP_PT
+        target = min(_MAX_ROW_HEIGHT_PT, target)
+        total += target - heights[index]
+        grid.rows[index] = target
+        grown_rows[index] = target
+    return total
 
 
 # 往下找空白最多看这么多行；再往下都空就当作没有尽头。
@@ -952,6 +1032,7 @@ def _apply_comments(
     review_marks: dict[str, str],
     review_positions: list[dict[str, str]] | None,
     stats: EmbeddedWriteStats,
+    grown_rows: dict[int, float] | None = None,
 ) -> None:
     # 对话式批注：正本改写，同时记下「原文 → 新文」供兼容副本同步。
     fallback_edits: dict[str, list[tuple[str, str]]] = {}
@@ -1017,7 +1098,10 @@ def _apply_comments(
     if changed:
         package.write(parts.comments, _serialize(root))
     if shown and parts.vml:
-        _grow_comment_boxes(package, parts.vml, shown, _sheet_grid(package, parts.sheet))
+        grid = _sheet_grid(package, parts.sheet)
+        if grid is not None and grown_rows:
+            grid.rows.update(grown_rows)  # 文本框那边加高过的行，批注框按加高后的量
+        _grow_comment_boxes(package, parts.vml, shown, grid)
 
 
 # ── 批注框跟着译文变大 ────────────────────────────────────────────────────────
@@ -1185,17 +1269,23 @@ def apply_embedded_translations(
     translation_only: bool,
     review_marks: dict[str, str] | None = None,
     review_positions: list[dict[str, str]] | None = None,
+    grow_rows: bool = True,
 ) -> EmbeddedWriteStats:
     """把文本框和批注的译文写进包里（只登记改写，保存由调用方负责）。
 
     必须在「保留原文表」拍快照之后、单元格写回之前调用：快照拿的是原文，
     单元格那一轮冻结图片锚点时读到的绘图部件已经是写好译文的版本。
+
+    ``grow_rows``：文本框缩字、往空白处长都放不下时，可否把它覆盖的几行加高
+    （锁定行高时为 False）。加高的行只记在 ``stats.row_heights`` 里，由单元格那一轮
+    写进分表——那一轮要拿原来的行高判断哪些图片得固定尺寸。
     """
     stats = EmbeddedWriteStats()
     if not options.enabled:
         return stats
     marks = dict(review_marks or {})
     for parts in _sheet_parts(package):
+        grown_rows: dict[int, float] = {}
         if options.shapes and parts.drawing:
             _apply_shapes(
                 package,
@@ -1205,6 +1295,7 @@ def apply_embedded_translations(
                 review_marks=marks,
                 review_positions=review_positions,
                 stats=stats,
+                grown_rows=grown_rows if grow_rows else None,
             )
         if options.comments:
             _apply_comments(
@@ -1215,5 +1306,8 @@ def apply_embedded_translations(
                 review_marks=marks,
                 review_positions=review_positions,
                 stats=stats,
+                grown_rows=grown_rows,
             )
+        if grown_rows and parts.sheet:
+            stats.row_heights[parts.sheet] = {row + 1: height for row, height in grown_rows.items()}
     return stats

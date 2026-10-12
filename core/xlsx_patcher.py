@@ -675,6 +675,12 @@ class _SheetGeometry:
     def row_height(self, row_num: int) -> float:
         return self._row_heights.get(row_num, self.default_row_height)
 
+    def with_row_heights(self, heights: dict[int, float]) -> _SheetGeometry:
+        """同一张表、但 ``heights``（行号 1 起 → 磅）里的行换成给定高度的副本。"""
+        clone = copy.copy(self)
+        clone._row_heights = {**self._row_heights, **heights}
+        return clone
+
     def last_sized_col(self) -> int:
         """最后一个尺寸被显式定义过的列号（1-based）；一个都没有返回 0。
 
@@ -1159,11 +1165,14 @@ def fix_drawing_anchors(
     freeze_all: bool = False,
     new_geometry: _SheetGeometry | None = None,
     shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     """把受行高变化影响的悬浮图片锚点改写成定尺寸 / 定位置的 oneCellAnchor。
 
     文本框另算：仍是两格锚定，右下角按 ``new_geometry``（调整行高之后）挪到原来的高度；
-    碰到下面有内容的行只能截短，截短的文本框名字记进 ``shortened``。
+    碰到下面有内容的行只能截短，截短的文本框名字记进 ``shortened``。文本框原来多高按
+    ``text_box_geometry`` 量（缺省同 ``geometry``）：写文本框时为放下译文加高过行，
+    它的锚点是按加高后的行写的。
 
     ``geometry`` 必须是**调整行高之前**的几何，这样算出的 ext 才是原渲染尺寸。
 
@@ -1196,6 +1205,7 @@ def fix_drawing_anchors(
                 freeze_all=freeze_all,
                 new_geometry=new_geometry,
                 shortened=shortened,
+                text_box_geometry=text_box_geometry,
             )
         elif tag == "absoluteAnchor":
             frozen += _freeze_absolute_anchor(
@@ -1212,6 +1222,7 @@ def _freeze_two_cell_anchor(
     freeze_all: bool,
     new_geometry: _SheetGeometry | None = None,
     shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     start = _anchor_position(anchor, "from")
     end = _anchor_position(anchor, "to")
@@ -1238,6 +1249,9 @@ def _freeze_two_cell_anchor(
         # 只把右下角挪到新行高下同样的高度，行变矮时框不跟着变矮、把字裁掉。
         if new_geometry is None:
             return 0
+        if text_box_geometry is not None:
+            cy = sum(text_box_geometry.row_emu(row + 1) for row in range(from_row, to_row))
+            cy = max(int(cy + to_row_off - from_row_off), 1)
         last_col = to_col if to_col_off > 0 else to_col - 1
         if _reanchor_bottom(
             anchor,
@@ -1480,6 +1494,7 @@ def _process_sheet(
     output_translation_only: bool = False,
     allowed_coordinates: set[str] | None = None,
     external_autofit_planned: bool = False,
+    min_row_heights: dict[int, float] | None = None,
 ) -> _SheetOutcome:
     data = package.read(entry.part)
     if data is None:
@@ -1684,6 +1699,11 @@ def _process_sheet(
             root, geometry, row_texts, mutated_rows
         )
         dirty = dirty or touched_rows
+        # 文本框放不下时加高过的行（见 xlsx_embedded_text._grow_shape）：取两者较大的。
+        if min_row_heights:
+            raised = _raise_row_heights(root, geometry, min_row_heights)
+            changed_rows |= raised
+            dirty = dirty or bool(raised)
 
     # 锁定行高时行高压根不变，没有任何锚点需要动。
     # 否则：调用方若还要跑 Excel COM 的整表 autofit，我们预知不了它会改哪些行，
@@ -1692,7 +1712,14 @@ def _process_sheet(
     if changed_rows or freeze_all:
         shortened: list[str] = []
         outcome.anchor_frozen_count = _patch_sheet_drawing(
-            package, entry, root, geometry, changed_rows, freeze_all=freeze_all, shortened=shortened
+            package,
+            entry,
+            root,
+            geometry,
+            changed_rows,
+            freeze_all=freeze_all,
+            shortened=shortened,
+            text_box_geometry=geometry.with_row_heights(min_row_heights) if min_row_heights else None,
         )
         # 行变矮后文本框保不住原高度（下面紧挨着内容）：字可能被裁，列入复核。
         if review_positions is not None and shortened:
@@ -1922,6 +1949,36 @@ def _auto_adjust_row_heights(
     return changed, touched
 
 
+def _raise_row_heights(root, geometry: _SheetGeometry, min_heights: dict[int, float]) -> set[int]:
+    """把 ``min_heights``（行号 1 起 → 磅）里的行至少加高到这么高，缺的 ``<row>`` 补上。返回变高了的行。"""
+    sheet_data = root.find(_m("sheetData"))
+    if sheet_data is None:
+        return set()
+    existing = dict(_iter_rows(root))
+    raised: set[int] = set()
+    for row_num in sorted(min_heights):
+        height = min_heights[row_num]
+        row = existing.get(row_num)
+        if row is None:
+            row = etree.Element(_m("row"))
+            row.set("r", str(row_num))
+            following = next((num for num in sorted(existing) if num > row_num), None)
+            if following is None:
+                sheet_data.append(row)
+            else:
+                existing[following].addprevious(row)
+            existing[row_num] = row
+        current = _to_float(row.get("ht"), None)
+        if current is None:
+            current = geometry.default_row_height
+        if current + 1e-9 >= height:
+            continue
+        row.set("ht", _format_number(height))
+        row.set("customHeight", "1")
+        raised.add(row_num)
+    return raised
+
+
 def _patch_sheet_drawing(
     package: _Package,
     entry: _SheetEntry,
@@ -1931,6 +1988,7 @@ def _patch_sheet_drawing(
     *,
     freeze_all: bool = False,
     shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     """返回本分表被冻结/改写的悬浮图片锚点数量。"""
     drawing_el = root.find(_m("drawing"))
@@ -1965,6 +2023,7 @@ def _patch_sheet_drawing(
         freeze_all=freeze_all,
         new_geometry=_SheetGeometry(root),
         shortened=shortened,
+        text_box_geometry=text_box_geometry,
     )
     if frozen:
         package.write(drawing_part, _serialize(drawing_root))
@@ -2395,7 +2454,7 @@ def write_bilingual_workbook(
 
     ``embedded_text``：``core.xlsx_embedded_text.EmbeddedTextOptions``，翻译文本框和
     批注；None 表示不动它们（旧行为）。写入数记进 ``stats["shape_paragraphs"]`` /
-    ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]`` / ``stats["overflow_shapes"]``。
+    ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]`` / ``stats["row_grown_shapes"]`` / ``stats["overflow_shapes"]``。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -2512,6 +2571,7 @@ def write_bilingual_workbook(
                 translation_only=output_translation_only,
                 review_marks=review_mark_map,
                 review_positions=review_positions,
+                grow_rows=not lock_row_height,
             )
 
         removed_formula = False
@@ -2543,6 +2603,9 @@ def write_bilingual_workbook(
                 log_callback=log_callback,
                 allowed_coordinates=sheet_allowed,
                 external_autofit_planned=external_autofit_planned,
+                min_row_heights=(
+                    embedded_stats.row_heights.get(entry.part) if embedded_stats is not None else None
+                ),
             )
             removed_formula = removed_formula or outcome.removed_formula
             total_mutated_cells += outcome.mutated_cells
@@ -2614,6 +2677,7 @@ def write_bilingual_workbook(
                 stats["comments"] = embedded_stats.comments
                 stats["shrunk_shapes"] = embedded_stats.shrunk_shapes
                 stats["grown_shapes"] = embedded_stats.grown_shapes
+                stats["row_grown_shapes"] = embedded_stats.row_grown_shapes
                 stats["overflow_shapes"] = embedded_stats.overflow_shapes
 
         if error_positions and log_callback:

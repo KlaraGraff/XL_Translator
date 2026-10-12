@@ -157,6 +157,15 @@ def _part(path: Path, name: str) -> str:
         return archive.read(name).decode("utf-8")
 
 
+def _row_heights(path: Path, part: str = "xl/worksheets/sheet1.xml") -> dict[int, float]:
+    root = etree.fromstring(_part(path, part).encode())
+    return {
+        int(row.get("r")): float(row.get("ht"))
+        for row in root.iter(f"{{{NS_MAIN}}}row")
+        if row.get("ht")
+    }
+
+
 def _shape_paragraphs(path: Path, part: str = "xl/drawings/drawing1.xml") -> list[str]:
     root = etree.fromstring(_part(path, part).encode())
     result = []
@@ -172,7 +181,9 @@ class EmbeddedTextTests(unittest.TestCase):
         self.source = self.root / "source.xlsx"
         build_workbook(self.source)
 
-    def _write(self, *, translation_only=False, keep=False, review_positions=None, stats=None, allowed=None):
+    def _write(
+        self, *, translation_only=False, keep=False, review_positions=None, stats=None, allowed=None, lock=False
+    ):
         output = self.root / f"out-{translation_only}-{keep}.xlsx"
         shutil.copy2(self.source, output)
         write_bilingual_workbook(
@@ -180,6 +191,7 @@ class EmbeddedTextTests(unittest.TestCase):
             translations={"单元格原文": TRANSLATIONS["单元格原文"]},
             target_lang="fr",
             keep_original_sheets=keep,
+            lock_row_height=lock,
             output_translation_only=translation_only,
             review_positions=review_positions,
             stats=stats,
@@ -258,21 +270,86 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual(review, [])
         self.assertEqual(stats["grown_shapes"], 1)
 
-    def test_box_grows_only_into_blank_rows(self) -> None:
-        # 框在 D 列第 2 行起，高 36 磅（落在第 4 行里）；D6 有表头。框只长到第 6 行顶，
-        # 不盖住表头；仍放不下，列入复核。别的列有内容不算。
+    def test_box_grows_into_blank_rows_then_raises_the_rows_it_covers(self) -> None:
+        # 框在 D 列第 2 行起，高 36 磅（落在第 4 行里）；D6 有表头。框先长到第 6 行顶，
+        # 不盖住表头；还不够，把框覆盖的第 2～5 行平均加高，表头跟着下移。别的列有内容不算。
         build_workbook(self.source, box=(1097280, 457200), cells={"D6": "序号", "F5": "旁边一列"})
         review: list[dict[str, str]] = []
-        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
-        self.assertIn("<xdr:to><xdr:col>3</xdr:col><xdr:colOff>1097280</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>", drawing)
-        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
+        stats: dict = {}
+        output = self._write(review_positions=review, stats=stats)
+        drawing = _part(output, "xl/drawings/drawing1.xml")
+        self.assertIn("<xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>", drawing)
+        self.assertEqual(review, [])
+        self.assertEqual((stats["row_grown_shapes"], stats["overflow_shapes"]), (1, 0))
+        heights = _row_heights(output)
+        raised = [heights.get(row) for row in (2, 3, 4, 5)]
+        self.assertTrue(all(height and height > 15 for height in raised), heights)
+        self.assertEqual(len(set(raised)), 1, "四行加得一样多")
+        self.assertNotIn(6, heights, "表头那一行不动")
 
-        # 紧贴着框下边就有内容：一点也不加高。
+        # 框下边那一行就有内容：不往下长，只加高框覆盖的第 2～4 行。
         build_workbook(self.source, box=(1097280, 457200), cells={"D4": "合计"})
         review = []
-        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
-        self.assertIn("<xdr:row>1</xdr:row><xdr:rowOff>457200</xdr:rowOff></xdr:to>", drawing)
+        output = self._write(review_positions=review)
+        # 框原来就有 6 磅压在第 4 行里，加高后仍在第 4 行里、离行底的距离不变。
+        self.assertRegex(_part(output, "xl/drawings/drawing1.xml"), r"<xdr:to>.*<xdr:row>3</xdr:row>")
+        self.assertEqual(review, [])
+        heights = _row_heights(output)
+        self.assertEqual({row: heights.get(row) for row in (2, 3, 4)}, {2: 30.75, 3: 30.75, 4: 30.75})
+        self.assertNotIn(5, heights)
+
+    def test_raised_rows_keep_pictures_and_grown_boxes_in_shape(self) -> None:
+        # 文本框为放下译文把第 2、3 行从 15 加到 30 磅、锚点按加高后的行写到第 4 行顶（高 60 磅）。
+        # 单元格那一轮看到行变了：图片按原行高冻成 30 磅不被拉长；文本框按加高后的行量，保持 60 磅。
+        from core.xlsx_patcher import _SheetGeometry, fix_drawing_anchors
+
+        def sheet(height: float):
+            return _SheetGeometry(
+                etree.fromstring(
+                    f'<worksheet xmlns="{NS_MAIN}"><sheetData><row r="2" ht="{height}" customHeight="1"/>'
+                    f'<row r="3" ht="{height}" customHeight="1"/></sheetData></worksheet>'.encode()
+                )
+            )
+
+        drawing = etree.fromstring(_drawing_xml(["图例说明"], anchor_box=(1097280, 0)))
+        to = drawing.find(f".//{{{NS_XDR}}}to")
+        to.find(f"{{{NS_XDR}}}row").text = "3"
+        picture = etree.fromstring(
+            f'<xdr:twoCellAnchor xmlns:xdr="{NS_XDR}"><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff>'
+            "<xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff>"
+            "<xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic/><xdr:clientData/></xdr:twoCellAnchor>"
+        )
+        drawing.append(picture)
+        original, grown = sheet(15), sheet(30)
+        fix_drawing_anchors(drawing, original, {2, 3}, new_geometry=grown, text_box_geometry=grown)
+        self.assertEqual((to.find(f"{{{NS_XDR}}}row").text, to.find(f"{{{NS_XDR}}}rowOff").text), ("3", "0"))
+        frozen = drawing.find(f"{{{NS_XDR}}}oneCellAnchor/{{{NS_XDR}}}ext")
+        self.assertEqual(frozen.get("cy"), str(30 * 12700))
+
+    def test_locked_row_height_lists_the_box_instead_of_raising_rows(self) -> None:
+        build_workbook(self.source, box=(1097280, 457200), cells={"D4": "合计"})
+        review: list[dict[str, str]] = []
+        output = self._write(review_positions=review, lock=True)
+        self.assertIn("<xdr:row>1</xdr:row><xdr:rowOff>457200</xdr:rowOff></xdr:to>", _part(output, "xl/drawings/drawing1.xml"))
         self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
+        self.assertEqual(_row_heights(output), {})
+
+    def test_raised_rows_stay_within_excel_limit(self) -> None:
+        # 一行就到顶了也放不下：行高封顶 409.5 磅，框列入复核。
+        from core.xlsx_embedded_text import _grow_covered_rows, _SheetGrid
+
+        grid = _SheetGrid({}, {1: 400.0}, 48.0, 15.0)
+        grown: dict[int, float] = {}
+        added = _grow_covered_rows(grid, 1, 2, 0.0, 30.0, grown)
+        self.assertEqual(grown, {1: 409.5})
+        self.assertAlmostEqual(added, 9.5)
+
+        # 两行，一行快到顶：多出来的摊给另一行。
+        grid = _SheetGrid({}, {1: 405.0, 2: 15.0}, 48.0, 15.0)
+        grown = {}
+        added = _grow_covered_rows(grid, 1, 3, 0.0, 30.0, grown)
+        self.assertEqual(grown, {1: 409.5, 2: 40.5})
+        self.assertAlmostEqual(added, 30.0)
 
     def test_text_box_anchor_is_not_frozen_when_rows_change(self) -> None:
         # 行高一变，图片要冻成定尺寸锚点防变形；文本框不冻：写死的宽度在 Mac 上会比列窄。
