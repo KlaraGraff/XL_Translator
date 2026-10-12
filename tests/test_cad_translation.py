@@ -238,8 +238,8 @@ def test_roundtrip_false_does_not_read_back_dwg(tmp_path):
 
 def test_target_language_detection_covers_scripts_and_latin_families():
     assert _is_likely_target_language("中文", "zh")
-    assert _is_likely_target_language("Bonjour", "fr")
-    assert _is_likely_target_language("Über", "de")
+    assert _is_likely_target_language("Plan de masse du bâtiment", "fr")
+    assert _is_likely_target_language("Straße", "de")
     assert _is_likely_target_language("مرحبا", "ar")
     assert _is_likely_target_language("日本語", "ja")
     assert not _is_likely_target_language("Bonjour", "x-custom-foo")

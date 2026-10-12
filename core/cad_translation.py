@@ -26,8 +26,18 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from core.cad_language import (
+    LATIN_TARGET_LANGS,
+    NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
+    TARGET as _LANG_TARGET,
+    UNSURE as _LANG_UNSURE,
+    base_lang as _base_lang,
+    classify_text_language,
+    has_latin_words as _has_latin_words,
+)
+
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
-_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成"}
+_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成", "kept": "已是目标语言"}
 
 CAD_SUPPORTED_EXTENSIONS = frozenset({".dwg", ".dxf"})
 # Stage weights are part of the UI contract and sum to 100.
@@ -152,6 +162,12 @@ class CadTranslator(Protocol):
     def __call__(self, texts: list[str], glossary: Mapping[str, str]) -> Mapping[str, str]: ...
 
 
+class CadLanguageTranslator(Protocol):
+    """Translate and report each source text's language: ``{原文: (译文, 语种代码)}``."""
+
+    def __call__(self, texts: list[str], glossary: Mapping[str, str]) -> Mapping[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class DxfRecord:
     code: int
@@ -194,6 +210,8 @@ class CadScanSummary:
     text_entity_count: int
     candidate_count: int
     needs_conversion: bool
+    # 候选里程序判断不了语种、翻译时交给模型确认的条数（已计入 candidate_count）。
+    uncertain_count: int = 0
 
 
 def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list[DxfRecord], bool]:
@@ -227,21 +245,32 @@ def scan_cad_file(
     source = Path(path)
     records, needs_conversion = _read_scan_records(source, converter)
     units = extract_cad_text_units(records, include_block_text=options.include_block_text)
-    candidates = [
-        unit for unit in units
-        if len(unit.plain_text) <= options.max_text_length
-        and _has_translatable_content(unit.plain_text)
-        and not (unit.entity_type == "DIMENSION" and "<>" in unit.plain_text)
-        and _matches_source_language(unit.plain_text, options.source_lang)
-        and not (options.skip_target_language and _is_likely_target_language(unit.plain_text, options.target_lang))
-    ]
+    candidate_count = 0
+    uncertain_count = 0
+    for unit in units:
+        if (
+            len(unit.plain_text) > options.max_text_length
+            or not _has_translatable_content(unit.plain_text)
+            or (unit.entity_type == "DIMENSION" and "<>" in unit.plain_text)
+            or not _matches_source_language(unit.plain_text, options.source_lang)
+        ):
+            continue
+        if options.skip_target_language:
+            verdict = classify_text_language(unit.plain_text, options.target_lang)
+            if verdict == _LANG_TARGET:
+                continue
+            if verdict == _LANG_UNSURE:
+                # 拿不准的照样算待翻译：翻译时由模型确认，已是目标语言的保留原文。
+                uncertain_count += 1
+        candidate_count += 1
     return CadScanSummary(
         path=source,
         filename=source.name,
         format=source.suffix.lower().lstrip("."),
         text_entity_count=len(units),
-        candidate_count=len(candidates),
+        candidate_count=candidate_count,
         needs_conversion=needs_conversion,
+        uncertain_count=uncertain_count,
     )
 
 
@@ -293,6 +322,9 @@ class CadTranslationStats:
     scanned_entities: int = 0
     candidate_entities: int = 0
     skipped_target_language: int = 0
+    # 程序拿不准、交给模型确认语种的文字条数，以及其中模型确认已是目标语言、保留原文的条数。
+    language_checked: int = 0
+    kept_target_language: int = 0
     memory_hits: int = 0
     glossary_hits: int = 0
     ai_translated: int = 0
@@ -628,51 +660,9 @@ def extract_cad_text_units(
     return units
 
 
-# 图纸里大量出现 M10、Q235、GB/T、DN50、PVC 这类型号/规范代号。它们由拉丁字母
-# 组成，但不是"外文"，判断语言时不能把它们当成英文单词——否则中文图纸里每一条
-# "M10螺栓"都会被当成未翻译的外文残留，整张图被误标"需复核"。
-_LATIN_WORD_RE = re.compile(r"(?<![A-Za-zÀ-ÿ0-9])[A-Za-zÀ-ÿ]+(?![A-Za-zÀ-ÿ0-9])")
-_NON_LATIN_SCRIPT_RE = re.compile(
-    r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0400-\u04ff\u0590-\u06ff\u0e00-\u0eff]"
-)
-
-
-def _has_latin_words(text: str) -> bool:
-    """True when ``text`` contains real Latin-script words, not just codes.
-
-    A word counts when it stands alone (not glued to digits like ``M10``) and
-    is not an all-caps abbreviation of up to 4 letters (``GB``, ``PVC``).
-    """
-    for match in _LATIN_WORD_RE.finditer(text):
-        word = match.group(0)
-        if len(word) >= 2 and not (word.isupper() and len(word) <= 4):
-            return True
-    return False
-
-
 def _is_likely_target_language(text: str, target_lang: str) -> bool:
-    normalized = str(target_lang or "").strip().lower().replace("_", "-")
-    code = normalized.split("-", 1)[0]
-    if code in {"zh", "ja", "ko"}:
-        patterns = {"zh": r"[\u3400-\u9fff]", "ja": r"[\u3040-\u30ff\u3400-\u9fff]", "ko": r"[\uac00-\ud7af]"}
-        return bool(re.search(patterns[code], text)) and not _has_latin_words(text)
-    script_patterns = {
-        "ar": r"[\u0600-\u06ff]", "fa": r"[\u0600-\u06ff]", "ur": r"[\u0600-\u06ff]",
-        "he": r"[\u0590-\u05ff]", "th": r"[\u0e00-\u0e7f]", "km": r"[\u1780-\u17ff]",
-        "hi": r"[\u0900-\u097f]", "bn": r"[\u0980-\u09ff]", "ta": r"[\u0b80-\u0bff]",
-        "te": r"[\u0c00-\u0c7f]", "ml": r"[\u0d00-\u0d7f]", "kn": r"[\u0c80-\u0cff]",
-        "gu": r"[\u0a80-\u0aff]", "pa": r"[\u0a00-\u0a7f]", "my": r"[\u1000-\u109f]",
-        "si": r"[\u0d80-\u0dff]", "lo": r"[\u0e80-\u0eff]", "am": r"[\u1200-\u137f]",
-    }
-    pattern = script_patterns.get(code)
-    if pattern:
-        return bool(re.search(pattern, text)) and not _has_latin_words(text)
-    # Latin-script targets share the same Unicode ranges. This is deliberately
-    # conservative for unknown/custom languages, which must still be scanned.
-    # 混排文字（如"Q235钢板"）里只要还有中日韩等非拉丁文字，就仍需翻译。
-    if code in {"en", "fr", "de", "es", "it", "pt", "nl", "sv", "da", "no", "fi", "pl", "cs", "sk", "sl", "hu", "ro", "tr", "vi", "id", "ms"}:
-        return bool(re.search(r"[A-Za-zÀ-ÿ]", text)) and not _NON_LATIN_SCRIPT_RE.search(text)
-    return False
+    """Whether the text is confidently already in ``target_lang`` (see core.cad_language)."""
+    return classify_text_language(text, target_lang) == _LANG_TARGET
 
 
 def _is_residual_foreign_text(text: str, target_lang: str) -> bool:
@@ -682,8 +672,7 @@ def _is_residual_foreign_text(text: str, target_lang: str) -> bool:
     part numbers or standard codes. For Latin targets the leftover is any
     remaining CJK/other non-Latin script.
     """
-    code = str(target_lang or "").strip().lower().replace("_", "-").split("-", 1)[0]
-    if code in {"en", "fr", "de", "es", "it", "pt", "nl", "sv", "da", "no", "fi", "pl", "cs", "sk", "sl", "hu", "ro", "tr", "vi", "id", "ms"}:
+    if _base_lang(target_lang) in LATIN_TARGET_LANGS:
         return bool(_NON_LATIN_SCRIPT_RE.search(text))
     return _has_latin_words(text) and not _is_likely_target_language(text, target_lang)
 
@@ -705,6 +694,24 @@ def _has_translatable_content(text: str) -> bool:
     # Digits, punctuation, CAD placeholders and symbol-only labels are not
     # translation requests.  CJK and Latin letters are valid source content.
     return bool(re.search(r"[A-Za-zÀ-ÿ\u3400-\u9fff]", text))
+
+
+def _language_result(item: Any) -> tuple[str | None, str]:
+    """``(译文, 原文语种)``；没拿到译文时译文为 ``None``。
+
+    语种翻译器交回 ``(译文, 语种)`` 二元组，或带 ``translation`` /
+    ``source_lang`` 属性的对象（engine_dispatcher 的 TranslationLanguageResult）。
+    """
+    if item is None:
+        return None, ""
+    if isinstance(item, tuple) and len(item) == 2:
+        value, source_lang = item
+    else:
+        value = getattr(item, "translation", None)
+        source_lang = getattr(item, "source_lang", "")
+    if value is None:
+        return None, ""
+    return str(value).strip(), _base_lang(str(source_lang or ""))
 
 
 def _numeric_tokens(text: str) -> list[str]:
@@ -871,10 +878,14 @@ class CadTranslationPipeline:
         progress: Callable[[CadProgress], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
         pause_gate: Callable[[], None] | None = None,
+        language_translator: CadLanguageTranslator | None = None,
     ) -> None:
         self.converter = converter
         self.memory_lookup = memory_lookup
         self.translator = translator
+        # 程序判断不了语种的文字走这个翻译器：模型同时回报每条原文的语种代码，
+        # 回报的就是目标语言时保留原文。不传时这些文字和其余文字一起照常翻译。
+        self.language_translator = language_translator
         self.progress = progress
         self.stop_requested = stop_requested
         # 暂停闸门：用户点了暂停时阻塞到继续或停止为止。由任务 runner 提供；
@@ -907,7 +918,8 @@ class CadTranslationPipeline:
         *,
         already: int,
         total: int,
-    ) -> Mapping[str, str]:
+        translator: Callable[..., Mapping[str, Any]] | None = None,
+    ) -> Mapping[str, Any]:
         """调用翻译器，并把它逐批的进度折算进「AI 翻译」阶段。
 
         翻译是整张图纸里最慢的一步（真实 DWG 要等一分多钟），以前只在全部批次返回后
@@ -924,8 +936,9 @@ class CadTranslationPipeline:
             # 已经发出去的几批照常收回来。这就是「文件内暂停」，不用丢弃任何已付费的结果。
             self._wait_if_paused()
 
+        translator = translator or self.translator
         try:
-            parameters = inspect.signature(self.translator).parameters
+            parameters = inspect.signature(translator).parameters
         except (TypeError, ValueError):
             parameters = {}
         kwargs: dict[str, Any] = {}
@@ -934,7 +947,7 @@ class CadTranslationPipeline:
         # 停止也要在批次之间生效，不然点了停止还得等整张图的请求全部发完。
         if "should_stop" in parameters and self.stop_requested is not None:
             kwargs["should_stop"] = self.stop_requested
-        return self.translator(remaining, glossary, **kwargs)
+        return translator(remaining, glossary, **kwargs)
 
     def translate_file(
         self,
@@ -996,6 +1009,8 @@ class CadTranslationPipeline:
             units = extract_cad_text_units(records, include_block_text=options.include_block_text)
             stats.candidate_entities = len(units)
             candidates: list[CadTextUnit] = []
+            # 整条文字程序拿不准语种的那些（只在「已是目标语言的不翻译」打开时有意义）。
+            uncertain_units: set[str] = set()
             for unit in units:
                 if len(unit.plain_text) > options.max_text_length:
                     stats.unsupported_entities += 1
@@ -1009,9 +1024,13 @@ class CadTranslationPipeline:
                 if not _matches_source_language(unit.plain_text, options.source_lang):
                     stats.skipped_other_language += 1
                     continue
-                if options.skip_target_language and _is_likely_target_language(unit.plain_text, options.target_lang):
-                    stats.skipped_target_language += 1
-                    continue
+                if options.skip_target_language:
+                    verdict = classify_text_language(unit.plain_text, options.target_lang)
+                    if verdict == _LANG_TARGET:
+                        stats.skipped_target_language += 1
+                        continue
+                    if verdict == _LANG_UNSURE:
+                        uncertain_units.add(unit.unit_id)
                 candidates.append(unit)
             timings["scan"] = round(time.perf_counter() - started_at, 4)
             self._emit("scan", 1, 1, f"找到 {len(candidates)} 处可翻译文字")
@@ -1020,6 +1039,15 @@ class CadTranslationPipeline:
             ))
             if not texts:
                 texts = list(dict.fromkeys(unit.plain_text for unit in candidates))
+            # 拿不准语种的整条文字里，各段格式文字自己也拿不准的，翻译时让模型确认语种。
+            uncertain_texts = {
+                text
+                for unit in candidates
+                if unit.unit_id in uncertain_units
+                for text in ([run.text for run in unit.runs] or [unit.plain_text])
+                if classify_text_language(text, options.target_lang) == _LANG_UNSURE
+            }
+            kept_texts: set[str] = set()
             memory_hits: dict[str, str] = {}
             self._check_stop()
             if self.memory_lookup and texts:
@@ -1050,19 +1078,56 @@ class CadTranslationPipeline:
             self._emit("match", len(memory_hits) + len(glossary_hits), max(1, len(texts)), f"术语表匹配 {len(glossary_hits)} 条")
             remaining = [text for text in remaining if text not in translations]
             self._check_stop()
-            if remaining and self.translator is not None:
+            checked = [text for text in remaining if text in uncertain_texts] if self.language_translator else []
+            checked_set = set(checked)
+            plain = [text for text in remaining if text not in checked_set]
+            if plain and self.translator is not None:
                 ai_results = dict(
-                    self._call_translator(remaining, glossary, already=len(translations), total=len(texts))
+                    self._call_translator(plain, glossary, already=len(translations), total=len(texts))
                 )
-                for text in remaining:
+                for text in plain:
                     value = str(ai_results.get(text, "") or "").strip()
                     valid, _reason = _valid_translation(text, value)
                     if valid:
                         translations[text] = value
                     else:
                         invalid_reasons[text] = _reason
-                stats.ai_translated = sum(1 for text in remaining if text in translations)
-            stats.untranslated = sum(1 for text in texts if text not in translations)
+            if checked:
+                self._check_stop()
+                stats.language_checked = len(checked)
+                checked_results = dict(
+                    self._call_translator(
+                        checked,
+                        glossary,
+                        already=len(translations),
+                        total=len(texts),
+                        translator=self.language_translator,
+                    )
+                )
+                target_code = _base_lang(options.target_lang)
+                for text in checked:
+                    value, source_code = _language_result(checked_results.get(text))
+                    if value is None:
+                        invalid_reasons[text] = "未获得译文"
+                        continue
+                    if source_code == target_code:
+                        # 模型确认原文已是目标语言：保留原文，不算翻译，也不用复核。
+                        kept_texts.add(text)
+                        continue
+                    valid, _reason = _valid_translation(text, value)
+                    if valid:
+                        translations[text] = value
+                    else:
+                        invalid_reasons[text] = _reason
+                stats.kept_target_language = len(kept_texts)
+                self._emit(
+                    "translate",
+                    len(translations),
+                    max(1, len(texts)),
+                    f"{len(checked)} 条文字由模型确认语种，其中 {len(kept_texts)} 条已是目标语言，保留原文",
+                )
+            stats.ai_translated = sum(1 for text in remaining if text in translations)
+            stats.untranslated = sum(1 for text in texts if text not in translations and text not in kept_texts)
             timings["translate"] = round(time.perf_counter() - started_at - timings["scan"] - timings["match"], 4)
             self._emit("translate", len(translations), max(1, len(texts)), "翻译完成")
             self._check_stop()
@@ -1139,7 +1204,11 @@ class CadTranslationPipeline:
             timings["verify"] = round(time.perf_counter() - started_at - sum(timings.values()), 4)
             timings["total"] = round(time.perf_counter() - started_at, 4)
             self._emit("verify", 1, 1, "已完成文字与乱码检查")
-            unresolved = [{"source": text, "reason": invalid_reasons.get(text, "未获得译文")} for text in texts if text not in translations]
+            unresolved = [
+                {"source": text, "reason": invalid_reasons.get(text, "未获得译文")}
+                for text in texts
+                if text not in translations and text not in kept_texts
+            ]
             unit_reports: list[dict[str, str]] = []
             for unit in candidates:
                 for run in unit.runs or (CadTextRun(0, len(unit.plain_text), unit.plain_text),):
@@ -1149,6 +1218,8 @@ class CadTranslationPipeline:
                     target_text = translations.get(source_text, "")
                     if target_text:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "translated", "reason": ""})
+                    elif source_text in kept_texts:
+                        unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": "", "status": "kept", "reason": ""})
                     else:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": "", "status": "unresolved", "reason": invalid_reasons.get(source_text, "未获得译文")})
             manifest_path = output.with_suffix(output.suffix + ".manifest.json")
