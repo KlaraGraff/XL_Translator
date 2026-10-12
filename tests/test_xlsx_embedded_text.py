@@ -39,7 +39,11 @@ THREADED_FALLBACK = (
 
 
 def _drawing_xml(
-    paragraphs: list[str], *, name: str = "TextBox 1", box: tuple[int, int] = (1828800, 762000)
+    paragraphs: list[str],
+    *,
+    name: str = "TextBox 1",
+    box: tuple[int, int] = (1828800, 762000),
+    list_style: str = "",
 ) -> bytes:
     body = "".join(
         f'<a:p><a:r><a:rPr lang="zh-CN" sz="1100"/><a:t>{text}</a:t></a:r></a:p>'
@@ -57,7 +61,7 @@ def _drawing_xml(
         '<xdr:spPr><a:xfrm><a:off x="0" y="0"/>'
         f'<a:ext cx="{box[0]}" cy="{box[1]}"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
-        f'<xdr:txBody><a:bodyPr wrap="square"/><a:lstStyle/>{body}</xdr:txBody>'
+        f'<xdr:txBody><a:bodyPr wrap="square"/><a:lstStyle>{list_style}</a:lstStyle>{body}</xdr:txBody>'
         "</xdr:sp><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"
     ).encode()
 
@@ -71,7 +75,13 @@ def _threaded_xml() -> bytes:
     ).encode()
 
 
-def build_workbook(path: Path, *, threaded: bool = True, box: tuple[int, int] = (1828800, 762000)) -> None:
+def build_workbook(
+    path: Path,
+    *,
+    threaded: bool = True,
+    box: tuple[int, int] = (1828800, 762000),
+    list_style: str = "",
+) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "表1"
@@ -107,7 +117,7 @@ def build_workbook(path: Path, *, threaded: bool = True, box: tuple[int, int] = 
         rel.set("Target", "../threadedComments/threadedComment1.xml")
     items[rels_part] = etree.tostring(rels, xml_declaration=True, encoding="UTF-8", standalone=True)
 
-    items["xl/drawings/drawing1.xml"] = _drawing_xml(["图例说明", "红色表示待施工区域"], box=box)
+    items["xl/drawings/drawing1.xml"] = _drawing_xml(["图例说明", "红色表示待施工区域"], box=box, list_style=list_style)
     content_types = items["[Content_Types].xml"].decode()
     overrides = (
         '<Override PartName="/xl/drawings/drawing1.xml" '
@@ -233,6 +243,70 @@ class EmbeddedTextTests(unittest.TestCase):
             {"worksheet": "表1", "cell": "TextBox 1", "category": REVIEW_CATEGORY_SHAPE_OVERFLOW, "action": "listed_only"},
             review,
         )
+
+    def test_line_spacing_counts_when_judging_room(self) -> None:
+        # 5 英寸 × 1.67 英寸的框单倍行距放得下（见上一条），两倍行距就要缩，
+        # 固定行距的磅值也跟着字号一起缩。
+        build_workbook(
+            self.source,
+            box=(4572000, 1524000),
+            list_style='<a:lvl1pPr><a:lnSpc><a:spcPct val="200000"/></a:lnSpc></a:lvl1pPr>',
+        )
+        drawing = _part(self._write(), "xl/drawings/drawing1.xml")
+        sizes = {int(value) for value in __import__("re").findall(r'sz="(\d+)"', drawing)}
+        self.assertTrue(sizes and max(sizes) < 1100, sizes)
+
+        build_workbook(
+            self.source,
+            box=(4572000, 1524000),
+            list_style='<a:lvl1pPr><a:lnSpc><a:spcPts val="3300"/></a:lnSpc></a:lvl1pPr>',
+        )
+        drawing = _part(self._write(), "xl/drawings/drawing1.xml")
+        line = int(__import__("re").search(r'<a:spcPts val="(\d+)"', drawing).group(1))
+        self.assertLess(line, 3300)
+
+    def test_comment_box_grows_to_show_the_translation(self) -> None:
+        vml_name = next(
+            name for name in zipfile.ZipFile(self.source).namelist() if name.endswith(".vml")
+        )
+        with zipfile.ZipFile(self.source) as source:
+            items = {name: source.read(name) for name in source.namelist()}
+        # Excel 自己写的批注框还带锚点：右下角落在第 6 行。
+        vml = items[vml_name].decode()
+        vml = vml.replace(
+            "<ns2:Row>1</ns2:Row>",
+            "<ns2:Anchor>2, 15, 0, 2, 4, 15, 5, 16</ns2:Anchor><ns2:Row>1</ns2:Row>",
+            1,
+        )
+        items[vml_name] = vml.encode()
+        with zipfile.ZipFile(self.source, "w") as target:
+            for name, data in items.items():
+                target.writestr(name, data)
+
+        output = self.root / "grown.xlsx"
+        shutil.copy2(self.source, output)
+        long_translation = (
+            "À vérifier ici avec le maître d'œuvre avant la réception définitive des travaux de charpente"
+        )
+        write_bilingual_workbook(
+            output,
+            translations={},
+            target_lang="fr",
+            keep_original_sheets=False,
+            embedded_text=EmbeddedTextOptions(
+                shapes=False,
+                comments=True,
+                translations={**TRANSLATIONS, "这里要核对": long_translation},
+            ),
+        )
+        vml = _part(output, vml_name)
+        heights = [int(value) for value in __import__("re").findall(r"height:(\d+)px", vml)]
+        # B2 的批注接了一段长译文，框加高；C3 对话式批注的兼容副本原文本来就放不下，
+        # 只为新增的那一行加高一点，不会被撑到整段说明文字那么高。
+        self.assertGreater(heights[0], 79)
+        self.assertTrue(79 < heights[1] < 120, heights)
+        self.assertIn("Anchor>2, 15, 0, 2, 4, 15, ", vml)
+        self.assertNotIn("Anchor>2, 15, 0, 2, 4, 15, 5, 16<", vml)
 
     def test_translation_only_replaces_text_and_keeps_author(self) -> None:
         output = self._write(translation_only=True)

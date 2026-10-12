@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,7 @@ from core.translation_coverage import (
     looks_like_target_text,
     split_existing_bilingual_text,
 )
+from core.text_box_fit import ParagraphMetrics, fitting_scale, wrapped_line_count
 from core.translation_protocol import extract_replace_translation
 from core.xlsx_patcher import (
     NS_A,
@@ -39,6 +41,7 @@ from core.xlsx_patcher import (
     REL_TYPE_DRAWING,
     REL_TYPE_OFFICE_DOCUMENT,
     REL_TYPE_THREADED_COMMENT,
+    REL_TYPE_VML_DRAWING,
     REL_TYPE_WORKSHEET,
     XML_SPACE,
     _Package,
@@ -59,9 +62,6 @@ NS_THREADED = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedco
 SHAPE_TEXT_MIN_SCALE = 0.6
 # 框的尺寸读不出来时退回按文字总宽度估：译文总宽度超出原文这么多以内不缩。
 SHAPE_TEXT_GROWTH_TOLERANCE = 1.08
-# 估算排版用的字宽和行高（相对字号）：西文按半个汉字宽、略放宽，行高按 1.2 倍。
-_HALF_WIDTH_EM = 0.55
-_LINE_HEIGHT_EM = 1.2
 _EMU_PER_PT = 12700
 # DrawingML 文字框默认内边距（EMU）：左右 0.1 英寸，上下 0.05 英寸。
 _DEFAULT_INSETS = {"lIns": 91440, "rIns": 91440, "tIns": 45720, "bIns": 45720}
@@ -128,6 +128,7 @@ class _SheetParts:
     drawing: str = ""
     comments: str = ""
     threaded: str = ""
+    vml: str = ""
 
 
 def _sheet_parts(package: _Package) -> list[_SheetParts]:
@@ -172,6 +173,8 @@ def _sheet_parts(package: _Package) -> list[_SheetParts]:
                     parts.comments = target
                 elif rel_type == REL_TYPE_THREADED_COMMENT:
                     parts.threaded = target
+                elif rel_type == REL_TYPE_VML_DRAWING:
+                    parts.vml = target
         result.append(parts)
     return result
 
@@ -473,6 +476,11 @@ def _base_font_size(tx_body) -> int:
 
 def _shrink_shape_text(tx_body, scale: float) -> None:
     base = _base_font_size(tx_body)
+    # 固定行距（磅值）不随字号变，要一起缩，否则字小了行还是那么高。
+    for line_spacing in tx_body.iter(_a("lnSpc")):
+        points = line_spacing.find(_a("spcPts"))
+        if points is not None:
+            points.set("val", str(max(100, int(round(_emu_attr(points, "val", 0) * scale)))))
     for paragraph in tx_body.iter(_a("p")):
         ppr_default = paragraph.find(f"{_a('pPr')}/{_a('defRPr')}")
         paragraph_base = base
@@ -501,12 +509,12 @@ def _shrink_shape_text(tx_body, scale: float) -> None:
 
 @dataclass(frozen=True)
 class _ShapeLayout:
-    """估算文字排版用的量：框内可用宽高（磅，读不出为 None）和每段的（显示宽度, 字号磅）。"""
+    """估算文字排版用的量：框内可用宽高（磅，读不出为 None）和各段的排版量。"""
 
     width: float | None
     height: float | None
     wrap: bool
-    paragraphs: tuple[tuple[int, float], ...]
+    paragraphs: tuple[ParagraphMetrics, ...]
 
 
 def _emu_attr(el, name: str, default: int) -> int:
@@ -527,13 +535,49 @@ def _paragraph_font_size(paragraph, base: int) -> int:
     return base
 
 
+def _spacing_child(paragraph, level_ppr, tag: str):
+    """段落自己写的行距/段距，没写就用文本框列表样式第一级的。"""
+    for ppr in (paragraph.find(_a("pPr")), level_ppr):
+        el = ppr.find(_a(tag)) if ppr is not None else None
+        if el is not None:
+            return el
+    return None
+
+
+def _spacing_value(el, size_pt: float) -> tuple[float | None, float | None]:
+    """(倍数, 磅值)：a:spcPct 是千分之一个百分点，a:spcPts 是百分之一磅。"""
+    if el is None:
+        return None, None
+    pct = el.find(_a("spcPct"))
+    if pct is not None:
+        return _emu_attr(pct, "val", 100000) / 100000, None
+    pts = el.find(_a("spcPts"))
+    if pts is not None:
+        return None, _emu_attr(pts, "val", 0) / 100
+    return None, None
+
+
+def _paragraph_metrics(paragraph, base: int, level_ppr) -> ParagraphMetrics:
+    size_pt = _paragraph_font_size(paragraph, base) / 100
+    factor, exact = _spacing_value(_spacing_child(paragraph, level_ppr, "lnSpc"), size_pt)
+    spacing = 0.0
+    for tag in ("spcBef", "spcAft"):
+        pct, pts = _spacing_value(_spacing_child(paragraph, level_ppr, tag), size_pt)
+        spacing += pts if pts is not None else (pct or 0.0) * size_pt
+    return ParagraphMetrics(
+        text=_paragraph_text(paragraph) or "",
+        size_pt=size_pt,
+        line_factor=factor if factor is not None else 1.0,
+        exact_line_pt=exact,
+        spacing_pt=spacing,
+    )
+
+
 def _shape_layout(sp) -> _ShapeLayout:
     tx_body = sp.find(_x("txBody"))
     base = _base_font_size(tx_body)
-    paragraphs = tuple(
-        (_display_width(_paragraph_text(p) or ""), _paragraph_font_size(p, base) / 100)
-        for p in tx_body.iter(_a("p"))
-    )
+    level_ppr = tx_body.find(f"{_a('lstStyle')}/{_a('lvl1pPr')}")
+    paragraphs = tuple(_paragraph_metrics(p, base, level_ppr) for p in tx_body.iter(_a("p")))
     body_pr = tx_body.find(_a("bodyPr"))
     wrap = body_pr is None or body_pr.get("wrap") != "none"
     ext = sp.find(f"{_x('spPr')}/{_a('xfrm')}/{_a('ext')}")
@@ -548,47 +592,23 @@ def _shape_layout(sp) -> _ShapeLayout:
     return _ShapeLayout(width, height, wrap, paragraphs)
 
 
-def _text_extent(layout: _ShapeLayout, scale: float) -> tuple[float, float]:
-    """按比例缩放字号后，文字占的（最宽一行, 总高度），单位磅。"""
-    widest = total_height = 0.0
-    for units, size in layout.paragraphs:
-        size *= scale
-        line_width = units * _HALF_WIDTH_EM * size
-        lines = 1
-        if layout.wrap and layout.width and line_width > layout.width:
-            lines = math.ceil(line_width / layout.width)
-            line_width = layout.width
-        widest = max(widest, line_width)
-        total_height += lines * _LINE_HEIGHT_EM * size
-    return widest, total_height
-
-
 def _fitting_scale(before: _ShapeLayout, after: _ShapeLayout) -> tuple[float, bool]:
-    """译文放进原框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。
-
-    原文本来就超出框的（用户自己让字溢出），以原文占的大小为准，不比原来更挤就行。
-    """
+    """译文放进原框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。"""
     if after.width is None or after.height is None:
-        old = sum(units for units, _size in before.paragraphs)
-        new = sum(units for units, _size in after.paragraphs)
+        old = sum(_display_width(p.text) for p in before.paragraphs)
+        new = sum(_display_width(p.text) for p in after.paragraphs)
         if old <= 0 or new <= old * SHAPE_TEXT_GROWTH_TOLERANCE:
             return 1.0, True
         wanted = math.sqrt(old / new)  # 框的面积固定，文字占的面积随字号平方变化。
         return max(SHAPE_TEXT_MIN_SCALE, round(wanted, 2)), wanted >= SHAPE_TEXT_MIN_SCALE
-
-    old_width, old_height = _text_extent(before, 1.0)
-    room_width = max(after.width, old_width)
-    room_height = max(after.height, old_height)
-
-    def fits(scale: float) -> bool:
-        width, height = _text_extent(after, scale)
-        return height <= room_height and (after.wrap or width <= room_width)
-
-    scale = 1.0
-    while scale > SHAPE_TEXT_MIN_SCALE and not fits(scale):
-        scale = round(scale - 0.05, 2)
-    scale = max(SHAPE_TEXT_MIN_SCALE, scale)
-    return scale, fits(scale)
+    return fitting_scale(
+        list(before.paragraphs),
+        list(after.paragraphs),
+        width_pt=after.width,
+        height_pt=after.height,
+        wrap=after.wrap,
+        min_scale=SHAPE_TEXT_MIN_SCALE,
+    )
 
 
 def _apply_shapes(
@@ -734,7 +754,9 @@ def _apply_comments(
     root = _parse(data)
     threaded_refs = _threaded_refs(package, parts)
     changed = False
+    shown: dict[str, tuple[str, str, float]] = {}
     for ref, _comment, text_el, prefix in _legacy_comments(root):
+        before = _comment_full_text(text_el)
         if ref in threaded_refs:
             edits = fallback_edits.get(ref)
             if not edits:
@@ -746,6 +768,7 @@ def _apply_comments(
                         value = value.replace(old, new.replace("\n", "\n    "), 1)
                 node.text = value
             changed = True
+            shown[ref] = (before, _comment_full_text(text_el), _comment_font_size(text_el))
             continue
         body = _comment_full_text(text_el)[len(prefix):]
         translation = _lookup(options, f"{parts.comments}#{ref}", body)
@@ -755,9 +778,118 @@ def _apply_comments(
         _replace_comment_text(text_el, prefix, new_body)
         changed = True
         stats.comments += 1
+        shown[ref] = (before, _comment_full_text(text_el), _comment_font_size(text_el))
         _note_review(review_marks, body, parts.name, ref, review_positions)
     if changed:
         package.write(parts.comments, _serialize(root))
+    if shown and parts.vml:
+        _grow_comment_boxes(package, parts.vml, shown)
+
+
+# ── 批注框跟着译文变大 ────────────────────────────────────────────────────────
+# 批注框的大小记在工作表的 VML 绘图里（v:shape 的 style 宽高 + x:Anchor 锚点），
+# 不会随文字自动撑大：原文下面接一行译文，悬停时译文就被框挡住。只加高、不改宽。
+# VML 是 Excel 沿用下来的老格式，不一定是规整的 XML，这里按文本改，不整体解析。
+
+_VML_SHAPE_RE = re.compile(
+    r"<(?P<p>(?:[\w.-]+:)?)shape\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=p)shape>", re.S
+)
+_VML_STYLE_RE = re.compile(r"""(?P<q>["'])(?P<style>[^"']*)(?P=q)""")
+_VML_SIZE_RE = re.compile(r"(?P<key>width|height)\s*:\s*(?P<num>[\d.]+)(?P<unit>pt|px|in|cm|mm)?", re.I)
+_VML_ANCHOR_RE = re.compile(r"(<(?:[\w.-]+:)?Anchor>)([^<]*)(</)")
+_PT_PER_UNIT = {"pt": 1.0, "px": 0.75, "in": 72.0, "cm": 72 / 2.54, "mm": 72 / 25.4, "": 0.75}
+# 批注框里文字到边框的距离（VML 文本框默认左右 0.1 英寸、上下 0.05 英寸）。
+_COMMENT_INSET_PT = (7.2, 3.6)
+_DEFAULT_COMMENT_FONT_PT = 9.0
+_DEFAULT_ROW_PT = 15.0
+
+
+def _comment_font_size(text_el) -> float:
+    for sz in text_el.iter(_m("sz")):
+        try:
+            return float(sz.get("val"))
+        except (TypeError, ValueError):
+            continue
+    return _DEFAULT_COMMENT_FONT_PT
+
+
+def _cell_index(ref: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\$?([A-Za-z]{1,3})\$?(\d+)", ref or "")
+    if not match:
+        return None
+    column = 0
+    for char in match.group(1).upper():
+        column = column * 26 + ord(char) - 64
+    return int(match.group(2)) - 1, column - 1
+
+
+def _vml_number(body: str, tag: str) -> int | None:
+    match = re.search(rf"<(?:[\w.-]+:)?{tag}>\s*(\d+)\s*<", body)
+    return int(match.group(1)) if match else None
+
+
+def _grow_comment_boxes(package: _Package, vml_part: str, shown: dict[str, tuple[str, str, float]]) -> None:
+    data = package.read(vml_part)
+    if data is None:
+        return
+    text = data.decode("utf-8", errors="surrogateescape")
+    wanted = {index: value for ref, value in shown.items() if (index := _cell_index(ref)) is not None}
+
+    def grow(match: re.Match) -> str:
+        body = match.group("body")
+        if "Note" not in body and "Note" not in match.group("attrs"):
+            return match.group(0)
+        key = (_vml_number(body, "Row"), _vml_number(body, "Column"))
+        if key not in wanted:
+            return match.group(0)
+        old_text, new_text, size_pt = wanted[key]
+        style_match = re.search(r"\bstyle\s*=\s*" + _VML_STYLE_RE.pattern, match.group("attrs"))
+        if style_match is None:
+            return match.group(0)
+        style = style_match.group("style")
+        sizes = {
+            m.group("key").lower(): (float(m.group("num")), (m.group("unit") or "").lower())
+            for m in _VML_SIZE_RE.finditer(style)
+        }
+        if "width" not in sizes or "height" not in sizes:
+            return match.group(0)
+        width_pt = sizes["width"][0] * _PT_PER_UNIT[sizes["width"][1]]
+        height_num, height_unit = sizes["height"]
+        height_pt = height_num * _PT_PER_UNIT[height_unit]
+        usable = max(1.0, width_pt - 2 * _COMMENT_INSET_PT[0])
+
+
+        def needed_pt(text: str) -> float:
+            return wrapped_line_count(text, size_pt, usable) * size_pt * 1.3 + 2 * _COMMENT_INSET_PT[1]
+
+        # 原文本来就超出框的（对话式批注的兼容副本常这样），只为新增的译文加高，
+        # 不替原文把框撑开。
+        overflow_before = max(0.0, needed_pt(old_text) - height_pt)
+        needed = needed_pt(new_text) - overflow_before
+        if needed <= height_pt:
+            return match.group(0)
+        new_height = math.ceil(needed / _PT_PER_UNIT[height_unit])
+        new_style = _VML_SIZE_RE.sub(
+            lambda m: f"height:{new_height}{m.group('unit') or ''}" if m.group("key").lower() == "height" else m.group(0),
+            style,
+        )
+        attrs = match.group("attrs").replace(style, new_style, 1)
+        extra_rows = math.ceil((needed - height_pt) / _DEFAULT_ROW_PT)
+
+        def move_anchor(anchor: re.Match) -> str:
+            values = [value.strip() for value in anchor.group(2).split(",")]
+            if len(values) != 8 or not all(value.lstrip("-").isdigit() for value in values):
+                return anchor.group(0)
+            values[6] = str(int(values[6]) + extra_rows)
+            return f"{anchor.group(1)}{', '.join(values)}{anchor.group(3)}"
+
+        new_body = _VML_ANCHOR_RE.sub(move_anchor, body, count=1)
+        prefix = match.group("p")
+        return f"<{prefix}shape{attrs}>{new_body}</{prefix}shape>"
+
+    updated = _VML_SHAPE_RE.sub(grow, text)
+    if updated != text:
+        package.write(vml_part, updated.encode("utf-8", errors="surrogateescape"))
 
 
 def _note_review(
