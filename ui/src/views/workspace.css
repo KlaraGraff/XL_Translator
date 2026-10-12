@@ -82,6 +82,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* CAD：DWG 的文字数开始翻译后才统计，「开始后统计」用弱色小字，不和真实计数抢眼。 */
+.tbl.ws-files td.num.pending {
+  color: var(--ink-3);
+  font-size: 12px;
+}
 .tbl.ws-files td.fstatus .chip,
 .filerow .chip {
   flex: none;

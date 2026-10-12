@@ -93,9 +93,12 @@ type FileItem = JsonObject & {
    *  oversizedPageStats() 上方的整段说明，处理方式与 Excel 的 image_count 完全一致。 */
   oversized_page_count?: number | null;
   source_type?: string;
-  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。 */
-  text_count?: number;
-  candidate_count?: number;
+  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。
+   *  DWG 扫描时不转换（转换工具一张图要几秒到几分钟），这两个数是 null、counts_pending
+   *  为 true：开始翻译后由任务转换并统计，界面写「开始后统计」，不写 0。 */
+  text_count?: number | null;
+  candidate_count?: number | null;
+  counts_pending?: boolean;
   needs_conversion?: boolean;
   // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
@@ -1362,13 +1365,28 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     ];
   }
   if (surface === "cad") {
-    const texts = files.reduce((sum, f) => sum + num(f.text_count), 0);
-    const candidates = files.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
+    // 合计只加扫描时数出来的（DXF）；DWG 开始后才统计，另起一行小字说明还有几张没算进来。
+    // 没连转换工具的 DWG 归「需转换工具」那一格，不算进「开始后统计」。
+    const counted = files.filter((f) => !cadCountsPending(f));
+    const pending = files.filter((f) => cadCountsPending(f) && !isRisky(surface, f)).length;
+    const texts = counted.reduce((sum, f) => sum + num(f.text_count), 0);
+    const candidates = counted.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
     const blocked = files.filter((f) => isRisky(surface, f)).length;
+    const noneCounted = counted.length === 0;
+    const pendingNote = pending
+      ? noneCounted
+        ? t("{0} 张 DWG 开始后统计", pending)
+        : t("另有 {0} 张 DWG 开始后统计", pending)
+      : undefined;
     return [
       { label: t("已扫描文件"), value: String(files.length) },
-      { label: t("文字实体"), value: fmtNum(texts) },
-      { label: t("待翻译"), value: fmtNum(candidates), sub: texts > candidates ? t("已是目标语言的不计入") : undefined },
+      { label: t("文字实体"), value: noneCounted ? "—" : fmtNum(texts), dim: noneCounted, sub: pendingNote },
+      {
+        label: t("待翻译"),
+        value: noneCounted ? "—" : fmtNum(candidates),
+        dim: noneCounted,
+        sub: texts > candidates ? t("已是目标语言的不计入") : undefined,
+      },
       { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
       { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
     ];
@@ -1393,6 +1411,11 @@ function isRisky(surface: Surface, f: FileItem): boolean {
   // DWG 要先经转换工具转成 DXF；转换工具没连上时这些文件开不了工。
   if (surface === "cad") return Boolean(f.needs_conversion) && !cadConverterReady(states.cad);
   return false;
+}
+
+/** CAD：这张图纸的文字数扫描时没数（DWG），开始翻译后由任务统计。老后端不带 counts_pending，按计数是否为 null 判断。 */
+function cadCountsPending(f: FileItem): boolean {
+  return Boolean(f.counts_pending) || (f.format === "dwg" && f.text_count === null);
 }
 
 function fileLabel(f: FileItem): string {
@@ -1917,10 +1940,19 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
     // 没连转换工具的 DWG 读不出内容，计数是 0 不代表图纸里没字——写「—」，不写 0。
     const unreadable = st.historyOnly || isRisky(surface, file);
-    const textCell = el("td", "num");
-    textCell.textContent = unreadable ? "—" : fmtNum(num(file.text_count));
-    const candidateCell = el("td", "num");
-    candidateCell.textContent = unreadable ? "—" : fmtNum(num(file.candidate_count, num(file.text_count)));
+    // DWG 扫描时不转换，文字数在开始翻译后由任务统计（运行日志里有每张图纸的转换用时）。
+    const pending = !unreadable && cadCountsPending(file);
+    const textCell = el("td", pending ? "num pending" : "num");
+    const candidateCell = el("td", pending ? "num pending" : "num");
+    if (pending) {
+      textCell.textContent = t("开始后统计");
+      candidateCell.textContent = t("开始后统计");
+      textCell.title = t("DWG 图纸在开始翻译后转换并统计文字");
+      candidateCell.title = textCell.title;
+    } else {
+      textCell.textContent = unreadable ? "—" : fmtNum(num(file.text_count));
+      candidateCell.textContent = unreadable ? "—" : fmtNum(num(file.candidate_count, num(file.text_count)));
+    }
     row.append(fmtCell, textCell, candidateCell);
   } else if (surface === "excel" || surface === "word") {
     const fmtCell = el("td");

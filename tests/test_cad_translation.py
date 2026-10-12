@@ -135,11 +135,37 @@ def test_scan_reports_conversion_requirement_and_expands_directories(tmp_path):
     dwg = tmp_path / "b.dwg"
     dwg.write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
     no_converter = scan_cad_file(dwg)
-    assert no_converter.needs_conversion is True and no_converter.candidate_count == 0
-    direct = scan_cad_file(dwg, converter=FakeConverter())
-    assert direct.needs_conversion is False and direct.candidate_count == 1
-    summaries = scan_cad_paths([tmp_path], converter=FakeConverter())
+    assert no_converter.needs_conversion is True
+    assert no_converter.counts_pending is True and no_converter.candidate_count is None
+    connected = scan_cad_file(dwg, converter_available=True)
+    # 扫描不转换 DWG：连上转换工具也只列出来，文字数开始翻译后由任务统计。
+    assert connected.needs_conversion is False
+    assert connected.counts_pending is True
+    assert connected.text_entity_count is None and connected.candidate_count is None
+    direct = scan_cad_file(dxf)
+    assert direct.counts_pending is False and direct.candidate_count == 1 and direct.text_entity_count == 1
+    summaries = scan_cad_paths([tmp_path], converter_available=True)
     assert [item.filename for item in summaries] == ["a.dxf", "b.dwg"]
+
+
+def test_scan_never_calls_the_converter_for_dwg(tmp_path, monkeypatch):
+    """扫描一页要几十张 DWG 时，以前每张都调一次外部转换工具，页面一直转圈。"""
+    calls: list[str] = []
+
+    def forbidden(self, source, destination, output_type):
+        calls.append(str(source))
+        raise AssertionError("scan must not convert")
+
+    monkeypatch.setattr(SubprocessCadConverter, "_run", forbidden)
+    for index in range(3):
+        (tmp_path / f"d{index}.dwg").write_bytes(b"AC1032 fake dwg")
+    (tmp_path / "plain.dxf").write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
+    skipped: list[dict[str, str]] = []
+    summaries = scan_cad_paths([tmp_path], converter_available=True, skipped=skipped)
+    assert calls == []
+    assert skipped == []
+    pending = [item.filename for item in summaries if item.counts_pending]
+    assert pending == ["d0.dwg", "d1.dwg", "d2.dwg"]
 
 
 def test_long_mtext_is_chunked_without_splitting_unicode_escapes(tmp_path):
