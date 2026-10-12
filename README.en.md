@@ -1,0 +1,204 @@
+# Translator (XL Translator)
+
+[简体中文](README.md) | **English**
+
+Translator is a desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, image and CAD (DWG / DXF) files**. Excel and Word files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent.
+
+[Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
+
+![Main window after an Excel translation](docs/images/readme/app-excel.png)
+
+> The application screenshots and the before-and-after comparisons on this page use the same set of engineering documents: the Excel and PDF examples were translated from French into Chinese, and the Word and CAD examples from Chinese into French. File names in the screenshots are neutral sample names; the interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+
+## Features
+
+### Excel
+
+Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formula cells and file names can also be translated. Row heights can be adjusted to fit the translation, or kept fixed with the font size reduced. Cells requiring review are highlighted. Model numbers and standard codes such as `GB/T 8163-2018` are left unchanged.
+
+![Excel translation in progress](docs/images/readme/app-excel-running.png)
+
+<p align="center">
+  <img src="docs/images/readme/result-excel-original.png" width="49%" alt="Original Excel sheet (French)">
+  <img src="docs/images/readme/result-excel-bilingual.png" width="49%" alt="Bilingual Excel output (Chinese below the French source)">
+</p>
+<p align="center"><sub>Left: original (French). Right: bilingual output with the Chinese translation below the source text.</sub></p>
+
+### Word
+
+Supports `.docx` and legacy `.doc` files, including body text, tables, headers and footers. Cover pages and tables of contents can be excluded from translation, and automatic numbering is preserved. Text boxes and footnotes are not yet translated and are reported when detected.
+
+![Word translation completed](docs/images/readme/app-word.png)
+
+<p align="center">
+  <img src="docs/images/readme/result-word-original.png" width="49%" alt="Original Word document (Chinese)">
+  <img src="docs/images/readme/result-word-bilingual.png" width="49%" alt="Bilingual Word output (French after each Chinese paragraph)">
+</p>
+<p align="center"><sub>Left: original (Chinese). Right: bilingual output with the French translation after each paragraph.</sub></p>
+
+### PDF and images
+
+Each page is redrawn in the target language by an image model, preserving the original layout and graphics as closely as possible. Supported image formats are PNG, JPG, WebP, BMP and TIFF. A review model can optionally check each page; individual pages can be regenerated after translation, and a compressed copy of the PDF can be saved.
+
+![PDF translation with per-page results](docs/images/readme/app-pdf.png)
+
+<p align="center">
+  <img src="docs/images/readme/result-pdf-original.png" width="49%" alt="Original PDF page (French)">
+  <img src="docs/images/readme/result-pdf-translated.png" width="49%" alt="Translated PDF page (Chinese)">
+</p>
+<p align="center"><sub>Left: original page (French). Right: translated page (Chinese).</sub></p>
+
+### CAD drawings
+
+DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
+
+How translations are written back is set under Writing translations on the right of the page:
+
+- Display: Translation only, Source above translation, or Translation above source. In bilingual mode, the translation is placed on the same layer as the source.
+- Translation font: translations are written in AutoCAD's built-in fonts by default, so they display correctly on other computers; the original font can be kept instead.
+- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is listed in the report for review.
+- Do not translate: text in specified blocks and layers, such as title blocks and frames, is left unchanged. Names can be typed in or picked from the drawings.
+
+![CAD translation completed, with the write-back options on the right](docs/images/readme/app-cad.png)
+
+![Original drawing (Chinese)](docs/images/readme/result-cad-original.png)
+
+![Translated drawing (French)](docs/images/readme/result-cad-translated.png)
+
+<p align="center"><sub>Top: original drawing (Chinese). Bottom: translated drawing (French).</sub></p>
+
+### Translation memory
+
+Translations from Excel and Word jobs are stored automatically and reused first when translating Excel, Word and CAD files. Pinned entries always use the specified translation. The memory supports import, export and cleanup.
+
+![Translation memory with pinned entries](docs/images/readme/app-library.png)
+
+### Task center
+
+Jobs of different types can run concurrently. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only the remaining content. Each job records its statistics, items requiring review and output files.
+
+![Task center](docs/images/readme/app-tasks.png)
+
+![Task center in dark mode](docs/images/readme/app-tasks-dark.png)
+
+### Feedback
+
+The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the task center with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days. If an email address is provided, a notification is sent when the issue is resolved or the feature is released.
+
+![Feedback page](docs/images/readme/app-feedback.png)
+
+### Appearance
+
+Light and dark modes are available and can follow the system setting. Five color schemes can be selected under Settings → Appearance & language: Neutral grey (default), Warm paper, Soft cool, Celadon and Amber comfort. Light and dark mode can each use a different scheme, for example Neutral grey by day and Amber comfort at night.
+
+### Languages and prompts
+
+59 built-in languages, automatic source-language detection and custom target languages are supported.
+
+Each translation page has an Auto-detect switch, on by default. Before translation, the document is read once to identify its type and field, and short standalone words are interpreted accordingly; for example, 甲 in a drawing's door number is not translated as "Party A" as in a contract. With the switch on, each file uses one additional model request.
+
+Prompts consist of fixed built-in rules and optional extra instructions. The built-in rules are always sent, and extra instructions are only appended after them, never replacing them. Extra instructions are set separately for Excel, Word and CAD under Settings → Translation options, and can be exported and imported.
+
+![Prompt settings: built-in rules, Auto-detect and extra instructions](docs/images/readme/app-prompts.png)
+
+## Model services
+
+Configure the provider, model name and API key under Settings → Models and test the connection before use. Document translation, PDF and image translation, and memory cleanup can each use a different model.
+
+If the service briefly fails or times out, the batch is resent automatically and moves to a backup connection if it still fails. For Excel and CAD, the number of resends can be set under Settings → Translation options (0 to 5, default 2). If the API key is rejected or the quota is exhausted, the job stops immediately with an explanation.
+
+| Type | Supported services |
+|---|---|
+| Cloud | OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Alibaba Qwen (DashScope), SiliconFlow and other OpenAI-compatible APIs |
+| Local | Ollama, LM Studio and other OpenAI-compatible local servers |
+| PDF and images | Requires an image generation model: OpenAI, SiliconFlow or an OpenAI-compatible API |
+
+Files are read and written locally. Only the text to be translated (page images for PDF and image files) is sent to the configured model service. When a local model is used, document content does not leave the computer.
+
+![Model service settings](docs/images/readme/app-settings.png)
+
+## What's new in V10.0.0
+
+- CAD drawing translation, with the same workflow as Excel, Word and PDF; translation display, translation font, auto-shrinking of long translations and blocks and layers to leave untranslated can be set
+- Auto-detect: the document is read once before translation, and short standalone words are interpreted according to the document type
+- Prompts now consist of fixed built-in rules plus optional extra instructions; the three former scene presets have been removed, and existing settings are migrated automatically on upgrade
+- A new Feedback page in the sidebar, with screenshots, logs and files attachable and everything reviewable before sending
+- English and French interface, selectable under Settings → Appearance & language
+- Five color schemes (Neutral grey, Warm paper, Soft cool, Celadon and Amber comfort), selectable separately for light and dark mode
+- Consistent terminology across the interface, run log, error messages and reports, without internal technical terms
+- Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; the number of retries for Excel and CAD can be adjusted; under sustained rate limiting, completed work is saved first
+
+For details, see the [release page](https://github.com/KlaraGraff/XL_Translator/releases/latest) and the [CHANGELOG](docs/CHANGELOG.md).
+
+## System requirements and downloads
+
+Two native installers are available:
+
+- macOS (Apple Silicon): `Translator_macOS_arm64_<version>.dmg`, requires **macOS 12.0 Monterey or later**
+- Windows (x64): `Translator_Windows_x64_<version>_Setup.exe`, requires **Windows 10 or later**
+
+Installers are available on the [latest release page](https://github.com/KlaraGraff/XL_Translator/releases/latest), each with a `.sha256` checksum file of the same name. Intel Macs are not supported; users on Intel Macs should continue to use an earlier version.
+
+### Installing on macOS
+
+Verify the download in Terminal:
+
+```bash
+cd ~/Downloads
+shasum -a 256 -c Translator_macOS_arm64_<version>.dmg.sha256
+```
+
+The output should read `OK`.
+
+1. Open the verified DMG and drag `Translator.app` into the Applications folder.
+2. Launch Translator from Applications.
+3. The signing status of each version is stated in its release notes. Builds signed with a Developer ID and notarized by Apple open directly. For ad-hoc signed builds that are not notarized, macOS reports that the developer cannot be verified; select "Open Anyway" under System Settings → Privacy & Security. Only install a DMG downloaded from the official release page and verified as described above.
+
+On macOS, application data is stored in `~/Library/Application Support/Translator`.
+
+### Installing on Windows
+
+Verify the download in PowerShell; the hash must match the value in the `.sha256` file:
+
+```powershell
+Get-FileHash "$env:USERPROFILE\Downloads\Translator_Windows_x64_<version>_Setup.exe" -Algorithm SHA256
+Get-Content "$env:USERPROFILE\Downloads\Translator_Windows_x64_<version>_Setup.exe.sha256"
+```
+
+1. Run the verified `Setup.exe`. The installer writes only to the current user's folder and does not require administrator rights.
+2. The Windows installer is not yet code-signed, so SmartScreen may display "Windows protected your PC". After verifying the checksum, select "More info → Run anyway". Do this only for an installer downloaded from the official release page and verified.
+3. The interface requires the Microsoft Edge WebView2 runtime. If it is not installed, the installer downloads and installs it automatically. This is the only step of the initial installation that may require an internet connection.
+
+On Windows, application data is stored in `%LOCALAPPDATA%\Translator`.
+
+## First launch
+
+On first launch, a quick-start guide is displayed; data from other folders is not imported automatically. Existing data in the application data folder is read or upgraded according to the compatibility rules. If data is found to be damaged, the original file is backed up, a new data file is created, and the backup location is shown in Settings. If the original file cannot be read, backed up or recreated, it is kept in place and the reason is reported; recovery of its contents is not guaranteed.
+
+## Usage notes
+
+Standard `.xlsx`, `.docx`, PDF, image and DXF files do not require Microsoft Office. High-fidelity conversion of legacy `.xls` and `.doc` files and certain numbering corrections can use Microsoft Office, LibreOffice or system converters installed on the computer. DWG drawings require ODA File Converter. These programs are optional and are not included with Translator. When one is needed, the application explains the required permissions, the expected format fidelity and the impact of any fallback.
+
+Before translating, configure a model service under Settings → Models and test the connection. The quick-start guide does not send API requests automatically. Help, update checks, maintenance and anonymized diagnostics are built into the application. Diagnostics are never uploaded automatically and do not include API keys, source text, translations or complete prompts.
+
+### Exporting and importing configurations
+
+The complete model configuration can be exported under Settings → Models for use by others. Exports without keys are plain `.json` files. Exports with keys are encrypted `.xltcfg` files: the keys are encrypted with a key built into the application, and a modified file cannot be imported. Exports can be valid for 7, 30 or 90 days, or without expiry.
+
+Security note: any user with the application installed can decrypt an `.xltcfg` file. The encryption only protects the file from unrelated parties during transfer, not from users who have the application. Do not share configuration files containing keys in public groups or cloud folders. Exports include only keys entered manually on the local computer; keys imported from another configuration are never exported again.
+
+## Updates
+
+The application checks for updates once in the background after startup and displays an indicator on Settings in the sidebar when a new version is available. Updates can be installed directly under Settings → Updates & about: the application downloads the official package, verifies its signature and replaces itself in place, and rejects any package whose signature does not match. On macOS, the user chooses when to restart; on Windows, the installer completes the update after confirming whether running jobs may be interrupted. Background update reminders can be paused, and specific versions can be skipped.
+
+If in-app updating is unavailable (for example, when running directly from the DMG, when the installation folder is not writable, on an architecture mismatch, or in a development build), the application states the reason and directs the user to a manual download. If retrieving update information, downloading or installing fails, the application identifies the failed step, and the installed version remains unaffected.
+
+Manual downloads are available from the official GitHub Releases page. The application accepts only complete release packages that match the system and architecture and include a SHA-256 checksum file.
+
+## Development
+
+The [architecture guide](docs/ARCHITECTURE.md) describes the code structure, the end-to-end execution of a job and where each type of change belongs. The steps for adding a translation module are listed in the [new translation module checklist](docs/ADDING_A_TRANSLATION_PAGE.md). Both documents are written in Chinese. The desktop shell is built with Tauri 2 (Rust), the interface with TypeScript, and the document engine with Python.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
