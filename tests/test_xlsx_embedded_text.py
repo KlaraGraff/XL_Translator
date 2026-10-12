@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 import unittest
@@ -319,13 +320,28 @@ class EmbeddedTextTests(unittest.TestCase):
             ),
         )
         vml = _part(output, vml_name)
-        heights = [int(value) for value in __import__("re").findall(r"height:(\d+)px", vml)]
-        # B2 的批注接了一段长译文，框加高；C3 对话式批注的兼容副本原文本来就放不下，
-        # 只为新增的那一行加高一点，不会被撑到整段说明文字那么高。
+        heights = [int(value) for value in re.findall(r"height:(\d+)px", vml)]
+        # B2 的批注接了一段长译文，框加高；C3 对话式批注的兼容副本按整段（原文 + 译文）加高。
         self.assertGreater(heights[0], 79)
-        self.assertTrue(79 < heights[1] < 120, heights)
-        self.assertIn("Anchor>2, 15, 0, 2, 4, 15, ", vml)
-        self.assertNotIn("Anchor>2, 15, 0, 2, 4, 15, 5, 16<", vml)
+        self.assertGreater(heights[1], 79)
+        # 锚点的下边跟着挪：从上边量下来（默认行高 15 磅）不比新的框矮。
+        anchor = [int(v) for v in re.search(r"Anchor>([^<]*)<", vml).group(1).split(",")]
+        self.assertEqual(anchor[:6], [2, 15, 0, 2, 4, 15])
+        anchored_pt = (anchor[6] - anchor[2]) * 15 - anchor[3] * 0.75 + anchor[7] * 0.75
+        self.assertGreaterEqual(anchored_pt, heights[0] * 0.75 - 0.75)
+
+    def test_comment_anchor_follows_actual_row_heights(self) -> None:
+        from core.xlsx_embedded_text import _extend_anchor_bottom, _SheetGrid
+
+        grid = _SheetGrid(columns={}, rows={1: 30.0, 2: 0.0}, default_column=48.0, default_row=15.0)
+        values = ["2", "15", "0", "0", "4", "15", "1", "0"]
+        # 要 60 磅：第 0 行 15 + 第 1 行 30（第 2 行隐藏不占高）+ 第 3 行再走 15 磅 = 第 4 行顶。
+        _extend_anchor_bottom(values, 60.0, grid)
+        self.assertEqual(values[6:], ["4", "0"])
+        # 已经够高的不动。
+        values = ["2", "15", "0", "0", "4", "15", "6", "0"]
+        _extend_anchor_bottom(values, 60.0, grid)
+        self.assertEqual(values[6:], ["6", "0"])
 
     def test_translation_only_replaces_text_and_keeps_author(self) -> None:
         output = self._write(translation_only=True)

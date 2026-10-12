@@ -30,7 +30,7 @@ from core.translation_coverage import (
     looks_like_target_text,
     split_existing_bilingual_text,
 )
-from core.text_box_fit import ParagraphMetrics, fitting_scale, wrapped_line_count
+from core.text_box_fit import ParagraphMetrics, fitting_scale, paragraphs_height
 from core.translation_protocol import extract_replace_translation
 from core.xlsx_patcher import (
     NS_A,
@@ -880,7 +880,7 @@ def _apply_comments(
     if changed:
         package.write(parts.comments, _serialize(root))
     if shown and parts.vml:
-        _grow_comment_boxes(package, parts.vml, shown)
+        _grow_comment_boxes(package, parts.vml, shown, _sheet_grid(package, parts.sheet))
 
 
 # ── 批注框跟着译文变大 ────────────────────────────────────────────────────────
@@ -925,7 +925,43 @@ def _vml_number(body: str, tag: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _grow_comment_boxes(package: _Package, vml_part: str, shown: dict[str, tuple[str, str, float]]) -> None:
+def _comment_needed_pt(text: str, size_pt: float, width_pt: float) -> float:
+    """批注文字要占多高：和文本框同一套估算，再多留一行，宁可框大一点。"""
+    usable = max(1.0, width_pt - 2 * _COMMENT_INSET_PT[0])
+    lines = paragraphs_height([ParagraphMetrics(text=text, size_pt=size_pt)], usable)
+    return lines + paragraphs_height([ParagraphMetrics(text="", size_pt=size_pt)], usable) + 2 * _COMMENT_INSET_PT[1]
+
+
+def _extend_anchor_bottom(values: list[str], needed_pt: float, grid: _SheetGrid | None) -> None:
+    """把 x:Anchor 的下边（第 7、8 项：行号、行内像素偏移）挪到离上边 needed_pt 磅处，按实际行高走。
+
+    Excel 打开时按锚点画批注框，锚点的高度不一定等于 style 里写的高度，所以从上边重新量。
+    """
+    def row_height(index: int) -> float:
+        return grid.row(index) if grid is not None else _DEFAULT_ROW_PT
+
+    top_row, top_px, bottom_row, bottom_px = (int(values[i]) for i in (2, 3, 6, 7))
+    current = sum(row_height(i) for i in range(top_row, bottom_row)) - top_px * 0.75 + bottom_px * 0.75
+    if current >= needed_pt:
+        return
+    row = top_row
+    remaining = needed_pt + top_px * 0.75
+    for _ in range(10000):
+        height = row_height(row)
+        if height > 0 and remaining < height:
+            break
+        remaining -= max(0.0, height)
+        row += 1
+    values[6] = str(row)
+    values[7] = str(math.ceil(remaining / 0.75))
+
+
+def _grow_comment_boxes(
+    package: _Package,
+    vml_part: str,
+    shown: dict[str, tuple[str, str, float]],
+    grid: _SheetGrid | None = None,
+) -> None:
     data = package.read(vml_part)
     if data is None:
         return
@@ -939,7 +975,7 @@ def _grow_comment_boxes(package: _Package, vml_part: str, shown: dict[str, tuple
         key = (_vml_number(body, "Row"), _vml_number(body, "Column"))
         if key not in wanted:
             return match.group(0)
-        old_text, new_text, size_pt = wanted[key]
+        _old_text, new_text, size_pt = wanted[key]
         style_match = re.search(r"\bstyle\s*=\s*" + _VML_STYLE_RE.pattern, match.group("attrs"))
         if style_match is None:
             return match.group(0)
@@ -953,16 +989,9 @@ def _grow_comment_boxes(package: _Package, vml_part: str, shown: dict[str, tuple
         width_pt = sizes["width"][0] * _PT_PER_UNIT[sizes["width"][1]]
         height_num, height_unit = sizes["height"]
         height_pt = height_num * _PT_PER_UNIT[height_unit]
-        usable = max(1.0, width_pt - 2 * _COMMENT_INSET_PT[0])
-
-
-        def needed_pt(text: str) -> float:
-            return wrapped_line_count(text, size_pt, usable) * size_pt * 1.3 + 2 * _COMMENT_INSET_PT[1]
-
-        # 原文本来就超出框的（对话式批注的兼容副本常这样），只为新增的译文加高，
-        # 不替原文把框撑开。
-        overflow_before = max(0.0, needed_pt(old_text) - height_pt)
-        needed = needed_pt(new_text) - overflow_before
+        # 按整段批注（原文 + 译文）要的高度算，不拿「原文本来就超出」抵扣：估算偏高时
+        # 抵扣会把框算矮（Mac 实测真实批注加高后最后两行仍在框外）。
+        needed = _comment_needed_pt(new_text, size_pt, width_pt)
         if needed <= height_pt:
             return match.group(0)
         new_height = math.ceil(needed / _PT_PER_UNIT[height_unit])
@@ -971,13 +1000,12 @@ def _grow_comment_boxes(package: _Package, vml_part: str, shown: dict[str, tuple
             style,
         )
         attrs = match.group("attrs").replace(style, new_style, 1)
-        extra_rows = math.ceil((needed - height_pt) / _DEFAULT_ROW_PT)
 
         def move_anchor(anchor: re.Match) -> str:
             values = [value.strip() for value in anchor.group(2).split(",")]
             if len(values) != 8 or not all(value.lstrip("-").isdigit() for value in values):
                 return anchor.group(0)
-            values[6] = str(int(values[6]) + extra_rows)
+            _extend_anchor_bottom(values, needed, grid)
             return f"{anchor.group(1)}{', '.join(values)}{anchor.group(3)}"
 
         new_body = _VML_ANCHOR_RE.sub(move_anchor, body, count=1)
