@@ -606,6 +606,111 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertFalse(hasattr(engine, "_client"))
 
 
+class _TransportFailingEngine(TranslationEngine):
+    """Fails like the OpenAI-compatible text transport: every error no_replay."""
+
+    def __init__(self, *, failures: list[Exception]) -> None:
+        self.failures = list(failures)
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/transport"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        self.calls.append(list(texts))
+        if self.failures:
+            raise self.failures.pop(0)
+        return {text: f"ok:{text}" for text in texts}
+
+    def translate_batch_with_sources(self, texts, target_lang, system_prompt, source_lang="auto"):
+        return [
+            TranslationLanguageResult(text, translated, source_lang="zh", target_lang=target_lang)
+            for text, translated in self.translate_batch(texts, target_lang, system_prompt).items()
+        ]
+
+
+def _transport_http_error(status: int) -> Exception:
+    import httpx
+
+    from core.text_transport import TextTransportHTTPError
+
+    request = httpx.Request("POST", "https://service.test/v1/chat/completions")
+    response = httpx.Response(status, text="{}", request=request)
+    return TextTransportHTTPError(f"HTTP {status}", request=request, response=response, kind="transient")
+
+
+class TransientTransportRetryTests(unittest.TestCase):
+    """A 5xx or a timeout from the text transport used to drop the batch on the
+    first try and say it 「无法通过重试解决」."""
+
+    def setUp(self) -> None:
+        patcher = patch("core.engine_dispatcher.time.sleep")
+        self.sleeps = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_503_is_resent_as_the_same_batch(self) -> None:
+        engine = _TransportFailingEngine(failures=[_transport_http_error(503)])
+        errors: list[str] = []
+        stats = TranslationBatchRunStats()
+        result = translate_texts(
+            ["alpha", "beta"], engine, "fr", "system prompt",
+            batch_size=20, concurrency=1, error_callback=errors.append, source_lang="en", stats=stats,
+        )
+        self.assertEqual(engine.calls, [["alpha", "beta"], ["alpha", "beta"]])
+        self.assertEqual(result, {"alpha": "ok:alpha", "beta": "ok:beta"})
+        self.assertEqual(stats.untranslated_count, 0)
+        self.assertEqual((stats.transient_retry_count, stats.retry_count), (1, 0))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("稍后自动重试（第 1/2 次）", errors[0])
+        self.assertTrue(self.sleeps.called)
+
+    def test_a_timeout_is_resent_and_the_last_failure_says_it_was_retried(self) -> None:
+        from core.text_transport import TextTransportError
+
+        engine = _TransportFailingEngine(failures=[
+            TextTransportError("read_timeout：请求超时", kind="read_timeout") for _ in range(3)
+        ])
+        errors: list[str] = []
+        stats = TranslationBatchRunStats()
+        result = translate_texts(
+            ["alpha", "beta"], engine, "fr", "system prompt",
+            batch_size=20, concurrency=1, error_callback=errors.append, source_lang="en", stats=stats,
+        )
+        # 1 try + 2 resends of the whole batch; never split into smaller ones.
+        self.assertEqual(engine.calls, [["alpha", "beta"]] * 3)
+        self.assertEqual(result, {"alpha": "alpha", "beta": "beta"})
+        self.assertEqual(stats.untranslated_count, 2)
+        self.assertIn("重试 2 次后仍失败", errors[-1])
+        self.assertFalse(any("无法通过重试" in message for message in errors))
+
+    def test_a_refused_request_is_not_resent(self) -> None:
+        engine = _TransportFailingEngine(failures=[_transport_http_error(422)])
+        errors: list[str] = []
+        translate_texts(
+            ["alpha"], engine, "fr", "system prompt",
+            batch_size=20, concurrency=1, error_callback=errors.append, source_lang="en",
+        )
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("一批翻译请求未成功", errors[0])
+
+    def test_the_sources_path_resends_too(self) -> None:
+        engine = _TransportFailingEngine(failures=[_transport_http_error(502)])
+        result = translate_texts_with_sources(
+            ["alpha"], engine, "fr", "system prompt", batch_size=20, concurrency=1,
+        )
+        self.assertEqual(len(engine.calls), 2)
+        self.assertEqual(result["alpha"].translation, "ok:alpha")
+
+    def test_the_first_wait_outlasts_the_transport_error_cache(self) -> None:
+        # Resending inside the cache window only gets the cached failure back.
+        from core.engine_dispatcher import _TRANSIENT_RETRY_BASE_DELAY
+        from core.text_transport import FAILED_REQUEST_CACHE_SECONDS
+
+        self.assertGreater(_TRANSIENT_RETRY_BASE_DELAY * 0.75, FAILED_REQUEST_CACHE_SECONDS)
+
+
 class QualityFilterResetTrackingTests(unittest.TestCase):
     """质量校验重置不许静默：每条被回退的原文必须记入 stats，任务层才报得出来。
 
