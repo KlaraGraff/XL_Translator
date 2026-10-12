@@ -197,7 +197,7 @@ def test_scan_counts_leave_out_locked_text_and_translation_warns_about_unmatched
     )
     assert result.stats.locked_texts == 4
     assert any("锁定不翻译的图块和图层里有 4 处文字" in message for message in messages)
-    assert any("没有找到：图块 TKA9" in message for message in messages)
+    assert any("没有找到这些图块：TKA9" in message for message in messages)
     written = output.read_text(encoding="utf-8")
     assert "设计单位" in written and "一层平面图" in written and "Porte coupe-feu" in written
 

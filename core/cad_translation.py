@@ -1647,14 +1647,18 @@ class CadTranslationPipeline:
             stats.locked_texts = lock_report.locked_texts
             if options.locked_blocks or options.locked_layers:
                 self._emit("scan", 1, 1, f"锁定不翻译的图块和图层里有 {lock_report.locked_texts} 处文字，保持原样")
-                unmatched = [
-                    *(f"图块 {name}" for name, count in lock_report.block_matches.items() if not count),
-                    *(f"图层 {name}" for name, count in lock_report.layer_matches.items() if not count),
-                ]
-                if unmatched:
+                missing_blocks = [name for name, count in lock_report.block_matches.items() if not count]
+                missing_layers = [name for name, count in lock_report.layer_matches.items() if not count]
+                if missing_blocks:
                     self._emit(
                         "scan", 1, 1,
-                        f"这张图里没有找到：{'、'.join(unmatched)}，请检查锁定名单是否写错",
+                        f"这张图里没有找到这些图块：{', '.join(missing_blocks)}，请检查锁定名单是否写错",
+                        level="WARN",
+                    )
+                if missing_layers:
+                    self._emit(
+                        "scan", 1, 1,
+                        f"这张图里没有找到这些图层：{', '.join(missing_layers)}，请检查锁定名单是否写错",
                         level="WARN",
                     )
             candidates: list[CadTextUnit] = []

@@ -443,8 +443,14 @@
     "en": "Choose {0}",
     "fr": "Choisir des {0}"
   },
-  "选择输出文件夹": {"en": "Choose output folder", "fr": "Choisir le dossier de sortie"},
-  "选择输出文件夹失败。": {"en": "Could not choose the output folder.", "fr": "Impossible de choisir le dossier de sortie."},
+  "选择输出文件夹": {
+    "en": "Choose output folder",
+    "fr": "Choisir le dossier de sortie"
+  },
+  "选择输出文件夹失败。": {
+    "en": "Could not choose the output folder.",
+    "fr": "Impossible de choisir le dossier de sortie."
+  },
   "选择来源失败。": {
     "en": "Could not choose the source.",
     "fr": "Impossible de choisir la source."
@@ -1584,5 +1590,181 @@
   "另有 {0} 张 DWG 开始后统计": {
     "en": "Plus {0} DWG {0|drawing|drawings} counted after start",
     "fr": "Plus {0} {0|plan|plans} DWG {0|compté|comptés} au lancement"
+  },
+  "AutoCAD 自带字体（推荐）": {
+    "en": "AutoCAD built-in fonts (recommended)",
+    "fr": "Polices intégrées d'AutoCAD (recommandé)"
+  },
+  "{0} 处文字": {
+    "en": "{0} {0|text|texts}",
+    "fr": "{0} {0|texte|textes}"
+  },
+  "{0} 处文字 · {1} 张图": {
+    "en": "{0} {0|text|texts} · {1} {1|drawing|drawings}",
+    "fr": "{0} {0|texte|textes} · {1} {1|plan|plans}"
+  },
+  "{0} 张 DWG 尚未统计文字数。现在统计会逐张转换，转换结果在翻译时直接使用。": {
+    "en": "Text in {0} DWG {0|drawing has|drawings have} not been counted yet. Counting converts them one by one; the converted files are reused for translation.",
+    "fr": "Le texte de {0} {0|plan|plans} DWG n'est pas encore compté. Le comptage les convertit un par un ; les fichiers convertis servent ensuite à la traduction."
+  },
+  "{0} 张图纸未能读取，将在开始翻译后再试。": {
+    "en": "{0} {0|drawing|drawings} could not be read. They will be tried again when translation starts.",
+    "fr": "{0} {0|plan n'a|plans n'ont} pas pu être {0|lu|lus}. Nouvelle tentative au lancement de la traduction."
+  },
+  "仅译文": {
+    "en": "Translation only",
+    "fr": "Traduction seule"
+  },
+  "仍放不下时每次再缩 0.1，最小缩到这个比例；到这里还放不下的列入报告，请人工复核。": {
+    "en": "If it still does not fit, the size is reduced by 0.1 at a time down to this ratio. Text that still does not fit is listed in the report for review.",
+    "fr": "Si le texte ne tient toujours pas, la taille diminue de 0,1 à chaque fois jusqu'à ce rapport. Le texte qui ne tient toujours pas est signalé dans le rapport, à vérifier."
+  },
+  "例如：TK*, 图框A1, 签名栏": {
+    "en": "For example: TK*, Frame-A1, Signatures",
+    "fr": "Par exemple : TK*, Cadre-A1, Signatures"
+  },
+  "例如：签字, TITLE*": {
+    "en": "For example: SIGN, TITLE*",
+    "fr": "Par exemple : SIGN, TITLE*"
+  },
+  "停止统计": {
+    "en": "Stop counting",
+    "fr": "Arrêter le comptage"
+  },
+  "先缩到": {
+    "en": "Shrink first to",
+    "fr": "Réduire d'abord à"
+  },
+  "全部统计": {
+    "en": "Count all",
+    "fr": "Tout compter"
+  },
+  "原文在上，译文在下": {
+    "en": "Source above, translation below",
+    "fr": "Original au-dessus, traduction en dessous"
+  },
+  "双语时译文与原文在同一图层：单行文字在原文下方（或上方）另起一行、字高为原文的 0.8 倍；多行文字、标注和引线在同一个框里换行；块属性写成「原文 / 译文」。再次翻译同一张图时会先清掉上次写入的译文。": {
+    "en": "In bilingual mode the translation stays on the same layer as the source. Single-line text gets a new line below (or above) the source at 0.8 times its height; multiline text, dimensions and leaders get a line break in the same box; block attributes read “source / translation”. Translating the same drawing again first removes the previous translation.",
+    "fr": "En mode bilingue, la traduction reste sur le même calque que l'original. Le texte sur une ligne reçoit une nouvelle ligne en dessous (ou au-dessus), à 0,8 fois sa hauteur ; le texte multiligne, les cotes et les lignes de repère passent à la ligne dans le même cadre ; les attributs de bloc s'écrivent « original / traduction ». Retraduire le même plan supprime d'abord la traduction précédente."
+  },
+  "图块": {
+    "en": "Blocks",
+    "fr": "Blocs"
+  },
+  "图块名": {
+    "en": "Block names",
+    "fr": "Noms de blocs"
+  },
+  "图层": {
+    "en": "Layers",
+    "fr": "Calques"
+  },
+  "图层名": {
+    "en": "Layer names",
+    "fr": "Noms de calques"
+  },
+  "图纸读取失败。": {
+    "en": "Could not read the drawing.",
+    "fr": "Impossible de lire le plan."
+  },
+  "图纸里的字体常常缺法文重音字母或中文。选「AutoCAD 自带字体」时，译文改用每台装了 AutoCAD 的电脑都有的字体写入（西文 simplex，中文 gbenor + gbcbig），在别人的电脑上也能正常显示；没翻译的文字不改。": {
+    "en": "Drawing fonts often lack French accented letters or Chinese. With “AutoCAD built-in fonts”, translations are written in fonts every AutoCAD installation has (simplex for Western languages, gbenor + gbcbig for Chinese), so they display correctly on other computers. Untranslated text keeps its font.",
+    "fr": "Les polices des plans manquent souvent d'accents français ou de caractères chinois. Avec « Polices intégrées d'AutoCAD », les traductions utilisent des polices présentes sur toute installation d'AutoCAD (simplex pour les langues occidentales, gbenor + gbcbig pour le chinois) et s'affichent correctement sur d'autres ordinateurs. Le texte non traduit garde sa police."
+  },
+  "已勾选的图纸都已扫描": {
+    "en": "All selected drawings have been scanned",
+    "fr": "Tous les plans cochés ont été analysés"
+  },
+  "已扫描 {0} 张图纸": {
+    "en": "{0} {0|drawing|drawings} scanned",
+    "fr": "{0} {0|plan analysé|plans analysés}"
+  },
+  "扫描图块名": {
+    "en": "Scan block names",
+    "fr": "Analyser les noms de blocs"
+  },
+  "搜索图块或图层名…": {
+    "en": "Search blocks or layers…",
+    "fr": "Rechercher un bloc ou un calque…"
+  },
+  "放不下时先缩到这个比例（相对原文字号）。": {
+    "en": "When text does not fit, it is first reduced to this ratio of the original size.",
+    "fr": "Si le texte ne tient pas, il est d'abord réduit à ce rapport de la taille d'origine."
+  },
+  "放不下时缩小字号": {
+    "en": "Shrink text that does not fit",
+    "fr": "Réduire le texte qui ne tient pas"
+  },
+  "显示方式": {
+    "en": "Display",
+    "fr": "Affichage"
+  },
+  "最小比例": {
+    "en": "Minimum ratio",
+    "fr": "Rapport minimal"
+  },
+  "正在读取第 {0} / {1} 张图纸…": {
+    "en": "Reading drawing {0} of {1}…",
+    "fr": "Lecture du plan {0} sur {1}…"
+  },
+  "正在转换并统计第 {0} / {1} 张图纸，可以先调整设置": {
+    "en": "Converting and counting drawing {0} of {1}. You can adjust settings meanwhile.",
+    "fr": "Conversion et comptage du plan {0} sur {1}. Vous pouvez ajuster les réglages en attendant."
+  },
+  "没有匹配的图块或图层": {
+    "en": "No matching blocks or layers",
+    "fr": "Aucun bloc ni calque correspondant"
+  },
+  "沿用原文字体": {
+    "en": "Keep the original font",
+    "fr": "Conserver la police d'origine"
+  },
+  "缩小比例": {
+    "en": "Shrink ratio",
+    "fr": "Rapport de réduction"
+  },
+  "译文写回": {
+    "en": "Writing translations",
+    "fr": "Écriture des traductions"
+  },
+  "译文在上，原文在下": {
+    "en": "Translation above, source below",
+    "fr": "Traduction au-dessus, original en dessous"
+  },
+  "译文字体": {
+    "en": "Translation font",
+    "fr": "Police de la traduction"
+  },
+  "译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到默认比例，仍放不下再每次缩 0.1，直到最小比例。缩到最小仍放不下的列入报告。": {
+    "en": "When a translation is longer than the source and would run into nearby text, it is first narrowed, then reduced: first to the default ratio, then by 0.1 at a time down to the minimum ratio. Text that still does not fit at the minimum is listed in the report.",
+    "fr": "Quand une traduction est plus longue que l'original et chevaucherait le texte voisin, elle est d'abord resserrée, puis réduite : d'abord au rapport par défaut, puis de 0,1 à chaque fois jusqu'au rapport minimal. Le texte qui ne tient toujours pas est signalé dans le rapport."
+  },
+  "请先选择图纸": {
+    "en": "Select drawings first",
+    "fr": "Sélectionnez d'abord des plans"
+  },
+  "读取已勾选的 {0} 张图纸，列出其中带文字的图块和图层": {
+    "en": "Reads the {0} selected {0|drawing|drawings} and lists blocks and layers that contain text",
+    "fr": "Lit {0|le plan coché|les {0} plans cochés} et liste les blocs et calques qui contiennent du texte"
+  },
+  "这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。多个名字用逗号或换行分开，* 代表任意字符，如 TK*。不分大小写。": {
+    "en": "Text in these blocks (including attributes and nested blocks) is left unchanged. Typical uses: drawing frames, title blocks, signature boxes, logos. Separate names with commas or line breaks; * matches any characters, as in TK*. Not case-sensitive.",
+    "fr": "Le texte de ces blocs (attributs et blocs imbriqués compris) reste inchangé. Usage courant : cadres, cartouches, cases de signature, logos. Séparez les noms par des virgules ou des retours à la ligne ; * remplace n'importe quels caractères, comme TK*. Sans distinction de casse."
+  },
+  "这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。写法同上。": {
+    "en": "Text on these layers is left unchanged. Text drawn on layer 0 inside a block follows the layer of the block. Same notation as above.",
+    "fr": "Le texte de ces calques reste inchangé. Le texte dessiné sur le calque 0 dans un bloc suit le calque du bloc. Même notation que ci-dessus."
+  },
+  "锁定不翻译": {
+    "en": "Do not translate",
+    "fr": "Ne pas traduire"
+  },
+  "锁定的图块": {
+    "en": "Locked blocks",
+    "fr": "Blocs verrouillés"
+  },
+  "锁定的图层": {
+    "en": "Locked layers",
+    "fr": "Calques verrouillés"
   }
 }
