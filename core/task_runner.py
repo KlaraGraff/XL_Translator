@@ -93,6 +93,14 @@ from core.residual_repair import (
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
+from core.document_profile import (
+    append_profile,
+    drop_unlocked_short_hits,
+    is_context_sensitive,
+    is_smart_preset,
+    lookup_locked_tm,
+    request_document_profile,
+)
 from core import tm_manager
 from core.xlsx_patcher import is_generated_original_sheet_title
 from core.excel_automation import (
@@ -877,6 +885,22 @@ class TaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
+            smart_mode = is_smart_preset(getattr(settings, "excel_domain_preset", settings.domain_preset))
+            self._smart_mode = smart_mode
+            if smart_mode and global_unique_texts and engine_supports_chat(engine):
+                # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
+                system_prompt = append_profile(
+                    system_prompt,
+                    request_document_profile(
+                        engine.chat,
+                        global_unique_texts,
+                        target_language=get_target_lang_display(target_lang),
+                        log=self._log,
+                    ),
+                )
+                _raise_if_stopped()
+
             # ══════════════════════════════════════════════════════════
             # 阶段 2：全局统一翻译（TM 查询 + API 并发）
             # ══════════════════════════════════════════════════════════
@@ -931,6 +955,13 @@ class TaskRunner(BaseTaskRunner):
                 for text, values in tm_values_by_text.items()
                 if len(values) == 1
             }
+            if smart_mode:
+                dropped = drop_unlocked_short_hits(hits, tm_texts_by_pair, lookup_locked_tm)
+                if dropped:
+                    self._log(
+                        "INFO",
+                        f"自动识别场景：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
+                    )
             misses = [text for text in normal_texts if text not in hits]
 
             tm_hit_count   = len(hits)
@@ -3166,7 +3197,8 @@ class TaskRunner(BaseTaskRunner):
                         "tm_eligible": item.tm_eligible
                         and source_text not in rejected_sources
                         and source_in_every_file_scope
-                        and should_store_translation_in_tm(source_text, translation),
+                        and should_store_translation_in_tm(source_text, translation)
+                        and not self._smart_skips_tm(source_text),
                     }
                 )
             return tm_manager.insert_auto_entries(
@@ -3180,7 +3212,7 @@ class TaskRunner(BaseTaskRunner):
         new_pairs = [
             (k, _final_text(k, v))
             for k, v in normal_api_translations.items()
-            if should_store_translation_in_tm(k, _final_text(k, v))
+            if should_store_translation_in_tm(k, _final_text(k, v)) and not self._smart_skips_tm(k)
         ]
         hygiene = sanitize_tm_pairs(
             new_pairs,
@@ -3196,6 +3228,10 @@ class TaskRunner(BaseTaskRunner):
             engine_name,
             sync_reverse=False,
         )
+
+    def _smart_skips_tm(self, source_text: str) -> bool:
+        """「自动识别场景」下，离开上下文就会译错的短词不自动存进记忆库。"""
+        return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 
     def _log_tm_hygiene(self, hygiene) -> None:
         """入库卫生留痕：文案在 core/tm_hygiene 维护一份（Word 共用）。"""

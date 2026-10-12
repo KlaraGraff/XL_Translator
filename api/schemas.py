@@ -279,7 +279,7 @@ class ModelRoleTestPayload(BaseModel):
 
 
 class DomainSettingsPayload(BaseModel):
-    preset: str = "同步工程场景"
+    preset: str = "自动识别场景"
     custom_prompt: str = ""
     # 新形态统一保存为「预设名 → {"_base": Prompt}」；仍接受旧的
     # 语言映射和扁平字符串，写入时折叠为一个主 Prompt。

@@ -534,3 +534,57 @@ def _shift_entity(records: list[Any], start: int, end: int, rotation: float, shi
             records[index] = replace(record, value=_format_number(_float(record.value) + dx))
         elif record.code in {20, 21}:
             records[index] = replace(record, value=_format_number(_float(record.value) + dy))
+
+
+def short_text_rows(
+    records: Sequence[Any],
+    plain_text: Callable[[str], str],
+    is_short: Callable[[str], bool],
+    *,
+    limit: int = 40,
+) -> list[str]:
+    """How short labels read together with the text beside them on the drawing.
+
+    天正把门号「FM甲1021」存成「FM」「甲」「1021」三段紧挨着的单行文字。翻译时
+    「甲」单独送去，连通读全图的模型也只看到一个孤立的「甲」，于是猜成合同甲方
+    或火灾危险性类别。这里把每段短文字和同一行上紧挨着的文字按从左到右连起来
+    （「FM 甲 1021」），按出现次数返回最常见的 ``limit`` 种，给写图纸说明的那次请求看。
+    """
+    entities = _collect_entities(records, plain_text)
+    groups: dict[tuple[tuple[str, str], float], list[_TextEntity]] = {}
+    for entity in entities:
+        if entity.entity_type in _SINGLE_LINE_TYPES:
+            groups.setdefault((entity.container, round(entity.rotation, 1)), []).append(entity)
+    rows: dict[str, int] = {}
+    for group in groups.values():
+        shorts = [entity for entity in group if is_short(entity.text)]
+        if not shorts:
+            continue
+        boxes = {entity.entity_no: _box(entity) for entity in group}
+        # 按基线高度排好，只在上下差不多一行高的范围里找邻居。
+        ordered = sorted(group, key=lambda entity: boxes[entity.entity_no].bottom)
+        bottoms = [boxes[entity.entity_no].bottom for entity in ordered]
+        for short in shorts:
+            box = boxes[short.entity_no]
+            line_height = box.top - box.bottom
+            lo = bisect.bisect_left(bottoms, box.bottom - line_height)
+            hi = bisect.bisect_right(bottoms, box.bottom + line_height)
+            row = [short]
+            for other in ordered[lo:hi]:
+                if other is short:
+                    continue
+                other_box = boxes[other.entity_no]
+                overlap = min(box.top, other_box.top) - max(box.bottom, other_box.bottom)
+                if overlap < 0.5 * min(line_height, other_box.top - other_box.bottom):
+                    continue
+                gap = max(other_box.left - box.right, box.left - other_box.right)
+                if gap > 1.5 * short.height:
+                    continue
+                row.append(other)
+            if len(row) < 2:
+                continue
+            row.sort(key=lambda entity: boxes[entity.entity_no].left)
+            text = " ".join(" ".join(entity.text.split()) for entity in row)
+            rows[text] = rows.get(text, 0) + 1
+    ranked = sorted(rows, key=lambda text: (-rows[text], text))
+    return ranked[:limit]

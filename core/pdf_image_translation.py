@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -1146,9 +1147,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         api_scheduler: WeightedApiScheduler | None = None,
         review_api_scheduler: WeightedApiScheduler | None = None,
         resume_output_dir: str | None = None,
+        profile_requester: Callable[[list[str], Callable[[str, str], None]], str] | None = None,
     ) -> None:
         self._files = file_items
         self._settings = settings
+        # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
+        # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
+        self._profile_requester = profile_requester
+        self._document_contexts: dict[str, str] = {}
         self._source_root = Path(source_root) if source_root else None
         # 「接着上次继续」选中的历史输出目录。只读：本次任务写的永远是自己的新目录。
         self._resume_output_dir = str(resume_output_dir).strip() if resume_output_dir else ""
@@ -2976,6 +2982,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - dependency/file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 record.error = _pdf_read_error_message(exc)
+            if record.status != PDF_OUTPUT_STATE_FAILED and self._profile_requester is not None:
+                self._request_document_context(item.path)
 
             prepared_files.append(
                 self._prepared_file_shell(
@@ -3328,6 +3336,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             model_config,
                             review_model_config,
                             source_type=prepared.record.source_type,
+                            document_context=self._document_contexts.get(prepared.record.source_path, ""),
                         )
                         futures[future] = (prepared, page_record)
                         self._file_progress.emit(
@@ -4097,6 +4106,27 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_height_pt=float(height),
         )
 
+    def _request_document_context(self, path: Path) -> None:
+        """「自动识别场景」：读这份 PDF 的文字层，请文档翻译模型概括成一段文档说明。"""
+        try:
+            lines = _pdf_text_lines(path)
+        except Exception as exc:  # noqa: BLE001 - the description is optional.
+            logger.debug(f"[PDF] 读取文字层失败原始错误：{exc!r}")
+            lines = []
+        if not lines:
+            self._log(
+                "INFO",
+                f"[{path.name}] 自动识别场景：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明",
+            )
+            return
+        try:
+            context = self._profile_requester(lines, self._log) if self._profile_requester else ""
+        except Exception as exc:  # noqa: BLE001 - the description is optional.
+            logger.debug(f"[PDF] 文档说明请求失败原始错误：{exc!r}")
+            context = ""
+        if context:
+            self._document_contexts[str(path)] = context
+
     def _generate_page_with_retries(
         self,
         page_record: PdfPageRecord,
@@ -4110,6 +4140,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         review_model_config,
         *,
         source_type: str = SOURCE_TYPE_PDF,
+        document_context: str = "",
     ) -> PdfPageRecord:
         output_path = translated_pages_dir / page_image_name(page_record.page_number, page_count)
         preserve_model_format = source_type == SOURCE_TYPE_IMAGE
@@ -4158,6 +4189,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     target_lang_code=self._settings.pdf.target_lang,
                     model_config=model_config,
                     review_feedback=review_feedback or None,
+                    # 只在有说明时才传，老的/第三方的生图客户端不必认识这个参数。
+                    **({"document_context": document_context} if document_context else {}),
                 )
             except Exception as exc:  # noqa: BLE001 - page/model classification.
                 if isinstance(exc, ImageModelUnavailableError) or is_model_unavailable_error(exc):
@@ -5177,6 +5210,32 @@ def _load_pdfium():
 
 def _open_pdf_document(path: Path):
     return _load_pdfium().PdfDocument(str(path))
+
+
+# 「自动识别场景」概括文档时最多读这么多页的文字层；够判断文档类型，又不至于把
+# 几百页的册子整本读一遍。
+_PROFILE_TEXT_MAX_PAGES = 30
+
+
+def _pdf_text_lines(path: Path, *, max_pages: int = _PROFILE_TEXT_MAX_PAGES) -> list[str]:
+    """PDF 文字层里的文字，按行拆开；扫描件或文字已转成线条时返回空。"""
+    doc = _open_pdf_document(path)
+    lines: list[str] = []
+    try:
+        for index in range(min(len(doc), max_pages)):
+            page = doc[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_bounded()
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+            lines.extend(line.strip() for line in str(text or "").splitlines() if line.strip())
+    finally:
+        doc.close()
+    return lines
 
 
 def _pdf_render_scale() -> float:

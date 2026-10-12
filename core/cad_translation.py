@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts
+from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts, short_text_rows
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
@@ -47,6 +47,7 @@ from core.cad_writeback import (
     set_style,
     shx_safe,
 )
+from core.document_profile import is_context_sensitive
 from core.cad_language import (
     LATIN_TARGET_LANGS,
     NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
@@ -1396,6 +1397,7 @@ class CadTranslationPipeline:
         pause_gate: Callable[[], None] | None = None,
         language_translator: CadLanguageTranslator | None = None,
         dxf_cache: CadDxfCache | None = None,
+        profile_requester: Callable[..., str] | None = None,
     ) -> None:
         self.converter = converter
         # 扫描时转换过的 DWG 留在这里，翻译时直接复用，不再转第二遍。
@@ -1405,6 +1407,12 @@ class CadTranslationPipeline:
         # 程序判断不了语种的文字走这个翻译器：模型同时回报每条原文的语种代码，
         # 回报的就是目标语言时保留原文。不传时这些文字和其余文字一起照常翻译。
         self.language_translator = language_translator
+        # 「自动识别场景」：翻译前先让模型读一遍这张图的文字，写一段图纸说明
+        # （core.document_profile）。``(全部文字, 写日志, neighbor_rows=短词连读) -> 说明``，
+        # 拿不到时返回空串。
+        # 说明交给肯接 ``context`` 参数的翻译器，带进每一批的提示词。
+        self.profile_requester = profile_requester
+        self.document_profile = ""
         self.progress = progress
         self.stop_requested = stop_requested
         # 暂停闸门：用户点了暂停时阻塞到继续或停止为止。由任务 runner 提供；
@@ -1550,6 +1558,8 @@ class CadTranslationPipeline:
             kwargs["should_stop"] = self.stop_requested
         if "error_callback" in parameters:
             kwargs["error_callback"] = on_error
+        if "context" in parameters and self.document_profile:
+            kwargs["context"] = self.document_profile
         ticker_stop = threading.Event()
         ticker: threading.Thread | None = None
         if "request_callback" in parameters:
@@ -1743,6 +1753,18 @@ class CadTranslationPipeline:
             kept_texts: set[str] = set()
             memory_hits: dict[str, str] = {}
             self._check_stop()
+            self.document_profile = ""
+            if self.profile_requester is not None and texts:
+                self._emit("match", 0, 1, "正在通读图纸，概括图纸说明")
+                self.document_profile = str(
+                    self.profile_requester(
+                        [unit.plain_text for unit in units],
+                        lambda level, message: self._emit("match", 0, 1, message, level=level),
+                        neighbor_rows=short_text_rows(records, _plain_text, is_context_sensitive),
+                    )
+                    or ""
+                ).strip()
+                self._check_stop()
             if self.memory_lookup and texts:
                 memory_hits = {key: value for key, value in self.memory_lookup(texts).items() if value}
             glossary = dict(glossary or {})
