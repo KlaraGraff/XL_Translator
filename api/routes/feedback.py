@@ -65,10 +65,18 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/feedback/send", response_model=None)
     def feedback_send(request: FeedbackRequest) -> dict[str, Any] | Response:
+        # 打好包就返回 job_id，上传在后台进行；界面轮询下面的进度接口。
         try:
-            return feedback.send(_draft(app, request), settings=load_settings())
+            return feedback.start_send(_draft(app, request), settings=load_settings())
         except feedback.FeedbackError as exc:
             return _json_error(_SEND_STATUS.get(exc.reason, 400), str(exc), reason=exc.reason)
+
+    @app.get("/api/feedback/send/{job_id}", response_model=None)
+    def feedback_send_status(job_id: str) -> dict[str, Any] | Response:
+        status = feedback.send_status(job_id)
+        if status is None:
+            return _json_error(404, "找不到这次发送，请重新发送。", reason="job_missing")
+        return status
 
 
 # 发不出去（服务未开通、网络、服务端）和用户能改的输入错误分开，界面据此决定要不要
