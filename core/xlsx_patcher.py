@@ -61,6 +61,9 @@ REL_TYPE_VML_DRAWING = f"{NS_REL}/vmlDrawing"
 REL_TYPE_COMMENTS = f"{NS_REL}/comments"
 REL_TYPE_TABLE = f"{NS_REL}/table"
 REL_TYPE_CALC_CHAIN = f"{NS_REL}/calcChain"
+REL_TYPE_THREADED_COMMENT = (
+    "http://schemas.microsoft.com/office/2017/10/relationships/threadedComment"
+)
 # 与分表一一对应、不能被两个分表共享的内部部件，克隆分表时必须一并复制。
 REL_TYPES_SHEET_OWNED = (REL_TYPE_DRAWING, REL_TYPE_VML_DRAWING, REL_TYPE_COMMENTS)
 
@@ -1985,6 +1988,11 @@ def _clone_original_sheets(
                     rels_root.remove(rel)
                     has_tables = True
                     continue
+                if rel_type == REL_TYPE_THREADED_COMMENT:
+                    # 对话式批注部件不能两张表共用；克隆分表只留传统批注的副本
+                    # （快照里是原文），Excel 会把它显示成普通批注。
+                    rels_root.remove(rel)
+                    continue
                 if rel_type not in REL_TYPES_SHEET_OWNED:
                     continue
                 if str(rel.get("TargetMode") or "") == "External":
@@ -1996,6 +2004,8 @@ def _clone_original_sheets(
                 if freeze_all_anchors and rel_type == REL_TYPE_DRAWING:
                     data, frozen = _freeze_snapshot_drawing(snapshot, data)
                     frozen_total += frozen
+                if rel_type == REL_TYPE_COMMENTS:
+                    data = _strip_comment_uids(data)
                 cloned_part = _clone_owned_part(
                     package,
                     content_types,
@@ -2031,6 +2041,27 @@ def _clone_original_sheets(
         next_sheet_id += 1
 
     return frozen_total
+
+
+_XR_UID = "{http://schemas.microsoft.com/office/spreadsheetml/2014/revision}uid"
+
+
+def _strip_comment_uids(comments_xml: bytes) -> bytes:
+    """去掉克隆件传统批注上的 ``xr:uid``。
+
+    带线程批注的表，传统批注是给旧版 Excel 看的兼容副本，``xr:uid`` 就是对应那条
+    线程批注的 id。克隆件不带线程批注（见上面），留着这个 id 等于指向另一张表的
+    线程批注，两张表的批注撞同一个 id。去掉后它就是一条普通批注。
+    """
+    if b"uid=" not in comments_xml:
+        return comments_xml
+    root = _parse(comments_xml)
+    changed = False
+    for comment in root.iter(_m("comment")):
+        if comment.get(_XR_UID) is not None:
+            del comment.attrib[_XR_UID]
+            changed = True
+    return _serialize(root) if changed else comments_xml
 
 
 def _freeze_snapshot_drawing(

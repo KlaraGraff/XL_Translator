@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 
 from core.bilingual_writer import bilingual_output_name, write_bilingual_file
 from core.file_scanner import scan_excel_sources
@@ -139,6 +140,84 @@ class TranslationOnlyNameTests(unittest.TestCase):
             previous = Path(tmp) / "报价_法文.xlsx"
             previous.write_bytes(b"x")
             self.assertEqual(match_previous_output(tmp, ".", "报价.xlsx", "fr", "excel"), previous)
+
+
+_THREADED_REL = "http://schemas.microsoft.com/office/2017/10/relationships/threadedComment"
+_GUID = "{6F2A1C9E-0000-4000-8000-000000000001}"
+
+
+def _with_threaded_comment(source: Path, target: Path) -> None:
+    """给 C3 的传统批注配一条线程批注，像新版 Excel 存的那样：传统批注带 xr:uid。"""
+    xr = "http://schemas.microsoft.com/office/spreadsheetml/2014/revision"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename == "xl/comments/comment1.xml":
+                text = data.decode("utf-8")
+                text = text.replace("<comments ", f'<comments xmlns:xr="{xr}" ', 1)
+                text = text.replace('shapeId="0">', f'shapeId="0" xr:uid="{_GUID}">', 1)
+                data = text.encode("utf-8")
+            elif info.filename == "xl/worksheets/_rels/sheet1.xml.rels":
+                data = data.replace(
+                    b"</Relationships>",
+                    f'<Relationship Id="rIdTC" Type="{_THREADED_REL}" '
+                    'Target="/xl/threadedComments/threadedComment1.xml"/></Relationships>'.encode(),
+                )
+            elif info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"</Types>",
+                    b'<Override PartName="/xl/threadedComments/threadedComment1.xml" '
+                    b'ContentType="application/vnd.ms-excel.threadedcomments+xml"/></Types>',
+                )
+            zout.writestr(info, data)
+        zout.writestr(
+            "xl/threadedComments/threadedComment1.xml",
+            '<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">'
+            f'<threadedComment ref="C3" dT="2026-01-01T00:00:00Z" personId="{_GUID}" id="{_GUID}">'
+            "<text>线程批注</text></threadedComment></ThreadedComments>",
+        )
+
+
+class ThreadedCommentCloneTests(unittest.TestCase):
+    def test_original_sheet_copy_does_not_share_threaded_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base.xlsx"
+            wb = Workbook()
+            wb.active.title = "产值"
+            wb.active["A1"] = "项目"
+            wb.active["C3"].comment = Comment("[Threaded comment]\n线程批注", f"tc={_GUID}")
+            wb.save(base)
+            source = Path(tmp) / "产值.xlsx"
+            _with_threaded_comment(base, source)
+
+            out_path = write_bilingual_file(
+                source_path=source,
+                output_dir=Path(tmp) / "out",
+                translations={"项目": "Projet"},
+                target_lang="fr",
+                keep_original_sheets=True,
+                formula_display_value_backfill=True,
+            )
+
+            with zipfile.ZipFile(out_path) as package:
+                rels = {
+                    name: package.read(name).decode("utf-8")
+                    for name in package.namelist()
+                    if name.startswith("xl/worksheets/_rels/")
+                }
+                threaded_owners = [name for name, xml in rels.items() if _THREADED_REL in xml]
+                self.assertEqual(len(rels), 2)
+                self.assertEqual(len(threaded_owners), 1, "线程批注只能挂在一张表上")
+                comment_parts = sorted(
+                    name for name in package.namelist() if name.startswith("xl/comments/")
+                )
+                self.assertEqual(len(comment_parts), 2, "原文副本要有自己的一份传统批注")
+                uids = [
+                    part for part in comment_parts
+                    if f'uid="{_GUID}"' in package.read(part).decode("utf-8")
+                ]
+                self.assertEqual(len(uids), 1, "原文副本的批注不能再指向那条线程批注")
+            self.assertEqual(load_workbook(out_path).sheetnames, ["产值", "产值_原文"])
 
 
 class EmptyFillTests(unittest.TestCase):
