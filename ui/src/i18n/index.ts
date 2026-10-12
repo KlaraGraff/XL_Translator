@@ -11,8 +11,9 @@
 //                     生成，这里按目录里的「模板」整句匹配后换成当前语言，占位处取到的
 //                     片段再递归翻一次。已经存下来的旧日志切换语言后也会跟着变。
 //
-// 切换语言会重新加载页面：模块级的文案常量（侧栏、状态词表等）在加载时就算好了，
-// 重载是让全部文字一次换齐的最简单办法。
+// 切换语言不重新加载页面：setLocale() 换掉词典，通知订阅者（app.ts 重画侧栏和
+// 当前页面）。模块级的文案常量（侧栏、状态词表等）一律用 localized() 包起来，
+// 换语言后第一次读取时按新语言重新生成；直接写成 const X = t(...) 会停留在旧语言。
 
 import { createTranslator, type Catalog, type Locale } from "./engine";
 
@@ -35,7 +36,7 @@ function readStoredLocale(): Locale {
   }
 }
 
-const locale: Locale = readStoredLocale();
+let locale: Locale = readStoredLocale();
 
 export function currentLocale(): Locale {
   return locale;
@@ -59,10 +60,61 @@ export function isLocale(value: unknown): value is Locale {
   return value === "zh" || value === "en" || value === "fr";
 }
 
-const catalogs = locale === "zh"
-  ? []
-  : Object.values(import.meta.glob<Catalog>("./catalog/*.json", { eager: true, import: "default" }));
-const translator = createTranslator(locale, catalogs);
+const catalogs = Object.values(import.meta.glob<Catalog>("./catalog/*.json", { eager: true, import: "default" }));
+let translator = createTranslator(locale, locale === "zh" ? [] : catalogs);
+// 每换一次语言加一，localized() 据此判断缓存是否过期。
+let generation = 0;
+const localeListeners = new Set<(value: Locale) => void>();
+
+/** 换界面语言，不重新加载页面。已经画好的界面由订阅者（app.ts）负责重画。 */
+export function setLocale(value: Locale): void {
+  if (value === locale) return;
+  locale = value;
+  translator = createTranslator(locale, locale === "zh" ? [] : catalogs);
+  generation += 1;
+  document.documentElement.lang = localeTag();
+  for (const listener of localeListeners) listener(value);
+}
+
+/** 订阅语言切换。返回取消订阅函数。 */
+export function onLocaleChange(listener: (value: Locale) => void): () => void {
+  localeListeners.add(listener);
+  return () => localeListeners.delete(listener);
+}
+
+/**
+ * 模块级文案常量的写法：const LABELS = localized(() => ({ a: t("…") }))。
+ * 返回的对象读起来和原来的对象、数组、Map、Set 一样，换语言后第一次读取时
+ * 按新语言重新生成一份。只适合只读的常量。
+ */
+export function localized<T extends object>(build: () => T): T {
+  let cached = build();
+  let builtAt = generation;
+  const current = (): T => {
+    if (builtAt !== generation) {
+      cached = build();
+      builtAt = generation;
+    }
+    return cached;
+  };
+  return new Proxy({} as T, {
+    get(_target, key) {
+      const real = current();
+      const value: unknown = Reflect.get(real, key, real);
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(real) : value;
+    },
+    has(_target, key) {
+      return Reflect.has(current(), key);
+    },
+    ownKeys() {
+      return Reflect.ownKeys(current()).filter((key) => key !== "length" || !Array.isArray(current()));
+    },
+    getOwnPropertyDescriptor(_target, key) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(current(), key);
+      return descriptor ? { ...descriptor, configurable: true } : undefined;
+    },
+  });
+}
 
 /** 界面文字。key 是中文原文，{0} {1} 占位。 */
 export function t(source: string, ...args: unknown[]): string {

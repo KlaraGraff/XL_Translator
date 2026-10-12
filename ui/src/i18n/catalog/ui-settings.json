@@ -555,9 +555,9 @@
     "en": "Interface language",
     "fr": "Langue de l'interface"
   },
-  "切换后界面会重新加载。正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。": {
-    "en": "The interface reloads after switching. Running tasks are not affected, and translations still use the target language chosen on each page.",
-    "fr": "L'interface se recharge après le changement. Les tâches en cours ne sont pas affectées et les traductions restent dans la langue cible choisie sur chaque page."
+  "正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。": {
+    "en": "Running tasks are not affected, and translations still use the target language chosen on each page.",
+    "fr": "Les tâches en cours ne sont pas affectées et les traductions restent dans la langue cible choisie sur chaque page."
   },
   "主题": {
     "en": "Theme",

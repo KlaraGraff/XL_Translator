@@ -57,7 +57,7 @@
   "词条在审阅期间已被修改，建议已过期": {"en": "The entry changed while you were reviewing, so the suggestion is out of date", "fr": "L'entrée a été modifiée pendant votre vérification : la suggestion n'est plus à jour"},
   "词条已被删除": {"en": "The entry has been deleted", "fr": "L'entrée a été supprimée"},
   "译文为空，未写入；该条仍保留在待审列表": {"en": "The translation is blank, so nothing was saved; this suggestion remains in the review list", "fr": "La traduction était vide, rien n'a été enregistré ; cette suggestion reste dans la liste à vérifier"},
-  "未勾选": {"en": "Not selected", "fr": "Non cochée"},
+  "未勾选": {"en": "Not selected", "fr": "Hors sélection"},
   "保留在待审列表，下次打开时可继续处理": {"en": "Stays in the review list for next time", "fr": "Reste dans la liste à vérifier pour la prochaine fois"},
   "已提交": {"en": "Submitted", "fr": "Envoyée"},
   "服务端未返回该条的写入结果": {"en": "No result was reported for this one", "fr": "Aucun résultat n'a été renvoyé pour celle-ci"},

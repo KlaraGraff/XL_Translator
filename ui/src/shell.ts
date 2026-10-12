@@ -5,7 +5,7 @@
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { navigate, onNavigate, type ViewId } from "./router";
-import { t } from "./i18n";
+import { t, localized } from "./i18n";
 
 interface SideItemDef {
   id: ViewId;
@@ -13,23 +13,23 @@ interface SideItemDef {
   icon: IconName;
 }
 
-const TRANSLATE_ITEMS: SideItemDef[] = [
+const TRANSLATE_ITEMS: SideItemDef[] = localized(() => ([
   { id: "excel", label: t("Excel 表格"), icon: "excel" },
   { id: "word", label: t("Word 文档"), icon: "word" },
   { id: "pdf", label: t("PDF 与图片"), icon: "pdf" },
   { id: "cad", label: t("CAD 图纸"), icon: "cad" },
-];
+]));
 
-const RESOURCE_ITEMS: SideItemDef[] = [
+const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
   { id: "tasks", label: t("任务中心"), icon: "tasks" },
   { id: "library", label: t("记忆库"), icon: "book" },
   { id: "plugins", label: t("插件"), icon: "spark" },
-];
+]));
 
-const SYSTEM_ITEMS: SideItemDef[] = [
+const SYSTEM_ITEMS: SideItemDef[] = localized(() => ([
   { id: "settings", label: t("设置"), icon: "gear" },
   { id: "help", label: t("帮助"), icon: "help" },
-];
+]));
 
 export interface ShellHandle {
   /** router.mountRouter() 应该指向这个容器；对应样张的 .content。 */
@@ -79,20 +79,39 @@ let toastHost: HTMLDivElement | null = null;
  *  不会跳到临时提示的下面去。 */
 const toastSlots = new Map<string, HTMLDivElement>();
 
+// 侧栏里要跟着界面语言换的文字节点：分组标题按原文 key、各项按视图 id 记下来，
+// relocalizeShell() 原地改文字，不重建侧栏（徽标、红点、选中态都不动）。
+const sideLabelNodes: { key: string; el: HTMLDivElement }[] = [];
+const sideItemTextNodes = new Map<ViewId, Text>();
+let lastTaskPill: TaskPillConfig = { count: 0 };
+
 function buildSideItem(def: SideItemDef): HTMLDivElement {
   const item = document.createElement("div");
   item.className = "side-item";
   item.append(icon(def.icon));
-  item.append(document.createTextNode(def.label));
+  const text = document.createTextNode(def.label);
+  sideItemTextNodes.set(def.id, text);
+  item.append(text);
   item.addEventListener("click", () => navigate(def.id));
   return item;
 }
 
-function buildSideLabel(text: string): HTMLDivElement {
+function buildSideLabel(key: string): HTMLDivElement {
   const label = document.createElement("div");
   label.className = "side-label";
-  label.textContent = text;
+  label.textContent = t(key);
+  sideLabelNodes.push({ key, el: label });
   return label;
+}
+
+/** 界面语言换了以后，原地换掉外壳上的文字（侧栏、任务药丸）。模型药丸由调用方刷新。 */
+export function relocalizeShell(): void {
+  for (const { key, el } of sideLabelNodes) el.textContent = t(key);
+  for (const def of [...TRANSLATE_ITEMS, ...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
+    const node = sideItemTextNodes.get(def.id);
+    if (node) node.data = def.label;
+  }
+  setTaskPill(lastTaskPill);
 }
 
 /** 构建并挂载整个应用外壳到 root（通常是 #app）。只应调用一次。 */
@@ -111,7 +130,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
   brand.append(brandMark, document.createTextNode("Translator"));
   side.append(brand);
 
-  side.append(buildSideLabel(t("翻译")));
+  side.append(buildSideLabel("翻译")); // i18n-ignore 词条 key，显示时由 t() 翻译
   const itemMap = new Map<ViewId, HTMLDivElement>();
   for (const def of TRANSLATE_ITEMS) {
     const itemEl = buildSideItem(def);
@@ -119,7 +138,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
     side.append(itemEl);
   }
 
-  side.append(buildSideLabel(t("资源")));
+  side.append(buildSideLabel("资源")); // i18n-ignore 词条 key，显示时由 t() 翻译
   for (const def of RESOURCE_ITEMS) {
     const itemEl = buildSideItem(def);
     itemMap.set(def.id, itemEl);
@@ -272,6 +291,7 @@ export function setTopbar(config: TopbarConfig): void {
 
 /** 更新顶栏右侧「任务中心」药丸。count > 0 时切到 live 态并显示计数。 */
 export function setTaskPill(config: TaskPillConfig): void {
+  lastTaskPill = config;
   if (!taskPillHost) return;
   taskPillHost.innerHTML = "";
   const pill = config.count > 0

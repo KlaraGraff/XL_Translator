@@ -443,6 +443,8 @@
     "en": "Choose {0}",
     "fr": "Choisir des {0}"
   },
+  "选择输出文件夹": {"en": "Choose output folder", "fr": "Choisir le dossier de sortie"},
+  "选择输出文件夹失败。": {"en": "Could not choose the output folder.", "fr": "Impossible de choisir le dossier de sortie."},
   "选择来源失败。": {
     "en": "Could not choose the source.",
     "fr": "Impossible de choisir la source."
@@ -758,10 +760,6 @@
   "{0} 页": {
     "en": "{0} {0|page|pages}",
     "fr": "{0} {0|page|pages}"
-  },
-  "已排除": {
-    "en": "Excluded",
-    "fr": "Exclu"
   },
   "需连接转换工具": {
     "en": "Needs converter",

@@ -88,7 +88,7 @@ import {
 } from "./settings";
 import { version as PACKAGE_VERSION } from "../../package.json";
 import { ApiError } from "../api-client";
-import { localeTag, t, tx } from "../i18n";
+import { localeTag, t, tx, localized } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 子页①：模型服务
@@ -342,7 +342,7 @@ export function renderModelsPage(host: HTMLElement): void {
     baseUrlDisabledByProvider ? "" : formBaseUrl,
     () => undefined,
     {
-      placeholder: baseUrlDisabledByProvider ? disabledBaseUrlPlaceholder : "https://.../v1",
+      placeholder: baseUrlDisabledByProvider ? disabledBaseUrlPlaceholder() : "https://.../v1",
       disabled: following || baseUrlDisabledByProvider,
     },
   );
@@ -353,7 +353,7 @@ export function renderModelsPage(host: HTMLElement): void {
     if (!cloudMode) return;
     if (providerBaseUrlDisabled.has(value)) {
       baseUrlField.input.disabled = true;
-      baseUrlField.input.placeholder = disabledBaseUrlPlaceholder;
+      baseUrlField.input.placeholder = disabledBaseUrlPlaceholder();
       return;
     }
     baseUrlField.input.disabled = following;
@@ -1079,16 +1079,16 @@ const CORRUPT_IMPORT_DETAIL = "此文件在传输过程中已损坏或被修改�
 // 替换。别再写「不删除未提及配置」：本机在这些角色下自己加的连接会连同它们保存的
 // Key 一起消失，说成「只合并」等于骗人。过期与版本太旧那两条路径的按钮写着「仅导入
 // 配置」，更需要这句话——「仅」字很容易被读成「影响有限」。
-const REPLACES_CONNECTIONS_NOTICE =
+const replacesConnectionsNotice = (): string =>
   t("文件中所含用途的连接列表将整体替换本机现有连接（本机添加的连接及已保存的密钥将被清除）；文件中未包含的用途保持不变。");
 
 // 有效期选项与 core/config_crypto.py::DEFAULT_VALID_DAYS 对齐：0 = 长期有效。
-const VALID_DAYS_OPTIONS: { label: string; value: number }[] = [
+const VALID_DAYS_OPTIONS: { label: string; value: number }[] = localized(() => ([
   { label: t("7 天"), value: 7 },
   { label: t("30 天（推荐）"), value: 30 },
   { label: t("90 天"), value: 90 },
   { label: t("长期有效"), value: 0 },
-];
+]));
 const DEFAULT_VALID_DAYS = 30;
 
 /** 路径用等宽字体展示，和「文件」「模型」这类普通文案区分开。 */
@@ -1457,7 +1457,7 @@ function openImportNormalModal(preview: ModelImportPreview): void {
     body.push(buildInlineBanner("warn", t("此文件由旧版本导出，密钥以明文保存，任何人用文本编辑器打开即可看到。可正常导入，建议导入后立即删除此文件。")));
   }
   body.push(
-    REPLACES_CONNECTIONS_NOTICE,
+    replacesConnectionsNotice(),
     buildRolesList(preview),
     t("导入后，这些用途将标记为「未测试」，不会自动发送任何请求。"),
   );
@@ -1501,7 +1501,7 @@ function openImportExpiredModal(preview: ModelImportPreview): void {
       // 「仅导入配置」提交的 payload 和正常导入的完全一样，连接列表照样整份替换。
       // 不写这一句，「仅」字会让人以为影响有限，而本机自己加的连接和它们的 Key
       // 已经没了，用户只能在事后的 toast 里第一次看到这件事。
-      REPLACES_CONNECTIONS_NOTICE,
+      replacesConnectionsNotice(),
     ],
     actions: [
       { label: t("取消"), variant: "default" },
@@ -1521,7 +1521,7 @@ function openImportUnsupportedModal(preview: ModelImportPreview): void {
     body: [
       t("此文件由更高版本的 Translator 导出，当前版本（{0}）无法解开其中的密钥。", PACKAGE_VERSION),
       buildInlineBanner("tint", t("请更新到最新版本后重新导入，或先仅导入配置，之后手动填写密钥。")),
-      REPLACES_CONNECTIONS_NOTICE, // 同过期弹窗：「仅」字不代表影响有限，见那边的注释
+      replacesConnectionsNotice(), // 同过期弹窗：「仅」字不代表影响有限，见那边的注释
     ],
     actions: [
       { label: t("仅导入配置（替换现有连接）"), keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },

@@ -28,7 +28,7 @@ import {
 } from "../components";
 import { icon } from "../icons";
 import { ApiClient, ApiError } from "../api-client";
-import { t, tx, fmtNum } from "../i18n";
+import { t, tx, fmtNum, localized } from "../i18n";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
@@ -906,18 +906,18 @@ interface ApplySuggestionsResult {
 
 // 逐条去向 → chip 语气 + 文案 + 原因说明。「已写入」没有额外原因（写成功了不需要
 // 解释）；其余几种都要说清楚「为什么没按你勾的写」，用户才知道要不要再处理一次。
-const CLEAN_OUTCOME_INFO: Record<string, { tone: ChipTone; label: string; reason?: string }> = {
+const CLEAN_OUTCOME_INFO: Record<string, { tone: ChipTone; label: string; reason?: string }> = localized(() => ({
   updated: { tone: "ok", label: t("已写入") },
   unchanged: { tone: "mute", label: t("未改动"), reason: t("库中译文已经是这个值") },
   pinned: { tone: "warn", label: t("已跳过"), reason: t("词条已固定，不接受清洗建议；如需修改，请先解除固定") },
   stale: { tone: "warn", label: t("已跳过"), reason: t("词条在审阅期间已被修改，建议已过期") },
   missing: { tone: "warn", label: t("已跳过"), reason: t("词条已被删除") },
   invalid: { tone: "warn", label: t("已跳过"), reason: t("译文为空，未写入；该条仍保留在待审列表") },
-};
-const CLEAN_OUTCOME_UNSELECTED = { tone: "mute" as ChipTone, label: t("未勾选"), reason: t("保留在待审列表，下次打开时可继续处理") };
+}));
+const CLEAN_OUTCOME_UNSELECTED = localized(() => ({ tone: "mute" as ChipTone, label: t("未勾选"), reason: t("保留在待审列表，下次打开时可继续处理") }));
 // 服务端没回报去向时（旧版本服务端、或响应里缺了这一条）不编结论：
 // 「未改动＝库里已经是这个值」是个事实断言，猜错会误导用户。
-const CLEAN_OUTCOME_UNKNOWN = { tone: "mute" as ChipTone, label: t("已提交"), reason: t("服务端未返回该条的写入结果") };
+const CLEAN_OUTCOME_UNKNOWN = localized(() => ({ tone: "mute" as ChipTone, label: t("已提交"), reason: t("服务端未返回该条的写入结果") }));
 
 function openCleanReviewModal(): void {
   const checks: HTMLInputElement[] = [];

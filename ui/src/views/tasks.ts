@@ -28,7 +28,7 @@ import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
-import { currentLocale, localeTag, t, tx } from "../i18n";
+import { currentLocale, localeTag, t, tx, localized } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -181,14 +181,14 @@ const SURFACE_ICON: Record<TaskSurface, IconName> = {
   tm_clean: "book",
 };
 
-const SURFACE_TASK_LABEL: Record<TaskSurface, string> = {
+const SURFACE_TASK_LABEL: Record<TaskSurface, string> = localized(() => ({
   excel: "Excel",
   word: "Word",
   pdf: "PDF",
   cad: "CAD",
   cleaner: t("记忆库清洗"),
   tm_clean: t("记忆库清洗"),
-};
+}));
 
 /** 能在翻译工作区里打开的任务（侧栏「翻译」下的四个页面）。 */
 const WORKSPACE_SURFACES = new Set<TaskSurface>(["excel", "word", "pdf", "cad"]);
@@ -283,7 +283,8 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
 
 /** 快照里存的是语言代码（auto、en、zh），详情里要显示成「自动检测 → 英文」。
  *  语言表进入任务中心时拉一次；没拉到时退回代码本身，不挡渲染。 */
-const languageNames = new Map<string, string>([["auto", t("自动检测")]]);
+// 存原文，显示时再 tx()：切换界面语言后跟着变。
+const languageNames = new Map<string, string>([["auto", "自动检测"]]); // i18n-ignore 显示时由 tx() 翻译
 let languageNamesRequested = false;
 
 async function loadLanguageNames(): Promise<void> {
@@ -403,13 +404,13 @@ function connectionSwitchText(task: TaskStatus): string {
 }
 
 /** model_snapshot 里没给 label 的角色（老记录）才用得到的兜底名字。 */
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<string, string> = localized(() => ({
   translation: t("文档翻译模型"),
   image: t("PDF 与图片翻译模型"),
   pdf_review: t("PDF 与图片审核模型"),
   review: t("PDF 与图片审核模型"),
   cleaner: t("记忆库清洗模型"),
-};
+}));
 
 function hostOf(value: string): string {
   const raw = value.trim();
@@ -549,7 +550,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
   );
 }
 
-const WARN_KPI_LABELS = new Set([t("需复核"), t("未生成"), t("未翻译段"), t("失败页（已插入占位）"), t("有疑点仍采用")]);
+const WARN_KPI_LABELS = localized(() => (new Set([t("需复核"), t("未生成"), t("未翻译段"), t("失败页（已插入占位）"), t("有疑点仍采用")])));
 
 interface ReviewRow {
   file: string;
@@ -593,7 +594,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
  *  这三个值说的是「复核标记有没有真的写进 xlsx」，全都不是「这条问题已经解决」——
  *  尤其 preserved_existing_fill 是「单元格本来就有底色，标记没写进去」，
  *  之前一律显示灰色「已处理」，等于告诉用户文件里能找到标记，实际上找不到。 */
-const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: ChipTone }> = {
+const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: ChipTone }> = localized(() => ({
   marked_fill: { label: t("已标底色"), note: t("已在该单元格填入复核底色，请在文件中按底色复核。"), tone: "warn" },
   marked_red_font: { label: t("已标红字"), note: t("单元格原有底色已保留，改用红色字体标出，请按红字复核。"), tone: "warn" },
   preserved_existing_fill: {
@@ -601,7 +602,7 @@ const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: 
     note: t("单元格已有底色，根据底色保留策略未添加标记；文件中不显示此处复核提示，请根据本行定位。"),
     tone: "dgr",
   },
-};
+}));
 
 /** 结果定位清单：合并 Excel（工作表/单元格）与 Word（章节/位置/摘录）两种复核行形状。
  *  main.ts 里 Excel 复核行本没有摘录列，这里仍尝试常见摘录键，取不到就留空——
@@ -747,7 +748,7 @@ interface FileRow {
 /** 后端逐文件状态枚举 → 用户读得懂的中文。文件级只说「已生成 / 未生成」（CONTEXT.md
  *  词表：文件级不许说「成功」「失败」）。之前这一列直接印 succeeded / failed，
  *  用户在界面上读到的是后端的内部枚举名。 */
-const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = {
+const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = localized(() => ({
   succeeded: { label: t("已生成"), tone: "ok" },
   completed: { label: t("已生成"), tone: "ok" },
   needs_review: { label: t("已生成 · 需复核"), tone: "warn" },
@@ -758,7 +759,7 @@ const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = {
   // 跟任务级状态词保持同一个动词（见 task-state-labels.ts）：任务写「已停止」、
   // 它下面的文件写「已中止」，同一屏之内就是两个说法。
   stopped: { label: t("已停止"), tone: "mute" },
-};
+}));
 
 function fileRows(task: TaskStatus): FileRow[] {
   const result = record(task.result);
@@ -1184,7 +1185,7 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
   }
 }
 
-const NO_DIAGNOSTIC_TEXT = t("该任务没有诊断记录（可能由早期版本运行，或已被自动清理），无可导出的内容。");
+const noDiagnosticText = (): string => t("该任务没有诊断记录（可能由早期版本运行，或已被自动清理），无可导出的内容。");
 
 /** 每个终态任务有没有诊断记录。没问过就不在表里；"pending" 表示正在问。
  *  任务结束时后端都会写一份；更早版本跑的任务、或者超出保留上限被清掉的，就没有。
@@ -1220,7 +1221,7 @@ async function exportTaskDiagnostic(taskId: string): Promise<void> {
     if (message.includes("没有诊断记录")) { // i18n-ignore 对后端原文判断
       diagnosticAvailability.set(taskId, false);
       if (mounted && selectedId === taskId) renderDetail();
-      showToast({ message: NO_DIAGNOSTIC_TEXT });
+      showToast({ message: noDiagnosticText() });
       return;
     }
     showToast({ message: t("导出诊断失败：{0}", tx(message)), error: true });
@@ -1294,11 +1295,11 @@ async function deleteTaskRecord(taskId: string): Promise<void> {
 // 渲染
 // ---------------------------------------------------------------------------
 
-const FILTERS: Array<["all" | "active" | "terminal", string]> = [
+const FILTERS: Array<["all" | "active" | "terminal", string]> = localized(() => ([
   ["all", t("全部")],
   ["active", t("活动")],
   ["terminal", t("最近结果")],
-];
+]));
 
 /** 卡片排序用的时间戳。优先用 created_at（用户发起这批任务的时刻）——用户在列表里
  *  找任务，脑子里记的是「我什么时候开始跑的」，不是「它最后一次状态变更是什么时候」；
@@ -1650,13 +1651,13 @@ function renderDetail(): void {
         label: t("导出诊断"),
         size: "mini",
         disabled: availability !== true,
-        title: availability === false ? NO_DIAGNOSTIC_TEXT : undefined,
+        title: availability === false ? noDiagnosticText() : undefined,
         onClick: () => void exportTaskDiagnostic(task.task_id),
       }),
     );
     // 置灰的按钮收不到悬停，原生 title 提示不可靠，旁边放一个「?」说清为什么不能点。
     if (availability === false) {
-      const hint = createHintBadge(NO_DIAGNOSTIC_TEXT);
+      const hint = createHintBadge(noDiagnosticText());
       // .hint 的皮肤只写在 .swrow 下面，这里照抄同一套样式。
       hint.style.cssText =
         "color:var(--ink-3);cursor:help;font-size:11px;border:1px solid var(--line-2);border-radius:99px;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex:none;margin-left:-4px";

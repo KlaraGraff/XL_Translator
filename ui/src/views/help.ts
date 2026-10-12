@@ -10,7 +10,7 @@ import { createCard, createButton } from "../components";
 import { icon, type IconName } from "../icons";
 import { invoke } from "@tauri-apps/api/core";
 import { showQuickStart } from "../quickstart";
-import { t } from "../i18n";
+import { t, localized } from "../i18n";
 import "./help.css";
 
 async function openExternalUrl(url: string): Promise<void> {
@@ -26,7 +26,7 @@ interface HelpCardSpec {
   footer?: (host: HTMLElement) => void;
 }
 
-const CARDS: HelpCardSpec[] = [
+const CARDS: HelpCardSpec[] = localized(() => ([
   {
     iconName: "gear",
     title: t("1. 配置翻译模型"),
@@ -114,7 +114,7 @@ const CARDS: HelpCardSpec[] = [
       host.append(row);
     },
   },
-];
+]));
 
 function buildHero(container: HTMLElement): void {
   const hero = document.createElement("div");

@@ -1,4 +1,4 @@
-import { t } from "./i18n";
+import { t, localized } from "./i18n";
 
 /** Shared, revision-aware file status handling for workspace and task center. */
 export type FileProgressState = "waiting" | "active" | "generated" | "failed" | "unstarted" | "stopped" | "interrupted" | "paused";
@@ -32,7 +32,7 @@ export function reduceFileProgress(
   return next;
 }
 
-const PHASE_LABELS: Record<string, string> = {
+const PHASE_LABELS: Record<string, string> = localized(() => ({
   prepare: t("准备文件"),
   extract: t("提取文字"),
   // PDF/图片：把页面渲染成图片交给图像模型（core/pdf_image_translation.py）。
@@ -46,7 +46,7 @@ const PHASE_LABELS: Record<string, string> = {
   match: t("匹配记忆库与术语"),
   write: t("写回图纸"),
   verify: t("校验结果"),
-};
+}));
 
 /** 已生成的文件是否带着需复核内容。徽章配色直接读这个判断，不去翻译后的文字里找「需复核」。 */
 function generatedNeedsReview(file: FileProgress): boolean {
