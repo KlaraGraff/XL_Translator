@@ -199,3 +199,23 @@
 .pal-card i.pal-btn { top: auto; left: auto; right: 7px; bottom: 6px; width: 22px; height: 9px; border-radius: 3px; }
 .pal-row-label { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 4px 0 6px; }
 .pal-grid + .pal-row-label { margin-top: 14px; }
+
+/* 「自动识别场景」：提示词按文档现写，正文框换成一段灰色、不可编辑的说明。 */
+.smart-prompt-note { display: flex; flex-direction: column; gap: 6px; }
+.smart-prompt-note p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.smart-prompt-rules {
+  padding: 8px 10px;
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+  background: var(--surface-2, var(--surface));
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  user-select: text;
+}
