@@ -54,6 +54,8 @@ def _settings(*, source_lang: str = "zh", target_lang: str = "en") -> AppSetting
         ),
         source_lang=source_lang,
         target_lang=target_lang,
+        # 语种预检数模型调用次数；「自动识别场景」的文档说明请求另有测试。
+        excel_domain_preset="无",
     )
     # This contract suite uses mocked writers and tests the legacy sheet set.
     settings.excel_output.translate_sheet_names = False
@@ -200,6 +202,72 @@ class ExcelCompatibilityContractTests(unittest.TestCase):
                 xls_converter.macos_excel_automation_privacy_path(),
                 "系统设置 > 隐私与安全性 > 自动化",
             )
+
+
+class _ProfileEngine:
+    """「自动识别场景」下只会收到文档说明这一次请求（源语言已指定，不做语种预检）。"""
+
+    engine_name = "phase4/mock"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def chat(self, system: str, user: str) -> str:
+        self.calls.append((system, user))
+        return "建筑施工图。「甲」指甲级防火门，常译 Class A。"
+
+
+class ExcelSmartModeContractTests(unittest.TestCase):
+    """「自动识别场景」：先写文档说明带进提示词；短词不套自动存下的记忆、也不存回去。"""
+
+    def test_profile_reaches_the_prompt_and_short_auto_memory_is_retranslated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "doors.xlsx"
+            texts = {source: ["甲", "防火门耐火等级说明", "甲", "FM", "门窗表"]}
+            engine = _ProfileEngine()
+            locked_calls: list[list[str]] = []
+
+            def lookup(values: list[str], _pair: str, *, locked_only: bool = False) -> dict[str, str | None]:
+                if locked_only:
+                    locked_calls.append(sorted(values))
+                    # 用户手动录入过「FM」，自动存过的「甲 → Party A」不算。
+                    return {value: ("Fire door" if value == "FM" else None) for value in values}
+                memory = {"甲": "Party A", "防火门耐火等级说明": "Fire rating note", "FM": "FM"}
+                return {value: memory.get(value) for value in values}
+
+            settings = _settings(source_lang="zh", target_lang="en")
+            settings.excel_domain_preset = "自动识别场景"
+            with ExitStack() as stack:
+                ExcelTaskRunnerContractTests._run_patches(
+                    self,
+                    stack,
+                    root=root,
+                    engine=engine,
+                    texts_by_path=texts,
+                    lookup_side_effect=lookup,
+                )
+                translate = stack.enter_context(
+                    patch(
+                        "core.task_runner.translate_texts",
+                        return_value={"甲": "Class A", "门窗表": "Door and window schedule"},
+                    )
+                )
+                insert = stack.enter_context(patch("core.task_runner.tm_manager.insert_batch", return_value=0))
+                runner = TaskRunner([FileItem(path=source, name="doors", size_kb=1.0)], settings, source_root=root)
+                runner._run()
+
+            self.assertEqual(len(engine.calls), 1)
+            self.assertIn("防火门耐火等级说明", engine.calls[0][1])
+            self.assertEqual(locked_calls, [["FM", "甲"]])
+            translate.assert_called_once()
+            misses, _engine, _lang, system_prompt = translate.call_args.args[:4]
+            self.assertEqual(sorted(misses), ["甲", "门窗表"])
+            self.assertIn("甲级防火门", system_prompt)
+            self.assertTrue(system_prompt.startswith("system"))
+            stored = [pair for call in insert.call_args_list for pair in call.args[0]]
+            # 长文字照常存进记忆库，短词不存。
+            self.assertEqual([source_text for source_text, _target in stored], ["门窗表"])
 
 
 class ExcelTaskRunnerContractTests(unittest.TestCase):

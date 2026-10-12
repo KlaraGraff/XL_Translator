@@ -1227,7 +1227,7 @@ function domainSettingsFor(surface: TranslationSurface): {
   // 新数据是「预设名 → {_base: Prompt}」；这里保留嵌套读取，兼容旧版按目标语言
   // 保存的配置，保存时由后端统一折叠回 `_base`。
   return {
-    preset: text(settings?.[`${prefix}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"), // i18n-ignore 领域预设值（存进设置）
+    preset: text(settings?.[`${prefix}_domain_preset`], "自动识别场景"), // i18n-ignore 领域预设值（存进设置）
     customPrompt: text(settings?.[`${prefix}_custom_prompt`]),
     promptOverrides: Object.fromEntries(
       Object.entries(record(settings?.[`${prefix}_domain_prompt_overrides`])).map(([preset, langs]) => [

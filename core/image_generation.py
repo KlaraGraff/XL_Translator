@@ -118,6 +118,7 @@ class ImageGenerationClient(Protocol):
         target_lang_code: str | None = None,
         model_config: EffectiveModelConfig,
         review_feedback: str | None = None,
+        document_context: str | None = None,
     ) -> bytes:
         """Return PNG/JPEG/WebP bytes for one translated page."""
 
@@ -144,6 +145,7 @@ class OpenAICompatibleImageGenerationClient:
         target_lang_code: str | None = None,
         model_config: EffectiveModelConfig,
         review_feedback: str | None = None,
+        document_context: str | None = None,
     ) -> bytes:
         if not provider_supports_capability(model_config.provider, "image"):
             raise ImageModelUnavailableError(
@@ -159,6 +161,7 @@ class OpenAICompatibleImageGenerationClient:
             target_language,
             target_lang_code=target_lang_code,
             review_feedback=review_feedback,
+            document_context=document_context,
         )
         if _is_gpt_image_model(model_config.model):
             return _generate_page_with_images_edit(
@@ -346,6 +349,7 @@ def build_pdf_image_translation_prompt(
     *,
     target_lang_code: str | None = None,
     review_feedback: str | None = None,
+    document_context: str | None = None,
 ) -> str:
     prompt = " ".join(
         (
@@ -356,6 +360,15 @@ def build_pdf_image_translation_prompt(
             ),
         )
     ).strip()
+    context = str(document_context or "").strip()
+    if context:
+        # 「自动识别场景」翻译前读过整份 PDF 的文字层写的说明：单独一页上的「甲」「FM」
+        # 该按什么意思译，靠它。
+        prompt = (
+            f"{prompt} Document context, summarized from the whole document's text before "
+            "translation; use it to interpret terms, single characters and abbreviations "
+            f"on this page:\n{context}"
+        )
     feedback = str(review_feedback or "").strip()
     if not feedback:
         return prompt

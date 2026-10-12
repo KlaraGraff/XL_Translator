@@ -1084,10 +1084,16 @@ def lookup_batch(
     texts: list[str],
     lang_pair: str,
     _chunk_size: int = 900,
+    *,
+    locked_only: bool = False,
 ) -> dict[str, str | None]:
     """
     批量查询 TM。
     返回 {原文: 译文} 字典，未命中的 key 值为 None。
+
+    ``locked_only`` 只认用户亲手定下的词条（置顶、手动录入、清洗时锁定），
+    自动存下的不算命中。「自动识别场景」下「甲」「FM」这类离开上下文就会译错的
+    短词用它：自动记下的旧译文可能来自别的场景，用户定的仍然算数。
 
     内部按 _chunk_size 分片执行 SQL，防止触发 SQLite 绑定变量数量上限
     （SQLITE_MAX_VARIABLE_NUMBER 编译默认值通常为 999）。
@@ -1125,8 +1131,12 @@ def lookup_batch(
             SELECT source_hash, target_text FROM tm_entries
             WHERE lang_pair = ? AND source_hash IN ({placeholders})
         """
+        params: list[object] = [lang_pair, *chunk]
+        if locked_only:
+            sql += " AND (pinned = 1 OR word_type IN (?, ?))"
+            params.extend((MANUAL_WORD_TYPE, CLEANING_LOCKED_WORD_TYPE))
         with _get_conn() as conn:
-            rows = conn.execute(sql, [lang_pair, *chunk]).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         for row in rows:
             source_hash = row["source_hash"]
             for original_text in raw_hash_to_texts.get(source_hash, []):

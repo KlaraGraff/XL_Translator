@@ -68,6 +68,8 @@ def _settings() -> AppSettings:
         ),
         source_lang="zh",
         target_lang="en",
+        # 这里数的是语种探测请求；「自动识别场景」的文档说明请求另有测试。
+        excel_domain_preset="无",
     )
     settings.excel_output.enable_excel_autofit = False
     return settings

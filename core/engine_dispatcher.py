@@ -509,7 +509,7 @@ def activate_translation_surface(settings: AppSettings, surface: str) -> AppSett
     prefix = f"{normalized}_"
     settings.domain_preset = str(
         getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
-        or "同步工程场景"
+        or "自动识别场景"
     ).strip()
     settings.custom_prompt = str(
         getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or ""
