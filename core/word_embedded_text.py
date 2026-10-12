@@ -23,6 +23,8 @@ run 里的 DrawingML 或 VML 图形中）和脚注/尾注（独立的 footnotes.
 """
 from __future__ import annotations
 
+import math
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 
@@ -32,7 +34,7 @@ from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 from lxml import etree
 
-from core.text_box_fit import MIN_SCALE, ParagraphMetrics, fitting_scale
+from core.text_box_fit import MIN_SCALE, ParagraphMetrics, fitting_scale, paragraphs_height
 from core.translation_coverage import looks_like_source_text, looks_like_target_text
 
 KIND_TEXTBOX = "textbox"
@@ -77,6 +79,7 @@ class StoryWriteStats:
     textbox_paragraphs: int = 0
     note_paragraphs: int = 0
     shrunk_textboxes: int = 0
+    grown_textboxes: int = 0
     highlight_count: int = 0
     highlight_skip_count: int = 0
 
@@ -306,7 +309,14 @@ def apply_story_translations(
         if scale < 1:
             _shrink_story_text(story, scale)
             stats.shrunk_textboxes += 1
-        if not fits and issue_callback is not None:
+        if fits:
+            continue
+        # 缩到下限还放不下：框往下加高到放得下（maple 2026-10-12 为 Excel 选的做法，
+        # Word 同样处理）。加不了的（竖排、旋转、组合、相对高度）才报进质量报告。
+        if _grow_textbox(story, after, scale):
+            stats.grown_textboxes += 1
+            continue
+        if issue_callback is not None:
             issue_callback(
                 {
                     "kind": "textbox_overflow",
@@ -494,6 +504,64 @@ def _fitting_scale(before: _BoxLayout, after: _BoxLayout | None) -> tuple[float,
         height_pt=after.height,
         min_scale=TEXTBOX_MIN_SCALE,
     )
+
+
+_WP14 = "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+_WPG = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+_V = "urn:schemas-microsoft-com:vml"
+_VML_HEIGHT_RE = re.compile(r"(height\s*:\s*)([\d.]+)(pt|px|in|cm|mm)?", re.I)
+_PT_PER_UNIT = {"pt": 1.0, "px": 0.75, "in": 72.0, "cm": 72 / 2.54, "mm": 72 / 25.4, "": 0.75}
+
+
+def _grow_textbox(story: _Story, layout: _BoxLayout | None, scale: float) -> bool:
+    """把文本框往下加高到按 ``scale`` 缩过的文字放得下（多留一行），成功返回 True。
+
+    改三处：wp:extent（Word 按它排版）、形状自己的 a:xfrm、VML 备份的 style 高度。
+    """
+    if layout is None:
+        return False
+    box = story.container
+    shape = box.getparent().getparent()
+    body_pr = shape.find(f"{{{_WPS}}}bodyPr")
+    if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
+        return False
+    xfrm = shape.find(f"{{{_WPS}}}spPr/{{{_A}}}xfrm")
+    if xfrm is not None and xfrm.get("rot") not in (None, "0"):
+        return False
+    if _nearest_ancestor(shape, f"{{{_WPG}}}wgp") is not None:
+        return False  # 组合里的形状：加高会和组合的坐标对不上
+    holder = _nearest_ancestor(box, f"{{{_WP}}}anchor")
+    if holder is None:
+        holder = _nearest_ancestor(box, f"{{{_WP}}}inline")
+    extent = holder.find(f"{{{_WP}}}extent") if holder is not None else None
+    if extent is None or holder.find(f"{{{_WP14}}}sizeRelV") is not None:
+        return False  # 高度按页面比例算的框，改 extent 不起作用
+    paragraphs = list(layout.paragraphs)
+    margin = max((p.size_pt for p in paragraphs), default=0.0) * scale * 1.4
+    extra = paragraphs_height(paragraphs, layout.width, scale) + margin - layout.height
+    if extra <= 0:
+        return False
+    extra_emu = int(math.ceil(extra * _EMU_PER_PT))
+    extent.set("cy", str(_int_attr(extent, "cy", 0) + extra_emu))
+    ext = xfrm.find(f"{{{_A}}}ext") if xfrm is not None else None
+    if ext is not None:
+        ext.set("cy", str(_int_attr(ext, "cy", 0) + extra_emu))
+    alternate = _outermost(box, _MC_ALTERNATE)
+    fallback = alternate.find(_MC_FALLBACK) if alternate is not None else None
+    if fallback is not None:
+        for element in fallback.iter():
+            style = element.get("style") if element.tag.startswith(f"{{{_V}}}") else None
+            if not style or element.find(f"{{{_V}}}textbox") is None:
+                continue
+
+            def taller(match: re.Match) -> str:
+                unit = (match.group(3) or "").lower()
+                value = float(match.group(2)) + extra / _PT_PER_UNIT[unit]
+                return f"{match.group(1)}{value:.2f}{match.group(3) or ''}"
+
+            element.set("style", _VML_HEIGHT_RE.sub(taller, style, count=1))
+            break
+    return True
 
 
 def _scale_exact_line_spacing(paragraph: Paragraph, scale: float) -> None:

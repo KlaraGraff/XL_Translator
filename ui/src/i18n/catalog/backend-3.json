@@ -1643,18 +1643,6 @@
     "en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.",
     "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."
   },
-  "，文本框 {0} 段": {
-    "en": ", text boxes {0} {0|paragraph|paragraphs}",
-    "fr": ", zones de texte {0} {0|paragraphe|paragraphes}"
-  },
-  "，脚注/尾注 {0} 段": {
-    "en": ", footnotes/endnotes {0} {0|paragraph|paragraphs}",
-    "fr": ", notes de bas de page/de fin {0} {0|paragraphe|paragraphes}"
-  },
-  "（{0} 个文本框已缩小字号）": {
-    "en": " ({0} {0|text box|text boxes} with reduced font size)",
-    "fr": " ({0} {0|zone de texte|zones de texte} avec taille de police réduite)"
-  },
   "文本框 {0}": {
     "en": "Text box {0}",
     "fr": "Zone de texte {0}"
@@ -1695,12 +1683,12 @@
     "en": "This content is inside content controls or unaccepted tracked changes. It was not translated and stays in the original language in the output document.",
     "fr": "Ce contenu se trouve dans des contrôles de contenu ou des modifications suivies non acceptées. Il n'a pas été traduit et reste dans la langue d'origine dans le document produit."
   },
-  "[OK] 已输出：{0}（段落 {1}，表格单元格 {2}{3}{4}{5}{6}）": {
-    "en": "[OK] Output: {0} (paragraphs {1}, table cells {2}{3}{4}{5}{6})",
-    "fr": "[OK] Fichier produit : {0} (paragraphes {1}, cellules de tableau {2}{3}{4}{5}{6})"
+  "  → {0}：已翻译文本框 {1} 段、脚注/尾注 {2} 段": {
+    "en": "  → {0}: translated {1} text box {1|paragraph|paragraphs} and {2} footnote/endnote {2|paragraph|paragraphs}",
+    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de zones de texte et {2} {2|paragraphe|paragraphes} de notes traduits"
   },
-  "[OK] 已输出：{0}（补译段落 {1}，表格单元格 {2}{3}{4}{5}）": {
-    "en": "[OK] Output: {0} (paragraphs filled in {1}, table cells {2}{3}{4}{5})",
-    "fr": "[OK] Fichier produit : {0} (paragraphes complétés {1}, cellules de tableau {2}{3}{4}{5})"
+  "  → {0}：已翻译脚注/尾注 {1} 段": {
+    "en": "  → {0}: translated {1} footnote/endnote {1|paragraph|paragraphs}",
+    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de notes de bas de page/de fin traduits"
   }
 }

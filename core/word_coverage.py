@@ -56,7 +56,7 @@ from core.word_document import (
     _replace_paragraph_text,
     _replace_paragraph_text_around_fields,
     apply_header_footer_translations,
-    story_write_summary,
+    log_story_summary,
     _review_mark_highlight_values,
     _sanitize_filename_fragment,
     find_word_front_matter_boundary,
@@ -302,9 +302,9 @@ def write_untranslated_docx(
         )
         log_callback(
             f"[OK] 已输出：{out_path.name}（补译段落 {paragraph_insertions}，"
-            f"表格单元格 {table_insertions}{header_footer_summary}"
-            f"{story_write_summary(story_stats)}{highlight_summary}）"
+            f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
         )
+        log_story_summary(log_callback, out_path.name, story_stats)
     return out_path
 
 

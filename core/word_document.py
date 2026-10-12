@@ -1315,8 +1315,9 @@ def write_bilingual_docx(
         log_callback(
             f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，"
             f"表格单元格 {table_insertions}{mismatch_summary}"
-            f"{header_footer_summary}{story_write_summary(story_stats)}{highlight_summary}）"
+            f"{header_footer_summary}{highlight_summary}）"
         )
+        log_story_summary(log_callback, out_path.name, story_stats)
     return out_path
 
 
@@ -1331,16 +1332,25 @@ def _apply_story_translations(doc: Document, translations: dict[str, str], **kwa
         return StoryWriteStats()
 
 
-def story_write_summary(stats) -> str:
-    """日志里的「，文本框 3 段，脚注/尾注 2 段（1 个文本框已缩小字号）」；全为 0 时为空。"""
-    parts = ""
-    if stats.textbox_paragraphs:
-        parts += f"，文本框 {stats.textbox_paragraphs} 段"
-    if stats.note_paragraphs:
-        parts += f"，脚注/尾注 {stats.note_paragraphs} 段"
+def log_story_summary(log_callback, file_name: str, stats) -> None:
+    """文本框和脚注/尾注的写入结果，单独几行日志。
+
+    每种组合写成整句：界面按整句模板翻译日志，拼进「[OK] 已输出」那一行的片段对不上模板。
+    文本框缩字号 / 加高两句和 Excel 共用词条。
+    """
+    if log_callback is None:
+        return
+    boxes, notes = stats.textbox_paragraphs, stats.note_paragraphs
+    if boxes and notes:
+        log_callback(f"  → {file_name}：已翻译文本框 {boxes} 段、脚注/尾注 {notes} 段")
+    elif boxes:
+        log_callback(f"  → {file_name}：已翻译文本框 {boxes} 段")
+    elif notes:
+        log_callback(f"  → {file_name}：已翻译脚注/尾注 {notes} 段")
     if stats.shrunk_textboxes:
-        parts += f"（{stats.shrunk_textboxes} 个文本框已缩小字号）"
-    return parts
+        log_callback(f"  → {file_name}：{stats.shrunk_textboxes} 个文本框的译文放不下，已缩小字号")
+    if stats.grown_textboxes:
+        log_callback(f"  → {file_name}：{stats.grown_textboxes} 个文本框缩小字号后仍放不下，已往下加高")
 
 
 def build_word_output_dir(

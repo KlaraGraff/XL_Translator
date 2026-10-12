@@ -193,7 +193,7 @@ class WordStoryTests(unittest.TestCase):
         self.assertIn(TRANSLATIONS["脚注正文"], runs[1])
         self.assertNotIn("superscript", runs[1])
 
-    def test_small_box_shrinks_font_and_reports_when_still_too_small(self) -> None:
+    def test_small_box_shrinks_font_then_grows_when_still_too_small(self) -> None:
         issues: list[dict] = []
         roomy = self._write(name="roomy", issues=issues)
         sizes = set(re.findall(r'<w:sz w:val="(\d+)"/>', _xml(roomy, "word/document.xml")))
@@ -201,11 +201,31 @@ class WordStoryTests(unittest.TestCase):
         self.assertTrue(sizes and all(12 <= int(size) < 22 for size in sizes), sizes)
         self.assertEqual(issues, [])
 
+        # 1 英寸 × 0.25 英寸：缩到 60% 还放不下，框往下加高（正本、VML 备份一起），不报问题。
         tiny = self.root / "tiny.docx"
-        build_document(tiny, cx=914400, cy=228600)  # 1 英寸 × 0.25 英寸
+        build_document(tiny, cx=914400, cy=228600)
         output = self._write(tiny, name="tiny", issues=issues)
-        sizes = set(re.findall(r'<w:sz w:val="(\d+)"/>', _xml(output, "word/document.xml")))
-        self.assertIn("13", sizes)  # 22 × 0.6
+        xml = _xml(output, "word/document.xml")
+        self.assertIn("13", set(re.findall(r'<w:sz w:val="(\d+)"/>', xml)))  # 22 × 0.6
+        extent_cy = int(re.search(r'<wp:extent cx="914400" cy="(\d+)"/>', xml).group(1))
+        self.assertGreater(extent_cy, 228600)
+        vml_height = float(re.search(r'style="width:144pt;height:([\d.]+)pt"', xml).group(1))
+        self.assertAlmostEqual(vml_height, 60 + (extent_cy - 228600) / 12700, delta=0.1)
+        self.assertEqual(issues, [])
+
+        # 旋转过的框加高会错位：保持原样，报进质量报告。
+        rotated = self.root / "rotated.docx"
+        build_document(rotated, cx=914400, cy=228600)
+        with zipfile.ZipFile(rotated) as archive:
+            items = {name: archive.read(name) for name in archive.namelist()}
+        items["word/document.xml"] = items["word/document.xml"].replace(
+            b"<wps:spPr>", b'<wps:spPr><a:xfrm rot="5400000"><a:off x="0" y="0"/><a:ext cx="914400" cy="228600"/></a:xfrm>'
+        )
+        with zipfile.ZipFile(rotated, "w") as archive:
+            for name, data in items.items():
+                archive.writestr(name, data)
+        output = self._write(rotated, name="rotated", issues=issues)
+        self.assertIn('<wp:extent cx="914400" cy="228600"/>', _xml(output, "word/document.xml"))
         self.assertEqual([issue["kind"] for issue in issues], ["textbox_overflow"])
         self.assertEqual(issues[0]["location"], "textbox[0].paragraph[0]")
 
