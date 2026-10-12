@@ -23,3 +23,6 @@ issue 里只放一个带签名、90 天内有效的下载链接。
 `node tests/feedback_relay.test.mjs` 用内存 KV 和假的 GitHub 跑一遍提交、下载、限流和失败回滚。
 本地联调可以用 `wrangler dev`，在 `.dev.vars` 里设 `GITHUB_TOKEN`、`LINK_SECRET`，并用
 `GITHUB_API` 指向一个假的 GitHub 服务。
+
+线上链路：手动运行「Deploy feedback relay」时勾选 `smoke_test`，部署完会真实发一条测试反馈，
+用反馈仓库的令牌找到对应 issue、下载附件比对，然后留言并关闭这条 issue。
