@@ -3,7 +3,8 @@
 // 隐私约定（改这个页面时必须守住）：
 //   - 什么都不会自动发出；只有点了「发送」才上传。
 //   - 「附带内容」是一组按类别的勾选项，勾了哪些就上传哪些：系统与版本信息、任务日志
-//     默认勾选；原文件、译文、其他文件默认不勾（文件可能含客户资料）。
+//     默认勾选；原文件、译文默认不勾（文件可能含客户资料）。「其他文件」单列，
+//     用户自己添加了才上传。
 //   - 日志、原文件、译文取自下面「选择任务」里选中的那几次；任务默认一个都不选，
 //     只有从任务中心「反馈此问题」进来时预先选上那一次。
 //   - 日志里的文件名由后端换成「文件1」「文件2」，预览里看到的就是实际发送的内容。
@@ -74,9 +75,8 @@ interface Draft {
   includeLogs: boolean;
   includeSources: boolean;
   includeOutputs: boolean;
-  includeOther: boolean;
   taskIds: Set<string>;
-  /** 「其他文件」里自己挑的文件；只有勾着「其他文件」时才上传。 */
+  /** 「其他文件」里自己添加的文件；添加了就上传，移除即不上传。 */
   files: PickedFile[];
   /** 粘贴到描述框里的截图，按粘贴顺序。 */
   images: PastedImage[];
@@ -91,7 +91,6 @@ function emptyDraft(): Draft {
     includeLogs: true,
     includeSources: false,
     includeOutputs: false,
-    includeOther: false,
     taskIds: new Set(),
     files: [],
     images: [],
@@ -203,7 +202,7 @@ function requestBody(): Record<string, unknown> {
     include_output_files: draft.includeOutputs,
     ui_language: currentLocale(),
     task_ids: [...draft.taskIds],
-    file_paths: draft.includeOther ? draft.files.map((file) => file.path) : [],
+    file_paths: draft.files.map((file) => file.path),
     images: draft.images.map((image) => ({ data: image.data })),
   };
 }
@@ -225,7 +224,7 @@ function checkedFiles(): PickedFile[] {
   if (draft.includeOutputs) kinds.push("output", "compressed");
   const result: PickedFile[] = [];
   const seen = new Set<string>();
-  for (const file of [...selectedTaskFiles(kinds), ...(draft.includeOther ? draft.files : [])]) {
+  for (const file of [...selectedTaskFiles(kinds), ...draft.files]) {
     if (!seen.has(file.path)) {
       seen.add(file.path);
       result.push(file);
@@ -321,6 +320,11 @@ function buildMessageCard(): HTMLElement {
   card.append(seg);
 
   card.append(sectionTitle(t("描述")));
+  // 跟 Claude 的输入框一样：截图以缩略图卡片排在框内文字上方，框和图是一个整体。
+  const composer = document.createElement("div");
+  composer.className = "feedback-composer";
+  imagesEl = document.createElement("div");
+  imagesEl.className = "feedback-images";
   const area = document.createElement("textarea");
   area.className = "feedback-text";
   area.rows = 12;
@@ -339,19 +343,20 @@ function buildMessageCard(): HTMLElement {
     if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
     void addImages(images);
   });
-  area.addEventListener("dragover", (event) => {
-    if (imageFiles(event.dataTransfer).length) event.preventDefault();
+  composer.addEventListener("dragover", (event) => {
+    if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
   });
-  area.addEventListener("drop", (event) => {
+  composer.addEventListener("drop", (event) => {
     const images = imageFiles(event.dataTransfer);
     if (!images.length) return;
     event.preventDefault();
     void addImages(images);
   });
-  card.append(area);
-  imagesEl = document.createElement("div");
-  imagesEl.className = "feedback-images";
-  card.append(imagesEl);
+  composer.append(imagesEl, area);
+  composer.addEventListener("click", (event) => {
+    if (event.target === composer) area.focus();
+  });
+  card.append(composer);
   renderImages();
 
   card.append(sectionTitle(t("联系方式（选填）")));
@@ -435,33 +440,41 @@ function renderImages(): void {
   const el = imagesEl;
   if (!el) return;
   el.replaceChildren();
+  el.hidden = !draft.images.length;
   draft.images.forEach((image, index) => {
     const tile = document.createElement("div");
     tile.className = "feedback-image";
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "feedback-image-view";
+    view.title = t("查看大图");
     const img = document.createElement("img");
     img.src = image.url;
     img.alt = t("截图 {0}", index + 1);
+    view.append(img);
+    view.addEventListener("click", () => openImage(image));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "feedback-image-remove";
     remove.title = t("移除");
     remove.setAttribute("aria-label", t("移除"));
-    remove.textContent = "×";
+    remove.append(icon("close", { size: "sm" }));
     remove.addEventListener("click", () => {
       URL.revokeObjectURL(image.url);
       draft.images.splice(index, 1);
       renderImages();
       renderFileSummary();
     });
-    tile.append(img, remove);
+    tile.append(view, remove);
     el.append(tile);
   });
-  const hint = document.createElement("p");
-  hint.className = "feedback-note";
-  hint.textContent = draft.images.length
-    ? t("已粘贴 {0} 张截图（最多 6 张），会随反馈一起发送。", draft.images.length)
-    : t("可直接粘贴或拖入截图，标注出问题位置更便于定位。");
-  el.append(hint);
+}
+
+function openImage(image: PastedImage): void {
+  const img = document.createElement("img");
+  img.className = "feedback-image-full";
+  img.src = image.url;
+  openModal({ tone: "tint", icon: "search", title: t("截图"), body: [img], actions: [{ label: t("关闭"), variant: "primary" }], wide: true });
 }
 
 function buildAttachmentCard(): HTMLElement {
@@ -471,9 +484,6 @@ function buildAttachmentCard(): HTMLElement {
   kindsEl = document.createElement("div");
   kindsEl.className = "feedback-kinds";
   card.append(kindsEl);
-  otherFilesEl = document.createElement("div");
-  otherFilesEl.className = "feedback-list feedback-other-files";
-  card.append(otherFilesEl);
   renderKinds();
 
   card.append(sectionTitle(
@@ -485,6 +495,12 @@ function buildAttachmentCard(): HTMLElement {
   taskListEl.className = "feedback-list feedback-task-list";
   renderTaskList();
   card.append(taskListEl);
+
+  card.append(sectionTitle(t("其他文件"), t("任务以外的文件，例如别处的文档。添加了就会上传，移除即不上传。文件可能包含客户资料，仅在需要我们查看时添加。")));
+  otherFilesEl = document.createElement("div");
+  otherFilesEl.className = "feedback-other-files";
+  card.append(otherFilesEl);
+  renderOtherFiles();
 
   fileSummaryEl = document.createElement("p");
   card.append(fileSummaryEl);
@@ -499,49 +515,74 @@ function sizeOf(files: PickedFile[]): number {
   return files.reduce((sum, file) => sum + file.bytes, 0);
 }
 
-// 原文件、译文两项后面跟一句所选任务里实际有多少，免得勾了才发现是空的。
-function taskFilesDetail(base: string, kinds: FileKind[]): string {
-  if (!draft.taskIds.size) return base;
-  if (tasksLoading()) return [base, t("正在统计所选任务的文件…")].join(" ");
+// 原文件、译文后面跟一个小计，免得勾了才发现所选任务里没有。
+function taskFilesCount(kinds: FileKind[]): string {
+  if (!draft.taskIds.size) return "";
+  if (tasksLoading()) return t("统计中…");
   const files = selectedTaskFiles(kinds);
-  return files.length
-    ? [base, t("所选任务共 {0} 个，{1}。", files.length, formatBytes(sizeOf(files)))].join(" ")
-    : [base, t("所选任务中没有找到。")].join(" ");
+  return files.length ? t("{0} 个，{1}", files.length, formatBytes(sizeOf(files))) : t("无");
+}
+
+function kindOption(options: { checked: boolean; title: string; hint: string; count?: string; onChange: (value: boolean) => void }): HTMLLabelElement {
+  const row = document.createElement("label");
+  row.className = options.checked ? "feedback-kind on" : "feedback-kind";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "ck";
+  box.checked = options.checked;
+  box.addEventListener("change", () => {
+    options.onChange(box.checked);
+    renderKinds();
+  });
+  const title = document.createElement("span");
+  title.className = "feedback-kind-title";
+  title.textContent = options.title;
+  const hint = createHintBadge(options.hint);
+  // 问号在 label 里，点它只看说明，不要顺带切换勾选。
+  hint.addEventListener("click", (event) => event.preventDefault());
+  row.append(box, title, hint);
+  if (options.count) {
+    const count = document.createElement("span");
+    count.className = "feedback-kind-count";
+    count.textContent = options.count;
+    count.title = options.count;
+    row.append(count);
+  }
+  return row;
 }
 
 function renderKinds(): void {
   const el = kindsEl;
   if (el) {
-    const option = (checked: boolean, title: string, detail: string, onChange: (value: boolean) => void): HTMLLabelElement =>
-      checkRow({ checked, title, detail, onChange: (value) => {
-        onChange(value);
-        renderKinds();
-      } });
     el.replaceChildren(
-      option(draft.includeSystem, t("系统与版本信息"), t("应用版本、操作系统、处理器和内存、界面语言、模型连接方式，不含 API 密钥。"), (value) => {
-        draft.includeSystem = value;
+      kindOption({
+        checked: draft.includeSystem,
+        title: t("系统与版本信息"),
+        hint: t("应用版本、操作系统、处理器和内存、界面语言、模型连接方式，不含 API 密钥。"),
+        onChange: (value) => { draft.includeSystem = value; },
       }),
-      option(draft.includeLogs, t("任务日志"), t("所选任务的运行记录，文件名已替换为「文件1」「文件2」等。"), (value) => {
-        draft.includeLogs = value;
+      kindOption({
+        checked: draft.includeLogs,
+        title: t("任务日志"),
+        hint: t("所选任务的运行记录。日志已去除 API 密钥和文件路径，文件名替换为「文件1」「文件2」等；为便于定位问题，可能保留少量原文片段。"),
+        onChange: (value) => { draft.includeLogs = value; },
       }),
-      option(draft.includeSources, t("原文件"), taskFilesDetail(t("所选任务翻译的原始文件。"), ["source"]), (value) => {
-        draft.includeSources = value;
+      kindOption({
+        checked: draft.includeSources,
+        title: t("原文件"),
+        hint: t("所选任务翻译的原始文件。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        count: taskFilesCount(["source"]),
+        onChange: (value) => { draft.includeSources = value; },
       }),
-      option(draft.includeOutputs, t("译文"), taskFilesDetail(t("所选任务生成的译文文件，含压缩版 PDF。"), ["output", "compressed"]), (value) => {
-        draft.includeOutputs = value;
-      }),
-      option(draft.includeOther, t("其他文件"), t("自己挑选的文件，例如截图或别处的文档。"), (value) => {
-        draft.includeOther = value;
+      kindOption({
+        checked: draft.includeOutputs,
+        title: t("译文"),
+        hint: t("所选任务生成的译文文件，含压缩版 PDF。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        count: taskFilesCount(["output", "compressed"]),
+        onChange: (value) => { draft.includeOutputs = value; },
       }),
     );
-    if (draft.includeSources || draft.includeOutputs || draft.includeOther) {
-      const warning = document.createElement("p");
-      warning.className = "feedback-warning";
-      warning.textContent = t("文件可能包含客户资料，仅在需要我们查看文件时附上，总大小不超过 50 MB。");
-      el.append(warning);
-    }
   }
-  renderOtherFiles();
   renderFileSummary();
 }
 
@@ -549,8 +590,6 @@ function renderOtherFiles(): void {
   const list = otherFilesEl;
   if (!list) return;
   list.replaceChildren();
-  list.hidden = !draft.includeOther;
-  if (!draft.includeOther) return;
   for (const file of draft.files) {
     const row = document.createElement("div");
     row.className = "feedback-file";
@@ -595,9 +634,7 @@ function renderFileSummary(): void {
   el.className = total > limit ? "feedback-total over" : "feedback-total";
   const needsTask = (draft.includeLogs || draft.includeSources || draft.includeOutputs) && !draft.taskIds.size;
   if (needsTask) el.textContent = t("尚未选择任务，任务日志、原文件和译文不会附上。");
-  else if (files.length && draft.images.length) el.textContent = t("将上传 {0} 个文件、{1} 张截图，合计 {2} / {3}", files.length, draft.images.length, formatBytes(total), formatBytes(limit));
-  else if (files.length) el.textContent = t("将上传 {0} 个文件，合计 {1} / {2}", files.length, formatBytes(total), formatBytes(limit));
-  else if (draft.images.length) el.textContent = t("将上传 {0} 张截图，合计 {1} / {2}", draft.images.length, formatBytes(total), formatBytes(limit));
+  else if (total) el.textContent = t("附件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
   else el.textContent = t("不附带文件。");
 }
 
