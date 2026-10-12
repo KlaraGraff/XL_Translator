@@ -11,6 +11,11 @@ name: Deploy feedback relay
 
 on:
   workflow_dispatch:
+    inputs:
+      smoke_test:
+        description: "部署后真实发一条测试反馈，确认私有仓库收到并能下载附件，然后关闭这条 issue"
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -113,6 +118,7 @@ jobs:
 
       - name: Check the deployed relay
         if: steps.gate.outputs.ready == 'true'
+        id: live
         run: |
           rm -f "$RUNNER_TEMP/secrets.json"
           subdomain=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
@@ -125,9 +131,55 @@ jobs:
               echo "" >> "$GITHUB_STEP_SUMMARY"
               echo "\`$url\`" >> "$GITHUB_STEP_SUMMARY"
               echo "Relay URL: $url"
+              echo "url=$url" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep 10
           done
           echo "::error::Deployed, but $url/health did not answer"
           exit 1
+
+      # 手动运行时可选：像应用一样发一条带附件的测试反馈，再用反馈仓库的令牌找到这条 issue、
+      # 下载附件比对，最后留言并关闭它。只验证整条链路，不留下未处理的 issue。
+      - name: End-to-end test
+        if: steps.gate.outputs.ready == 'true' && inputs.smoke_test
+        env:
+          RELAY_URL: ${{ steps.live.outputs.url }}
+        run: |
+          set -euo pipefail
+          repo=$(sed -n 's/^FEEDBACK_REPO *= *"\(.*\)"/\1/p' feedback-relay/wrangler.toml)
+          work="$RUNNER_TEMP/smoke"
+          mkdir -p "$work"
+          python3 - "$work/package.zip" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1], "w") as z:
+              z.writestr("feedback.json", '{"smoke_test": true}')
+              z.writestr("log.txt", "deploy smoke test")
+          PY
+          meta=$(jq -n '{category: "other", description: "部署后的连通测试（自动发出，会自动关闭）", contact: "", app_version: "smoke-test", platform: "GitHub Actions", ui_language: "zh", includes: {system: false, task_logs: 0, files: [], images: 0}}')
+          response=$(curl -fsS --form-string "meta=$meta" -F "package=@$work/package.zip;type=application/zip" "$RELAY_URL/v1/feedback")
+          id=$(echo "$response" | jq -r '.id')
+          [ -n "$id" ] && [ "$id" != "null" ] || { echo "::error::Relay did not return a feedback id: $response"; exit 1; }
+          echo "Feedback id: $id"
+          gh_api() { curl -fsS -H "Authorization: Bearer $FEEDBACK_GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
+          issue=""
+          for attempt in 1 2 3 4 5; do
+            issue=$(gh_api "https://api.github.com/repos/$repo/issues?state=open&per_page=20" | jq -c --arg id "$id" '[.[] | select(.title | contains($id))][0] // empty')
+            [ -n "$issue" ] && break
+            sleep 5
+          done
+          [ -n "$issue" ] || { echo "::error::No issue for $id in $repo"; exit 1; }
+          number=$(echo "$issue" | jq -r '.number')
+          link=$(echo "$issue" | jq -r '.body' | grep -o "$RELAY_URL/v1/files/[^)]*" | head -n 1)
+          curl -fsS -o "$work/downloaded.zip" "$link"
+          cmp "$work/package.zip" "$work/downloaded.zip"
+          gh_api -X POST "https://api.github.com/repos/$repo/issues/$number/comments" \
+            --data "$(jq -n '{body: "部署后的自动连通测试：提交、开 issue、下载附件均正常。自动关闭。"}')" > /dev/null
+          gh_api -X PATCH "https://api.github.com/repos/$repo/issues/$number" \
+            --data '{"state": "closed", "state_reason": "completed"}' > /dev/null
+          {
+            echo ""
+            echo "### End-to-end test passed"
+            echo ""
+            echo "Feedback $id became issue #$number in $repo; the attachment downloaded intact. The issue was closed."
+          } >> "$GITHUB_STEP_SUMMARY"
