@@ -179,12 +179,12 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["reason"], "not_configured")
 
-    def _send_with(self, handler: Any) -> dict[str, Any]:
+    def _send_with(self, handler: Any, **overrides: Any) -> dict[str, Any]:
         transport = httpx.MockTransport(handler)
         with patch.object(feedback, "FEEDBACK_ENDPOINT", "https://relay.example/"), patch.object(
             feedback, "_open_client", lambda: httpx.Client(transport=transport)
         ):
-            started = self.client.post("/api/feedback/send", json=self._body())
+            started = self.client.post("/api/feedback/send", json=self._body(**overrides))
             self.assertEqual(started.status_code, 200, started.text)
             job_id = started.json()["job_id"]
             self.assertEqual(started.json()["sent"], 0)
@@ -220,6 +220,29 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertEqual(self._send_with(lambda r: httpx.Response(429))["reason"], "rate_limited")
         failed = self._send_with(lambda r: httpx.Response(500))
         self.assertEqual((failed["state"], failed["reason"]), ("error", "server"))
+
+    def test_email_of_a_sent_feedback_is_remembered_for_the_next_one(self) -> None:
+        def ok(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "FB-1"})
+
+        def context_email() -> str:
+            return self.client.get("/api/feedback/context").json()["saved_email"]
+
+        self.assertEqual(context_email(), "")
+        # 只是保存 ZIP 或发送失败，邮箱并没有交出去，不记。
+        self.client.post("/api/feedback/package", json=self._body(contact="a@example.com"))
+        self._send_with(lambda r: httpx.Response(500), contact="a@example.com")
+        self.assertEqual(context_email(), "")
+
+        self.assertEqual(self._send_with(ok, contact=" a@example.com ")["state"], "done")
+        self.assertEqual(context_email(), "a@example.com")
+        self.assertTrue(feedback.saved_contact_path().is_relative_to(self.app_data_dir))
+        # 改成别的邮箱就记新的；清空后发送就忘掉。
+        self._send_with(ok, contact="b@example.com")
+        self.assertEqual(context_email(), "b@example.com")
+        self._send_with(ok, contact="")
+        self.assertEqual(context_email(), "")
+        self.assertFalse(feedback.saved_contact_path().exists())
 
     def test_unknown_send_job_is_reported(self) -> None:
         response = self.client.get("/api/feedback/send/nope")

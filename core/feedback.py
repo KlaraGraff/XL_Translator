@@ -41,10 +41,12 @@ import httpx
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
 from core import diagnostics
 from core.task_logger import redact_absolute_paths
+import settings as settings_module
 
 FEEDBACK_CATEGORIES = ("problem", "suggestion", "other")
 MAX_DESCRIPTION_CHARS = 5_000
 MAX_CONTACT_CHARS = 200
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 MAX_TASKS = 5
 # 用户自己另外挑的文件最多 10 个；加上所选任务的原文件和译文，整包最多 50 个。
 MAX_PICKED_FILES = 10
@@ -466,7 +468,10 @@ def start_send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
         _jobs[job_id] = job
         started = {"job_id": job_id, **job.snapshot()}
     threading.Thread(
-        target=_run_send_job, args=(job, endpoint, data, meta), name="feedback-send", daemon=True
+        target=_run_send_job,
+        args=(job, endpoint, data, meta, draft.contact),
+        name="feedback-send",
+        daemon=True,
     ).start()
     return started
 
@@ -503,7 +508,7 @@ _jobs_lock = threading.Lock()
 _KEEP_FINISHED_JOBS = 20
 
 
-def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any]) -> None:
+def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any], contact: str = "") -> None:
     def progress(sent: int) -> None:
         with _jobs_lock:
             job.sent = sent
@@ -518,8 +523,48 @@ def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any
             job.state, job.reason = "error", "server"
             job.message = "反馈服务暂时不可用，请稍后重试，或保存为 ZIP。"
     else:
+        # 先记邮箱再报完成：界面看到「已发送」时，下一条反馈已经能带上它。
+        remember_email(contact)
         with _jobs_lock:
             job.state, job.reference, job.sent = "done", reference, job.total
+
+
+def saved_contact_path() -> Path:
+    # 读得晚：测试会把 settings 模块的数据目录指到临时目录。
+    return settings_module.APP_DATA_DIR / "feedback_contact.json"
+
+
+def saved_email() -> str:
+    """The email the user left on their last sent feedback, or ""."""
+    try:
+        data = json.loads(saved_contact_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    email = data.get("email") if isinstance(data, dict) else None
+    return email if isinstance(email, str) and _EMAIL_RE.match(email) else ""
+
+
+def remember_email(contact: str) -> None:
+    """Keep the address of a sent feedback on this machine; an empty one forgets it.
+
+    Only a successful send calls this, so an address that never left the
+    machine (a draft, a saved ZIP) is not kept. Failing to write just means
+    typing it again next time.
+    """
+    email = contact.strip()
+    if email and not _EMAIL_RE.match(email):
+        return
+    path = saved_contact_path()
+    try:
+        if not email:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(json.dumps({"email": email}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
 
 
 class _CountingReader(io.BytesIO):

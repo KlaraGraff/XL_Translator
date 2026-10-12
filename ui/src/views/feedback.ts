@@ -37,6 +37,8 @@ interface FeedbackContext {
   max_attachment_bytes: number;
   max_files: number;
   max_tasks: number;
+  /** 上次成功发送时填的邮箱（只存在本机），新反馈默认填上。 */
+  saved_email?: string;
 }
 
 interface PickedFile {
@@ -71,6 +73,8 @@ interface Draft {
   category: Category;
   description: string;
   contact: string;
+  /** 用户动过邮箱框就不再自动填（包括有意清空）。 */
+  contactEdited: boolean;
   includeSystem: boolean;
   includeLogs: boolean;
   includeSources: boolean;
@@ -86,7 +90,8 @@ function emptyDraft(): Draft {
   return {
     category: "problem",
     description: "",
-    contact: "",
+    contact: rememberedEmail,
+    contactEdited: false,
     includeSystem: true,
     includeLogs: true,
     includeSources: false,
@@ -112,6 +117,8 @@ const SURFACE_LABEL: Record<string, string> = localized(() => ({
   tm_clean: t("记忆库清洗"),
 }));
 
+/** 上次成功发送时留的邮箱；新写的反馈默认填它，省得每次重输。 */
+let rememberedEmail = "";
 let draft: Draft = emptyDraft();
 let context: FeedbackContext | null = null;
 let contextError = "";
@@ -170,6 +177,8 @@ async function loadContext(): Promise<void> {
     const client = await getClient();
     context = await client.request<FeedbackContext>("/api/feedback/context");
     contextError = "";
+    rememberedEmail = context.saved_email ?? "";
+    if (!draft.contactEdited) draft.contact = rememberedEmail;
     // 任务记录被删掉了就不再勾着它，免得预览时报「记录已不存在」。
     const known = new Set(context.tasks.map((task) => task.task_id));
     for (const id of [...draft.taskIds]) if (!known.has(id)) setTaskChecked(id, false);
@@ -394,6 +403,7 @@ function buildMessageCard(): HTMLElement {
   };
   contact.addEventListener("input", () => {
     draft.contact = contact.value;
+    draft.contactEdited = true;
     syncContactNote();
     syncActionState();
   });
@@ -998,6 +1008,8 @@ async function send(): Promise<void> {
     } else {
       sentId = status.id;
       sentEmail = draft.contact.trim();
+      // 后端发送成功后已把这个邮箱记在本机（留空就忘掉），下一条直接带上。
+      rememberedEmail = sentEmail;
       draft = emptyDraft();
     }
   } catch (error) {
