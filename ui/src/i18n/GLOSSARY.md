@@ -33,6 +33,7 @@
 | 插件 | Plugins | Plugins |
 | 设置 | Settings | Paramètres |
 | 帮助 | Help | Aide |
+| 反馈 | Feedback | Retours |
 | 快速开始 | Quick start | Démarrage rapide |
 | 外观与语言 | Appearance & language | Apparence et langue |
 | 数据与维护 | Data & maintenance | Données et maintenance |

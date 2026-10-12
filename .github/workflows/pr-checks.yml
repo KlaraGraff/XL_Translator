@@ -61,3 +61,5 @@ jobs:
         run: npm run check
       - name: Interface language engine
         run: node ../tests/i18n_engine.test.mjs
+      - name: Feedback relay
+        run: node ../tests/feedback_relay.test.mjs

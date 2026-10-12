@@ -31,6 +31,7 @@ export const ICON_NAMES = [
   "spark",
   "wand",
   "close",
+  "message",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -157,6 +158,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   close: {
     viewBox: "0 0 24 24",
     body: '<path d="M18 6 6 18M6 6l12 12"/>',
+  },
+  message: {
+    viewBox: "0 0 24 24",
+    // 对话气泡：侧栏「反馈」。
+    body: '<path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5a1.5 1.5 0 0 1-1.5-1.5V6.5A1.5 1.5 0 0 1 5 5Z"/><path d="M8 9.5h8M8 12.5h5"/>',
   },
 };
 

@@ -1665,6 +1665,8 @@ function renderDetail(): void {
     }
     // 只删任务中心的这条记录；译文、报告、诊断包都在磁盘上原样留着。
     moreItems.push({ label: t("删除记录"), description: t("输出文件不会被删除"), onSelect: () => confirmDeleteTask(task.task_id) });
+    // 反馈页会预先勾上这次任务的日志；文件仍然默认不附带。
+    moreItems.push({ label: t("反馈此任务"), description: t("附上这次任务的日志"), onSelect: () => navigate("feedback", { taskId: task.task_id }) });
   }
   if (moreItems.length) {
     actions.append(
@@ -1695,6 +1697,7 @@ function renderDetail(): void {
     sub.textContent = tx(failure);
     copy.append(head, sub);
     banner.append(copy);
+    banner.append(createButton({ label: t("反馈此问题"), size: "mini", onClick: () => navigate("feedback", { taskId: task.task_id }) }));
     detailRootEl.append(banner);
   }
 

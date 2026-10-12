@@ -1,0 +1,13 @@
+# 反馈中转站的部署配置。KV 命名空间的 id 由部署流程（.github/workflows/feedback-relay.yml）
+# 查到或新建后替换进来，这里只放占位符；密钥（GITHUB_TOKEN、LINK_SECRET）不进仓库。
+name = "xl-translator-feedback"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+FEEDBACK_REPO = "KlaraGraff/XL_Translator-feedback"
+
+[[kv_namespaces]]
+binding = "FEEDBACK"
+id = "__FEEDBACK_KV_ID__"

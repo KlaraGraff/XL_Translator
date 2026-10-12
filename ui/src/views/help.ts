@@ -8,14 +8,9 @@ import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { createCard, createButton } from "../components";
 import { icon, type IconName } from "../icons";
-import { invoke } from "@tauri-apps/api/core";
 import { showQuickStart } from "../quickstart";
 import { t, localized } from "../i18n";
 import "./help.css";
-
-async function openExternalUrl(url: string): Promise<void> {
-  await invoke("open_external_url", { url });
-}
 
 const IS_MAC = /Mac/i.test(navigator.userAgent);
 
@@ -97,18 +92,19 @@ const CARDS: HelpCardSpec[] = localized(() => ([
     // 这句话过去写的是「更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启」——
     // 应用内更新上线之后它就不成立了（会下载、验签、就地替换），而且 Windows 上根本没有
     // DMG。帮助页说错更新怎么工作，用户就会在真的替换应用时以为出了别的事。
-    body: t("可在设置中检查更新：下载后先验证签名再安装，重启时间由您决定（Windows 将打开安装程序，安装完成后自动重新打开应用）。诊断信息仅在您主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。"),
+    body: t("可在设置中检查更新：下载后先验证签名再安装，重启时间由您决定（Windows 将打开安装程序，安装完成后自动重新打开应用）。诊断信息仅在您主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。反馈仅在您点击「发送」后上传，附带哪些日志和文件由您逐项选择。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
       row.append(
         createButton({ label: t("维护与诊断"), size: "mini", onClick: () => navigate("settings", { page: "data" }) }),
       );
+      // 以前跳到公开的 GitHub Issues：用户得有账号，贴出来的日志谁都看得到。
       const feedbackBtn = createButton({
         label: t("反馈问题"),
-        icon: "ext",
+        icon: "message",
         size: "mini",
-        onClick: () => void openExternalUrl("https://github.com/KlaraGraff/XL_Translator/issues"),
+        onClick: () => navigate("feedback"),
       });
       row.append(feedbackBtn);
       host.append(row);
