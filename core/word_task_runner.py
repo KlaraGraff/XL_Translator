@@ -45,10 +45,19 @@ from core.engine_dispatcher import (
     get_system_prompt,
     is_local_engine_name,
 )
+from core.document_profile import (
+    append_profile,
+    drop_unlocked_short_hits,
+    is_context_sensitive,
+    is_smart_preset,
+    lookup_locked_tm,
+    request_document_profile,
+)
 from core.language_registry import (
     build_lang_pair,
     get_default_source_lang,
     get_source_lang_display,
+    get_target_lang_display,
     get_tm_language_pairs,
     is_auto_source_lang,
 )
@@ -972,6 +981,22 @@ class WordTaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
+            smart_mode = is_smart_preset(getattr(settings, "word_domain_preset", settings.domain_preset))
+            self._smart_mode = smart_mode
+            if smart_mode and global_unique_texts and engine_supports_chat(engine):
+                # 「智能」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
+                system_prompt = append_profile(
+                    system_prompt,
+                    request_document_profile(
+                        engine.chat,
+                        global_unique_texts,
+                        target_language=get_target_lang_display(target_lang),
+                        log=self._log,
+                    ),
+                )
+                _raise_if_stopped()
+
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在查找记忆库中已有的译文…"))
             t_phase2 = datetime.now()
             all_texts = list(global_unique_texts)
@@ -1018,6 +1043,13 @@ class WordTaskRunner(BaseTaskRunner):
                 for text, values in tm_values_by_text.items()
                 if len(values) == 1
             }
+            if smart_mode:
+                dropped = drop_unlocked_short_hits(hits, tm_texts_by_pair, lookup_locked_tm)
+                if dropped:
+                    self._log(
+                        "INFO",
+                        f"智能模式：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
+                    )
             misses = [text for text in normal_texts if text not in hits]
             tm_hit_count = len(hits)
             api_call_count = len(misses) + len(mixed_texts)
@@ -2548,6 +2580,7 @@ class WordTaskRunner(BaseTaskRunner):
                             or source in recovery_review_sources
                             or source in unresolved_review_sources
                             or not should_store_translation_in_tm(source, final_text)
+                            or (getattr(self, "_smart_mode", False) and is_context_sensitive(source))
                         ):
                             continue
                         pair = build_lang_pair(
@@ -2591,6 +2624,7 @@ class WordTaskRunner(BaseTaskRunner):
                             source not in mixed_texts
                             and source not in recovery_review_sources
                             and source not in unresolved_review_sources
+                            and not (getattr(self, "_smart_mode", False) and is_context_sensitive(source))
                             and should_store_translation_in_tm(
                                 source, _final_tm_text(source, translated)
                             )

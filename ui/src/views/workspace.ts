@@ -189,6 +189,7 @@ const WORD_TOGGLES: ToggleDef[] = localized(() => ([
 
 const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "pdfSmartContext", label: t("智能理解术语"), hint: t("翻译前先用文档翻译模型读一遍 PDF 里的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，每页按这个理解翻译。每份文件多调用一次文档翻译模型；扫描件没有可读文字时自动跳过。"), default: true, pathKind: "flat", path: "pdf.smart_context" },
   { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在常规输出之外，另生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
@@ -375,7 +376,7 @@ function freshState(surface: Surface): SurfaceState {
     toggles: freshToggles(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
-    domainPreset: surface === "excel" ? "无" : "同步工程场景", // i18n-ignore 发给后端的专业领域预设值
+    domainPreset: "智能", // i18n-ignore 发给后端的专业领域预设值
     useCustomOutputDir: false,
     customOutputDir: "",
     task: null,
@@ -617,7 +618,7 @@ function applySettingsToStates(): void {
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
-      st.domainPreset = text(settings[`${surface}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"); // i18n-ignore 专业领域预设值，存进设置
+      st.domainPreset = text(settings[`${surface}_domain_preset`], "智能"); // i18n-ignore 专业领域预设值，存进设置
     }
     for (const toggle of TOGGLES[surface]) {
       if (toggle.pathKind === "flat" && toggle.path) {
@@ -2471,7 +2472,7 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
 }
 
 function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
-  const builtIns = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"]; // i18n-ignore 发给后端的专业领域预设值，显示时 tx()
+  const builtIns = ["无", "智能", "同步工程场景", "资料管理场景", "行政生活化场景"]; // i18n-ignore 发给后端的专业领域预设值，显示时 tx()
   const disabled = Array.isArray(settings[`${surface}_domain_disabled_presets`])
     ? (settings[`${surface}_domain_disabled_presets`] as unknown[]).filter((value): value is string => typeof value === "string")
     : [];

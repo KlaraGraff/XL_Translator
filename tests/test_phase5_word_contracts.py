@@ -332,7 +332,8 @@ class WordScanAndEventContractTests(IsolatedAppDataTestCase):
 class WordTaskResultContractTests(IsolatedAppDataTestCase):
     @staticmethod
     def _settings() -> AppSettings:
-        return AppSettings(source_lang="zh", target_lang="en")
+        # 这组契约数的是语种预检的模型调用；「智能」模式多出的那次文档说明请求另有测试。
+        return AppSettings(source_lang="zh", target_lang="en", word_domain_preset="无")
 
     @staticmethod
     def _terminal_message(runner: WordTaskRunner, message_type):
@@ -792,6 +793,81 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
                 done.language["files"][0]["preflight"]["source_langs"], ["fr"]
             )
             self.assertEqual(done.language["files"][0]["actual_source_counts"], {"en": 1})
+
+    def test_smart_mode_profile_reaches_the_prompt_and_short_auto_memory_is_retranslated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            Document().save(source)
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            settings = self._settings()
+            settings.word_domain_preset = "智能"
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                settings,
+                source_root=root,
+                source_lang="zh",
+            )
+
+            class _ProfileEngine:
+                engine_name = "phase5/mock"
+
+                def __init__(self) -> None:
+                    self.calls: list[tuple[str, str]] = []
+
+                def chat(self, system: str, user: str) -> str:
+                    self.calls.append((system, user))
+                    return "防火门技术说明。「甲」指甲级防火门，常译 Class A。"
+
+            engine = _ProfileEngine()
+            prompts: list[str] = []
+            translated: list[str] = []
+            inserted: list[tuple[str, str]] = []
+
+            def translate(texts, _engine, _target_lang, prompt, *_args, **_kwargs):
+                prompts.append(prompt)
+                translated.extend(texts)
+                return {text: {"甲": "Class A"}.get(text, "New note") for text in texts}
+
+            def lookup(texts, _pair, *, locked_only=False):
+                if locked_only:
+                    return {text: None for text in texts}
+                return {text: ("Party A" if text == "甲" else None) for text in texts}
+
+            def capture_insert(entries, *_args, **_kwargs):
+                inserted.extend(entries)
+                return len(entries)
+
+            segments = [
+                WordSegment(source="甲", kind="paragraph", location="正文第 1 段"),
+                WordSegment(source="防火门应满足耐火完整性要求。", kind="paragraph", location="正文第 2 段"),
+            ]
+            with ExitStack() as stack:
+                self._runner_patches(stack, root=root, prepared_by_path={source: prepared})
+                stack.enter_context(patch("core.word_task_runner.build_engine", return_value=engine))
+                stack.enter_context(patch("core.word_task_runner.extract_word_segments", return_value=segments))
+                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", side_effect=lookup))
+                stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
+                stack.enter_context(patch("core.word_task_runner.tm_manager.insert_batch", side_effect=capture_insert))
+                runner._run()
+
+            self._terminal_message(runner, DoneMsg)
+            self.assertEqual(len(engine.calls), 1)
+            self.assertIn("防火门应满足耐火完整性要求。", engine.calls[0][1])
+            self.assertEqual(sorted(translated), sorted(["甲", "防火门应满足耐火完整性要求。"]))
+            self.assertTrue(prompts and all("甲级防火门" in prompt for prompt in prompts))
+            self.assertEqual([source_text for source_text, _target in inserted], ["防火门应满足耐火完整性要求。"])
 
     def test_quality_report_write_failure_only_warns_and_keeps_successful_word_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

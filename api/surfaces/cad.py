@@ -21,6 +21,12 @@ from api.surfaces.base import (
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
 from core.cad_task_runner import CadTaskRunner
+from core.document_profile import (
+    append_profile,
+    is_context_sensitive,
+    is_smart_preset,
+    request_document_profile,
+)
 from core.cad_translation import (
     CadPipelineError,
     CadPipelineOptions,
@@ -277,6 +283,15 @@ class CadSurface(Surface):
             translate_texts_with_sources,
         )
         system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
+        smart_mode = is_smart_preset(settings.cad_domain_preset)
+
+        def profile_requester(texts: list[str], log: Callable[[str, str], None]) -> str:
+            return request_document_profile(
+                engine.chat,
+                texts,
+                target_language=get_target_lang_display(settings.target_lang),
+                log=log,
+            )
 
         def translate_batch(
             texts: list[str],
@@ -285,8 +300,9 @@ class CadSurface(Surface):
             should_stop: Callable[[], bool] | None = None,
             error_callback: Callable[[str], None] | None = None,
             request_callback: Callable[[Any], None] | None = None,
+            context: str = "",
         ) -> dict[str, str]:
-            prompt = system_prompt
+            prompt = append_profile(system_prompt, context)
             if glossary:
                 prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
             concurrency = max(1, int(settings.engine.concurrency))
@@ -331,9 +347,10 @@ class CadSurface(Surface):
             progress: Callable[[int, int], None] | None = None,
             should_stop: Callable[[], bool] | None = None,
             error_callback: Callable[[str], None] | None = None,
+            context: str = "",
         ) -> dict[str, Any]:
             """程序判断不了语种的文字：翻译的同时让模型回报原文语种（与 Excel/Word 自动识别相同的协议）。"""
-            prompt = system_prompt
+            prompt = append_profile(system_prompt, context)
             if glossary:
                 prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
             stats = TranslationBatchRunStats()
@@ -371,6 +388,11 @@ class CadSurface(Surface):
                 if not remaining:
                     break
                 current = tm_manager.lookup_batch(remaining, pair)
+                if smart_mode:
+                    # 「智能」：「甲」「FM」这类短词只认用户定下的记忆，自动存下的可能来自别的场景。
+                    short = [text for text in remaining if is_context_sensitive(text)]
+                    if short:
+                        current.update(tm_manager.lookup_batch(short, pair, locked_only=True))
                 for text, value in current.items():
                     if value and hits.get(text) in (None, ""):
                         hits[text] = value
@@ -385,6 +407,7 @@ class CadSurface(Surface):
             memory_lookup=memory_lookup if options.cad_use_memory else None,
             translator=translate_batch,
             language_translator=translate_batch_with_sources,
+            profile_requester=profile_requester if smart_mode else None,
             filename_translator=engine,
             glossary=load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
             options=CadPipelineOptions(

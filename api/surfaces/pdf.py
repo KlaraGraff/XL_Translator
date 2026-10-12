@@ -16,6 +16,7 @@ from api.task_contracts import (
     TaskOptions,
 )
 from core import bilingual_writer
+from core.language_registry import get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -145,12 +146,55 @@ class PdfSurface(Surface):
         }
 
     def build_runner(self, request: RunnerRequest) -> Runner:
+        settings = request.settings
+        profile_requester = None
+        if getattr(settings.pdf, "smart_context", False):
+            profile_requester = _document_profile_requester(
+                settings,
+                tuple(request.connection_chains.get("translation") or ()),
+            )
         return PdfImageTranslationRunner(
             request.files,
-            request.settings,
+            settings,
             source_root=request.source_root,
             key_overrides=request.key_overrides,
             api_scheduler=request.api_schedulers.get("image"),
             review_api_scheduler=request.api_schedulers.get("pdf_review"),
             resume_output_dir=request.options.resume_output_dir,
+            profile_requester=profile_requester,
         )
+
+
+def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str, ...]):
+    """「智能」：用文档翻译模型（不是生图模型）读 PDF 文字层、写文档说明。
+
+    引擎在第一次用到时才建，并在任务线程里建，这样拿到的是任务开始时的密钥快照；
+    建不起来（没配文档翻译模型）就记一行日志、不写说明，PDF 照常翻译。
+    """
+    from core.document_profile import request_document_profile
+    from core.engine_dispatcher import build_role_engine
+    from engines.base_engine import engine_supports_chat
+
+    target_language = get_target_lang_display(
+        settings.pdf.target_lang,
+        settings.custom_target_langs,
+        include_optional=True,
+    )
+    state: dict[str, Any] = {}
+
+    def requester(texts: list[str], log) -> str:
+        if "engine" not in state:
+            try:
+                engine = build_role_engine(settings, "translation", connection_ids=connection_ids)
+            except Exception as exc:  # noqa: BLE001 - the description is optional.
+                logger.debug(f"[PDF] 智能模式建文档翻译引擎失败：{exc!r}")
+                engine = None
+            state["engine"] = engine if engine is not None and engine_supports_chat(engine) else None
+            if state["engine"] is None:
+                log("WARN", "智能模式：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
+        engine = state["engine"]
+        if engine is None:
+            return ""
+        return request_document_profile(engine.chat, texts, target_language=target_language, log=log)
+
+    return requester

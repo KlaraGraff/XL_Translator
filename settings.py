@@ -1004,6 +1004,10 @@ class PdfSettings(BaseModel):
     # 翻译模型，直接从源 PDF 矢量原样导入输出——这类页经不起栅格化，且大多数
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
+    # 「智能」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
+    # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字
+    # 层时这一步自动跳过。v33 新增，默认开。
+    smart_context: bool = True
 
     @model_validator(mode="before")
     @classmethod
@@ -1200,12 +1204,12 @@ class AppSettings(BaseModel):
             if field in migrated:
                 migrated[field] = migrate_model(migrated[field])
         return migrated
-    domain_preset: str = "同步工程场景"
+    domain_preset: str = "智能"
     custom_prompt: str = ""
     # Excel and Word intentionally own separate domain/prompt state.  The
     # legacy global fields remain as an inert compatibility surface for CLI
     # callers; page-aware task code reads the fields below.
-    excel_domain_preset: str = "无"
+    excel_domain_preset: str = "智能"
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     # Prompt 覆盖新版本按「预设名 → {_base: Prompt}」保存；旧版目标语言映射仍可
@@ -1215,13 +1219,13 @@ class AppSettings(BaseModel):
     # legacy/plain string; the API normalizes writes while reads stay tolerant.
     excel_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     excel_domain_disabled_presets: list[str] = Field(default_factory=list)
-    word_domain_preset: str = "同步工程场景"
+    word_domain_preset: str = "智能"
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     word_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     word_domain_disabled_presets: list[str] = Field(default_factory=list)
-    cad_domain_preset: str = "同步工程场景"
+    cad_domain_preset: str = "智能"
     cad_custom_prompt: str = ""
     cad_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     cad_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -1695,6 +1699,32 @@ def _migrate_theme_default(payload: dict, stored_version: int) -> dict:
     return migrated
 
 
+# v33 之前各页面的默认领域：Excel「无」，其余「同步工程场景」。
+_PRE_V33_DEFAULT_DOMAINS = {
+    "domain_preset": "同步工程场景",
+    "excel_domain_preset": "无",
+    "word_domain_preset": "同步工程场景",
+    "cad_domain_preset": "同步工程场景",
+}
+
+
+def _migrate_smart_domain_default(payload: dict, stored_version: int) -> dict:
+    """v33: every page's default domain became 「智能」; carry old defaults along.
+
+    Same reasoning as the theme migration above: an old file cannot tell the
+    default apart from a deliberate pick, and almost nobody changed it, so a
+    page still on its pre-v33 default moves to 「智能」.  A page set to any
+    other domain (or a named prompt) keeps it.
+    """
+    if stored_version >= 33:
+        return payload
+    migrated = dict(payload)
+    for key, old_default in _PRE_V33_DEFAULT_DOMAINS.items():
+        if str(migrated.get(key, old_default) or old_default).strip() == old_default:
+            migrated[key] = "智能"
+    return migrated
+
+
 class SettingsSchemaError(ValueError):
     """The settings file could not be read *and* could not be backed up.
 
@@ -1855,7 +1885,9 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, _migrate_theme_default(payload, stored_version)
+        return "adopted", stored_version, _migrate_smart_domain_default(
+            _migrate_theme_default(payload, stored_version), stored_version,
+        )
     return "current", stored_version, payload
 
 

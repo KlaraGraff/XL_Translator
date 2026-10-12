@@ -64,6 +64,7 @@ from core.pdf_image_translation import (
     _finished_page_count,
     _is_new_style_translated_name,
     _load_placeholder_font,
+    _pdf_text_lines,
     _localized_pdf_placeholder_problem,
     _open_pdf_document,
     _pdf_render_scale_for_page,
@@ -3982,6 +3983,109 @@ class PdfDefectRegressionTests(unittest.TestCase):
             runner._refresh_file_record_counts(record)
             self.assertEqual(record.suspect_adopted_page_count, 1)
             self.assertEqual(record.review_failed_page_count, 3)
+
+
+class PdfSmartContextTests(unittest.TestCase):
+    """「智能理解术语」：读文字层写文档说明，逐页带进生图请求。"""
+
+    def test_text_layer_lines_are_read_with_pdfium(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "text.pdf"
+            path.write_bytes(_pdf_with_text(["FIRE DOOR SCHEDULE", "Class A"]))
+            self.assertEqual(_pdf_text_lines(path), ["FIRE DOOR SCHEDULE", "Class A"])
+
+    def test_profile_is_requested_per_file_and_passed_to_every_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            image_client = _ContextRecordingImageClient(_png_bytes(1200, 1600))
+            requested: list[list[str]] = []
+
+            def profile(lines: list[str], log) -> str:
+                requested.append(list(lines))
+                return "门窗图。「甲」指甲级防火门。"
+
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+                profile_requester=profile,
+            )
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch(
+                "core.pdf_image_translation._pdf_text_lines", return_value=["甲", "防火门"]
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+            self.assertEqual(requested, [["甲", "防火门"]])
+            self.assertEqual(image_client.contexts, ["门窗图。「甲」指甲级防火门。"] * 2)
+
+    def test_scan_without_text_layer_skips_the_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            image_client = _ContextRecordingImageClient(_png_bytes(1200, 1600))
+
+            def profile(_lines, _log) -> str:
+                raise AssertionError("扫描件不该请求文档说明")
+
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                _page_review_settings(root),
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+                profile_requester=profile,
+            )
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.pdf_image_translation._pdf_text_lines", return_value=[]), patch(
+                "core.model_roles.get_key", return_value="secret"
+            ):
+                runner._run()
+
+            self.assertEqual(image_client.contexts, [None])
+
+
+class _ContextRecordingImageClient(_FakeImageClient):
+    def __init__(self, image_bytes: bytes) -> None:
+        super().__init__(image_bytes)
+        self.contexts: list[str | None] = []
+
+    def generate_page(self, **kwargs):
+        self.contexts.append(kwargs.get("document_context"))
+        return super().generate_page(**kwargs)
+
+
+def _pdf_with_text(lines: list[str]) -> bytes:
+    """一页带文字层的最小 PDF（Helvetica，ASCII），给 pdfium 读文字用。"""
+    content = "BT /F1 12 Tf 72 720 Td 14 TL " + " ".join(f"({line}) Tj T*" for line in lines) + " ET"
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> >>",
+        f"<< /Length {len(content)} >>\nstream\n{content}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n{body}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("latin-1")
+    out += "".join(f"{offset:010d} 00000 n \n" for offset in offsets).encode("latin-1")
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("latin-1")
+    return out
 
 
 if __name__ == "__main__":
