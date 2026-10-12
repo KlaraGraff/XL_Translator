@@ -304,6 +304,14 @@ export function renderModelsPage(host: HTMLElement): void {
     input.addEventListener("change", () => {
       modelAccessDraft[role] = option.value;
       renderBody();
+      // 切换即保存，和这一页其它字段一样。以前切完要再点「保存配置」，否则一离开
+      // 设置页草稿就被丢掉（见 settings.ts unmount），用户以为切了其实没切。
+      // renderBody() 已按新方式重画表单并登记了新的 submitModelForm，交的就是新表单。
+      if (!selected) return;
+      void reRenderAfter(async () => {
+        await ensureFormSavedBeforeCatalog();
+        showToast({ message: t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" })) });
+      }, { preserveDraft: false });
     });
     label.append(input, document.createTextNode(option.label));
     radioRow.append(label);
