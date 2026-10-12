@@ -293,6 +293,7 @@ def test_macos_oda_app_is_launched_through_launchservices(tmp_path, monkeypatch)
     monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
     monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
     monkeypatch.setattr("core.cad_translation.shutil.which", lambda name: "/usr/bin/open")
+    monkeypatch.setattr(SubprocessCadConverter, "_POLL_INTERVAL", 0.01)
 
     SubprocessCadConverter(app_executable, timeout=2).dxf_to_dwg(source, destination)
 
@@ -302,6 +303,93 @@ def test_macos_oda_app_is_launched_through_launchservices(tmp_path, monkeypatch)
     ]
     assert captured["command"][6].endswith("/in")
     assert captured["command"][7].endswith("/out")
+
+
+def _fake_oda_app(tmp_path, monkeypatch, write_output):
+    """Launch a fake ODA .app: ``open`` returns at once, the file is written while we poll."""
+    app_executable = tmp_path / "ODAFileConverter.app" / "Contents" / "MacOS" / "ODAFileConverter"
+    app_executable.parent.mkdir(parents=True)
+    app_executable.write_text("binary", encoding="utf-8")
+    state = {"output_dir": None, "polls": 0}
+
+    def fake_run(command, *, check, timeout, stdout, stderr, text):
+        state["output_dir"] = Path(command[7])
+
+    def fake_sleep(_seconds):
+        state["polls"] += 1
+        write_output(state["output_dir"], state["polls"])
+
+    monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
+    monkeypatch.setattr("core.cad_translation.shutil.which", lambda name: "/usr/bin/open")
+    monkeypatch.setattr("core.cad_translation.time.sleep", fake_sleep)
+    return app_executable, state
+
+
+def test_macos_oda_waits_until_dxf_is_fully_written(tmp_path, monkeypatch):
+    # ODA 后台边转边写：文件刚出现时只有前半截。以前一出现就拿去解析，
+    # 大图纸稳定报「图纸文件不完整」。
+    complete = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (1, "门"), (0, "ENDSEC"), (0, "EOF"))
+    half = complete[: len(complete) // 2]
+
+    def write_output(output_dir, poll):
+        target = output_dir / "sample.dxf"
+        if poll == 1:
+            target.write_text(half, encoding="utf-8")
+        elif poll == 3:
+            target.write_text(complete, encoding="utf-8")
+
+    source = tmp_path / "sample.dwg"
+    source.write_bytes(b"AC1032")
+    app_executable, state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+
+    destination = SubprocessCadConverter(app_executable, timeout=30).dwg_to_dxf(source, tmp_path / "out.dxf")
+
+    assert destination.read_text(encoding="utf-8") == complete
+    assert state["polls"] >= 4
+
+
+def test_macos_oda_reports_unfinished_dxf_on_timeout(tmp_path, monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr("core.cad_translation.time.monotonic", lambda: clock["now"])
+
+    def write_output(output_dir, poll):
+        clock["now"] += 1
+        (output_dir / "sample.dxf").write_text(_dxf((0, "SECTION"), (2, "ENTITIES")), encoding="utf-8")
+
+    source = tmp_path / "sample.dwg"
+    source.write_bytes(b"AC1032")
+    app_executable, _state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+
+    with pytest.raises(CadPipelineError, match="未写完"):
+        SubprocessCadConverter(app_executable, timeout=5).dwg_to_dxf(source, tmp_path / "out.dxf")
+
+
+def test_macos_oda_waits_for_dwg_size_to_settle(tmp_path, monkeypatch):
+    def write_output(output_dir, poll):
+        target = output_dir / "sample.dwg"
+        if poll <= 3:
+            target.write_bytes(b"x" * (100 * poll))
+
+    source = tmp_path / "sample.dxf"
+    source.write_text("DXF", encoding="utf-8")
+    app_executable, state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+
+    destination = SubprocessCadConverter(app_executable, timeout=30).dxf_to_dwg(source, tmp_path / "out.dwg")
+
+    assert destination.read_bytes() == b"x" * 300
+    assert state["polls"] >= 7
+
+
+def test_text_with_unicode_line_separators_is_not_split():
+    # str.splitlines 会在这些字符处断行，把正常图纸错位成「格式无法识别」。
+    raw = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "MTEXT"),
+               (1, "甲\x1c乙\x0b丙\x0c丁\x85戊\u2028己\u2029庚\r辛"),
+               (0, "ENDSEC"), (0, "EOF")).replace("\n", "\r\n")
+    records = _parse_dxf(raw)
+    assert [record.code for record in records] == [0, 2, 0, 1, 0, 0]
+    assert records[3].value == "甲\x1c乙\x0b丙\x0c丁\x85戊\u2028己\u2029庚\r辛"
+    assert _serialize_dxf(records) == raw
 
 
 def test_mixed_cjk_text_is_not_skipped_for_latin_targets():
