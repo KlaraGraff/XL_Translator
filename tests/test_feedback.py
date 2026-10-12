@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import zipfile
@@ -61,6 +62,10 @@ class _FakeTaskManager:
             raise TaskNotFoundError(task_id)
         return self._records[task_id]
 
+    def task_source(self, task_id: str) -> dict[str, Any]:
+        # 历史记录里的任务不再保留原文件路径。
+        raise TaskNotFoundError(task_id)
+
     def shutdown(self) -> None:
         return None
 
@@ -109,7 +114,33 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertEqual(archive.namelist(), ["feedback.json"])
         payload = json.loads(archive.read("feedback.json"))
         self.assertEqual(payload["description"], "导出时报错")
-        self.assertEqual(payload["includes"], {"system": False, "task_logs": 0, "files": []})
+        self.assertEqual(payload["includes"], {"system": False, "task_logs": 0, "files": [], "images": 0})
+
+    def test_kind_checkboxes_choose_what_comes_from_the_chosen_tasks(self) -> None:
+        output = self.app_data_dir.parent / "报价单_FR.xlsx"
+        output.write_bytes(b"PK-out")
+        record = _task_record()
+        record["result"]["file_results"] = [{"file_id": "a", "output_path": str(output)}]
+        self.client.app.state.task_manager = _FakeTaskManager([record])
+
+        archive = self._package(include_logs=False)
+        self.assertFalse([name for name in archive.namelist() if name.startswith(("tasks/", "files/"))])
+
+        archive = self._package(include_logs=False, include_output_files=True)
+        self.assertEqual(archive.read("files/报价单_FR.xlsx"), b"PK-out")
+        self.assertFalse([name for name in archive.namelist() if name.startswith("tasks/")])
+
+    def test_pasted_screenshots_are_packed_and_checked(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+        archive = self._package(images=[{"data": base64.b64encode(png).decode()}])
+        self.assertEqual(archive.read("images/截图1.png"), png)
+        self.assertEqual(json.loads(archive.read("feedback.json"))["includes"]["images"], 1)
+
+        response = self.client.post(
+            "/api/feedback/package", json=self._body(images=[{"data": base64.b64encode(b"not an image").decode()}])
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["reason"], "invalid_image")
 
     def test_picked_files_are_attached_under_their_names(self) -> None:
         attached = self.app_data_dir.parent / "样例.xlsx"

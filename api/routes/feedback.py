@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -23,7 +25,7 @@ def register(app: FastAPI) -> None:
             "endpoint_configured": bool(feedback.feedback_endpoint()),
             "tasks": feedback.recent_tasks(recent),
             "max_attachment_bytes": feedback.MAX_ATTACHMENT_BYTES,
-            "max_files": feedback.MAX_FILES,
+            "max_files": feedback.MAX_PICKED_FILES,
             "max_tasks": feedback.MAX_TASKS,
         }
 
@@ -34,18 +36,13 @@ def register(app: FastAPI) -> None:
 
     @app.get("/api/feedback/tasks/{task_id}/files", response_model=None)
     def feedback_task_files(task_id: str) -> dict[str, Any] | Response:
-        # 勾选某次任务的日志后，列出这次任务的原文件和译文，供用户逐个勾选；默认都不勾。
+        # 界面据此显示所选任务有几个原文件、几个译文、多大；真正发送时后端再取一遍。
         manager = app.state.task_manager
         try:
             record = manager.task_status(task_id)
         except TaskNotFoundError:
             return _json_error(404, "所选任务的记录已不存在，请重新选择。", reason="task_missing")
-        try:
-            live = manager.task_source(task_id)
-        except TaskNotFoundError:
-            live = {}
-        sources = {str(item.get("file_id") or ""): str(item.get("path") or "") for item in live.get("files") or []}
-        return {"files": feedback.task_files(record, sources)}
+        return {"files": feedback.task_files(record, _task_sources(app, task_id))}
 
     @app.post("/api/feedback/preview", response_model=None)
     def feedback_preview(request: FeedbackRequest) -> dict[str, Any] | Response:
@@ -79,6 +76,15 @@ def register(app: FastAPI) -> None:
 _SEND_STATUS = {"not_configured": 503, "network": 502, "server": 502, "rate_limited": 429}
 
 
+def _task_sources(app: FastAPI, task_id: str) -> dict[str, str]:
+    # 原文件路径只在任务还留在内存里时有；历史记录出于隐私不保存。
+    try:
+        live = app.state.task_manager.task_source(task_id)
+    except TaskNotFoundError:
+        return {}
+    return {str(item.get("file_id") or ""): str(item.get("path") or "") for item in live.get("files") or []}
+
+
 def _draft(app: FastAPI, request: FeedbackRequest) -> feedback.FeedbackDraft:
     records: list[dict[str, Any]] = []
     for task_id in dict.fromkeys(item.strip() for item in request.task_ids if item.strip()):
@@ -88,12 +94,31 @@ def _draft(app: FastAPI, request: FeedbackRequest) -> feedback.FeedbackDraft:
             raise feedback.FeedbackError(
                 "所选任务的记录已不存在，请重新选择。", reason="task_missing"
             ) from exc
+    kinds: set[str] = set()
+    if request.include_source_files:
+        kinds.add("source")
+    if request.include_output_files:
+        kinds.update({"output", "compressed"})
+    paths = list(request.file_paths)
+    if kinds:
+        for record in records:
+            sources = _task_sources(app, str(record.get("task_id") or ""))
+            paths.extend(item["path"] for item in feedback.task_files(record, sources) if item["kind"] in kinds)
+    images: list[bytes] = []
+    for image in request.images:
+        try:
+            images.append(base64.b64decode(image.data, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise feedback.FeedbackError(
+                "只能粘贴 PNG、JPEG、GIF 或 WebP 图片。", reason="invalid_image"
+            ) from exc
     return feedback.FeedbackDraft(
         category=request.category,
         description=request.description,
         contact=request.contact,
         include_system=request.include_system,
         ui_language=request.ui_language,
-        task_records=records,
-        file_paths=list(request.file_paths),
+        task_records=records if request.include_logs else [],
+        file_paths=list(dict.fromkeys(paths)),
+        images=images,
     )

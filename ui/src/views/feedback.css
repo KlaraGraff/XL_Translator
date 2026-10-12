@@ -1,15 +1,24 @@
-/* 反馈视图：单列卡片，最宽 760px，沿用设置页的分段选择（.seg / .segc）与设计令牌。 */
+/* 反馈视图：宽窗口左右两栏等高、上下铺满，描述框和任务列表吃掉剩余高度；内容放不下时
+   整页滚动（列表至少留 180px）。窄窗口退回单列滚动。
+   沿用设置页的分段选择（.seg / .segc）与设计令牌。 */
 .feedback-content { display: flex; overflow: auto; }
+.feedback-content > .feedback-column { min-height: 100%; }
 .feedback-column { width: 100%; display: flex; flex-direction: column; gap: 14px; }
-.feedback-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 14px; align-items: start; }
-@media (max-width: 1000px) { .feedback-grid { grid-template-columns: minmax(0, 1fr); } }
+.feedback-grid { flex: 1 0 auto; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 14px; align-items: stretch; }
+.feedback-grid .feedback-text { flex: 1 1 0; min-height: 160px; }
+.feedback-grid .feedback-task-list { flex: 1 1 0; min-height: 180px; }
+@media (max-width: 1000px) {
+  .feedback-grid { flex: none; grid-template-columns: minmax(0, 1fr); }
+  .feedback-grid .feedback-text { flex: none; min-height: 200px; }
+  .feedback-grid .feedback-task-list { flex: none; max-height: 420px; }
+}
 .feedback-task-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .feedback-search { position: relative; flex: 1 1 200px; min-width: 160px; color: var(--ink-3); }
 .feedback-search svg { position: absolute; left: 10px; top: 8px; }
 .feedback-search input { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 10px 0 32px; }
 .feedback-limit { flex: none; width: 128px; }
 .feedback-task-count { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
-.feedback-task-list { max-height: 420px; overflow: auto; align-items: stretch; }
+.feedback-task-list { overflow: auto; align-items: stretch; flex-wrap: nowrap; }
 .feedback-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 8px; }
 .feedback-section-title { margin: 6px 0 0; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
 .feedback-section-title:first-child { margin-top: 0; }
@@ -34,6 +43,8 @@
 .feedback-total.over { color: var(--danger); }
 .feedback-note { margin: 0; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
 .feedback-actions-wrap { display: flex; flex-direction: column; gap: 10px; }
+.feedback-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.feedback-bar .feedback-note { flex: 1 1 260px; }
 .feedback-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .feedback-banner { margin: 0; }
 .feedback-sent { max-width: 640px; width: 100%; align-self: center; align-items: center; text-align: center; padding: 32px 24px; gap: 6px; }
@@ -45,5 +56,11 @@
 .feedback-preview-block { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 10px; }
 .feedback-preview-block summary { cursor: pointer; font-size: 12.5px; font-weight: 550; }
 .feedback-preview-block pre { margin: 8px 0 2px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11.5px; line-height: 1.5; color: var(--ink-2); }
-.feedback-task-files { display: flex; flex-direction: column; gap: 6px; width: 100%; padding-left: 26px; }
-.feedback-task-files .feedback-check { padding: 5px 10px; }
+.feedback-kinds { display: flex; flex-direction: column; gap: 6px; }
+.feedback-other-files { padding-left: 26px; }
+.feedback-images { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.feedback-image { position: relative; width: 72px; height: 54px; border: 1px solid var(--line-2); border-radius: var(--r-sm); overflow: hidden; background: var(--ground-2); }
+.feedback-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.feedback-image-remove { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border: 0; border-radius: 99px; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 12px; line-height: 18px; padding: 0; cursor: pointer; }
+.feedback-images .feedback-note { flex: 1 1 200px; }
+.feedback-task-list > *, .feedback-kinds > * { flex: none; }

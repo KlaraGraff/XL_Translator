@@ -179,7 +179,7 @@ export function issueBody({ id, category, description, contact, meta, link, size
     `**类型**：${CATEGORY_LABELS[category]}`,
     `**版本**：${neutralize(String(meta.app_version || "未知"))} · ${neutralize(String(meta.platform || "未知系统"))} · 界面语言 ${neutralize(String(meta.ui_language || "zh"))}`,
     `**联系方式**：${contact ? codeSpan(contact) : "未填写"}`,
-    `**附带**：系统信息${includes.system ? "✓" : "✗"} · 任务日志 ${Number(includes.task_logs) || 0} 次 · 文件 ${files.length} 个${files.length ? `（${files.join("、")}）` : ""}`,
+    `**附带**：系统信息${includes.system ? "✓" : "✗"} · 截图 ${Number(includes.images) || 0} 张 · 任务日志 ${Number(includes.task_logs) || 0} 次 · 文件 ${files.length} 个${files.length ? `（${files.join("、")}）` : ""}`,
     "",
     "### 描述",
     "",

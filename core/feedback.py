@@ -4,15 +4,16 @@ Nothing here runs on its own. A package is built only when the user opens the
 feedback page and asks for a preview, a ZIP, or a send, and it holds exactly
 what they ticked:
 
-* their own text (category, description, optional contact);
+* their own text (category, description, optional contact) and any
+  screenshots they pasted into the description;
 * optionally the anonymous app/system summary the diagnostics module already
   produces (version, OS, model connection type, never keys or endpoints);
 * optionally the activity log of chosen tasks. Those logs are already stripped
   of credentials, absolute paths and quoted content when they are written;
   here every file name is additionally replaced with 文件1, 文件2 … because
   names often carry a project or client name;
-* optionally files the user ticked one by one: a ticked task's source and
-  generated files (see ``task_files``) or files they added. None by default.
+* optionally the source files and/or generated files of the chosen tasks
+  (see ``task_files``), and files they picked themselves. None by default.
 
 ``send`` posts the ZIP to the feedback relay (``feedback-relay/`` in the repo).
 When no relay is configured, or it cannot be reached, the UI offers the same
@@ -24,6 +25,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import platform
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -41,7 +43,12 @@ FEEDBACK_CATEGORIES = ("problem", "suggestion", "other")
 MAX_DESCRIPTION_CHARS = 5_000
 MAX_CONTACT_CHARS = 200
 MAX_TASKS = 5
-MAX_FILES = 10
+# 用户自己另外挑的文件最多 10 个；加上所选任务的原文件和译文，整包最多 50 个。
+MAX_PICKED_FILES = 10
+# 描述框里粘贴的截图。
+MAX_IMAGES = 6
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_FILES = 50
 # 附件（用户自己挑的文件）原始大小上限。中转站把包分段存进 Cloudflare KV（单个值
 # 上限 25 MiB，免费额度共 1 GB、保留 90 天），整包上限另给 ZIP 头和日志留出余量，
 # 须与 feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
@@ -83,6 +90,33 @@ class FeedbackDraft:
     # Task-center records (as returned by the task manager, logs included).
     task_records: list[dict[str, Any]] = field(default_factory=list)
     file_paths: list[str] = field(default_factory=list)
+    # Screenshots pasted into the description, raw image bytes in paste order.
+    images: list[bytes] = field(default_factory=list)
+
+
+_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+
+def image_names(images: list[bytes]) -> list[str]:
+    """Package names for pasted screenshots (截图1.png …); rejects anything that is not an image."""
+    if len(images) > MAX_IMAGES:
+        raise FeedbackError("最多粘贴 6 张图片。", reason="too_many_images")
+    names: list[str] = []
+    for index, data in enumerate(images, start=1):
+        if len(data) > MAX_IMAGE_BYTES:
+            raise FeedbackError("单张图片不能超过 10 MB。", reason="image_too_large")
+        suffix = next((ext for magic, ext in _IMAGE_SIGNATURES if data.startswith(magic)), "")
+        if not suffix and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            suffix = ".webp"
+        if not suffix:
+            raise FeedbackError("只能粘贴 PNG、JPEG、GIF 或 WebP 图片。", reason="invalid_image")
+        names.append(f"截图{index}{suffix}")
+    return names
 
 
 def feedback_endpoint() -> str:
@@ -125,7 +159,7 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
     if len(draft.task_records) > MAX_TASKS:
         raise FeedbackError("一次最多附上 5 次任务的日志。", reason="too_many_tasks")
     if len(draft.file_paths) > MAX_FILES:
-        raise FeedbackError("一次最多附上 10 个文件。", reason="too_many_files")
+        raise FeedbackError("一次最多附上 50 个文件，请少选几次任务或不附原文件。", reason="too_many_files")
     files: list[Path] = []
     total = 0
     for raw in draft.file_paths:
@@ -134,6 +168,8 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
             raise FeedbackError(f"找不到文件：{path.name}", reason="file_missing")
         total += path.stat().st_size
         files.append(path)
+    image_names(draft.images)
+    total += sum(len(data) for data in draft.images)
     if total > MAX_ATTACHMENT_BYTES:
         raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
     return files
@@ -286,9 +322,24 @@ def _task_summary(record: dict[str, Any]) -> dict[str, Any]:
     return diagnostics._redact(_scrub(record, masker))
 
 
+def _hardware_summary() -> dict[str, Any]:
+    """Processor architecture, core count and memory: enough to spot an underpowered machine."""
+    summary: dict[str, Any] = {"machine": platform.machine(), "cpu_count": os.cpu_count() or 0}
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        summary["memory_gb"] = round(memory.total / 1024**3, 1)
+        summary["memory_available_gb"] = round(memory.available / 1024**3, 1)
+    except Exception:  # noqa: BLE001 - hardware details are a nice-to-have
+        pass
+    return summary
+
+
 def _system_summary(settings: Any) -> dict[str, Any]:
     return {
         **diagnostics._build_runtime_payload(),
+        "hardware": _hardware_summary(),
         "connection_summary": diagnostics._connection_summary(settings),
     }
 
@@ -320,6 +371,7 @@ def _feedback_payload(draft: FeedbackDraft, files: list[Path]) -> dict[str, Any]
             "system": draft.include_system,
             "task_logs": len(draft.task_records),
             "files": [path.name for path in files],
+            "images": len(draft.images),
         },
     }
 
@@ -340,6 +392,8 @@ def build_package(draft: FeedbackDraft, *, settings: Any) -> tuple[bytes, dict[s
             archive.writestr(f"{folder}/log.txt", task_log_text(record).encode("utf-8"))
             for name, content in _task_diagnostic_files(str(record.get("task_id") or "")).items():
                 archive.writestr(f"{folder}/diagnostic/{name}", content)
+        for name, data in zip(image_names(draft.images), draft.images, strict=True):
+            archive.writestr(f"images/{name}", data)
         used: set[str] = set()
         for path in files:
             archive.write(path, f"files/{_unique_name(path.name, used)}")
@@ -370,6 +424,10 @@ def preview(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
         "system": _system_summary(settings) if draft.include_system else None,
         "tasks": tasks,
         "files": files,
+        "images": [
+            {"name": name, "bytes": len(image)}
+            for name, image in zip(image_names(draft.images), draft.images, strict=True)
+        ],
         "package_bytes": len(data),
         "endpoint_configured": bool(feedback_endpoint()),
     }

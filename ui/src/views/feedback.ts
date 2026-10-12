@@ -2,10 +2,10 @@
 //
 // 隐私约定（改这个页面时必须守住）：
 //   - 什么都不会自动发出；只有点了「发送」才上传。
-//   - 应用与系统信息默认勾选（本来就不含文件名、路径、正文和密钥）；
-//     任务日志默认不勾，只有从任务中心「反馈此问题」进来时预先勾上那一次；
-//     文件一律不预选：勾了某次任务的日志后，下面列出这次任务的原文件和译文，
-//     每个都要用户自己勾；也可以另外添加文件。勾了哪些就上传哪些。
+//   - 「附带内容」是一组按类别的勾选项，勾了哪些就上传哪些：系统与版本信息、任务日志
+//     默认勾选；原文件、译文、其他文件默认不勾（文件可能含客户资料）。
+//   - 日志、原文件、译文取自下面「选择任务」里选中的那几次；任务默认一个都不选，
+//     只有从任务中心「反馈此问题」进来时预先选上那一次。
 //   - 日志里的文件名由后端换成「文件1」「文件2」，预览里看到的就是实际发送的内容。
 // 草稿存在模块变量里，切到别的页面再回来不会丢；发送成功后才清空。
 
@@ -55,7 +55,15 @@ interface PreviewPayload {
   system: Record<string, unknown> | null;
   tasks: { task_id: string; surface: string; state: string; log: string }[];
   files: { name: string; bytes: number }[];
+  images: { name: string; bytes: number }[];
   package_bytes: number;
+}
+
+interface PastedImage {
+  /** base64，不带 data: 前缀，原样发给后端。 */
+  data: string;
+  bytes: number;
+  url: string;
 }
 
 interface Draft {
@@ -63,15 +71,31 @@ interface Draft {
   description: string;
   contact: string;
   includeSystem: boolean;
+  includeLogs: boolean;
+  includeSources: boolean;
+  includeOutputs: boolean;
+  includeOther: boolean;
   taskIds: Set<string>;
-  /** 勾选了的任务文件（原文件、译文）的路径；任务取消勾选时一并去掉。 */
-  taskFilePaths: Set<string>;
-  /** 用户另外添加的文件；取消勾选只是不上传，仍留在列表里。 */
-  files: (PickedFile & { checked: boolean })[];
+  /** 「其他文件」里自己挑的文件；只有勾着「其他文件」时才上传。 */
+  files: PickedFile[];
+  /** 粘贴到描述框里的截图，按粘贴顺序。 */
+  images: PastedImage[];
 }
 
 function emptyDraft(): Draft {
-  return { category: "problem", description: "", contact: "", includeSystem: true, taskIds: new Set(), taskFilePaths: new Set(), files: [] };
+  return {
+    category: "problem",
+    description: "",
+    contact: "",
+    includeSystem: true,
+    includeLogs: true,
+    includeSources: false,
+    includeOutputs: false,
+    includeOther: false,
+    taskIds: new Set(),
+    files: [],
+    images: [],
+  };
 }
 
 const CATEGORIES: { value: Category; label: string; hint: string }[] = localized(() => ([
@@ -174,33 +198,44 @@ function requestBody(): Record<string, unknown> {
     description: draft.description,
     contact: draft.contact,
     include_system: draft.includeSystem,
+    include_logs: draft.includeLogs,
+    include_source_files: draft.includeSources,
+    include_output_files: draft.includeOutputs,
     ui_language: currentLocale(),
     task_ids: [...draft.taskIds],
-    file_paths: checkedFiles().map((file) => file.path),
+    file_paths: draft.includeOther ? draft.files.map((file) => file.path) : [],
+    images: draft.images.map((image) => ({ data: image.data })),
   };
 }
 
-/** 实际会上传的文件：勾选任务下勾了的文件，加上另外添加并勾着的文件。 */
-function checkedFiles(): PickedFile[] {
-  const result: PickedFile[] = [];
-  const seen = new Set<string>();
+/** 所选任务里某一类文件（已读到的部分）。 */
+function selectedTaskFiles(kinds: FileKind[]): TaskFile[] {
+  const result: TaskFile[] = [];
   for (const id of draft.taskIds) {
     const files = taskFiles.get(id);
-    if (!Array.isArray(files)) continue;
-    for (const file of files) {
-      if (draft.taskFilePaths.has(file.path) && !seen.has(file.path)) {
-        seen.add(file.path);
-        result.push(file);
-      }
-    }
+    if (Array.isArray(files)) result.push(...files.filter((file) => kinds.includes(file.kind)));
   }
-  for (const file of draft.files) {
-    if (file.checked && !seen.has(file.path)) {
+  return result;
+}
+
+/** 实际会上传的文件，跟后端按同样的规则取。 */
+function checkedFiles(): PickedFile[] {
+  const kinds: FileKind[] = [];
+  if (draft.includeSources) kinds.push("source");
+  if (draft.includeOutputs) kinds.push("output", "compressed");
+  const result: PickedFile[] = [];
+  const seen = new Set<string>();
+  for (const file of [...selectedTaskFiles(kinds), ...(draft.includeOther ? draft.files : [])]) {
+    if (!seen.has(file.path)) {
       seen.add(file.path);
       result.push(file);
     }
   }
   return result;
+}
+
+function tasksLoading(): boolean {
+  return [...draft.taskIds].some((id) => taskFiles.get(id) === "loading");
 }
 
 function setTaskChecked(taskId: string, checked: boolean): void {
@@ -210,8 +245,6 @@ function setTaskChecked(taskId: string, checked: boolean): void {
     return;
   }
   draft.taskIds.delete(taskId);
-  const files = taskFiles.get(taskId);
-  if (Array.isArray(files)) for (const file of files) draft.taskFilePaths.delete(file.path);
 }
 
 async function loadTaskFiles(taskId: string): Promise<void> {
@@ -225,10 +258,7 @@ async function loadTaskFiles(taskId: string): Promise<void> {
   } catch (error) {
     taskFiles.set(taskId, { error: errorText(error) });
   }
-  if (mounted) {
-    renderTaskList();
-    renderFileSummary();
-  }
+  if (mounted) renderKinds();
 }
 
 function render(): void {
@@ -295,14 +325,34 @@ function buildMessageCard(): HTMLElement {
   area.className = "feedback-text";
   area.rows = 12;
   area.maxLength = 5000;
-  area.placeholder = t("请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。");
+  area.placeholder = t("请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。可直接粘贴截图。");
   area.value = draft.description;
   area.addEventListener("input", () => {
     draft.description = area.value;
     sendFailure = "";
     syncActionState();
   });
+  area.addEventListener("paste", (event) => {
+    const images = imageFiles(event.clipboardData);
+    if (!images.length) return;
+    // 只有图片时不让浏览器再插一段文件名进去；图文混贴（如从 Word 复制）时文字照常粘贴。
+    if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
+    void addImages(images);
+  });
+  area.addEventListener("dragover", (event) => {
+    if (imageFiles(event.dataTransfer).length) event.preventDefault();
+  });
+  area.addEventListener("drop", (event) => {
+    const images = imageFiles(event.dataTransfer);
+    if (!images.length) return;
+    event.preventDefault();
+    void addImages(images);
+  });
   card.append(area);
+  imagesEl = document.createElement("div");
+  imagesEl.className = "feedback-images";
+  card.append(imagesEl);
+  renderImages();
 
   card.append(sectionTitle(t("联系方式（选填）")));
   const contact = document.createElement("input");
@@ -341,22 +391,94 @@ function checkRow(options: { checked: boolean; disabled?: boolean; title: string
   return row;
 }
 
+// 描述框粘贴截图 ----------------------------------------------------------
+const MAX_IMAGES = 6;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+let imagesEl: HTMLElement | null = null;
+
+function imageFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  return Array.from(data.files).filter((file) => IMAGE_TYPES.includes(file.type));
+}
+
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addImages(files: File[]): Promise<void> {
+  for (const file of files) {
+    if (draft.images.length >= MAX_IMAGES) {
+      showToast({ message: t("最多粘贴 6 张图片。"), error: true });
+      break;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      showToast({ message: t("单张图片不能超过 10 MB。"), error: true });
+      continue;
+    }
+    try {
+      draft.images.push({ data: await readBase64(file), bytes: file.size, url: URL.createObjectURL(file) });
+    } catch (error) {
+      showToast({ message: t("无法读取图片：{0}", errorText(error)), error: true });
+    }
+  }
+  renderImages();
+  renderFileSummary();
+}
+
+function renderImages(): void {
+  const el = imagesEl;
+  if (!el) return;
+  el.replaceChildren();
+  draft.images.forEach((image, index) => {
+    const tile = document.createElement("div");
+    tile.className = "feedback-image";
+    const img = document.createElement("img");
+    img.src = image.url;
+    img.alt = t("截图 {0}", index + 1);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "feedback-image-remove";
+    remove.title = t("移除");
+    remove.setAttribute("aria-label", t("移除"));
+    remove.textContent = "×";
+    remove.addEventListener("click", () => {
+      URL.revokeObjectURL(image.url);
+      draft.images.splice(index, 1);
+      renderImages();
+      renderFileSummary();
+    });
+    tile.append(img, remove);
+    el.append(tile);
+  });
+  const hint = document.createElement("p");
+  hint.className = "feedback-note";
+  hint.textContent = draft.images.length
+    ? t("已粘贴 {0} 张截图（最多 6 张），会随反馈一起发送。", draft.images.length)
+    : t("可直接粘贴或拖入截图，标注出问题位置更便于定位。");
+  el.append(hint);
+}
+
 function buildAttachmentCard(): HTMLElement {
   const card = createCard([], "feedback-card");
 
   card.append(sectionTitle(t("附带内容")));
-  card.append(checkRow({
-    checked: draft.includeSystem,
-    title: t("应用与系统信息"),
-    detail: t("版本号、操作系统、界面语言和模型连接方式，不含 API 密钥。"),
-    onChange: (checked) => {
-      draft.includeSystem = checked;
-    },
-  }));
+  kindsEl = document.createElement("div");
+  kindsEl.className = "feedback-kinds";
+  card.append(kindsEl);
+  otherFilesEl = document.createElement("div");
+  otherFilesEl.className = "feedback-list feedback-other-files";
+  card.append(otherFilesEl);
+  renderKinds();
 
   card.append(sectionTitle(
-    t("任务日志"),
-    t("日志已去除 API 密钥和文件路径，文件名替换为「文件1」「文件2」等；为便于定位问题，可能保留少量原文片段。发送前可点击「查看将发送的内容」逐条核对。"),
+    t("选择任务"),
+    t("上面勾选的任务日志、原文件和译文取自这里选中的任务。日志已去除 API 密钥和文件路径，文件名替换为「文件1」「文件2」等；为便于定位问题，可能保留少量原文片段。发送前可点击「查看将发送的内容」逐条核对。"),
   ));
   if (context?.tasks.length) card.append(buildTaskToolbar());
   taskListEl = document.createElement("div");
@@ -364,38 +486,101 @@ function buildAttachmentCard(): HTMLElement {
   renderTaskList();
   card.append(taskListEl);
 
-  card.append(sectionTitle(t("其他文件")));
-  const fileNote = document.createElement("p");
-  fileNote.className = "feedback-warning";
-  fileNote.textContent = t("文件可能包含客户资料，默认不附带。勾了哪些就上传哪些，总大小不超过 50 MB。");
-  card.append(fileNote);
-  const fileList = document.createElement("div");
-  fileList.className = "feedback-list";
+  fileSummaryEl = document.createElement("p");
+  card.append(fileSummaryEl);
+  renderFileSummary();
+  return card;
+}
+
+let kindsEl: HTMLElement | null = null;
+let otherFilesEl: HTMLElement | null = null;
+
+function sizeOf(files: PickedFile[]): number {
+  return files.reduce((sum, file) => sum + file.bytes, 0);
+}
+
+// 原文件、译文两项后面跟一句所选任务里实际有多少，免得勾了才发现是空的。
+function taskFilesDetail(base: string, kinds: FileKind[]): string {
+  if (!draft.taskIds.size) return base;
+  if (tasksLoading()) return [base, t("正在统计所选任务的文件…")].join(" ");
+  const files = selectedTaskFiles(kinds);
+  return files.length
+    ? [base, t("所选任务共 {0} 个，{1}。", files.length, formatBytes(sizeOf(files)))].join(" ")
+    : [base, t("所选任务中没有找到。")].join(" ");
+}
+
+function renderKinds(): void {
+  const el = kindsEl;
+  if (el) {
+    const option = (checked: boolean, title: string, detail: string, onChange: (value: boolean) => void): HTMLLabelElement =>
+      checkRow({ checked, title, detail, onChange: (value) => {
+        onChange(value);
+        renderKinds();
+      } });
+    el.replaceChildren(
+      option(draft.includeSystem, t("系统与版本信息"), t("应用版本、操作系统、处理器和内存、界面语言、模型连接方式，不含 API 密钥。"), (value) => {
+        draft.includeSystem = value;
+      }),
+      option(draft.includeLogs, t("任务日志"), t("所选任务的运行记录，文件名已替换为「文件1」「文件2」等。"), (value) => {
+        draft.includeLogs = value;
+      }),
+      option(draft.includeSources, t("原文件"), taskFilesDetail(t("所选任务翻译的原始文件。"), ["source"]), (value) => {
+        draft.includeSources = value;
+      }),
+      option(draft.includeOutputs, t("译文"), taskFilesDetail(t("所选任务生成的译文文件，含压缩版 PDF。"), ["output", "compressed"]), (value) => {
+        draft.includeOutputs = value;
+      }),
+      option(draft.includeOther, t("其他文件"), t("自己挑选的文件，例如截图或别处的文档。"), (value) => {
+        draft.includeOther = value;
+      }),
+    );
+    if (draft.includeSources || draft.includeOutputs || draft.includeOther) {
+      const warning = document.createElement("p");
+      warning.className = "feedback-warning";
+      warning.textContent = t("文件可能包含客户资料，仅在需要我们查看文件时附上，总大小不超过 50 MB。");
+      el.append(warning);
+    }
+  }
+  renderOtherFiles();
+  renderFileSummary();
+}
+
+function renderOtherFiles(): void {
+  const list = otherFilesEl;
+  if (!list) return;
+  list.replaceChildren();
+  list.hidden = !draft.includeOther;
+  if (!draft.includeOther) return;
   for (const file of draft.files) {
-    fileList.append(checkRow({
-      checked: file.checked,
-      disabled: !file.exists,
-      title: file.name,
-      detail: file.exists ? formatBytes(file.bytes) : t("文件不存在"),
-      onChange: (checked) => {
-        file.checked = checked;
+    const row = document.createElement("div");
+    row.className = "feedback-file";
+    row.append(icon("folder", { size: "sm" }));
+    const name = document.createElement("span");
+    name.className = "feedback-file-name";
+    name.textContent = file.name;
+    name.title = file.path;
+    const size = document.createElement("span");
+    size.className = "feedback-file-size";
+    size.textContent = file.exists ? formatBytes(file.bytes) : t("文件不存在");
+    row.append(name, size, createButton({
+      label: t("移除"),
+      size: "mini",
+      onClick: () => {
+        draft.files = draft.files.filter((item) => item.path !== file.path);
+        renderOtherFiles();
         renderFileSummary();
       },
     }));
+    list.append(row);
   }
   const maxFiles = context?.max_files ?? 10;
-  fileList.append(createButton({
+  list.append(createButton({
     label: t("添加文件…"),
     icon: "plus",
     size: "mini",
     disabled: draft.files.length >= maxFiles,
     onClick: () => void pickFiles(),
   }));
-  card.append(fileList);
-  fileSummaryEl = document.createElement("p");
-  card.append(fileSummaryEl);
-  renderFileSummary();
-  return card;
 }
 
 let fileSummaryEl: HTMLElement | null = null;
@@ -405,47 +590,15 @@ function renderFileSummary(): void {
   const el = fileSummaryEl;
   if (!el) return;
   const files = checkedFiles();
-  const total = files.reduce((sum, file) => sum + file.bytes, 0);
+  const total = sizeOf(files) + draft.images.reduce((sum, image) => sum + image.bytes, 0);
   const limit = context?.max_attachment_bytes ?? 50 * 1024 * 1024;
-  const maxFiles = context?.max_files ?? 10;
-  el.className = total > limit || files.length > maxFiles ? "feedback-total over" : "feedback-total";
-  el.textContent = files.length
-    ? t("将上传 {0} 个文件，合计 {1} / {2}", files.length, formatBytes(total), formatBytes(limit))
-    : t("未勾选任何文件。");
-}
-
-const FILE_KIND_LABEL: Record<FileKind, string> = localized(() => ({
-  source: t("原文件"),
-  output: t("译文"),
-  compressed: t("压缩版"),
-}));
-
-// 勾选任务下面缩进列出这次任务的文件，全部默认不勾。
-function taskFileRows(taskId: string): HTMLElement[] {
-  const files = taskFiles.get(taskId);
-  const wrap = document.createElement("div");
-  wrap.className = "feedback-task-files";
-  if (files === undefined || files === "loading") {
-    wrap.append(note(t("正在读取这次任务的文件…")));
-  } else if (!Array.isArray(files)) {
-    wrap.append(note(t("无法读取这次任务的文件：{0}", tx(files.error))));
-  } else if (!files.length) {
-    wrap.append(note(t("没有找到这次任务的文件，可在下方「其他文件」里手动添加。")));
-  } else {
-    for (const file of files) {
-      wrap.append(checkRow({
-        checked: draft.taskFilePaths.has(file.path),
-        title: `${FILE_KIND_LABEL[file.kind] ?? ""} · ${file.name}`,
-        detail: formatBytes(file.bytes),
-        onChange: (checked) => {
-          if (checked) draft.taskFilePaths.add(file.path);
-          else draft.taskFilePaths.delete(file.path);
-          renderFileSummary();
-        },
-      }));
-    }
-  }
-  return [wrap];
+  el.className = total > limit ? "feedback-total over" : "feedback-total";
+  const needsTask = (draft.includeLogs || draft.includeSources || draft.includeOutputs) && !draft.taskIds.size;
+  if (needsTask) el.textContent = t("尚未选择任务，任务日志、原文件和译文不会附上。");
+  else if (files.length && draft.images.length) el.textContent = t("将上传 {0} 个文件、{1} 张截图，合计 {2} / {3}", files.length, draft.images.length, formatBytes(total), formatBytes(limit));
+  else if (files.length) el.textContent = t("将上传 {0} 个文件，合计 {1} / {2}", files.length, formatBytes(total), formatBytes(limit));
+  else if (draft.images.length) el.textContent = t("将上传 {0} 张截图，合计 {1} / {2}", draft.images.length, formatBytes(total), formatBytes(limit));
+  else el.textContent = t("不附带文件。");
 }
 
 // 任务多的时候按关键词筛、按条数截断。已勾选的任务始终排在最前面，不受筛选和条数影响，
@@ -534,10 +687,9 @@ function renderTaskList(): void {
       onChange: (value) => {
         setTaskChecked(task.task_id, value);
         renderTaskList();
-        renderFileSummary();
+        renderKinds();
       },
     }));
-    if (checked) list.append(...taskFileRows(task.task_id));
   }
   if (!matchedCount && query) list.append(note(t("没有匹配的任务。")));
   else if (others.length > room) list.append(note(t("还有 {0} 条未显示，可搜索或调整显示条数。", others.length - room)));
@@ -555,7 +707,6 @@ async function pickFiles(): Promise<void> {
     const picked = await open({ title: t("选择要附上的文件"), multiple: true, directory: false });
     const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []).filter((path): path is string => typeof path === "string");
     const fresh = paths.filter((path) => !draft.files.some((file) => file.path === path));
-    // 自己挑的文件默认勾上；取消勾选就不上传。
     if (!fresh.length) return;
     const client = await getClient();
     const result = await client.request<{ files: PickedFile[] }>("/api/feedback/files", {
@@ -563,7 +714,7 @@ async function pickFiles(): Promise<void> {
       body: JSON.stringify({ paths: fresh }),
     });
     const maxFiles = context?.max_files ?? 10;
-    const combined = [...draft.files, ...result.files.map((file) => ({ ...file, checked: file.exists }))];
+    const combined = [...draft.files, ...result.files];
     if (combined.length > maxFiles) showToast({ message: t("一次最多附上 10 个文件。"), error: true });
     draft.files = combined.slice(0, maxFiles);
     render();
@@ -609,12 +760,15 @@ function buildActions(): HTMLElement {
   saveButton = createButton({ label: busy === "save" ? t("正在保存…") : t("保存为 ZIP"), onClick: () => void saveZip() });
   sendButton = createButton({ label: busy === "send" ? t("正在发送…") : t("发送"), variant: "primary", onClick: () => void send() });
   actions.append(previewButton, saveButton, sendButton);
-  wrap.append(actions);
 
+  // 底栏一行：左边说明，右边按钮。
+  const bar = document.createElement("div");
+  bar.className = "feedback-bar";
   const configured = context ? context.endpoint_configured : true;
-  wrap.append(note(configured
+  bar.append(note(configured
     ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，保存 90 天后自动删除。")
-    : t("此版本尚未开通在线发送，可先保存为 ZIP。")));
+    : t("此版本尚未开通在线发送，可先保存为 ZIP。")), actions);
+  wrap.append(bar);
   syncActionState();
   return wrap;
 }
@@ -647,13 +801,14 @@ function openPreviewModal(preview: PreviewPayload): void {
     list.append(li);
   };
   item(t("反馈内容与联系方式"));
-  if (preview.system) item(t("应用与系统信息"));
+  if (preview.system) item(t("系统与版本信息"));
   for (const task of preview.tasks) item(t("任务日志：{0} · {1}", SURFACE_LABEL[task.surface] ?? task.surface, taskStateWord(task.state)));
+  for (const image of preview.images ?? []) item(t("截图：{0}（{1}）", image.name, formatBytes(image.bytes)));
   for (const file of preview.files) item(t("文件：{0}（{1}）", file.name, formatBytes(file.bytes)));
   body.push(list);
 
   if (preview.system) {
-    body.push(previewBlock(t("应用与系统信息"), JSON.stringify(preview.system, null, 2)));
+    body.push(previewBlock(t("系统与版本信息"), JSON.stringify(preview.system, null, 2)));
   }
   for (const task of preview.tasks) {
     body.push(previewBlock(

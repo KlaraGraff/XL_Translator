@@ -294,15 +294,25 @@ class FullResetRequest(BaseModel):
     phrase: str = ""
 
 
+class FeedbackRequestImage(BaseModel):
+    # 描述框里粘贴的截图，base64（不带 data: 前缀）。单张上限在 core.feedback 里查。
+    data: str = Field(default="", max_length=14_500_000)
+
+
 class FeedbackRequest(BaseModel):
     category: Literal["problem", "suggestion", "other"] = "problem"
     # 长度上限在 core.feedback.validate_draft 里查，好给出中文提示而不是 422。
     description: str = Field(default="", max_length=20_000)
     contact: str = Field(default="", max_length=1_000)
     include_system: bool = True
+    # 下面三项取自 task_ids 选中的任务：日志、原文件、译文（含压缩版 PDF）。
+    include_logs: bool = True
+    include_source_files: bool = False
+    include_output_files: bool = False
     ui_language: str = Field(default="zh", max_length=16)
     task_ids: list[str] = Field(default_factory=list, max_length=20)
     file_paths: list[str] = Field(default_factory=list, max_length=50)
+    images: list[FeedbackRequestImage] = Field(default_factory=list, max_length=20)
 
     @field_validator("file_paths", mode="before")
     @classmethod
