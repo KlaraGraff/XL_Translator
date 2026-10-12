@@ -18,7 +18,6 @@ from api.cad_plugin import (
 from core.cad_translation import (
     CadPipelineError,
     CadPipelineOptions,
-    SubprocessCadConverter,
     scan_cad_paths,
 )
 from core.task_runner import user_facing_reason
@@ -71,9 +70,9 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/cad/scan")
     def scan_cad(payload: CadScanRequest) -> dict[str, Any]:
+        # DWG is listed without conversion (counts are counted by the task).
         status = probe_status()
         converter_path = str(status.get("converter") or "").strip()
-        converter = SubprocessCadConverter(converter_path) if converter_path else None
         options = CadPipelineOptions(
             source_lang=str(payload.source_language or "auto"),
             target_lang=str(payload.target_language or "zh"),
@@ -81,7 +80,9 @@ def register(app: FastAPI) -> None:
         )
         skipped: list[dict[str, str]] = []
         try:
-            summaries = scan_cad_paths(payload.paths, converter=converter, options=options, skipped=skipped)
+            summaries = scan_cad_paths(
+                payload.paths, converter_available=bool(converter_path), options=options, skipped=skipped
+            )
         except CadPipelineError as exc:
             raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc
         except Exception as exc:  # noqa: BLE001 - return a user-facing preflight error
@@ -97,6 +98,7 @@ def register(app: FastAPI) -> None:
                 "text_count": item.text_entity_count,
                 "candidate_count": item.candidate_count,
                 "needs_conversion": item.needs_conversion,
+                "counts_pending": item.counts_pending,
             }
             for item in summaries
         ]

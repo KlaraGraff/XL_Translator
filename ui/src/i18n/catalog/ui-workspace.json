@@ -1568,5 +1568,21 @@
   "打开路径失败。": {
     "en": "Could not open the path.",
     "fr": "Impossible d'ouvrir le chemin."
+  },
+  "开始后统计": {
+    "en": "Counted after start",
+    "fr": "Compté au lancement"
+  },
+  "DWG 图纸在开始翻译后转换并统计文字": {
+    "en": "DWG drawings are converted and their text counted once translation starts",
+    "fr": "Les plans DWG sont convertis et leur texte compté au lancement de la traduction"
+  },
+  "{0} 张 DWG 开始后统计": {
+    "en": "{0} DWG {0|drawing|drawings} counted after start",
+    "fr": "{0} {0|plan|plans} DWG {0|compté|comptés} au lancement"
+  },
+  "另有 {0} 张 DWG 开始后统计": {
+    "en": "Plus {0} DWG {0|drawing|drawings} counted after start",
+    "fr": "Plus {0} {0|plan|plans} DWG {0|compté|comptés} au lancement"
   }
 }

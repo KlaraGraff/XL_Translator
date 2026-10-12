@@ -59,6 +59,23 @@ CAD_STAGE_WEIGHTS: dict[str, int] = {
     "write": 8,
     "verify": 2,
 }
+# A DWG goes through the external converter three times: DWG→DXF to read it
+# (scan), DXF→DWG to write the translation back (write), and DWG→DXF again to
+# read the result back for verification (verify).  Each conversion takes from
+# seconds to minutes on a large drawing, so those stages get a real share of
+# the bar instead of the near-zero share a DXF needs.
+CAD_DWG_STAGE_WEIGHTS: dict[str, int] = {
+    "scan": 20,
+    "match": 2,
+    "translate": 55,
+    "write": 15,
+    "verify": 8,
+}
+
+
+def cad_stage_weights(path: str | Path) -> dict[str, int]:
+    """Per-stage weights (summing to 100) for one drawing, by its format."""
+    return CAD_DWG_STAGE_WEIGHTS if Path(path).suffix.lower() == ".dwg" else CAD_STAGE_WEIGHTS
 
 # AI 翻译阶段：多久没有请求返回就在运行日志里说一声（每隔 _TICK_SECONDS 看一次）。
 _TICK_SECONDS = 0.5
@@ -220,48 +237,63 @@ class CadTextUnit:
 
 @dataclass(frozen=True)
 class CadScanSummary:
-    """Preflight information used by the CAD page and task manager."""
+    """Preflight information used by the CAD page and task manager.
+
+    A DWG is never converted while scanning: the external converter takes
+    seconds to minutes per drawing, and the scan is one request with no
+    progress.  Its counts are ``None`` with ``counts_pending`` set; the task
+    converts and counts it, with log lines and progress.
+    """
 
     path: Path
     filename: str
     format: str
-    text_entity_count: int
-    candidate_count: int
+    text_entity_count: int | None
+    candidate_count: int | None
+    # DWG while no converter is connected: the file cannot be translated yet.
     needs_conversion: bool
     # 候选里程序判断不了语种、翻译时交给模型确认的条数（已计入 candidate_count）。
-    uncertain_count: int = 0
+    uncertain_count: int | None = 0
+    counts_pending: bool = False
 
 
-def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list[DxfRecord], bool]:
-    """Read a DXF directly or convert one DWG into a disposable DXF."""
-    if path.suffix.lower() == ".dxf":
-        try:
-            return _parse_dxf(_read_dxf_text(path)), False
-        except UnicodeError as exc:
-            raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
-    if path.suffix.lower() != ".dwg":
+def _read_scan_records(path: Path) -> list[DxfRecord]:
+    """Read a DXF for the preflight counts (DWG is not read here)."""
+    if path.suffix.lower() != ".dxf":
         raise CadPipelineError(f"不支持这种图纸格式：{path.suffix}（只支持 DWG 和 DXF）。")
-    if converter is None:
-        return [], True
-    with tempfile.TemporaryDirectory(prefix="xl-cad-scan-") as temporary:
-        dxf_path = Path(temporary) / f"{path.stem}.dxf"
-        converter.dwg_to_dxf(path, dxf_path)
-        try:
-            return _parse_dxf(_read_dxf_text(dxf_path)), False
-        except UnicodeError as exc:
-            raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
+    try:
+        return _parse_dxf(_read_dxf_text(path))
+    except UnicodeError as exc:
+        raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
 
 
 def scan_cad_file(
     path: str | Path,
     *,
-    converter: CadConverter | None = None,
+    converter_available: bool = False,
     options: CadPipelineOptions | None = None,
 ) -> CadScanSummary:
-    """Scan one CAD file without modifying it or creating a translation task."""
+    """Scan one CAD file without modifying it or creating a translation task.
+
+    DXF is parsed and counted.  DWG is only listed (see ``CadScanSummary``);
+    ``converter_available`` says whether a converter is connected, which
+    decides ``needs_conversion``.
+    """
     options = options or CadPipelineOptions()
     source = Path(path)
-    records, needs_conversion = _read_scan_records(source, converter)
+    if source.suffix.lower() == ".dwg":
+        return CadScanSummary(
+            path=source,
+            filename=source.name,
+            format="dwg",
+            text_entity_count=None,
+            candidate_count=None,
+            needs_conversion=not converter_available,
+            uncertain_count=None,
+            counts_pending=True,
+        )
+    records = _read_scan_records(source)
+    needs_conversion = False
     units = extract_cad_text_units(records, include_block_text=options.include_block_text)
     candidate_count = 0
     uncertain_count = 0
@@ -292,18 +324,11 @@ def scan_cad_file(
     )
 
 
-def scan_cad_paths(
-    paths: Iterable[str | Path],
-    *,
-    converter: CadConverter | None = None,
-    options: CadPipelineOptions | None = None,
-    skipped: list[dict[str, str]] | None = None,
-) -> list[CadScanSummary]:
-    """Scan selected CAD files and recursively expand selected directories.
+def list_cad_files(paths: Iterable[str | Path]) -> list[Path]:
+    """Selected DWG/DXF files, with selected directories expanded recursively.
 
-    When ``skipped`` is given, a file that cannot be read is recorded there
-    (``{"path", "name", "reason"}``) and the rest of the batch is still
-    scanned; without it the first error propagates, as before.
+    Nothing is opened or converted; previous translation outputs and CAD work
+    folders inside a selected directory are left out.
     """
     files: list[Path] = []
     for raw_path in paths:
@@ -323,13 +348,33 @@ def scan_cad_paths(
             )
         elif path.is_file() and path.suffix.lower() in CAD_SUPPORTED_EXTENSIONS:
             files.append(path)
-    unique_files = list(dict.fromkeys(files))
+    return list(dict.fromkeys(files))
+
+
+def scan_cad_paths(
+    paths: Iterable[str | Path],
+    *,
+    converter_available: bool = False,
+    options: CadPipelineOptions | None = None,
+    skipped: list[dict[str, str]] | None = None,
+) -> list[CadScanSummary]:
+    """Scan selected CAD files and recursively expand selected directories.
+
+    DWG files are listed without conversion (see ``scan_cad_file``).  When
+    ``skipped`` is given, a file that cannot be read is recorded there
+    (``{"path", "name", "reason"}``) and the rest of the batch is still
+    scanned; without it the first error propagates, as before.
+    """
+    unique_files = list_cad_files(paths)
     if skipped is None:
-        return [scan_cad_file(path, converter=converter, options=options) for path in unique_files]
+        return [
+            scan_cad_file(path, converter_available=converter_available, options=options)
+            for path in unique_files
+        ]
     summaries: list[CadScanSummary] = []
     for path in unique_files:
         try:
-            summaries.append(scan_cad_file(path, converter=converter, options=options))
+            summaries.append(scan_cad_file(path, converter_available=converter_available, options=options))
         except Exception as exc:  # noqa: BLE001 - one unreadable drawing must not hide the others
             skipped.append({"path": str(path), "name": path.name, "reason": str(exc) or exc.__class__.__name__})
     return summaries
@@ -921,6 +966,9 @@ class CadTranslationPipeline:
         # 不传就是不支持文件内暂停（老调用方、测试替身）。
         self.pause_gate = pause_gate
         self.last_translate_seconds = 0.0
+        # Set per drawing by ``translate_file``: a DWG spends real time in the
+        # converter at scan / write / verify.
+        self._stage_weights: dict[str, int] = CAD_STAGE_WEIGHTS
 
     def _wait_if_paused(self) -> None:
         if self.pause_gate is not None:
@@ -952,10 +1000,36 @@ class CadTranslationPipeline:
         if fraction is None:
             fraction = done / stage_total
         fraction = min(1.0, max(0.0, fraction))
-        before = sum(CAD_STAGE_WEIGHTS[name] for name in CAD_STAGE_WEIGHTS if list(CAD_STAGE_WEIGHTS).index(name) < list(CAD_STAGE_WEIGHTS).index(stage))
-        percent = before + CAD_STAGE_WEIGHTS[stage] * fraction
+        weights = self._stage_weights
+        stages = list(weights)
+        before = sum(weights[name] for name in stages[: stages.index(stage)])
+        percent = before + weights[stage] * fraction
         if self.progress:
             self.progress(CadProgress(stage, done, total, round(percent, 2), message, level))
+
+    def _convert(
+        self,
+        stage: str,
+        convert: Callable[[Path, Path], Path],
+        source: Path,
+        destination: Path,
+        *,
+        started: str,
+        finished: str,
+        done: int = 1,
+        total: int = 1,
+    ) -> None:
+        """Run one external conversion between two progress points.
+
+        The converter reports nothing while it runs, so the bar holds at the
+        stage start and moves once the conversion has really finished; the
+        run log says when it started and how long it took.
+        """
+        self._emit(stage, 0, total, started)
+        began = time.monotonic()
+        convert(source, destination)
+        seconds = f"{time.monotonic() - began:.1f}"
+        self._emit(stage, done, total, finished.format(seconds))
 
     def _call_translator(
         self,
@@ -1096,19 +1170,29 @@ class CadTranslationPipeline:
         evidence_dir.mkdir(parents=True, exist_ok=True)
         started_at = time.perf_counter()
         timings: dict[str, float] = {}
+        self._stage_weights = cad_stage_weights(source)
         with tempfile.TemporaryDirectory(prefix="xl-cad-") as temporary:
             temp_root = Path(temporary)
             work_dxf = temp_root / f"{source.stem}.dxf"
-            # DWG 转 DXF 要调用外部转换器，大图纸要好几秒：先报一次 0，界面马上进入「读取」阶段。
-            self._emit("scan", 0, 1)
             if source.suffix.lower() == ".dxf":
+                self._emit("scan", 0, 1)
                 shutil.copy2(source, work_dxf)
             elif self.converter is not None:
-                self.converter.dwg_to_dxf(source, work_dxf)
+                # DWG 转 DXF 要调用外部转换器，大图纸要几秒到几分钟：开始和结束各记一行
+                # 运行日志，进度在转换真正完成时才前进。
+                self._convert(
+                    "scan",
+                    self.converter.dwg_to_dxf,
+                    source,
+                    work_dxf,
+                    started="正在转换图纸格式（DWG → DXF）",
+                    finished="图纸格式转换完成，用时 {0} 秒",
+                )
             else:
                 raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
             # Keep a recoverable input/work copy even if a later provider or
-            # converter step fails.
+            # converter step fails.  Both evidence copies are removed again once
+            # the drawing has passed verification (see _discard_evidence).
             shutil.copy2(work_dxf, evidence_dir / "source.dxf")
             try:
                 dxf_encoding = _detect_dxf_encoding(work_dxf)
@@ -1287,7 +1371,14 @@ class CadTranslationPipeline:
             if output.suffix.lower() == ".dwg":
                 if self.converter is None:
                     raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
-                self.converter.dxf_to_dwg(translated_dxf, staged_output)
+                self._convert(
+                    "write",
+                    self.converter.dxf_to_dwg,
+                    translated_dxf,
+                    staged_output,
+                    started="正在将译文转换回 DWG 图纸",
+                    finished="已转换回 DWG 图纸，用时 {0} 秒",
+                )
             else:
                 shutil.copy2(translated_dxf, staged_output)
             timings["write"] = round(time.perf_counter() - write_started, 4)
@@ -1298,7 +1389,16 @@ class CadTranslationPipeline:
                 if self.converter is None:
                     raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
                 verification_dxf = temp_root / f"{source.stem}_verify.dxf"
-                self.converter.dwg_to_dxf(staged_output, verification_dxf)
+                # 读回刚生成的 DWG 核对文字：转换完成算校验阶段的一半，检查做完才到头。
+                self._convert(
+                    "verify",
+                    self.converter.dwg_to_dxf,
+                    staged_output,
+                    verification_dxf,
+                    started="正在读回译文图纸以便校验",
+                    finished="译文图纸读回完成，用时 {0} 秒",
+                    total=2,
+                )
             if options.verify_roundtrip:
                 self._check_stop()
                 output_records = _parse_dxf(_read_dxf_text(verification_dxf))
@@ -1395,7 +1495,28 @@ class CadTranslationPipeline:
             if output.exists():
                 raise CadPipelineError("处理期间输出位置出现同名文件，为避免覆盖，未写入译文图纸。")
             shutil.copy2(staged_output, output)
+            _discard_evidence(evidence_dir)
             return CadTranslationResult(source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf, manifest_path, report_path, stats, unresolved, timings, summary_path)
+
+
+def _discard_evidence(evidence_dir: Path) -> None:
+    """Drop the evidence DXF copies of a drawing that passed verification.
+
+    ``source.dxf`` / ``translated.dxf`` exist for troubleshooting a drawing
+    that failed (they stay when any step raises).  After a pass they only
+    double the disk use of a large ASCII DXF; nothing reads them later — the
+    manifest, report and summary are kept, and so is the optional work DXF
+    (``keep_work_dxf``).  An evidence folder left empty is removed.
+    """
+    for name in ("source.dxf", "translated.dxf"):
+        try:
+            (evidence_dir / name).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"[CAD] 无法删除校验用的图纸副本 {name}：{exc!r}")
+    try:
+        evidence_dir.rmdir()
+    except OSError:
+        pass  # not empty (or already gone): leave it
 
 
 class SubprocessCadConverter:

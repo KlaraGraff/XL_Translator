@@ -88,6 +88,27 @@ def _file_identity(source: Path) -> dict[str, str]:
     return {"name": source.name, "file_id": file_progress_id(source)}
 
 
+# 整批进度条的分母。step_done/step_total 只当比例用（界面和任务中心都只取比值）。
+_BATCH_PROGRESS_SCALE = 10000
+
+
+def _file_progress_weight(path: Path) -> float:
+    """One drawing's share of the batch progress bar.
+
+    0.2 + size in MB, where a DXF counts a fifth of its size: an ASCII DXF is
+    several times larger than the same drawing as DWG, and reading it takes no
+    converter.  The 0.2 floor keeps a tiny drawing from being invisible; the
+    size term keeps a 40 MB drawing from getting the same share as a 100 KB one.
+    """
+    try:
+        size_mb = path.stat().st_size / (1024 * 1024)
+    except OSError:
+        size_mb = 0.0
+    if path.suffix.lower() == ".dxf":
+        size_mb /= 5
+    return 0.2 + size_mb
+
+
 def _target_filename_label(target_lang: str) -> str:
     """Return a stable, filesystem-safe target-language suffix."""
     label = get_target_lang_display(str(target_lang or "").strip()) or str(target_lang or "").strip()
@@ -165,6 +186,19 @@ class CadTaskRunner(BaseTaskRunner):
         self._thread: threading.Thread | None = None
         self._file_progress = FileProgressReporter(self._queue, files, self._source_root)
         self._file_progress.emit_many("waiting", "extract")
+        # 每个文件在整批进度里占的份额（见 _file_progress_weight）和它之前所有文件的
+        # 份额之和；_batch_shown 是已经报出去的最大值，进度只进不退。
+        weights = [_file_progress_weight(Path(item.path)) for item in files]
+        total_weight = sum(weights) or 1.0
+        offsets: list[float] = []
+        running = 0.0
+        for weight in weights:
+            offsets.append(running)
+            running += weight
+        self._file_weights = [weight / total_weight for weight in weights]
+        self._file_offsets = [offset / total_weight for offset in offsets]
+        self._batch_shown = 0
+        self._last_label = ""
 
     def _before_start(self) -> None:
         self._pause_event.clear()
@@ -197,26 +231,18 @@ class CadTaskRunner(BaseTaskRunner):
         # 「阶段 i/5 + 阶段内进度」，界面按阶段折算出的总进度会在第二个文件回到
         # 「读取与扫描」时倒退一大截。CAD 这里直接上报整批的总进度：
         # step_done/step_total = 已完成文件 + 当前文件内的加权进度（CadProgress.percent
-        # 已按 CAD_STAGE_WEIGHTS 折算好），phase_index=0 表示「没有跨文件的阶段划分」，
-        # 界面就直接用这个比例画进度条。phase_name 写成「阶段名 · 具体一步：第 i / N 个
-        # 文件」，界面取「 · 」前面的部分当阶段名，后半句当进度卡标题。
+        # 已按各格式的阶段权重折算好，见 cad_stage_weights），phase_index=0 表示「没有
+        # 跨文件的阶段划分」，界面就直接用这个比例画进度条。phase_name 写成「阶段名 ·
+        # 具体一步：第 i / N 个文件」，界面取「 · 」前面的部分当阶段名，后半句当进度卡标题。
+        # 文件之间不再平分：每个文件按大小占一份（_file_progress_weight），大图纸不会和
+        # 小图纸各占一样多。
         file_count = max(1, len(self._files))
         index = next((i for i, item in enumerate(self._files) if file_path is not None and Path(item.path) == Path(file_path)), 0)
         local_percent = max(0.0, min(100.0, float(progress.percent)))
-        batch_done = int(round(index * 100 + local_percent))
-        batch_total = file_count * 100
         detail = f"{activity}：第 {index + 1} / {file_count} 个文件" if file_count > 1 else activity
         label = f"{stage_name} · {detail}" if detail else stage_name
         self._last_stage = progress.stage
-        self._queue.put(
-            ProgressMsg(
-                phase_index=0,
-                phase_total=0,
-                phase_name=label,
-                step_done=batch_done,
-                step_total=batch_total,
-            )
-        )
+        self._put_batch_progress(index, local_percent / 100.0, label)
         # 具体说明（「发现 N 个可翻译文字实体」等）进运行日志，不再用状态消息覆盖进度卡标题——
         # 以前标题会在「AI 翻译」和「状态：[阶段 3/5] 翻译完成」之间来回跳。
         if progress.message:
@@ -232,6 +258,29 @@ class CadTaskRunner(BaseTaskRunner):
                 completed=max(0, int(progress.done)),
                 total=max(1, int(progress.total)),
             )
+
+    def _put_batch_progress(self, index: int, fraction: float, label: str | None = None) -> None:
+        """Report the whole batch's progress: files before ``index`` plus ``fraction`` of it."""
+        if self._file_weights:
+            index = max(0, min(index, len(self._file_weights) - 1))
+            share = self._file_offsets[index] + self._file_weights[index] * max(0.0, min(1.0, fraction))
+        else:
+            share = 1.0
+        done = min(_BATCH_PROGRESS_SCALE, int(round(share * _BATCH_PROGRESS_SCALE)))
+        # 只进不退：失败或沿用上次结果的文件之后，下一个文件从自己的起点开始报。
+        done = max(done, self._batch_shown)
+        self._batch_shown = done
+        if label is not None:
+            self._last_label = label
+        self._queue.put(
+            ProgressMsg(
+                phase_index=0,
+                phase_total=0,
+                phase_name=self._last_label,
+                step_done=done,
+                step_total=_BATCH_PROGRESS_SCALE,
+            )
+        )
 
     def _log(self, level: str, message: str) -> None:
         self._queue.put(LogMsg(level=level, message=message))
@@ -283,7 +332,10 @@ class CadTaskRunner(BaseTaskRunner):
     def _publish_result(self, result: Any, output: Path) -> Any:
         """Atomically publish only the final CAD file into the task output."""
         work_output = Path(result.output)
-        result.work_evidence_dir = work_output.parent / f"{work_output.stem}.cad-work"
+        evidence_dir = work_output.parent / f"{work_output.stem}.cad-work"
+        # A drawing that passed verification has no evidence folder left (the
+        # pipeline removes its DXF copies and the then-empty folder).
+        result.work_evidence_dir = evidence_dir if evidence_dir.is_dir() else None
         output.parent.mkdir(parents=True, exist_ok=True)
         staged = output.with_name(f".{output.name}.{self._run_id}.publish")
         if staged.exists():
@@ -327,6 +379,9 @@ class CadTaskRunner(BaseTaskRunner):
         review_parent.mkdir(parents=True, exist_ok=True)
         evidence_source = result.output.parent / f"{result.output.stem}.cad-work"
         evidence_target: Path | None = None
+        if evidence_source.is_dir() and not any(evidence_source.iterdir()):
+            # Nothing to keep: do not move an empty folder into the review area.
+            evidence_source.rmdir()
         if evidence_source.is_dir():
             evidence_target = review_parent / evidence_source.name
             collision_index = 2
@@ -465,7 +520,7 @@ class CadTaskRunner(BaseTaskRunner):
                 )
         try:
             self._log("INFO", f"共 {len(self._files)} 个图纸文件")
-            for item in self._files:
+            for file_index, item in enumerate(self._files):
                 self._wait_while_paused(CAD_PAUSED_STATUS)
                 source = Path(item.path)
                 if self._stop_event.is_set():
@@ -533,6 +588,7 @@ class CadTaskRunner(BaseTaskRunner):
                         file_result.update({**_file_identity(source), "source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
+                        self._put_batch_progress(file_index, 1.0)
                         self._log("INFO", f"{source.name}：沿用上次的翻译结果")
                         checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
@@ -579,6 +635,8 @@ class CadTaskRunner(BaseTaskRunner):
                     results.append({**_file_identity(source), "source_path": str(source), "status": "failed", "message": message})
                     issues.append({"file": source.name, "stage": "cad", "message": message, "problem": message})
                     self._log("ERROR", f"{source.name}：{message}")
+                    # 这张图纸已经处理完（失败也是结果）：进度到它的终点，下一张接着走。
+                    self._put_batch_progress(file_index, 1.0)
                     continue
                 stats = result.stats
                 translated_count += stats.changed
