@@ -269,3 +269,22 @@ def test_underlined_latin_text_is_not_swallowed_by_the_format_code(tmp_path):
     assert _field(_entities(output, "MTEXT")[0], 1) == "{\\LPlan de démolition des murs}"
     records = _parse_dxf(output.read_text(encoding="utf-8"))
     assert [unit.plain_text for unit in extract_cad_text_units(records)] == ["Plan de démolition des murs"]
+
+
+def test_text_split_by_an_inline_font_change_is_translated_as_one_phrase(tmp_path):
+    # 「平面图」中间夹着换字体的代码：以前拆成「平面」「图」分别翻译，拼回成「Vue en planDessin」。
+    from core.cad_translation import _mtext_runs
+
+    assert [run.text for run in _mtext_runs("平面{\\fSimSun|b0|i0|c134|p2;图}")] == ["平面图"]
+    assert [run.text for run in _mtext_runs("{\\fA;平面}{\\fB;图}\\P说明")] == ["平面图", "说明"]
+    assert [run.text for run in _mtext_runs("Plan {\\Ldetail}")] == ["Plan detail"]
+    mtext = (
+        (0, "MTEXT"), (5, "21"), (330, "1F"), (100, "AcDbEntity"), (8, "0"), (100, "AcDbMText"),
+        (10, "0"), (20, "0"), (30, "0"), (40, "2.5"), (41, "60"), (71, "1"),
+        (1, "{\\fSimSun|b0;平面}{\\fSimHei|b0;图}\\P说明"), (7, "Standard"),
+    )
+    _, output, _ = _translate(
+        tmp_path, _drawing(*mtext), {"平面图": "Vue en plan", "说明": "Note", "平面": "X", "图": "Y"},
+        translation_font="original",
+    )
+    assert _field(_entities(output, "MTEXT")[0], 1) == "{\\fSimSun|b0;Vue en plan}{\\fSimHei|b0;}\\PNote"

@@ -286,11 +286,17 @@ class DxfRecord:
 
 @dataclass(frozen=True)
 class CadTextRun:
-    """A translatable run inside an entity, excluding MTEXT controls."""
+    """A translatable run inside an entity, excluding MTEXT controls.
+
+    ``parts``：一句话被换字体、下划线这类格式代码切成几段时（「平面{\\fSimSun;图}」），
+    几段合成一个 run 送去翻译，写回时译文放在第一段，其余几段清空，格式代码照留。
+    空着表示整个 ``start:end`` 就是一段。
+    """
 
     start: int
     end: int
     text: str
+    parts: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -788,7 +794,43 @@ def _mtext_runs(value: str) -> tuple[CadTextRun, ...]:
         plain = _plain_text(value[start:])
         if plain:
             runs.append(CadTextRun(start, len(value), plain))
-    return tuple(runs)
+    return _join_split_runs(value, runs)
+
+
+# 两段文字之间只隔着这些（换字体、字高、颜色、下划线、括号）时，看上去就是连在一起的一句话。
+# \P 换行不算：换了行就是两句。
+_INLINE_GAP_RE = re.compile(r"(?:\\[fFhHwWcCaAtTqQsS][^;]*;|\\[LlOoKk]|[{}])*")
+
+
+def _join_split_runs(value: str, runs: Sequence[CadTextRun]) -> tuple[CadTextRun, ...]:
+    """把被格式代码切开的同一句话合成一个 run。
+
+    「平面图」中间夹一个换字体的代码时，以前拆成「平面」「图」分别翻译，拼回去成了
+    「Vue en planDessin」。
+    """
+    out: list[CadTextRun] = []
+    group: list[CadTextRun] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        if len(group) == 1:
+            out.append(group[0])
+        else:
+            raw = "".join(value[run.start:run.end] for run in group)
+            out.append(CadTextRun(
+                group[0].start, group[-1].end, _plain_text(raw), tuple((run.start, run.end) for run in group),
+            ))
+        group.clear()
+
+    for run in runs:
+        if group and _INLINE_GAP_RE.fullmatch(value[group[-1].end:run.start]):
+            group.append(run)
+            continue
+        flush()
+        group.append(run)
+    flush()
+    return tuple(out)
 
 
 def _record_copy(record: DxfRecord, *, value: str, code: int | None = None) -> DxfRecord:
@@ -1329,6 +1371,20 @@ def _replace_runs(
     for run in reversed(runs):
         target = translations.get(run.text)
         if not target:
+            continue
+        if run.parts:
+            # 译文放进第一段，后面几段只留空白，中间的格式代码不动。
+            for part_start, part_end in reversed(run.parts[1:]):
+                span = assembled[part_start:part_end]
+                assembled = assembled[:part_start] + ("" if span.strip() else span) + assembled[part_end:]
+            first_start, first_end = run.parts[0]
+            span = assembled[first_start:first_end]
+            leading = re.match(r"\s*", span).group(0)
+            trailing = re.search(r"\s*$", span).group(0)
+            replacement = _encode_dxf_text(
+                leading + _safe_translation(span.strip(), target) + trailing, multiline=False, escape=escape,
+            )
+            assembled = assembled[:first_start] + replacement + assembled[first_end:]
             continue
         span = assembled[run.start:run.end]
         leading = re.match(r"\s*", span).group(0)
