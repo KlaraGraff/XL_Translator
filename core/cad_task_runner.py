@@ -332,7 +332,10 @@ class CadTaskRunner(BaseTaskRunner):
     def _publish_result(self, result: Any, output: Path) -> Any:
         """Atomically publish only the final CAD file into the task output."""
         work_output = Path(result.output)
-        result.work_evidence_dir = work_output.parent / f"{work_output.stem}.cad-work"
+        evidence_dir = work_output.parent / f"{work_output.stem}.cad-work"
+        # A drawing that passed verification has no evidence folder left (the
+        # pipeline removes its DXF copies and the then-empty folder).
+        result.work_evidence_dir = evidence_dir if evidence_dir.is_dir() else None
         output.parent.mkdir(parents=True, exist_ok=True)
         staged = output.with_name(f".{output.name}.{self._run_id}.publish")
         if staged.exists():
@@ -376,6 +379,9 @@ class CadTaskRunner(BaseTaskRunner):
         review_parent.mkdir(parents=True, exist_ok=True)
         evidence_source = result.output.parent / f"{result.output.stem}.cad-work"
         evidence_target: Path | None = None
+        if evidence_source.is_dir() and not any(evidence_source.iterdir()):
+            # Nothing to keep: do not move an empty folder into the review area.
+            evidence_source.rmdir()
         if evidence_source.is_dir():
             evidence_target = review_parent / evidence_source.name
             collision_index = 2

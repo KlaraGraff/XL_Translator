@@ -307,3 +307,76 @@ def test_failed_drawing_advances_to_its_end_and_never_goes_back(tmp_path):
     values = [message.step_done for message in list(runner._queue.queue) if isinstance(message, ProgressMsg)]
     assert values == sorted(values)
     assert values[-1] == values[-2] == round(runner._file_weights[0] * _BATCH_PROGRESS_SCALE)
+
+
+# ---------------------------------------------------------------------------
+# Evidence DXF copies: kept only for a drawing that fails.
+# ---------------------------------------------------------------------------
+
+
+class _LossyReadBackConverter(_CountingConverter):
+    """The read-back after writing loses a text, so verification fails."""
+
+    def dwg_to_dxf(self, source: Path, destination: Path) -> Path:
+        super().dwg_to_dxf(source, destination)
+        if "_staged" in Path(source).name:
+            destination.write_text(_dxf_text("Door").replace("0\nTEXT\n1\nDoor\n", ""), encoding="utf-8")
+        return destination
+
+
+def test_verified_drawing_drops_its_evidence_dxf_copies(tmp_path, monkeypatch):
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "plan.dwg"
+    source.write_text(_dxf_text("Door"), encoding="utf-8")
+    runner = CadTaskRunner(
+        files=[SimpleNamespace(path=source, name=source.name, format="dwg")],
+        source_root=tmp_path,
+        output_dir=tmp_path / "results",
+        converter=_CountingConverter(),
+        translator=lambda texts, glossary: {"Door": "门"},
+        options=CadPipelineOptions(),
+    )
+    messages = _run(runner)
+    done = next(message for message in messages if hasattr(message, "file_results"))
+    entry = done.file_results[0]
+    assert entry["status"] == "succeeded"
+    assert entry["work_evidence_dir"] == ""
+    for root in (tmp_path / "results", tmp_path / "app-data"):
+        assert not list(root.rglob("*.cad-work")), list(root.rglob("*.cad-work"))
+        assert not list(root.rglob("source.dxf")) and not list(root.rglob("translated.dxf"))
+    for key in ("manifest_path", "report_path", "summary_path"):
+        assert Path(entry[key]).is_file(), key
+    # 「另存一份 DXF」照旧保留。
+    assert Path(entry["work_dxf"]).is_file()
+
+
+def test_drawing_that_fails_verification_keeps_its_evidence(tmp_path):
+    source = tmp_path / "plan.dwg"
+    source.write_text(_dxf_text("Door"), encoding="utf-8")
+    output = tmp_path / "out" / "plan_zh.dwg"
+    with pytest.raises(Exception, match="文字数量不一致"):
+        CadTranslationPipeline(
+            converter=_LossyReadBackConverter(), translator=lambda texts, glossary: {"Door": "门"}
+        ).translate_file(source, output)
+    evidence = output.parent / "plan_zh.cad-work"
+    assert (evidence / "source.dxf").is_file()
+    assert (evidence / "translated.dxf").is_file()
+    assert not output.exists()
+
+
+def test_empty_evidence_folder_is_not_moved_into_review(tmp_path):
+    runner = CadTaskRunner(
+        files=[], source_root=tmp_path, output_dir=tmp_path / "results",
+        converter=None, translator=lambda texts, glossary: {}, options=CadPipelineOptions(),
+    )
+    output = runner._publication_dir / "plan_zh.dxf"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_dxf_text(), encoding="utf-8")
+    (output.parent / "plan_zh.cad-work").mkdir()
+    manifest = output.with_suffix(".dxf.manifest.json")
+    manifest.write_text("{}", encoding="utf-8")
+    result = SimpleNamespace(output=output, manifest=manifest, report=manifest, summary=None, work_dxf=None)
+    runner._relocate_file_artifacts(result)
+    assert result.work_evidence_dir is None
+    assert not (output.parent / "plan_zh.cad-work").exists()
+    assert not list(runner._review_dir.rglob("*.cad-work"))

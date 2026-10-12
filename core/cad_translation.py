@@ -1191,7 +1191,8 @@ class CadTranslationPipeline:
             else:
                 raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
             # Keep a recoverable input/work copy even if a later provider or
-            # converter step fails.
+            # converter step fails.  Both evidence copies are removed again once
+            # the drawing has passed verification (see _discard_evidence).
             shutil.copy2(work_dxf, evidence_dir / "source.dxf")
             try:
                 dxf_encoding = _detect_dxf_encoding(work_dxf)
@@ -1494,7 +1495,28 @@ class CadTranslationPipeline:
             if output.exists():
                 raise CadPipelineError("处理期间输出位置出现同名文件，为避免覆盖，未写入译文图纸。")
             shutil.copy2(staged_output, output)
+            _discard_evidence(evidence_dir)
             return CadTranslationResult(source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf, manifest_path, report_path, stats, unresolved, timings, summary_path)
+
+
+def _discard_evidence(evidence_dir: Path) -> None:
+    """Drop the evidence DXF copies of a drawing that passed verification.
+
+    ``source.dxf`` / ``translated.dxf`` exist for troubleshooting a drawing
+    that failed (they stay when any step raises).  After a pass they only
+    double the disk use of a large ASCII DXF; nothing reads them later — the
+    manifest, report and summary are kept, and so is the optional work DXF
+    (``keep_work_dxf``).  An evidence folder left empty is removed.
+    """
+    for name in ("source.dxf", "translated.dxf"):
+        try:
+            (evidence_dir / name).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"[CAD] 无法删除校验用的图纸副本 {name}：{exc!r}")
+    try:
+        evidence_dir.rmdir()
+    except OSError:
+        pass  # not empty (or already gone): leave it
 
 
 class SubprocessCadConverter:
