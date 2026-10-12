@@ -2578,6 +2578,9 @@ class TaskRunner(BaseTaskRunner):
             shrunk = int(write_stats.get("shrunk_shapes") or 0)
             if shrunk:
                 self._log("INFO", f"  → {file_item.name}：{shrunk} 个文本框的译文放不下，已缩小字号")
+            grown = int(write_stats.get("grown_shapes") or 0)
+            if grown:
+                self._log("INFO", f"  → {file_item.name}：{grown} 个文本框缩小字号后仍放不下，已往下加高")
             if excel_output.translate_sheet_names:
                 with ZipFile(out_path) as workbook_package:
                     workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))

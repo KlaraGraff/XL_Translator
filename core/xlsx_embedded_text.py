@@ -117,6 +117,7 @@ class EmbeddedWriteStats:
     shape_paragraphs: int = 0
     comments: int = 0
     shrunk_shapes: int = 0
+    grown_shapes: int = 0
 
 
 # ── 遍历 ──────────────────────────────────────────────────────────────────────
@@ -749,12 +750,20 @@ def _apply_shapes(
             )
 
     for sp in shapes:
-        scale, fits = _fitting_scale(before[id(sp)], _shape_layout(sp, grid))
+        after = _shape_layout(sp, grid)
+        scale, fits = _fitting_scale(before[id(sp)], after)
         if scale >= 1:
             continue
         _shrink_shape_text(sp.find(_x("txBody")), scale)
         stats.shrunk_shapes += 1
-        if not fits and review_positions is not None:
+        if fits:
+            continue
+        # 缩到下限还放不下：框往下加高到放得下（maple 2026-10-12 选的做法）。加不了的
+        # （竖排、旋转、组合里的形状、量不出大小）才列入复核。
+        if _grow_shape(sp, after, scale, grid):
+            stats.grown_shapes += 1
+            continue
+        if review_positions is not None:
             review_positions.append(
                 {
                     "worksheet": parts.name,
@@ -764,6 +773,56 @@ def _apply_shapes(
                 }
             )
     package.write(parts.drawing, _serialize(root))
+
+
+def _grow_shape(sp, layout: _ShapeLayout, scale: float, grid: _SheetGrid | None) -> bool:
+    """把形状往下加高到按 ``scale`` 缩过的文字放得下（多留一行），成功返回 True。"""
+    if layout.width is None or layout.height is None or not layout.wrap:
+        return False
+    tx_body = sp.find(_x("txBody"))
+    body_pr = tx_body.find(_a("bodyPr")) if tx_body is not None else None
+    if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
+        return False
+    xfrm = sp.find(f"{_x('spPr')}/{_a('xfrm')}")
+    if xfrm is not None and xfrm.get("rot") not in (None, "0"):
+        return False
+    anchor = sp.getparent()
+    if anchor is None or anchor.tag not in {_x("twoCellAnchor"), _x("oneCellAnchor"), _x("absoluteAnchor")}:
+        return False  # 组合里的形状：加高会和组合的坐标对不上
+    paragraphs = list(layout.paragraphs)
+    margin = max((p.size_pt for p in paragraphs), default=0.0) * scale * 1.4
+    extra = paragraphs_height(paragraphs, layout.width, scale) + margin - layout.height
+    if extra <= 0:
+        return False
+    extra_emu = int(math.ceil(extra * _EMU_PER_PT))
+    if anchor.tag == _x("twoCellAnchor"):
+        end = anchor.find(_x("to"))
+        row_el = end.find(_x("row")) if end is not None else None
+        off_el = end.find(_x("rowOff")) if end is not None else None
+        if row_el is None or off_el is None:
+            return False
+        try:
+            row, offset = int(row_el.text), int(off_el.text)
+        except (TypeError, ValueError):
+            return False
+        remaining = extra + offset / _EMU_PER_PT
+        for _ in range(10000):
+            height = grid.row(row) if grid is not None else _DEFAULT_ROW_PT
+            if height > 0 and remaining < height:
+                break
+            remaining -= max(0.0, height)
+            row += 1
+        row_el.text = str(row)
+        off_el.text = str(int(math.ceil(remaining * _EMU_PER_PT)))
+    else:
+        ext = anchor.find(_x("ext"))
+        if ext is None:
+            return False
+        ext.set("cy", str(_emu_attr(ext, "cy", 0) + extra_emu))
+    ext = xfrm.find(_a("ext")) if xfrm is not None else None
+    if ext is not None:
+        ext.set("cy", str(_emu_attr(ext, "cy", 0) + extra_emu))
+    return True
 
 
 def _replace_comment_text(text_el, prefix: str, body: str) -> None:

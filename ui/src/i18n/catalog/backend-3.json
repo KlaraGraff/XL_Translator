@@ -1558,5 +1558,9 @@
   "  → {0}：另有批注 {1} 条待翻译": {
     "en": "  → {0}: also {1} {1|comment|comments} to translate",
     "fr": "  → {0} : également {1} {1|commentaire|commentaires} à traduire"
+  },
+  "  → {0}：{1} 个文本框缩小字号后仍放不下，已往下加高": {
+    "en": "  → {0}: {1} text {1|box|boxes} still too small after reducing the font size; made taller",
+    "fr": "  → {0} : {1} {1|zone de texte encore trop petite après réduction de la police ; agrandie vers le bas|zones de texte encore trop petites après réduction de la police ; agrandies vers le bas}"
   }
 }

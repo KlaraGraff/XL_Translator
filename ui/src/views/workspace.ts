@@ -176,7 +176,7 @@ const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "translateSheetNames", label: t("翻译工作表名称"), hint: t("同时翻译工作表标签名，并同步更新公式中引用的表名；无法安全重命名的工作表保留原名。"), default: true, pathKind: "output", path: "translate_sheet_names" },
   { key: "keepOriginal", label: t("另存原文工作表"), hint: t("在每张工作表旁保留一份未翻译的原文副本，表名后加「_原文」。"), default: true, pathKind: "output", path: "keep_original_sheets" },
-  { key: "translateShapes", label: t("翻译文本框和形状"), hint: t("同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的列入复核清单。"), default: true, pathKind: "output", path: "translate_shapes" },
+  { key: "translateShapes", label: t("翻译文本框和形状"), hint: t("同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的，把文本框往下加高，可能会盖住下面几行单元格。"), default: true, pathKind: "output", path: "translate_shapes" },
   { key: "translateComments", label: t("翻译批注"), hint: t("同时翻译单元格批注。双语时译文接在原批注下一行，作者署名保留不译。"), default: false, pathKind: "output", path: "translate_comments" },
   { key: "formulaBackfill", label: t("翻译公式单元格"), hint: t("公式单元格按当前显示内容写为双语文本，此后不再自动计算。关闭时公式单元格保持原样，不予翻译。"), default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: t("用 Excel 调整行高"), hint: t("需要本机安装 Excel。开启后由 Excel 按译文重新计算行高，结果更准确；Excel 不可用时保留估算行高，并在结果中提示。"), default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },

@@ -238,18 +238,43 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"1100"})
         self.assertEqual(stats["shrunk_shapes"], 0)
 
-    def test_box_too_small_even_at_minimum_size_is_listed_for_review(self) -> None:
+    def test_box_too_small_even_at_minimum_size_grows_down(self) -> None:
         build_workbook(self.source, box=(1097280, 457200))  # 1.2 英寸 × 0.5 英寸
         review: list[dict[str, str]] = []
+        stats: dict = {}
+        drawing = _part(self._write(review_positions=review, stats=stats), "xl/drawings/drawing1.xml")
+        self.assertEqual(set(re.findall(r'sz="(\d+)"', drawing)), {"660"})
+        # 缩到下限还放不下：锚点右下角和 xfrm 一起往下挪，不再列入复核。
+        to_row, to_offset = re.search(
+            r"<xdr:to>.*?<xdr:row>(\d+)</xdr:row><xdr:rowOff>(\d+)</xdr:rowOff>", drawing
+        ).groups()
+        grown_pt = (int(to_row) - 1) * 15 + int(to_offset) / 12700
+        cy = int(re.search(r'<a:ext cx="\d+" cy="(\d+)"', drawing).group(1))
+        self.assertGreater(grown_pt, 457200 / 12700)
+        self.assertAlmostEqual(cy / 12700, grown_pt, delta=1)
+        self.assertEqual(review, [])
+        self.assertEqual(stats["grown_shapes"], 1)
+
+    def test_rotated_box_that_cannot_grow_is_listed_for_review(self) -> None:
+        build_workbook(self.source, box=(1097280, 457200))
+        with zipfile.ZipFile(self.source) as source:
+            items = {name: source.read(name) for name in source.namelist()}
+        items["xl/drawings/drawing1.xml"] = items["xl/drawings/drawing1.xml"].replace(
+            b"<a:xfrm>", b'<a:xfrm rot="5400000">'
+        )
+        with zipfile.ZipFile(self.source, "w") as target:
+            for name, data in items.items():
+                target.writestr(name, data)
+        review: list[dict[str, str]] = []
         drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
-        self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"660"})
+        self.assertIn("<xdr:row>1</xdr:row><xdr:rowOff>457200</xdr:rowOff></xdr:to>", drawing)
         self.assertIn(
             {"worksheet": "表1", "cell": "TextBox 1", "category": REVIEW_CATEGORY_SHAPE_OVERFLOW, "action": "listed_only"},
             review,
         )
 
     def test_two_cell_anchor_size_wins_over_recorded_shape_size(self) -> None:
-        # xfrm 里写着 5 英寸宽，锚点实际只框住 1.2 英寸 × 0.5 英寸：按锚点算，缩到下限。
+        # xfrm 里写着 5 英寸宽，锚点实际只框住 1.2 英寸 × 0.5 英寸：按锚点算，缩到下限再加高。
         build_workbook(self.source, box=(4572000, 1524000))
         with zipfile.ZipFile(self.source) as source:
             items = {name: source.read(name) for name in source.namelist()}
@@ -259,10 +284,10 @@ class EmbeddedTextTests(unittest.TestCase):
         with zipfile.ZipFile(self.source, "w") as target:
             for name, data in items.items():
                 target.writestr(name, data)
-        review: list[dict[str, str]] = []
-        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
-        self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"660"})
-        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
+        stats: dict = {}
+        drawing = _part(self._write(stats=stats), "xl/drawings/drawing1.xml")
+        self.assertEqual(set(re.findall(r'sz="(\d+)"', drawing)), {"660"})
+        self.assertEqual(stats["grown_shapes"], 1)
 
     def test_line_spacing_counts_when_judging_room(self) -> None:
         # 5 英寸 × 1.67 英寸的框单倍行距放得下（见上一条），两倍行距就要缩，
