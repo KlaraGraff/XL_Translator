@@ -47,6 +47,10 @@ def test_parse_notice_and_contact():
     assert notify.parse_notice("普通评论") is None
     assert notify.parse_notice("<!-- xl-notify version=10.0.1 -->\n没有主题行\n\n正文") is None
     assert notify.contact_email(ISSUE_BODY) == "marie@example.fr"
+    assert notify.feedback_reference(ISSUE_BODY) == "FB-20261012-ABCD"
+    tagged = notify.with_reference(notice, "FB-20261012-ABCD")
+    assert tagged.subject == "[FB-20261012-ABCD] Votre retour est corrigé"
+    assert notify.with_reference(tagged, "FB-20261012-ABCD").subject == tagged.subject
     assert notify.contact_email(ISSUE_BODY.replace("`marie@example.fr`", "`微信 abc`")) == ""
     assert notify.contact_email("**联系方式**：未填写") == ""
 
@@ -71,7 +75,7 @@ def test_due_notices_are_sent_and_issues_closed(capsys):
     failures = notify.run(github, (10, 0, 1), send=lambda to, n: sent.append((to, n.subject)), dry_run=False)
 
     assert failures == 0
-    assert sent == [("marie@example.fr", "Votre retour est corrigé")]
+    assert sent == [("marie@example.fr", "[FB-20261012-ABCD] Votre retour est corrigé")]
     assert [(number, label) for number, label, _ in github.finished] == [(1, "已通知"), (3, "无邮箱")]
     output = capsys.readouterr().out
     # 公开仓库的日志里不能出现完整邮箱或邮件正文。
