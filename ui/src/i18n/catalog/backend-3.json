@@ -1571,78 +1571,24 @@
     "en": "  → {0}: {1} text {1|box|boxes} still too small after reducing the font size and making {1|it|them} taller; listed for review",
     "fr": "  → {0} : {1} {1|zone de texte encore trop petite après réduction de la police et agrandissement ; listée pour vérification|zones de texte encore trop petites après réduction de la police et agrandissement ; listées pour vérification}"
   },
-  "正在按对照表重新写回图纸，请等它完成后再修改。": {
-    "en": "The drawings are being rewritten from the translation table. Wait for it to finish before editing.",
-    "fr": "Les plans sont en cours de réécriture à partir de la table des traductions. Attendez la fin avant de modifier."
-  },
-  "任务还没有结束，请等它结束后再重新写回。": {
-    "en": "The task has not finished yet. Wait for it to finish before rewriting.",
-    "fr": "La tâche n'est pas encore terminée. Attendez la fin avant de réécrire."
-  },
-  "没有可以重新写回的图纸。": {
-    "en": "There are no drawings that can be rewritten.",
-    "fr": "Aucun plan ne peut être réécrit."
-  },
-  "这批图纸正在重新写回，请等它完成。": {
-    "en": "These drawings are already being rewritten. Wait for it to finish.",
-    "fr": "Ces plans sont déjà en cours de réécriture. Attendez la fin."
-  },
-  "重新写回时出错，请导出诊断信息反馈。": {
-    "en": "Something went wrong while rewriting. Export the diagnostics and send feedback.",
-    "fr": "Une erreur est survenue pendant la réécriture. Exportez le diagnostic et envoyez un retour."
-  },
-  "只有 CAD 图纸翻译任务有译文对照表。": {
-    "en": "Only CAD drawing tasks have a translation table.",
-    "fr": "Seules les tâches de traduction de plans CAO ont une table des traductions."
-  },
-  "这次任务没有留下译文记录，可能还没有译完任何一张图纸。": {
-    "en": "This task left no translation record; it may not have finished any drawing.",
-    "fr": "Cette tâche n'a laissé aucun relevé de traduction ; aucun plan n'a peut-être été terminé."
-  },
-  "这张图纸的译文记录已被清理。": {
-    "en": "The translation record for this drawing has been cleaned up.",
-    "fr": "Le relevé de traduction de ce plan a été supprimé."
-  },
-  "这批图纸是旧版本翻译的，只能查看和导出，不能直接重新写回；重新翻译一次后即可使用。": {
-    "en": "These drawings were translated by an older version: you can view and export them, but not rewrite them. Translate them again to enable rewriting.",
-    "fr": "Ces plans ont été traduits par une version antérieure : vous pouvez les consulter et les exporter, mais pas les réécrire. Traduisez-les à nouveau pour activer la réécriture."
-  },
-  "译好的图纸所在文件夹已被移动或删除，无法重新写回。": {
-    "en": "The folder holding the translated drawing was moved or deleted, so it cannot be rewritten.",
-    "fr": "Le dossier du plan traduit a été déplacé ou supprimé ; impossible de le réécrire."
-  },
-  "找不到这张图纸，请刷新后重试。": {
-    "en": "This drawing could not be found. Refresh and try again.",
-    "fr": "Ce plan est introuvable. Actualisez et réessayez."
-  },
-  "表头不对：需要「图纸」「原文」「译文」三列，请用从这里导出的表格修改。": {
-    "en": "Wrong header: the columns 图纸, 原文 and 译文 are required. Edit the spreadsheet exported from here.",
-    "fr": "En-tête incorrect : les colonnes 图纸, 原文 et 译文 sont requises. Modifiez le tableau exporté depuis cette fenêtre."
-  },
-  "这批图纸是旧版本翻译的，不能直接重新写回；重新翻译一次后即可使用。": {
-    "en": "These drawings were translated by an older version and cannot be rewritten. Translate them again to enable rewriting.",
-    "fr": "Ces plans ont été traduits par une version antérieure et ne peuvent pas être réécrits. Traduisez-les à nouveau pour activer la réécriture."
-  },
-  "原图纸已被移动或删除，无法重新写回。": {
-    "en": "The source drawing was moved or deleted, so it cannot be rewritten.",
-    "fr": "Le plan d'origine a été déplacé ou supprimé ; impossible de le réécrire."
-  },
-  "原图纸在翻译之后改过，对照表已经对不上，请重新翻译这张图纸。": {
-    "en": "The source drawing changed after translation, so the table no longer matches. Translate this drawing again.",
-    "fr": "Le plan d'origine a changé après la traduction ; la table ne correspond plus. Traduisez ce plan à nouveau."
-  },
-  "重新写回 DWG 图纸前，请先在「插件」中连接图纸转换工具。": {
-    "en": "Connect the drawing converter in Plugins before rewriting DWG drawings.",
-    "fr": "Connectez le convertisseur de plans dans Plugins avant de réécrire des plans DWG."
-  },
-  "这次任务的译文记录已被清理或损坏，无法查看。请重新翻译这批图纸。": {
-    "en": "This task's translation record was cleaned up or is damaged and cannot be shown. Translate these drawings again.",
-    "fr": "Le relevé de traduction de cette tâche a été supprimé ou est endommagé. Traduisez ces plans à nouveau."
-  },
-  "读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。": {
-    "en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.",
-    "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."
-  },
+  "正在按对照表重新写回图纸，请等它完成后再修改。": {"en": "The drawings are being rewritten from the translation table. Wait for it to finish before editing.", "fr": "Les plans sont en cours de réécriture à partir de la table des traductions. Attendez la fin avant de modifier."},
+  "任务还没有结束，请等它结束后再重新写回。": {"en": "The task has not finished yet. Wait for it to finish before rewriting.", "fr": "La tâche n'est pas encore terminée. Attendez la fin avant de réécrire."},
+  "没有可以重新写回的图纸。": {"en": "There are no drawings that can be rewritten.", "fr": "Aucun plan ne peut être réécrit."},
+  "这批图纸正在重新写回，请等它完成。": {"en": "These drawings are already being rewritten. Wait for it to finish.", "fr": "Ces plans sont déjà en cours de réécriture. Attendez la fin."},
+  "重新写回时出错，请导出诊断信息反馈。": {"en": "Something went wrong while rewriting. Export the diagnostics and send feedback.", "fr": "Une erreur est survenue pendant la réécriture. Exportez le diagnostic et envoyez un retour."},
+  "只有 CAD 图纸翻译任务有译文对照表。": {"en": "Only CAD drawing tasks have a translation table.", "fr": "Seules les tâches de traduction de plans CAO ont une table des traductions."},
+  "这次任务没有留下译文记录，可能还没有译完任何一张图纸。": {"en": "This task left no translation record; it may not have finished any drawing.", "fr": "Cette tâche n'a laissé aucun relevé de traduction ; aucun plan n'a peut-être été terminé."},
+  "这张图纸的译文记录已被清理。": {"en": "The translation record for this drawing has been cleaned up.", "fr": "Le relevé de traduction de ce plan a été supprimé."},
+  "这批图纸是旧版本翻译的，只能查看和导出，不能直接重新写回；重新翻译一次后即可使用。": {"en": "These drawings were translated by an older version: you can view and export them, but not rewrite them. Translate them again to enable rewriting.", "fr": "Ces plans ont été traduits par une version antérieure : vous pouvez les consulter et les exporter, mais pas les réécrire. Traduisez-les à nouveau pour activer la réécriture."},
+  "译好的图纸所在文件夹已被移动或删除，无法重新写回。": {"en": "The folder holding the translated drawing was moved or deleted, so it cannot be rewritten.", "fr": "Le dossier du plan traduit a été déplacé ou supprimé ; impossible de le réécrire."},
+  "找不到这张图纸，请刷新后重试。": {"en": "This drawing could not be found. Refresh and try again.", "fr": "Ce plan est introuvable. Actualisez et réessayez."},
+  "表头不对：需要「图纸」「原文」「译文」三列，请用从这里导出的表格修改。": {"en": "Wrong header: the columns 图纸, 原文 and 译文 are required. Edit the spreadsheet exported from here.", "fr": "En-tête incorrect : les colonnes 图纸, 原文 et 译文 sont requises. Modifiez le tableau exporté depuis cette fenêtre."},
+  "这批图纸是旧版本翻译的，不能直接重新写回；重新翻译一次后即可使用。": {"en": "These drawings were translated by an older version and cannot be rewritten. Translate them again to enable rewriting.", "fr": "Ces plans ont été traduits par une version antérieure et ne peuvent pas être réécrits. Traduisez-les à nouveau pour activer la réécriture."},
+  "原图纸已被移动或删除，无法重新写回。": {"en": "The source drawing was moved or deleted, so it cannot be rewritten.", "fr": "Le plan d'origine a été déplacé ou supprimé ; impossible de le réécrire."},
+  "原图纸在翻译之后改过，对照表已经对不上，请重新翻译这张图纸。": {"en": "The source drawing changed after translation, so the table no longer matches. Translate this drawing again.", "fr": "Le plan d'origine a changé après la traduction ; la table ne correspond plus. Traduisez ce plan à nouveau."},
+  "重新写回 DWG 图纸前，请先在「插件」中连接图纸转换工具。": {"en": "Connect the drawing converter in Plugins before rewriting DWG drawings.", "fr": "Connectez le convertisseur de plans dans Plugins avant de réécrire des plans DWG."},
+  "这次任务的译文记录已被清理或损坏，无法查看。请重新翻译这批图纸。": {"en": "This task's translation record was cleaned up or is damaged and cannot be shown. Translate these drawings again.", "fr": "Le relevé de traduction de cette tâche a été supprimé ou est endommagé. Traduisez ces plans à nouveau."},
+  "读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。": {"en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.", "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."},
   "文本框 {0}": {
     "en": "Text box {0}",
     "fr": "Zone de texte {0}"
@@ -1689,6 +1635,6 @@
   },
   "  → {0}：已翻译脚注/尾注 {1} 段": {
     "en": "  → {0}: translated {1} footnote/endnote {1|paragraph|paragraphs}",
-    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de notes de bas de page/de fin traduits"
+    "fr": "  → {0} : {1} {1|paragraphe de note de bas de page/de fin traduit|paragraphes de notes de bas de page/de fin traduits}"
   }
 }
