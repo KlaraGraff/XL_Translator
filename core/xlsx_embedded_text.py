@@ -129,6 +129,7 @@ class _SheetParts:
     comments: str = ""
     threaded: str = ""
     vml: str = ""
+    sheet: str = ""
 
 
 def _sheet_parts(package: _Package) -> list[_SheetParts]:
@@ -159,7 +160,7 @@ def _sheet_parts(package: _Package) -> list[_SheetParts]:
         sheet_part = targets.get(el.get(f"{{{NS_REL}}}id"))
         if not sheet_part or not package.has(sheet_part):
             continue
-        parts = _SheetParts(name=str(el.get("name") or ""))
+        parts = _SheetParts(name=str(el.get("name") or ""), sheet=sheet_part)
         rels_data = package.read(_rels_path(sheet_part))
         if rels_data is not None:
             for rel in _parse(rels_data):
@@ -573,7 +574,99 @@ def _paragraph_metrics(paragraph, base: int, level_ppr) -> ParagraphMetrics:
     )
 
 
-def _shape_layout(sp) -> _ShapeLayout:
+@dataclass(frozen=True)
+class _SheetGrid:
+    """列宽、行高（磅），用来按锚点算出两格锚定的文本框实际有多大。"""
+
+    columns: dict[int, float]
+    rows: dict[int, float]
+    default_column: float
+    default_row: float
+
+    def column(self, index: int) -> float:
+        return self.columns.get(index, self.default_column)
+
+    def row(self, index: int) -> float:
+        return self.rows.get(index, self.default_row)
+
+
+def _column_width_pt(chars: float) -> float:
+    """Excel 列宽（字符数）换成磅：默认字体每字符 7 像素、两侧各留 2.5 像素。"""
+    pixels = math.trunc(((256 * chars + math.trunc(128 / 7)) / 256) * 7)
+    return pixels * 0.75
+
+
+def _sheet_grid(package: _Package, sheet_part: str) -> _SheetGrid | None:
+    data = package.read(sheet_part) if sheet_part else None
+    if data is None:
+        return None
+    root = _parse(data)
+    fmt = root.find(_m("sheetFormatPr"))
+    default_row = 15.0
+    default_column = _column_width_pt(8.43)
+    if fmt is not None:
+        try:
+            default_row = float(fmt.get("defaultRowHeight") or default_row)
+            if fmt.get("defaultColWidth"):
+                default_column = _column_width_pt(float(fmt.get("defaultColWidth")))
+            elif fmt.get("baseColWidth"):
+                default_column = _column_width_pt(float(fmt.get("baseColWidth")) + 0.71)
+        except ValueError:
+            pass
+    columns: dict[int, float] = {}
+    for col in root.iter(_m("col")):
+        try:
+            first, last = int(col.get("min")), int(col.get("max"))
+            width = 0.0 if col.get("hidden") in {"1", "true"} else _column_width_pt(float(col.get("width")))
+        except (TypeError, ValueError):
+            continue
+        for index in range(first - 1, min(last, first + 16383)):
+            columns[index] = width
+    rows: dict[int, float] = {}
+    for row in root.iter(_m("row")):
+        try:
+            index = int(row.get("r")) - 1
+            if row.get("hidden") in {"1", "true"}:
+                rows[index] = 0.0
+            elif row.get("ht"):
+                rows[index] = float(row.get("ht"))
+        except (TypeError, ValueError):
+            continue
+    return _SheetGrid(columns, rows, default_column, default_row)
+
+
+def _anchor_point(marker, grid: _SheetGrid, *, column: bool) -> float | None:
+    """锚点（第几列/行 + 偏移 EMU）到工作表左上角的距离，磅。"""
+    tag, offset_tag = ("col", "colOff") if column else ("row", "rowOff")
+    try:
+        index = int(marker.find(_x(tag)).text)
+        offset = int(marker.find(_x(offset_tag)).text) / _EMU_PER_PT
+    except (AttributeError, TypeError, ValueError):
+        return None
+    size = grid.column if column else grid.row
+    return sum(size(i) for i in range(index)) + offset
+
+
+def _anchored_size(sp, grid: _SheetGrid | None) -> tuple[float, float] | None:
+    """两格锚定（twoCellAnchor）的形状在 Excel 里按锚点定大小，xfrm 里记的尺寸可能对不上。"""
+    anchor = sp.getparent()
+    if grid is None or anchor is None or anchor.tag != _x("twoCellAnchor"):
+        return None
+    start, end = anchor.find(_x("from")), anchor.find(_x("to"))
+    if start is None or end is None:
+        return None
+    points = [
+        _anchor_point(marker, grid, column=column)
+        for column in (True, False)
+        for marker in (start, end)
+    ]
+    if any(point is None for point in points):
+        return None
+    width, height = points[1] - points[0], points[3] - points[2]
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def _shape_layout(sp, grid: _SheetGrid | None = None) -> _ShapeLayout:
     tx_body = sp.find(_x("txBody"))
     base = _base_font_size(tx_body)
     level_ppr = tx_body.find(f"{_a('lstStyle')}/{_a('lvl1pPr')}")
@@ -583,6 +676,9 @@ def _shape_layout(sp) -> _ShapeLayout:
     ext = sp.find(f"{_x('spPr')}/{_a('xfrm')}/{_a('ext')}")
     width = height = None
     cx, cy = _emu_attr(ext, "cx", 0), _emu_attr(ext, "cy", 0)
+    anchored = _anchored_size(sp, grid)
+    if anchored is not None:
+        cx, cy = int(anchored[0] * _EMU_PER_PT), int(anchored[1] * _EMU_PER_PT)
     if cx > 0 and cy > 0:
         insets = {name: _emu_attr(body_pr, name, value) for name, value in _DEFAULT_INSETS.items()}
         if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
@@ -636,7 +732,8 @@ def _apply_shapes(
         return
 
     shapes = list({id(item[0]): item[0] for item in planned}.values())
-    before = {id(sp): _shape_layout(sp) for sp in shapes}
+    grid = _sheet_grid(package, parts.sheet)
+    before = {id(sp): _shape_layout(sp, grid) for sp in shapes}
     for sp, paragraph, source, translation in planned:
         _rewrite_shape_paragraph(paragraph, translation, translation_only=translation_only)
         stats.shape_paragraphs += 1
@@ -652,7 +749,7 @@ def _apply_shapes(
             )
 
     for sp in shapes:
-        scale, fits = _fitting_scale(before[id(sp)], _shape_layout(sp))
+        scale, fits = _fitting_scale(before[id(sp)], _shape_layout(sp, grid))
         if scale >= 1:
             continue
         _shrink_shape_text(sp.find(_x("txBody")), scale)

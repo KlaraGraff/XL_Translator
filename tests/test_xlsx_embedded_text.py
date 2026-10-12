@@ -44,7 +44,9 @@ def _drawing_xml(
     name: str = "TextBox 1",
     box: tuple[int, int] = (1828800, 762000),
     list_style: str = "",
+    anchor_box: tuple[int, int] | None = None,
 ) -> bytes:
+    anchor_box = anchor_box or box
     body = "".join(
         f'<a:p><a:r><a:rPr lang="zh-CN" sz="1100"/><a:t>{text}</a:t></a:r></a:p>'
         for text in paragraphs
@@ -54,8 +56,9 @@ def _drawing_xml(
         f'<xdr:wsDr xmlns:xdr="{NS_XDR}" xmlns:a="{NS_A}" xmlns:r="{NS_REL}">'
         '<xdr:twoCellAnchor><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff>'
         "<xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
-        "<xdr:to><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff>"
-        "<xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>"
+        # 右下角锚点按框的大小放：Excel 按锚点定两格锚定的形状有多大。
+        f"<xdr:to><xdr:col>3</xdr:col><xdr:colOff>{anchor_box[0]}</xdr:colOff>"
+        f"<xdr:row>1</xdr:row><xdr:rowOff>{anchor_box[1]}</xdr:rowOff></xdr:to>"
         '<xdr:sp macro="" textlink="">'
         f'<xdr:nvSpPr><xdr:cNvPr id="2" name="{name}"/><xdr:cNvSpPr txBox="1"/></xdr:nvSpPr>'
         '<xdr:spPr><a:xfrm><a:off x="0" y="0"/>'
@@ -243,6 +246,22 @@ class EmbeddedTextTests(unittest.TestCase):
             {"worksheet": "表1", "cell": "TextBox 1", "category": REVIEW_CATEGORY_SHAPE_OVERFLOW, "action": "listed_only"},
             review,
         )
+
+    def test_two_cell_anchor_size_wins_over_recorded_shape_size(self) -> None:
+        # xfrm 里写着 5 英寸宽，锚点实际只框住 1.2 英寸 × 0.5 英寸：按锚点算，缩到下限。
+        build_workbook(self.source, box=(4572000, 1524000))
+        with zipfile.ZipFile(self.source) as source:
+            items = {name: source.read(name) for name in source.namelist()}
+        items["xl/drawings/drawing1.xml"] = _drawing_xml(
+            ["图例说明", "红色表示待施工区域"], box=(4572000, 1524000), anchor_box=(1097280, 457200)
+        )
+        with zipfile.ZipFile(self.source, "w") as target:
+            for name, data in items.items():
+                target.writestr(name, data)
+        review: list[dict[str, str]] = []
+        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
+        self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"660"})
+        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
 
     def test_line_spacing_counts_when_judging_room(self) -> None:
         # 5 英寸 × 1.67 英寸的框单倍行距放得下（见上一条），两倍行距就要缩，

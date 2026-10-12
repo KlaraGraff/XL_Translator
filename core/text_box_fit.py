@@ -6,7 +6,7 @@ Excel 的文本框、批注框和 Word 的文本框都是作者定好大小的�
 
   - 字宽：汉字等全角字符按 1 个字号宽，其他字符按 0.55 个字号宽；
   - 折行：西文按单词折（单词放不下一整行时才从中间断），汉字逐字折；
-  - 行高：单倍行距按 1.3 个字号（中文字体的单倍行高普遍比西文高），再乘段落自己的
+  - 行高：单倍行距按 1.4 个字号（中文字体的单倍行高普遍比西文高），再乘段落自己的
     行距倍数；固定行距按给定的磅值；
   - 段前段后间距照加。
 """
@@ -19,9 +19,7 @@ from dataclasses import dataclass
 # 字号缩到原来的这个比例还放不下，就不再缩，交给复核清单。
 MIN_SCALE = 0.6
 _HALF_WIDTH_EM = 0.55
-_SINGLE_LINE_EM = 1.3
-# 原文按估算本来就超出框这么多以上，才认为作者有意让字溢出、改以原文占的高度为准。
-_ORIGINAL_OVERFLOW_TOLERANCE = 1.15
+_SINGLE_LINE_EM = 1.4
 
 
 @dataclass(frozen=True)
@@ -127,14 +125,12 @@ def fitting_scale(
 ) -> tuple[float, bool]:
     """译文放进框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。
 
-    原文按估算明显超出框的（作者有意让字溢出，或者框会随字撑大），以原文占的大小
-    为准：译文不比原文更挤就行。
+    只拿框的大小比，不拿「原文估算占多高」当余量：估算本来就偏高，原文恰好贴边
+    折一行时会被算成超出，拿它当余量反而放过了真放不下的译文（Mac 实测仿宋 1.5
+    倍行距的说明框就是这样漏掉的）。不折行的框，宽度以原文最长一行为准。
     """
     wrap_width = width_pt if wrap else None
     room_height = height_pt
-    old_height = paragraphs_height(before, wrap_width)
-    if old_height > height_pt * _ORIGINAL_OVERFLOW_TOLERANCE:
-        room_height = old_height
     room_width = max(width_pt, widest_line(before))
 
     def fits(scale: float) -> bool:
