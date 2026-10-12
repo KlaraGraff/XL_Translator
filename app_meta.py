@@ -9,9 +9,10 @@ APP_BUNDLE_IDENTIFIER = f"com.klara-graff.{APP_SAFE_NAME.lower().replace('_', '-
 APP_UPDATE_USER_AGENT = f"{APP_SAFE_NAME}-Updater"
 
 # 应用内「反馈」发送到的中转站（feedback-relay/，部署在 Cloudflare Workers）。
-# 留空表示这个版本还不能在线发送，反馈页只提供「保存为 ZIP」。开发时可以用环境变量
+# 地址来自部署流程（.github/workflows/feedback-relay.yml）摘要里的 workers.dev 地址；
+# 留空表示不能在线发送，反馈页只提供「保存为 ZIP」。开发时可以用环境变量
 # TRANSLATOR_FEEDBACK_ENDPOINT 临时指向别的地址。
-FEEDBACK_ENDPOINT = ""
+FEEDBACK_ENDPOINT = "https://xl-translator-feedback.klaragraff2661997iph.workers.dev"
 
 MACOS_COLLECT_NAME = APP_NAME
 MACOS_APP_BUNDLE_NAME = f"{APP_NAME}.app"
