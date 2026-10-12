@@ -3,7 +3,8 @@
 重点验证三件事：
   1. 未被修改的部件在输出包里逐字节保持原样（尤其是 WPS cellimages.xml、
      Excel 富数据部件、media 图片）；
-  2. 悬浮图片在行高调整后不被拉伸——twoCellAnchor 变成带原渲染尺寸的 oneCellAnchor；
+  2. 悬浮图片在行高调整后不被拉伸——twoCellAnchor 右下角挪到新行高下原来的高度
+     （之后还要跑 Excel autofit 时改成带原渲染尺寸的 oneCellAnchor）；
   3. 译文、复核标色、行高、原文分表克隆的语义与旧路径一致。
 """
 from __future__ import annotations
@@ -320,20 +321,14 @@ class XlsxPatcherTests(unittest.TestCase):
         output = self._write()
         drawing = etree.fromstring(_read_part(output, "xl/drawings/drawing1.xml"))
 
-        self.assertIsNone(drawing.find(f"{{{NS_XDR}}}twoCellAnchor"))
-        anchor = drawing.find(f"{{{NS_XDR}}}oneCellAnchor")
-        self.assertIsNotNone(anchor, "受影响的悬浮图片应改为 oneCellAnchor")
-
-        children = [etree.QName(child).localname for child in anchor]
-        self.assertEqual(children[:2], ["from", "ext"])
-        self.assertIn("clientData", children)
-
-        ext = anchor.find(f"{{{NS_XDR}}}ext")
-        self.assertEqual(int(ext.get("cy")), expected_cy)
-        self.assertGreater(int(ext.get("cx")), 0)
+        # 仍是两格锚定（宽度跟着列走），按输出的行高量出来的高度和原来一样。
+        anchor = drawing.find(f"{{{NS_XDR}}}twoCellAnchor")
+        self.assertIsNotNone(anchor, "受影响的悬浮图片仍应是两格锚定")
+        self.assertIsNone(drawing.find(f"{{{NS_XDR}}}oneCellAnchor"))
+        out_sheet = etree.fromstring(_read_part(output, "xl/worksheets/sheet1.xml"))
+        self.assertEqual(_two_cell_height(anchor, _SheetGeometry(out_sheet)), expected_cy)
 
         # 行高确实变了，否则这条断言没有意义
-        out_sheet = etree.fromstring(_read_part(output, "xl/worksheets/sheet1.xml"))
         row2 = next(
             row for row in out_sheet.iter(f"{{{NS_MAIN}}}row") if row.get("r") == "2"
         )
@@ -638,6 +633,17 @@ class AnchorFixture:
                 archive.writestr(name, data)
 
 
+def _two_cell_height(anchor, geometry: _SheetGeometry) -> int:
+    """两格锚定按 ``geometry`` 的行高算出来有多高（EMU）。"""
+
+    def position(name: str) -> tuple[int, int]:
+        node = anchor.find(f"{{{NS_XDR}}}{name}")
+        return int(node.findtext(f"{{{NS_XDR}}}row")), int(node.findtext(f"{{{NS_XDR}}}rowOff"))
+
+    (from_row, from_off), (to_row, to_off) = position("from"), position("to")
+    return sum(geometry.row_emu(row + 1) for row in range(from_row, to_row)) + to_off - from_off
+
+
 def _anchors_by_name(drawing_xml: bytes) -> dict[str, tuple[str, object]]:
     """``{形状名: (锚点标签名, 锚点元素)}``。"""
     root = etree.fromstring(drawing_xml)
@@ -702,17 +708,16 @@ class AnchorFreezeTests(unittest.TestCase):
         output, stats = self._write()
         anchors = _anchors_by_name(_read_part(output, "xl/drawings/drawing1.xml"))
 
-        self.assertEqual(anchors["hit"][0], "oneCellAnchor")
+        # 行变了的图片仍是两格锚定（宽度跟着列走，不按估算写死），高度保持原样。
+        self.assertEqual(anchors["hit"][0], "twoCellAnchor")
+        out_sheet = etree.fromstring(_read_part(output, "xl/worksheets/sheet1.xml"))
+        self.assertEqual(_two_cell_height(anchors["hit"][1], _SheetGeometry(out_sheet)), 2 * ROW_EMU)
         self.assertEqual(
             anchors["miss"][0],
             "twoCellAnchor",
             "不跑 Excel autofit 时，没被改过的行上的图片应保持原样",
         )
         self.assertEqual(anchors["miss"][1].get("editAs"), "absolute")
-
-        hit_ext = anchors["hit"][1].find(f"{{{NS_XDR}}}ext")
-        self.assertEqual(int(hit_ext.get("cy")), 2 * ROW_EMU)
-        self.assertEqual(int(hit_ext.get("cx")), 2 * COL_EMU)
 
         # 图纸：hit + absolute_in；附表：hit2
         self.assertEqual(stats["anchor_frozen_count"], 3)

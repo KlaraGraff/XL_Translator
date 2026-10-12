@@ -1182,8 +1182,10 @@ def fix_drawing_anchors(
     * ``absoluteAnchor`` 钉的是相对整表原点的绝对坐标，上方行变高后格子整体下移，
       图片却纹丝不动，最后盖到不相干的内容上。
 
-    两者都改写成 ``oneCellAnchor``（只钉左上角 + 写死尺寸），图片跟着所在单元格
-    走，既不拉伸也不错位。
+    ``absoluteAnchor`` 改写成 ``oneCellAnchor``（只钉左上角 + 原尺寸），图片跟着
+    所在单元格走，不再错位。``twoCellAnchor`` 在给了 ``new_geometry`` 时仍是两格锚定，
+    只把右下角挪到新行高下原来的高度：宽度跟着列走（列我们不动），不按 Windows 字宽
+    估算写死——Mac 上那样会窄一截。只有 ``freeze_all`` 时才改成定尺寸。
 
     ``freeze_all=True`` 表示调用方之后还要交给 Excel COM 做整表 autofit——那一刀
     会重排 used range 里的**所有**行高，我们无从预知哪些行会变，只能把整张表的悬浮
@@ -1261,6 +1263,13 @@ def _freeze_two_cell_anchor(
             stop=_first_filled_row(new_geometry, to_row + 1, from_col, max(from_col, last_col)),
         ) and shortened is not None:
             shortened.append(_anchor_shape_name(anchor))
+        return 1
+
+    if not freeze_all and new_geometry is not None:
+        # 图片同理：只是我们改了行高时，仍用两格锚定，右下角挪到新行高下同样的高度。
+        # 改成定尺寸会把宽度按 Windows 字宽写死，Mac 上列更宽，图片就窄了一截
+        # （Mac 实测 106 磅变 88.5 磅）；列我们不动，宽度跟着列走才对。
+        _reanchor_bottom(anchor, new_geometry, from_row, from_row_off + cy)
         return 1
 
     one_cell = etree.Element(_xdr("oneCellAnchor"))

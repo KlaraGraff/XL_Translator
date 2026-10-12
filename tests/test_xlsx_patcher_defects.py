@@ -277,6 +277,8 @@ class GroupedShapeTests(_PatcherDefectCase):
                     "A very long construction note that needs wrapping"
                 )
             },
+            # 只有之后还要跑 Excel autofit 时才改成定尺寸锚点，组合图形的外框问题出在这条路上。
+            external_autofit_planned=True,
         )
 
         drawing = etree.fromstring(_read_part(output, "xl/drawings/drawing1.xml"))

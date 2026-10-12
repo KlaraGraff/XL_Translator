@@ -300,7 +300,7 @@ class EmbeddedTextTests(unittest.TestCase):
 
     def test_raised_rows_keep_pictures_and_grown_boxes_in_shape(self) -> None:
         # 文本框为放下译文把第 2、3 行从 15 加到 30 磅、锚点按加高后的行写到第 4 行顶（高 60 磅）。
-        # 单元格那一轮看到行变了：图片按原行高冻成 30 磅不被拉长；文本框按加高后的行量，保持 60 磅。
+        # 单元格那一轮看到行变了：图片按原行高量是 30 磅，不被拉长；文本框按加高后的行量，保持 60 磅。
         from core.xlsx_patcher import _SheetGeometry, fix_drawing_anchors
 
         def sheet(height: float):
@@ -323,8 +323,11 @@ class EmbeddedTextTests(unittest.TestCase):
         original, grown = sheet(15), sheet(30)
         fix_drawing_anchors(drawing, original, {2, 3}, new_geometry=grown, text_box_geometry=grown)
         self.assertEqual((to.find(f"{{{NS_XDR}}}row").text, to.find(f"{{{NS_XDR}}}rowOff").text), ("3", "0"))
-        frozen = drawing.find(f"{{{NS_XDR}}}oneCellAnchor/{{{NS_XDR}}}ext")
-        self.assertEqual(frozen.get("cy"), str(30 * 12700))
+        # 图片仍是两格锚定，右下角挪到第 3 行顶（加高后的第 2 行正好 30 磅），高度不变。
+        self.assertEqual(
+            (picture.findtext(f"{{{NS_XDR}}}to/{{{NS_XDR}}}row"), picture.findtext(f"{{{NS_XDR}}}to/{{{NS_XDR}}}rowOff")),
+            ("2", "0"),
+        )
 
     def test_locked_row_height_lists_the_box_instead_of_raising_rows(self) -> None:
         build_workbook(self.source, box=(1097280, 457200), cells={"D4": "合计"})
