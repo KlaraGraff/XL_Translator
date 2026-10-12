@@ -1,0 +1,133 @@
+name: Deploy feedback relay
+
+# 部署应用内「反馈」用的中转站（feedback-relay/）到 Cloudflare Workers。
+# 需要主仓库里有三个 Actions 密钥：
+#   CLOUDFLARE_API_TOKEN   Cloudflare「Edit Cloudflare Workers」模板生成的令牌
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare 账户 ID
+#   FEEDBACK_GITHUB_TOKEN  只对私有仓库 XL_Translator-feedback 有 Issues 读写权限的细粒度令牌
+# 缺任何一个就跳过部署（不报红），所以合进 main 时不会因为还没配好而让检查失败。
+# 第一次部署时自动建 KV 命名空间和下载链接签名用的 LINK_SECRET；之后重复部署保持不变，
+# 以前发出的下载链接继续有效。
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - feedback-relay/**
+      - .github/workflows/feedback-relay.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feedback-relay
+  cancel-in-progress: false
+
+env:
+  WRANGLER_VERSION: 4.136.1
+  WORKER_NAME: xl-translator-feedback
+  KV_TITLE: xl-translator-feedback
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FEEDBACK_GITHUB_TOKEN: ${{ secrets.FEEDBACK_GITHUB_TOKEN }}
+    steps:
+      - name: Check that the secrets are configured
+        id: gate
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$FEEDBACK_GITHUB_TOKEN" ] || missing="$missing FEEDBACK_GITHUB_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::notice::Feedback relay not deployed: missing secrets:$missing"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6.0.3
+        if: steps.gate.outputs.ready == 'true'
+
+      - uses: actions/setup-node@v6
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          node-version: "24"
+
+      - name: Relay behaviour tests
+        if: steps.gate.outputs.ready == 'true'
+        run: node tests/feedback_relay.test.mjs
+
+      - name: Find or create the KV namespace
+        if: steps.gate.outputs.ready == 'true'
+        id: kv
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+          auth=(-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          id=$(curl -fsS "${auth[@]}" "$api?per_page=100" | jq -r --arg t "$KV_TITLE" '.result[] | select(.title == $t) | .id' | head -n 1)
+          if [ -z "$id" ]; then
+            id=$(curl -fsS "${auth[@]}" -H "Content-Type: application/json" -X POST "$api" \
+              --data "$(jq -n --arg t "$KV_TITLE" '{title: $t}')" | jq -r '.result.id')
+            echo "Created KV namespace $id"
+          fi
+          [ -n "$id" ] && [ "$id" != "null" ] || { echo "::error::Could not find or create the KV namespace"; exit 1; }
+          sed -i "s/__FEEDBACK_KV_ID__/$id/" feedback-relay/wrangler.toml
+
+      - name: Prepare secrets
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: feedback-relay
+        run: |
+          umask 077
+          # LINK_SECRET 一旦生成就不能换，否则已发出的下载链接全部失效：查不清楚就停下。
+          code=$(curl -sS -o "$RUNNER_TEMP/secrets-list.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/secrets")
+          if [ "$code" = "200" ]; then
+            has_link=$(jq -r '[.result[].name] | index("LINK_SECRET") != null' "$RUNNER_TEMP/secrets-list.json")
+          elif [ "$code" = "404" ]; then
+            has_link=false
+          else
+            echo "::error::Could not list the relay's secrets (HTTP $code)"
+            exit 1
+          fi
+          if [ "$has_link" = "true" ]; then
+            jq -n --arg gh "$FEEDBACK_GITHUB_TOKEN" '{GITHUB_TOKEN: $gh}' > "$RUNNER_TEMP/secrets.json"
+          else
+            echo "Generating LINK_SECRET for the first deployment"
+            jq -n --arg gh "$FEEDBACK_GITHUB_TOKEN" --arg link "$(openssl rand -hex 32)" \
+              '{GITHUB_TOKEN: $gh, LINK_SECRET: $link}' > "$RUNNER_TEMP/secrets.json"
+          fi
+
+      - name: Deploy
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: feedback-relay
+        run: npx --yes "wrangler@$WRANGLER_VERSION" deploy --secrets-file "$RUNNER_TEMP/secrets.json"
+
+      - name: Check the deployed relay
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          rm -f "$RUNNER_TEMP/secrets.json"
+          subdomain=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain')
+          url="https://$WORKER_NAME.$subdomain.workers.dev"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$url/health"; then
+              echo
+              echo "### Feedback relay is live" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`$url\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "Relay URL: $url"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Deployed, but $url/health did not answer"
+          exit 1

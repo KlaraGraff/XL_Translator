@@ -27,6 +27,7 @@ import * as libraryView from "./views/library";
 import * as pluginsView from "./views/plugins";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
+import * as feedbackView from "./views/feedback";
 
 const THEME_STORAGE_KEY = "translator.theme";
 type ThemePreference = "light" | "dark" | "system";
@@ -164,6 +165,7 @@ function main(): void {
   registerView("plugins", pluginsView);
   registerView("settings", settingsView);
   registerView("help", helpView);
+  registerView("feedback", feedbackView);
 
   navigate("excel");
 

@@ -29,6 +29,7 @@ const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
 const SYSTEM_ITEMS: SideItemDef[] = localized(() => ([
   { id: "settings", label: t("设置"), icon: "gear" },
   { id: "help", label: t("帮助"), icon: "help" },
+  { id: "feedback", label: t("反馈"), icon: "message" },
 ]));
 
 export interface ShellHandle {

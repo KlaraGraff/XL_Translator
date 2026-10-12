@@ -216,14 +216,16 @@ export class ApiClient {
    *
    * 保存框里的默认文件名优先用后端 Content-Disposition 里的那个，拿不到才退回调用方
    * 给的兜底名——诊断包的名字带时间戳和场景，是后端算出来的。
+   * `init` 用于需要 POST 请求体才能生成的包（例如反馈页「保存为 ZIP」）。
    *
    * 不能用 `<a download>` 交给 WebView 下载：macOS 的 WKWebView 会静默丢弃它，
    * 原因见 save-file.ts 顶部注释。
    */
-  async saveBinaryDownload(path: string, fallbackFilename: string): Promise<string | null> {
-    const response = await fetch(`${this.#baseUrl}${path}`, {
-      headers: { "X-Translator-Token": this.#token },
-    });
+  async saveBinaryDownload(path: string, fallbackFilename: string, init: RequestInit = {}): Promise<string | null> {
+    const headers = new Headers(init.headers);
+    headers.set("X-Translator-Token", this.#token);
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    const response = await fetch(`${this.#baseUrl}${path}`, { ...init, headers });
     if (!response.ok) {
       const fallback = `${response.status} ${response.statusText}`;
       const payload = await response.json().catch(() => ({ detail: fallback }));

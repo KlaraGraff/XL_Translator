@@ -1,0 +1,208 @@
+// 应用内「反馈」的中转站，部署在 Cloudflare Workers（部署流程见
+// .github/workflows/feedback-relay.yml）。
+//
+// 应用把用户勾选的内容打成一个 ZIP 发过来；这里做三件事：
+//   1. 把 ZIP 存进 KV（FEEDBACK 绑定），90 天后自动过期删除；
+//   2. 在私有仓库（FEEDBACK_REPO）里开一条 issue，正文是用户写的话和一个带签名、
+//      90 天内有效的下载链接，GitHub 会按仓库的关注设置发邮件提醒；
+//   3. 把反馈编号返回给应用，应用显示给用户。
+//
+// 不记录 IP：限流只用「LINK_SECRET + IP」的哈希做一小时计数，计数一小时后过期。
+// GitHub 令牌只存在 Worker 的密钥里，应用里没有任何凭据。
+
+const MAX_PACKAGE_BYTES = 24 * 1024 * 1024;
+const MAX_DESCRIPTION_CHARS = 5000;
+const MAX_CONTACT_CHARS = 200;
+const FILE_TTL_SECONDS = 90 * 24 * 3600;
+const RATE_LIMIT_PER_HOUR = 10;
+const CATEGORY_LABELS = { problem: "问题", suggestion: "建议", other: "其他" };
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "POST" && url.pathname === "/v1/feedback") return await handleFeedback(request, env, url);
+      if (request.method === "GET" && url.pathname.startsWith("/v1/files/")) return await handleDownload(env, url);
+      if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
+      return json({ error: "not_found" }, 404);
+    } catch (error) {
+      console.error("feedback relay failed", error && error.message);
+      return json({ error: "internal" }, 500);
+    }
+  },
+};
+
+async function handleFeedback(request, env, url) {
+  const declared = Number(request.headers.get("Content-Length") || 0);
+  if (declared > MAX_PACKAGE_BYTES + 1024 * 1024) return json({ error: "too_large" }, 413);
+
+  if (!(await withinRateLimit(request, env))) return json({ error: "rate_limited" }, 429);
+
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return json({ error: "bad_request" }, 400);
+  }
+  let meta;
+  try {
+    meta = JSON.parse(String(form.get("meta") || ""));
+  } catch {
+    return json({ error: "bad_request" }, 400);
+  }
+  const category = Object.hasOwn(CATEGORY_LABELS, meta.category) ? meta.category : "";
+  const description = typeof meta.description === "string" ? meta.description.trim() : "";
+  const contact = typeof meta.contact === "string" ? meta.contact.trim() : "";
+  if (!category || !description || description.length > MAX_DESCRIPTION_CHARS || contact.length > MAX_CONTACT_CHARS) {
+    return json({ error: "bad_request" }, 400);
+  }
+
+  const pkg = form.get("package");
+  const hasPackage = pkg && typeof pkg === "object" && typeof pkg.arrayBuffer === "function" && pkg.size > 0;
+  if (hasPackage && pkg.size > MAX_PACKAGE_BYTES) return json({ error: "too_large" }, 413);
+
+  const id = feedbackId(new Date());
+  let link = "";
+  if (hasPackage) {
+    await env.FEEDBACK.put(`pkg:${id}`, await pkg.arrayBuffer(), {
+      expirationTtl: FILE_TTL_SECONDS,
+      metadata: { size: pkg.size },
+    });
+    const expires = Math.floor(Date.now() / 1000) + FILE_TTL_SECONDS;
+    const signature = await sign(env.LINK_SECRET, `${id}.${expires}`);
+    link = `${url.origin}/v1/files/${id}?exp=${expires}&sig=${signature}`;
+  }
+
+  // GITHUB_API 只在本地联调时指向假的 GitHub；线上不设，用官方地址。
+  const githubApi = env.GITHUB_API || "https://api.github.com";
+  const issue = await fetch(`${githubApi}/repos/${env.FEEDBACK_REPO}/issues`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "xl-translator-feedback-relay",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      title: issueTitle(id, category, description),
+      body: issueBody({ id, category, description, contact, meta, link, size: hasPackage ? pkg.size : 0 }),
+    }),
+  });
+  if (!issue.ok) {
+    console.error("github issue failed", issue.status);
+    if (hasPackage) await env.FEEDBACK.delete(`pkg:${id}`);
+    return json({ error: "upstream" }, 502);
+  }
+  return json({ ok: true, id });
+}
+
+async function handleDownload(env, url) {
+  const id = url.pathname.slice("/v1/files/".length);
+  const expires = Number(url.searchParams.get("exp") || 0);
+  const signature = url.searchParams.get("sig") || "";
+  if (!/^FB-\d{8}-[A-Z2-9]{6}$/.test(id) || !expires || expires < Date.now() / 1000) {
+    return json({ error: "not_found" }, 404);
+  }
+  const expected = await sign(env.LINK_SECRET, `${id}.${expires}`);
+  if (!timingSafeEqual(signature, expected)) return json({ error: "forbidden" }, 403);
+  const data = await env.FEEDBACK.get(`pkg:${id}`, { type: "arrayBuffer" });
+  if (!data) return json({ error: "not_found" }, 404);
+  return new Response(data, {
+    headers: {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${id}.zip"`,
+      "Cache-Control": "private, no-store",
+    },
+  });
+}
+
+async function withinRateLimit(request, env) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const hour = Math.floor(Date.now() / 3_600_000);
+  const key = `rl:${(await sha256Hex(`${env.LINK_SECRET}|${ip}`)).slice(0, 24)}:${hour}`;
+  const count = Number((await env.FEEDBACK.get(key)) || 0);
+  if (count >= RATE_LIMIT_PER_HOUR) return false;
+  // KV 是最终一致的，计数不精确；这里只为挡住成批的刷量，偶尔多放过一两条无妨。
+  await env.FEEDBACK.put(key, String(count + 1), { expirationTtl: 3600 });
+  return true;
+}
+
+// 编号：FB-年月日-6 位（去掉易混的 0/O/1/I）。
+const ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+export function feedbackId(now) {
+  const date = now.toISOString().slice(0, 10).replaceAll("-", "");
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  const suffix = Array.from(bytes, (byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join("");
+  return `FB-${date}-${suffix}`;
+}
+
+export function issueTitle(id, category, description) {
+  const firstLine = description.split(/\r?\n/).find((line) => line.trim()) || "";
+  const short = firstLine.trim().slice(0, 60);
+  return `[${CATEGORY_LABELS[category]}] ${neutralize(short)}${firstLine.trim().length > 60 ? "…" : ""} · ${id}`;
+}
+
+export function issueBody({ id, category, description, contact, meta, link, size }) {
+  const includes = meta && typeof meta.includes === "object" && meta.includes ? meta.includes : {};
+  const files = Array.isArray(includes.files) ? includes.files.map((name) => neutralize(String(name))).slice(0, 10) : [];
+  const parts = [
+    `**编号**：${id}`,
+    `**类型**：${CATEGORY_LABELS[category]}`,
+    `**版本**：${neutralize(String(meta.app_version || "未知"))} · ${neutralize(String(meta.platform || "未知系统"))} · 界面语言 ${neutralize(String(meta.ui_language || "zh"))}`,
+    `**联系方式**：${contact ? codeSpan(contact) : "未填写"}`,
+    `**附带**：系统信息${includes.system ? "✓" : "✗"} · 任务日志 ${Number(includes.task_logs) || 0} 次 · 文件 ${files.length} 个${files.length ? `（${files.join("、")}）` : ""}`,
+    "",
+    "### 描述",
+    "",
+    description.split(/\r?\n/).map((line) => `> ${neutralize(line)}`).join("\n"),
+  ];
+  if (link) {
+    parts.push("", "### 附件", "", `[下载反馈包 ${id}.zip](${link})（${formatBytes(size)}，90 天内有效，到期自动删除）`);
+  }
+  return parts.join("\n");
+}
+
+// 正文是用户写的，不能让它在私有仓库里 @ 到人或者关联到别的 issue。
+function neutralize(text) {
+  return String(text).replace(/@/g, "@​").replace(/#(\d)/g, "#​$1");
+}
+
+// 联系方式要能原样复制（邮箱里的 @ 不能插零宽空格），放进代码样式里 GitHub 就不会当成 @ 提及。
+function codeSpan(text) {
+  return `\`${String(text).replace(/[`\r\n]/g, " ")}\``;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function sign(secret, message) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return toHex(mac);
+}
+
+async function sha256Hex(text) {
+  return toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+}
+
+function toHex(buffer) {
+  return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function json(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}

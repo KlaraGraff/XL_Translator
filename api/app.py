@@ -35,6 +35,7 @@ from api.routes import (
     models as models_routes,
     config_transfer as config_transfer_routes,
     maintenance as maintenance_routes,
+    feedback as feedback_routes,
 )
 from api.routes._shared import _json_error
 from api.routes.config_transfer import CORRUPT_IMPORT_DETAIL
@@ -239,6 +240,7 @@ def create_app(
     models_routes.register(app)
     config_transfer_routes.register(app)
     maintenance_routes.register(app)
+    feedback_routes.register(app)
 
 
     return app

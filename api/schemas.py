@@ -292,3 +292,28 @@ class MaintenanceClearRequest(BaseModel):
 class FullResetRequest(BaseModel):
     confirmation: bool = False
     phrase: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    category: Literal["problem", "suggestion", "other"] = "problem"
+    # 长度上限在 core.feedback.validate_draft 里查，好给出中文提示而不是 422。
+    description: str = Field(default="", max_length=20_000)
+    contact: str = Field(default="", max_length=1_000)
+    include_system: bool = True
+    ui_language: str = Field(default="zh", max_length=16)
+    task_ids: list[str] = Field(default_factory=list, max_length=20)
+    file_paths: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("file_paths", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        return normalize_user_paths(value)
+
+
+class FeedbackFilesRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("paths", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        return normalize_user_paths(value)
