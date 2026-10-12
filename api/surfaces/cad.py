@@ -300,7 +300,7 @@ class CadSurface(Surface):
                 should_stop=should_stop,
                 # 拆小重试、整批放弃、限流降速这些情况写进运行日志（与 Excel 一致）。
                 error_callback=error_callback,
-                # 每批请求的发出与返回：运行日志和在途进度用。
+                # 每批请求的发出与返回：写进运行日志。
                 request_callback=request_callback,
                 stats=stats,
             )
