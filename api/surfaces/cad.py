@@ -28,7 +28,7 @@ from core.cad_translation import (
     scan_cad_paths,
 )
 from core.task_runner import user_facing_reason
-from core.engine_dispatcher import build_role_engine
+from core.engine_dispatcher import TranslationBatchRunStats, build_role_engine
 from core.file_progress import file_progress_id
 from core.language_registry import get_target_lang_display
 from settings import AppSettings
@@ -272,17 +272,21 @@ class CadSurface(Surface):
             glossary: dict[str, str],
             progress: Callable[[int, int], None] | None = None,
             should_stop: Callable[[], bool] | None = None,
+            error_callback: Callable[[str], None] | None = None,
+            request_callback: Callable[[Any], None] | None = None,
         ) -> dict[str, str]:
             prompt = system_prompt
             if glossary:
                 prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
-            return translate_texts(
+            concurrency = max(1, int(settings.engine.concurrency))
+            stats = TranslationBatchRunStats()
+            results = translate_texts(
                 texts,
                 engine,
                 settings.target_lang,
                 prompt,
                 max(1, int(settings.engine.batch_size)),
-                max(1, int(settings.engine.concurrency)),
+                concurrency,
                 # CAD preflight may keep mixed English/French text under
                 # automatic detection.  Passing ``zh`` here silently
                 # changes the model instruction and can produce a wrong
@@ -294,7 +298,19 @@ class CadSurface(Surface):
                 progress_callback=progress,
                 # 停止在批次之间生效，不必等整张图纸的请求都发完。
                 should_stop=should_stop,
+                # 拆小重试、整批放弃、限流降速这些情况写进运行日志（与 Excel 一致）。
+                error_callback=error_callback,
+                # 每批请求的发出与返回：运行日志和在途进度用。
+                request_callback=request_callback,
+                stats=stats,
             )
+            # 接口放弃的批次、停止时没发出去的批次，translate_texts 按原文占位交回。
+            # 那不是译文：以前管线把它们当成「已翻译」计数，日志和报告都说全翻好了。
+            # 摘掉之后管线记为「未获得译文」，图纸里保留原文，结果标为需复核。
+            for text in stats.untranslated_sources | stats.stopped_sources:
+                if results.get(text) == text:
+                    results.pop(text, None)
+            return results
 
         source_pair = str(source_lang or "").strip()
         memory_pairs = (
