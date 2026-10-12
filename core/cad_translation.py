@@ -1383,6 +1383,70 @@ def scan_replacement_characters(records: Sequence[DxfRecord]) -> list[str]:
     return [record.value for record in records if any(char in record.value for char in _REPLACEMENT_CHARS)]
 
 
+def _select_candidates(
+    units: Sequence[CadTextUnit],
+    options: CadPipelineOptions,
+    stats: CadTranslationStats,
+) -> tuple[list[CadTextUnit], set[str]]:
+    """Pick the text units to translate; count the skipped ones in ``stats``.
+
+    Returns the candidates and the ids of those whose language the program
+    cannot tell (only when 「已是目标语言的不翻译」 is on).
+    """
+    candidates: list[CadTextUnit] = []
+    uncertain_units: set[str] = set()
+    for unit in units:
+        if len(unit.plain_text) > options.max_text_length:
+            stats.unsupported_entities += 1
+            continue
+        if not _has_translatable_content(unit.plain_text):
+            stats.skipped_non_text += 1
+            continue
+        if unit.entity_type == "DIMENSION" and "<>" in unit.plain_text:
+            stats.skipped_non_text += 1
+            continue
+        if not _matches_source_language(unit.plain_text, options.source_lang):
+            stats.skipped_other_language += 1
+            continue
+        if options.skip_target_language:
+            verdict = classify_text_language(unit.plain_text, options.target_lang)
+            if verdict == _LANG_TARGET:
+                stats.skipped_target_language += 1
+                if not _has_real_words(unit.plain_text):
+                    stats.skipped_codes += 1
+                continue
+            if verdict == _LANG_UNSURE:
+                uncertain_units.add(unit.unit_id)
+        candidates.append(unit)
+    return candidates, uncertain_units
+
+
+def read_profile_inputs(dxf: str | Path, options: CadPipelineOptions) -> tuple[list[str], list[str]] | None:
+    """「自动识别场景」：读一张 DXF，取出写图纸说明要用的文字和短词连读。
+
+    和 ``CadTranslationPipeline.translate_file`` 送给 ``profile_requester`` 的是同一份
+    （先恢复上次写入的双语译文，同样按锁定图块和图层取文字）。用来在前一张图纸
+    翻译时提前请求下一张的说明；这张图没有要翻译的文字时返回 None（不请求说明）。
+    """
+    path = Path(dxf)
+    records = _parse_dxf(_read_dxf_text(path, _detect_dxf_encoding(path)))
+    restore_previous_run(records)
+    units = extract_cad_text_units(
+        records,
+        include_block_text=options.include_block_text,
+        locked_blocks=options.locked_blocks,
+        locked_layers=options.locked_layers,
+        lock_report=CadLockReport(),
+    )
+    candidates, _uncertain = _select_candidates(units, options, CadTranslationStats())
+    if not candidates:
+        return None
+    return (
+        [unit.plain_text for unit in units],
+        short_text_rows(records, _plain_text, is_context_sensitive),
+    )
+
+
 class CadTranslationPipeline:
     """Translate one DWG/DXF while preserving the surrounding DXF topology."""
 
@@ -1699,32 +1763,8 @@ class CadTranslationPipeline:
                         f"这张图里没有找到这些图层：{', '.join(missing_layers)}，请检查锁定名单是否写错",
                         level="WARN",
                     )
-            candidates: list[CadTextUnit] = []
             # 整条文字程序拿不准语种的那些（只在「已是目标语言的不翻译」打开时有意义）。
-            uncertain_units: set[str] = set()
-            for unit in units:
-                if len(unit.plain_text) > options.max_text_length:
-                    stats.unsupported_entities += 1
-                    continue
-                if not _has_translatable_content(unit.plain_text):
-                    stats.skipped_non_text += 1
-                    continue
-                if unit.entity_type == "DIMENSION" and "<>" in unit.plain_text:
-                    stats.skipped_non_text += 1
-                    continue
-                if not _matches_source_language(unit.plain_text, options.source_lang):
-                    stats.skipped_other_language += 1
-                    continue
-                if options.skip_target_language:
-                    verdict = classify_text_language(unit.plain_text, options.target_lang)
-                    if verdict == _LANG_TARGET:
-                        stats.skipped_target_language += 1
-                        if not _has_real_words(unit.plain_text):
-                            stats.skipped_codes += 1
-                        continue
-                    if verdict == _LANG_UNSURE:
-                        uncertain_units.add(unit.unit_id)
-                candidates.append(unit)
+            candidates, uncertain_units = _select_candidates(units, options, stats)
             timings["scan"] = round(time.perf_counter() - started_at, 4)
             self._emit("scan", 1, 1, f"找到 {len(candidates)} 处可翻译文字")
             skipped_numbers = stats.skipped_non_text

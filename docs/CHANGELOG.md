@@ -34,9 +34,9 @@
 
   **Translation quality**: Standard codes such as GB/T 700-2006 are skipped. With auto-detect, text already in the target language is left unchanged. Word no longer inserts wrong-language output and reports untranslated text in text boxes and footnotes.
 
-- **性能与进度**：源语言为自动识别时 Excel 并发发送翻译请求；Excel、Word 和 CAD 的进度按等待模型的时间分配，翻译后期不再停滞；PDF 进度平稳、页面列表实时更新。
+- **性能与进度**：源语言为自动识别时 Excel 并发发送翻译请求；Excel、Word 多个文件的原文语言识别同时进行，「自动识别场景」的通读与语言识别同时进行；PDF 多个文件的文档说明同时请求，CAD 后续图纸的图纸说明提前同时请求；补译遗留原文按并发设置同时修复；Excel、Word 和 CAD 的进度按等待模型的时间分配，翻译后期不再停滞；PDF 进度平稳、页面列表实时更新。
 
-  **Performance and progress**: Excel sends requests concurrently with auto-detect. Excel, Word and CAD progress follows model wait time and no longer stalls late in translation. PDF progress is smoother and the page list updates live.
+  **Performance and progress**: Excel sends requests concurrently with auto-detect. Source-language detection for several Excel or Word files runs in parallel, and so does the auto-detect-scenario read-through alongside it; document descriptions for several PDFs are requested together, and those for later CAD drawings are requested ahead of time; leftover untranslated text is repaired in parallel. Excel, Word and CAD progress follows model wait time and no longer stalls late in translation. PDF progress is smoother and the page list updates live.
 
 - **其他**：任务结束时保留匿名诊断记录，「导出诊断」恢复可用；Windows 关闭或更新时正在运行的任务正常收尾；提示消息移至顶部，窄窗口表格不再错位，未配置模型时引导至设置；自定义输出目录可通过「浏览」选择；任务进度事件在 macOS 上不再比运行日志慢一拍。
 

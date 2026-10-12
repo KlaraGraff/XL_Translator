@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import BytesIO
@@ -41,6 +41,7 @@ from core.runner_base import BaseTaskRunner
 from core.output_name_translation import translate_output_stem
 from core.file_progress import FileProgressReporter
 from core.api_concurrency_control import handle_api_concurrency_limit
+from core.concurrent_calls import wait_result
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_RECOVERY,
     ApiSchedulerAcquireCancelled,
@@ -1148,12 +1149,15 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         review_api_scheduler: WeightedApiScheduler | None = None,
         resume_output_dir: str | None = None,
         profile_requester: Callable[[list[str], Callable[[str, str], None]], str] | None = None,
+        profile_concurrency: int = 1,
     ) -> None:
         self._files = file_items
         self._settings = settings
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
         # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
         self._profile_requester = profile_requester
+        # 各文件的文档说明互不依赖，按文档翻译模型的并发设置同时请求。
+        self._profile_concurrency = max(1, int(profile_concurrency or 1))
         self._document_contexts: dict[str, str] = {}
         self._source_root = Path(source_root) if source_root else None
         # 「接着上次继续」选中的历史输出目录。只读：本次任务写的永远是自己的新目录。
@@ -2902,6 +2906,41 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         app_managed: bool,
     ) -> list[_PreparedPdfFile]:
         prepared_files: list[_PreparedPdfFile] = []
+        # 「自动识别场景」：每份 PDF 的文档说明在读文件时就发出去，各文件同时请求，
+        # 不等上一份写完；全部读完后再收齐，翻译开始前每份的说明都已就绪。
+        profile_executor = (
+            ThreadPoolExecutor(max_workers=self._profile_concurrency, thread_name_prefix="pdf-profile")
+            if self._profile_requester is not None
+            else None
+        )
+        profile_futures: dict[str, Future[str]] = {}
+        try:
+            self._prepare_pdf_file_records(
+                prepared_files,
+                output_dir=output_dir,
+                app_managed=app_managed,
+                profile_executor=profile_executor,
+                profile_futures=profile_futures,
+            )
+            for source_path, future in profile_futures.items():
+                context = wait_result(future, should_stop=self._stop_event.is_set, default="")
+                if context:
+                    self._document_contexts[source_path] = context
+        finally:
+            if profile_executor is not None:
+                stopped = self._stop_event.is_set()
+                profile_executor.shutdown(wait=not stopped, cancel_futures=stopped)
+        return prepared_files
+
+    def _prepare_pdf_file_records(
+        self,
+        prepared_files: list[_PreparedPdfFile],
+        *,
+        output_dir: Path,
+        app_managed: bool,
+        profile_executor: ThreadPoolExecutor | None,
+        profile_futures: dict[str, Future[str]],
+    ) -> None:
         for index, item in enumerate(self._files, start=1):
             if self._stop_event.is_set():
                 remaining = [candidate.path for candidate in self._files[index - 1 :]]
@@ -2982,8 +3021,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - dependency/file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 record.error = _pdf_read_error_message(exc)
-            if record.status != PDF_OUTPUT_STATE_FAILED and self._profile_requester is not None:
-                self._request_document_context(item.path)
+            if record.status != PDF_OUTPUT_STATE_FAILED and profile_executor is not None:
+                future = self._submit_document_context(profile_executor, item.path)
+                if future is not None:
+                    profile_futures[str(item.path)] = future
 
             prepared_files.append(
                 self._prepared_file_shell(
@@ -3004,7 +3045,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             else:
                 self._file_progress.emit(item.path, "waiting", "translate", total=record.page_count)
             self._queue.put(ProgressMsg(1, 4, "读取文件", index, max(1, len(self._files))))
-        return prepared_files
 
     def _prepared_file_shell(
         self,
@@ -4106,8 +4146,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_height_pt=float(height),
         )
 
-    def _request_document_context(self, path: Path) -> None:
-        """「自动识别场景」：读这份 PDF 的文字层，请文档翻译模型概括成一段文档说明。"""
+    def _submit_document_context(self, executor: ThreadPoolExecutor, path: Path) -> Future[str] | None:
+        """「自动识别场景」：读这份 PDF 的文字层，交给后台请文档翻译模型概括成一段文档说明。
+
+        文字层在当前线程读（PDF 库不宜多线程同时用），只有模型请求放到后台。
+        没有文字层就不请求，返回 None。
+        """
         try:
             lines = _pdf_text_lines(path)
         except Exception as exc:  # noqa: BLE001 - the description is optional.
@@ -4118,14 +4162,19 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 "INFO",
                 f"[{path.name}] 自动识别场景：这份 PDF 没有可读的文字层（扫描件或文字已转成线条），不生成文档说明",
             )
-            return
-        try:
-            context = self._profile_requester(lines, self._log) if self._profile_requester else ""
-        except Exception as exc:  # noqa: BLE001 - the description is optional.
-            logger.debug(f"[PDF] 文档说明请求失败原始错误：{exc!r}")
-            context = ""
-        if context:
-            self._document_contexts[str(path)] = context
+            return None
+        requester = self._profile_requester
+
+        def request() -> str:
+            if requester is None or self._stop_event.is_set():
+                return ""
+            try:
+                return str(requester(lines, self._log) or "")
+            except Exception as exc:  # noqa: BLE001 - the description is optional.
+                logger.debug(f"[PDF] 文档说明请求失败原始错误：{exc!r}")
+                return ""
+
+        return executor.submit(request)
 
     def _generate_page_with_retries(
         self,

@@ -94,6 +94,7 @@ from core.residual_repair import (
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
+from core.concurrent_calls import map_concurrently, run_in_background, wait_result
 from core.document_profile import (
     append_profile,
     drop_unlocked_short_hits,
@@ -821,8 +822,19 @@ class TaskRunner(BaseTaskRunner):
 
             self._translate_progress = self._new_translate_progress(phase_total=phase_total)
 
+            smart_mode = smart_context_enabled(settings, "excel")
+            self._smart_mode = smart_mode
+            wants_profile = bool(smart_mode and global_unique_texts and engine_supports_chat(engine))
+            parallel_requests = concurrency if settings.engine.mode != "local" else 1
+            # 「自动识别场景」的通读请求和语言识别互不依赖：先在后台发出去，和语言识别
+            # 同时进行。只补译未翻译内容时，语言识别之后待译文字还会重算，那时再发。
+            profile_future = None
+            if wants_profile and not (auto_source_lang and self._untranslated_only):
+                profile_future = self._start_document_profile(engine, global_unique_texts, target_lang)
+
             if auto_source_lang:
                 source_lang, system_prompt, raw_text_count, file_language_preflights = self._preflight_source_languages(
+                    detect_workers=max(1, parallel_requests - (1 if profile_future else 0)),
                     concurrency=concurrency,
                     coverage_plans=coverage_plans,
                     deferred_resume_baselines=deferred_resume_baselines,
@@ -885,19 +897,14 @@ class TaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
-            smart_mode = smart_context_enabled(settings, "excel")
-            self._smart_mode = smart_mode
-            if smart_mode and global_unique_texts and engine_supports_chat(engine):
+            if wants_profile and global_unique_texts:
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
+                if profile_future is None:
+                    profile_future = self._start_document_profile(engine, global_unique_texts, target_lang)
                 system_prompt = append_profile(
                     system_prompt,
-                    request_document_profile(
-                        engine.chat,
-                        global_unique_texts,
-                        target_language=get_target_lang_display(target_lang),
-                        log=self._log,
-                    ),
+                    wait_result(profile_future, should_stop=self._stop_event.is_set, default=""),
                 )
                 _raise_if_stopped()
 
@@ -1034,6 +1041,8 @@ class TaskRunner(BaseTaskRunner):
                 rate_limited=rate_limited,
                 phase_total=phase_total,
                 excel_review_marks=excel_review_marks,
+                # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
+                repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -1405,6 +1414,24 @@ class TaskRunner(BaseTaskRunner):
             **contract,
         ))
 
+    def _start_document_profile(self, engine, texts, target_lang):
+        """「自动识别场景」：在后台请模型通读全部文字、写文档说明，返回 Future。"""
+        texts = list(texts)
+
+        def run() -> str:
+            try:
+                return request_document_profile(
+                    engine.chat,
+                    texts,
+                    target_language=get_target_lang_display(target_lang),
+                    log=self._log,
+                )
+            except Exception as exc:  # noqa: BLE001 - the description is optional.
+                logger.debug(f"文档说明请求失败：{exc!r}")
+                return ""
+
+        return run_in_background(run, name="document-profile")
+
     def _preflight_source_languages(
         self,
         *,
@@ -1428,6 +1455,7 @@ class TaskRunner(BaseTaskRunner):
         text_source_scopes,
         system_prompt,
         raw_text_count,
+        detect_workers=1,
     ) -> tuple[str, str, int, dict]:
         """自动识别源语言：每个文件做一次语言预检，定出源语言、补译范围和 TM 语言对；返回更新后的源语言、提示词、待译计数和预检结果。"""
         self._queue.put(
@@ -1439,9 +1467,11 @@ class TaskRunner(BaseTaskRunner):
         )
 
         detector_calls = {"count": 0}
+        detector_lock = threading.Lock()
 
         def _detect_file_language(samples, detected_target):
-            detector_calls["count"] += 1
+            with detector_lock:
+                detector_calls["count"] += 1
             raw = engine.chat(
                 LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
                 build_language_preflight_prompt(
@@ -1456,19 +1486,32 @@ class TaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        # 每个文件一次模型请求。逐个文件推进度、报「正在检测语言 x/y」，进度条
+        # 每个文件一次模型请求，按并发设置同时发出（各文件互不依赖）。每返回一个
+        # 文件推一次进度、报「正在检测语言 x/y」（x 是已识别完的文件数），进度条
         # 和进度卡标题都看得出还在往前走（先报进度再报状态，标题才是这句状态）。
         detect_total = len(file_payloads)
-        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
-            self._translate_progress.report("detect", detect_index - 1, detect_total)
-            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}…"))
+        detect_paths = list(file_payloads)
+        self._translate_progress.report("detect", 0, detect_total)
+        self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 0/{detect_total}…"))
+        for file_path in detect_paths:
             self._file_progress.emit(file_path, "active", "detect")
-            file_language_preflights.update(preflight_files(
-                {file_path: candidate_texts},
+
+        def _detected(index: int, done: int) -> None:
+            self._translate_progress.report("detect", done, detect_total)
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {done}/{detect_total}…"))
+            self._file_progress.emit(detect_paths[index], "waiting", "translate")
+
+        for detected_result in map_concurrently(
+            lambda file_path: preflight_files(
+                {file_path: file_payloads[file_path]},
                 _detect_file_language,
                 target_lang=target_lang,
-            ))
-            self._file_progress.emit(file_path, "waiting", "translate")
+            ),
+            detect_paths,
+            max_workers=detect_workers,
+            on_done=_detected,
+        ):
+            file_language_preflights.update(detected_result)
         detected_sources: list[str] = []
         for result in file_language_preflights.values():
             for detected in result.source_langs:
@@ -2650,6 +2693,7 @@ class TaskRunner(BaseTaskRunner):
         rate_limited: list[ApiKeyTemporarilyUnavailableError],
         phase_total: int,
         excel_review_marks: dict[str, str],
+        repair_concurrency: int = 1,
     ) -> ResidualPassResult:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；改得了的直接改词典，改不了的标记复核。"""
         residual_result = run_residual_pass(
@@ -2694,13 +2738,15 @@ class TaskRunner(BaseTaskRunner):
         if still_needs_review and engine_supports_chat(engine) and not rate_limited:
 
             def _on_repair_progress(done: int, total: int) -> None:
-                # done 是正要开跑的那一条（从 1 起），已经补完的是 done - 1 条。
-                self._translate_progress.report("repair", done - 1, total)
+                # done 是已经修完（拿到回复）的条数；几条同时在修，按返回的算。
+                self._translate_progress.report("repair", done, total)
                 self._queue.put(StatusMsg(
                     phase_desc=(
                         f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文（{done}/{total}）…"
                     )
                 ))
+
+            _on_repair_progress(0, min(len(still_needs_review), _RESIDUAL_REPAIR_MAX_UNITS))
 
             ladder = run_repair_ladder(
                 still_needs_review,
@@ -2711,6 +2757,7 @@ class TaskRunner(BaseTaskRunner):
                 breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
                 should_stop=self._stop_event.is_set,
                 on_progress=_on_repair_progress,
+                max_workers=repair_concurrency,
             )
             if ladder.over_cap_count:
                 self._log(
