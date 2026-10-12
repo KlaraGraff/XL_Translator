@@ -170,7 +170,10 @@ def test_release_workflow_replaces_body_before_publishing():
     assert "step=retract" in tail
     archive = tail.index('-f "ref=refs/tags/$archive"')
     kept_check = tail.index("不在 main 的历史里")
-    assert archive < kept_check < tail.index('gh release delete "$tag"') < tail.index('-X DELETE "repos/$repo/git/refs/tags/$tag"')
+    release_delete = tail.index('-X DELETE "repos/$repo/releases/$id"')
+    assert archive < kept_check < release_delete < tail.index('-X DELETE "repos/$repo/git/refs/tags/$tag"')
+    # 撤回过的草稿按标签查不到，必须列出全部 Release 按 tag_name 找。
+    assert 'gh release view' not in tail and 'select(.tag_name == ' in tail
 
 
 def test_build_workflow_accepts_dispatched_tag_releases_only_when_asked():
