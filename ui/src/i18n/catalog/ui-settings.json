@@ -355,9 +355,17 @@
     "en": "Number of pages translated at the same time, 1 to 20. Leave empty to follow the image model's speed settings.",
     "fr": "Nombre de pages traduites en même temps, de 1 à 20. Laissez vide pour suivre les réglages de débit du modèle d'image."
   },
-  "CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。": {
-    "en": "CAD translation options are on the right side of the “CAD drawings” page. Domain prompts can be edited below.",
-    "fr": "Les options de traduction CAO se trouvent à droite de la page « Plans CAO ». Les prompts de domaine se modifient ci-dessous."
+  "CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。": {
+    "en": "Other CAD translation options are on the right side of the “CAD drawings” page. Domain prompts can be edited below.",
+    "fr": "Les autres options de traduction CAO se trouvent à droite de la page « Plans CAO ». Les prompts de domaine se modifient ci-dessous."
+  },
+  "失败重试次数": {
+    "en": "Retries on failure",
+    "fr": "Nouvelles tentatives en cas d'échec"
+  },
+  "模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数，范围 0 到 5。仍失败的内容保留原文，并在结果中标记。": {
+    "en": "How many times a batch is sent again automatically when the model service is temporarily unavailable, a request times out or a reply is cut off. Range 0 to 5. Content that still fails keeps the source text and is flagged in the result.",
+    "fr": "Nombre de renvois automatiques d'un même lot lorsque le service du modèle est momentanément indisponible, qu'une requête expire ou qu'une réponse est interrompue. De 0 à 5. Le contenu toujours en échec conserve le texte source et est signalé dans le résultat."
   },
   "复核标记颜色": {
     "en": "Review mark colors",

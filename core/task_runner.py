@@ -1664,6 +1664,7 @@ class TaskRunner(BaseTaskRunner):
                         api_scheduler=shared_scheduler,
                         stats=batch_stats,
                         throughput_unlocked=self._settings.engine.concurrency_unlocked,
+                        transient_retries=self._settings.request_retry.excel,
                     )
                     normal_api_language_results.update(language_results)
                     return {
@@ -1684,6 +1685,7 @@ class TaskRunner(BaseTaskRunner):
                     api_scheduler=shared_scheduler,
                     stats=batch_stats,
                     throughput_unlocked=self._settings.engine.concurrency_unlocked,
+                    transient_retries=self._settings.request_retry.excel,
                 )
 
             def run_mixed_api_translation():

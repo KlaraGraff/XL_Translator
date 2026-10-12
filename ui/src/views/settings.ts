@@ -1196,6 +1196,18 @@ function excelReviewSettings(): JsonObject {
 function wordBatchSettings(): JsonObject {
   return record(settings?.word_batch);
 }
+/** 「失败重试次数」：接口临时故障时同一批重发几次。上下限对齐 config.py 的 REQUEST_RETRY_ATTEMPTS_*。 */
+function requestRetryField(surface: "excel" | "cad"): HTMLDivElement {
+  const grid = document.createElement("div");
+  grid.className = "grid2";
+  grid.append(numberField(
+    t("失败重试次数"),
+    num(record(settings?.request_retry)[surface], 2),
+    (v) => void reRenderAfter(() => saveSettingPath(`request_retry.${surface}`, v), { rerenderOnError: true }),
+    { min: 0, max: 5, integer: true, hint: t("模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数，范围 0 到 5。仍失败的内容保留原文，并在结果中标记。") },
+  ));
+  return grid;
+}
 function wordReviewSettings(): JsonObject {
   return record(settings?.word_review);
 }
@@ -1345,6 +1357,7 @@ function renderParamsPage(host: HTMLElement): void {
       const colors = record(excelReviewSettings().mark_colors);
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
+    body.append(requestRetryField("excel"));
   } else if (paramsTab === "word") {
     const review = wordReviewSettings();
     const batch = wordBatchSettings();
@@ -1403,14 +1416,14 @@ function renderParamsPage(host: HTMLElement): void {
       : t("同时翻译的页数，范围 1 到 20；留空则根据图像模型的速率设置自动确定。")));
     body.append(grid);
   } else if (paramsTab === "cad") {
-    // CAD 没有放在这一页的参数；以前这个标签下是一块空白卡片，看着像没加载出来。
+    // CAD 在这一页只有失败重试次数，其余选项在 CAD 页右栏。
     const note = document.createElement("p");
     note.className = "note";
     note.style.margin = "0";
     note.style.fontSize = "12.5px";
     note.style.color = "var(--ink-3)";
-    note.textContent = t("CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。");
-    body.append(note);
+    note.textContent = t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。");
+    body.append(requestRetryField("cad"), note);
   }
 
   card.append(body);

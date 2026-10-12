@@ -187,6 +187,12 @@ WORD_BATCH_SPLIT_CHARS_DEFAULT = WORD_BATCH_CHARS_DEFAULT
 WORD_STRICT_RETRY_ATTEMPTS_DEFAULT = 3
 WORD_STRICT_RETRY_ATTEMPTS_MIN     = 1
 WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
+
+# Excel / CAD：接口临时故障（5xx、超时、回答中断）后同一批原样重发的次数，
+# 在「翻译参数」里按页面设置。0 表示不重发。
+REQUEST_RETRY_ATTEMPTS_DEFAULT = 2
+REQUEST_RETRY_ATTEMPTS_MIN     = 0
+REQUEST_RETRY_ATTEMPTS_MAX     = 5
 WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
 # 复核底色只有两种，对应两类真正需要人动手的东西：译文没出来（保留了原文、
 # 译文里残留源语言）和原文本身可疑。程序自己判过并放行的不上底色——9.3.0 之前
@@ -371,4 +377,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 31
+SETTINGS_SCHEMA_VERSION = 32
