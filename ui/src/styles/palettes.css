@@ -1,0 +1,277 @@
+/*
+ * 可选配色方案（设置 → 外观与语言 → 配色方案）。
+ *
+ * 「暖调纸感」直接写在 tokens.css 的 :root / [data-theme="dark"] 里，不需要单独的
+ * 块。默认方案是「素雅灰」（id graphite）。这里的每个方案都给浅色和深色各一整套 token，
+ * 由 <html data-palette="…"> 选中；浅色块的特异性 (0,2,0) 与 tokens.css 的
+ * 深色块相同、写在它后面，所以深色块 (0,3,0) 必须把浅色块里的每个 token
+ * 都重新定义一遍，否则深色下会漏出浅色值。阴影、圆角、字体沿用 tokens.css。
+ *
+ * 每个方案都满足 tokens.css 文件头的对比度底线：正文、次要文字（--ink-3）、
+ * 主色文字和状态色对卡片底色 ≥ 4.5；--ink-3 对 --ground-2 也 ≥ 4.5。
+ * 方案 id 与 ui/src/palette.ts、settings.py 的 PALETTES 保持一致。
+ */
+
+/* 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */
+:root[data-palette="cool"] {
+  --ground: #e6e9f0;
+  --ground-2: #dce0e9;
+  --rail: #edf0f5;
+  --surface: #f4f6f9;
+  --surface-2: #edf0f5;
+  --ink: #161b2c;
+  --ink-2: #4a5470;
+  --ink-3: #58617a;
+  --line: #d9dde7;
+  --line-2: #c6ccda;
+  --accent: #4c5de8;
+  --accent-strong: #3d4cc4;
+  --on-accent: #ffffff;
+  --tint: #e8eafb;
+  --tint-line: #c6ccf5;
+  --tint-ink: #3a49ba;
+  --ok: #0c7a4c;
+  --ok-t: #dff0e8;
+  --ok-l: #afd9c4;
+  --warn: #9a6000;
+  --warn-t: #f5ebdb;
+  --warn-l: #e5d0aa;
+  --danger: #c9353b;
+  --danger-t: #f8e5e6;
+  --danger-l: #efbcbf;
+  --ring: #a3acf0;
+  --ring-soft: rgb(76 93 232 / 18%);
+  --bar-end: #7d8cff;
+  --surface-clear: rgb(244 246 249 / 0%);
+}
+
+:root[data-palette="cool"][data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #151a23;
+  --ground-2: #11151d;
+  --rail: #12161e;
+  --surface: #1e2431;
+  --surface-2: #252c3b;
+  --ink: #eef1f8;
+  --ink-2: #bac2d6;
+  --ink-3: #8f99b2;
+  --line: #343d51;
+  --line-2: #424c63;
+  --accent: #8f9dff;
+  --accent-strong: #7080ff;
+  --on-accent: #11141f;
+  --tint: #262e4d;
+  --tint-line: #3c4785;
+  --tint-ink: #b1bbff;
+  --ok: #4fd296;
+  --ok-t: #1c3530;
+  --ok-l: #30614f;
+  --warn: #eaae52;
+  --warn-t: #352d22;
+  --warn-l: #6a5639;
+  --danger: #ff7a7d;
+  --danger-t: #3a2227;
+  --danger-l: #6a3840;
+  --ring: #6472d8;
+  --ring-soft: rgb(143 157 255 / 24%);
+  --bar-end: #a3adff;
+  --surface-clear: rgb(30 36 49 / 0%);
+}
+
+/* 青瓷：灰绿中性色配青绿主色，整体最柔和。 */
+:root[data-palette="celadon"] {
+  --ground: #e2e8e4;
+  --ground-2: #d7dfda;
+  --rail: #e9eeea;
+  --surface: #f2f5f2;
+  --surface-2: #eaefeb;
+  --ink: #17201c;
+  --ink-2: #48564f;
+  --ink-3: #56635c;
+  --line: #d4ddd8;
+  --line-2: #bdc9c2;
+  --accent: #1b7870;
+  --accent-strong: #135d56;
+  --on-accent: #ffffff;
+  --tint: #deedea;
+  --tint-line: #b2d5cf;
+  --tint-ink: #135d56;
+  --ok: #276d1a;
+  --ok-t: #e2eae1;
+  --ok-l: #b9cfb6;
+  --warn: #855600;
+  --warn-t: #e9e8df;
+  --warn-l: #d3c8ae;
+  --danger: #b33034;
+  --danger-t: #ede5e3;
+  --danger-l: #e0bebd;
+  --ring: #8cc3bb;
+  --ring-soft: rgb(27 120 112 / 18%);
+  --bar-end: #46a397;
+  --surface-clear: rgb(242 245 242 / 0%);
+}
+
+:root[data-palette="celadon"][data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #161c1a;
+  --ground-2: #121715;
+  --rail: #141917;
+  --surface: #1f2724;
+  --surface-2: #26302c;
+  --ink: #e9efec;
+  --ink-2: #b9c6bf;
+  --ink-3: #8f9e96;
+  --line: #34413c;
+  --line-2: #46554e;
+  --accent: #72b8ad;
+  --accent-strong: #5a9f94;
+  --on-accent: #0e1917;
+  --tint: #1f3532;
+  --tint-line: #305751;
+  --tint-ink: #a8d8d0;
+  --ok: #7fd08a;
+  --ok-t: #2e4234;
+  --ok-l: #43674b;
+  --warn: #e3ad55;
+  --warn-t: #3e3c2c;
+  --warn-l: #695a37;
+  --danger: #f4807e;
+  --danger-t: #413532;
+  --danger-l: #704946;
+  --ring: #4f8f86;
+  --ring-soft: rgb(114 184 173 / 24%);
+  --bar-end: #95d3c8;
+  --surface-clear: rgb(31 39 36 / 0%);
+}
+
+/* 素雅灰（id graphite，默认方案）：纯中性灰，不带色偏，主色为标准蓝，接近系统原生界面。 */
+:root[data-palette="graphite"] {
+  --ground: #e5e5e5;
+  --ground-2: #dbdbdb;
+  --rail: #ececec;
+  --surface: #f4f4f4;
+  --surface-2: #ededed;
+  --ink: #1a1a1a;
+  --ink-2: #4d4d4d;
+  --ink-3: #5e5e5e;
+  --line: #d9d9d9;
+  --line-2: #c2c2c2;
+  --accent: #2462c8;
+  --accent-strong: #1b4ea3;
+  --on-accent: #ffffff;
+  --tint: #e2eaf7;
+  --tint-line: #b7cbec;
+  --tint-ink: #1b4ea3;
+  --ok: #0a6c43;
+  --ok-t: #e1e9e6;
+  --ok-l: #b2cec2;
+  --warn: #855500;
+  --warn-t: #ebe7e0;
+  --warn-l: #d5c7b0;
+  --danger: #b33036;
+  --danger-t: #efe4e5;
+  --danger-l: #e2bdbf;
+  --ring: #93b4ea;
+  --ring-soft: rgb(36 98 200 / 18%);
+  --bar-end: #5b8ee6;
+  --surface-clear: rgb(244 244 244 / 0%);
+}
+
+:root[data-palette="graphite"][data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #171717;
+  --ground-2: #121212;
+  --rail: #141414;
+  --surface: #222222;
+  --surface-2: #2a2a2a;
+  --ink: #ececec;
+  --ink-2: #bdbdbd;
+  --ink-3: #979797;
+  --line: #393939;
+  --line-2: #4b4b4b;
+  --accent: #82a9ea;
+  --accent-strong: #6890d8;
+  --on-accent: #0d1420;
+  --tint: #1f2b3e;
+  --tint-line: #304872;
+  --tint-ink: #abc5f1;
+  --ok: #5fd39a;
+  --ok-t: #2c3e35;
+  --ok-l: #396550;
+  --warn: #e8ae55;
+  --warn-t: #42382a;
+  --warn-l: #6d5735;
+  --danger: #ff7b7e;
+  --danger-t: #453031;
+  --danger-l: #764445;
+  --ring: #5276b4;
+  --ring-soft: rgb(130 169 234 / 24%);
+  --bar-end: #a6c3f2;
+  --surface-clear: rgb(34 34 34 / 0%);
+}
+
+/* 琥珀护眼：米黄纸色配焦糖主色，蓝光成分最少，适合夜间长时间使用。 */
+:root[data-palette="amber"] {
+  --ground: #e8dfcf;
+  --ground-2: #ddd3c0;
+  --rail: #eee6d8;
+  --surface: #f4eddf;
+  --surface-2: #ede4d3;
+  --ink: #2a2116;
+  --ink-2: #5b4d3b;
+  --ink-3: #665744;
+  --line: #dccfb9;
+  --line-2: #c8b89c;
+  --accent: #9f4e18;
+  --accent-strong: #823f0e;
+  --on-accent: #ffffff;
+  --tint: #f1dfca;
+  --tint-line: #dfbd97;
+  --tint-ink: #823f0e;
+  --ok: #2a661e;
+  --ok-t: #e4e2d0;
+  --ok-l: #bbc7a9;
+  --warn: #7d5200;
+  --warn-t: #eae1cd;
+  --warn-l: #d3c2a1;
+  --danger: #a82c29;
+  --danger-t: #eeded0;
+  --danger-l: #dfb7ac;
+  --ring: #d9a477;
+  --ring-soft: rgb(159 78 24 / 18%);
+  --bar-end: #c97a3e;
+  --surface-clear: rgb(244 237 223 / 0%);
+}
+
+:root[data-palette="amber"][data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #1d1813;
+  --ground-2: #17130f;
+  --rail: #1a1611;
+  --surface: #28211a;
+  --surface-2: #2f281f;
+  --ink: #f0e6d6;
+  --ink-2: #cdbfa8;
+  --ink-3: #a5967f;
+  --line: #40362b;
+  --line-2: #534838;
+  --accent: #d99b62;
+  --accent-strong: #c2834c;
+  --on-accent: #1d140b;
+  --tint: #3a2b1d;
+  --tint-line: #5e4329;
+  --tint-ink: #ebc195;
+  --ok: #8ccf7a;
+  --ok-t: #383d29;
+  --ok-l: #4e633e;
+  --warn: #e8b452;
+  --warn-t: #473923;
+  --warn-l: #71592f;
+  --danger: #f2837b;
+  --danger-t: #48312a;
+  --danger-l: #75463f;
+  --ring: #9c6c40;
+  --ring-soft: rgb(217 155 98 / 24%);
+  --bar-end: #ecb682;
+  --surface-clear: rgb(40 33 26 / 0%);
+}

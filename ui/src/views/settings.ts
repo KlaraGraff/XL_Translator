@@ -4,6 +4,7 @@
 // params 约定：{ page?: "models" | "params" | "appearance" | "data" | "about" }，
 // 用于从右栏「编辑 Prompt ↗ 设置」、顶栏模型药丸等处深链到具体子页。
 
+import { PALETTES, applyPalettes, palettesFromAppearance, storePalettes, type PaletteChoice, type PaletteMode } from "../palette";
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import {
@@ -872,6 +873,10 @@ export async function refreshSettings(): Promise<void> {
   const pref = currentThemePreference();
   applyThemeVisual(pref);
   commitThemeToLocalStorage(pref);
+  // 配色方案同理：重置设置会把它改回默认方案，这里跟着对齐。
+  const palettes = currentPalettePreference();
+  applyPalettes(palettes);
+  storePalettes(palettes);
 }
 
 async function refreshProviderDefaults(): Promise<void> {
@@ -1848,6 +1853,92 @@ function currentThemePreference(): ThemePreference {
   return value === "dark" || value === "system" ? value : "light";
 }
 
+function currentPalettePreference(): PaletteChoice {
+  return palettesFromAppearance(record(settings?.appearance));
+}
+
+function paletteSwatch(palette: (typeof PALETTES)[number], mode: PaletteMode): HTMLElement {
+  // 小色样：背景条上放一张卡片，卡片里两行字色和一个主色按钮，画的是该方案在这一行对应
+  // 模式（浅色 / 深色）下的样子，与当前页面的配色无关。
+  const colors = palette.swatch[mode];
+  const frame = document.createElement("span");
+  frame.className = "pal-swatch";
+  frame.style.background = colors.ground;
+  const card = document.createElement("span");
+  card.className = "pal-card";
+  card.style.background = colors.surface;
+  card.style.borderColor = colors.line;
+  const line1 = document.createElement("i");
+  line1.style.background = colors.ink;
+  const line2 = document.createElement("i");
+  line2.style.background = colors.ink3;
+  const button = document.createElement("i");
+  button.className = "pal-btn";
+  button.style.background = colors.accent;
+  card.append(line1, line2, button);
+  frame.append(card);
+  return frame;
+}
+
+// 配色方案：浅色模式、深色模式各选一个，可以跨方案搭配。和主题分段控件同样的顺序——
+// 先切可见颜色给即时反馈，落盘成功后才写 localStorage，落盘失败就把颜色回滚。
+function renderPaletteCard(host: HTMLElement): void {
+  const card = createCard([]);
+  const body = document.createElement("div");
+  body.style.padding = "14px 16px";
+  body.append(sectionLabel(t("配色方案")));
+  const active = currentPalettePreference();
+  const rows: { mode: PaletteMode; label: string }[] = [
+    { mode: "light", label: t("浅色模式使用") },
+    { mode: "dark", label: t("深色模式使用") },
+  ];
+  for (const row of rows) {
+    const rowLabel = document.createElement("div");
+    rowLabel.className = "pal-row-label";
+    rowLabel.textContent = row.label;
+    const grid = document.createElement("div");
+    grid.className = "pal-grid";
+    for (const palette of PALETTES) {
+      const selected = palette.id === active[row.mode];
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = selected ? "pal-opt on" : "pal-opt";
+      option.setAttribute("aria-pressed", String(selected));
+      option.setAttribute("aria-label", `${row.label} · ${palette.label()}`);
+      const b = document.createElement("b");
+      b.textContent = palette.label();
+      const span = document.createElement("span");
+      span.textContent = palette.hint();
+      option.append(paletteSwatch(palette, row.mode), b, span);
+      option.addEventListener("click", () => void reRenderAfter(async () => {
+        const previous = currentPalettePreference();
+        if (palette.id === previous[row.mode]) return;
+        const next: PaletteChoice = { ...previous, [row.mode]: palette.id };
+        applyPalettes(next);
+        try {
+          await persistSettings({
+            appearance: { ...record(settings?.appearance), palette_light: next.light, palette_dark: next.dark },
+          });
+        } catch (error) {
+          applyPalettes(previous);
+          throw error;
+        }
+        storePalettes(next);
+      }));
+      grid.append(option);
+    }
+    body.append(rowLabel, grid);
+  }
+  const note = document.createElement("div");
+  note.style.marginTop = "8px";
+  note.style.fontSize = "12px";
+  note.style.color = "var(--ink-3)";
+  note.textContent = t("界面处于浅色还是深色由上面的主题决定；两种模式可以选不同的方案，例如白天用素雅灰、晚上用琥珀护眼。");
+  body.append(note);
+  card.append(body);
+  host.append(card);
+}
+
 function currentLanguagePreference(): Locale {
   const value = record(settings?.appearance).ui_language;
   return isLocale(value) ? value : "zh";
@@ -1939,6 +2030,7 @@ function renderAppearancePage(host: HTMLElement): void {
   themeBody.append(seg);
   themeCard.append(themeBody);
   host.append(themeCard);
+  renderPaletteCard(host);
 
   const langCard = createCard([]);
   const addBtn = createButton({
