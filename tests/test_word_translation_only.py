@@ -80,5 +80,54 @@ class WordTranslationOnlyTests(unittest.TestCase):
         self.assertFalse(WordOutputSettings().output_translation_only)
 
 
+class TranslationOnlyKeepsEmbeddedContentTests(unittest.TestCase):
+    """「仅显示译文」改写整段时，段落里挂着的文本框和脚注编号不能被一起删掉。"""
+
+    def test_textbox_and_footnote_reference_survive_replacement(self) -> None:
+        import zipfile
+
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls, qn
+
+        mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        wps = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+        box = "<w:txbxContent><w:p><w:r><w:t>文本框里的字</w:t></w:r></w:p></w:txbxContent>"
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            doc = Document()
+            end = doc.element.body.find(qn("w:sectPr"))
+            end.addprevious(parse_xml(
+                f'<w:p {nsdecls("w")} xmlns:mc="{mc}" xmlns:wps="{wps}">'
+                "<w:r><w:t>这一段带文本框</w:t></w:r><w:r><mc:AlternateContent>"
+                f'<mc:Choice Requires="wps"><wps:txbx>{box}</wps:txbx></mc:Choice>'
+                f"<mc:Fallback><w:pict>{box}</w:pict></mc:Fallback>"
+                "</mc:AlternateContent></w:r></w:p>"
+            ))
+            end.addprevious(parse_xml(
+                f'<w:p {nsdecls("w")}><w:r><w:t>这一段带脚注</w:t></w:r>'
+                '<w:r><w:footnoteReference w:id="1"/></w:r></w:p>'
+            ))
+            source = root / "source.docx"
+            doc.save(source)
+
+            output = write_bilingual_docx(
+                source_path=source,
+                output_dir=root / "only",
+                translations={
+                    "这一段带文本框": "Paragraph with a text box",
+                    "这一段带脚注": "Paragraph with a footnote",
+                },
+                target_lang="en",
+                output_translation_only=True,
+            )
+            xml = zipfile.ZipFile(output).read("word/document.xml").decode("utf-8")
+            self.assertEqual(xml.count("<w:txbxContent"), 2)
+            self.assertEqual(xml.count("w:footnoteReference"), 1)
+            texts = [paragraph.text for paragraph in Document(output).paragraphs]
+            self.assertIn("Paragraph with a text box", texts)
+            self.assertIn("Paragraph with a footnote", texts)
+            self.assertNotIn("这一段带文本框", xml)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
