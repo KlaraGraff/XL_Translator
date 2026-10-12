@@ -38,7 +38,9 @@ THREADED_FALLBACK = (
 )
 
 
-def _drawing_xml(paragraphs: list[str], *, name: str = "TextBox 1") -> bytes:
+def _drawing_xml(
+    paragraphs: list[str], *, name: str = "TextBox 1", box: tuple[int, int] = (1828800, 762000)
+) -> bytes:
     body = "".join(
         f'<a:p><a:r><a:rPr lang="zh-CN" sz="1100"/><a:t>{text}</a:t></a:r></a:p>'
         for text in paragraphs
@@ -52,7 +54,8 @@ def _drawing_xml(paragraphs: list[str], *, name: str = "TextBox 1") -> bytes:
         "<xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>"
         '<xdr:sp macro="" textlink="">'
         f'<xdr:nvSpPr><xdr:cNvPr id="2" name="{name}"/><xdr:cNvSpPr txBox="1"/></xdr:nvSpPr>'
-        '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="762000"/></a:xfrm>'
+        '<xdr:spPr><a:xfrm><a:off x="0" y="0"/>'
+        f'<a:ext cx="{box[0]}" cy="{box[1]}"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
         f'<xdr:txBody><a:bodyPr wrap="square"/><a:lstStyle/>{body}</xdr:txBody>'
         "</xdr:sp><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"
@@ -68,7 +71,7 @@ def _threaded_xml() -> bytes:
     ).encode()
 
 
-def build_workbook(path: Path, *, threaded: bool = True) -> None:
+def build_workbook(path: Path, *, threaded: bool = True, box: tuple[int, int] = (1828800, 762000)) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "表1"
@@ -104,7 +107,7 @@ def build_workbook(path: Path, *, threaded: bool = True) -> None:
         rel.set("Target", "../threadedComments/threadedComment1.xml")
     items[rels_part] = etree.tostring(rels, xml_declaration=True, encoding="UTF-8", standalone=True)
 
-    items["xl/drawings/drawing1.xml"] = _drawing_xml(["图例说明", "红色表示待施工区域"])
+    items["xl/drawings/drawing1.xml"] = _drawing_xml(["图例说明", "红色表示待施工区域"], box=box)
     content_types = items["[Content_Types].xml"].decode()
     overrides = (
         '<Override PartName="/xl/drawings/drawing1.xml" '
@@ -210,7 +213,22 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual(stats["comments"], 2)
         self.assertEqual(stats["shrunk_shapes"], 1)
         self.assertEqual(stats["mutated_cells"], 1)
-        # 译文是原文宽度的好几倍，缩到下限仍放不下，要进复核清单。
+        # 2 英寸 × 0.8 英寸的框缩到七成左右放得下，不进复核清单。
+        self.assertTrue(min(sizes) >= 1100 * 0.6, sizes)
+        self.assertEqual([item for item in review if item["category"] == REVIEW_CATEGORY_SHAPE_OVERFLOW], [])
+
+    def test_roomy_box_keeps_font_size(self) -> None:
+        build_workbook(self.source, box=(4572000, 1524000))  # 5 英寸 × 1.67 英寸，留了很多空
+        stats: dict[str, object] = {}
+        drawing = _part(self._write(stats=stats), "xl/drawings/drawing1.xml")
+        self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"1100"})
+        self.assertEqual(stats["shrunk_shapes"], 0)
+
+    def test_box_too_small_even_at_minimum_size_is_listed_for_review(self) -> None:
+        build_workbook(self.source, box=(1097280, 457200))  # 1.2 英寸 × 0.5 英寸
+        review: list[dict[str, str]] = []
+        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
+        self.assertEqual(set(__import__("re").findall(r'sz="(\d+)"', drawing)), {"660"})
         self.assertIn(
             {"worksheet": "表1", "cell": "TextBox 1", "category": REVIEW_CATEGORY_SHAPE_OVERFLOW, "action": "listed_only"},
             review,

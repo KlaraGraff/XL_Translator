@@ -7,8 +7,8 @@
   - 双语：文本框在原段后面插一段译文（沿用原段的段落格式和第一个文字片段的字体），
     批注在原文后换行接译文；
   - 仅显示译文：原段只留一个文字片段，换成译文；批注作者署名（「张三:」）保留。
-文本框尺寸是固定的，译文变长后放不下就按比例缩小这个文本框里的字号，缩到下限仍
-放不下的记进复核清单。
+文本框尺寸是固定的：按框的大小和字号估算译文占多少行，放不下就按比例缩小这个文本框
+里的字号，缩到下限仍放不下的记进复核清单。
 
 新版对话式批注（threadedComments）Excel 还会在传统批注里留一份兼容副本，副本里的
 原文同步替换，两边看到的一致。
@@ -57,8 +57,14 @@ NS_THREADED = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedco
 
 # 文本框里的字缩到原来的这个比例还放不下，就不再缩，记进复核清单。
 SHAPE_TEXT_MIN_SCALE = 0.6
-# 译文总宽度超出原文这么多以内不缩：原框一般留有余量。
+# 框的尺寸读不出来时退回按文字总宽度估：译文总宽度超出原文这么多以内不缩。
 SHAPE_TEXT_GROWTH_TOLERANCE = 1.08
+# 估算排版用的字宽和行高（相对字号）：西文按半个汉字宽、略放宽，行高按 1.2 倍。
+_HALF_WIDTH_EM = 0.55
+_LINE_HEIGHT_EM = 1.2
+_EMU_PER_PT = 12700
+# DrawingML 文字框默认内边距（EMU）：左右 0.1 英寸，上下 0.05 英寸。
+_DEFAULT_INSETS = {"lIns": 91440, "rIns": 91440, "tIns": 45720, "bIns": 45720}
 # 文字片段没写字号、文本框也没给默认值时，Excel 形状的默认字号（百分之一磅）。
 DEFAULT_SHAPE_FONT_SIZE = 1100
 
@@ -493,6 +499,98 @@ def _shrink_shape_text(tx_body, scale: float) -> None:
             rpr.set("sz", str(max(100, int(round(size * scale)))))
 
 
+@dataclass(frozen=True)
+class _ShapeLayout:
+    """估算文字排版用的量：框内可用宽高（磅，读不出为 None）和每段的（显示宽度, 字号磅）。"""
+
+    width: float | None
+    height: float | None
+    wrap: bool
+    paragraphs: tuple[tuple[int, float], ...]
+
+
+def _emu_attr(el, name: str, default: int) -> int:
+    try:
+        return int(el.get(name)) if el is not None and el.get(name) is not None else default
+    except ValueError:
+        return default
+
+
+def _paragraph_font_size(paragraph, base: int) -> int:
+    for path in (f"{_a('r')}/{_a('rPr')}", f"{_a('pPr')}/{_a('defRPr')}", _a("endParaRPr")):
+        el = paragraph.find(path)
+        if el is not None and el.get("sz"):
+            try:
+                return int(el.get("sz"))
+            except ValueError:
+                pass
+    return base
+
+
+def _shape_layout(sp) -> _ShapeLayout:
+    tx_body = sp.find(_x("txBody"))
+    base = _base_font_size(tx_body)
+    paragraphs = tuple(
+        (_display_width(_paragraph_text(p) or ""), _paragraph_font_size(p, base) / 100)
+        for p in tx_body.iter(_a("p"))
+    )
+    body_pr = tx_body.find(_a("bodyPr"))
+    wrap = body_pr is None or body_pr.get("wrap") != "none"
+    ext = sp.find(f"{_x('spPr')}/{_a('xfrm')}/{_a('ext')}")
+    width = height = None
+    cx, cy = _emu_attr(ext, "cx", 0), _emu_attr(ext, "cy", 0)
+    if cx > 0 and cy > 0:
+        insets = {name: _emu_attr(body_pr, name, value) for name, value in _DEFAULT_INSETS.items()}
+        if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
+            cx, cy = cy, cx  # 竖排：按转过来的框算
+        width = max(1.0, (cx - insets["lIns"] - insets["rIns"]) / _EMU_PER_PT)
+        height = max(1.0, (cy - insets["tIns"] - insets["bIns"]) / _EMU_PER_PT)
+    return _ShapeLayout(width, height, wrap, paragraphs)
+
+
+def _text_extent(layout: _ShapeLayout, scale: float) -> tuple[float, float]:
+    """按比例缩放字号后，文字占的（最宽一行, 总高度），单位磅。"""
+    widest = total_height = 0.0
+    for units, size in layout.paragraphs:
+        size *= scale
+        line_width = units * _HALF_WIDTH_EM * size
+        lines = 1
+        if layout.wrap and layout.width and line_width > layout.width:
+            lines = math.ceil(line_width / layout.width)
+            line_width = layout.width
+        widest = max(widest, line_width)
+        total_height += lines * _LINE_HEIGHT_EM * size
+    return widest, total_height
+
+
+def _fitting_scale(before: _ShapeLayout, after: _ShapeLayout) -> tuple[float, bool]:
+    """译文放进原框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。
+
+    原文本来就超出框的（用户自己让字溢出），以原文占的大小为准，不比原来更挤就行。
+    """
+    if after.width is None or after.height is None:
+        old = sum(units for units, _size in before.paragraphs)
+        new = sum(units for units, _size in after.paragraphs)
+        if old <= 0 or new <= old * SHAPE_TEXT_GROWTH_TOLERANCE:
+            return 1.0, True
+        wanted = math.sqrt(old / new)  # 框的面积固定，文字占的面积随字号平方变化。
+        return max(SHAPE_TEXT_MIN_SCALE, round(wanted, 2)), wanted >= SHAPE_TEXT_MIN_SCALE
+
+    old_width, old_height = _text_extent(before, 1.0)
+    room_width = max(after.width, old_width)
+    room_height = max(after.height, old_height)
+
+    def fits(scale: float) -> bool:
+        width, height = _text_extent(after, scale)
+        return height <= room_height and (after.wrap or width <= room_width)
+
+    scale = 1.0
+    while scale > SHAPE_TEXT_MIN_SCALE and not fits(scale):
+        scale = round(scale - 0.05, 2)
+    scale = max(SHAPE_TEXT_MIN_SCALE, scale)
+    return scale, fits(scale)
+
+
 def _apply_shapes(
     package: _Package,
     parts: _SheetParts,
@@ -517,12 +615,8 @@ def _apply_shapes(
     if not planned:
         return
 
-    widths_before: dict[int, int] = {}
-    for sp in {id(item[0]): item[0] for item in planned}.values():
-        tx_body = sp.find(_x("txBody"))
-        widths_before[id(sp)] = sum(
-            _display_width(_paragraph_text(p) or "") for p in tx_body.iter(_a("p"))
-        )
+    shapes = list({id(item[0]): item[0] for item in planned}.values())
+    before = {id(sp): _shape_layout(sp) for sp in shapes}
     for sp, paragraph, source, translation in planned:
         _rewrite_shape_paragraph(paragraph, translation, translation_only=translation_only)
         stats.shape_paragraphs += 1
@@ -537,18 +631,13 @@ def _apply_shapes(
                 }
             )
 
-    for sp in {id(item[0]): item[0] for item in planned}.values():
-        tx_body = sp.find(_x("txBody"))
-        before = widths_before[id(sp)]
-        after = sum(_display_width(_paragraph_text(p) or "") for p in tx_body.iter(_a("p")))
-        if before <= 0 or after <= before * SHAPE_TEXT_GROWTH_TOLERANCE:
+    for sp in shapes:
+        scale, fits = _fitting_scale(before[id(sp)], _shape_layout(sp))
+        if scale >= 1:
             continue
-        # 框的面积固定，文字占的面积随字号平方变化。
-        wanted = math.sqrt(before / after)
-        scale = max(SHAPE_TEXT_MIN_SCALE, round(wanted, 2))
-        _shrink_shape_text(tx_body, scale)
+        _shrink_shape_text(sp.find(_x("txBody")), scale)
         stats.shrunk_shapes += 1
-        if wanted < SHAPE_TEXT_MIN_SCALE and review_positions is not None:
+        if not fits and review_positions is not None:
             review_positions.append(
                 {
                     "worksheet": parts.name,
