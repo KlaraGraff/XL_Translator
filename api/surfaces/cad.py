@@ -147,6 +147,7 @@ class CadSurface(Surface):
                 "text_count": item.text_entity_count,
                 "candidate_count": item.candidate_count,
                 "needs_conversion": item.needs_conversion,
+                "uncertain_count": item.uncertain_count,
                 "file_id": file_progress_id(item.path),
             }
             for item in summaries
@@ -264,7 +265,11 @@ class CadSurface(Surface):
             "translation",
             connection_ids=tuple(chains.get("translation") or ()),
         )
-        from core.engine_dispatcher import get_system_prompt, translate_texts
+        from core.engine_dispatcher import (
+            get_system_prompt,
+            translate_texts,
+            translate_texts_with_sources,
+        )
         system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
 
         def translate_batch(
@@ -312,11 +317,42 @@ class CadSurface(Surface):
                     results.pop(text, None)
             return results
 
+        def translate_batch_with_sources(
+            texts: list[str],
+            glossary: dict[str, str],
+            progress: Callable[[int, int], None] | None = None,
+            should_stop: Callable[[], bool] | None = None,
+            error_callback: Callable[[str], None] | None = None,
+        ) -> dict[str, Any]:
+            """程序判断不了语种的文字：翻译的同时让模型回报原文语种（与 Excel/Word 自动识别相同的协议）。"""
+            prompt = system_prompt
+            if glossary:
+                prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
+            stats = TranslationBatchRunStats()
+            results = translate_texts_with_sources(
+                texts,
+                engine,
+                settings.target_lang,
+                prompt,
+                max(1, int(settings.engine.batch_size)),
+                max(1, int(settings.engine.concurrency)),
+                progress,
+                error_callback,
+                should_stop=should_stop,
+                api_scheduler=api_schedulers.get("translation"),
+                stats=stats,
+            )
+            # 接口放弃或停止时没发出去的条目按原文占位交回，那不是译文，也不是语种判断。
+            failed = stats.untranslated_sources | stats.stopped_sources
+            return {text: (item.translation, item.source_lang) for text, item in results.items() if text not in failed}
+
         source_pair = str(source_lang or "").strip()
+        target_base = str(settings.target_lang or "").split("-", 1)[0].lower()
         memory_pairs = (
             [f"{source_pair}-{settings.target_lang}"]
             if source_pair and source_pair != "auto"
-            else [f"{candidate}-{settings.target_lang}" for candidate in ("en", "fr", "zh")]
+            # 原文和译文同一种语言的组合查不出东西（英译英），不必去查。
+            else [f"{candidate}-{settings.target_lang}" for candidate in ("en", "fr", "zh") if candidate != target_base]
         )
 
         def memory_lookup(texts: list[str]) -> dict[str, str | None]:
@@ -339,6 +375,7 @@ class CadSurface(Surface):
             converter=SubprocessCadConverter(converter_path) if converter_path else None,
             memory_lookup=memory_lookup if options.cad_use_memory else None,
             translator=translate_batch,
+            language_translator=translate_batch_with_sources,
             filename_translator=engine,
             glossary=load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
             options=CadPipelineOptions(

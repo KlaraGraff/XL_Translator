@@ -112,6 +112,7 @@ class CadTaskRunner(BaseTaskRunner):
         converter: Any = None,
         memory_lookup: Any = None,
         translator: Any = None,
+        language_translator: Any = None,
         filename_translator: Any = None,
         translate_output_filename: bool = False,
         glossary: Mapping[str, str] | None = None,
@@ -149,6 +150,7 @@ class CadTaskRunner(BaseTaskRunner):
         self._converter = converter
         self._memory_lookup = memory_lookup
         self._translator = translator
+        self._language_translator = language_translator
         self._filename_translator = filename_translator
         self._translate_output_filename = bool(translate_output_filename)
         self._glossary = dict(glossary or {})
@@ -543,6 +545,7 @@ class CadTaskRunner(BaseTaskRunner):
                     converter=self._converter,
                     memory_lookup=self._memory_lookup,
                     translator=self._translator,
+                    language_translator=self._language_translator,
                     progress=progress,
                     pause_gate=lambda: self._wait_while_paused(CAD_PAUSED_IN_FILE_STATUS),
                 )
