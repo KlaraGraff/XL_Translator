@@ -18,10 +18,7 @@
   "正在读取任务记录…": {"en": "Loading tasks…", "fr": "Chargement des tâches…"},
   "无法读取任务记录：{0}": {"en": "Could not load tasks: {0}", "fr": "Impossible de charger les tâches : {0}"},
   "暂无已结束的任务。": {"en": "No finished tasks yet.", "fr": "Aucune tâche terminée pour le moment."},
-  "文件可能包含客户资料，默认不附带。仅在需要我们查看原文件或译文时添加，总大小不超过 50 MB。": {"en": "Files may contain client data and are not attached by default. Add them only when we need to see the original or the translation, up to 50 MB in total.", "fr": "Les fichiers peuvent contenir des données client et ne sont pas joints par défaut. Ajoutez-les uniquement si nous devons consulter l'original ou la traduction, dans la limite de 50 Mo au total."},
   "文件不存在": {"en": "File not found", "fr": "Fichier introuvable"},
-  "移除": {"en": "Remove", "fr": "Retirer"},
-  "合计 {0} / {1}": {"en": "Total {0} / {1}", "fr": "Total {0} / {1}"},
   "添加文件…": {"en": "Add files…", "fr": "Ajouter des fichiers…"},
   "选择要附上的文件": {"en": "Choose files to attach", "fr": "Choisir les fichiers à joindre"},
   "一次最多附上 10 个文件。": {"en": "You can attach up to 10 files.", "fr": "Vous pouvez joindre 10 fichiers au maximum."},
@@ -70,5 +67,14 @@
   "找到 {0} 条，共 {1} 条": {"en": "{0} of {1} {1|task|tasks}", "fr": "{0} sur {1} {1|tâche|tâches}"},
   "共 {0} 条": {"en": "{0} {0|task|tasks}", "fr": "{0} {0|tâche|tâches}"},
   "没有匹配的任务。": {"en": "No matching tasks.", "fr": "Aucune tâche correspondante."},
-  "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} autres non affichées. Recherchez ou affichez-en davantage."}
+  "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} autres non affichées. Recherchez ou affichez-en davantage."},
+  "其他文件": {"en": "Other files", "fr": "Autres fichiers"},
+  "文件可能包含客户资料，默认不附带。勾了哪些就上传哪些，总大小不超过 50 MB。": {"en": "Files may contain client data and are not attached by default. Only the files you tick are uploaded, up to 50 MB in total.", "fr": "Les fichiers peuvent contenir des données client et ne sont pas joints par défaut. Seuls les fichiers cochés sont envoyés, dans la limite de 50 Mo au total."},
+  "将上传 {0} 个文件，合计 {1} / {2}": {"en": "Files to upload: {0}, {1} / {2} in total", "fr": "Fichiers à envoyer : {0}, {1} / {2} au total"},
+  "未勾选任何文件。": {"en": "No files ticked.", "fr": "Aucun fichier coché."},
+  "原文件": {"en": "Original", "fr": "Original"},
+  "压缩版": {"en": "Compressed", "fr": "Version compressée"},
+  "正在读取这次任务的文件…": {"en": "Loading this task's files…", "fr": "Chargement des fichiers de cette tâche…"},
+  "无法读取这次任务的文件：{0}": {"en": "Could not load this task's files: {0}", "fr": "Impossible de charger les fichiers de cette tâche : {0}"},
+  "没有找到这次任务的文件，可在下方「其他文件」里手动添加。": {"en": "No files found for this task. You can add them under “Other files” below.", "fr": "Aucun fichier trouvé pour cette tâche. Vous pouvez les ajouter sous « Autres fichiers » ci-dessous."}
 }

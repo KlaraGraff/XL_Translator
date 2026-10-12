@@ -32,6 +32,21 @@ def register(app: FastAPI) -> None:
         # 界面挑完文件后用来显示名字和大小；不读内容。
         return {"files": [feedback.file_info(path) for path in request.paths]}
 
+    @app.get("/api/feedback/tasks/{task_id}/files", response_model=None)
+    def feedback_task_files(task_id: str) -> dict[str, Any] | Response:
+        # 勾选某次任务的日志后，列出这次任务的原文件和译文，供用户逐个勾选；默认都不勾。
+        manager = app.state.task_manager
+        try:
+            record = manager.task_status(task_id)
+        except TaskNotFoundError:
+            return _json_error(404, "所选任务的记录已不存在，请重新选择。", reason="task_missing")
+        try:
+            live = manager.task_source(task_id)
+        except TaskNotFoundError:
+            live = {}
+        sources = {str(item.get("file_id") or ""): str(item.get("path") or "") for item in live.get("files") or []}
+        return {"files": feedback.task_files(record, sources)}
+
     @app.post("/api/feedback/preview", response_model=None)
     def feedback_preview(request: FeedbackRequest) -> dict[str, Any] | Response:
         try:

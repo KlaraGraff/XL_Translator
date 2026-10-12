@@ -11,7 +11,8 @@ what they ticked:
   of credentials, absolute paths and quoted content when they are written;
   here every file name is additionally replaced with 文件1, 文件2 … because
   names often carry a project or client name;
-* optionally files the user picked one by one. Off by default in the UI.
+* optionally files the user ticked one by one: a ticked task's source and
+  generated files (see ``task_files``) or files they added. None by default.
 
 ``send`` posts the ZIP to the feedback relay (``feedback-relay/`` in the repo).
 When no relay is configured, or it cannot be reached, the UI offers the same
@@ -147,6 +148,60 @@ def file_info(raw: str) -> dict[str, Any]:
         "bytes": path.stat().st_size if exists else 0,
         "exists": exists,
     }
+
+
+_OUTPUT_KEYS = ("output_path", "result_path", "output", "translated_image_path", "translated_path")
+_COMPRESSED_KEYS = ("compressed_output", "compressed_output_path", "compressed_pdf_path")
+
+
+def task_files(record: dict[str, Any], sources: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Files one task touched that the user may tick: its source and generated files.
+
+    ``record`` is the task-center status (with result); ``sources`` maps file ids
+    to source paths and only exists while the task is still held in memory
+    (history never keeps source paths). Nothing is read here, only listed.
+    """
+    sources = sources or {}
+    result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    terminal: dict[str, dict[str, Any]] = {}
+    loose: list[dict[str, Any]] = []
+    for key in ("file_results", "files", "file_records"):
+        for entry in (result.get(key) if isinstance(result, dict) else None) or []:
+            if not isinstance(entry, dict):
+                continue
+            file_id = str(entry.get("file_id") or "")
+            if file_id:
+                terminal[file_id] = {**terminal.get(file_id, {}), **entry}
+            else:
+                loose.append(entry)
+    progress = record.get("file_progress")
+    progress_files = progress.get("files") if isinstance(progress, dict) else None
+    entries: list[tuple[str, dict[str, Any]]] = []
+    for item in progress_files or []:
+        if isinstance(item, dict):
+            file_id = str(item.get("file_id") or "")
+            merged = {**(item.get("result") if isinstance(item.get("result"), dict) else {}), **terminal.pop(file_id, {})}
+            entries.append((file_id, merged))
+    entries.extend((file_id, entry) for file_id, entry in terminal.items())
+    entries.extend(("", entry) for entry in loose)
+
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(raw: Any, kind: str) -> None:
+        text = str(raw or "").strip()
+        if not text or text in seen or text.startswith("["):
+            return
+        seen.add(text)
+        info = file_info(text)
+        if info["exists"]:
+            found.append({**info, "kind": kind})
+
+    for file_id, entry in entries:
+        add(sources.get(file_id), "source")
+        add(next((entry.get(key) for key in _OUTPUT_KEYS if entry.get(key)), ""), "output")
+        add(next((entry.get(key) for key in _COMPRESSED_KEYS if entry.get(key)), ""), "compressed")
+    return found
 
 
 class _NameMasker:

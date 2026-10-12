@@ -185,3 +185,28 @@ class NameMaskerTests(IsolatedAppDataTestCase):
         self.assertEqual(masker("报价单_2026.xlsx 和 报价单.xlsx"), "文件2.xlsx 和 文件1.xlsx")
         self.assertEqual(masker("见 合同.docx"), "见 [文件名]")
         self.assertEqual(masker("进度 3/9 批"), "进度 3/9 批")
+
+
+def test_task_files_lists_existing_source_and_outputs(tmp_path):
+    source = tmp_path / "报价单.xlsx"
+    source.write_bytes(b"src")
+    output = tmp_path / "报价单_FR.xlsx"
+    output.write_bytes(b"out!")
+    record = {
+        "file_progress": {"files": [{"file_id": "f1", "name": "报价单.xlsx", "result": {}}]},
+        "result": {
+            "file_results": [
+                {"file_id": "f1", "output_path": str(output), "compressed_output": str(tmp_path / "gone.pdf")},
+                {"output": "[path]"},
+            ]
+        },
+    }
+
+    files = feedback.task_files(record, {"f1": str(source)})
+
+    assert [(item["kind"], item["name"], item["bytes"]) for item in files] == [
+        ("source", "报价单.xlsx", 3),
+        ("output", "报价单_FR.xlsx", 4),
+    ]
+    # 历史记录里没有原文件路径时，只列出译文。
+    assert [item["kind"] for item in feedback.task_files(record)] == ["output"]
