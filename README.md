@@ -8,9 +8,9 @@ Translator is a desktop application for macOS and Windows that uses large langua
 
 ![Translator 主界面：Excel 翻译完成 · Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> 本页截图均由一组虚构的示例文件（水泵房改造项目的材料清单、施工方案、验收单和平面图）实际翻译生成，目标语言为英语，界面语言为中文。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
+> 各功能下的翻译前后对照图取自实际工程文档的翻译结果，其中 Excel 与 PDF 为法译中，Word 与 CAD 图纸为中译法。应用界面截图使用一组虚构的示例文件生成，目标语言为英语，界面语言为中文。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
 >
-> All screenshots on this page were produced by translating a set of fictitious sample files (a material list, construction plan, inspection form and layout drawing for a pump room retrofit) into English, with the interface set to Chinese. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+> The before-and-after comparisons in each section are taken from real engineering documents: the Excel and PDF examples were translated from French into Chinese, and the Word and CAD examples from Chinese into French. The application screenshots were produced with a set of fictitious sample files translated into English, with the interface set to Chinese. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
 ## 功能 · Features
 
@@ -22,7 +22,11 @@ Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formu
 
 ![Excel 翻译进行中 · Excel translation in progress](docs/images/readme/app-excel-running.png)
 
-![Excel 双语输出：原文在上，译文在下 · Bilingual Excel output](docs/images/readme/result-excel.png)
+<p align="center">
+  <img src="docs/images/readme/result-excel-original.png" width="49%" alt="Excel 原文（法语） · Original Excel sheet (French)">
+  <img src="docs/images/readme/result-excel-bilingual.png" width="49%" alt="Excel 双语输出（法语原文下附中文译文） · Bilingual Excel output (Chinese below the French source)">
+</p>
+<p align="center"><sub>左：原文（法语）；右：双语输出，原文在上，中文译文在下 · Left: original (French). Right: bilingual output with the Chinese translation below the source text.</sub></p>
 
 ### Word
 
@@ -32,7 +36,11 @@ Supports `.docx` and legacy `.doc` files, including body text, tables, headers a
 
 ![Word 翻译完成 · Word translation completed](docs/images/readme/app-word.png)
 
-![Word 双语输出：原文段落后附译文 · Bilingual Word output](docs/images/readme/result-word.png)
+<p align="center">
+  <img src="docs/images/readme/result-word-original.png" width="49%" alt="Word 原文（中文） · Original Word document (Chinese)">
+  <img src="docs/images/readme/result-word-bilingual.png" width="49%" alt="Word 双语输出（每段原文后附法语译文） · Bilingual Word output (French after each Chinese paragraph)">
+</p>
+<p align="center"><sub>左：原文（中文）；右：双语输出，每段原文后附法语译文 · Left: original (Chinese). Right: bilingual output with the French translation after each paragraph.</sub></p>
 
 ### PDF 与图片 · PDF and images
 
@@ -42,17 +50,25 @@ Each page is redrawn in the target language by an image model, preserving the or
 
 ![PDF 翻译完成及逐页结果 · PDF translation with per-page results](docs/images/readme/app-pdf.png)
 
-![PDF 原文与译文对照 · Original and translated PDF page](docs/images/readme/result-pdf.png)
+<p align="center">
+  <img src="docs/images/readme/result-pdf-original.png" width="49%" alt="PDF 原文页面（法语） · Original PDF page (French)">
+  <img src="docs/images/readme/result-pdf-translated.png" width="49%" alt="PDF 译文页面（中文） · Translated PDF page (Chinese)">
+</p>
+<p align="center"><sub>左：原文页面（法语）；右：译文页面（中文） · Left: original page (French). Right: translated page (Chinese).</sub></p>
 
 ### CAD 图纸 · CAD drawings
 
-DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter。图块内的文字可一并翻译，GBK 等中文编码的旧图纸可正确读写。
+DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter。图块内的文字可一并翻译。GBK 等中文编码的旧图纸可正确读写，旧版 CAD 以特殊编码保存的中文也能正确识别。
 
-DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page. Text inside blocks can be included, and legacy drawings in GBK or other Chinese encodings are read and written correctly.
+DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
 
 ![CAD 翻译完成 · CAD translation completed](docs/images/readme/app-cad.png)
 
-![CAD 原图与译图对照 · Original and translated drawing](docs/images/readme/result-cad.png)
+![CAD 原图（中文） · Original drawing (Chinese)](docs/images/readme/result-cad-original.png)
+
+![CAD 译图（法语） · Translated drawing (French)](docs/images/readme/result-cad-translated.png)
+
+<p align="center"><sub>上：原图（中文）；下：译图（法语） · Top: original drawing (Chinese). Bottom: translated drawing (French).</sub></p>
 
 ### 记忆库 · Translation memory
 
@@ -64,13 +80,19 @@ Translations from Excel and Word jobs are stored automatically and reused first 
 
 ### 任务中心 · Task center
 
-不同类型的任务可同时运行，任务可随时停止（PDF 和 CAD 任务还可暂停），之后可仅翻译剩余部分。每个任务均保留结果统计、待复核位置及输出文件。界面提供浅色与深色两种模式。
+不同类型的任务可同时运行，任务可随时停止（PDF 和 CAD 任务还可暂停），之后可仅翻译剩余部分。每个任务均保留结果统计、待复核位置及输出文件。
 
-Jobs of different types can run concurrently. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only the remaining content. Each job records its statistics, items requiring review and output files. Light and dark themes are available.
+Jobs of different types can run concurrently. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only the remaining content. Each job records its statistics, items requiring review and output files.
 
 ![任务中心 · Task center](docs/images/readme/app-tasks.png)
 
 ![任务中心（深色模式） · Task center in dark mode](docs/images/readme/app-tasks-dark.png)
+
+### 外观 · Appearance
+
+界面提供浅色与深色模式，可跟随系统自动切换。在「设置 → 外观与语言」中可选择五套配色方案：素雅灰（默认）、暖调纸感、冷调柔光、青瓷和琥珀护眼；浅色和深色模式可分别选用不同的方案，例如白天使用素雅灰、夜间使用琥珀护眼。
+
+Light and dark modes are available and can follow the system setting. Five color schemes can be selected under Settings → Appearance & language: Neutral grey (default), Warm paper, Soft cool, Celadon and Amber comfort. Light and dark mode can each use a different scheme, for example Neutral grey by day and Amber comfort at night.
 
 ### 语言与领域 · Languages and domains
 
@@ -100,7 +122,7 @@ Files are read and written locally. Only the text to be translated (page images 
 
 - 新增 CAD 图纸翻译，操作流程与 Excel、Word、PDF 一致
 - 新增英语和法语界面，可在「设置 → 外观与语言」中切换
-- 调整配色：浅色模式采用暖米白色，深色模式增强卡片与背景的层次
+- 新增五套配色方案（素雅灰、暖调纸感、冷调柔光、青瓷、琥珀护眼），浅色与深色模式可分别选择
 - 统一界面、运行日志、错误信息和报告中的用语，不再出现程序内部术语
 - API 密钥无效或额度用尽时，任务立即停止并说明原因；持续限流时，先保存已完成的部分
 
@@ -108,7 +130,7 @@ Files are read and written locally. Only the text to be translated (page images 
 
 - CAD drawing translation, with the same workflow as Excel, Word and PDF
 - English and French interface, selectable under Settings → Appearance & language
-- Updated color scheme: a warm off-white light theme and a dark theme with clearer contrast between cards and background
+- Five color schemes (Neutral grey, Warm paper, Soft cool, Celadon and Amber comfort), selectable separately for light and dark mode
 - Consistent terminology across the interface, run log, error messages and reports, without internal technical terms
 - Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; under sustained rate limiting, completed work is saved first
 
