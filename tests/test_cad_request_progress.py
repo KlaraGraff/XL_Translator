@@ -1,7 +1,7 @@
-"""CAD 翻译：请求在途时进度条继续推进，运行日志写清每批请求的发出与返回。
+"""CAD 翻译：运行日志写清每批请求的发出与返回；进度只按真正返回的条数统计。
 
-maple 2026-10-12 实测：同时发出的几十批请求差不多同时回来，进度先停住、再一下子
-加满；运行日志从「术语表匹配 0 条」直接跳到「翻译完成」，中间看不出在等什么。
+maple 2026-10-12：运行日志从「术语表匹配 0 条」直接跳到「翻译完成」，中间看不出在
+等什么。进度条不能把还在路上的请求算进去（「路上也增加是造假」）。
 """
 
 from __future__ import annotations
@@ -33,31 +33,24 @@ class _Clock:
         return self.now
 
 
-def test_tracker_credits_requests_in_flight_but_never_completes_them():
+def test_tracker_counts_only_returned_batches():
     clock = _Clock()
     tracker = InFlightRequestTracker(clock=clock)
     tracker.on_event(BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=3, items=30, concurrency=3))
     for index in (1, 2, 3):
         tracker.on_event(BatchRequestEvent(BATCH_EVENT_SENT, index=index, batch_total=3, items=10))
-    assert tracker.estimated_items() == 0
-
-    estimates = []
-    for _ in range(6):
-        clock.now += 10
-        estimates.append(tracker.estimated_items())
-    # 还没有任何请求返回：估计一路往上走，但远不到 30 条。
-    assert estimates == sorted(estimates) and estimates[0] > 0
-    assert estimates[-1] < 30 * 0.9
+    clock.now += 60
     assert tracker.done_items() == 0
+    assert tracker.in_flight_count() == 3
+    assert tracker.seconds_since_last_return() == 60
 
     tracker.on_event(BatchRequestEvent(BATCH_EVENT_DONE, index=1, batch_total=3, items=10, elapsed=60.0))
     assert tracker.done_items() == 10
-    # 有了实际用时：在途的两批按 60 秒估，等得再久也只算到 9 成。
-    clock.now += 1000
-    assert 10 < tracker.estimated_items() <= 10 + 20 * 0.9 + 1e-9
+    assert tracker.in_flight_count() == 2
+    assert tracker.seconds_since_last_return() == 0
     tracker.on_event(BatchRequestEvent(BATCH_EVENT_DONE, index=2, batch_total=3, items=10, elapsed=61.0, failed=4))
     tracker.on_event(BatchRequestEvent(BATCH_EVENT_DONE, index=3, batch_total=3, items=10, elapsed=62.0))
-    assert tracker.estimated_items() == 30
+    assert tracker.done_items() == 30
     assert tracker.failed_items == 4
     assert tracker.in_flight_count() == 0
 
@@ -99,7 +92,7 @@ def test_a_broken_request_hook_does_not_break_translation():
     assert result == {"A": "A-译", "B": "B-译"}
 
 
-def test_pipeline_moves_while_requests_are_out_and_logs_each_request(tmp_path, monkeypatch):
+def test_pipeline_counts_only_returned_requests_and_logs_each_request(tmp_path, monkeypatch):
     monkeypatch.setattr(cad_translation, "_TICK_SECONDS", 0.01)
     monkeypatch.setattr(cad_translation, "_WAIT_LOG_SECONDS", 0.15)
     words = [f"Word{index}" for index in range(8)]
@@ -107,6 +100,7 @@ def test_pipeline_moves_while_requests_are_out_and_logs_each_request(tmp_path, m
     source.write_text(_dxf(words), encoding="utf-8")
     progress: list[CadProgress] = []
     lock = threading.Lock()
+    percent_while_waiting: list[float] = []
 
     def on_progress(item):
         with lock:
@@ -116,8 +110,10 @@ def test_pipeline_moves_while_requests_are_out_and_logs_each_request(tmp_path, m
         request_callback(BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=2, items=len(texts), concurrency=2))
         for index in (1, 2):
             request_callback(BatchRequestEvent(BATCH_EVENT_SENT, index=index, batch_total=2, items=4))
-        # 两批请求都还在路上：这段时间里进度条要自己往前走。
+        # 两批请求都还在路上：进度条不能动。
         time.sleep(0.4)
+        with lock:
+            percent_while_waiting.append(progresses[-1].percent)
         error_callback("一批翻译出错，已拆分为更小的批次重试：服务暂时不可用。")
         request_callback(BatchRequestEvent(BATCH_EVENT_DONE, index=1, batch_total=2, items=4, elapsed=0.4))
         progress(4, 8)
@@ -125,6 +121,7 @@ def test_pipeline_moves_while_requests_are_out_and_logs_each_request(tmp_path, m
         progress(8, 8)
         return {text: f"{text}译" for text in texts[1:]}
 
+    progresses = progress
     CadTranslationPipeline(converter=None, translator=translate, progress=on_progress).translate_file(
         source, tmp_path / "plan_zh.dxf", options=CadPipelineOptions(target_lang="zh", source_lang="auto")
     )
@@ -132,11 +129,11 @@ def test_pipeline_moves_while_requests_are_out_and_logs_each_request(tmp_path, m
     translate_events = [item for item in progress if item.stage == "translate"]
     percents = [item.percent for item in translate_events]
     assert percents == sorted(percents), "进度不能倒退"
-    # 第一批返回之前（done 仍为 0）进度条已经走了好几步。
-    before_return = [item for item in translate_events if item.done == 0]
-    assert len({item.percent for item in before_return}) >= 4
-    assert max(item.percent for item in before_return) > 10.0
-    assert max(item.percent for item in before_return) < 90.0
+    # 没有任何请求返回之前，进度停在「AI 翻译」这一段的起点。
+    assert percent_while_waiting == [10.0]
+    assert {item.percent for item in translate_events if item.done == 0} == {10.0}
+    # 每批返回后按真实条数推进：4/8 → 50%，8/8 → 90%。
+    assert 50.0 in percents and 90.0 in percents
 
     messages = [(item.level, item.message) for item in progress if item.message]
     texts = [message for _, message in messages]
