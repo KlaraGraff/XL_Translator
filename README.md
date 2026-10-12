@@ -8,9 +8,9 @@ Translator is a desktop application for macOS and Windows that uses large langua
 
 ![Translator 主界面：Excel 翻译完成 · Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> 各功能下的翻译前后对照图取自实际工程文档的翻译结果，其中 Excel 与 PDF 为法译中，Word 与 CAD 图纸为中译法。应用界面截图使用一组虚构的示例文件生成，目标语言为英语，界面语言为中文。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
+> 本页的界面截图与各功能下的翻译前后对照图对应同一批工程文档：Excel 与 PDF 为法译中，Word 与 CAD 图纸为中译法。截图中的文件名均为中性的示例名称，界面语言为中文，配色为默认的素雅灰。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
 >
-> The before-and-after comparisons in each section are taken from real engineering documents: the Excel and PDF examples were translated from French into Chinese, and the Word and CAD examples from Chinese into French. The application screenshots were produced with a set of fictitious sample files translated into English, with the interface set to Chinese. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+> The application screenshots and the before-and-after comparisons on this page use the same set of engineering documents: the Excel and PDF examples were translated from French into Chinese, and the Word and CAD examples from Chinese into French. File names in the screenshots are neutral sample names; the interface is set to Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
 ## 功能 · Features
 
