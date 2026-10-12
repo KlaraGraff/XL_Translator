@@ -44,8 +44,12 @@ from core.cad_writeback import (
     ensure_translation_style,
     has_cjk,
     marker_records,
+    replace_cell_values,
     restore_previous_run,
     set_style,
+    table_content_index,
+    table_content_ranges,
+    TABLE_CELL_CODES,
     shx_safe,
 )
 from core.document_profile import is_context_sensitive
@@ -1465,7 +1469,6 @@ def _write_bilingual(
 # ACAD_TABLE 里存单元格原值的组码：1 是单元格文字，302 是 CELL_VALUE 里的值（AutoCAD 2008 起）。
 # 表格显示的是它的 *T 图块，但 AutoCAD 重新生成表格（改单元格、调列宽）时按这些原值重画，
 # 只改 *T 图块的话，译文一编辑就变回原文。
-_TABLE_CELL_CODES = frozenset({1, 302})
 # 单元格文字超过 250 个字符要拆成组码 2 的分段；译文写不进一条记录时这一格不同步。
 _TABLE_CELL_LIMIT = 250
 
@@ -1488,11 +1491,12 @@ def plan_table_cells(
     *,
     display_mode: str = "translation",
     escape: bool = True,
-) -> list[tuple[DxfRecord, dict[int, str]]]:
-    """表格单元格要改成的值：``[(表格的 0 记录, {实体内位置: 新值})]``。
+) -> list[tuple[DxfRecord, dict[str, str]]]:
+    """表格单元格要改成的值：``[(表格的 0 记录, {原值: 新值})]``。
 
     只同步译好的 *T 图块里出现过的文字（锁定的表格、没译出的格子都不动），
-    写法和 *T 图块里的多行文字一致（双语时同一格里换行追加译文）。
+    写法和 *T 图块里的多行文字一致（双语时同一格里换行追加译文）。按值记而不按位置：
+    同一份单元格内容还存在表格内容对象里（见 ``table_content_ranges``），要一起改。
     """
     starts = [i for i, record in enumerate(records) if record.code == 0]
     starts.append(len(records))
@@ -1510,7 +1514,7 @@ def plan_table_cells(
         elif typ == "ACAD_TABLE":
             tables.append((start, end, _table_block_name(records, start, end)))
     bilingual = display_mode if display_mode in _BILINGUAL_MODES else None
-    plans: list[tuple[DxfRecord, dict[int, str]]] = []
+    plans: list[tuple[DxfRecord, dict[str, str]]] = []
     for start, end, name in tables:
         span = block_ranges.get(name)
         if span is None:
@@ -1524,47 +1528,52 @@ def plan_table_cells(
                     local[text] = translations[text]
         if not local:
             continue
-        edits: dict[int, str] = {}
+        mapping: dict[str, str] = {}
         in_table = False
         for index in range(start + 1, end):
             record = records[index]
             if record.code == 100:
                 in_table = record.value.strip() == "AcDbTable"
                 continue
-            if not in_table or record.code not in _TABLE_CELL_CODES:
+            if not in_table or record.code not in TABLE_CELL_CODES or record.value in mapping:
                 continue
             if record.code == 1 and records[index - 1].code == 2:
                 continue  # 长文字分了段，只看最后一段会改坏
             value = _cell_value(record.value, local, bilingual, escape)
             if value is None or value == record.value or len(value) > _TABLE_CELL_LIMIT:
                 continue
-            edits[index - start] = value
-        if edits:
-            plans.append((records[start], edits))
+            mapping[record.value] = value
+        if mapping:
+            plans.append((records[start], mapping))
     return plans
 
 
 def apply_table_cells(
-    records: list[DxfRecord], plans: Sequence[tuple[DxfRecord, dict[int, str]]], *, can_mark: bool
+    records: list[DxfRecord], plans: Sequence[tuple[DxfRecord, dict[str, str]]], *, can_mark: bool
 ) -> int:
-    """按 ``plan_table_cells`` 改单元格；表格按 0 记录对象认（前面的实体可能多了记录）。返回改了几个表格。"""
+    """按 ``plan_table_cells`` 改单元格（表格实体和它的内容对象）。返回改了几个表格。
+
+    表格按 0 记录对象认（前面的实体可能多了记录）。先把所有格子改完再加标记：
+    标记让表格实体变长，内容对象的位置就跟着变了。
+    """
     positions = {id(record): index for index, record in enumerate(records) if record.code == 0}
-    changed = 0
-    for entity, edits in plans:
+    content = table_content_index(records)
+    marked: list[tuple[DxfRecord, dict[str, str]]] = []
+    for entity, mapping in plans:
         start = positions.get(id(entity))
         if start is None:
             continue
-        originals: dict[str, str] = {}
-        for offset, value in edits.items():
-            originals[str(offset)] = records[start + offset].value
-            records[start + offset] = _record_copy(records[start + offset], value=value)
-        if can_mark:
+        end = _entity_end(records, start)
+        if replace_cell_values(records, [(start, end), *table_content_ranges(records, start, end, content)], mapping):
+            marked.append((entity, mapping))
+    if can_mark:
+        # 从后往前加：加了标记的表格变长，只影响它后面的位置。
+        for entity, mapping in sorted(marked, key=lambda item: positions[id(item[0])], reverse=True):
+            start = positions[id(entity)]
             end = _entity_end(records, start)
-            records[start + 1:end] = append_marker(
-                list(records[start + 1:end]), marker_records(records[start], MARK_TABLE, json.dumps(originals)),
-            )
-        changed += 1
-    return changed
+            payload = json.dumps({new: old for old, new in mapping.items()}, ensure_ascii=False)
+            records[start + 1:end] = append_marker(list(records[start + 1:end]), marker_records(records[start], MARK_TABLE, payload))
+    return len(marked)
 
 
 def scan_replacement_characters(records: Sequence[DxfRecord]) -> list[str]:

@@ -12,7 +12,7 @@ from core.cad_translation import (
     resolve_output_version,
 )
 from settings import CadOutputSettings
-from tests.test_cad_new_features import _drawing, _entities, _field, _text, _translate
+from tests.test_cad_new_features import _drawing, _dxf, _entities, _field, _text, _translate
 
 TITLE = "{\\fSimSun|b0|i0|c134|p2;材料表}"
 
@@ -109,6 +109,63 @@ def test_locked_table_is_left_alone(tmp_path):
     _, output, _ = _translate(tmp_path, drawing, TRANSLATIONS, locked_layers=("TK",), translation_font="original")
     assert _cells(output).count("墙体拆除图") == 3
     assert _field(_entities(output, "TEXT")[0], 1) == "Plan de démolition des murs"
+
+
+def _with_content(drawing: str, *, link: str = "owner") -> str:
+    """AutoCAD 2008 起的新式表格：单元格内容另存在 OBJECTS 段的 TABLECONTENT 里。
+
+    ``link="owner"``：内容对象以表格为所属；``"pointer"``：表格用 340 指向它。
+    """
+    def cell(text):
+        return (
+            (90, "1"), (300, "CELL"), (91, "0"), (300, "CONTENT"), (90, "1"),
+            (300, "VALUE"), (93, "6"), (90, "4"), (1, text), (94, "0"), (300, ""), (302, text), (304, "ACVALUE_END"),
+            (309, "CONTENTEND"),
+        )
+    content = _dxf(
+        (0, "SECTION"), (2, "OBJECTS"),
+        (0, "DICTIONARY"), (5, "C"), (330, "0"), (100, "AcDbDictionary"), (3, "ACAD_GROUP"), (350, "D"),
+        (0, "TABLECONTENT"), (5, "60"), (330, "40" if link == "owner" else "C"),
+        (100, "AcDbLinkedData"), (1, ""), (300, ""),
+        (100, "AcDbLinkedTableData"), (90, "1"), (90, "3"),
+        *cell(TITLE), *cell("墙体拆除图"), *cell("3100X2100mm"),
+        (100, "AcDbFormattedTableData"), (100, "AcDbTableContent"),
+        (0, "ENDSEC"),
+    )
+    if link == "pointer":
+        drawing = drawing.replace("100\nAcDbTable\n280\n0\n", "100\nAcDbTable\n280\n0\n340\n60\n", 1)
+    return drawing.replace("0\nEOF\n", content + "0\nEOF\n")
+
+
+def _content_cells(path: Path) -> list[str]:
+    return [
+        record.value for record in _entities(path, "TABLECONTENT")[0] if record.code in {1, 302} and record.value
+    ]
+
+
+def test_new_style_table_content_is_translated_too(tmp_path):
+    for link in ("owner", "pointer"):
+        drawing = _with_content(_drawing(*_table(), blocks=_table_block()), link=link)
+        _, output, messages = _translate(tmp_path, drawing, TRANSLATIONS, name=link, translation_font="original")
+        cells = _content_cells(output)
+        assert cells.count("Plan de démolition des murs") == 2, (link, cells)
+        assert cells.count("{\\fSimSun|b0|i0|c134|p2;Liste des matériaux}") == 2
+        assert "墙体拆除图" not in cells and cells.count("3100X2100mm") == 2
+        assert any("1 个表格的单元格内容已同步为译文" in message for message in messages)
+
+
+def test_bilingual_rerun_restores_cells_by_value_even_after_the_records_moved(tmp_path):
+    drawing = _with_content(_drawing(*_table(), blocks=_table_block()))
+    _, first, _ = _translate(tmp_path, drawing, TRANSLATIONS, name="first", display_mode="source_first", translation_font="original")
+    expected = "墙体拆除图\\P{\\H0.8x;Plan de démolition des murs}"
+    assert _content_cells(first).count(expected) == 2
+    # 存成 DWG 再转回来时，转换工具会重排表格里的组码：标记按位置记就会找错格子。
+    moved = first.read_text(encoding="utf-8").replace(
+        "100\nAcDbTable\n280\n0\n", "100\nAcDbTable\n280\n0\n94\n0\n95\n0\n", 1,
+    )
+    _, second, _ = _translate(tmp_path, moved, TRANSLATIONS, name="second", display_mode="source_first", translation_font="original")
+    assert _cells(second) == _cells(first)
+    assert _content_cells(second) == _content_cells(first)
 
 
 # ── 输出图纸版本 ──────────────────────────────────────────────
