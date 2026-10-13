@@ -136,6 +136,15 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         archive = self._package(images=[{"data": base64.b64encode(png).decode()}])
         self.assertEqual(archive.read("images/截图1.png"), png)
         self.assertEqual(json.loads(archive.read("feedback.json"))["includes"]["images"], 1)
+        # 截图不限张数，只受附件总大小限制。
+        many = self._package(images=[{"data": base64.b64encode(png).decode()}] * 12)
+        self.assertIn("images/截图12.png", many.namelist())
+        # 截图的额度（合计 10 MB）和文件分开算。
+        with patch.object(feedback, "MAX_IMAGES_TOTAL_BYTES", len(png) * 3):
+            over = self.client.post(
+                "/api/feedback/preview", json=self._body(images=[{"data": base64.b64encode(png).decode()}] * 4)
+            )
+        self.assertEqual(over.json()["reason"], "images_too_large")
 
         response = self.client.post(
             "/api/feedback/package", json=self._body(images=[{"data": base64.b64encode(b"not an image").decode()}])

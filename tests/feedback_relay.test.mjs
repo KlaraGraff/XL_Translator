@@ -1,7 +1,7 @@
 // 反馈中转站（feedback-relay/src/index.js）的行为测试：用内存 KV 和假的 GitHub API 跑一遍。
 // 运行：node tests/feedback_relay.test.mjs
 import assert from "node:assert/strict";
-import worker, { issueBody, issueTitle } from "../feedback-relay/src/index.js";
+import worker, { deleteResolvedPackages, issueBody, issueTitle } from "../feedback-relay/src/index.js";
 
 function memoryKv() {
   const store = new Map();
@@ -132,6 +132,53 @@ const META = {
   assert.equal((await worker.fetch(feedbackRequest(META, null, "9.9.9.9"), env)).status, 429);
   assert.equal((await worker.fetch(feedbackRequest(META, null, "8.8.8.8"), env)).status, 200);
   assert.ok([...env.FEEDBACK.store.keys()].every((key) => !key.includes("9.9.9.9")));
+}
+
+// 问题处理完毕（已关闭，或带「待通知」）的反馈包每天删掉，正文的下载链接换成说明；还在处理的不动。
+{
+  const env = makeEnv();
+  const ids = [];
+  for (const ip of ["7.0.0.1", "7.0.0.2", "7.0.0.3"]) {
+    ids.push((await (await worker.fetch(feedbackRequest(META, undefined, ip), env)).json()).id);
+  }
+  const bodies = issues.slice(-3).map((issue) => issue.body);
+  const github = [
+    { number: 1, state: "closed", labels: [], body: bodies[0] },
+    { number: 2, state: "open", labels: ["待通知"], body: bodies[1] },
+    { number: 3, state: "open", labels: [], body: bodies[2] },
+    { number: 4, state: "closed", labels: [], body: "没有附件", pull_request: undefined },
+  ];
+  const patches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(init.headers.Authorization, "Bearer ghp_test");
+    const parsed = new URL(url);
+    if ((init.method || "GET") === "GET") {
+      const state = parsed.searchParams.get("state");
+      const label = parsed.searchParams.get("labels");
+      const list = github.filter((issue) => issue.state === state && (!label || issue.labels.includes(label)));
+      return new Response(JSON.stringify(list), { status: 200 });
+    }
+    assert.equal(init.method, "PATCH");
+    const number = Number(parsed.pathname.split("/").at(-1));
+    const body = JSON.parse(init.body).body;
+    patches.push(number);
+    github.find((issue) => issue.number === number).body = body;
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const deleted = await deleteResolvedPackages(env, new Date("2026-10-13T03:00:00Z"));
+    assert.deepEqual(deleted, [ids[0], ids[1]]);
+    assert.deepEqual(patches, [1, 2]);
+    assert.ok(!env.FEEDBACK.store.has(`pkg:${ids[0]}`) && !env.FEEDBACK.store.has(`pkg:${ids[1]}`));
+    assert.ok(env.FEEDBACK.store.has(`pkg:${ids[2]}`), "feedback still being handled keeps its package");
+    assert.ok(github[0].body.includes(`反馈包 ${ids[0]}.zip 已在问题处理完毕后删除（2026-10-13）。`));
+    assert.ok(!github[0].body.includes("/v1/files/") && github[0].body.includes("### 描述"));
+    // 第二次运行不再重复处理。
+    assert.deepEqual(await deleteResolvedPackages(env), []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }
 
 // 标题截断与空行处理。

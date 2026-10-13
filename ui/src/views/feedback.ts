@@ -35,6 +35,8 @@ interface FeedbackContext {
   endpoint_configured: boolean;
   tasks: FeedbackTask[];
   max_attachment_bytes: number;
+  /** 截图合计上限，和文件分开算。 */
+  max_images_bytes?: number;
   max_files: number;
   max_tasks: number;
   /** 上次成功发送时填的邮箱（只存在本机），新反馈默认填上。 */
@@ -344,10 +346,18 @@ function buildMessageCard(): HTMLElement {
 
   card.append(sectionTitle(t("描述")));
   // 跟 Claude 的输入框一样：截图以缩略图卡片排在框内文字上方，框和图是一个整体。
+  // 截图不限张数，只排一行、横向滚动，粘得再多也不会挤掉写字的地方。
   const composer = document.createElement("div");
   composer.className = "feedback-composer";
   imagesEl = document.createElement("div");
   imagesEl.className = "feedback-images";
+  // 普通鼠标只有竖向滚轮：指针在截图行上时，把竖向滚动换成横向。
+  imagesEl.addEventListener("wheel", (event) => {
+    const strip = event.currentTarget as HTMLElement;
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || strip.scrollWidth <= strip.clientWidth) return;
+    event.preventDefault();
+    strip.scrollLeft += event.deltaY;
+  }, { passive: false });
   const area = document.createElement("textarea");
   area.className = "feedback-text";
   area.rows = 12;
@@ -436,7 +446,6 @@ function checkRow(options: { checked: boolean; disabled?: boolean; title: string
 }
 
 // 描述框粘贴截图 ----------------------------------------------------------
-const MAX_IMAGES = 6;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 let imagesEl: HTMLElement | null = null;
@@ -457,13 +466,14 @@ function readBase64(file: File): Promise<string> {
 
 async function addImages(files: File[]): Promise<void> {
   for (const file of files) {
-    if (draft.images.length >= MAX_IMAGES) {
-      showToast({ message: t("最多粘贴 6 张图片。"), error: true });
-      break;
-    }
     if (file.size > MAX_IMAGE_BYTES) {
       showToast({ message: t("单张图片不能超过 10 MB。"), error: true });
       continue;
+    }
+    const used = draft.images.reduce((sum, image) => sum + image.bytes, 0);
+    if (used + file.size > (context?.max_images_bytes ?? MAX_IMAGE_BYTES)) {
+      showToast({ message: t("截图合计不能超过 10 MB，请删掉几张再粘贴。"), error: true });
+      break;
     }
     try {
       draft.images.push({ data: await readBase64(file), bytes: file.size, url: URL.createObjectURL(file) });
@@ -471,8 +481,11 @@ async function addImages(files: File[]): Promise<void> {
       showToast({ message: t("无法读取图片：{0}", errorText(error)), error: true });
     }
   }
+  const added = draft.images.length;
   renderImages();
   renderFileSummary();
+  // 新粘的截图排在最后，滚到能看见它。
+  if (added && imagesEl) imagesEl.scrollLeft = imagesEl.scrollWidth;
 }
 
 function renderImages(): void {
@@ -621,6 +634,15 @@ function renderKinds(): void {
         onChange: (value) => { draft.includeOutputs = value; },
       }),
     );
+    // 勾了原文件或译文才出现：用户最担心的是自己的文件，就在勾选的地方说清楚怎么处理。
+    if (draft.includeSources || draft.includeOutputs) {
+      const privacy = document.createElement("p");
+      privacy.className = "feedback-privacy";
+      privacy.append(icon("lock", { size: "sm" }), document.createTextNode(
+        t("原文件和译文仅用于定位和修复问题，绝不会公开或泄露；问题处理完毕后立即删除，不再保存。"),
+      ));
+      el.append(privacy);
+    }
   }
   renderFileSummary();
 }
@@ -663,17 +685,17 @@ function renderOtherFiles(): void {
 
 let fileSummaryEl: HTMLElement | null = null;
 
-// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。
+// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。截图另有额度，不算在这里。
 function renderFileSummary(): void {
   const el = fileSummaryEl;
   if (!el) return;
   const files = checkedFiles();
-  const total = sizeOf(files) + draft.images.reduce((sum, image) => sum + image.bytes, 0);
-  const limit = context?.max_attachment_bytes ?? 50 * 1024 * 1024;
+  const total = sizeOf(files);
+  const limit = context?.max_attachment_bytes ?? 40 * 1024 * 1024;
   el.className = total > limit ? "feedback-total over" : "feedback-total";
   const needsTask = (draft.includeLogs || draft.includeSources || draft.includeOutputs) && !draft.taskIds.size;
   if (needsTask) el.textContent = t("尚未选择任务，任务日志、原文件和译文不会附上。");
-  else if (total) el.textContent = t("附件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
+  else if (total) el.textContent = t("文件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
   else el.textContent = t("不附带文件。");
 }
 
@@ -843,7 +865,7 @@ function buildActions(): HTMLElement {
   bar.className = "feedback-bar";
   const configured = context ? context.endpoint_configured : true;
   bar.append(busy === "send" ? buildProgress() : note(configured
-    ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，保存 90 天后自动删除。")
+    ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。")
     : t("此版本尚未开通在线发送，可先保存为 ZIP。")), actions);
   wrap.append(bar);
   syncActionState();

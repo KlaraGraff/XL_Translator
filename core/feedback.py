@@ -50,14 +50,16 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 MAX_TASKS = 5
 # 用户自己另外挑的文件最多 10 个；加上所选任务的原文件和译文，整包最多 50 个。
 MAX_PICKED_FILES = 10
-# 描述框里粘贴的截图。
-MAX_IMAGES = 6
+# 描述框里粘贴的截图：不限张数，单张和合计都不超过 10 MB。截图的额度和文件分开算，
+# 文件再多也挤不掉截图。
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024
 MAX_FILES = 50
-# 附件（用户自己挑的文件）原始大小上限。中转站把包分段存进 Cloudflare KV（单个值
-# 上限 25 MiB，免费额度共 1 GB、保留 90 天），整包上限另给 ZIP 头和日志留出余量，
-# 须与 feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
-MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# 附件文件（所选任务的原文件、译文和用户另挑的文件）原始大小上限，截图另算。中转站
+# 把包分段存进 Cloudflare KV（单个值上限 25 MiB，免费额度共 1 GB、最长保留 90 天）；
+# 文件 40 MB + 截图 10 MB，整包上限再给 ZIP 头和日志留出余量，须与
+# feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
+MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024
 MAX_PACKAGE_BYTES = 54 * 1024 * 1024
 # 任务中心最多保留 200 条记录；界面上再按搜索和条数筛选。
 RECENT_TASK_LIMIT = 200
@@ -109,8 +111,6 @@ _IMAGE_SIGNATURES = (
 
 def image_names(images: list[bytes]) -> list[str]:
     """Package names for pasted screenshots (截图1.png …); rejects anything that is not an image."""
-    if len(images) > MAX_IMAGES:
-        raise FeedbackError("最多粘贴 6 张图片。", reason="too_many_images")
     names: list[str] = []
     for index, data in enumerate(images, start=1):
         if len(data) > MAX_IMAGE_BYTES:
@@ -173,10 +173,11 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
             raise FeedbackError(f"找不到文件：{path.name}", reason="file_missing")
         total += path.stat().st_size
         files.append(path)
-    image_names(draft.images)
-    total += sum(len(data) for data in draft.images)
     if total > MAX_ATTACHMENT_BYTES:
-        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
+        raise FeedbackError("附件文件合计超过 40 MB，请只附上必要的文件。", reason="too_large")
+    image_names(draft.images)
+    if sum(len(data) for data in draft.images) > MAX_IMAGES_TOTAL_BYTES:
+        raise FeedbackError("截图合计超过 10 MB，请删掉几张。", reason="images_too_large")
     return files
 
 

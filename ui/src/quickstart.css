@@ -36,3 +36,9 @@
   gap: 6px;
   margin-top: 2px;
 }
+
+/* 三步之后的「反馈」提示：不是步骤，用淡底色和步骤区分开。 */
+.qs-step.qs-tip {
+  border-style: dashed;
+  background: transparent;
+}

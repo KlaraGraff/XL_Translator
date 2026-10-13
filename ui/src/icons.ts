@@ -32,6 +32,7 @@ export const ICON_NAMES = [
   "wand",
   "close",
   "message",
+  "lock",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -163,6 +164,10 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 对话气泡：侧栏「反馈」。
     body: '<path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5a1.5 1.5 0 0 1-1.5-1.5V6.5A1.5 1.5 0 0 1 5 5Z"/><path d="M8 9.5h8M8 12.5h5"/>',
+  },  lock: {
+    viewBox: "0 0 24 24",
+    // 反馈页勾选原文件、译文时的隐私说明。
+    body: '<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
   },
 };
 
