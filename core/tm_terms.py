@@ -402,11 +402,15 @@ class TermIndex:
 _SCENE_LATIN_WORD_RE = re.compile(r"[a-z]{4,}")
 
 
+# 虚词和说明里的套话：「中的」「指的」这类两字组合在哪份说明里都可能出现，不能当成场景相同。
+_SCENE_STOP_CHARS = set("的了和与及或在为是指等其之对于以并该此即也中上下内外时所者译作称用按各个本这那有")
+
+
 def _scene_words(text: str, source: str) -> set[str]:
     """一段说明里的「说法」：中日韩文字取相邻两字，拉丁文取四个字母以上的词。
-    含词条本身的字不算（「甲级」和「甲方」不能因为都有「甲」就算场景相同）。"""
+    含词条本身的字不算（「甲级」和「甲方」不能因为都有「甲」就算场景相同），含虚词的也不算。"""
     key = scan_key(text)
-    skip = set(scan_key(source))
+    skip = set(scan_key(source)) | _SCENE_STOP_CHARS
     words: set[str] = set()
     for left, right in zip(key, key[1:]):
         if _is_cjk(left) and _is_cjk(right) and left not in skip and right not in skip:
@@ -416,13 +420,15 @@ def _scene_words(text: str, source: str) -> set[str]:
 
 
 def note_fits_profile(note: str, profile: str, source: str) -> bool:
-    """备注和文档说明至少有一个相同的说法；任一方为空、或备注里取不出说法时不作判断（算相符）。"""
+    """备注和文档说明有相同的说法；任一方为空、或备注里取不出说法时不作判断（算相符）。"""
     if not note.strip() or not profile.strip():
         return True
     note_words = _scene_words(note, source)
     if not note_words:
         return True
-    return bool(note_words & _scene_words(profile, source))
+    # 备注里有两个以上说法时，至少要对上两个，免得一个巧合的词就把候选放进来。
+    needed = 2 if len(note_words) >= 2 else 1
+    return len(note_words & _scene_words(profile, source)) >= needed
 
 
 # ── 提示词 ────────────────────────────────────────────────────────────────────

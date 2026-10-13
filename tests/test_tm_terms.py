@@ -98,6 +98,8 @@ class NoteFitsProfileTests(unittest.TestCase):
         self.assertFalse(note_fits_profile("防火门耐火等级 A 级", contract, "甲"))
         # 「甲方」「甲级」只靠「甲」字相同，不算同一场景。
         self.assertFalse(note_fits_profile("合同甲方", "甲级防火门", "甲"))
+        # 只靠「中的」这类虚词重合也不算（Mac 复测的实例）。
+        self.assertFalse(note_fits_profile("防火门耐火等级中的甲级", "合同文件，甲指合同甲方，译 partie A；见合同中的条款。", "甲"))
         self.assertTrue(note_fits_profile("", contract, "甲"))
         self.assertTrue(note_fits_profile("Fire door rating", "fire door schedule", "甲"))
 
