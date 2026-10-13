@@ -2763,7 +2763,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("可提取文字的页"),
-    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。需要在插件页安装「PDF 转 Word 组件」，电脑上还要有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
+    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。转成 Word 和原位替换都需要在插件页安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
       { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变，中文字号略小；只能译成中文") },
@@ -2776,7 +2776,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。"),
+    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在插件页安装「PDF 处理组件」。"),
     options: [
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
       { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
@@ -2789,7 +2789,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 转 Word 组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
     options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
     value: st.pdfAutoFallback,
     disabled: active,
@@ -2842,12 +2842,18 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   if (caps && usesImage && !caps.image_model_ready) {
     wrap.append(note(t("没有设置图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
   }
-  if (caps && st.pdfAutoTextRoute === "word" && !caps.word_component) {
-    wrap.append(note(t("还没有安装「PDF 转 Word 组件」：能提取文字的页改用保底方式。可在插件页安装。"), true));
-  } else if (caps && st.pdfAutoTextRoute === "word" && !caps.office_engine) {
-    wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
-  }
   const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
+  const usesWord = st.pdfAutoTextRoute === "word";
+  if (caps && (usesWord || usesInplace) && !caps.word_component) {
+    wrap.append(note(t("还没有安装「PDF 处理组件」：原位替换和转成 Word 的页改用保底方式，大幅面图纸保留原样。可在插件页一键安装。"), true));
+  } else {
+    if (caps && usesInplace && caps.inplace_component === false) {
+      wrap.append(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：原位替换的页改用保底方式，大幅面图纸保留原样。可在插件页重新安装。"), true));
+    }
+    if (caps && usesWord && !caps.office_engine) {
+      wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
+    }
+  }
   if (usesInplace && !st.targetLang.toLowerCase().startsWith("zh")) {
     wrap.append(note(t("原位替换目前只能译成中文：这些页会改用保底方式，大幅面图纸保留原样。"), true));
   }

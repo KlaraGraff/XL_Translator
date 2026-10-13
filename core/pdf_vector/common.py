@@ -22,7 +22,11 @@ import re
 import unicodedata
 from pathlib import Path
 
-import fitz
+from core.pdf_component import lazy_fitz
+
+# PyMuPDF 来自「PDF 处理组件」，第一次用到 fitz.xxx 时才加载（见 core.pdf_component）；
+# 没装组件时本包照样能 import，只是原位替换用不了。
+fitz = lazy_fitz()
 
 # unit advance vector and glyph-up vector in display space (y grows downward)
 _ADV = {0: (1.0, 0.0), 90: (0.0, -1.0), 180: (-1.0, 0.0), 270: (0.0, 1.0)}

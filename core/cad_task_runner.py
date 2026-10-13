@@ -594,8 +594,9 @@ class CadTaskRunner(BaseTaskRunner):
                             review_parent = self._review_dir
                         review_parent.mkdir(parents=True, exist_ok=True)
                         for key in ("manifest_path", "report_path", "summary_path", "work_dxf"):
-                            old = Path(str(prior.get(key) or ""))
-                            if old.is_file():
+                            recorded = str(prior.get(key) or "")
+                            old = Path(recorded)
+                            if recorded and old.is_file():
                                 target = review_parent / old.name
                                 collision_index = 2
                                 while target.exists() and target.resolve() != old.resolve():
@@ -604,8 +605,10 @@ class CadTaskRunner(BaseTaskRunner):
                                 if target.resolve() != old.resolve():
                                     shutil.copy2(old, target)
                                 copied_paths[key] = str(target)
-                        old_evidence = Path(str(prior.get("work_evidence_dir") or ""))
-                        if not old_evidence.is_dir():
+                        # 空字符串变成 Path("") 就是当前目录：在应用里可能是 /，会把整个磁盘复制过来。
+                        recorded_evidence = str(prior.get("work_evidence_dir") or "")
+                        old_evidence = Path(recorded_evidence) if recorded_evidence else None
+                        if old_evidence is None or not old_evidence.is_dir():
                             old_evidence = prior_output.parent / f"{prior_output.stem}.cad-work"
                         if old_evidence.is_dir():
                             evidence_target = review_parent / old_evidence.name

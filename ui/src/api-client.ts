@@ -62,11 +62,34 @@ export type OcrPluginStatus = {
   message?: string;
 };
 
-/** PDF 转 Word 组件（pdf2docx 插件）状态。 */
+/** 「PDF 处理组件」一键安装的进度（后台安装，页面轮询）。 */
+export type PdfComponentInstallProgress = {
+  running: boolean;
+  phase: "" | "download" | "extract" | "verify" | "done" | "failed";
+  done: number;
+  total: number;
+  error: string;
+  /** 用户自己取消的：不算失败。 */
+  cancelled?: boolean;
+  finished: number;
+};
+
+/** 「PDF 处理组件」（pdf2docx + PyMuPDF）状态：一键安装的，或用户自己装的 pdf2docx。 */
 export type Pdf2DocxPluginStatus = {
   state: "connected" | "missing" | "invalid";
+  /** managed：一键安装的；manual：选择安装位置连接的。 */
+  source?: "" | "managed" | "manual";
   path: string;
   message?: string;
+  managed_installed?: boolean;
+  manual_path?: string;
+  one_click_supported?: boolean;
+  download_bytes?: number;
+  install?: PdfComponentInstallProgress;
+  /** 组件里的 PyMuPDF 能否加载（原位替换要用）。 */
+  inplace?: boolean;
+  inplace_message?: string;
+  pymupdf_version?: string;
 };
 
 
@@ -140,6 +163,9 @@ export type PdfRouteCapabilities = {
   image_model_ready: boolean;
   image_model_message: string;
   word_component: boolean;
+  /** 「PDF 处理组件」里的 PyMuPDF 能否加载：原位替换要用。 */
+  inplace_component?: boolean;
+  inplace_component_message?: string;
   office_engine: string;
   office_message: string;
   inplace_target_ok: boolean;
@@ -504,8 +530,20 @@ export class ApiClient {
     return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/install", { method: "POST", body: JSON.stringify({ path }) });
   }
 
-  async uninstallPdf2DocxPlugin(): Promise<Pdf2DocxPluginStatus> {
-    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/uninstall", { method: "POST", body: JSON.stringify({}) });
+  async uninstallPdf2DocxPlugin(target: "" | "managed" | "manual" = ""): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/uninstall", { method: "POST", body: JSON.stringify({ target }) });
+  }
+
+  async startPdfComponentInstall(): Promise<PdfComponentInstallProgress> {
+    return this.request<PdfComponentInstallProgress>("/api/plugins/pdf2docx/one-click-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async pdfComponentInstallProgress(): Promise<PdfComponentInstallProgress> {
+    return this.request<PdfComponentInstallProgress>("/api/plugins/pdf2docx/install-progress");
+  }
+
+  async cancelPdfComponentInstall(): Promise<PdfComponentInstallProgress> {
+    return this.request<PdfComponentInstallProgress>("/api/plugins/pdf2docx/cancel-install", { method: "POST", body: JSON.stringify({}) });
   }
 
   async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {

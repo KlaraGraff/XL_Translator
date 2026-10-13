@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+import pytest
 from pathlib import Path
 
-import fitz
 
 from core.pdf_image_translation import is_oversized_for_threshold
 from core.pdf_routes import (
@@ -19,6 +20,9 @@ from core.pdf_routes import (
 )
 from core.pdf_word_route import normalize_fonts_xml
 from settings import AppSettings, PdfSettings
+
+# PyMuPDF 属于「PDF 处理组件」，不随安装包分发；没装它的环境跳过这些测试。
+fitz = pytest.importorskip("fitz")
 
 A4 = (595.276, 841.89)
 A1 = (1683.78, 2383.94)
@@ -464,5 +468,6 @@ class OfficePdfTests(unittest.TestCase):
         with patch("core.pdf_word_route.office_pdf_engine", return_value=("", "none")):
             caps = route_capabilities()
         self.assertEqual(set(caps), {"image_model_ready", "image_model_message", "word_component",
+                                     "inplace_component", "inplace_component_message",
                                      "office_engine", "office_message", "inplace_target_ok"})
         self.assertEqual(caps["office_engine"], "")

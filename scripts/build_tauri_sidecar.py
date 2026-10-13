@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -44,7 +45,66 @@ def build_sidecar(*, python: Path, output_parent: Path = RESOURCE_PARENT) -> Pat
     executable = sidecar_executable(target_dir)
     if not executable.is_file():
         raise RuntimeError(f"PyInstaller did not produce the sidecar executable: {executable}")
+    assert_pdf_component_not_bundled(target_dir)
+    verify_pdf_component_loads(executable, python=python)
     return executable
+
+
+# PyMuPDF（AGPL-3.0，约 60MB）属于「PDF 处理组件」，不随安装包分发（见 core/pdf_component.py）。
+PDF_COMPONENT_REQUIREMENT = "PyMuPDF>=1.24,<2"
+
+
+def assert_pdf_component_not_bundled(sidecar_dir: Path) -> None:
+    """spec 里排除了 fitz / pymupdf；构建机为了跑测试装着它，这里再查一遍产物。"""
+    leaked = [
+        path for path in sidecar_dir.rglob("*")
+        if path.name.lower() in {"fitz", "pymupdf"} or path.name.lower().startswith(("pymupdf-", "libmupdf"))
+    ]
+    if leaked:
+        names = ", ".join(str(path.relative_to(sidecar_dir)) for path in leaked[:5])
+        raise RuntimeError(f"PyMuPDF must not be bundled into the sidecar, found: {names}")
+
+
+def _pymupdf_site_dir(python: Path) -> Path | None:
+    code = "import os, pymupdf; print(os.path.dirname(os.path.dirname(os.path.abspath(pymupdf.__file__))))"
+    result = subprocess.run([str(python), "-c", code], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return Path(lines[-1].strip()) if lines else None
+
+
+def verify_pdf_component_loads(executable: Path, *, python: Path) -> None:
+    """用真的 PyMuPDF 让冻结后的 sidecar 走一遍插件加载（--probe-pdf-component）。
+
+    冻结包只带我们自己代码用到的标准库；PyMuPDF 额外要的模块漏收时，用户连上组件
+    才会出错。构建环境里没有 PyMuPDF 就临时装一份到 .runtime 下，用完即弃。
+    """
+    site_dir = _pymupdf_site_dir(python)
+    if site_dir is None:
+        site_dir = ROOT / ".runtime" / "package" / "pdf-component-probe"
+        if site_dir.exists():
+            shutil.rmtree(site_dir)
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--quiet", "--no-deps", "--target", str(site_dir),
+             PDF_COMPONENT_REQUIREMENT],
+            check=True,
+        )
+    result = subprocess.run(
+        [str(executable), "--probe-pdf-component", str(site_dir)],
+        capture_output=True, text=True, timeout=300, check=False,
+    )
+    output = (result.stdout or "").strip().splitlines()
+    try:
+        verdict = json.loads(output[-1]) if output else {}
+    except ValueError:
+        verdict = {}
+    if result.returncode != 0 or not verdict.get("ok"):
+        raise RuntimeError(
+            "The frozen sidecar cannot load the PDF component (PyMuPDF): "
+            f"{verdict.get('error') or (result.stderr or '').strip()[-800:]}"
+        )
+    print(f"[INFO] Frozen sidecar loads the PDF component: PyMuPDF {verdict.get('version', '')}")
 
 
 def main() -> int:

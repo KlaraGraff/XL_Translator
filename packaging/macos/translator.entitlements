@@ -4,5 +4,9 @@
 <dict>
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+  <!-- 「PDF 处理组件」装在用户数据目录，里面的 PyMuPDF 等原生库不是我们的签名；
+       强化运行时默认只允许加载同一团队签名的库，不加这一项正式版就加载不了组件。 -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
 </dict>
 </plist>
