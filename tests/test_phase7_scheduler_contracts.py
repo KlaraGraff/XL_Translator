@@ -522,8 +522,10 @@ class Phase7ManagedTaskContracts(unittest.TestCase):
                 risk_dump = json.dumps(word_preflight, ensure_ascii=False)
                 self.assertNotIn("fixture-api-key-must-not-leak", risk_dump)
                 # 风险提示要说清后果（共用连接、会变慢、会计费），不再给用户看 HTTP 状态码。
-                self.assertIn("共用同一条模型连接", risk_dump)
-                self.assertNotIn("429", risk_dump)
+                # 只查提示文字：整份报文里有随机 task_id，十六进制串偶尔会带上「429」。
+                warnings_text = "\n".join(word_preflight["risk"]["warnings"])
+                self.assertIn("共用同一条模型连接", warnings_text)
+                self.assertNotIn("429", warnings_text)
 
                 with self.assertRaises(TaskConflictError) as missing:
                     manager.start_task(surface="word", source_path=str(root))
