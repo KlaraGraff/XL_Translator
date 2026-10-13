@@ -1,20 +1,18 @@
-"""PDF 翻译方式（Beta 分支）：每份文件、每一页走哪条路线。
+"""PDF 翻译方式（Beta 分支）：每一页走哪条路线。
 
-三条路线：
+四种处理：
 - image   —— 整页图像翻译（原来的做法）：整页交给图像模型重新生成。
 - inplace —— 原位替换（保留矢量）：在原 PDF 上删掉原文字形，按原位置写译文。
-- word    —— 转成 Word 再翻译：整份文件转成 .docx，走 Word 翻译流程，输出 .docx。
+- word    —— 转成 Word 再翻译：连续的正文页转成 .docx，走 Word 翻译流程，再转回
+             PDF 拼回原位；整份都是正文的文件直接输出 .docx。
+- skip    —— 原样保留，不翻译。
 
-另有 skip（原样保留，不翻译）给大幅面页用。
+设置只有两种：整页图像翻译（原来的做法），或「自动组合」——逐页按类型处理：
+扫描页、正文页、图纸和大幅面页各有一个首选方式；首选在这一页用不了时（没有
+图像模型、原位替换不支持目标语言、转 Word 失败、本机没有 Word……）改用「保底
+方式」。
 
-用户在设置里选一条（单一路线）或「自动组合」。单一路线下，不适合这条路线
-的文件或页面退回整页图像翻译；自动组合按文件类型分别处理：
-
-- 文字文档（整份都是能取到文字的普通排版页）→ auto_text_route
-- 图纸和大图（大幅面页）→ auto_drawing_route
-- 扫描件（取不到文字的页）→ 整页图像翻译
-
-判断只看 PDF 本身（页面尺寸、可见文字、每行字数），不调用模型。
+页面类型只看 PDF 本身（页面尺寸、可见文字、矢量密度），不调用模型。
 """
 from __future__ import annotations
 
@@ -128,35 +126,41 @@ def file_uses_word(pdf_settings, document: DocumentKind | None) -> bool:
     if document is None or document.kind != KIND_TEXT:
         return False
     route = getattr(pdf_settings, "translation_route", ROUTE_IMAGE)
-    if route == ROUTE_WORD:
-        return True
     return route == "auto" and getattr(pdf_settings, "auto_text_route", ROUTE_WORD) == ROUTE_WORD
 
 
 def page_route(pdf_settings, *, oversized_a3: bool, oversized: bool, page_kind: str) -> str:
-    """Route of one page of a file that is handled page by page.
+    """The preferred route of one page of a file that is handled page by page.
 
     oversized_a3: the fixed A3 test behind the original 「跳过 A3 及更大的页面」.
     oversized:    the user's large-format threshold (A3/A2/A1/A0).
     page_kind:    classify_page() of this page (text / drawing / scan / blank).
+
+    Whether the preferred route can actually be used on this machine (image
+    model set, target language, Word available...) is the runner's call; when it
+    cannot, the page takes ``fallback_route``.
     """
     route = getattr(pdf_settings, "translation_route", ROUTE_IMAGE)
-    has_text = page_kind in (KIND_TEXT, KIND_DRAWING) and not (oversized and page_kind == KIND_SCAN)
-    if route == ROUTE_INPLACE:
-        # 大幅面页即使没有文字层也走原位替换：画成线条的字靠文字识别组件读。
-        return ROUTE_INPLACE if oversized or has_text else ROUTE_IMAGE
     if route == "auto":
-        drawing_route = getattr(pdf_settings, "auto_drawing_route", ROUTE_INPLACE)
         if oversized or page_kind == KIND_DRAWING:
-            return drawing_route
-        if page_kind == KIND_TEXT and getattr(pdf_settings, "auto_text_route", ROUTE_WORD) == ROUTE_INPLACE:
-            return ROUTE_INPLACE
-        # 扫描页、空白页，以及混合文件里的正文页（转 Word 只能整份转）
-        return ROUTE_IMAGE
-    # image, and word for files that are not text documents: the original behaviour
+            return getattr(pdf_settings, "auto_drawing_route", ROUTE_INPLACE)
+        if page_kind == KIND_TEXT:
+            return getattr(pdf_settings, "auto_text_route", ROUTE_WORD)
+        if page_kind == KIND_SCAN:
+            return getattr(pdf_settings, "auto_scan_route", ROUTE_IMAGE)
+        return ROUTE_SKIP  # 空白页：原样放进去，不花钱
+    # image: the original behaviour
     if oversized_a3 and bool(getattr(pdf_settings, "skip_oversized_pages", True)):
         return ROUTE_SKIP
     return ROUTE_IMAGE
+
+
+def fallback_route(pdf_settings, *, oversized: bool, image_available: bool) -> str:
+    """「保底方式」：首选用不了时。大幅面页不改用整页图像翻译（会画糊），保留原样。"""
+    if (getattr(pdf_settings, "auto_fallback", ROUTE_IMAGE) == ROUTE_IMAGE
+            and image_available and not oversized):
+        return ROUTE_IMAGE
+    return ROUTE_SKIP
 
 
 def needs_image_model(pdf_settings) -> bool:

@@ -19,7 +19,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, apiErrorReason, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, apiErrorReason, type PdfPagesSnapshot, type PdfRouteCapabilities, type SseEvent, type TaskStatus } from "../api-client";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import {
@@ -370,14 +370,14 @@ interface SurfaceState {
   /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
    *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
   cadResumeDir: string;
-  /** PDF 翻译方式（Beta 分支）：image 整页图像翻译（默认）/ inplace 原位替换 / word 转成
-   *  Word 再翻译 / auto 自动组合。只有 pdf surface 用，见 settings.py PdfSettings 与
-   *  core/pdf_routes.py。 */
+  /** PDF 翻译方式（Beta 分支）：image 整页图像翻译（默认）/ auto 自动组合（逐页按类型）。
+   *  只有 pdf surface 用，见 settings.py PdfSettings 与 core/pdf_routes.py。 */
   pdfRoute: PdfRoute;
-  /** 自动组合里「文字文档」怎么处理。 */
+  /** 自动组合里扫描页、正文页、图纸和大图的首选方式，以及首选用不了时的保底方式。 */
+  pdfAutoScanRoute: "image" | "skip";
   pdfAutoTextRoute: "word" | "inplace" | "image";
-  /** 自动组合里「图纸和大图」怎么处理。 */
   pdfAutoDrawingRoute: "inplace" | "skip" | "image";
+  pdfAutoFallback: "image" | "skip";
   /** 从多大算大幅面（原位替换、自动组合用）。 */
   pdfOversizedPageThreshold: "A3" | "A2" | "A1" | "A0";
 }
@@ -422,8 +422,10 @@ function freshState(surface: Surface): SurfaceState {
     cadCapability: null,
     cadResumeDir: "",
     pdfRoute: "image",
+    pdfAutoScanRoute: "image",
     pdfAutoTextRoute: "word",
     pdfAutoDrawingRoute: "inplace",
+    pdfAutoFallback: "image",
     pdfOversizedPageThreshold: "A3",
   };
 }
@@ -639,9 +641,12 @@ function applySettingsToStates(): void {
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
-      st.pdfRoute = oneOf(text(pdf.translation_route), ["image", "inplace", "word", "auto"] as const, "image");
+      // 分支早先的 inplace / word 两个单一路线由后端换算成自动组合，这里只认两种。
+      st.pdfRoute = text(pdf.translation_route) === "image" || !text(pdf.translation_route) ? "image" : "auto";
+      st.pdfAutoScanRoute = oneOf(text(pdf.auto_scan_route), ["image", "skip"] as const, "image");
       st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
       st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
+      st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
       const threshold = text(pdf.oversized_page_threshold);
       st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
     } else {
@@ -2419,7 +2424,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     // 缩小字号的开关和它的两档比例放在一起，挪到下面「译文写回」里画。
     if (surface === "cad" && toggle.key === "cadFitLayout") continue;
     // 原位替换、自动组合有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
-    if (toggle.key === "skipOversizedPages" && (st.pdfRoute === "inplace" || st.pdfRoute === "auto")) continue;
+    if (toggle.key === "skipOversizedPages" && st.pdfRoute === "auto") continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
     // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
     // 角标说明，想全译走横幅上的「改为全部重译」。
@@ -2654,14 +2659,31 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// PDF 翻译方式（Beta 分支）：单一路线或自动组合。样张见
-// .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-translation-routes.html。
-// 每行「名称 + ? + 右侧紧凑下拉」，自动组合时下面多出按内容分类的几行。
-// 落盘路径见 settings.py PdfSettings：translation_route / auto_text_route /
-// auto_drawing_route / oversized_page_threshold。
+// PDF 翻译方式（Beta 分支）：整页图像翻译（原来的做法）或自动组合（逐页按类型）。样张见
+// .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-auto-combination.html。
+// 自动组合时下面每类页面一行首选方式，最后一行保底方式；本机条件不够（没配图像模型、
+// 没有 Word、译成非中文）时用琥珀色字说明后果。落盘路径见 settings.py PdfSettings。
 // ---------------------------------------------------------------------------
 
-type PdfRoute = "image" | "inplace" | "word" | "auto";
+type PdfRoute = "image" | "auto";
+
+/** 本机条件：后端 /api/pdf/route-capabilities 给，查一次就缓存；查不到时不提示。 */
+let pdfRouteCaps: PdfRouteCapabilities | null = null;
+let pdfRouteCapsLoading = false;
+
+function ensurePdfRouteCaps(): void {
+  if (pdfRouteCaps || pdfRouteCapsLoading) return;
+  pdfRouteCapsLoading = true;
+  client.pdfRouteCapabilities()
+    .then((caps) => {
+      pdfRouteCaps = caps;
+      rerender("pdf");
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      pdfRouteCapsLoading = false;
+    });
+}
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -2699,25 +2721,71 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   // 紧接在上面的开关后面，不另起小标题：小标题和下面这一行的名称都会是「翻译方式」。
   const wrap = el("div", "route-block");
   const beta = t("Beta");
+  const imageLabel = t("整页图像翻译");
 
   wrap.append(buildRouteRow({
     label: t("翻译方式"),
-    hint: t("PDF 怎么翻译。整页图像翻译：交给图像模型重新生成整页（原来的做法）。原位替换：在原 PDF 上只把文字换成译文，线条和图片不动。转成 Word：能取到文字的文档转成 Word 再翻译，输出 .docx。自动组合：按每份文件、每一页的情况分别选。"),
+    hint: t("整页图像翻译：每页交给图像模型重画，是原来的做法。自动组合：先看每一页是扫描件、正文还是图纸，按下面几行分别翻译，最后按原来的页序合成一份 PDF。"),
     options: [
-      { value: "image", label: t("整页图像翻译"), description: t("原来的做法：整页交给图像模型重新生成") },
-      { value: "inplace", label: t("原位替换（保留矢量）"), tag: beta, description: t("只换 PDF 上的文字，线条和清晰度不变") },
-      { value: "word", label: t("转成 Word 再翻译"), tag: beta, description: t("文字文档转成 Word，输出可编辑的 .docx") },
-      { value: "auto", label: t("自动组合"), tag: beta, description: t("按每份文件、每一页分别选，可以自己调整") },
+      { value: "image", label: imageLabel, description: t("原来的做法：每页交给图像模型重画") },
+      { value: "auto", label: t("自动组合"), tag: beta, description: t("扫描页用图像翻译，正文转 Word，图纸原位替换，合成一份 PDF") },
     ],
     value: st.pdfRoute,
     disabled: active,
     wide: true,
     onChange: (value) => void handlePdfRouteChange(st, "pdfRoute", "pdf.translation_route", value as PdfRoute),
   }));
+  if (st.pdfRoute !== "auto") return wrap;
 
-  const thresholdRow = (): HTMLElement => buildRouteRow({
+  ensurePdfRouteCaps();
+  const keepLabel = t("原样保留");
+  wrap.append(buildRouteRow({
+    label: t("扫描页"),
+    hint: t("选不中文字的页，比如签字页、盖章的评审意见、拍照件。只有图像模型能翻。"),
+    options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
+    value: st.pdfAutoScanRoute,
+    disabled: active,
+    sub: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoScanRoute", "pdf.auto_scan_route", value as SurfaceState["pdfAutoScanRoute"]),
+  }));
+  wrap.append(buildRouteRow({
+    label: t("正文页"),
+    hint: t("能选中文字的正文、表格、说明页。转成 Word 费用最低、效果最好；夹在扫描页或图纸中间的正文，翻好后用电脑上的 Word 转回 PDF 拼回原位。整份都是正文的文件直接输出 Word。"),
+    options: [
+      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用最低、效果最好") },
+      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面完全不变，中文小一号；只能译成中文") },
+      { value: "image", label: imageLabel, description: t("交给图像模型重画，费用最高") },
+    ],
+    value: st.pdfAutoTextRoute,
+    disabled: active,
+    sub: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoTextRoute", "pdf.auto_text_route", value as SurfaceState["pdfAutoTextRoute"]),
+  }));
+  wrap.append(buildRouteRow({
+    label: t("图纸和大图"),
+    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只换字，线条、尺寸和清晰度不变，目前只支持译成中文。"),
+    options: [
+      { value: "inplace", label: t("原位替换"), tag: beta },
+      { value: "image", label: imageLabel },
+      { value: "skip", label: keepLabel },
+    ],
+    value: st.pdfAutoDrawingRoute,
+    disabled: active,
+    sub: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoDrawingRoute", "pdf.auto_drawing_route", value as SurfaceState["pdfAutoDrawingRoute"]),
+  }));
+  wrap.append(buildRouteRow({
+    label: t("保底方式"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会画糊），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
+    value: st.pdfAutoFallback,
+    disabled: active,
+    sub: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoFallback", "pdf.auto_fallback", value as SurfaceState["pdfAutoFallback"]),
+  }));
+  wrap.append(buildRouteRow({
     label: t("大幅面起点"),
-    hint: t("多大的页面按图纸和大图处理。默认 A3 及以上（长、宽都超出 A4 约 15%）。"),
+    hint: t("多大的页面算图纸和大图。默认 A3 及以上（长、宽都超出 A4 约 15%）。"),
     options: [
       { value: "A3", label: t("A3 及以上") },
       { value: "A2", label: t("A2 及以上") },
@@ -2728,61 +2796,42 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
     disabled: active,
     sub: true,
     onChange: (value) => void handlePdfRouteChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as SurfaceState["pdfOversizedPageThreshold"]),
-  });
+  }));
 
-  const note = (text: string): HTMLElement => {
-    const node = el("div", "route-note");
+  const note = (text: string, warn = false): HTMLElement => {
+    const node = el("div", warn ? "route-note warn" : "route-note");
     node.textContent = text;
     return node;
   };
-
-  if (st.pdfRoute === "auto") {
-    wrap.append(buildRouteRow({
-      label: t("文字文档"),
-      hint: t("整份都是能取到文字的普通排版页（报告、说明、表格）。转成 Word：输出可编辑的 Word，版面会有变化。原位替换：输出 PDF，版面不变。"),
-      options: [
-        { value: "word", label: t("转成 Word"), tag: beta },
-        { value: "inplace", label: t("原位替换"), tag: beta },
-        { value: "image", label: t("整页图像翻译") },
-      ],
-      value: st.pdfAutoTextRoute,
-      disabled: active,
-      sub: true,
-      onChange: (value) => void handlePdfRouteChange(st, "pdfAutoTextRoute", "pdf.auto_text_route", value as SurfaceState["pdfAutoTextRoute"]),
-    }));
-    wrap.append(buildRouteRow({
-      label: t("图纸和大图"),
-      hint: t("大幅面页面，以及线条密集、文字都是零散标注的图纸页。原位替换：线条、尺寸、清晰度不变，只换文字。原样保留：不翻译。"),
-      options: [
-        { value: "inplace", label: t("原位替换"), tag: beta },
-        { value: "skip", label: t("原样保留") },
-        { value: "image", label: t("整页图像翻译") },
-      ],
-      value: st.pdfAutoDrawingRoute,
-      disabled: active,
-      sub: true,
-      onChange: (value) => void handlePdfRouteChange(st, "pdfAutoDrawingRoute", "pdf.auto_drawing_route", value as SurfaceState["pdfAutoDrawingRoute"]),
-    }));
-    const scanRow = el("div", "selrow sub");
-    const scanName = el("span", "selrow-label");
-    scanName.textContent = t("扫描件");
-    const scanValue = el("span", "selrow-fixed");
-    scanValue.textContent = t("整页图像翻译");
-    scanRow.append(scanName, createHintBadge(t("取不到文字的页（扫描件、照片）只能靠图像模型翻译。")), scanValue);
-    wrap.append(scanRow, thresholdRow());
-    wrap.append(note(t("Beta：文字文档转 Word 时输出 .docx，版面会有变化；其余输出 PDF。认不准的字保留原文，完成后列出清单。")));
-  } else if (st.pdfRoute === "inplace") {
-    wrap.append(thresholdRow());
-    wrap.append(note(t("Beta：认不准的字保留原文，完成后列出清单。取不到文字的页（扫描件）改用整页图像翻译。")));
-  } else if (st.pdfRoute === "word") {
-    wrap.append(note(t("Beta：只有整份都是普通排版页的文字文档转成 Word，输出 .docx，版面会有变化；图纸、扫描件和图文混合的文件改用整页图像翻译。")));
+  const routeName: Record<string, string> = {
+    image: t("图像翻译"), word: t("Word"), inplace: t("原位替换"), skip: t("原样保留"),
+  };
+  wrap.append(note(t("扫描页 → {0} · 正文 → {1} · 图纸 → {2}；用不了时{3}",
+    routeName[st.pdfAutoScanRoute],
+    routeName[st.pdfAutoTextRoute],
+    routeName[st.pdfAutoDrawingRoute],
+    st.pdfAutoFallback === "image" ? t("改用图像翻译") : t("保留原样"),
+  )));
+  const caps = pdfRouteCaps;
+  const usesImage = st.pdfAutoScanRoute === "image" || st.pdfAutoFallback === "image"
+    || st.pdfAutoTextRoute === "image" || st.pdfAutoDrawingRoute === "image";
+  if (caps && usesImage && !caps.image_model_ready) {
+    wrap.append(note(t("没有设置图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
   }
+  if (caps && st.pdfAutoTextRoute === "word" && !caps.office_engine) {
+    wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice：夹在扫描页、图纸中间的正文改用保底方式；整份都是正文的文件照常输出 Word。"), true));
+  }
+  const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
+  if (usesInplace && !st.targetLang.toLowerCase().startsWith("zh")) {
+    wrap.append(note(t("原位替换目前只能译成中文：这些页会改用保底方式，大幅面图纸保留原样。"), true));
+  }
+  if (!usesImage) wrap.append(note(t("这次不会调用图像模型。")));
   return wrap;
 }
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
  *  见 persistSettingsOrRevert 顶部的说明）。 */
-async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfOversizedPageThreshold">(
+async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfOversizedPageThreshold">(
   st: SurfaceState,
   stateKey: K,
   settingPath: string,

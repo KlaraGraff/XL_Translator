@@ -1117,17 +1117,18 @@ class PdfSettings(BaseModel):
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
     # 翻译方式（Beta 分支新增，见 core.pdf_routes）：
-    #   image   —— 整页图像翻译（默认，和以前一样；大幅面页按上面的开关跳过或翻译）
-    #   inplace —— 原位替换（保留矢量）：在原 PDF 上删字写回译文；取不到文字的
-    #              普通页退回整页图像翻译
-    #   word    —— 转成 Word 再翻译：整份都是普通排版页的文字文档输出 .docx；
-    #              其余文件照整页图像翻译处理
-    #   auto    —— 自动组合：文字文档按 auto_text_route，图纸和大图按
-    #              auto_drawing_route，扫描页整页图像翻译
-    # 没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
+    #   image —— 整页图像翻译（默认，和以前一样；大幅面页按上面的开关跳过或翻译）
+    #   auto  —— 自动组合：逐页按类型处理，扫描页按 auto_scan_route，正文页按
+    #            auto_text_route（转 Word 时连续的正文页合成一段转 Word 翻译，再转回
+    #            PDF 拼回原位；整份都是正文的文件直接输出 Word），图纸和大幅面页按
+    #            auto_drawing_route；首选用不了时按 auto_fallback 保底。
+    # 分支早先还有 inplace / word 两个单一路线，读到时换算成等价的自动组合（见下面的
+    # 校验）。没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
     translation_route: Literal["image", "inplace", "word", "auto"] = "image"
+    auto_scan_route: Literal["image", "skip"] = "image"
     auto_text_route: Literal["word", "inplace", "image"] = "word"
     auto_drawing_route: Literal["inplace", "skip", "image"] = "inplace"
+    auto_fallback: Literal["image", "skip"] = "image"
     # 从多大算大幅面（原位替换、自动组合用）：A3（默认，即以前的判定）/ A2 / A1 / A0。
     oversized_page_threshold: Literal["A3", "A2", "A1", "A0"] = "A3"
     # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
@@ -1144,6 +1145,16 @@ class PdfSettings(BaseModel):
         raw = migrated.get("page_generation_concurrency")
         if raw in ("", None):
             migrated["page_generation_concurrency"] = None
+        # 分支早先的单一路线换算成等价的自动组合
+        route = migrated.get("translation_route")
+        if route == "inplace":
+            migrated.update(translation_route="auto", auto_text_route="inplace", auto_drawing_route="inplace")
+        elif route == "word":
+            migrated.update(
+                translation_route="auto",
+                auto_text_route="word",
+                auto_drawing_route="image" if migrated.get("skip_oversized_pages") is False else "skip",
+            )
         return migrated
 
 

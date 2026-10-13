@@ -107,6 +107,10 @@ export type PdfPage = {
   inplace_message?: string;
   /** 要整页图像翻译、但没有设置图像翻译模型而保留原样的原因。 */
   kept_reason?: string;
+  /** 混合文件里转 Word 翻译的正文页（Beta）："" | done | failed | stopped。 */
+  word_requested?: boolean;
+  word_status?: string;
+  word_message?: string;
   /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
    *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
   quality_flagged: boolean;
@@ -118,6 +122,16 @@ export type PdfPage = {
   /** 这一页留着上一版译文（上一次单页重生成把旧译图顶下来时留的，只留紧邻一版）。
    *  对比弹窗靠它决定要不要出「当前版／上一版」切换和「换回这一版」。 */
   has_previous_image: boolean;
+};
+
+/** PDF 翻译方式（Beta）：设置面板用的本机条件。 */
+export type PdfRouteCapabilities = {
+  image_model_ready: boolean;
+  image_model_message: string;
+  word_component: boolean;
+  office_engine: string;
+  office_message: string;
+  inplace_target_ok: boolean;
 };
 
 export type PdfPageFile = {
@@ -442,6 +456,10 @@ export class ApiClient {
 
   async connectCadOda(path: string): Promise<CadCapabilityStatus> {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  pdfRouteCapabilities(): Promise<PdfRouteCapabilities> {
+    return this.request<PdfRouteCapabilities>("/api/pdf/route-capabilities");
   }
 
   async getOcrCapability(): Promise<OcrPluginStatus> {

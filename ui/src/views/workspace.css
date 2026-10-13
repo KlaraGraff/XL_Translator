@@ -376,6 +376,12 @@ tr.hid {
   color: var(--ink-3);
   margin: 6px 0 2px;
 }
+.route-note.warn {
+  color: var(--warn);
+  background: var(--warn-t);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
 
 /* 翻译方式下拉的菜单比按钮宽：每项下面有一句说明，挤在按钮宽度里会折成三四行。 */
 .compact-menu {

@@ -234,6 +234,15 @@ class PdfPageRecord:
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
     # 照样能跑）：原页放进输出，这里写原因。
     kept_reason: str = ""
+    # 混合文件里转 Word 翻译的正文页（Beta）：连续几页合成一段，word_segment 是段号
+    # （从 1 起），word_status 为 "" | done | failed | stopped。
+    word_requested: bool = False
+    word_segment: int = 0
+    word_status: str = ""
+    word_message: str = ""
+    # 自动组合：首选方式在这一页用不了、改用保底方式时写原因（如「转成 Word 失败，
+    # 改用整页图像翻译」）。保留原样的另写在 kept_reason。
+    route_note: str = ""
     review_enabled: bool = False
     review_status: str = "skipped"
     review_attempts: int = 0
@@ -302,6 +311,9 @@ class PdfFileRecord:
     translated_docx_path: str = ""
     # 转 Word 翻译时 Word 流程报出的待复核处数（保留原文、疑似漏译等）
     word_issue_count: int = 0
+    # 混合文件里转 Word 的正文段：[{segment, first_page, last_page, docx_path, pdf_path,
+    # status, message, issue_count}]
+    word_segments: list[dict[str, Any]] = field(default_factory=list)
     pages: list[PdfPageRecord] = field(default_factory=list)
 
 

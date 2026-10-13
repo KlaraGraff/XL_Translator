@@ -100,6 +100,7 @@ from core.pdf_routes import (
     ROUTE_SKIP,
     ROUTE_WORD,
     classify_document,
+    fallback_route,
     file_uses_word,
     page_route,
 )
@@ -906,6 +907,8 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         or any(page.kept_reason for page in record.pages)
         # 转 Word 翻译后 Word 流程报出的待复核处
         or record.word_issue_count
+        # 首选方式用不了、改用了保底方式的页
+        or any(page.route_note for page in record.pages)
     )
 
 
@@ -1330,6 +1333,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 需要整页图像翻译的页保留原样。
         self._document_kinds: dict[str, Any] = {}
         self._image_model_missing = ""
+        # 本机把 Word 转回 PDF 用的程序（"word" / "libreoffice" / ""）；None 表示还没查。
+        self._office_pdf_engine: str | None = None
+        self._office_pdf_message = ""
+        # 自动组合里转 Word 的正文页：(源文件路径, 页码) → {segment, status, message}。
+        # 在页面翻译开始前就转好（见 _run_word_segments），失败的页随后按保底方式处理。
+        self._word_pages: dict[tuple[str, int], dict[str, Any]] = {}
 
     @property
     def task_id(self) -> str:
@@ -2170,6 +2179,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
             "inplace_message": page.inplace_message if page is not None else "",
             "kept_reason": page.kept_reason if page is not None else "",
+            "word_requested": bool(page.word_requested) if page is not None else False,
+            "word_status": page.word_status if page is not None else "",
+            "word_message": page.word_message if page is not None else "",
+            "route_note": page.route_note if page is not None else "",
             "error": _short_review_text(page.error if page is not None else ""),
             # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
             # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
@@ -2749,6 +2762,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 复用上次的成品页必须发生在这里：页记录一旦建好，_iter_rendered_pages
             # 就会自然跳过这些页，装订、逐页面板、停止/暂停语义全都不用另开分支。
             self._prefill_resume_pages(prepared_files, output_dir=output_dir)
+            # 自动组合：混合文件里的正文段先转 Word 翻好，转不成的页随后按保底方式翻译。
+            self._run_word_segments(prepared_files)
             # 转 Word 的文件不逐页翻译，不算进页数进度
             total_pages = sum(
                 record.page_count for record in file_records if record.translation_route != ROUTE_WORD
@@ -2911,8 +2926,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 and not fatal_error
                 and self._stop_event.is_set()
                 and any(
-                    record.translation_route == ROUTE_WORD
-                    and record.status == PDF_OUTPUT_STATE_STOPPED
+                    (record.translation_route == ROUTE_WORD and record.status == PDF_OUTPUT_STATE_STOPPED)
+                    or any(item.get("status") == "stopped" for item in record.word_segments)
                     for record in file_records
                 )
             ):
@@ -3525,6 +3540,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                     "WARN",
                                     f"[{prepared.record.name}] 第 {page_record.page_number} 页{page_record.kept_reason}。",
                                 )
+                            elif page_record.word_requested:
+                                self._log(
+                                    "INFO",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页是正文，"
+                                    "和相邻的正文页一起转成 Word 翻译（Beta），在整份文件翻译完后处理。",
+                                )
                             elif page_record.inplace_requested:
                                 self._log(
                                     "INFO",
@@ -4021,6 +4042,108 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         self._log("ERROR", f"[{record.name}] {record.error}")
 
+    def _planned_word_pages(self, prepared: _PreparedPdfFile) -> list[int]:
+        """自动组合里首选转 Word 的正文页（整份都是正文的文件另走整份转 Word）。"""
+        record = prepared.record
+        if (getattr(self._settings.pdf, "translation_route", "image") != "auto"
+                or record.source_type == SOURCE_TYPE_IMAGE
+                or record.status == PDF_OUTPUT_STATE_FAILED
+                or record.translation_route == ROUTE_WORD):
+            return []
+        kind = self._document_kinds.get(str(prepared.item.path))
+        if kind is None:
+            return []
+        return [
+            item.page_number for item in kind.pages
+            if page_route(self._settings.pdf, oversized_a3=False, oversized=item.oversized,
+                          page_kind=item.kind) == ROUTE_WORD
+        ]
+
+    def _run_word_segments(self, prepared_files: list[_PreparedPdfFile]) -> None:
+        """自动组合（Beta）：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
+        翻译，再转回 PDF。转好的段在装配时按原页序拼进来；转不成的页随后按保底方式
+        处理（见 _decide_page_route）。转出来的 Word 只留在过程文件夹里。"""
+        from core.pdf_word_route import OfficePdfError, docx_to_pdf, translate_pdf_via_word
+
+        plans = [(prepared, self._planned_word_pages(prepared)) for prepared in prepared_files]
+        plans = [(prepared, pages) for prepared, pages in plans if pages]
+        if not plans:
+            return
+        unavailable = self._word_segments_possible()
+        hooks = self._inplace_hooks
+        for prepared, page_numbers in plans:
+            record = prepared.record
+            key = str(prepared.item.path)
+            segments: list[list[int]] = []
+            for number in page_numbers:
+                if segments and segments[-1][-1] == number - 1:
+                    segments[-1].append(number)
+                else:
+                    segments.append([number])
+            for index, seg in enumerate(segments, start=1):
+                first, last = seg[0], seg[-1]
+                label = f"第 {first} 页" if first == last else f"第 {first}–{last} 页"
+                entry: dict[str, Any] = {"segment": index, "first_page": first, "last_page": last,
+                                         "docx_path": "", "pdf_path": "", "status": "", "message": "",
+                                         "issue_count": 0, "engine": ""}
+                record.word_segments.append(entry)
+
+                def mark(status: str, message: str = "", note: str = "") -> None:
+                    entry.update(status=status, message=message)
+                    for number in seg:
+                        self._word_pages[(key, number)] = {"segment": index, "status": status,
+                                                           "message": message, "note": note}
+
+                if unavailable:
+                    mark("failed", unavailable)
+                    continue
+                if self._stop_event.is_set():
+                    mark("stopped", "任务已停止")
+                    continue
+                self._queue.put(StatusMsg(f"状态：正在把「{record.name}」{label}转成 Word 翻译…"))
+                self._log("INFO", f"[{record.name}] {label}是正文，先转成 Word 翻译（Beta）。")
+                work = Path(prepared.translated_pages_dir) / "word" / f"segment_{index:02d}"
+                work.mkdir(parents=True, exist_ok=True)
+                stem = Path(record.name).stem
+                seg_pdf = work / f"{stem}_p{first}-{last}.pdf"
+                try:
+                    import fitz
+
+                    with fitz.open(record.source_copy_path) as src:
+                        part = fitz.open()
+                        part.insert_pdf(src, from_page=first - 1, to_page=last - 1)
+                        part.save(seg_pdf)
+                        part.close()
+                    result = translate_pdf_via_word(
+                        seg_pdf, work, work / f"{stem}_p{first}-{last}_translated.docx", self._settings,
+                        source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
+                        should_stop=self._stop_event.is_set, log=self._log,
+                        file_label=f"{record.name} {label}", key_overrides=self._key_overrides,
+                    )
+                    if not result.ok:
+                        mark("stopped" if result.stopped else "failed",
+                             "任务已停止" if result.stopped else "转成 Word 翻译失败")
+                        if not result.stopped:
+                            self._log("WARN", f"[{record.name}] {label}转成 Word 翻译失败：{result.error}")
+                        continue
+                    translated_pdf = work / f"{stem}_p{first}-{last}_translated.pdf"
+                    engine = docx_to_pdf(Path(result.output_path), translated_pdf)
+                except OfficePdfError as exc:
+                    mark("failed", "译好的正文转回 PDF 失败")
+                    self._log("WARN", f"[{record.name}] {label}译好的正文转回 PDF 失败：{str(exc)[:200]}")
+                    continue
+                except Exception as exc:  # noqa: BLE001 - one segment only costs that segment
+                    logger.exception("[PDF] 正文段转 Word 翻译失败")
+                    mark("failed", "转成 Word 翻译出错")
+                    self._log("WARN", f"[{record.name}] {label}转成 Word 翻译出错："
+                              + user_facing_reason(exc, fallback="处理这几页时出错。"))
+                    continue
+                entry.update(docx_path=result.output_path, pdf_path=str(translated_pdf),
+                             issue_count=len(result.issues), engine=engine)
+                record.word_issue_count += len(result.issues)
+                mark("done", note=f"{label}是正文，转成 Word 翻译后转回 PDF 拼入")
+                self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
+
     def _run_inplace_pages(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
         """「原位替换文字（Beta）」：逐页删字写回；失败或自检不过的页保留原页。"""
         # 只处理还没试过的页。单页重新生成、「换回上一版」也会走到这里，它们不该
@@ -4207,6 +4330,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages
             if page.skipped_oversize and page.inplace_status != "done" and not page.kept_reason
+            and not page.word_requested
             and (not page.inplace_requested
                  or is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt))
         )
@@ -4416,7 +4540,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page = doc.get_page(page_index)
         try:
             page_width_pt, page_height_pt = page.get_size()
-            route = self._decide_page_route(
+            route, fallback_reason = self._decide_page_route(
                 page,
                 page_index=page_index,
                 width_pt=page_width_pt,
@@ -4425,10 +4549,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 source_pdf=source_pdf,
             )
             kept_reason = ""
+            route_note = ""
+            if fallback_reason:
+                if route == ROUTE_SKIP:
+                    kept_reason = f"{fallback_reason}，这一页保留原样"
+                else:
+                    route_note = f"{fallback_reason}，改用整页图像翻译"
             if route == ROUTE_IMAGE and self._image_model_missing:
                 route = ROUTE_SKIP
                 kept_reason = "没有设置图像翻译模型，这一页需要整页图像翻译，已保留原样"
-            if route in {ROUTE_SKIP, ROUTE_INPLACE}:
+            word_entry = self._word_pages.get((source_path_key, page_index + 1), {}) if route == ROUTE_WORD else {}
+            if route in {ROUTE_SKIP, ROUTE_INPLACE, ROUTE_WORD}:
                 # 不送图像模型的页（原样保留、原位替换）不渲染栅格化预览（A3 在
                 # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
                 # 从源 PDF 把这一页矢量导入，栅格化只会拖慢流程、拉低质量。
@@ -4439,6 +4570,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     status=PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
                     skipped_oversize=True,
                     inplace_requested=route == ROUTE_INPLACE,
+                    word_requested=route == ROUTE_WORD,
+                    word_segment=int(word_entry.get("segment", 0)),
+                    word_status="done" if route == ROUTE_WORD else "",
+                    word_message=str(word_entry.get("note", "")),
                     kept_reason=kept_reason,
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
@@ -4478,6 +4613,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_width_pt=float(page_width_pt),
             page_height_pt=float(page_height_pt),
             render_dpi=float(render_dpi),
+            route_note=route_note,
         )
 
     def _decide_page_route(
@@ -4489,22 +4625,55 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         height_pt: float,
         source_path: str,
         source_pdf: str,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """(route, reason)：reason 非空表示首选用不了、改走了保底方式。"""
         pdf_settings = self._settings.pdf
         threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
+        oversized = is_oversized_for_threshold(threshold, width_pt, height_pt)
+        auto = getattr(pdf_settings, "translation_route", "image") == "auto"
         page_kind = self._page_kind(source_path, page_index)
-        if not page_kind and getattr(pdf_settings, "translation_route", "image") != "image":
+        if not page_kind and auto:
             page_kind = KIND_TEXT if _page_has_text_layer(page, source_pdf, page_index) else KIND_SCAN
         route = page_route(
             pdf_settings,
             oversized_a3=is_oversized_page(width_pt, height_pt),
-            oversized=is_oversized_for_threshold(threshold, width_pt, height_pt),
+            oversized=oversized,
             page_kind=page_kind,
         )
-        if route == ROUTE_INPLACE and self._inplace_hooks is None:
-            # 原位替换的组件没接上（不该发生）：大图保留原样，普通页照旧整页图像翻译
-            route = ROUTE_SKIP if is_oversized_page(width_pt, height_pt) else ROUTE_IMAGE
-        return route
+        if not auto:
+            return route, ""
+        reason = self._route_unusable_reason(route, source_path, page_index + 1)
+        if not reason:
+            return route, ""
+        return fallback_route(pdf_settings, oversized=oversized, image_available=not self._image_model_missing), reason
+
+    def _route_unusable_reason(self, route: str, source_path: str, page_number: int) -> str:
+        if route == ROUTE_IMAGE and self._image_model_missing:
+            return "没有设置图像翻译模型"
+        if route == ROUTE_INPLACE:
+            if self._inplace_hooks is None:
+                return "原位替换不可用"
+            if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
+                return "原位替换目前只支持译成中文"
+        if route == ROUTE_WORD:
+            entry = self._word_pages.get((source_path, page_number))
+            if entry is None or entry.get("status") != "done":
+                return (entry or {}).get("message") or "转成 Word 不可用"
+        return ""
+
+    def _word_segments_possible(self) -> str:
+        """混合文件里的正文页转 Word 要用的条件；全满足返回空串，否则返回原因。只查一次。"""
+        if self._office_pdf_engine is None:
+            from core.pdf_word_route import office_pdf_engine, word_route_available
+
+            if not word_route_available():
+                self._office_pdf_engine = ""
+                self._office_pdf_message = "转成 Word 的组件不可用"
+            else:
+                engine, message = office_pdf_engine()
+                self._office_pdf_engine = engine
+                self._office_pdf_message = "" if engine else "电脑上没有 Microsoft Word 或 LibreOffice，译好的正文转不回 PDF"
+        return "" if self._office_pdf_engine else self._office_pdf_message
 
     def _render_source_image(
         self,
@@ -5292,7 +5461,22 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         try:
             with tempfile.TemporaryDirectory(prefix="xl-translator-pdf-") as tmp_dir:
                 temp_dir = Path(tmp_dir)
+                done_segments = {int(item["segment"]): item for item in record.word_segments
+                                 if item.get("status") == "done" and item.get("pdf_path")
+                                 and Path(item["pdf_path"]).exists()}
+                imported_segments: set[int] = set()
                 for page in sorted(record.pages, key=lambda item: item.page_number):
+                    if page.word_status == "done" and page.word_segment in done_segments:
+                        # 转 Word 翻译的正文段：整段转回的 PDF 在段首一次拼进来，页数可能和
+                        # 原文不同（中文通常更短）；段内其余页不再单独处理。
+                        if page.word_segment not in imported_segments:
+                            imported_segments.add(page.word_segment)
+                            seg_doc = _open_pdf_document(Path(done_segments[page.word_segment]["pdf_path"]))
+                            try:
+                                out_doc.import_pages(seg_doc)
+                            finally:
+                                seg_doc.close()
+                        continue
                     if page.skipped_oversize:
                         # 装订顺序靠的是这个循环本身按页码顺序、逐页 append——
                         # 无论这一页是矢量导入还是栅格化图片页，只要在这里按

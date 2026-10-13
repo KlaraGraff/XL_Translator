@@ -373,3 +373,189 @@ def translate_pdf_via_word(
     shutil.copy2(outputs[0]["output"], final_path)
     return WordRouteResult(ok=True, output_path=str(final_path), issues=list(done.issues or []),
                            word_result=dict(outputs[0]))
+
+
+# --------------------------------------------------------------------------
+# 混合文件里的正文段：译好的 Word 要转回 PDF，才能和扫描页、图纸页按原页序拼成一份。
+# Word 转 PDF 要本机的 Microsoft Word（软件转 .doc 时已经在用同一条自动化通道），
+# 没有 Word 时退到 LibreOffice。两样都没有，正文页就不走转 Word（见调用方）。
+# --------------------------------------------------------------------------
+
+WORD_PDF_FORMAT = 17  # wdFormatPDF
+
+
+def cjk_text_visible(pdf_path: Path, max_pages: int = 3) -> bool:
+    """转回的 PDF 里中文看不看得见。本机缺中文字体时（实测 macOS 上的 LibreOffice）
+    中文照样写进了文字层，却画成空白；按中文字所在区域的墨迹判断。没有中文时算看得见。"""
+    import statistics
+
+    import fitz
+
+    values: list[float] = []
+    with fitz.open(pdf_path) as doc:
+        for page in list(doc)[:max_pages]:
+            spans = [span for block in page.get_text("dict")["blocks"] for line in block.get("lines", [])
+                     for span in line["spans"]
+                     if sum("\u3000" <= ch <= "\u9fff" for ch in span["text"]) >= 2]
+            if not spans:
+                continue
+            pix = page.get_pixmap(dpi=72, colorspace=fitz.csGRAY)
+            for span in spans[:40]:
+                rect = fitz.IRect(fitz.Rect(span["bbox"])) & pix.irect
+                if rect.is_empty:
+                    continue
+                dark = total = 0
+                for y in range(rect.y0, rect.y1):
+                    row = pix.samples[y * pix.stride + rect.x0: y * pix.stride + rect.x1]
+                    dark += sum(1 for value in row if value < 160)
+                    total += len(row)
+                values.append(dark / total if total else 0.0)
+    return not values or statistics.median(values) >= 0.03
+
+
+class OfficePdfError(Exception):
+    pass
+
+
+def office_pdf_engine() -> tuple[str, str]:
+    """("word" | "libreoffice" | "", message). Never starts an application."""
+    from core.word_converter import _find_soffice, get_local_word_automation_availability
+
+    ok, message = get_local_word_automation_availability()
+    if ok:
+        return "word", message
+    if _find_soffice() is not None:
+        return "libreoffice", "未检测到 Microsoft Word，改用 LibreOffice 把 Word 转回 PDF。"
+    return "", "本机没有 Microsoft Word，也没有 LibreOffice，译好的 Word 没法转回 PDF。"
+
+
+def docx_to_pdf(docx_path: Path, pdf_path: Path, *, timeout: int = 300) -> str:
+    """Render a .docx to PDF with Microsoft Word (or LibreOffice); returns the engine used."""
+    import platform
+    import subprocess
+
+    from core.word_converter import _find_soffice, get_local_word_automation_availability
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.unlink(missing_ok=True)
+    errors: list[str] = []
+    word_ok, _message = get_local_word_automation_availability()
+    if word_ok:
+        try:
+            if platform.system() == "Windows":
+                _docx_to_pdf_windows_word(docx_path, pdf_path)
+            else:
+                _docx_to_pdf_macos_word(docx_path, pdf_path, timeout)
+            if pdf_path.is_file() and pdf_path.stat().st_size > 0:
+                if cjk_text_visible(pdf_path):
+                    return "word"
+                errors.append("Word 转出的 PDF 里中文显示不出来")
+            else:
+                errors.append("Word 没有生成 PDF")
+        except Exception as exc:  # noqa: BLE001 - try LibreOffice next
+            logger.debug(f"[PDF] Word 转 PDF 失败：{exc!r}")
+            errors.append(f"Word：{exc}")
+    soffice = _find_soffice()
+    if soffice is not None:
+        out_dir = pdf_path.parent / f".lo-{pdf_path.stem}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [str(soffice), "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
+                capture_output=True, timeout=timeout, check=False,
+            )
+            produced = out_dir / f"{docx_path.stem}.pdf"
+            if produced.is_file() and produced.stat().st_size > 0:
+                if cjk_text_visible(produced):
+                    produced.replace(pdf_path)
+                    return "libreoffice"
+                errors.append("LibreOffice 转出的 PDF 里中文显示不出来（缺少中文字体）")
+            else:
+                errors.append("LibreOffice 没有生成 PDF")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"LibreOffice：{exc}")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+    raise OfficePdfError("；".join(errors) or "本机没有可以把 Word 转成 PDF 的程序。")
+
+
+def _docx_to_pdf_macos_word(docx_path: Path, pdf_path: Path, timeout: int) -> None:
+    import subprocess
+
+    # 只动自己打开的这一份：按文件名找到它，用完关掉；用户在 Word 里开着的其他文档不碰。
+    script = """
+on run argv
+    set inputPath to POSIX file (item 1 of argv)
+    set outputPath to (item 2 of argv)
+    set docName to (item 3 of argv)
+    tell application "Microsoft Word"
+        try
+            set display alerts to false
+        end try
+        open inputPath
+        set theDoc to missing value
+        set n to 0
+        repeat while theDoc is missing value and n < 60
+            repeat with i from 1 to (count documents)
+                if name of document i is docName then set theDoc to document i
+            end repeat
+            if theDoc is missing value then
+                delay 1
+                set n to n + 1
+            end if
+        end repeat
+        if theDoc is missing value then error "Word 没有打开这份文件"
+        -- 文件刚打开时 Word 可能还在排版，这时另存会报「不认识 save as」；等一下再试。
+        set lastErr to ""
+        set didExport to false
+        repeat with attempt from 1 to 6
+            delay 2
+            try
+                save as theDoc file name outputPath file format format PDF
+                set didExport to true
+                exit repeat
+            on error errMsg
+                set lastErr to errMsg
+            end try
+        end repeat
+        try
+            close theDoc saving no
+        end try
+        if not didExport then error lastErr
+    end tell
+end run
+"""
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-e", script, str(docx_path), str(pdf_path), docx_path.name],
+        capture_output=True, text=True, timeout=timeout, check=False,
+    )
+    if result.returncode != 0:
+        raise OfficePdfError((result.stderr or result.stdout or "Word 自动化失败").strip())
+
+
+def _docx_to_pdf_windows_word(docx_path: Path, pdf_path: Path) -> None:
+    import pythoncom
+    import win32com.client
+
+    word = None
+    document = None
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        document = word.Documents.Open(str(docx_path), ReadOnly=True, AddToRecentFiles=False,
+                                       ConfirmConversions=False)
+        document.SaveAs2(str(pdf_path), FileFormat=WORD_PDF_FORMAT)
+    finally:
+        if document is not None:
+            try:
+                document.Close(False)
+            except Exception:  # noqa: BLE001
+                pass
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:  # noqa: BLE001
+                pass
+        pythoncom.CoUninitialize()

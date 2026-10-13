@@ -57,7 +57,7 @@ def _hooks(translate=None) -> InplaceHooks:
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
 class InplaceTaskTests(unittest.TestCase):
     def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A3), text=(True, True),
-             image_model_missing="", extra=None):
+             image_model_missing="", extra=None, office=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -77,8 +77,11 @@ class InplaceTaskTests(unittest.TestCase):
             inplace_hooks=hooks or _hooks(),
         )
         runner._image_model_missing = image_model_missing
-        with patch("core.model_roles.get_key", return_value="secret"):
+        office = office or ("", "no office engine in tests")
+        with patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_word_route.office_pdf_engine", return_value=office):
             prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
+            runner._run_word_segments([prepared])
             runner._total_page_count = len(sizes)
             runner._process_prepared_pages(
                 [prepared], max_attempts=max_page_generation_attempts(0), scheduler=WeightedApiScheduler(1),
@@ -90,7 +93,7 @@ class InplaceTaskTests(unittest.TestCase):
         return runner, prepared.record, client
 
     def test_oversized_page_is_translated_in_place_and_keeps_vectors(self):
-        runner, record, client = self._run()
+        runner, record, client = self._run(extra={"auto_text_route": "image"})
         self.assertEqual(len(client.calls), 1)  # only the A4 page went to the image model
         self.assertTrue(record.translated_pdf_path)  # page 1 is a blank fake image, so the file may be flagged
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
@@ -133,10 +136,11 @@ class InplaceTaskTests(unittest.TestCase):
         runner._run_inplace_pages(record, runner._prepared_files[0])
         self.assertEqual(len(calls), before)
 
-    def test_non_chinese_target_keeps_original(self):
+    def test_non_chinese_target_keeps_the_large_page_original(self):
         _runner, record, _client = self._run(target="en")
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
-        self.assertEqual(page.inplace_status, "kept_original")
+        self.assertFalse(page.inplace_requested)       # in place only writes Chinese
+        self.assertIn("只支持译成中文", page.kept_reason)  # large pages never fall back to image
 
     def test_skip_mode_does_not_touch_oversized_page(self):
         _runner, record, _client = self._run(route="image")
@@ -202,6 +206,68 @@ class InplaceTaskTests(unittest.TestCase):
             _runner, record, _client = self._run(route="word", sizes=(A4, A4))
         self.assertEqual(record.status, "failed")
         self.assertIn("整页图像翻译", record.error)
+
+
+    def test_text_pages_of_a_mixed_file_become_a_word_segment(self):
+        from core.pdf_word_route import WordRouteResult
+
+        def fake_word(pdf_path, work_dir, final_path, settings, **kwargs):
+            with fitz.open(pdf_path) as part:
+                self.assertEqual(len(part), 2)          # both text pages, one segment
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        def fake_docx_to_pdf(_docx, pdf_path, **_kwargs):
+            doc = fitz.open()
+            doc.new_page(width=A4[0], height=A4[1]).insert_text((60, 100), "SEGMENT-TRANSLATED", fontsize=12)
+            doc.save(pdf_path)
+            return "word"
+
+        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_docx_to_pdf):
+            _runner, record, client = self._run(sizes=(A4, A4, A3), text=(True, True, True),
+                                                office=("word", "test"))
+        pages = sorted(record.pages, key=lambda p: p.page_number)
+        self.assertEqual([p.word_status for p in pages], ["done", "done", ""])
+        self.assertEqual(pages[2].inplace_status, "done")
+        self.assertEqual(len(client.calls), 0)
+        self.assertEqual(len(record.word_segments), 1)
+        self.assertTrue(record.word_segments[0]["docx_path"].endswith("_p1-2_translated.docx"))
+        out_dir = Path(record.translated_pdf_path).parent
+        self.assertEqual(list(out_dir.glob("*.docx")), [])   # the Word stays in the process folder
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 2)               # 2 text pages became 1 translated page
+            self.assertIn("SEGMENT-TRANSLATED", out[0].get_text())
+            self.assertIn("屋面平面图", out[1].get_text())
+
+    def test_failed_word_segment_falls_back_to_the_safety_net(self):
+        from core.pdf_word_route import WordRouteResult
+
+        def broken_word(*_args, **_kwargs):
+            return WordRouteResult(ok=False, error="转成 Word 失败")
+
+        with patch("core.pdf_word_route.translate_pdf_via_word", broken_word):
+            _runner, record, client = self._run(sizes=(A4, A3), text=(True, True), office=("word", "test"))
+        first = sorted(record.pages, key=lambda p: p.page_number)[0]
+        self.assertFalse(first.word_requested)
+        self.assertIn("改用整页图像翻译", first.route_note)
+        self.assertEqual(len(client.calls), 1)          # the safety net: whole-page image translation
+        self.assertEqual(record.word_segments[0]["status"], "failed")
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+
+    def test_no_office_engine_sends_text_pages_to_the_safety_net(self):
+        _runner, record, client = self._run(sizes=(A4, A3), text=(True, True))   # office probe says none
+        first = sorted(record.pages, key=lambda p: p.page_number)[0]
+        self.assertIn("Microsoft Word", first.route_note)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_safety_net_keep_original(self):
+        _runner, record, client = self._run(sizes=(A4, A3), text=(True, True),
+                                            extra={"auto_fallback": "skip"})
+        first = sorted(record.pages, key=lambda p: p.page_number)[0]
+        self.assertTrue(first.kept_reason)
+        self.assertEqual(len(client.calls), 0)
 
 
 class TextLayerTests(unittest.TestCase):

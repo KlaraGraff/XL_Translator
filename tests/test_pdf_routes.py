@@ -48,11 +48,12 @@ class SettingsTests(unittest.TestCase):
         from api.routes.settings import _deep_merge
 
         base = AppSettings().model_dump(mode="json")
-        for route in ("image", "inplace", "word", "auto"):
-            merged = _deep_merge(base, {"pdf": {"translation_route": route, "auto_text_route": "inplace"}})
+        for route in ("image", "auto"):
+            merged = _deep_merge(base, {"pdf": {"translation_route": route, "auto_text_route": "inplace",
+                                                "auto_scan_route": "skip", "auto_fallback": "skip"}})
             pdf = AppSettings.model_validate(merged).pdf
             self.assertEqual(pdf.translation_route, route)
-            self.assertEqual(pdf.auto_text_route, "inplace")
+            self.assertEqual((pdf.auto_text_route, pdf.auto_scan_route, pdf.auto_fallback), ("inplace", "skip", "skip"))
 
 
 class PageRouteTests(unittest.TestCase):
@@ -60,39 +61,49 @@ class PageRouteTests(unittest.TestCase):
         pdf = PdfSettings(skip_oversized_pages=False)
         self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_DRAWING), "image")
 
-    def test_inplace_route(self) -> None:
-        pdf = PdfSettings(translation_route="inplace")
-        self.assertEqual(_route(pdf, big=True, kind=KIND_DRAWING), "inplace")
-        self.assertEqual(_route(pdf, kind=KIND_TEXT), "inplace")
-        self.assertEqual(_route(pdf, kind=KIND_DRAWING), "inplace")
-        self.assertEqual(_route(pdf, kind=KIND_SCAN), "image")     # nothing to replace
-
-    def test_word_route_pages_fall_back_to_the_original_behaviour(self) -> None:
-        pdf = PdfSettings(translation_route="word")
-        self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_DRAWING), "skip")
-        self.assertEqual(_route(pdf, kind=KIND_SCAN), "image")
-
-    def test_auto_route(self) -> None:
+    def test_auto_route_prefers_one_method_per_page_type(self) -> None:
         pdf = PdfSettings(translation_route="auto")
-        self.assertEqual(_route(pdf, big=True, kind=KIND_DRAWING), "inplace")
-        self.assertEqual(_route(pdf, kind=KIND_DRAWING), "inplace")  # small drawing page
         self.assertEqual(_route(pdf, kind=KIND_SCAN), "image")
-        self.assertEqual(_route(pdf, kind=KIND_TEXT), "image")       # text page of a mixed file
-        self.assertEqual(_route(PdfSettings(translation_route="auto", auto_text_route="inplace"), kind=KIND_TEXT),
-                         "inplace")
-        self.assertEqual(_route(PdfSettings(translation_route="auto", auto_drawing_route="skip"), big=True,
-                                kind=KIND_DRAWING), "skip")
+        self.assertEqual(_route(pdf, kind=KIND_TEXT), "word")
+        self.assertEqual(_route(pdf, kind=KIND_DRAWING), "inplace")
+        self.assertEqual(_route(pdf, big=True, kind=KIND_DRAWING), "inplace")
+        self.assertEqual(_route(pdf, kind=KIND_BLANK), "skip")
+        custom = PdfSettings(translation_route="auto", auto_scan_route="skip", auto_text_route="inplace",
+                             auto_drawing_route="skip")
+        self.assertEqual(_route(custom, kind=KIND_SCAN), "skip")
+        self.assertEqual(_route(custom, kind=KIND_TEXT), "inplace")
+        self.assertEqual(_route(custom, big=True, kind=KIND_DRAWING), "skip")
+
+    def test_safety_net(self) -> None:
+        from core.pdf_routes import fallback_route
+
+        pdf = PdfSettings(translation_route="auto")
+        self.assertEqual(fallback_route(pdf, oversized=False, image_available=True), "image")
+        self.assertEqual(fallback_route(pdf, oversized=True, image_available=True), "skip")   # no blurry drawings
+        self.assertEqual(fallback_route(pdf, oversized=False, image_available=False), "skip")
+        keep = PdfSettings(translation_route="auto", auto_fallback="skip")
+        self.assertEqual(fallback_route(keep, oversized=False, image_available=True), "skip")
+
+    def test_earlier_single_routes_become_the_same_combination(self) -> None:
+        inplace = PdfSettings(translation_route="inplace")
+        self.assertEqual((inplace.translation_route, inplace.auto_text_route, inplace.auto_drawing_route),
+                         ("auto", "inplace", "inplace"))
+        word = PdfSettings(translation_route="word")
+        self.assertEqual((word.translation_route, word.auto_text_route, word.auto_drawing_route),
+                         ("auto", "word", "skip"))
+        word_no_skip = PdfSettings(translation_route="word", skip_oversized_pages=False)
+        self.assertEqual(word_no_skip.auto_drawing_route, "image")
 
     def test_word_is_only_for_whole_text_documents(self) -> None:
         from core.pdf_routes import DocumentKind
 
         text, mixed = DocumentKind(KIND_TEXT), DocumentKind(KIND_MIXED)
-        self.assertTrue(file_uses_word(PdfSettings(translation_route="word"), text))
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="word"), mixed))
+        self.assertTrue(file_uses_word(PdfSettings(translation_route="word"), text))   # mapped to auto
+        self.assertFalse(file_uses_word(PdfSettings(translation_route="auto"), mixed))
         self.assertTrue(file_uses_word(PdfSettings(translation_route="auto"), text))
         self.assertFalse(file_uses_word(PdfSettings(translation_route="auto", auto_text_route="inplace"), text))
         self.assertFalse(file_uses_word(PdfSettings(translation_route="image"), text))
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="inplace"), text))
+        self.assertFalse(file_uses_word(PdfSettings(translation_route="inplace"), text))  # text pages in place
 
 
 def _text_page(doc) -> None:
@@ -313,3 +324,34 @@ class NumberedLineMergeTests(unittest.TestCase):
         self.assertEqual(texts[0], "4 \tI am a family member. Are the standard requirements applicable to me?")
         self.assertEqual(texts[1], "Other people are visible in the image")
         self.assertEqual(texts[2], "-\n-")
+
+
+class OfficePdfTests(unittest.TestCase):
+    def _pdf(self, render_mode: int) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / f"cjk_{render_mode}.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=A4[0], height=A4[1])
+        for i in range(6):
+            page.insert_text((60, 100 + i * 30), "砌筑砂浆在中小型施工现场的水泥消耗中占很大比例", fontsize=14,
+                             fontname="china-s", render_mode=render_mode)
+        doc.save(path)
+        return path
+
+    def test_chinese_that_renders_blank_is_caught(self) -> None:
+        from core.pdf_word_route import cjk_text_visible
+
+        self.assertTrue(cjk_text_visible(self._pdf(0)))
+        self.assertFalse(cjk_text_visible(self._pdf(3)))   # text layer present, nothing drawn
+
+    def test_route_capabilities_shape(self) -> None:
+        from unittest.mock import patch
+
+        from api.routes.pdf_routes import route_capabilities
+
+        with patch("core.pdf_word_route.office_pdf_engine", return_value=("", "none")):
+            caps = route_capabilities()
+        self.assertEqual(set(caps), {"image_model_ready", "image_model_message", "word_component",
+                                     "office_engine", "office_message", "inplace_target_ok"})
+        self.assertEqual(caps["office_engine"], "")

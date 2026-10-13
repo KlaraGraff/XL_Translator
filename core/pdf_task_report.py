@@ -276,6 +276,13 @@ def _route_report_lines(record: PdfFileRecord) -> list[str]:
             "- 翻译方式：转成 Word 再翻译（Beta）；译文 Word："
             + (record.translated_docx_path or "未生成")
         )
+    for segment in getattr(record, "word_segments", []) or []:
+        pages = (f"第 {segment.get('first_page')} 页" if segment.get("first_page") == segment.get("last_page")
+                 else f"第 {segment.get('first_page')}–{segment.get('last_page')} 页")
+        if segment.get("status") == "done":
+            lines.append(f"- {pages}：正文，转成 Word 翻译（Beta）后转回 PDF 拼入")
+        else:
+            lines.append(f"- {pages}：转成 Word 没有成功：{segment.get('message', '')}")
     kept = [page.page_number for page in record.pages if getattr(page, "kept_reason", "")]
     if kept:
         lines.append(
