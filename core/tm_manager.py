@@ -13,7 +13,9 @@ import hashlib
 import re
 import shutil
 import sqlite3
+import threading
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -62,9 +64,16 @@ CREATE TABLE IF NOT EXISTS tm_entries (
     pinned        INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(source_text, lang_pair)
+    note          TEXT    NOT NULL DEFAULT '',
+    usage         TEXT    NOT NULL DEFAULT '',
+    scope         TEXT    NOT NULL DEFAULT '',
+    use_count     INTEGER NOT NULL DEFAULT 0,
+    last_used_at  TEXT    NOT NULL DEFAULT ''
 );
 """
+# 同一原文可以有多条：每条带一句备注（适用场景），备注不同即不同的词条。
+# 唯一性因此落在 (原文, 语言对, 备注) 上，由下面的唯一索引保证，而不是表约束。
+# 旧库的表约束 UNIQUE(source_text, lang_pair) 由 _migrate_entries_layout 备份后重建去掉。
 
 _INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_source_lang "
@@ -85,6 +94,22 @@ _PLAIN_HASH_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_hash_lang "
     "ON tm_entries(source_hash, lang_pair)"
 )
+# 词条布局 2：同一原文按备注区分多条。唯一性在 (哈希, 语言对, 备注) 上；
+# idx_hash_lang 降为普通索引（只做查询加速）。
+#
+# 旧版程序（V10.0.0 及以前）打开布局 2 的库时会执行
+# ``CREATE UNIQUE INDEX IF NOT EXISTS idx_hash_lang``：同名索引已存在，语句不做
+# 任何事，所以旧版照常读写（只是不认备注）——不会把库当成坏库备份重建。
+_UNIQUE_HASH_NOTE_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_hash_lang_note "
+    "ON tm_entries(source_hash, lang_pair, note)"
+)
+_PLAIN_HASH_NOTE_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_hash_lang_note "
+    "ON tm_entries(source_hash, lang_pair, note)"
+)
+TM_ENTRIES_LAYOUT = 2
+TM_ENTRIES_LAYOUT_KEY = "tm_entries_layout"
 
 _CREATE_META_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tm_meta (
@@ -190,7 +215,18 @@ def _get_conn():
         conn.close()
 
 
+# 记忆库页面一打开就并发发出好几个请求，每个都先 init_db()。旧库第一次升级时它们
+# 会同时补列、同时重建表而互相撞上（「duplicate column name」），页面显示加载失败。
+# 同一进程里的升级排成一队：第一个做完，后面的只是确认一下已是最新。
+_INIT_LOCK = threading.Lock()
+
+
 def init_db() -> None:
+    with _INIT_LOCK:
+        _init_db_locked()
+
+
+def _init_db_locked() -> None:
     """Bring the TM database to the current schema, keeping every entry it can.
 
     Every schema bump so far has been additive — new tables and indexes beside
@@ -233,6 +269,7 @@ def init_db() -> None:
     try:
         _ensure_current_schema()
         _backfill_source_hashes()
+        _migrate_entries_layout()
         _ensure_hash_index()
     except sqlite3.OperationalError as exc:
         # A lock that outlasts the probe *and* the writers' own timeout.  Say
@@ -344,7 +381,12 @@ def _add_missing_entry_columns() -> None:
             if sql is None:
                 continue
             logger.info(f"TM 数据库补列：{name}")
-            conn.execute(sql)
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as exc:
+                # 另一个进程刚补上同一列：结果一样，不算失败。
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
 
 # The companion files that belong with the database: WAL mode keeps the first
@@ -458,12 +500,12 @@ def _inspect_db(db_path=None) -> tuple[str, int | None]:
     return "upgraded", version
 
 
-def _backup_db() -> str:
-    """Copy the unusable database (and its WAL sidecars) aside; return the path."""
+def _backup_db(prefix: str = "tm_unusable") -> str:
+    """Copy the database (and its WAL sidecars) aside; return the path."""
     target_dir = BACKUPS_DIR / "tm"
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    target = target_dir / f"tm_unusable_{stamp}.db"
+    target = target_dir / f"{prefix}_{stamp}.db"
     shutil.copy2(DB_PATH, target)
     for suffix in _DB_SIDECAR_SUFFIXES:
         sidecar = DB_PATH.with_name(f"{DB_PATH.name}{suffix}")
@@ -566,30 +608,128 @@ def _backfill_source_hashes() -> None:
         logger.info(f"TM 数据库修复：source_hash 回填完成，共 {len(rows)} 条")
 
 
+def _has_legacy_source_unique(conn: sqlite3.Connection) -> bool:
+    """旧布局：表约束 UNIQUE(source_text, lang_pair) 还在。
+
+    表约束在 SQLite 里体现为 origin='u' 的自动索引，只能重建表才能去掉。
+    """
+    for index in conn.execute("PRAGMA index_list(tm_entries)").fetchall():
+        if str(index["origin"]) != "u":
+            continue
+        columns = [
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA index_info(\"{index['name']}\")").fetchall()
+        ]
+        if columns == ["source_text", "lang_pair"]:
+            return True
+    return False
+
+
+def _set_layout_marker(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO tm_meta (meta_key, meta_value)
+        VALUES (?, ?)
+        ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value
+        """,
+        [TM_ENTRIES_LAYOUT_KEY, str(TM_ENTRIES_LAYOUT)],
+    )
+
+
+def entries_layout_supports_notes() -> bool:
+    """当前库能否存同一原文的多条（带不同备注）词条。"""
+    try:
+        with _get_conn() as conn:
+            return not _has_legacy_source_unique(conn)
+    except sqlite3.Error:
+        return False
+
+
+def _migrate_entries_layout() -> None:
+    """把旧布局的 tm_entries 重建成布局 2（去掉「同一原文只能一条」的表约束）。
+
+    这是破坏性的结构改动，所以按 AGENTS.md 的旧数据规则先自动备份整个库
+    （含 -wal/-shm/-journal），备份成功才重建；重建在一个事务里完成，id 原样
+    保留（待裁决冲突、清洗建议按 id 引用词条）。备份失败就不动表结构：记忆库
+    照常可用，只是同一原文暂时存不了第二条带备注的译法，写入时记日志跳过。
+    """
+    with _get_conn() as conn:
+        if not _has_legacy_source_unique(conn):
+            _set_layout_marker(conn)
+            return
+    try:
+        backup_path = _backup_db(prefix="tm_before_layout2")
+    except OSError as exc:
+        logger.warning(f"记忆库结构升级前备份失败，本次不升级（词条照常可用）：{exc}")
+        return
+
+    columns = [
+        "id", "source_text", "source_hash", "target_text", "lang_pair", "word_type",
+        "source_engine", "pinned", "created_at", "updated_at", "note", "usage",
+        "scope", "use_count", "last_used_at",
+    ]
+    column_list = ", ".join(columns)
+    new_table_sql = _CREATE_TABLE_SQL.replace(
+        "CREATE TABLE IF NOT EXISTS tm_entries (", "CREATE TABLE tm_entries_layout2 ("
+    )
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if not _has_legacy_source_unique(conn):
+            conn.execute("COMMIT")
+            return
+        conn.execute("DROP TABLE IF EXISTS tm_entries_layout2")
+        conn.execute(new_table_sql)
+        conn.execute(
+            f"INSERT INTO tm_entries_layout2 ({column_list}) "
+            f"SELECT {column_list} FROM tm_entries"
+        )
+        conn.execute("DROP TABLE tm_entries")
+        conn.execute("ALTER TABLE tm_entries_layout2 RENAME TO tm_entries")
+        for sql in _INDEX_SQL:
+            conn.execute(sql)
+        _set_layout_marker(conn)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+    logger.info(f"记忆库结构已升级（同一原文可按备注保存多条），升级前的库已备份到 {backup_path}")
+
+
 def _ensure_hash_index() -> None:
-    """Build the unique hash index, repairing stale hashes if it will not take.
+    """Build the hash indexes, repairing stale hashes if the unique one will not take.
 
     Runs after the backfill, never before: on a legacy database every row
     carries ``source_hash`` at its column default, and a unique index over a
     column that is '' everywhere fails on the second row.
 
+    Layout 2 keeps uniqueness on (hash, lang pair, note): one source may have
+    several entries as long as their notes differ.  ``idx_hash_lang`` stays as
+    a plain lookup index.  A layout-1 database whose upgrade was skipped (its
+    backup failed) keeps its old unique ``idx_hash_lang`` untouched.
+
     A database can still hold hashes that disagree with their text — an older
     build's hashing, or a hand-edited row.  Recomputing them all is cheap and
-    normally produces distinct values, because ``tm_entries`` has enforced
-    ``UNIQUE(source_text, lang_pair)`` since the first release and the hash is
-    taken from exactly that pair.
-
-    A table that never had that constraint — a hand-built or restored dump —
-    can hold two rows with the same source, and then no recomputation will
-    make the hashes distinct.  That falls back to a plain index: the index is
-    only ever a lookup shortcut here (writes already resolve duplicates with
-    their own select-then-insert retry), so the alternative — refusing to open
-    the memory, or deleting the duplicate rows — would cost the user far more
-    than the missing guarantee is worth.
+    normally produces distinct values.  A table that still holds true
+    duplicates falls back to a plain index: the index is only ever a lookup
+    shortcut here (writes resolve duplicates with their own select-then-insert
+    retry), so refusing to open the memory, or deleting the duplicate rows,
+    would cost the user far more than the missing guarantee is worth.
     """
+    with _get_conn() as conn:
+        legacy = _has_legacy_source_unique(conn)
+    unique_sql = _UNIQUE_HASH_INDEX_SQL if legacy else _UNIQUE_HASH_NOTE_INDEX_SQL
+    plain_sql = _PLAIN_HASH_INDEX_SQL if legacy else _PLAIN_HASH_NOTE_INDEX_SQL
+    if not legacy:
+        with _get_conn() as conn:
+            conn.execute(_PLAIN_HASH_INDEX_SQL)
     try:
         with _get_conn() as conn:
-            conn.execute(_UNIQUE_HASH_INDEX_SQL)
+            conn.execute(unique_sql)
         return
     except sqlite3.IntegrityError as exc:
         logger.warning(f"TM 数据库哈希索引冲突，将按原文重算全部哈希：{exc}")
@@ -603,13 +743,13 @@ def _ensure_hash_index() -> None:
             )
     try:
         with _get_conn() as conn:
-            conn.execute(_UNIQUE_HASH_INDEX_SQL)
+            conn.execute(unique_sql)
     except sqlite3.IntegrityError as exc:
         logger.warning(
             f"TM 数据库存在重复原文，改建普通哈希索引（词条全部保留）：{exc}"
         )
         with _get_conn() as conn:
-            conn.execute(_PLAIN_HASH_INDEX_SQL)
+            conn.execute(plain_sql)
 
 
 def _normalize_word_type(word_type: str | None) -> str:
@@ -704,11 +844,17 @@ def _incoming_priority(word_type: str, pinned: int = 0) -> int:
     return _entry_priority({"pinned": 0, "word_type": word_type})
 
 
+_ENTRY_COLUMNS = (
+    "id, source_text, source_hash, target_text, lang_pair, word_type, "
+    "source_engine, pinned, created_at, updated_at, note, usage, scope, "
+    "use_count, last_used_at"
+)
+
+
 def _fetch_entry(conn: sqlite3.Connection, entry_id: int) -> sqlite3.Row | None:
     return conn.execute(
-        """
-        SELECT id, source_text, source_hash, target_text, lang_pair,
-               word_type, source_engine, pinned, created_at, updated_at
+        f"""
+        SELECT {_ENTRY_COLUMNS}
         FROM tm_entries
         WHERE id = ?
         """,
@@ -720,34 +866,150 @@ def _fetch_entry_by_source(
     conn: sqlite3.Connection,
     source_text: str,
     lang_pair: str,
+    note: str = "",
 ) -> sqlite3.Row | None:
     """先按原文逐字匹配，再退到匹配哈希。
 
     哈希这一步不是优化：命中判定按比较形态（换行折成空格）做，写入侧
     要是只认逐字相等，「多行写法」和「旧库里的单行写法」就会被当成两条
     不同的词条——轻则重复行，重则撞上 source_hash 唯一索引整批写入失败。
+
+    同一原文可以有多条（备注不同）。不带 ``note`` 时找的是没有备注的那一条
+    （通用条目）——自动写入、导入、冲突裁决这些老路径都只认它。
     """
+    note = normalize_entry_note(note)
     row = conn.execute(
-        """
-        SELECT id, source_text, source_hash, target_text, lang_pair,
-               word_type, source_engine, pinned, created_at, updated_at
+        f"""
+        SELECT {_ENTRY_COLUMNS}
         FROM tm_entries
-        WHERE source_text = ? AND lang_pair = ?
+        WHERE source_text = ? AND lang_pair = ? AND note = ?
         """,
-        [source_text, lang_pair],
+        [source_text, lang_pair, note],
     ).fetchone()
     if row is not None:
         return row
     return conn.execute(
-        """
-        SELECT id, source_text, source_hash, target_text, lang_pair,
-               word_type, source_engine, pinned, created_at, updated_at
+        f"""
+        SELECT {_ENTRY_COLUMNS}
         FROM tm_entries
-        WHERE lang_pair = ? AND source_hash = ?
+        WHERE lang_pair = ? AND source_hash = ? AND note = ?
         ORDER BY id
         """,
-        [lang_pair, _match_hash(source_text, lang_pair)],
+        [lang_pair, _match_hash(source_text, lang_pair), note],
     ).fetchone()
+
+
+def normalize_entry_note(note: object) -> str:
+    """备注只去掉首尾空白、把内部连续空白折成一个空格；不改写措辞。"""
+    return " ".join(str(note or "").split())[:200]
+
+
+# 采用方式（界面「采用方式」）。存空串表示「按默认」，由 effective_usage 推出。
+USAGE_ALWAYS = "always"      # 始终采用：整段相同或在句中出现均采用，翻译完成后核对
+USAGE_SCENE = "scene"        # 按场景选用：交给模型对照备注和文档说明判断
+USAGE_SEGMENT = "segment"    # 仅整段复用：整段文字完全相同时才采用
+ENTRY_USAGES = (USAGE_ALWAYS, USAGE_SCENE, USAGE_SEGMENT)
+
+# 来源（界面「来源」）：手动维护 / 自动保存。
+ORIGIN_MANUAL = "manual"
+ORIGIN_AUTO = "auto"
+
+
+def normalize_entry_usage(usage: object) -> str:
+    value = str(usage or "").strip().lower()
+    return value if value in ENTRY_USAGES else ""
+
+
+def normalize_entry_scope(scope: object) -> str:
+    """生效范围：文件名或文件夹名里要包含的文字。"""
+    return " ".join(str(scope or "").split())[:100]
+
+
+def _row_value(row: sqlite3.Row | dict, key: str, default: object = "") -> object:
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return default
+    return default if value is None else value
+
+
+def entry_origin(row: sqlite3.Row | dict) -> str:
+    """手动维护：用户录入、编辑、导入、固定，或审阅后采纳的；其余为自动保存。"""
+    if int(_row_value(row, "pinned", 0) or 0):
+        return ORIGIN_MANUAL
+    word_type = _normalize_word_type(str(_row_value(row, "word_type", "")))
+    if word_type in {MANUAL_WORD_TYPE, CLEANING_LOCKED_WORD_TYPE, REVIEWED_AUTO_WORD_TYPE}:
+        return ORIGIN_MANUAL
+    return ORIGIN_AUTO
+
+
+def effective_usage(row: sqlite3.Row | dict) -> str:
+    """词条实际的采用方式：用户选过就按所选，否则按来源和备注推出默认值。
+
+    - 手动维护：有备注 → 按场景选用；没有 → 始终采用。
+    - 自动保存：有备注，或是「甲」「FM」这类离开上下文会译错的短词 → 按场景选用；
+      其余 → 仅整段复用（与以前的整段记忆一致）。
+    """
+    chosen = normalize_entry_usage(_row_value(row, "usage", ""))
+    if chosen:
+        return chosen
+    has_note = bool(normalize_entry_note(_row_value(row, "note", "")))
+    if entry_origin(row) == ORIGIN_MANUAL:
+        return USAGE_SCENE if has_note else USAGE_ALWAYS
+    from core.document_profile import is_context_sensitive
+
+    if has_note or is_context_sensitive(_row_value(row, "source_text", "")):
+        return USAGE_SCENE
+    return USAGE_SEGMENT
+
+
+def entry_public_dict(row: sqlite3.Row | dict) -> dict[str, object]:
+    """One entry as the API returns it: stored fields plus origin and effective usage."""
+    data = {key: _row_value(row, key) for key in (
+        "id", "source_text", "target_text", "lang_pair", "word_type", "source_engine",
+        "pinned", "created_at", "updated_at", "note", "usage", "scope", "use_count",
+        "last_used_at",
+    )}
+    data["pinned"] = int(data.get("pinned") or 0)
+    data["use_count"] = int(data.get("use_count") or 0)
+    data["origin"] = entry_origin(row)
+    data["effective_usage"] = effective_usage(row)
+    return data
+
+
+def get_entries_by_ids(entry_ids: Iterable[int]) -> list[dict[str, object]]:
+    """按 id 取词条的当前内容（任务详情里「本次自动保存的词条」用：撤销、编辑过的要如实显示）。"""
+    ids = sorted({int(entry_id) for entry_id in entry_ids if int(entry_id) > 0})[:200]
+    if not ids:
+        return []
+    placeholders = ", ".join("?" for _ in ids)
+    with _get_conn() as conn:
+        rows = conn.execute(f"SELECT * FROM tm_entries WHERE id IN ({placeholders})", ids).fetchall()
+    return [entry_public_dict(row) for row in rows]
+
+
+def retire_stale_auto_entries(entry_targets: Mapping[int, str]) -> int:
+    """删掉已过期的自动保存整段词条：{id: 当时读到的旧译文}。返回删除条数。
+
+    整段旧译文没用上后来改过的设定译法时，任务会带着词条重译；重译结果入库前先
+    删掉旧的那条，新译文才能正常写入，而不是每次都多挂一条冲突候选、下次又重译。
+    只删仍是那句旧译文、未固定的自动保存词条；手动维护的一律不动。
+    """
+    retired = 0
+    with _get_conn() as conn:
+        for entry_id, old_target in entry_targets.items():
+            row = conn.execute("SELECT * FROM tm_entries WHERE id = ?", [int(entry_id)]).fetchone()
+            if row is None or entry_origin(row) != ORIGIN_AUTO:
+                continue
+            if str(row["target_text"] or "") != str(old_target or ""):
+                continue
+            conn.execute("DELETE FROM tm_entries WHERE id = ?", [int(entry_id)])
+            conn.execute(
+                "DELETE FROM tm_conflict_candidates WHERE entry_id = ? AND status = 'pending'",
+                [int(entry_id)],
+            )
+            retired += 1
+    return retired
 
 
 def _entry_version(row: sqlite3.Row | dict) -> str:
@@ -830,9 +1092,16 @@ def _upsert_entry(
     cleanup_changed_reverse: bool = True,
     force_overwrite: bool = False,
     task_id: str = "",
+    note: str = "",
+    usage: str | None = None,
+    scope: str | None = None,
     _allow_insert_retry: bool = True,
 ) -> bool:
     """Write one entry, or reroute it through the conflict rules.
+
+    ``note`` picks which of a source's entries this is (empty = the general
+    one).  ``usage`` / ``scope`` are only written when given, so the automatic
+    paths never reset what the user chose for an entry.
 
     ``force_overwrite`` is the explicit "the user asked for this value to win"
     path (import/restore with mode='overwrite').  It bypasses the trust
@@ -842,13 +1111,16 @@ def _upsert_entry(
     """
     word_type = _normalize_word_type(word_type)
     pinned = 1 if int(pinned or 0) else 0
-    existing = _fetch_entry_by_source(conn, source_text, lang_pair)
+    note = normalize_entry_note(note)
+    usage = normalize_entry_usage(usage) if usage is not None else None
+    scope = normalize_entry_scope(scope) if scope is not None else None
+    existing = _fetch_entry_by_source(conn, source_text, lang_pair, note)
     incoming_priority = _incoming_priority(word_type, pinned)
     source_hash = _match_hash(source_text, lang_pair)
 
     if existing is not None:
         if existing["target_text"] == target_text and not force_overwrite:
-            return False
+            return _update_entry_options(conn, existing, usage=usage, scope=scope)
         if not force_overwrite and _same_target_ignoring_newlines(
             existing["target_text"], target_text
         ):
@@ -919,6 +1191,7 @@ def _upsert_entry(
                 existing["id"],
             ],
         )
+        _update_entry_options(conn, existing, usage=usage, scope=scope)
         return True
 
     try:
@@ -931,9 +1204,12 @@ def _upsert_entry(
                 lang_pair,
                 word_type,
                 source_engine,
-                pinned
+                pinned,
+                note,
+                usage,
+                scope
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 source_text,
@@ -943,6 +1219,9 @@ def _upsert_entry(
                 word_type,
                 str(source_engine or ""),
                 pinned,
+                note,
+                usage or "",
+                scope or "",
             ],
         )
     except sqlite3.IntegrityError:
@@ -964,8 +1243,36 @@ def _upsert_entry(
             cleanup_changed_reverse=cleanup_changed_reverse,
             force_overwrite=force_overwrite,
             task_id=task_id,
+            note=note,
+            usage=usage,
+            scope=scope,
             _allow_insert_retry=False,
         )
+    return True
+
+
+def _update_entry_options(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row | dict,
+    *,
+    usage: str | None,
+    scope: str | None,
+) -> bool:
+    """Write the user's 采用方式 / 生效范围 onto an entry when they changed."""
+    updates: list[str] = []
+    values: list[object] = []
+    if usage is not None and usage != str(row["usage"] or ""):
+        updates.append("usage = ?")
+        values.append(usage)
+    if scope is not None and scope != str(row["scope"] or ""):
+        updates.append("scope = ?")
+        values.append(scope)
+    if not updates:
+        return False
+    conn.execute(
+        "UPDATE tm_entries SET " + ", ".join(updates) + ", updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [*values, int(row["id"])],
+    )
     return True
 
 
@@ -1068,8 +1375,7 @@ def _select_scope_rows(
         params.extend([kw, kw])
     return conn.execute(
         f"""
-        SELECT id, source_text, source_hash, target_text, lang_pair,
-               word_type, source_engine, pinned, created_at, updated_at
+        SELECT {_ENTRY_COLUMNS}
         FROM tm_entries
         {base_where}
         ORDER BY id
@@ -1090,6 +1396,9 @@ def lookup_batch(
     """
     批量查询 TM。
     返回 {原文: 译文} 字典，未命中的 key 值为 None。
+
+    只认没有备注的通用条目：带备注的词条只在备注所述场景中采用，要交给模型
+    判断，不能整段直接贴回（见 core/tm_terms.py）。
 
     ``locked_only`` 只认用户亲手定下的词条（置顶、手动录入、清洗时锁定），
     自动存下的不算命中。「自动识别场景」下「甲」「FM」这类离开上下文就会译错的
@@ -1129,7 +1438,7 @@ def lookup_batch(
         placeholders = ",".join("?" * len(chunk))
         sql = f"""
             SELECT source_hash, target_text FROM tm_entries
-            WHERE lang_pair = ? AND source_hash IN ({placeholders})
+            WHERE lang_pair = ? AND note = '' AND source_hash IN ({placeholders})
         """
         params: list[object] = [lang_pair, *chunk]
         if locked_only:
@@ -1361,6 +1670,7 @@ _MANUAL_ENTRY_MESSAGES = {
     "unchanged": "记忆库里已有相同译文，未重复写入。",
     "blocked_pinned": "该原文已有固定词条，新译文未写入，已登记为待裁决冲突。",
     "invalid": "原文和译文都不能为空。",
+    "layout_pending": "记忆库尚未完成结构升级，暂时不能为同一原文保存带备注的词条。请重启应用后重试。",
 }
 
 
@@ -1370,6 +1680,9 @@ def insert_manual_entry_detailed(
     lang_pair: str,
     *,
     sync_reverse: bool = False,
+    note: str = "",
+    usage: str | None = None,
+    scope: str | None = None,
 ) -> TmWriteResult:
     """手动新增单条词条，并如实回报写没写进去。
 
@@ -1379,11 +1692,16 @@ def insert_manual_entry_detailed(
     """
     normalized_source = normalize_tm_text_for_storage(source)
     normalized_target = normalize_tm_text_for_storage(target)
+    note = normalize_entry_note(note)
     if not normalized_source or not normalized_target:
         return TmWriteResult("invalid", False, _MANUAL_ENTRY_MESSAGES["invalid"])
     try:
         with _get_conn() as conn:
-            existing = _fetch_entry_by_source(conn, normalized_source, lang_pair)
+            if note and _has_legacy_source_unique(conn):
+                return TmWriteResult(
+                    "layout_pending", False, _MANUAL_ENTRY_MESSAGES["layout_pending"]
+                )
+            existing = _fetch_entry_by_source(conn, normalized_source, lang_pair, note)
             changed = _upsert_entry(
                 conn,
                 normalized_source,
@@ -1392,8 +1710,12 @@ def insert_manual_entry_detailed(
                 word_type=MANUAL_WORD_TYPE,
                 source_engine="manual",
                 pinned=0,
+                note=note,
+                usage=usage,
+                scope=scope,
             )
-            if changed and sync_reverse:
+            # 带备注的词条只在备注所述场景中采用，反向那条没有同样的场景可言，不同步。
+            if changed and sync_reverse and not note:
                 _sync_reverse_upsert(
                     conn,
                     normalized_source,
@@ -1472,6 +1794,10 @@ def update_entry_full_detailed(
     *,
     sync_reverse: bool = False,
     confirm_cleaning_locked: bool = False,
+    note: str | None = None,
+    usage: str | None = None,
+    scope: str | None = None,
+    allow_pinned: bool = False,
 ) -> TmWriteResult:
     """全量更新一条词条，并如实回报被拒的真实原因。
 
@@ -1493,7 +1819,8 @@ def update_entry_full_detailed(
             if old_row is None:
                 logger.warning(f"TM 全量更新失败：词条 id={entry_id} 不存在")
                 return _rejected("missing")
-            if int(old_row["pinned"] or 0):
+            keep_pinned = int(old_row["pinned"] or 0)
+            if keep_pinned and not allow_pinned:
                 logger.warning(f"TM 全量更新拒绝：固定条目 id={entry_id} 必须先解除固定")
                 return _rejected("pinned")
             if (
@@ -1504,7 +1831,21 @@ def update_entry_full_detailed(
                     f"TM 全量更新拒绝：清洗锁定条目 id={entry_id} 需要明确确认"
                 )
                 return _rejected("cleaning_locked")
-            conflict = _fetch_entry_by_source(conn, new_source, old_row["lang_pair"])
+            new_note = (
+                normalize_entry_note(note) if note is not None
+                else normalize_entry_note(old_row["note"])
+            )
+            if new_note and _has_legacy_source_unique(conn):
+                return TmWriteResult(
+                    "layout_pending", False, _MANUAL_ENTRY_MESSAGES["layout_pending"]
+                )
+            new_usage = (
+                normalize_entry_usage(usage) if usage is not None else str(old_row["usage"] or "")
+            )
+            new_scope = (
+                normalize_entry_scope(scope) if scope is not None else str(old_row["scope"] or "")
+            )
+            conflict = _fetch_entry_by_source(conn, new_source, old_row["lang_pair"], new_note)
             if conflict is not None and int(conflict["id"]) != int(entry_id):
                 logger.warning(f"TM 全量更新失败：词条 id={entry_id} 的新原文与现有词条冲突")
                 return _rejected("conflict")
@@ -1520,13 +1861,26 @@ def update_entry_full_detailed(
                     target_text = ?,
                     word_type = ?,
                     source_engine = 'manual',
-                    pinned = 0,
+                    pinned = ?,
+                    note = ?,
+                    usage = ?,
+                    scope = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                [new_source, new_hash, new_target, MANUAL_WORD_TYPE, entry_id],
+                [
+                    new_source,
+                    new_hash,
+                    new_target,
+                    MANUAL_WORD_TYPE,
+                    1 if (keep_pinned and allow_pinned) else 0,
+                    new_note,
+                    new_usage,
+                    new_scope,
+                    entry_id,
+                ],
             )
-            if sync_reverse:
+            if sync_reverse and not new_note:
                 _delete_matching_reverse(conn, old_row)
                 _sync_reverse_upsert(
                     conn,
@@ -1571,13 +1925,17 @@ def update_entry_full(
     ).changed
 
 
-def delete_entry(entry_id: int) -> bool:
-    """Delete one entry, refusing protected/fixed rows."""
+def delete_entry(entry_id: int, *, allow_pinned: bool = False) -> bool:
+    """Delete one entry, refusing protected/fixed rows unless ``allow_pinned``.
+
+    The memory page no longer shows a pin, so it deletes with ``allow_pinned``:
+    the user pressing 删除 on a row is the explicit instruction.
+    """
     with _get_conn() as conn:
         row = _fetch_entry(conn, entry_id)
         if row is None:
             return False
-        if int(row["pinned"] or 0):
+        if int(row["pinned"] or 0) and not allow_pinned:
             logger.warning(f"TM 删除拒绝：固定条目 id={entry_id} 必须先解除固定")
             return False
         conn.execute("DELETE FROM tm_entries WHERE id = ?", [entry_id])
@@ -1585,7 +1943,7 @@ def delete_entry(entry_id: int) -> bool:
     return True
 
 
-def delete_entries(entry_ids: list[int]) -> dict[str, int]:
+def delete_entries(entry_ids: list[int], *, allow_pinned: bool = False) -> dict[str, int]:
     """Delete a batch while reporting protected and missing rows."""
     deleted = 0
     protected = 0
@@ -1596,7 +1954,7 @@ def delete_entries(entry_ids: list[int]) -> dict[str, int]:
             if row is None:
                 missing += 1
                 continue
-            if int(row["pinned"] or 0):
+            if int(row["pinned"] or 0) and not allow_pinned:
                 protected += 1
                 continue
             conn.execute("DELETE FROM tm_entries WHERE id = ?", [entry_id])
@@ -1877,18 +2235,24 @@ def get_stats(lang_pair: str) -> dict[str, int]:
     total = 0
     pinned = 0
     by_type: dict[str, int] = defaultdict(int)
+    origin_manual = 0
     for row in rows:
         count = int(row["cnt"] or 0)
         total += count
         if int(row["pinned"] or 0):
             pinned += count
         by_type[_normalize_word_type(row["word_type"])] += count
+        if entry_origin(row) == ORIGIN_MANUAL:
+            origin_manual += count
 
     manual = by_type.get(MANUAL_WORD_TYPE, 0)
     reviewed_auto = by_type.get(REVIEWED_AUTO_WORD_TYPE, 0)
     cleaning_locked = by_type.get(CLEANING_LOCKED_WORD_TYPE, 0)
     user_fixed = pinned
     return {
+        **get_month_usage(lang_pair),
+        "origin_manual": origin_manual,
+        "origin_auto": max(total - origin_manual, 0),
         "total": total,
         "pinned": pinned,
         "unpinned": max(total - pinned, 0),
@@ -2165,39 +2529,281 @@ def get_pin_count(lang_pair: str, keyword: str = "") -> dict[str, int]:
     return result
 
 
+ENTRY_FILTERS = (
+    "all", "manual", "auto", "always", "scene", "segment", "recent_auto", "unused",
+)
+
+
+def _entry_matches_filter(row: sqlite3.Row | dict, entry_filter: str, now: datetime) -> bool:
+    if entry_filter in {"", "all"}:
+        return True
+    if entry_filter in {ORIGIN_MANUAL, ORIGIN_AUTO}:
+        return entry_origin(row) == entry_filter
+    if entry_filter in ENTRY_USAGES:
+        return effective_usage(row) == entry_filter
+    if entry_filter == "recent_auto":
+        created = _parse_db_time(_row_value(row, "created_at", ""))
+        return entry_origin(row) == ORIGIN_AUTO and created is not None and (now - created).days < 7
+    if entry_filter == "unused":
+        last = _parse_db_time(_row_value(row, "last_used_at", "")) or _parse_db_time(
+            _row_value(row, "updated_at", "")
+        )
+        return last is not None and (now - last).days >= 365
+    return True
+
+
+def _parse_db_time(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _utc_now() -> datetime:
+    """SQLite CURRENT_TIMESTAMP 是 UTC；比较时用同一口径。"""
+    from datetime import timezone
+
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def search_entries(
     lang_pair: str,
     keyword: str = "",
     page: int = 1,
     page_size: int = 50,
+    *,
+    entry_filter: str = "all",
 ) -> tuple[list[dict], int]:
     """
     分页搜索词条。
     返回 (rows, total_count)。
-    rows 每项含 id, source_text, target_text, word_type, source_engine, updated_at, pinned。
+    rows 每项见 :func:`entry_public_dict`：原有字段加备注、采用方式、生效范围、
+    使用次数、来源。关键词同时搜原文、译文和备注。
+
+    ``entry_filter`` 是记忆库页的筛选项（全部 / 手动维护 / 自动保存 / 三种采用方式 /
+    最近 7 天自动保存 / 一年以上未使用）。来源和采用方式要按规则推算，在 Python
+    里筛；记忆库通常几千条，整对语言读一遍是毫秒级。
     """
     base_where = "WHERE lang_pair = ?"
     params: list = [lang_pair]
 
     if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
+        base_where += " AND (source_text LIKE ? OR target_text LIKE ? OR note LIKE ?)"
         kw = f"%{keyword.strip()}%"
-        params.extend([kw, kw])
+        params.extend([kw, kw, kw])
 
-    count_sql = f"SELECT COUNT(*) FROM tm_entries {base_where}"
-    data_sql  = f"""
-        SELECT id, source_text, target_text, word_type, source_engine, updated_at, pinned
-        FROM tm_entries {base_where}
-        ORDER BY updated_at DESC
-        LIMIT ? OFFSET ?
-    """
-    offset = (page - 1) * page_size
+    entry_filter = str(entry_filter or "all").strip().lower()
+    if entry_filter not in ENTRY_FILTERS:
+        entry_filter = "all"
+    offset = (max(1, int(page)) - 1) * page_size
+
+    if entry_filter == "all":
+        count_sql = f"SELECT COUNT(*) FROM tm_entries {base_where}"
+        data_sql = f"""
+            SELECT {_ENTRY_COLUMNS}
+            FROM tm_entries {base_where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ? OFFSET ?
+        """
+        with _get_conn() as conn:
+            total = conn.execute(count_sql, params).fetchone()[0]
+            rows = conn.execute(data_sql, [*params, page_size, offset]).fetchall()
+        return [entry_public_dict(r) for r in rows], total
 
     with _get_conn() as conn:
-        total = conn.execute(count_sql, params).fetchone()[0]
-        rows  = conn.execute(data_sql, [*params, page_size, offset]).fetchall()
+        rows = conn.execute(
+            f"SELECT {_ENTRY_COLUMNS} FROM tm_entries {base_where} "
+            "ORDER BY updated_at DESC, id DESC",
+            params,
+        ).fetchall()
+    now = _utc_now()
+    matched = [row for row in rows if _entry_matches_filter(row, entry_filter, now)]
+    return [entry_public_dict(r) for r in matched[offset: offset + page_size]], len(matched)
 
-    return [dict(r) for r in rows], total
+
+def get_filter_counts(lang_pair: str, keyword: str = "") -> dict[str, int]:
+    """每个筛选项的条数（记忆库页筛选按钮上的数字）。"""
+    base_where = "WHERE lang_pair = ?"
+    params: list = [lang_pair]
+    if keyword.strip():
+        base_where += " AND (source_text LIKE ? OR target_text LIKE ? OR note LIKE ?)"
+        kw = f"%{keyword.strip()}%"
+        params.extend([kw, kw, kw])
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT {_ENTRY_COLUMNS} FROM tm_entries {base_where}", params
+        ).fetchall()
+    now = _utc_now()
+    counts = {name: 0 for name in ENTRY_FILTERS}
+    counts["all"] = len(rows)
+    for row in rows:
+        counts[entry_origin(row)] += 1
+        counts[effective_usage(row)] += 1
+        if _entry_matches_filter(row, "recent_auto", now):
+            counts["recent_auto"] += 1
+        if _entry_matches_filter(row, "unused", now):
+            counts["unused"] += 1
+    return counts
+
+
+# ── 翻译时用的整表读取、按场景自动保存、使用次数 ────────────────────────────────
+
+def list_entries_for_target(
+    target_lang: str, lang_pairs: Iterable[str] | None = None
+) -> list[dict[str, object]]:
+    """读出译入 ``target_lang`` 的词条，供一次任务建对照表。
+
+    ``lang_pairs`` 给出时只读这几个语言对（任务里实际用到的），否则读任意源语言。
+    """
+    target = str(target_lang or "").strip()
+    if not target:
+        return []
+    with _get_conn() as conn:
+        if lang_pairs is not None:
+            pairs = sorted({str(pair) for pair in lang_pairs if str(pair).strip()})
+            if not pairs:
+                return []
+            rows = conn.execute(
+                f"SELECT {_ENTRY_COLUMNS} FROM tm_entries "
+                f"WHERE lang_pair IN ({','.join('?' * len(pairs))})",
+                pairs,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {_ENTRY_COLUMNS} FROM tm_entries WHERE lang_pair LIKE ?",
+                [f"%-{target}"],
+            ).fetchall()
+    result: list[dict[str, object]] = []
+    for row in rows:
+        split_pair = _split_lang_pair(str(row["lang_pair"] or ""))
+        if split_pair is None or split_pair[1] != target:
+            continue
+        result.append(entry_public_dict(row))
+    return result
+
+
+def insert_scene_entry(
+    source: str,
+    target: str,
+    lang_pair: str,
+    note: str,
+    *,
+    engine_name: str = "",
+    task_id: str = "",
+) -> int:
+    """自动保存一条带备注的场景译法；返回新词条 id，未写入返回 0。
+
+    同一原文已有相同译文（不论哪条）就不再新增：换了场景、译法却一样，没有
+    新信息。备注为空不写——没有场景说明的短词译法正是以前「甲 → Party A」
+    被套到图纸上的来源。
+    """
+    source = normalize_tm_text_for_storage(source)
+    target = normalize_tm_text_for_storage(target)
+    note = normalize_entry_note(note)
+    if not source or not target or not note or source == target:
+        return 0
+    try:
+        with _get_conn() as conn:
+            source_hash = _match_hash(source, lang_pair)
+            same = conn.execute(
+                "SELECT id, target_text FROM tm_entries WHERE lang_pair = ? AND source_hash = ?",
+                [lang_pair, source_hash],
+            ).fetchall()
+            if any(
+                _same_target_ignoring_newlines(row["target_text"], target) for row in same
+            ):
+                return 0
+            # 旧布局（升级前备份失败）同一原文只能存一条：已有就不再写。
+            if same and _has_legacy_source_unique(conn):
+                return 0
+            if _fetch_entry_by_source(conn, source, lang_pair, note) is not None:
+                return 0
+            cursor = conn.execute(
+                """
+                INSERT INTO tm_entries (
+                    source_text, source_hash, target_text, lang_pair, word_type,
+                    source_engine, pinned, note
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                [source, source_hash, target, lang_pair, AUTO_WORD_TYPE, str(engine_name or ""), note],
+            )
+            return int(cursor.lastrowid or 0)
+    except sqlite3.Error as exc:
+        logger.warning(f"按场景自动保存词条失败（不影响本次翻译）：{exc}")
+        return 0
+
+
+def _usage_month_key(kind: str, lang_pair: str, month: str) -> str:
+    return f"{kind}:{lang_pair}:{month}"
+
+
+def record_task_usage(
+    entry_uses: dict[int, int],
+    *,
+    not_applied_by_pair: dict[str, int] | None = None,
+) -> None:
+    """任务结束时一次写入：词条使用次数、上次使用时间、本月使用与未采用计数。
+
+    失败只记日志：这些是统计，不能让一个已经翻好的任务因此报错。
+    """
+    uses = {int(k): int(v) for k, v in (entry_uses or {}).items() if int(v) > 0}
+    not_applied = {str(k): int(v) for k, v in (not_applied_by_pair or {}).items() if int(v) > 0}
+    if not uses and not not_applied:
+        return
+    month = _utc_now().strftime("%Y-%m")
+    try:
+        with _get_conn() as conn:
+            pair_uses: dict[str, int] = defaultdict(int)
+            for entry_id, count in uses.items():
+                row = conn.execute(
+                    "SELECT lang_pair FROM tm_entries WHERE id = ?", [entry_id]
+                ).fetchone()
+                if row is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE tm_entries
+                    SET use_count = use_count + ?,
+                        last_used_at = strftime('%Y-%m-%d %H:%M:%S', 'now')
+                    WHERE id = ?
+                    """,
+                    [count, entry_id],
+                )
+                pair_uses[str(row["lang_pair"])] += count
+            for kind, by_pair in (("usage_month", pair_uses), ("not_applied_month", not_applied)):
+                for pair, count in by_pair.items():
+                    conn.execute(
+                        """
+                        INSERT INTO tm_meta (meta_key, meta_value) VALUES (?, ?)
+                        ON CONFLICT(meta_key) DO UPDATE
+                        SET meta_value = CAST(meta_value AS INTEGER) + CAST(excluded.meta_value AS INTEGER)
+                        """,
+                        [_usage_month_key(kind, pair, month), str(count)],
+                    )
+    except sqlite3.Error as exc:
+        logger.warning(f"记录记忆库使用次数失败（不影响翻译结果）：{exc}")
+
+
+def get_month_usage(lang_pair: str) -> dict[str, int]:
+    month = _utc_now().strftime("%Y-%m")
+    result = {"month_uses": 0, "month_not_applied": 0}
+    with _get_conn() as conn:
+        for kind, key in (("usage_month", "month_uses"), ("not_applied_month", "month_not_applied")):
+            row = conn.execute(
+                "SELECT meta_value FROM tm_meta WHERE meta_key = ?",
+                [_usage_month_key(kind, lang_pair, month)],
+            ).fetchone()
+            if row is not None:
+                try:
+                    result[key] = int(row["meta_value"])
+                except (TypeError, ValueError):
+                    pass
+    return result
 
 
 # ── 导入 / 导出 ───────────────────────────────────────────────────────────────
@@ -2208,7 +2814,7 @@ def get_all_entries_for_export(lang_pair: str) -> list[dict]:
     返回 [{source_text, target_text, word_type, pinned, updated_at}, ...]。
     """
     sql = """
-        SELECT source_text, target_text, word_type, pinned, updated_at
+        SELECT source_text, target_text, word_type, pinned, updated_at, note, usage, scope
         FROM tm_entries
         WHERE lang_pair = ?
         ORDER BY id
@@ -2235,7 +2841,8 @@ def get_full_export(custom_target_langs=None) -> dict[str, object]:
         entries = conn.execute(
             """
             SELECT source_text, source_hash, target_text, lang_pair,
-                   word_type, source_engine, pinned, created_at, updated_at
+                   word_type, source_engine, pinned, created_at, updated_at,
+                   note, usage, scope, use_count, last_used_at
             FROM tm_entries
             ORDER BY lang_pair, id
             """
@@ -2282,13 +2889,15 @@ def import_entries(
     'overwrite' 模式下备份里的每一条都会真正落库，用户不会看到「全是重复」却
     什么也没恢复。
     """
-    normalized_entries: list[tuple[str, str, str, int, str, str, str]] = []
+    normalized_entries: list[tuple[str, str, str, int, str, str, str, str, str, str]] = []
+    supports_notes = entries_layout_supports_notes()
     for entry in entries:
         src = normalize_tm_text_for_storage(entry.get("source_text", ""))
         tgt = normalize_tm_text_for_storage(entry.get("target_text", ""))
         if not src or not tgt:
             continue
         pinned = _coerce_pinned(entry.get("pinned"))
+        note = normalize_entry_note(entry.get("note", "")) if supports_notes else ""
         normalized_entries.append(
             (
                 src,
@@ -2298,6 +2907,9 @@ def import_entries(
                 str(entry.get("source_engine") or "import"),
                 str(entry.get("created_at") or "").strip(),
                 str(entry.get("updated_at") or "").strip(),
+                note,
+                normalize_entry_usage(entry.get("usage", "")),
+                normalize_entry_scope(entry.get("scope", "")),
             )
         )
 
@@ -2315,8 +2927,11 @@ def import_entries(
             source_engine,
             created_at,
             updated_at,
+            note,
+            usage,
+            scope,
         ) in normalized_entries:
-            existing = _fetch_entry_by_source(conn, src, lang_pair)
+            existing = _fetch_entry_by_source(conn, src, lang_pair, note)
             write_source = src
             if existing is not None:
                 duplicates += 1
@@ -2350,6 +2965,9 @@ def import_entries(
                 source_engine=source_engine,
                 pinned=pinned,
                 force_overwrite=overwrite,
+                note=note,
+                usage=usage or None,
+                scope=scope or None,
             )
             if not changed:
                 skipped += 1
@@ -2366,7 +2984,7 @@ def import_entries(
                 target_row = (
                     existing
                     if existing is not None
-                    else _fetch_entry_by_source(conn, write_source, lang_pair)
+                    else _fetch_entry_by_source(conn, write_source, lang_pair, note)
                 )
                 if target_row is not None:
                     # 哈希在语言对被 API 层映射过之后重算：沿用备份里的旧哈希
@@ -2392,7 +3010,7 @@ def import_entries(
                         + " WHERE id = ?",
                         metadata_values,
                     )
-            if sync_reverse and _sync_reverse_upsert(
+            if sync_reverse and not note and _sync_reverse_upsert(
                 conn,
                 write_source,
                 tgt,

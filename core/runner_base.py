@@ -91,3 +91,29 @@ class BaseTaskRunner:
     def _log(self, level: str, message: str) -> None:
         self._queue.put(LogMsg(level=level, message=message))
         logger.info(f"[{level}] {message}")
+
+    def _retire_stale_terms(self) -> None:
+        """本次重译的过期整段词条，在新译文入库前删掉（见 TaskTermSession.retire_stale_entries）。"""
+        session = getattr(self, "_term_session", None)
+        if session is not None:
+            session.retire_stale_entries()
+
+    def _finish_terms(self) -> dict[str, object]:
+        """记忆库词条的采用情况（结果里的 ``terms``）；整个任务只算一次。
+
+        停止、失败、完成三条收尾路都会走到这里；使用次数只能记一次。任务没走到
+        查记忆库那一步时返回空字典。
+        """
+        cached = getattr(self, "_term_result", None)
+        if cached is not None:
+            return cached
+        session = getattr(self, "_term_session", None)
+        result: dict[str, object] = {}
+        if session is not None:
+            pair_for_text = getattr(self, "_term_pair_for_text", None) or (lambda _text: None)
+            result = session.finish(
+                pair_for_text=pair_for_text,
+                locations_for_text=getattr(self, "_term_locations_for_text", None),
+            )
+        self._term_result = result
+        return result

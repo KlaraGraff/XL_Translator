@@ -40,6 +40,7 @@ from config import (
     PRINT_GUARD_FONT_FLOOR,
     PRINT_GUARD_FONT_STEP,
     PRINT_GUARD_LINE_HEIGHT_MULTIPLIER,
+    REVIEW_MARK_COLOR_ALIASES,
     REVIEW_MARK_COLOR_DEFAULTS,
 )
 from core.mixed_language import MIXED_MARK_UNRESOLVED
@@ -558,10 +559,15 @@ def _set_wrap_alignment(xf) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 def normalize_review_mark_colors(colors: dict[str, str] | None) -> dict[str, str]:
     raw_colors = dict(colors or {})
-    return {
+    normalized = {
         mark: normalize_excel_rgb(raw_colors.get(mark, ""), fallback=default_color)
         for mark, default_color in _EXCEL_REVIEW_MARK_COLORS.items()
     }
+    # 「未采用设定译法」等标记借用已有标记的颜色，复核清单里仍按自己的类别列出。
+    for alias, base in REVIEW_MARK_COLOR_ALIASES.items():
+        if base in normalized:
+            normalized[alias] = normalized[base]
+    return normalized
 
 
 def normalize_review_marks(

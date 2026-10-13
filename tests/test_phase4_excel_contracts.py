@@ -19,7 +19,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 
 from core.api_config_check import ApiConfigCheckResult
-from core import xls_converter
+from core import tm_manager, xls_converter
 from core.file_scanner import FileItem, scan_excel_sources
 from core.language_preflight import TranslationLanguageResult
 from core.mixed_language import MIXED_MARK_UNRESOLVED
@@ -219,34 +219,41 @@ class _ProfileEngine:
 
 
 class ExcelSmartModeContractTests(unittest.TestCase):
-    """「自动识别场景」：先写文档说明带进提示词；短词不套自动存下的记忆、也不存回去。"""
+    """「自动识别场景」：先写文档说明带进提示词；短词的旧译法只作候选，不直接套用。
 
-    def test_profile_reaches_the_prompt_and_short_auto_memory_is_retranslated(self) -> None:
+    记忆库用隔离的真实数据库：整段规则要读词条的来源和备注，桩出来的查询没有这些。
+    """
+
+    def test_profile_reaches_the_prompt_and_short_auto_memory_is_only_a_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "doors.xlsx"
             texts = {source: ["甲", "防火门耐火等级说明", "甲", "FM", "门窗表"]}
             engine = _ProfileEngine()
-            locked_calls: list[list[str]] = []
-
-            def lookup(values: list[str], _pair: str, *, locked_only: bool = False) -> dict[str, str | None]:
-                if locked_only:
-                    locked_calls.append(sorted(values))
-                    # 用户手动录入过「FM」，自动存过的「甲 → Party A」不算。
-                    return {value: ("Fire door" if value == "FM" else None) for value in values}
-                memory = {"甲": "Party A", "防火门耐火等级说明": "Fire rating note", "FM": "FM"}
-                return {value: memory.get(value) for value in values}
-
             settings = _settings(source_lang="zh", target_lang="en")
             settings.excel_smart_context = True
             with ExitStack() as stack:
+                stack.enter_context(patch.object(tm_manager, "DB_PATH", root / "tm.db"))
+                stack.enter_context(patch.object(tm_manager, "BACKUPS_DIR", root / "backups"))
+                tm_manager.init_db()
+                # 自动存过的「甲 → Party A」和长句；用户手动录入过「FM → Fire door」。
+                tm_manager.insert_auto_entries(
+                    [
+                        {"source_text": "甲", "translation": "Party A", "source_lang": "zh", "tm_eligible": True},
+                        {"source_text": "防火门耐火等级说明", "translation": "Fire rating note", "source_lang": "zh", "tm_eligible": True},
+                    ],
+                    "en",
+                    200,
+                    "mock",
+                )
+                tm_manager.insert_manual_entry_detailed("FM", "Fire door", "zh-en")
                 ExcelTaskRunnerContractTests._run_patches(
                     self,
                     stack,
                     root=root,
                     engine=engine,
                     texts_by_path=texts,
-                    lookup_side_effect=lookup,
+                    lookup_side_effect=tm_manager.lookup_batch,
                 )
                 translate = stack.enter_context(
                     patch(
@@ -257,18 +264,25 @@ class ExcelSmartModeContractTests(unittest.TestCase):
                 insert = stack.enter_context(patch("core.task_runner.tm_manager.insert_batch", return_value=0))
                 runner = TaskRunner([FileItem(path=source, name="doors", size_kb=1.0)], settings, source_root=root)
                 runner._run()
+                saved = [row for row in tm_manager.list_entries_for_target("en") if row["note"]]
 
-            self.assertEqual(len(engine.calls), 1)
+            # 第一次是通读文档，第二次是给自动保存的短词写场景说明。
+            self.assertEqual(len(engine.calls), 2)
             self.assertIn("防火门耐火等级说明", engine.calls[0][1])
-            self.assertEqual(locked_calls, [["FM", "甲"]])
             translate.assert_called_once()
-            misses, _engine, _lang, system_prompt = translate.call_args.args[:4]
+            misses, wrapped_engine, _lang, system_prompt = translate.call_args.args[:4]
             self.assertEqual(sorted(misses), ["甲", "门窗表"])
             self.assertIn("甲级防火门", system_prompt)
             self.assertTrue(system_prompt.startswith("system"))
+            # 批次经过词条包装器：「甲」随批附上旧译法作候选。
+            self.assertIn("Party A", wrapped_engine._block([wrapped_engine._scan(["甲"])[0]]))
             stored = [pair for call in insert.call_args_list for pair in call.args[0]]
-            # 长文字照常存进记忆库，短词不存。
+            # 长文字照常存进记忆库，短词不存成通用词条，而是存成带备注的场景译法。
             self.assertEqual([source_text for source_text, _target in stored], ["门窗表"])
+            self.assertEqual([(row["source_text"], row["target_text"]) for row in saved], [("甲", "Class A")])
+            terms = runner._finish_terms()
+            self.assertEqual(terms["hits"], {"always": 1, "scene": 0, "segment": 1})
+            self.assertEqual(terms["auto_saved"][0]["term"], "甲")
 
 
 class ExcelTaskRunnerContractTests(unittest.TestCase):

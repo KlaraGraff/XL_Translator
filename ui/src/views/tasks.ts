@@ -26,6 +26,7 @@ import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
 import { openCadReview } from "./cad-review";
+import { refreshTermsAdvancedMode, renderTermsSection, resetTermsEntryCache } from "./task-terms";
 import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
@@ -596,6 +597,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   tm_write_failed: "翻译记忆库写入失败", // i18n-ignore 参与复核判断与合并，显示时 tx()
   cell_text_truncated: "超长单元格文本被截断", // i18n-ignore 参与复核判断与合并，显示时 tx()
   shape_text_overflow: "文本框放不下译文，已缩到最小字号", // i18n-ignore 参与复核判断与合并，显示时 tx()
+  term_not_applied: "未采用设定译法", // i18n-ignore 参与复核判断与合并，显示时 tx()
 };
 
 /** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`；文本框和
@@ -1799,8 +1801,19 @@ function renderDetail(): void {
     detailRootEl.append(grid);
   }
 
+  // 记忆库：未采用设定译法的位置、自动保存的短词；高级模式另有命中统计和明细。
+  // 未采用的位置本身已列在下方复核清单里，「查看位置」直接滚过去。
+  renderTermsSection(detailRootEl, task, {
+    client: getClient,
+    rerender: renderDetail,
+    scrollToReview: reviews.length
+      ? () => detailRootEl?.querySelector("[data-review-anchor]")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      : null,
+  });
+
   if (reviews.length) {
     const sectionTitle = document.createElement("div");
+    sectionTitle.dataset.reviewAnchor = "1";
     sectionTitle.style.fontSize = "13px";
     sectionTitle.style.fontWeight = "650";
     sectionTitle.style.margin = "6px 0 8px";
@@ -2034,6 +2047,9 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   // 进入任务中心先立刻拉一次：否则第一份画面用的是上一次巡检的成像，最长能差 12 秒。
   void refreshRegistry();
   void loadLanguageNames();
+  // 记忆库高级模式可能在别的页面切换过，进页时重新读一次。
+  resetTermsEntryCache();
+  refreshTermsAdvancedMode(getClient, renderDetail);
   // 前台快速轮询：任务中心可见时更快发现新任务/刷新列表；后台巡检（12s）在任何视图下都跑。
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);
 }

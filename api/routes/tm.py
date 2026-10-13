@@ -42,6 +42,7 @@ def register(app: FastAPI) -> None:
         keyword: str = "",
         page: int = 1,
         page_size: int = 50,
+        entry_filter: str = "all",
     ) -> dict[str, Any]:
         tm_manager.init_db()
         rows, total = tm_manager.search_entries(
@@ -49,13 +50,22 @@ def register(app: FastAPI) -> None:
             keyword,
             page=max(1, page),
             page_size=min(max(1, page_size), 200),
+            entry_filter=entry_filter,
         )
         return {
             "entries": rows,
             "total": total,
             "stats": tm_manager.get_stats(lang_pair),
             "pin_count": tm_manager.get_pin_count(lang_pair, keyword),
+            "filter_counts": tm_manager.get_filter_counts(lang_pair, keyword),
         }
+
+    @app.get("/api/tm/entries/by-ids")
+    def get_tm_entries_by_ids(ids: str = "") -> dict[str, Any]:
+        """按 id 取词条当前内容；已删除的不在结果里。"""
+        tm_manager.init_db()
+        wanted = [int(part) for part in ids.split(",") if part.strip().isdigit()]
+        return {"entries": tm_manager.get_entries_by_ids(wanted)}
 
     @app.post("/api/tm/entries", status_code=201)
     def create_tm_entry(payload: TmEntryPayload) -> dict[str, Any]:
@@ -71,11 +81,16 @@ def register(app: FastAPI) -> None:
             payload.target_text,
             payload.lang_pair,
             sync_reverse=payload.sync_reverse,
+            note=payload.note,
+            usage=payload.usage or None,
+            scope=payload.scope or None,
         )
         if result.status == "invalid":
             raise HTTPException(422, result.message)
         if result.status == "error":
             raise HTTPException(500, result.message)
+        if result.status == "layout_pending":
+            raise HTTPException(409, result.message)
         return {
             "changed": result.changed,
             "status": result.status,
@@ -95,7 +110,7 @@ def register(app: FastAPI) -> None:
     @app.post("/api/tm/entries/bulk/delete")
     def bulk_delete_tm_entries(payload: TmBulkDeletePayload) -> dict[str, int]:
         tm_manager.init_db()
-        return tm_manager.delete_entries(payload.ids)
+        return tm_manager.delete_entries(payload.ids, allow_pinned=payload.allow_pinned)
 
     @app.put("/api/tm/entries/{entry_id}")
     def update_tm_entry(entry_id: int, payload: TmEntryUpdatePayload) -> dict[str, Any]:
@@ -106,6 +121,10 @@ def register(app: FastAPI) -> None:
             payload.source_text,
             payload.target_text,
             sync_reverse=payload.sync_reverse,
+            note=payload.note,
+            usage=payload.usage,
+            scope=payload.scope,
+            allow_pinned=payload.allow_pinned,
         )
         if result.status == "invalid":
             raise HTTPException(422, result.message)
@@ -118,9 +137,9 @@ def register(app: FastAPI) -> None:
         return {"changed": True, "status": result.status, "message": result.message}
 
     @app.delete("/api/tm/entries/{entry_id}")
-    def delete_tm_entry(entry_id: int) -> dict[str, bool]:
+    def delete_tm_entry(entry_id: int, allow_pinned: bool = False) -> dict[str, bool]:
         tm_manager.init_db()
-        deleted = tm_manager.delete_entry(entry_id)
+        deleted = tm_manager.delete_entry(entry_id, allow_pinned=allow_pinned)
         if not deleted:
             raise HTTPException(409, "固定或不存在的词条不能删除；请先解除固定。")
         return {"deleted": True}

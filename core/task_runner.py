@@ -97,11 +97,11 @@ from core.translation_protocol import should_store_translation_in_tm
 from core.concurrent_calls import map_concurrently, run_in_background, wait_result
 from core.document_profile import (
     append_profile,
-    drop_unlocked_short_hits,
     is_context_sensitive,
-    lookup_locked_tm,
     request_document_profile,
 )
+from config import REVIEW_MARK_TERM_NOT_APPLIED
+from core.term_session import TaskTermSession
 from core import tm_manager
 from core.xlsx_embedded_text import KIND_SHAPE, EmbeddedTextOptions, collect_embedded_units
 from core.xlsx_patcher import is_generated_original_sheet_title
@@ -244,6 +244,7 @@ AUTOFIT_MONITOR_POLL_SECONDS = 0.5
 # （保留了原文）和原文本身可疑。同一条原文被判进两类时按这里的大小取重的那个。
 # 「语义校验接受」在 9.3.1 整类删除，见 MixedLanguageResult.mark_kind。
 _EXCEL_REVIEW_MARK_PRIORITY = {
+    REVIEW_MARK_TERM_NOT_APPLIED: 10,
     MIXED_MARK_UNRESOLVED: 20,
     MIXED_MARK_FOREIGN_NOISE: 30,
 }
@@ -898,15 +899,14 @@ class TaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
+            document_profile = ""
             if wants_profile and global_unique_texts:
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
                 if profile_future is None:
                     profile_future = self._start_document_profile(engine, global_unique_texts, target_lang)
-                system_prompt = append_profile(
-                    system_prompt,
-                    wait_result(profile_future, should_stop=self._stop_event.is_set, default=""),
-                )
+                document_profile = wait_result(profile_future, should_stop=self._stop_event.is_set, default="")
+                system_prompt = append_profile(system_prompt, document_profile)
                 _raise_if_stopped()
 
             # ══════════════════════════════════════════════════════════
@@ -944,33 +944,31 @@ class TaskRunner(BaseTaskRunner):
             elif lang_pair:
                 text_tm_pairs = {text: {lang_pair} for text in normal_texts}
 
-            # Same-value hits across two permitted pairs are usable, but a
-            # conflicting value remains a model miss and is never guessed.
-            tm_values_by_text: dict[str, list[str]] = {
-                text: [] for text in normal_texts
-            }
-            tm_texts_by_pair: dict[str, list[str]] = {}
-            for text, pairs in text_tm_pairs.items():
-                for pair in pairs:
-                    tm_texts_by_pair.setdefault(pair, []).append(text)
-            for pair, pair_texts in tm_texts_by_pair.items():
-                tm_result = tm_manager.lookup_batch(pair_texts, pair)
-                for text, value in tm_result.items():
-                    if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
-                        tm_values_by_text[text].append(str(value))
-            hits = {
-                text: values[0]
-                for text, values in tm_values_by_text.items()
-                if len(values) == 1
-            }
-            if smart_mode:
-                dropped = drop_unlocked_short_hits(hits, tm_texts_by_pair, lookup_locked_tm)
-                if dropped:
-                    self._log(
-                        "INFO",
-                        f"自动识别场景：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
-                    )
+            # 整段与记忆库词条相同的直接套用；按场景选用的、两个语言对说法不一的
+            # 交给模型（随批附上候选译法），不替模型猜（core/tm_terms.py）。
+            term_session = TaskTermSession(
+                settings.tm,
+                target_lang=target_lang,
+                smart_mode=smart_mode,
+                file_paths=[item.path for item in self._files],
+                log=self._log,
+                task_id=self.task_id,
+            )
+            self._term_session = term_session
+            hits = term_session.resolve(text_tm_pairs, profile=document_profile)
             misses = [text for text in normal_texts if text not in hits]
+
+            def term_pair_for_text(text: str) -> str | None:
+                pairs = text_tm_pairs.get(text) or set()
+                if len(pairs) == 1:
+                    return next(iter(pairs))
+                item = normal_api_language_results.get(text)
+                reported = str(getattr(item, "source_lang", "") or "")
+                if item is not None and getattr(item, "tm_eligible", False) and reported:
+                    return f"{reported}-{target_lang}"
+                return lang_pair or None
+
+            self._term_pair_for_text = term_pair_for_text
 
             tm_hit_count   = len(hits)
             api_call_count = len(misses) + len(mixed_texts)
@@ -999,7 +997,7 @@ class TaskRunner(BaseTaskRunner):
                 auto_source_lang=auto_source_lang,
                 batch_size=batch_size,
                 concurrency=concurrency,
-                engine=engine,
+                engine=term_session.wrap(engine),
                 excel_review_marks=excel_review_marks,
                 file_texts=file_texts,
                 global_unique_texts=global_unique_texts,
@@ -1021,6 +1019,11 @@ class TaskRunner(BaseTaskRunner):
             )
                 # TM 写入挪到了残留修复阶梯之后：这里写会把「修复前」的
                 # 带残留译文存进库，下个文档 TM 命中直接短路，残留就固化了。
+
+            # 未采用「始终采用」词条设定译法的：标记需复核（底色同「需复核」），不进记忆库。
+            for text in term_session.not_applied_texts():
+                _set_excel_review_mark(excel_review_marks, text, REVIEW_MARK_TERM_NOT_APPLIED)
+            term_session.log_not_applied()
 
             # 汇聚全局翻译词典：TM 命中覆盖 API 结果（TM 优先）
             global_translations = {**api_translations, **hits}
@@ -1073,6 +1076,20 @@ class TaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 text_source_scopes=text_source_scopes,
                 quality_issues=quality_issues,
+            )
+
+            # 「自动识别场景」下短词在本文档场景里的译法，存成带备注的新词条。
+            short_words = (
+                {text for text in misses if is_context_sensitive(text)}
+                if term_session.will_auto_save()
+                else set()
+            )
+            term_session.auto_save_short_words(
+                engine,
+                {text: global_translations.get(text, "") for text in misses},
+                pair_for_text=term_pair_for_text,
+                counts=self._count_cell_occurrences(process_paths, short_words),
+                engine_name=engine.engine_name,
             )
 
             # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
@@ -3249,6 +3266,7 @@ class TaskRunner(BaseTaskRunner):
         文件相左。
         """
         finals = final_translations or {}
+        self._retire_stale_terms()
 
         def _final_text(source_text: str, fallback: str) -> str:
             value = finals.get(source_text)
@@ -3328,7 +3346,14 @@ class TaskRunner(BaseTaskRunner):
         )
 
     def _smart_skips_tm(self, source_text: str) -> bool:
-        """「自动识别场景」下，离开上下文就会译错的短词不自动存进记忆库。"""
+        """不自动存进记忆库的译文。
+
+        - 「自动识别场景」下离开上下文就会译错的短词（带备注的场景译法另行保存）；
+        - 没有采用记忆库设定译法的译文：已标记需复核，存进去就成了下次的「旧译法」。
+        """
+        session = getattr(self, "_term_session", None)
+        if session is not None and source_text in session.not_applied_texts():
+            return True
         return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 
     def _log_tm_hygiene(self, hygiene) -> None:
@@ -3852,6 +3877,7 @@ class TaskRunner(BaseTaskRunner):
                 "files": actual_by_file,
             },
             "error": {"message": error_message} if error_message else {},
+            "terms": self._finish_terms(),
         }
 
     def _record_unfinished_after_stop(
@@ -4009,6 +4035,37 @@ class TaskRunner(BaseTaskRunner):
             translations=translations,
             allowed_keys=allowed,
         )
+
+    @staticmethod
+    def _count_cell_occurrences(paths: list[Path], texts: set[str]) -> dict[str, int]:
+        """这几段文字各在多少个单元格里出现（任务详情「本次自动保存的词条」的出现次数）。
+
+        只在要自动保存短词时调用，只数整格相同的单元格；读不了的文件跳过，次数照算其余文件。
+        """
+        counts: dict[str, int] = {}
+        if not texts:
+            return counts
+        from core.openpyxl_compat import load_workbook
+
+        for path in paths:
+            try:
+                wb = load_workbook(str(path), read_only=True, data_only=True)
+            except Exception as exc:  # noqa: BLE001 - counts are informational only
+                logger.debug(f"统计出现次数时无法读取 {path}：{exc!r}")
+                continue
+            try:
+                for ws in wb.worksheets:
+                    for row in ws.iter_rows(values_only=True):
+                        for value in row:
+                            if isinstance(value, str):
+                                text = value.strip()
+                                if text in texts:
+                                    counts[text] = counts.get(text, 0) + 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"统计出现次数时读取中断 {path}：{exc!r}")
+            finally:
+                wb.close()
+        return counts
 
     @staticmethod
     def _collect_texts(

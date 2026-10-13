@@ -173,6 +173,7 @@ def register(app: FastAPI) -> None:
                 "target_lang": settings.tm_target_lang,
             },
             "recent": list(settings.recent_tm_lang_pairs),
+            "advanced_mode": settings.tm.advanced_mode,
         }
 
     @app.get("/api/settings")

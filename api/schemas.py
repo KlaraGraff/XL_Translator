@@ -172,12 +172,21 @@ class TmEntryPayload(BaseModel):
     target_text: str = Field(min_length=1)
     lang_pair: str = Field(min_length=3)
     sync_reverse: bool = False
+    # 备注（适用场景）、采用方式、生效范围。旧客户端不带时按通用词条、默认采用方式。
+    note: str = Field(default="", max_length=200)
+    usage: Literal["", "always", "scene", "segment"] = ""
+    scope: str = Field(default="", max_length=100)
 
 
 class TmEntryUpdatePayload(BaseModel):
     source_text: str = Field(min_length=1)
     target_text: str = Field(min_length=1)
     sync_reverse: bool = False
+    # None 表示不改；记忆库页不再有「固定」概念，从页面编辑固定词条时带 allow_pinned。
+    note: str | None = Field(default=None, max_length=200)
+    usage: Literal["", "always", "scene", "segment"] | None = None
+    scope: str | None = Field(default=None, max_length=100)
+    allow_pinned: bool = False
 
 
 class TmPinPayload(BaseModel):
@@ -190,6 +199,7 @@ class TmBulkPinPayload(TmPinPayload):
 
 class TmBulkDeletePayload(BaseModel):
     ids: list[int] = Field(min_length=1)
+    allow_pinned: bool = False
 
 
 class TmImportPayload(BaseModel):
