@@ -70,6 +70,9 @@ def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str
         roles = [ROLE_IMAGE]
         if bool(settings.pdf.review_enabled):
             roles.append(ROLE_PDF_REVIEW)
+        # 原位替换、转 Word（Beta 分支）用文档翻译模型翻文字
+        if getattr(settings.pdf, "translation_route", "image") != "image":
+            roles.append(ROLE_TRANSLATION)
         return tuple(roles)
     return ()
 

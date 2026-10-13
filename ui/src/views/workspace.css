@@ -329,3 +329,66 @@ tr.hid {
 .pdf-review-card .tbl th:nth-child(-n+2) {
   white-space: nowrap;
 }
+
+/*
+ * PDF「翻译方式」：一行「名称 + ? + 右侧紧凑下拉」，和上面的开关行同高同节奏。样张见
+ * .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-translation-routes.html。
+ * 自动组合时按内容分类的几行缩进一格、字色淡一档，读起来是「翻译方式」的下级。
+ */
+.route-block {
+  margin-top: 2px;
+}
+.selrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.swrow.sub {
+  color: var(--ink-2);
+  padding-left: 10px;
+}
+.selrow.sub {
+  color: var(--ink-2);
+  padding-left: 10px;
+}
+.selrow .dropdown.compact {
+  margin-left: auto;
+  width: 146px;
+  flex: none;
+}
+.selrow .dropdown.compact.wide {
+  width: 168px;
+}
+.selrow .dropdown.compact .dropdown-btn {
+  min-height: 28px;
+  font-size: 12px;
+  padding: 0 6px 0 9px;
+}
+.selrow-fixed {
+  margin-left: auto;
+  width: 146px;
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-left: 10px;
+}
+.route-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  margin: 6px 0 2px;
+}
+.route-note.warn {
+  color: var(--warn);
+  background: var(--warn-t);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+/* 翻译方式下拉的菜单比按钮宽：每项下面有一句说明，挤在按钮宽度里会折成三四行。 */
+.compact-menu {
+  width: max-content;
+  max-width: 280px;
+}

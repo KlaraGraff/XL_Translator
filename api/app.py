@@ -27,6 +27,9 @@ from settings import (
 )
 from api.routes import (
     cad as cad_routes,
+    ocr as ocr_routes,
+    pdf2docx as pdf2docx_routes,
+    pdf_routes as pdf_route_routes,
     settings as settings_routes,
     domains as domains_routes,
     keys as keys_routes,
@@ -173,6 +176,9 @@ def create_app(
     # parameterised sibling overlap (Starlette matches in declaration
     # order), so keep this list in the order the routes were written.
     cad_routes.register(app)
+    ocr_routes.register(app)
+    pdf2docx_routes.register(app)
+    pdf_route_routes.register(app)
 
     @app.middleware("http")
     async def require_loopback_token(request, call_next):
