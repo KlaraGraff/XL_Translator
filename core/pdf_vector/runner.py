@@ -4,8 +4,7 @@
 字）→ 分类、去重、写图纸说明、翻译 → 删掉原文字形、按原字号和颜色写中文 →
 自检。自检不过的页不交付，调用方保留原页。
 
-PDF 的读写目前用 PyMuPDF（AGPL），只在这个包里使用；合入主线前要换成
-pypdfium2 或另行授权，见分支说明。
+PDF 的读写用 PyMuPDF（AGPL-3.0，沿用其原许可，见 THIRD_PARTY_NOTICES.md）。
 """
 from __future__ import annotations
 

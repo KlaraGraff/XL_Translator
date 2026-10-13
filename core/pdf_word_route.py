@@ -9,7 +9,8 @@
    的 .docx，放进 PDF 任务的输出文件夹。
 
 只用于整份都是普通排版页的文档（见 core.pdf_routes）；图纸、扫描件不走这里。
-pdf2docx 依赖 PyMuPDF（AGPL）和 OpenCV，只在用到时才导入。
+pdf2docx（MIT）依赖 PyMuPDF（AGPL-3.0）和 OpenCV，只在用到时才导入；许可见
+THIRD_PARTY_NOTICES.md。
 """
 from __future__ import annotations
 
@@ -64,7 +65,41 @@ def normalize_fonts_xml(xml: str) -> str:
     return re.sub(r"<w:rFonts\b[^>]*/>", lambda m: _fix_rfonts(m.group(0)), xml)
 
 
-def normalize_docx_fonts(path: Path) -> None:
+def loosen_row_heights_xml(xml: str) -> str:
+    """pdf2docx 把表格行高定成「固定值」，正好装下原文那几行。中文换行位置不同、
+    字形也高，固定行高会把多出来的一行裁掉；改成「最小值」，原文一样高，译文长了
+    行跟着长。"""
+    return re.sub(r'(<w:trHeight\b[^>]*?)w:hRule="exact"', r'\1w:hRule="atLeast"', xml)
+
+
+_EAST_ASIAN_LOCALES = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh-hk": "zh-HK", "ja": "ja-JP", "ko": "ko-KR"}
+
+
+def east_asian_locale(target_lang: str | None) -> str:
+    lang = str(target_lang or "").strip().lower().replace("_", "-")
+    return _EAST_ASIAN_LOCALES.get(lang) or _EAST_ASIAN_LOCALES.get(lang.split("-")[0], "")
+
+
+def set_default_east_asian_lang_xml(styles_xml: str, locale: str) -> str:
+    """pdf2docx 把文档默认东亚语言写成 en-US，Word 就不按中文的断行规则排：句号、
+    逗号会跑到行首。把默认东亚语言改成译文的语言。"""
+    if not locale:
+        return styles_xml
+    match = re.search(r"<w:rPrDefault>\s*<w:rPr>(.*?)</w:rPr>", styles_xml, re.S)
+    if not match:
+        return styles_xml
+    inner = match.group(1)
+    if re.search(r"<w:lang\b", inner):
+        if re.search(r'<w:lang\b[^>]*w:eastAsia="', inner):
+            new_inner = re.sub(r'(<w:lang\b[^>]*?w:eastAsia=")[^"]*"', rf'\g<1>{locale}"', inner, count=1)
+        else:
+            new_inner = re.sub(r"<w:lang\b", f'<w:lang w:eastAsia="{locale}"', inner, count=1)
+    else:
+        new_inner = inner + f'<w:lang w:eastAsia="{locale}"/>'
+    return styles_xml[: match.start(1)] + new_inner + styles_xml[match.end(1):]
+
+
+def normalize_docx_fonts(path: Path, east_asian_lang: str = "") -> None:
     tmp = path.with_suffix(".fonts.docx")
     with zipfile.ZipFile(path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -72,9 +107,86 @@ def normalize_docx_fonts(path: Path) -> None:
             if item.filename in ("word/document.xml", "word/styles.xml") or (
                 item.filename.startswith(("word/header", "word/footer")) and item.filename.endswith(".xml")
             ):
-                data = normalize_fonts_xml(data.decode("utf-8")).encode("utf-8")
+                text = loosen_row_heights_xml(normalize_fonts_xml(data.decode("utf-8")))
+                if item.filename == "word/styles.xml":
+                    text = set_default_east_asian_lang_xml(text, east_asian_lang)
+                data = text.encode("utf-8")
             zout.writestr(item, data)
     tmp.replace(path)
+
+
+_SENTENCE_END = tuple(".!?:;。！？：；")
+_LIST_START = re.compile(r"^\s*(?:[-•▪●○◦*–—]|\(?\d{1,3}[.)]|\[\d+\]|[a-zA-Z][.)])\s")
+
+
+def _run_look(run) -> tuple:
+    font = run.font
+    return (bool(run.bold), bool(run.italic), font.size, font.name)
+
+
+def _plain_line(paragraph) -> bool:
+    """A paragraph that is one wrapped line of text: no tabs, breaks, fields, pictures."""
+    p = paragraph._p
+    tags = {el.tag.rsplit("}", 1)[-1] for el in p.iter() if isinstance(el.tag, str)}
+    return paragraph.text.strip() != "" and not ({"tab", "br", "drawing", "pict", "fldChar", "instrText",
+                                                  "footnoteReference", "endnoteReference"} & tags)
+
+
+def _continues(first, second) -> bool:
+    a, b = first.text.rstrip(), second.text.strip()
+    if not a or not b or a.endswith(_SENTENCE_END) or _LIST_START.match(b):
+        return False
+    if not (_plain_line(first) and _plain_line(second)):
+        return False
+    looks_a = {_run_look(r) for r in first.runs if r.text.strip()}
+    looks_b = {_run_look(r) for r in second.runs if r.text.strip()}
+    if len(looks_a) != 1 or looks_a != looks_b:
+        return False
+    # 后一行离前一行太远（隔了一段空白）就是另一段
+    gap = second.paragraph_format.space_before
+    size = next(iter(looks_a))[2]
+    return gap is None or size is None or gap <= size * 1.2
+
+
+def _merge_paragraph_pairs(paragraphs) -> int:
+    merged = 0
+    items = list(paragraphs)
+    i = 0
+    while i < len(items) - 1:
+        first, second = items[i], items[i + 1]
+        if first._p.getnext() is not second._p or not _continues(first, second):
+            i += 1
+            continue
+        joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) else " "
+        if first.runs:
+            first.runs[-1].text = first.runs[-1].text.rstrip() + joiner
+        for run in list(second.runs):
+            first._p.append(run._r)
+        if second.alignment is not None and second.alignment != first.alignment and 1 in (first.alignment, second.alignment):
+            first.alignment = 1  # 标题：pdf2docx 用缩进模拟的居中，合并后改成真正居中
+            first.paragraph_format.left_indent = None
+            first.paragraph_format.first_line_indent = None
+        second._p.getparent().remove(second._p)
+        items.pop(i + 1)
+        merged += 1
+    return merged
+
+
+def merge_wrapped_lines(path: Path) -> int:
+    """pdf2docx 有时把同一段的几行（多见于标题、图注、居中的作者单位）拆成几个段落。
+    按段翻译时每一行都成了半句话，译文出现「……」。相邻两段字体完全相同、前一段
+    没以句末标点结束、后一段不是列表项、中间没有空行，就并成一段。"""
+    from docx import Document
+
+    doc = Document(str(path))
+    count = _merge_paragraph_pairs(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                count += _merge_paragraph_pairs(cell.paragraphs)
+    if count:
+        doc.save(str(path))
+    return count
 
 
 def _quiet_import_pdf2docx():
@@ -91,7 +203,13 @@ def _quiet_import_pdf2docx():
     return Converter
 
 
-def convert_pdf_to_docx(pdf_path: Path, docx_path: Path, *, should_stop: Callable[[], bool] | None = None) -> None:
+def convert_pdf_to_docx(
+    pdf_path: Path,
+    docx_path: Path,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+    target_lang: str = "",
+) -> None:
     Converter = _quiet_import_pdf2docx()
 
     docx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +220,8 @@ def convert_pdf_to_docx(pdf_path: Path, docx_path: Path, *, should_stop: Callabl
         converter.convert(str(docx_path), multi_processing=False)
     finally:
         converter.close()
-    normalize_docx_fonts(docx_path)
+    normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
+    merge_wrapped_lines(docx_path)
 
 
 def translate_pdf_via_word(
@@ -127,7 +246,8 @@ def translate_pdf_via_word(
     work_dir.mkdir(parents=True, exist_ok=True)
     docx = work_dir / f"{pdf_path.stem}.docx"
     try:
-        convert_pdf_to_docx(pdf_path, docx, should_stop=should_stop)
+        convert_pdf_to_docx(pdf_path, docx, should_stop=should_stop,
+                            target_lang=settings.pdf.target_lang or settings.target_lang)
     except WordRouteStopped:
         return WordRouteResult(ok=False, stopped=True, error="任务已停止")
     except Exception as exc:  # noqa: BLE001 - conversion failure is reported per file

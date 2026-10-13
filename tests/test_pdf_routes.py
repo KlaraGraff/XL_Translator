@@ -194,3 +194,83 @@ class LightTextGroundTests(unittest.TestCase):
 
         self.assertTrue(dark_ground(Image.new("L", (50, 20), 30), (0, 0, 50, 20)))
         self.assertFalse(dark_ground(Image.new("L", (50, 20), 250), (0, 0, 50, 20)))  # yellow text on white paper
+
+
+class WordConversionCleanupTests(unittest.TestCase):
+    def _doc(self, lines):
+        from docx import Document
+        from docx.shared import Pt
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "conv.docx"
+        doc = Document()
+        for text, size, bold in lines:
+            run = doc.add_paragraph().add_run(text)
+            run.font.size = Pt(size)
+            run.bold = bold
+        doc.save(path)
+        return path
+
+    def test_wrapped_title_lines_become_one_paragraph(self) -> None:
+        from docx import Document
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        path = self._doc([
+            ("Early-Age Strength of Mortars Prepared with ", 16, True),
+            ("Washed River Sand", 16, True),
+            ("1. Introduction", 11, True),               # different size: a new block
+            ("Mortars use cement.", 10, False),
+            ("- first item", 10, False),                 # list item: kept apart
+        ])
+        self.assertEqual(merge_wrapped_lines(path), 1)
+        texts = [p.text for p in Document(str(path)).paragraphs]
+        self.assertEqual(texts[0], "Early-Age Strength of Mortars Prepared with Washed River Sand")
+        self.assertEqual(texts[1:], ["1. Introduction", "Mortars use cement.", "- first item"])
+
+    def test_row_heights_are_loosened(self) -> None:
+        from core.pdf_word_route import loosen_row_heights_xml
+
+        self.assertIn('w:hRule="atLeast"', loosen_row_heights_xml('<w:trHeight w:hRule="exact" w:val="306"/>'))
+
+
+class DominantRunShapeTests(unittest.TestCase):
+    def test_a_short_bold_label_does_not_make_the_translation_bold(self) -> None:
+        from docx import Document
+
+        from core.word_document import _replace_paragraph_text
+
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("Abstract — ").bold = True
+        p.add_run("This study investigates the compressive strength of masonry mortars.")
+        _replace_paragraph_text(p, "摘要——本研究考察了砌筑砂浆的抗压强度。", target_lang="zh")
+        self.assertEqual(p.text, "摘要——本研究考察了砌筑砂浆的抗压强度。")
+        self.assertFalse(any(run.bold for run in p.runs if run.text))
+
+    def test_a_mostly_bold_paragraph_stays_bold(self) -> None:
+        from docx import Document
+
+        from core.word_document import _replace_paragraph_text
+
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("General ICAO passport photo requirements").bold = True
+        p.add_run(" (2024)")
+        _replace_paragraph_text(p, "ICAO 护照照片一般要求（2024）", target_lang="zh")
+        self.assertTrue(next(run for run in p.runs if run.text).bold)
+
+
+class EastAsianLangTests(unittest.TestCase):
+    def test_default_east_asian_language_follows_the_target(self) -> None:
+        from core.pdf_word_route import east_asian_locale, set_default_east_asian_lang_xml
+
+        xml = ('<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/>'
+               '<w:lang w:val="en-US" w:eastAsia="en-US" w:bidi="ar-SA"/></w:rPr></w:rPrDefault></w:docDefaults>')
+        out = set_default_east_asian_lang_xml(xml, east_asian_locale("zh"))
+        self.assertIn('w:eastAsia="zh-CN"', out)
+        self.assertIn('w:val="en-US"', out)
+        bare = '<w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault>'
+        self.assertIn('<w:lang w:eastAsia="ja-JP"/>', set_default_east_asian_lang_xml(bare, east_asian_locale("ja")))
+        self.assertEqual(set_default_east_asian_lang_xml(xml, east_asian_locale("fr")), xml)
