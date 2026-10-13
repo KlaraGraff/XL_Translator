@@ -2731,11 +2731,11 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const wrap = el("div", "route-block");
   const beta = t("Beta");
   const imageLabel = t("整页图像翻译");
-  const imageDesc = t("实测综合效果最好，费用最高；大页面受像素限制，不够清晰");
+  const imageDesc = t("各类页面均可处理，费用较高；大页面受像素限制，清晰度下降");
 
   wrap.append(buildRouteRow({
     label: t("翻译方式"),
-    hint: t("三种方式各有长处。整页图像翻译：实测综合效果最好，但译文是图片，受像素限制，大幅面页面会不够清晰，费用也最高。转成 Word：适合能提取文字的页，尤其是本来由 Word 导出的文件，排版还不错；不走图像模型，费用最低，综合效果中等偏上。原位替换：适合大型图纸，只替换文字，线条、尺寸等矢量细节完整保留；遇到画成线条的字要先识别，会慢一些。自动组合按每一页的类型分别选，最后按原页序合成一份 PDF。"),
+    hint: t("三种方式适用的页面不同。整页图像翻译：每页交给图像模型重画，各类页面均可处理；译文为图片，受像素限制，大幅面页面清晰度下降，费用较高。转成 Word：适用于可提取文字的页，尤其是由 Word 导出的文件，可保留大部分排版；不使用图像模型，费用较低。原位替换：适用于大型图纸，只替换文字，线条、尺寸等矢量细节保持不变；画成线条的字需先识别，耗时较长。自动组合按每一页的类型分别选择方式，最后按原页序合成一份 PDF。"),
     options: [
       { value: "image", label: imageLabel, description: t("原来的做法：每页交给图像模型重画") },
       { value: "auto", label: t("自动组合"), tag: beta, description: t("按每一页的类型分别选方式，合成一份 PDF") },
@@ -2765,8 +2765,8 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
     label: t("可提取文字的页"),
     hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。需要在插件页安装「PDF 转 Word 组件」，电脑上还要有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
-      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用最低；由 Word 导出的文件排版不错，综合效果中等偏上") },
-      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面完全不变，中文略小；只能译成中文") },
+      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
+      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变，中文字号略小；只能译成中文") },
       { value: "image", label: imageLabel, description: imageDesc },
     ],
     value: st.pdfAutoTextRoute,
