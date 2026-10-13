@@ -274,3 +274,42 @@ class EastAsianLangTests(unittest.TestCase):
         bare = '<w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault>'
         self.assertIn('<w:lang w:eastAsia="ja-JP"/>', set_default_east_asian_lang_xml(bare, east_asian_locale("ja")))
         self.assertEqual(set_default_east_asian_lang_xml(xml, east_asian_locale("fr")), xml)
+
+
+class NumberedLineMergeTests(unittest.TestCase):
+    def test_numbered_question_and_soft_break(self) -> None:
+        from docx import Document
+        from docx.enum.text import WD_BREAK
+        from docx.shared import Pt
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "q.docx"
+        doc = Document()
+        p = doc.add_paragraph()
+        p.paragraph_format.tab_stops.add_tab_stop(Pt(30))
+        p.add_run("4 ").bold = True
+        p.add_run().add_tab()
+        r = p.add_run("I am a family member. Are the standard requirements ")
+        r.bold = True
+        r.font.size = Pt(12)
+        p.runs[0].font.size = Pt(12)
+        q = doc.add_paragraph().add_run("applicable to me?")
+        q.bold = True
+        q.font.size = Pt(12)
+        caption = doc.add_paragraph()
+        c1 = caption.add_run("Other people are visible in the")
+        c1.add_break(WD_BREAK.LINE)
+        caption.add_run("image")
+        dashes = doc.add_paragraph()
+        d1 = dashes.add_run("-")
+        d1.add_break(WD_BREAK.LINE)
+        dashes.add_run("-")
+        doc.save(path)
+        merge_wrapped_lines(path)
+        texts = [p.text for p in Document(str(path)).paragraphs]
+        self.assertEqual(texts[0], "4 \tI am a family member. Are the standard requirements applicable to me?")
+        self.assertEqual(texts[1], "Other people are visible in the image")
+        self.assertEqual(texts[2], "-\n-")

@@ -124,21 +124,43 @@ def _run_look(run) -> tuple:
     return (bool(run.bold), bool(run.italic), font.size, font.name)
 
 
-def _plain_line(paragraph) -> bool:
-    """A paragraph that is one wrapped line of text: no tabs, breaks, fields, pictures."""
-    p = paragraph._p
-    tags = {el.tag.rsplit("}", 1)[-1] for el in p.iter() if isinstance(el.tag, str)}
-    return paragraph.text.strip() != "" and not ({"tab", "br", "drawing", "pict", "fldChar", "instrText",
-                                                  "footnoteReference", "endnoteReference"} & tags)
+def _plain_line(paragraph, *, numbered_ok: bool = False) -> bool:
+    """A paragraph that is one wrapped line of text: no tabs, breaks, fields, pictures.
+
+    numbered_ok: one tab right after a short number or bullet（「4<tab>正文」）is allowed.
+    """
+    from docx.oxml.ns import qn
+
+    # 只看正文里的节点：段落属性里的 <w:tabs><w:tab/> 是制表位定义，不是制表符
+    tags = [el.tag.rsplit("}", 1)[-1] for child in paragraph._p if child.tag != qn("w:pPr")
+            for el in child.iter() if isinstance(el.tag, str)]
+    if paragraph.text.strip() == "" or {"br", "drawing", "pict", "fldChar", "instrText",
+                                        "footnoteReference", "endnoteReference"} & set(tags):
+        return False
+    tabs = tags.count("tab")
+    if not tabs:
+        return True
+    return numbered_ok and tabs == 1 and len(paragraph.text.split("\t", 1)[0].strip()) <= 4
+
+
+def _runs_after_number(paragraph) -> list:
+    """「4<tab>正文」这种带编号的行，只比较编号后面的正文字体。"""
+    from docx.oxml.ns import qn
+
+    runs = list(paragraph.runs)
+    for index, run in enumerate(runs):
+        if run._r.find(qn("w:tab")) is not None:
+            return runs[index:]
+    return runs
 
 
 def _continues(first, second) -> bool:
     a, b = first.text.rstrip(), second.text.strip()
     if not a or not b or a.endswith(_SENTENCE_END) or _LIST_START.match(b):
         return False
-    if not (_plain_line(first) and _plain_line(second)):
+    if not (_plain_line(first, numbered_ok=True) and _plain_line(second)):
         return False
-    looks_a = {_run_look(r) for r in first.runs if r.text.strip()}
+    looks_a = {_run_look(r) for r in _runs_after_number(first) if r.text.strip()}
     looks_b = {_run_look(r) for r in second.runs if r.text.strip()}
     if len(looks_a) != 1 or looks_a != looks_b:
         return False
@@ -162,7 +184,9 @@ def _merge_paragraph_pairs(paragraphs) -> int:
             first.runs[-1].text = first.runs[-1].text.rstrip() + joiner
         for run in list(second.runs):
             first._p.append(run._r)
-        if second.alignment is not None and second.alignment != first.alignment and 1 in (first.alignment, second.alignment):
+        look = _run_look(first.runs[0]) if first.runs else (False, False, None, None)
+        heading = look[0] or (look[2] is not None and look[2].pt >= 12)
+        if heading and second.alignment != first.alignment and 1 in (first.alignment, second.alignment):
             first.alignment = 1  # 标题：pdf2docx 用缩进模拟的居中，合并后改成真正居中
             first.paragraph_format.left_indent = None
             first.paragraph_format.first_line_indent = None
@@ -170,6 +194,40 @@ def _merge_paragraph_pairs(paragraphs) -> int:
         items.pop(i + 1)
         merged += 1
     return merged
+
+
+def _join_soft_breaks(paragraph) -> int:
+    """段落里的换行符（w:br）多是 PDF 原来的折行位置：前面是没说完的半句（有字母、
+    没有句末标点），后面还有字，就换成空格，让 Word 按译文重新折行。分页符、
+    只有符号的那种对齐用换行（如一列「-」）保留。"""
+    joined = 0
+    from docx.oxml.ns import qn
+
+    for br in list(paragraph._p.iter(qn("w:br"))):
+        if br.get(qn("w:type")) not in (None, "textWrapping"):
+            continue
+        before, after = [], []
+        seen = False
+        for node in paragraph._p.iter(qn("w:t"), qn("w:br")):
+            if node is br:
+                seen = True
+                continue
+            if node.tag == qn("w:br"):
+                if seen:
+                    break
+                before.clear()
+                continue
+            (after if seen else before).append(node.text or "")
+        head, tail = "".join(before).rstrip(), "".join(after).strip()
+        if not tail or not head or not re.search(r"[^\W\d_]", head) or head.endswith(_SENTENCE_END):
+            continue
+        run = br.getparent()
+        t = run.makeelement(qn("w:t"), {})
+        t.text = " "
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        run.replace(br, t)
+        joined += 1
+    return joined
 
 
 def merge_wrapped_lines(path: Path) -> int:
@@ -180,13 +238,23 @@ def merge_wrapped_lines(path: Path) -> int:
 
     doc = Document(str(path))
     count = _merge_paragraph_pairs(doc.paragraphs)
-    for table in doc.tables:
+    count += sum(_join_soft_breaks(p) for p in doc.paragraphs)
+    for table in _all_tables(doc.tables):
         for row in table.rows:
             for cell in row.cells:
                 count += _merge_paragraph_pairs(cell.paragraphs)
+                count += sum(_join_soft_breaks(p) for p in cell.paragraphs)
     if count:
         doc.save(str(path))
     return count
+
+
+def _all_tables(tables):
+    for table in tables:
+        yield table
+        for row in table.rows:
+            for cell in row.cells:
+                yield from _all_tables(cell.tables)
 
 
 def _quiet_import_pdf2docx():
