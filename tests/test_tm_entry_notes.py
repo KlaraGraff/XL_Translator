@@ -1,0 +1,144 @@
+"""记忆库词条的备注、采用方式、使用次数，以及旧库升级到「同一原文多条」布局。"""
+
+from __future__ import annotations
+
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from core import tm_manager
+
+# 升级前（V10）的表：同一原文在同一语言对只能有一条。
+_V10_DDL = """
+CREATE TABLE tm_entries (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_text   TEXT    NOT NULL,
+    source_hash   TEXT    NOT NULL DEFAULT '',
+    target_text   TEXT    NOT NULL,
+    lang_pair     TEXT    NOT NULL,
+    word_type     TEXT    NOT NULL,
+    source_engine TEXT    DEFAULT '',
+    pinned        INTEGER NOT NULL DEFAULT 0,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_text, lang_pair)
+);
+"""
+
+
+class TmEntryNotesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.db_path = self.root / "tm.db"
+        self.backups_dir = self.root / "backups"
+        for patcher in (
+            patch.object(tm_manager, "DB_PATH", self.db_path),
+            patch.object(tm_manager, "BACKUPS_DIR", self.backups_dir),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def make_v10_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript(_V10_DDL)
+            conn.execute(
+                "INSERT INTO tm_entries (id, source_text, target_text, lang_pair, word_type, pinned) "
+                "VALUES (7, '甲', 'Partie A', 'zh-fr', 'manual', 1)"
+            )
+            conn.execute(
+                "INSERT INTO tm_entries (id, source_text, target_text, lang_pair, word_type) "
+                "VALUES (9, '卫生间', 'toilettes', 'zh-fr', 'auto')"
+            )
+
+    def test_v10_database_is_backed_up_then_rebuilt_keeping_every_row(self):
+        self.make_v10_db()
+        tm_manager.init_db()
+        backups = [path.name for path in self.backups_dir.rglob("tm_before_layout2_*") if path.is_file()]
+        self.assertTrue(backups, "rebuilding the table must leave a copy first")
+        self.assertTrue(tm_manager.entries_layout_supports_notes())
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT id, source_text, target_text, pinned, note FROM tm_entries ORDER BY id").fetchall()
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(tm_entries)")}
+        self.assertEqual(rows, [(7, "甲", "Partie A", 1, ""), (9, "卫生间", "toilettes", 0, "")])
+        # 旧版应用打开新库时 CREATE UNIQUE INDEX IF NOT EXISTS idx_hash_lang 是空操作。
+        self.assertIn("idx_hash_lang", indexes)
+        self.assertIn("idx_hash_lang_note", indexes)
+        # 再次启动不再备份。
+        before = len(list(self.backups_dir.rglob("*")))
+        tm_manager.init_db()
+        self.assertEqual(len(list(self.backups_dir.rglob("*"))), before)
+
+    def test_failed_backup_leaves_the_old_layout_working(self):
+        self.make_v10_db()
+        with patch.object(tm_manager, "_backup_db", side_effect=OSError("disk full")):
+            tm_manager.init_db()
+        self.assertFalse(tm_manager.entries_layout_supports_notes())
+        self.assertEqual(tm_manager.lookup_batch(["卫生间"], "zh-fr"), {"卫生间": "toilettes"})
+        result = tm_manager.insert_manual_entry_detailed("甲", "A", "zh-fr", note="配电回路编号")
+        self.assertEqual(result.status, "layout_pending")
+        self.assertTrue(tm_manager.insert_manual_entry_detailed("楼梯", "escalier", "zh-fr"))
+
+    def test_noted_variants_live_beside_the_general_entry(self):
+        tm_manager.init_db()
+        self.assertTrue(tm_manager.insert_manual_entry_detailed("甲", "Partie A", "zh-fr", note="合同甲方"))
+        self.assertTrue(tm_manager.insert_manual_entry_detailed("甲", "A", "zh-fr", note="配电回路编号"))
+        self.assertTrue(tm_manager.insert_manual_entry_detailed("门", "porte", "zh-fr"))
+        # 整段直接贴回只认没有备注的通用条目（CAD、PDF 仍走这条路）。
+        self.assertEqual(tm_manager.lookup_batch(["甲", "门"], "zh-fr"), {"甲": None, "门": "porte"})
+        rows = {(row["source_text"], row["note"]): row for row in tm_manager.list_entries_for_target("fr")}
+        self.assertEqual(rows[("甲", "合同甲方")]["effective_usage"], "scene")
+        self.assertEqual(rows[("门", "")]["effective_usage"], "always")
+        self.assertEqual(rows[("门", "")]["origin"], "manual")
+        counts = tm_manager.get_filter_counts("zh-fr")
+        self.assertEqual((counts["all"], counts["manual"], counts["scene"], counts["always"]), (3, 3, 2, 1))
+        found, total = tm_manager.search_entries("zh-fr", "合同", entry_filter="scene")
+        self.assertEqual((total, found[0]["target_text"]), (1, "Partie A"))
+
+    def test_usage_choice_and_pinned_entries_can_be_edited_from_the_page(self):
+        tm_manager.init_db()
+        tm_manager.insert_manual_entry_detailed("预埋件", "pièce noyée", "zh-fr")
+        entry = tm_manager.search_entries("zh-fr")[0][0]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE tm_entries SET pinned = 1 WHERE id = ?", [entry["id"]])
+        refused = tm_manager.update_entry_full_detailed(entry["id"], "预埋件", "pièce à sceller")
+        self.assertFalse(refused)
+        updated = tm_manager.update_entry_full_detailed(
+            entry["id"], "预埋件", "pièce à sceller", usage="segment", scope="公建", allow_pinned=True
+        )
+        self.assertTrue(updated, updated.message)
+        row = tm_manager.search_entries("zh-fr")[0][0]
+        self.assertEqual((row["target_text"], row["effective_usage"], row["scope"], row["pinned"]), ("pièce à sceller", "segment", "公建", 1))
+        self.assertFalse(tm_manager.delete_entry(row["id"]))
+        self.assertTrue(tm_manager.delete_entry(row["id"], allow_pinned=True))
+
+    def test_scene_entries_are_saved_once_per_new_translation(self):
+        tm_manager.init_db()
+        tm_manager.insert_batch([("甲", "Partie A")], "zh-fr", 200)
+        self.assertEqual(tm_manager.insert_scene_entry("甲", "Partie A", "zh-fr", "合同"), 0)
+        self.assertEqual(tm_manager.insert_scene_entry("甲", "classe A", "zh-fr", ""), 0)
+        new_id = tm_manager.insert_scene_entry("甲", "classe A", "zh-fr", "防火门耐火等级")
+        self.assertGreater(new_id, 0)
+        self.assertEqual(tm_manager.insert_scene_entry("甲", "classe A", "zh-fr", "防火门耐火等级"), 0)
+        row = next(r for r in tm_manager.list_entries_for_target("fr") if r["id"] == new_id)
+        self.assertEqual((row["origin"], row["effective_usage"]), ("auto", "scene"))
+
+    def test_task_usage_updates_counts_and_month_totals(self):
+        tm_manager.init_db()
+        tm_manager.insert_manual_entry_detailed("门", "porte", "zh-fr")
+        entry_id = tm_manager.search_entries("zh-fr")[0][0]["id"]
+        tm_manager.record_task_usage({entry_id: 3}, not_applied_by_pair={"zh-fr": 1})
+        tm_manager.record_task_usage({entry_id: 2})
+        row = tm_manager.search_entries("zh-fr")[0][0]
+        self.assertEqual(row["use_count"], 5)
+        self.assertTrue(row["last_used_at"])
+        self.assertEqual(tm_manager.get_month_usage("zh-fr"), {"month_uses": 5, "month_not_applied": 1})
+        stats = tm_manager.get_stats("zh-fr")
+        self.assertEqual((stats["month_uses"], stats["origin_manual"]), (5, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -34,13 +34,13 @@ class TmConcurrentUpsertTests(unittest.TestCase):
         real_fetch = tm_manager._fetch_entry_by_source
         calls = {"count": 0}
 
-        def _fetch_missing_once(conn, source_text, lang_pair):
+        def _fetch_missing_once(conn, source_text, lang_pair, note=""):
             calls["count"] += 1
             if calls["count"] == 1:
                 # Simulate the race: the winner's commit lands after our
                 # existence check but before our INSERT.
                 return None
-            return real_fetch(conn, source_text, lang_pair)
+            return real_fetch(conn, source_text, lang_pair, note)
 
         with patch.object(
             tm_manager, "_fetch_entry_by_source", side_effect=_fetch_missing_once

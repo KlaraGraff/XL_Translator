@@ -119,6 +119,20 @@ class _IsolatedDataDirTestCase(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def assert_only_layout_backup(self) -> None:
+        """An additive upgrade never sets the memory aside as unusable.
+
+        The one copy it may leave is the automatic backup taken before the
+        layout-2 rebuild (one source, several noted entries): that rebuild
+        drops a table constraint, so AGENTS.md requires a copy first.
+        """
+        if not self.backups_dir.exists():
+            return
+        names = sorted(path.name for path in self.backups_dir.rglob("*") if path.is_file())
+        self.assertTrue(names)
+        for name in names:
+            self.assertTrue(name.startswith("tm_before_layout2_"), name)
+
     def write_legacy_db(self, ddl: str, version: int, entries: int = 0) -> None:
         conn = sqlite3.connect(str(self.db_path))
         try:
@@ -188,7 +202,7 @@ class TmSchemaUpgradeTests(_IsolatedDataDirTestCase):
         )
         # An in-place upgrade keeps everything, so there is nothing to report.
         self.assertEqual(settings_module.read_recovery_record(), {})
-        self.assertFalse(self.backups_dir.exists())
+        self.assert_only_layout_backup()
         self.assertEqual(tm_manager.get_schema_status()["state"], "current")
 
     def test_entries_still_usable_after_upgrade(self) -> None:
@@ -230,7 +244,7 @@ class TmSchemaUpgradeTests(_IsolatedDataDirTestCase):
             {"term-0": "词-0", "term-4": "词-4"},
         )
         self.assertEqual(settings_module.read_recovery_record(), {})
-        self.assertFalse(self.backups_dir.exists())
+        self.assert_only_layout_backup()
 
     def test_a_column_that_can_be_grafted_on_keeps_every_entry(self) -> None:
         """A missing column is one ALTER TABLE, not a reason to wipe the memory."""
@@ -248,7 +262,7 @@ class TmSchemaUpgradeTests(_IsolatedDataDirTestCase):
             conn.close()
         self.assertIn("source_engine", columns)
         self.assertEqual(settings_module.read_recovery_record(), {})
-        self.assertFalse(self.backups_dir.exists())
+        self.assert_only_layout_backup()
 
     def test_a_locked_database_is_left_alone_rather_than_rebuilt(self) -> None:
         """A held write lock is another writer working, not a broken file.
@@ -285,7 +299,7 @@ class TmSchemaUpgradeTests(_IsolatedDataDirTestCase):
 
         # Nothing was backed up, nothing was rebuilt, nothing was announced.
         self.assertEqual(tm_manager.count_entries(), 5)
-        self.assertFalse(self.backups_dir.exists())
+        self.assert_only_layout_backup()
         self.assertEqual(settings_module.read_recovery_record(), {})
 
     def test_duplicate_source_rows_keep_every_entry_instead_of_dead_ending(self) -> None:
