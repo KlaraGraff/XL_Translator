@@ -20,6 +20,17 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from core.prompt_cache import (
+    FAMILY_CLAUDE,
+    FAMILY_GROK,
+    FAMILY_OPENAI,
+    grok_conversation_id,
+    model_cache_family,
+    prompt_cache_key,
+    record_usage,
+    split_system,
+)
+
 CONNECT_TIMEOUT = 10.0
 READ_TIMEOUT = 120.0  # idle read, separately from the whole operation's deadline
 TOTAL_TIMEOUT = 180.0
@@ -291,6 +302,7 @@ class ResponsesEvents:
     def __init__(self):
         self.deltas: list[str] = []
         self.text: str | None = None
+        self.usage: object = None
 
     def feed(self, line: str):
         if not line.startswith("data:"):
@@ -312,6 +324,7 @@ class ResponsesEvents:
         if kind == "response.completed":
             # Completed output is authoritative: never append it to deltas.
             self.text = _response_text(event.get("response"))
+            self.usage = event["response"].get("usage")
 
     def finish(self) -> str:
         if self.text is None:
@@ -357,15 +370,49 @@ def classify_http_error(exc: httpx.HTTPStatusError) -> tuple[str, str]:
     return "request", ""
 
 
+# 按模型名加的官方缓存标识（core.prompt_cache）。第三方平台不认、退回 400/422 时，
+# 去掉标识重发，并随协议路线记住（10 分钟），之后同一连接不再带。
+_CACHE_HINTS = frozenset({"cache_control", "prompt_cache_key"})
+# 请求头不在请求体里发出：_send 发送前取出。
+_HEADERS_KEY = "_xlt_headers"
+
+
 def _payload(route: Route, model: str, system: str, user: str) -> dict:
+    stable, volatile = split_system(system)
+    text = "\n\n".join(part for part in (stable, volatile) if part)
+    family = model_cache_family(model)
     if route.mode == "chat":
-        return {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-    body = {"model": model, "instructions": system, "input": [{"role": "user", "content": [{"type": "input_text", "text": user}]}], "store": False, "stream": True}
+        system_content: str | list = text
+        if family == FAMILY_CLAUDE and stable and "cache_control" not in route.omitted:
+            # Claude 只缓存打了标记的那段之前的内容：标记打在固定段末尾。
+            system_content = [{"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}]
+            if volatile:
+                system_content.append({"type": "text", "text": volatile})
+        body = {"model": model, "messages": [{"role": "system", "content": system_content}, {"role": "user", "content": user}]}
+    else:
+        body = {"model": model, "instructions": text, "input": [{"role": "user", "content": [{"type": "input_text", "text": user}]}], "store": False, "stream": True}
+    if family == FAMILY_OPENAI:
+        body["prompt_cache_key"] = prompt_cache_key(model, stable)
+    elif family == FAMILY_GROK:
+        # Grok 靠这个请求头把同一前缀的请求送到同一台机器，不带时命中率可能接近零。
+        body[_HEADERS_KEY] = {"x-grok-conv-id": grok_conversation_id(model, stable)}
     return {k: v for k, v in body.items() if k not in route.omitted}
 
 
+def _sent_cache_hints(route: Route, payload: dict) -> frozenset[str]:
+    """这次请求实际带了、还没被这条路线去掉的缓存标识。"""
+    sent = set()
+    if "prompt_cache_key" in payload:
+        sent.add("prompt_cache_key")
+    messages = payload.get("messages")
+    if isinstance(messages, list) and messages and isinstance(messages[0].get("content"), list):
+        sent.add("cache_control")
+    return frozenset(sent - route.omitted)
+
+
 async def _send_async(route: Route, api_key: str, payload: dict, budget: RequestBudget) -> str:
-    headers = {"Content-Type": "application/json"}
+    payload = dict(payload)
+    headers = {"Content-Type": "application/json", **(payload.pop(_HEADERS_KEY, None) or {})}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     timeout = httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=CONNECT_TIMEOUT)
@@ -384,14 +431,19 @@ async def _send_async(route: Route, api_key: str, payload: dict, budget: Request
                     budget.check()
                     parser.feed(line)
                     if parser.text is not None:
-                        return parser.finish()
-                return parser.finish()
+                        break
+                text = parser.finish()
+                record_usage(parser.usage)
+                return text
             await response.aread()
             try:
                 payload = response.json()
             except ValueError as exc:
                 raise TextTransportError("HTTP 200 正文不是有效 JSON 或 Responses 事件流") from exc
-            return _response_text(payload) if route.mode == "responses" else extract_chat_text(payload)
+            text = _response_text(payload) if route.mode == "responses" else extract_chat_text(payload)
+            if isinstance(payload, dict):
+                record_usage(payload.get("usage"))
+            return text
 
 
 async def _send_cancellable(route, api_key, payload, budget):
@@ -505,8 +557,13 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                         kind, param = classify_http_error(exc)
                         if budget.remaining <= 0 or send_attempts >= MAX_SENDS:
                             raise TextTransportError("协议候选已耗尽。", kind="budget_exhausted") from exc
-                        if kind == "parameter" and param in _payload(route, model, system, user) and param not in route.omitted:
+                        sent_payload = _payload(route, model, system, user)
+                        if kind == "parameter" and param in sent_payload and param not in route.omitted:
                             route = Route(route.mode, route.url, route.omitted | {param})
+                            continue
+                        hints = _sent_cache_hints(route, sent_payload)
+                        if hints and exc.response.status_code in {400, 422} and kind not in {"credential", "transient", "model"}:
+                            route = Route(route.mode, route.url, route.omitted | hints)
                             continue
                         if mode == "auto" and kind == "route" and route != routes[-1]:
                             break

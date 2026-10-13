@@ -112,6 +112,8 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
       sent: hasExtra,
       content: hasExtra ? excerpt(input.extraText, 120) : t("无"),
     },
+    // 发送顺序同 core/prompt_cache：固定内容在前，每份文档、每批不同的在后。
+    formatBlock(),
     profileBlock(input.smartContext),
   ];
   if (withTerms) {
@@ -132,7 +134,7 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
       },
     );
   }
-  blocks.push(formatBlock(), {
+  blocks.push({
     title: t("待翻译内容"),
     state: t("本批原文"),
     sent: true,
@@ -198,7 +200,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
         title: t("与 Word 文档相同"),
         state: t("按「Word」页签的提示词设置"),
         sent: true,
-        content: t("依次为内置规则、补充要求、文档说明、本批涉及的词条、返回格式和待翻译内容。"),
+        content: t("依次为内置规则、补充要求、返回格式、文档说明、本批涉及的词条和待翻译内容。"),
       }],
     },
     {
@@ -207,8 +209,8 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
       used: inplaceUsed,
       blocks: [
         { title: t("内置规则"), state: t("每次发送"), sent: true, content: t("工程图纸标注的翻译要求：逐条译成简体中文，保留数字、单位、编号和缩写，由程序固定。") },
-        profileBlock(input.smartContext, t("由「自动识别场景」按本页文字生成")),
         formatBlock(),
+        profileBlock(input.smartContext, t("由「自动识别场景」按本页文字生成")),
         { title: t("待翻译内容"), state: t("本页取出的文字"), sent: true, mono: true, content: t("[\"Porte coupe-feu\", \"Local technique\", … 本页若干条]") },
       ],
       note: t("数字、编号等不需要翻译的文字不发送。"),

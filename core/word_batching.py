@@ -27,6 +27,7 @@ from core.api_scheduler import (
 )
 from core.engine_dispatcher import is_local_engine_name, user_facing_batch_reason
 from core.language_preflight import TranslationLanguageResult
+from core.prompt_cache import carry_meter
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
@@ -266,7 +267,7 @@ def _run_batches(
                 except StopIteration:
                     notify_drained()
                     return False
-                future = executor.submit(translate_one_batch, index, batch)
+                future = executor.submit(carry_meter(translate_one_batch), index, batch)
                 future_map[future] = batch
                 return True
 

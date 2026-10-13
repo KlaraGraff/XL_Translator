@@ -47,6 +47,7 @@ from core.api_concurrency_control import (
 )
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
+from core.prompt_cache import carry_meter
 from core.translation_protocol import should_apply_quality_filter
 from core.user_facing_errors import humanize_error
 from engines.base_engine import TranslationEngine
@@ -620,7 +621,7 @@ def translate_texts(
                 batch_index, batch = next(batch_iter)
             except StopIteration:
                 return False
-            future = executor.submit(_submit_batch, batch_index, batch)
+            future = executor.submit(carry_meter(_submit_batch), batch_index, batch)
             future_map[future] = batch
             return True
 
@@ -779,7 +780,7 @@ def translate_texts_with_sources(
                 batch_index, batch = next(batch_iter)
             except StopIteration:
                 return False
-            future_map[executor.submit(_run_batch, batch_index, batch)] = batch
+            future_map[executor.submit(carry_meter(_run_batch), batch_index, batch)] = batch
             return True
 
         for _ in range(min(max_workers, len(batches))):

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+from core.prompt_cache import append_batch_block
+
 # 一段里最多加几对标记；再多说明格式很碎，模型放错的概率也高，按整段写法处理
 MAX_GROUPS_PER_UNIT = 12
 
@@ -357,7 +359,7 @@ class InlineMarkEngine:
         sent = [self._marked_sources.get(text, text) for text in texts]
         if sent == list(texts):
             return sent, system_prompt
-        return sent, f"{system_prompt}\n\n{MARK_PROMPT_RULE}".strip()
+        return sent, append_batch_block(system_prompt, MARK_PROMPT_RULE)
 
     def _receive(self, plain: str, sent: str, translation: str, target_lang: str) -> str:
         if sent is plain or sent == plain:

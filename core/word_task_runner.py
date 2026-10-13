@@ -168,6 +168,7 @@ from core.word_batching import (
 )
 from core.output_name_translation import avoid_bilingual_name_collision, translate_output_stem
 from core.phase_progress import PhaseProgress
+from core.prompt_cache import carry_meter
 from core.request_log import BatchRequestLog
 from engines.base_engine import engine_supports_chat, strip_markdown_json
 from settings import AppSettings
@@ -1291,8 +1292,8 @@ class WordTaskRunner(BaseTaskRunner):
                 with request_log:
                     if misses and mixed_texts and api_scheduler is not None:
                         with ThreadPoolExecutor(max_workers=2) as main_executor:
-                            normal_future = main_executor.submit(run_normal_main_translation)
-                            mixed_future = main_executor.submit(run_mixed_main_translation)
+                            normal_future = main_executor.submit(carry_meter(run_normal_main_translation))
+                            mixed_future = main_executor.submit(carry_meter(run_mixed_main_translation))
                             normal_api_translations = normal_future.result()
                             mixed_results = mixed_future.result()
                     else:
@@ -4158,7 +4159,7 @@ class _WordRecoveryPool:
     def _submit(self, fn, ticket: _WordRecoveryTicket, *args) -> bool:
         """真正把任务排进线程池。调用方**不得**持有 `_condition`（见类文档锁序）。"""
         try:
-            future = self._executor.submit(fn, ticket, *args)
+            future = self._executor.submit(carry_meter(fn), ticket, *args)
         except RuntimeError as exc:
             # 线程池已经关停（停止收尾或异常路径）。调用方负责把 inflight
             # 标志退回去，返回 False 就是在通知它。

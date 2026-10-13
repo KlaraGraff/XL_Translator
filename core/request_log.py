@@ -19,6 +19,7 @@ import re
 import threading
 from collections.abc import Callable
 
+from core.prompt_cache import UsageTotals, current_meter, format_usage_line
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
@@ -73,6 +74,8 @@ class BatchRequestLog:
             wait_log_seconds=wait_log_seconds,
             thread_name=thread_name,
         )
+        self._usage_meter = None
+        self._usage_start = UsageTotals()
 
     def on_event(self, event: BatchRequestEvent) -> None:
         """The ``request_callback`` of the translate call (any thread)."""
@@ -97,10 +100,19 @@ class BatchRequestLog:
                 self._log("INFO", f"{head}{event.items} {unit}，用时 {seconds} 秒")
 
     def start(self) -> None:
+        # 这一步发出的请求读回了多少缓存命中：开始时记下任务计数器的读数，结束时写差值。
+        self._usage_meter = current_meter()
+        if self._usage_meter is not None:
+            self._usage_start = self._usage_meter.totals()
         self._notice.start()
 
     def stop(self) -> None:
         self._notice.stop()
+        meter, self._usage_meter = self._usage_meter, None
+        if meter is not None:
+            line = format_usage_line(meter.totals().minus(self._usage_start))
+            if line:
+                self._log("INFO", line)
 
     def __enter__(self) -> BatchRequestLog:
         self.start()

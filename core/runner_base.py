@@ -21,6 +21,7 @@ from typing import Any
 
 from loguru import logger
 
+from core.prompt_cache import usage_metering
 from core.task_runner_messages import LogMsg
 from settings import provider_key_overrides
 
@@ -57,11 +58,13 @@ class BaseTaskRunner:
         """Reset subclass state (pause flags, stop reasons) before a start."""
 
     def _thread_main(self) -> None:
-        if self._uses_key_overrides:
-            with provider_key_overrides(getattr(self, "_key_overrides", None) or {}):
+        # 任务里所有模型请求读回的缓存命中数，由 core.request_log 按翻译步骤写进日志。
+        with usage_metering():
+            if self._uses_key_overrides:
+                with provider_key_overrides(getattr(self, "_key_overrides", None) or {}):
+                    self._run()
+            else:
                 self._run()
-        else:
-            self._run()
 
     def _run(self) -> None:
         raise NotImplementedError

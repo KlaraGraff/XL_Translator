@@ -115,6 +115,7 @@ from core.excel_automation import (
 )
 from core.task_logger import TaskLogger
 from core.process_artifacts import ProcessArtifacts
+from core.prompt_cache import carry_meter
 from core.user_facing_errors import humanize_error
 from core.runner_base import BaseTaskRunner
 # 消息类型移到了 core/task_runner_messages.py（所有任务运行器共用），这里照旧可以导入。
@@ -1891,8 +1892,8 @@ class TaskRunner(BaseTaskRunner):
             with request_log:
                 if misses and mixed_texts and shared_scheduler is not None:
                     with ThreadPoolExecutor(max_workers=2) as main_executor:
-                        normal_future = main_executor.submit(run_normal_api_translation)
-                        mixed_future = main_executor.submit(run_mixed_api_translation)
+                        normal_future = main_executor.submit(carry_meter(run_normal_api_translation))
+                        mixed_future = main_executor.submit(carry_meter(run_mixed_api_translation))
                         normal_api_translations = normal_future.result()
                         mixed_results = mixed_future.result()
                 else:

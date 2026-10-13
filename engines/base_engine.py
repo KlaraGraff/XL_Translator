@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.language_preflight import TranslationLanguageResult, normalize_translation_language_result
+from core.prompt_cache import compose_system
 
 
 # ── 公共常量 ──────────────────────────────────────────────
@@ -213,7 +214,7 @@ class TranslationEngine(ABC):
         instruction = TASK_INSTRUCTION_WITH_SOURCE.format(
             target_lang_name=target_lang_name,
         )
-        full_system = f"{system_prompt}\n\n{instruction}".strip()
+        full_system = compose_system(system_prompt, instruction)
         raw = self.chat(full_system, json.dumps(texts, ensure_ascii=False))
         return parse_response_with_sources(
             texts,

@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import TypeVar
+from core.prompt_cache import carry_meter
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -50,6 +51,7 @@ def map_concurrently(
         return value
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="model-call") as executor:
+        run = carry_meter(run)
         futures = [executor.submit(run, index, item) for index, item in enumerate(items)]
         return [future.result() for future in futures]
 
@@ -66,7 +68,7 @@ def run_in_background(fn: Callable[[], R], *, name: str) -> Future[R]:
         except BaseException as exc:  # noqa: BLE001 - handed to whoever waits on the future
             future.set_exception(exc)
 
-    threading.Thread(target=run, name=name, daemon=True).start()
+    threading.Thread(target=carry_meter(run), name=name, daemon=True).start()
     return future
 
 

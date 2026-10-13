@@ -23,6 +23,8 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
+from core.prompt_cache import append_context_block
+
 # 送去概括的样本：出现次数最多的短标签 + 最长的几段说明，合计不超过这么多字。
 _SAMPLE_CHAR_BUDGET = 6000
 _SAMPLE_FREQUENT = 200
@@ -177,8 +179,8 @@ def append_profile(prompt: str, profile: str) -> str:
         "本文档说明（翻译前通读全文后概括，逐段翻译时据此理解术语、单字和缩写的含义）：\n"
         f"{profile}"
     )
-    prompt = str(prompt or "").rstrip()
-    return f"{prompt}\n\n{block}" if prompt else block
+    # 每份文档不同：排在返回格式要求之后，不同文档也能共用前面那段缓存。
+    return append_context_block(prompt, block)
 
 
 def drop_unlocked_short_hits(

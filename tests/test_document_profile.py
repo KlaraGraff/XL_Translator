@@ -15,6 +15,7 @@ from unittest.mock import patch
 import settings as settings_module
 from core import tm_manager
 from core.cad_translation import CadPipelineOptions, CadTranslationPipeline
+from core.prompt_cache import plain_system
 from core.document_profile import (
     append_profile,
     drop_unlocked_short_hits,
@@ -106,7 +107,8 @@ class RequestProfileTests(unittest.TestCase):
 
     def test_append_profile(self) -> None:
         self.assertEqual(append_profile("system", ""), "system")
-        combined = append_profile("system", "建筑施工图。")
+        # 文档说明带分段记号接在后面，发出前由 core.prompt_cache 排到返回格式要求之后。
+        combined = plain_system(append_profile("system", "建筑施工图。"))
         self.assertTrue(combined.startswith("system\n\n本文档说明"))
         self.assertTrue(combined.endswith("建筑施工图。"))
 

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from core.prompt_cache import carry_meter
 from core.residual_classifier import (
     CATEGORY_CN_DATE_UNIT,
     CATEGORY_NUMBERING_PREFIX,
@@ -375,7 +376,7 @@ def run_repair_ladder(
             repair_one(index, unit)
     else:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="repair") as executor:
-            futures = [executor.submit(repair_one, index, unit) for index, unit in enumerate(queue)]
+            futures = [executor.submit(carry_meter(repair_one), index, unit) for index, unit in enumerate(queue)]
             for future in futures:
                 future.result()
 
