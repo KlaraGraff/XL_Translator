@@ -122,6 +122,28 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             script.index("scripts/sign_macos_app.sh"),
         )
 
+    def test_installer_size_optimizations_stay_in_place(self) -> None:
+        script = (ROOT / "scripts" / "build_macos_package.sh").read_text(encoding="utf-8")
+        # Tauri follows symlinks when it copies resources; the sidecar must be
+        # put back with its symlinks before anything is signed or verified.
+        restore = script.index('ditto "$SIDECAR_SOURCE_DIR" "$SIDECAR_BUNDLED_DIR"')
+        self.assertLess(restore, script.index("scripts/verify_macos_minimum_version.py"))
+        self.assertLess(restore, script.index("scripts/sign_macos_app.sh"))
+        self.assertIn("-format ULMO", script)
+        self.assertNotIn("-format UDZO", script)
+
+        cargo = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+        profile = cargo.split("[profile.release]", 1)[1]
+        for line in ("lto = true", "codegen-units = 1", 'opt-level = "s"', "strip = true"):
+            self.assertIn(line, profile)
+        # SidecarShutdownHook stops the sidecar from Drop; abort would skip it.
+        self.assertNotIn('panic = "abort"', profile)
+
+        spec = (ROOT / "packaging" / "sidecar" / "translator_sidecar.spec").read_text(encoding="utf-8")
+        for module in ("pygments", "_pytest", "win32ui", "pywin"):
+            self.assertIn(f'"{module}"', spec)
+        self.assertNotIn('ROOT / "assets"', spec)
+
     def test_formal_signing_requires_hardened_runtime_and_apple_events_entitlement(self) -> None:
         entitlements = (
             ROOT / "packaging" / "macos" / "translator.entitlements"

@@ -15,7 +15,6 @@ datas = [
     (str(ROOT / "app_meta.py"), "."),
     (str(ROOT / "config.py"), "."),
     (str(ROOT / "settings.py"), "."),
-    (str(ROOT / "assets"), "assets"),
 ]
 
 metadata_packages = [
@@ -105,6 +104,16 @@ a = Analysis(
         # sax/builder (grepped their installed sources directly) -- only lxml.etree and
         # its lxml._elementpath helper are actually used.
         "lxml.objectify", "lxml.html", "lxml.isoschematron", "lxml.sax", "lxml.builder",
+        # The macOS release job installs requirements-test.txt (pytest) before packaging,
+        # and two optional imports then drag test tooling in (~1.8MB): httpx's command-line
+        # entry point (httpx/_main.py) imports pygments, and anyio's asyncio backend imports
+        # _pytest.outcomes in its pytest test-runner helper. Neither runs in the sidecar.
+        "pygments", "pytest", "_pytest",
+        # pywin32's MFC GUI layer (Pythonwin). Static analysis reaches it through
+        # win32com.client.makepy's GUIProgress class, which nothing instantiates; it brings
+        # win32ui.pyd plus the 5.6MB mfc140u.dll. Word/Excel automation only needs
+        # win32com.client, pythoncom and pywintypes.
+        "win32ui", "win32uiole", "pywin", "dde",
     ],
     noarchive=False,
     optimize=0,
