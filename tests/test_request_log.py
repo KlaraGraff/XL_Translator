@@ -11,12 +11,18 @@ import time
 
 from core.engine_dispatcher import translate_texts_with_sources
 from core.language_preflight import TranslationLanguageResult
-from core.request_log import BatchRequestLog
+from core.request_log import (
+    PDF_PAGE_WAIT_TEMPLATE,
+    BatchRequestLog,
+    RequestWaitNotice,
+    is_request_log_line,
+)
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
     BATCH_EVENT_SENT,
     BatchRequestEvent,
+    InFlightRequestTracker,
 )
 from core.word_batching import translate_word_texts
 from engines.base_engine import TranslationEngine
@@ -72,7 +78,7 @@ def test_waiting_notice_only_while_batches_are_out():
     assert waiting_before_idle and waiting_before_idle[0].startswith("正在等待 2 批请求返回，已等待 ")
     # 全部返回以后不再提示等待；退出 with 后提示线程已停。
     assert waiting == waiting_before_idle
-    assert log._ticker is None
+    assert log._notice._ticker is None
 
 
 class _SourceEngine(TranslationEngine):
@@ -156,3 +162,29 @@ def test_word_batches_not_sent_after_stop_count_as_stopped():
     )
     done = [event for event in events if event.kind == BATCH_EVENT_DONE]
     assert [(event.index, event.items, event.stopped) for event in done] == [(1, 2, 0)]
+
+
+def test_request_lines_are_recognised_for_relaying():
+    # PDF「转 Word 翻译」只转发 Word 流程的警告和这几类逐批日志。
+    lines = _Lines()
+    log = BatchRequestLog(lines, unit="处", subject="内容", tick_seconds=0.01, wait_log_seconds=0.05)
+    with log:
+        log.on_event(BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=1, items=3, concurrency=1))
+        log.on_event(BatchRequestEvent(BATCH_EVENT_SENT, index=1, batch_total=1, items=3))
+        time.sleep(0.15)
+        log.on_event(BatchRequestEvent(BATCH_EVENT_DONE, index=1, batch_total=1, items=3, elapsed=0.1))
+    assert len(lines.texts) >= 3
+    assert all(is_request_log_line(text) for text in lines.texts)
+    for other in ("读取文件：说明.docx（1/1）", "开始翻译 3 处内容", "模型翻译完成，共 3 处", ""):
+        assert not is_request_log_line(other)
+
+
+def test_pdf_pages_use_their_own_waiting_line():
+    lines = _Lines()
+    tracker = InFlightRequestTracker()
+    tracker.on_event(BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=2, items=2, concurrency=2))
+    tracker.on_event(BatchRequestEvent(BATCH_EVENT_SENT, index=1, items=1))
+    tracker.on_event(BatchRequestEvent(BATCH_EVENT_SENT, index=2, items=1))
+    with RequestWaitNotice(lines, tracker, template=PDF_PAGE_WAIT_TEMPLATE, tick_seconds=0.01, wait_log_seconds=0.1):
+        time.sleep(0.25)
+    assert lines.texts and lines.texts[0].startswith("正在等待 2 页生成结果，已等待 ")

@@ -15,6 +15,7 @@ the way (maple 2026-10-12：路上也加是造假).
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Callable
 
@@ -30,6 +31,15 @@ TICK_SECONDS = 0.5
 WAIT_LOG_SECONDS = 30.0
 
 LogFn = Callable[[str, str], None]  # (level, message)
+
+BATCH_WAIT_TEMPLATE = "正在等待 {waiting} 批请求返回，已等待 {seconds} 秒"
+# PDF 整页图像翻译按页发请求。
+PDF_PAGE_WAIT_TEMPLATE = "正在等待 {waiting} 页生成结果，已等待 {seconds} 秒"
+_REQUEST_LINE_RE = re.compile(
+    r"开始翻译 \d+ \S+（相同内容只翻译一次）：分 \d+ 批发送"
+    r"|第 \d+/\d+ 批已返回："
+    r"|正在等待 \d+ 批请求返回"
+)
 
 
 class BatchRequestLog:
@@ -56,11 +66,13 @@ class BatchRequestLog:
         self._unit = unit
         self._subject = subject
         self.tracker = tracker or InFlightRequestTracker()
-        self._tick_seconds = tick_seconds
-        self._wait_log_seconds = wait_log_seconds
-        self._thread_name = thread_name
-        self._stop = threading.Event()
-        self._ticker: threading.Thread | None = None
+        self._notice = RequestWaitNotice(
+            log,
+            self.tracker,
+            tick_seconds=tick_seconds,
+            wait_log_seconds=wait_log_seconds,
+            thread_name=thread_name,
+        )
 
     def on_event(self, event: BatchRequestEvent) -> None:
         """The ``request_callback`` of the translate call (any thread)."""
@@ -85,6 +97,55 @@ class BatchRequestLog:
                 self._log("INFO", f"{head}{event.items} {unit}，用时 {seconds} 秒")
 
     def start(self) -> None:
+        self._notice.start()
+
+    def stop(self) -> None:
+        self._notice.stop()
+
+    def __enter__(self) -> BatchRequestLog:
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.stop()
+
+
+def is_request_log_line(message: str) -> bool:
+    """True for the batch lines ``BatchRequestLog`` writes (plan, returns, waiting).
+
+    A runner that relays another runner's log selectively (the PDF「转 Word 翻译」
+    route relays only warnings from the Word run) uses this to pass these on too.
+    """
+    return bool(_REQUEST_LINE_RE.match(str(message or "")))
+
+
+class RequestWaitNotice:
+    """Log a line while requests are out and none has come back for a while.
+
+    ``tracker`` is the step's ``InFlightRequestTracker``; ``template`` gets
+    ``waiting`` (requests still out) and ``seconds`` (since the last return).
+    """
+
+    def __init__(
+        self,
+        log: LogFn,
+        tracker: InFlightRequestTracker,
+        *,
+        template: str = BATCH_WAIT_TEMPLATE,
+        tick_seconds: float = TICK_SECONDS,
+        wait_log_seconds: float = WAIT_LOG_SECONDS,
+        thread_name: str = "translate-wait-log",
+    ) -> None:
+        self._log = log
+        self._tracker = tracker
+        self._template = template
+        self._tick_seconds = tick_seconds
+        self._wait_log_seconds = wait_log_seconds
+        self._thread_name = thread_name
+        self._stop = threading.Event()
+        self._ticker: threading.Thread | None = None
+
+    def start(self) -> None:
         if self._ticker is not None:
             return
         self._stop.clear()
@@ -97,7 +158,7 @@ class BatchRequestLog:
             self._ticker.join(timeout=2)
             self._ticker = None
 
-    def __enter__(self) -> BatchRequestLog:
+    def __enter__(self) -> RequestWaitNotice:
         self.start()
         return self
 
@@ -107,11 +168,11 @@ class BatchRequestLog:
     def _tick(self) -> None:
         next_wait_log = self._wait_log_seconds
         while not self._stop.wait(self._tick_seconds):
-            waiting = self.tracker.in_flight_count()
-            quiet = self.tracker.seconds_since_last_return()
+            waiting = self._tracker.in_flight_count()
+            quiet = self._tracker.seconds_since_last_return()
             if not waiting or quiet < next_wait_log:
                 if quiet < self._wait_log_seconds:
                     next_wait_log = self._wait_log_seconds
                 continue
-            self._log("INFO", f"正在等待 {waiting} 批请求返回，已等待 {int(quiet)} 秒")
+            self._log("INFO", self._template.format(waiting=waiting, seconds=int(quiet)))
             next_wait_log = quiet + self._wait_log_seconds

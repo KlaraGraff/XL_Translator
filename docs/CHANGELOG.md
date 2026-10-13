@@ -30,9 +30,9 @@
 
   **Task center, feedback and data**: A search box replaces the Recent results filter. Task details and the result banner offer a Send feedback on this task dialog, and Export diagnostics moves under More. The Feedback page remembers the last successfully used email, allows any number of screenshots, shows a privacy note when originals or translations are attached, and counts files (40 MB) and screenshots (10 MB) separately. Process-file retention is adjustable (completed: 20 runs or 1 GB; needs review or failed: 30 runs or 1 GB; blank for no limit; settings schema v36). Notification emails gain an HTML version and are signed Translator.
 
-- **运行日志（Excel、Word）**：翻译时与 CAD 一样逐批记录：开头写分几批、每次同时发送几批，每批返回写条数和用时，30 秒没有返回时提示还在等几批。逐批日志统一由 core/request_log.py 写出，CAD 改用同一模块；自动识别源语言的路径（translate_texts_with_sources）和 Word 分批（translate_word_texts）也发出逐批事件。进度条仍只按已返回的批次推进。
+- **运行日志（Excel、Word、PDF）**：翻译时与 CAD 一样逐批记录：开头写分几批、每次同时发送几批，每批返回写条数和用时，30 秒没有返回时提示还在等几批。PDF 整页图像翻译每页结果带用时（从第一次发出请求算起），久不返回时提示还在等几页；自动组合中转 Word 翻译的页转发 Word 的逐批日志。逐批日志统一由 core/request_log.py 写出，CAD 改用同一模块；自动识别源语言的路径（translate_texts_with_sources）和 Word 分批（translate_word_texts）也发出逐批事件。进度条仍只按已返回的批次推进。
 
-  **Run log (Excel, Word)**: Translation now logs each batch as CAD does: the batch plan and concurrency up front, each returned batch with its item count and time, and a note on how many batches are still out after 30 s without a return. One module (core/request_log.py) writes these lines for every page, CAD included; the auto-language path and Word batching now emit per-batch events too. Progress still advances only on returned batches.
+  **Run log (Excel, Word, PDF)**: Translation now logs each batch as CAD does: the batch plan and concurrency up front, each returned batch with its item count and time, and a note on how many batches are still out after 30 s without a return. PDF full-page image translation adds the time taken to each page result (from its first request) and notes how many pages are still pending; text pages that Automatic mix sends through Word relay the Word batch lines. One module (core/request_log.py) writes these lines for every page, CAD included; the auto-language path and Word batching now emit per-batch events too. Progress still advances only on returned batches.
 
 ## V10.0.0
 

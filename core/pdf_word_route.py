@@ -421,6 +421,7 @@ def translate_pdf_via_word(
     from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StoppedMsg
     from core.word_document import scan_word_path
     from core.word_task_runner import WordTaskRunner
+    from core.request_log import is_request_log_line
 
     prefix = f"[{file_label}] " if file_label else ""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -464,7 +465,9 @@ def translate_pdf_via_word(
         if message is None:
             continue
         if isinstance(message, LogMsg):
-            if message.level in ("WARN", "ERROR"):
+            # Word 流程自己的读取、生成等说明不转（说的是临时转出的 Word）；警告、错误和
+            # 逐批请求日志（分几批、每批返回和用时）照转，和直接翻 Word 时看到的一样。
+            if message.level in ("WARN", "ERROR") or (message.visible and is_request_log_line(message.message)):
                 log(message.level, f"{prefix}{message.message}")
             continue
         if isinstance(message, ProgressMsg):
