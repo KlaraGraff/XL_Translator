@@ -52,6 +52,23 @@ export type CadCapabilityStatus = {
   detail?: string;
 };
 
+/** 文字识别组件（Tesseract OCR）状态；后端未提供时前端按 unavailable 处理。 */
+export type OcrPluginStatus = {
+  state: "connected" | "missing" | "invalid";
+  path: string;
+  version?: string | null;
+  languages: string[];
+  has_latin: boolean;
+  message?: string;
+};
+
+/** PDF 转 Word 组件（pdf2docx 插件）状态。 */
+export type Pdf2DocxPluginStatus = {
+  state: "connected" | "missing" | "invalid";
+  path: string;
+  message?: string;
+};
+
 
 export type SseEvent = {
   id: number;
@@ -86,6 +103,23 @@ export type PdfPage = {
   /** 按「跳过 A3 及更大的页面」的尺寸判定被跳过——原始矢量内容整页直传到输出，没有译文也没有页图。
    *  和 user_skipped（用户在逐页面板里手动跳过）是两回事，展示上也必须分开：这个不是异常。 */
   skipped_oversize: boolean;
+  /** 「原位替换文字（Beta）」：这一页按设置走了原位替换。done = 已替换并装进输出；
+   *  kept_original = 没成功（出错/自检不过/没有可替换的字），输出里是原页。 */
+  inplace_requested?: boolean;
+  inplace_status?: "" | "done" | "kept_original" | "stopped";
+  inplace_written?: number;
+  inplace_kept?: number;
+  inplace_review?: number;
+  inplace_review_items?: { text: string; reason: string; box_px?: number[] }[];
+  inplace_message?: string;
+  /** 首选方式用不了、保底也用不了而保留原样的原因（比如没有设置图像翻译模型）。 */
+  kept_reason?: string;
+  /** 首选方式用不了、改用整页图像翻译的原因。 */
+  route_note?: string;
+  /** 混合文件里转 Word 翻译的正文页（Beta）："" | done | failed | stopped。 */
+  word_requested?: boolean;
+  word_status?: string;
+  word_message?: string;
   /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
    *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
   quality_flagged: boolean;
@@ -99,6 +133,16 @@ export type PdfPage = {
   has_previous_image: boolean;
 };
 
+/** PDF 翻译方式（Beta）：设置面板用的本机条件。 */
+export type PdfRouteCapabilities = {
+  image_model_ready: boolean;
+  image_model_message: string;
+  word_component: boolean;
+  office_engine: string;
+  office_message: string;
+  inplace_target_ok: boolean;
+};
+
 export type PdfPageFile = {
   name: string;
   relative_path: string;
@@ -106,6 +150,9 @@ export type PdfPageFile = {
   status: string;
   error: string;
   page_count: number;
+  /** 翻译方式（Beta 分支）：读文件时的判断 text / drawing / scan / mixed（整页图像翻译时为空）。 */
+  document_kind?: string;
+  translated_docx_path?: string;
   pages: PdfPage[];
 };
 
@@ -416,6 +463,44 @@ export class ApiClient {
 
   async connectCadOda(path: string): Promise<CadCapabilityStatus> {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  pdfRouteCapabilities(): Promise<PdfRouteCapabilities> {
+    return this.request<PdfRouteCapabilities>("/api/pdf/route-capabilities");
+  }
+
+  async getOcrCapability(): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr");
+  }
+
+  async refreshOcrCapability(): Promise<OcrPluginStatus> { return this.getOcrCapability(); }
+
+  async officialOcrDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/ocr/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async connectOcrTesseract(path: string): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr/install", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async uninstallOcrPlugin(): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr/uninstall", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async getPdf2DocxCapability(): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx");
+  }
+
+  async officialPdf2DocxDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/pdf2docx/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async connectPdf2Docx(path: string): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/install", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async uninstallPdf2DocxPlugin(): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/uninstall", { method: "POST", body: JSON.stringify({}) });
   }
 
   async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {

@@ -525,6 +525,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         [t("未开始页"), ["unstarted_page_count"]],
         [t("高清 PDF"), ["generated_pdf_count"]],
         [t("译文图片"), ["generated_image_count"]],
+        [t("译文 Word"), ["generated_docx_count"]],
         [t("失败页（已插入占位）"), ["placeholder_page_count"]],
         // 跟「失败占位」并列的必须是与它互斥的那个数。「审核未通过」里有一半是直接退回
         // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。

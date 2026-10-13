@@ -221,6 +221,28 @@ class PdfPageRecord:
     # 「跳过大幅面页」命中的页面：从未提交给翻译模型，装订时从源 PDF 矢量直传。
     # UI 需要靠这个字段和别的终态区分开，单独给张「未翻译，原样保留」的角标。
     skipped_oversize: bool = False
+    # 「原位替换文字（保留矢量，Beta）」：这一页按设置走原位替换。不送图像模型，
+    # 装订时用替换后的单页 PDF（失败或自检不过则用源页，等同原样保留）。
+    inplace_requested: bool = False
+    inplace_status: str = ""          # "" | "done" | "kept_original" | "stopped"
+    inplace_pdf_path: str = ""
+    inplace_written: int = 0
+    inplace_kept: int = 0
+    inplace_review: int = 0
+    inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
+    inplace_message: str = ""
+    # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
+    # 照样能跑）：原页放进输出，这里写原因。
+    kept_reason: str = ""
+    # 自动组合里转 Word 翻译的页（Beta）：连续几页合成一段，word_segment 是段号
+    # （从 1 起），word_status 为 "" | done | failed | stopped。
+    word_requested: bool = False
+    word_segment: int = 0
+    word_status: str = ""
+    word_message: str = ""
+    # 自动组合：首选方式在这一页用不了、改用保底方式时写原因（如「转成 Word 失败，
+    # 改用整页图像翻译」）。保留原样的另写在 kept_reason。
+    route_note: str = ""
     review_enabled: bool = False
     review_status: str = "skipped"
     review_attempts: int = 0
@@ -281,6 +303,16 @@ class PdfFileRecord:
     source_pdf_size_bytes: int = 0
     high_quality_pdf_size_bytes: int = 0
     compressed_pdf_size_bytes: int = 0
+    # 翻译方式（Beta 分支）：document_kind 是读文件时的判断（text / drawing / scan /
+    # mixed，整页图像翻译时不判断，留空）；translated_docx_path 是「同时输出 Word」
+    # 另存的 Word（只在整份文件都转 Word 翻译时才有）。
+    document_kind: str = ""
+    translated_docx_path: str = ""
+    # 转 Word 翻译时 Word 流程报出的待复核处数（保留原文、疑似漏译等）
+    word_issue_count: int = 0
+    # 混合文件里转 Word 的正文段：[{segment, first_page, last_page, docx_path, pdf_path,
+    # status, message, issue_count}]
+    word_segments: list[dict[str, Any]] = field(default_factory=list)
     pages: list[PdfPageRecord] = field(default_factory=list)
 
 
@@ -307,6 +339,8 @@ class PdfTaskSummary:
     compressed_pdf_enabled: bool = False
     compressed_pdf_count: int = 0
     generated_image_count: int = 0
+    # 转成 Word 翻译（Beta）写出的 .docx 份数
+    generated_docx_count: int = 0
     compression_quality: int = PDF_COMPRESSED_JPEG_QUALITY_DEFAULT
     compression_max_long_edge_px: int = PDF_COMPRESSED_MAX_LONG_EDGE_PX
     review_enabled: bool = False

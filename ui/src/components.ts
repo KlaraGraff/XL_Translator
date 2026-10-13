@@ -535,6 +535,10 @@ export function createTextField(options: TextFieldOptions): TextFieldHandle {
 export interface SelectFieldOption {
   value: string;
   label: string;
+  /** 下拉菜单里写在名称下面的一句说明；按钮上只显示名称。 */
+  description?: string;
+  /** 名称后面的小角标（如「Beta」），按钮和菜单里都显示。 */
+  tag?: string;
 }
 
 export interface SelectFieldOptions {
@@ -594,9 +598,11 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
   const valueLabel = el("span", { className: "dropdown-value" });
   button.append(valueLabel, icon("chev", { className: "chev" }));
 
-  const currentLabel = () => options.options.find((item) => item.value === select.value)?.label ?? select.value;
+  const current = () => options.options.find((item) => item.value === select.value);
   const paint = () => {
-    valueLabel.textContent = currentLabel();
+    valueLabel.textContent = current()?.label ?? select.value;
+    const tag = current()?.tag;
+    if (tag) valueLabel.append(el("em", { className: "opt-tag", text: tag }));
     button.disabled = Boolean(options.disabled);
   };
   // Keep the visual trigger in sync when a caller restores a form by assigning
@@ -670,7 +676,10 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
       item.type = "button";
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(option.value === select.value));
-      item.append(el("b", { text: option.label }));
+      const name = el("b", { text: option.label });
+      if (option.tag) name.append(el("em", { className: "opt-tag", text: option.tag }));
+      item.append(name);
+      if (option.description) item.append(el("span", { text: option.description }));
       item.addEventListener("click", () => {
         select.value = option.value;
         paint();
