@@ -179,6 +179,13 @@ export function mount(container: HTMLElement, params: ViewParams): void {
       draft.contact = params.contact;
       draft.contactEdited = true;
     }
+    const include = params.include as Partial<Record<"system" | "logs" | "sources" | "outputs", boolean>> | undefined;
+    if (include && typeof include === "object") {
+      if (typeof include.system === "boolean") draft.includeSystem = include.system;
+      if (typeof include.logs === "boolean") draft.includeLogs = include.logs;
+      if (typeof include.sources === "boolean") draft.includeSources = include.sources;
+      if (typeof include.outputs === "boolean") draft.includeOutputs = include.outputs;
+    }
   }
   render();
   void loadContext();

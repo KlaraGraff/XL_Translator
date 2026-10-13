@@ -1,8 +1,8 @@
 // 「反馈此任务」弹窗：任务中心详情和翻译结果横幅上的快捷反馈，不用离开当前页面。
 //
-// 默认附上系统与版本信息和这次任务的日志；原文件、译文要用户自己勾。任务有异常
-// （失败、中断、需复核）时日志本身就说明了问题，描述可以不写；看上去正常的任务，
-// 用户得写一句哪里不对。要贴截图或加别的文件，点「在反馈页填写」去完整的反馈页。
+// 默认附上系统与版本信息和这次任务的日志。任务有异常（失败、中断、需复核）时译文
+// 也默认附上，日志本身就说明了问题，描述可以不写；看上去正常的任务，译文要用户自己勾，
+// 还得写一句哪里不对。原文件始终要用户自己勾。要贴截图或加别的文件，点「在反馈页填写」去完整的反馈页。
 
 import { ApiClient, ApiError } from "./api-client";
 import { createButton, openModal, showToast, type ModalHandle } from "./components";
@@ -58,7 +58,7 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
     includeSystem: true,
     includeLogs: true,
     includeSources: false,
-    includeOutputs: false,
+    includeOutputs: options.hasProblem,
     busy: false,
   };
   let context: FeedbackContext | null = null;
@@ -143,10 +143,20 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
     body: [form],
     wide: true,
     actions: [
-      // 已经写的描述和邮箱一起带过去，不用重写。
+      // 已经写的描述、邮箱和勾选的附带内容一起带过去，不用重来。
       {
         label: t("在反馈页填写"),
-        onClick: () => navigate("feedback", { taskId: options.taskId, description: state.description, contact: state.contactEdited ? state.contact : "" }),
+        onClick: () => navigate("feedback", {
+          taskId: options.taskId,
+          description: state.description,
+          contact: state.contactEdited ? state.contact : "",
+          include: {
+            system: state.includeSystem,
+            logs: state.includeLogs,
+            sources: state.includeSources,
+            outputs: state.includeOutputs,
+          },
+        }),
       },
       { label: t("取消") },
       { label: t("发送"), variant: "primary", keepOpen: true, onClick: () => send() },
