@@ -38,6 +38,10 @@
 
   **Excel slow responses and timeouts**: The 180 s limit now applies to each request on its own (it used to be shared by a whole batch, so retries, splits and connection switches only got what was left). Waiting for the first batch to settle the protocol no longer counts against concurrent batches, and a timed-out or truncated first batch no longer fails the others. A batch that still times out after its retry is split in two and tried once more. The "total request time used up; protocol still undetermined" message now says how many seconds the model service went without answering, and when everything failed by timeout the result suggests "Translate untranslated content only". The log counts translations returned identical to the source. Run-together English (e.g. Exhaustfan(withbackdraftdamper)) is no longer treated as needing no translation; model numbers, units, emails and file names are still skipped.
 
+- **仅译文模式下「中文＋外文」整体翻译（Excel、Word）**：模型会把「6.1.1 土石方工程合计  Total of Earthworks」判成已有双语，中译法时那半句英文不是法文，仅译文模式下原样保留就等于没翻（反馈 FB-20261013-UVW95F）。现在这类格子或段落在仅译文模式下再按普通内容整体翻一遍，翻不出来的保留原文并标需复核；原文＋译文模式不变。
+
+  **Mixed Chinese + other language in Translation only (Excel, Word)**: The model may treat "6.1.1 土石方工程合计  Total of Earthworks" as already bilingual, but for Chinese → French the English half is not French, so keeping it as is in Translation only mode left it untranslated (feedback FB-20261013-UVW95F). Such cells and paragraphs are now translated again as ordinary content in Translation only mode; anything that still fails keeps its source and is marked for review. Source + translation mode is unchanged.
+
 - **记忆库在全新数据目录上自动建表**：PDF 转 Word 和原位替换不经过任务开始时的 init_db()，在从没用过记忆库的数据目录上会报「no such table: tm_entries」；tm_manager 在本进程第一次打开某个库文件（或文件被删掉后）先建表。
 
   **Translation memory tables on a fresh data directory**: PDF-to-Word and in-place replacement skip the task-start init_db(), so a data directory that had never used the memory hit "no such table: tm_entries". tm_manager now creates the tables the first time a process opens a database file (or after it was deleted).
