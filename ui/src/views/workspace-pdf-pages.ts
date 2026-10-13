@@ -391,6 +391,16 @@ function pageIsUnfinished(page: PdfPage): boolean {
  *
  *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
 function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewEnabled: boolean): HTMLElement[] {
+  if (file.translation_route === "word") {
+    // 整份转成 Word 翻译（Beta）：没有逐页结果，只说这份文件到哪一步了。
+    const span = el("span", file.status === "failed" ? "bad" : "");
+    span.textContent = file.status === "failed"
+      ? t("转成 Word 翻译失败")
+      : file.status === "completed" || file.status === "needs_review"
+        ? t("已转成 Word 翻译 · {0} 页", file.page_count)
+        : t("转成 Word 翻译 · 处理中");
+    return [span];
+  }
   if (file.pages.length === 0) {
     // 一页都没有：要么预处理就失败（打不开、图片校验没过），要么还没轮到预处理。
     // 有页的失败文件（例如单张图片那一页没生成出来）不是「打不开」，往下按页分桶说。
@@ -410,7 +420,8 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
   const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
   // 按幅面跳过的 A3+ 页没有翻译，只是原样保留——不能算进「通过」。以前一份只有一页
   // A3 的文件汇总写着「1 页全部通过」，展开才看到那一页是「按幅面跳过」。
-  const isSkippedOversize = (page: PdfPage): boolean => Boolean(page.skipped_oversize) && page.inplace_status !== "done";
+  const isSkippedOversize = (page: PdfPage): boolean =>
+    Boolean(page.skipped_oversize) && page.inplace_status !== "done" && !page.kept_reason;
   const oversize = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !flagged.includes(page) && !unfinished.includes(page) && isSkippedOversize(page));
   const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length - oversize.length;
 
@@ -872,6 +883,7 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
       : createChip({ label: t("原位替换"), tone: "ok" });
   }
   if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
+  if (page.kept_reason) return createChip({ label: t("保留原样"), tone: "warn" });
   if (page.skipped_oversize) return createChip({ label: t("按幅面跳过"), tone: "mute" });
   if (page.status === "failed" || page.placeholder) {
     return createChip({ label: page.user_skipped ? t("已跳过占位") : t("生成失败"), tone: "dgr" });
@@ -933,6 +945,7 @@ function inplaceNote(page: PdfPage): string {
 
 function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
   if (page.inplace_requested && page.inplace_status) return inplaceNote(page);
+  if (page.kept_reason) return tx(page.kept_reason);
   if (page.skipped_oversize) return t("幅面较大，未送翻译，原始内容已原样保留在输出文件中。");
   if (page.pending_action === "regenerate") return t("待执行重新生成，继续翻译后执行。");
   if (page.pending_action === "skip") return t("待执行跳过，继续翻译后执行。");
@@ -994,7 +1007,9 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   const oversizeSkipped = page.skipped_oversize;
   const oversizeReason = page.inplace_requested
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
-    : t("该页因幅面被跳过，未生成页图；如需翻译，请在「大幅面页面」里改选其他处理方式后重新翻译。");
+    : page.kept_reason
+      ? t("该页需要整页图像翻译，但还没有设置图像翻译模型，未生成页图。")
+      : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或在「翻译方式」里改选原位替换后重新翻译。");
 
   actionsCell.append(
     buildActionLink(

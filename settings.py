@@ -1116,18 +1116,20 @@ class PdfSettings(BaseModel):
     # 翻译模型，直接从源 PDF 矢量原样导入输出——这类页经不起栅格化，且大多数
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
-    # 大幅面页怎么处理（Beta 分支新增，取代上面的开关；上面的开关仍随之保存，
-    # 回到没有这项设置的版本时按它工作）：
-    #   skip    —— 原样保留，不翻译（默认，和以前「跳过」一样）
-    #   inplace —— 原位替换文字（保留矢量，Beta）：在原 PDF 上删字写回译文
-    #   image   —— 整页图像翻译（以前关掉「跳过」时的行为）
-    # 没有版本号升级：这是加法字段，旧版本读到会忽略它；分支若合入主线再升版。
-    oversized_page_mode: Literal["skip", "inplace", "image"] = "skip"
-    # 从多大算大幅面：A3（默认，即以前的判定）/ A2 / A1 / A0。
+    # 翻译方式（Beta 分支新增，见 core.pdf_routes）：
+    #   image   —— 整页图像翻译（默认，和以前一样；大幅面页按上面的开关跳过或翻译）
+    #   inplace —— 原位替换（保留矢量）：在原 PDF 上删字写回译文；取不到文字的
+    #              普通页退回整页图像翻译
+    #   word    —— 转成 Word 再翻译：整份都是普通排版页的文字文档输出 .docx；
+    #              其余文件照整页图像翻译处理
+    #   auto    —— 自动组合：文字文档按 auto_text_route，图纸和大图按
+    #              auto_drawing_route，扫描页整页图像翻译
+    # 没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
+    translation_route: Literal["image", "inplace", "word", "auto"] = "image"
+    auto_text_route: Literal["word", "inplace", "image"] = "word"
+    auto_drawing_route: Literal["inplace", "skip", "image"] = "inplace"
+    # 从多大算大幅面（原位替换、自动组合用）：A3（默认，即以前的判定）/ A2 / A1 / A0。
     oversized_page_threshold: Literal["A3", "A2", "A1", "A0"] = "A3"
-    # 比大幅面小的页面：image（整页图像翻译，默认）/ inplace（取得到文字层时原位
-    # 替换文字，Beta；取不到文字层的页仍走整页图像翻译）。
-    normal_page_mode: Literal["image", "inplace"] = "image"
     # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
     # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字
     # 层时这一步自动跳过。v33 新增，默认开。
@@ -1142,20 +1144,7 @@ class PdfSettings(BaseModel):
         raw = migrated.get("page_generation_concurrency")
         if raw in ("", None):
             migrated["page_generation_concurrency"] = None
-        # 大幅面处理方式：旧文件只有「跳过」开关，按它推出来。新字段在的时候以新字段
-        # 为准——设置接口是把改动合并进当前设置再整体校验的，合并后旧开关还是改动
-        # 之前的值，拿它纠正新字段就等于把用户刚做的选择改回去。旧开关由下面的
-        # after 校验跟着新字段重算。
-        mode = migrated.get("oversized_page_mode")
-        if mode not in ("skip", "inplace", "image"):
-            migrated["oversized_page_mode"] = "image" if migrated.get("skip_oversized_pages") is False else "skip"
         return migrated
-
-    @model_validator(mode="after")
-    def _sync_legacy_oversized_flag(self):
-        # 旧开关跟着新设置走：原样保留和原位替换都不把大幅面页送去图像翻译。
-        self.skip_oversized_pages = self.oversized_page_mode != "image"
-        return self
 
 
 class ModelThroughputSettings(BaseModel):

@@ -47,7 +47,7 @@ def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
     return (
         f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
         "输出 PDF 与源文件一致。如需翻译这些页面，"
-        "请在「大幅面页面」里改选其他处理方式后重新翻译。"
+        "请关闭「跳过 A3 及更大的页面」，或在「翻译方式」里改选原位替换后重新翻译。"
     )
 
 
@@ -257,6 +257,29 @@ def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
     return message
 
 
+_DOCUMENT_KIND_TEXT = {"text": "文字文档", "drawing": "图纸", "scan": "扫描件", "mixed": "图文混合"}
+
+
+def _route_report_lines(record: PdfFileRecord) -> list[str]:
+    """翻译方式（Beta 分支）：文件判断成什么、走了哪条路、没有图像模型而保留的页。"""
+    lines: list[str] = []
+    if record.document_kind:
+        lines.append(f"- 文件类型判断：{_DOCUMENT_KIND_TEXT.get(record.document_kind, record.document_kind)}")
+    if record.translation_route == "word":
+        lines.append(
+            "- 翻译方式：转成 Word 再翻译（Beta）；译文 Word："
+            + (record.translated_docx_path or "未生成")
+        )
+    kept = [page.page_number for page in record.pages if getattr(page, "kept_reason", "")]
+    if kept:
+        lines.append(
+            f"- 没有设置图像翻译模型而保留原样的页：{len(kept)} 页（第 "
+            + "、".join(str(number) for number in sorted(kept)[:30])
+            + " 页）"
+        )
+    return lines
+
+
 def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
     """「原位替换文字（Beta）」的逐页结果：替换了多少处、哪些地方保留了原文。"""
     pages = [page for page in record.pages if getattr(page, "inplace_requested", False)]
@@ -404,6 +427,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
         f"- 已生成高清 PDF：{summary.generated_pdf_count}",
         f"- 已生成压缩 PDF：{summary.compressed_pdf_count}",
         f"- 已生成译图：{summary.generated_image_count}",
+        *([f"- 已转成 Word 翻译（Beta）：{summary.generated_docx_count}"] if summary.generated_docx_count else []),
         f"- 压缩输出：{'开启' if summary.compressed_pdf_enabled else '关闭'}",
         f"- 失败占位页：{summary.placeholder_page_count}",
         f"- 大幅面页（未翻译，原样保留）：{summary.skipped_oversize_page_count}",
@@ -452,6 +476,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
                 "页参与翻译",
                 *_inplace_report_lines(file_record),
+                *_route_report_lines(file_record),
                 f"- 自动修正比例的页：{file_record.emergency_ratio_normalized_count}",
                 f"- 自动检查发现问题、待复核的页：{file_record.quality_flagged_page_count}",
                 f"- 补白边保持比例的页：{file_record.ratio_letterboxed_page_count}",
@@ -529,8 +554,15 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     fully_skipped = _record_is_fully_skipped_oversize(record)
     # 全部页面都被大幅面跳过时产物只是源文件副本：文件确实生成了，但翻译
     # 一个字都没有，所以这里不能算 success。
-    success = bool(record.translated_pdf_path or record.translated_image_path) and not fully_skipped
+    success = bool(
+        record.translated_docx_path or record.translated_pdf_path or record.translated_image_path
+    ) and not fully_skipped
     detail_parts = []
+    if record.translated_docx_path:
+        detail_parts.append("已转成 Word 翻译（Beta）")
+    kept_pages = sum(1 for page in record.pages if getattr(page, "kept_reason", ""))
+    if kept_pages:
+        detail_parts.append(f"{kept_pages} 页需要整页图像翻译，但没有设置图像翻译模型，保留原样")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     if record.quality_flagged_page_count:
@@ -552,7 +584,10 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "quality_flagged_page_count": record.quality_flagged_page_count,
         "ratio_letterboxed_page_count": record.ratio_letterboxed_page_count,
         "render_downscaled_page_count": record.render_downscaled_page_count,
-        "output": record.translated_pdf_path or record.translated_image_path,
+        "output": record.translated_docx_path or record.translated_pdf_path or record.translated_image_path,
+        "output_format": "docx" if record.translated_docx_path else ("image" if record.translated_image_path else "pdf"),
+        "translation_route": record.translation_route,
+        "document_kind": record.document_kind,
         "compressed_output": record.compressed_pdf_path,
         "translated_image_path": record.translated_image_path,
         "translated_image_format": record.translated_image_format,
@@ -600,6 +635,8 @@ def _done_kpi(summary: PdfTaskSummary) -> dict[str, Any]:
             kpi["unstarted_page_count"] = summary.unstarted_page_count
     if summary.generated_image_count:
         kpi["generated_image_count"] = summary.generated_image_count
+    if summary.generated_docx_count:
+        kpi["generated_docx_count"] = summary.generated_docx_count
     if summary.suspect_adopted_page_count:
         kpi["suspect_adopted_page_count"] = summary.suspect_adopted_page_count
     if summary.skipped_oversize_page_count:

@@ -331,72 +331,54 @@ tr.hid {
 }
 
 /*
- * PDF「普通页面」/「大幅面页面」怎么处理：单选卡组，取代原来的「跳过 A3 及更大的页面」
- * 开关。照抄样张 docs/mockups/.../2026-10-13_pdf-page-routes-beta.html 的 .opt/.tag.beta，
- * 颜色全部换成 tokens.css 的变量——Beta 角标直接复用 .chip.warn（本来就是橙色），不另起
- * 一套色。说明文字只在选中的卡上展开（紧凑优先），其余卡只留标题 + 角标。
+ * PDF「翻译方式」：一行「名称 + ? + 右侧紧凑下拉」，和上面的开关行同高同节奏。样张见
+ * .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-translation-routes.html。
+ * 自动组合时按内容分类的几行缩进一格、字色淡一档，读起来是「翻译方式」的下级。
  */
-.pagecards {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 2px;
+.route-block {
+  margin-top: 2px;
 }
-.pagecard {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-}
-.pagecard:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.pagecard.sel {
-  border-color: var(--accent);
-  background: var(--tint);
-}
-.pagecard.dis {
-  opacity: .5;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-.pagecard-dot {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  margin-top: 1px;
-  border-radius: 99px;
-  border: 2px solid var(--line-2);
-  box-sizing: border-box;
-}
-.pagecard.sel .pagecard-dot {
-  border: 4px solid var(--accent);
-}
-.pagecard-body {
-  flex: 1;
-  min-width: 0;
-}
-.pagecard-main {
+.selrow {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-}
-.pagecard-title {
+  padding: 4px 0;
   font-size: 12.5px;
-  font-weight: 600;
   color: var(--ink);
 }
-.pagecard-tag {
+.selrow.sub {
+  color: var(--ink-2);
+  padding-left: 10px;
+}
+.selrow .dropdown.compact {
+  margin-left: auto;
+  width: 146px;
   flex: none;
 }
-.pagecard-hint {
-  margin-top: 4px;
-  font-size: 11.5px;
-  line-height: 1.6;
+.selrow .dropdown.compact.wide {
+  width: 168px;
+}
+.selrow .dropdown.compact .dropdown-btn {
+  min-height: 28px;
+  font-size: 12px;
+  padding: 0 6px 0 9px;
+}
+.selrow-fixed {
+  margin-left: auto;
+  width: 146px;
+  font-size: 12px;
   color: var(--ink-3);
+  padding-left: 10px;
+}
+.route-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  margin: 6px 0 2px;
+}
+
+/* 翻译方式下拉的菜单比按钮宽：每项下面有一句说明，挤在按钮宽度里会折成三四行。 */
+.compact-menu {
+  width: max-content;
+  max-width: 280px;
 }

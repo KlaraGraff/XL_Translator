@@ -90,6 +90,20 @@ from core.process_artifacts import ProcessArtifacts, find_process_dirs
 from settings import AppSettings, provider_key_overrides
 
 # 数据模型与结果整理已拆到独立模块，这里原样再导出，保持旧的导入路径可用。
+from core.pdf_routes import (
+    KIND_DRAWING,
+    KIND_MIXED,
+    KIND_SCAN,
+    KIND_TEXT,
+    ROUTE_IMAGE,
+    ROUTE_INPLACE,
+    ROUTE_SKIP,
+    ROUTE_WORD,
+    classify_document,
+    file_uses_word,
+    page_route,
+)
+from core.pdf_word_route import word_route_available
 from core.pdf_models import (  # noqa: F401
     SOURCE_TYPE_PDF,
     SOURCE_TYPE_IMAGE,
@@ -888,6 +902,8 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         # 原位替换没成功（出错、自检不过、中途停止）的页，输出里是原页，要提醒复核。
         or any(page.inplace_requested and page.inplace_status in {"kept_original", "stopped"}
                for page in record.pages)
+        # 要整页图像翻译、但没有设置图像模型而保留原样的页
+        or any(page.kept_reason for page in record.pages)
     )
 
 
@@ -903,6 +919,14 @@ def _with_stop(translate, should_stop):
             return translate(texts, prompt)
 
     return wrapped
+
+
+_DOCUMENT_KIND_LABELS = {
+    KIND_TEXT: "文字文档",
+    KIND_DRAWING: "图纸",
+    KIND_SCAN: "扫描件",
+    KIND_MIXED: "图文混合文件",
+}
 
 
 def max_page_generation_attempts(retry_count: int | None) -> int:
@@ -1299,6 +1323,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._output_name_engine = None
         self._output_name_engine_failed = False
         self._translated_pdf_names: dict[str, str] = {}
+        # 翻译方式（Beta 分支，见 core.pdf_routes）：每份 PDF 读文件时的判断，以及
+        # 「没有设置图像翻译模型」——翻译方式不是整页图像翻译时任务照样能跑，只是
+        # 需要整页图像翻译的页保留原样。
+        self._document_kinds: dict[str, Any] = {}
+        self._image_model_missing = ""
 
     @property
     def task_id(self) -> str:
@@ -1372,7 +1401,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             record = prepared.record
             by_number = {page.page_number: page for page in list(record.pages)}
             pages: list[dict[str, Any]] = []
-            for page_number in range(1, max(0, int(record.page_count)) + 1):
+            # 转 Word 的文件没有逐页结果，面板上只显示一行文件状态
+            page_numbers = [] if record.translation_route == ROUTE_WORD else range(1, max(0, int(record.page_count)) + 1)
+            for page_number in page_numbers:
                 page = by_number.get(page_number)
                 key = (record.relative_path, page_number)
                 pages.append(
@@ -1392,6 +1423,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     "status": record.status,
                     "error": _short_review_text(record.error),
                     "page_count": int(record.page_count),
+                    "document_kind": record.document_kind,
+                    "translation_route": record.translation_route,
+                    "translated_docx_path": record.translated_docx_path,
                     "pages": pages,
                 }
             )
@@ -2133,6 +2167,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "inplace_review": int(page.inplace_review) if page is not None else 0,
             "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
             "inplace_message": page.inplace_message if page is not None else "",
+            "kept_reason": page.kept_reason if page is not None else "",
             "error": _short_review_text(page.error if page is not None else ""),
             # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
             # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
@@ -2543,9 +2578,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         review_model_signature = _safe_pdf_review_model_signature(self._settings)
         review_enabled = bool(self._settings.pdf.review_enabled)
 
+        self._image_model_missing = ""
+        self._document_kinds = {}
+        image_optional = getattr(self._settings.pdf, "translation_route", "image") != "image"
+        model_config = None
+        image_concurrency = 1
         try:
             model_config = resolve_effective_model_config(self._settings, ROLE_IMAGE)
-            image_throughput = get_model_throughput(self._settings, model_config)
+            image_concurrency = get_model_throughput(self._settings, model_config).concurrency
             model_signature = image_model_signature(self._settings)
             if not provider_supports_capability(model_config.provider, "image"):
                 raise ImageModelUnavailableError(
@@ -2555,31 +2595,42 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
             if not model_config.model:
                 raise ImageModelUnavailableError("PDF 与图片翻译模型的名称不能为空")
+            if image_optional and model_config.mode == "cloud" and not model_config.api_key:
+                raise ImageModelUnavailableError("PDF 与图片翻译模型还没有填写 API 密钥")
         except ImageModelUnavailableError as exc:
             message = str(exc)
-            record_image_model_availability(
-                self._settings,
-                ok=False,
-                message=message,
-                signature=model_signature,
-                checked_at=datetime.now().isoformat(timespec="seconds"),
-            )
-            self._queue.put(ErrorMsg(message=f"PDF 与图片翻译模型的设置不可用：{message}"))
-            return
+            if image_optional:
+                # 原位替换、转 Word 不用图像模型；要整页图像翻译的页到时保留原样。
+                self._image_model_missing = message
+                model_config = None
+            else:
+                record_image_model_availability(
+                    self._settings,
+                    ok=False,
+                    message=message,
+                    signature=model_signature,
+                    checked_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                self._queue.put(ErrorMsg(message=f"PDF 与图片翻译模型的设置不可用：{message}"))
+                return
         except Exception as exc:  # noqa: BLE001 - init converted to UI error.
             logger.debug(f"[PDF] 解析翻译模型配置失败原始错误：{exc!r}")
-            self._queue.put(
-                ErrorMsg(
-                    message="PDF 与图片翻译模型的设置不可用："
-                    + user_facing_reason(
-                        exc,
-                        fallback="请在设置中检查 PDF 与图片翻译模型的连接。",
+            if image_optional:
+                self._image_model_missing = user_facing_reason(exc, fallback="图像翻译模型不可用。")
+                model_config = None
+            else:
+                self._queue.put(
+                    ErrorMsg(
+                        message="PDF 与图片翻译模型的设置不可用："
+                        + user_facing_reason(
+                            exc,
+                            fallback="请在设置中检查 PDF 与图片翻译模型的连接。",
+                        )
                     )
                 )
-            )
-            return
+                return
 
-        if review_enabled:
+        if review_enabled and model_config is not None:
             try:
                 review_model_config = resolve_effective_model_config(
                     self._settings,
@@ -2642,7 +2693,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             max_attempts = max_page_generation_attempts(
                 self._settings.pdf.page_retry_attempts
             )
-            concurrency = self._resolve_pdf_concurrency(image_throughput.concurrency)
+            concurrency = self._resolve_pdf_concurrency(image_concurrency)
             self._review_total = max_attempts
             scheduler = self._api_scheduler_override or WeightedApiScheduler(concurrency)
             same_review_group = (
@@ -2666,7 +2717,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             logger.info(
                 f"[PDF] 页面以 {PDF_RENDER_DPI_DEFAULT} DPI 渲染为 PNG，图片按模型返回格式输出"
             )
-            if self._settings.pdf.page_generation_concurrency is None:
+            if self._image_model_missing:
+                self._log(
+                    "WARN",
+                    f"没有可用的图像翻译模型（{self._image_model_missing}）：需要整页图像翻译的页将保留原样。",
+                )
+            elif self._settings.pdf.page_generation_concurrency is None:
                 self._log("INFO", f"同时处理 {concurrency} 页（按所选模型自动设定）")
             else:
                 self._log("INFO", f"同时处理 {concurrency} 页（按设置里指定的数量）")
@@ -2691,7 +2747,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 复用上次的成品页必须发生在这里：页记录一旦建好，_iter_rendered_pages
             # 就会自然跳过这些页，装订、逐页面板、停止/暂停语义全都不用另开分支。
             self._prefill_resume_pages(prepared_files, output_dir=output_dir)
-            total_pages = sum(record.page_count for record in file_records)
+            # 转 Word 的文件不逐页翻译，不算进页数进度
+            total_pages = sum(
+                record.page_count for record in file_records if record.translation_route != ROUTE_WORD
+            )
             self._total_page_count = total_pages
             self._emit_page_status()
             for prepared in prepared_files:
@@ -3062,6 +3121,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     record.status = PDF_OUTPUT_STATE_FAILED
                     logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
                     record.error = f"图片读取失败：{user_facing_reason(exc, fallback='无法打开此图片，文件可能已损坏或格式不受支持。')}"
+                if record.status != PDF_OUTPUT_STATE_FAILED and self._image_model_missing:
+                    record.status = PDF_OUTPUT_STATE_FAILED
+                    record.error = _with_sentence_end(
+                        "图片只能用图像翻译模型翻译，还没有设置它：" + self._image_model_missing
+                    )
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -3092,7 +3156,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - dependency/file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 record.error = _pdf_read_error_message(exc)
-            if record.status != PDF_OUTPUT_STATE_FAILED and profile_executor is not None:
+            if record.status != PDF_OUTPUT_STATE_FAILED:
+                self._classify_for_route(item, record)
+            if (
+                record.status != PDF_OUTPUT_STATE_FAILED
+                and profile_executor is not None
+                # 转 Word 的文件由 Word 流程自己写文档说明
+                and record.translation_route != ROUTE_WORD
+            ):
                 future = self._submit_document_context(profile_executor, item.path)
                 if future is not None:
                     profile_futures[str(item.path)] = future
@@ -3116,6 +3187,34 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             else:
                 self._file_progress.emit(item.path, "waiting", "translate", total=record.page_count)
             self._queue.put(ProgressMsg(1, 4, "读取文件", index, max(1, len(self._files))))
+
+    def _classify_for_route(self, item: PdfFileItem, record: PdfFileRecord) -> None:
+        """翻译方式不是整页图像翻译时，读文件判断类型，决定整份转 Word 还是逐页处理。"""
+        pdf_settings = self._settings.pdf
+        if getattr(pdf_settings, "translation_route", "image") == "image":
+            return
+        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
+        kind = classify_document(
+            item.path,
+            is_oversized=lambda width, height: is_oversized_for_threshold(threshold, width, height),
+        )
+        self._document_kinds[str(item.path)] = kind
+        record.document_kind = kind.kind
+        if file_uses_word(pdf_settings, kind):
+            if word_route_available():
+                record.translation_route = ROUTE_WORD
+                self._log("INFO", f"[{record.name}] 判断为文字文档，将转成 Word 再翻译（Beta），输出 .docx。")
+                return
+            self._log("WARN", f"[{record.name}] 转成 Word 的组件不可用，这份文件改为逐页处理。")
+        label = _DOCUMENT_KIND_LABELS.get(kind.kind, "")
+        if label:
+            self._log("INFO", f"[{record.name}] 判断为{label}，按页处理。")
+
+    def _page_kind(self, source_path: str, page_index: int) -> str:
+        kind = self._document_kinds.get(source_path)
+        if kind is None or page_index >= len(kind.pages):
+            return ""
+        return kind.pages[page_index].kind
 
     def _prepared_file_shell(
         self,
@@ -3405,7 +3504,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             short_mm = _pt_to_mm(
                                 min(page_record.page_width_pt, page_record.page_height_pt)
                             )
-                            if page_record.inplace_requested:
+                            if page_record.kept_reason:
+                                self._log(
+                                    "WARN",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页{page_record.kept_reason}。",
+                                )
+                            elif page_record.inplace_requested:
                                 self._log(
                                     "INFO",
                                     f"[{prepared.record.name}] 第 {page_record.page_number} 页（{short_mm:.0f}×{long_mm:.0f} mm）"
@@ -3622,7 +3726,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
         for prepared in prepared_files:
             record = prepared.record
-            if record.status == PDF_OUTPUT_STATE_FAILED or record.page_count <= 0:
+            if (
+                record.status == PDF_OUTPUT_STATE_FAILED
+                or record.page_count <= 0
+                or record.translation_route == ROUTE_WORD
+            ):
                 continue
             self._file_progress.emit(
                 prepared.item.path,
@@ -3679,6 +3787,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 source_pages_dir=prepared.source_pages_dir,
                                 file_name=record.name,
                                 source_pdf=record.source_copy_path,
+                                source_path_key=str(prepared.item.path),
                             )
                         except Exception as exc:  # noqa: BLE001 - one broken page only costs that page.
                             # 一页对象损坏绝不能拖垮整份文件：第 180 页读不出来，
@@ -3754,6 +3863,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 「已生成 9 / 14 页」——三个口径三个数。计数只有一处实现，这两条路也得走一遍。
         if record.status == PDF_OUTPUT_STATE_FAILED:
             self._refresh_file_record_counts(record)
+            return
+        if record.translation_route == ROUTE_WORD:
+            self._finalize_word_record(prepared)
             return
         if not should_assemble:
             record.status = PDF_OUTPUT_STATE_STOPPED
@@ -3834,6 +3946,62 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
             record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='已翻译的页面未能合成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
+
+    def _finalize_word_record(self, prepared: _PreparedPdfFile) -> None:
+        """「转成 Word 再翻译」（Beta）：整份文件转 .docx，走 Word 翻译流程。"""
+        from core.pdf_word_route import translate_pdf_via_word
+
+        record = prepared.record
+        if record.translated_docx_path and Path(record.translated_docx_path).is_file():
+            return  # 单页重新生成等操作会再次收尾，已经翻好的 Word 不重做
+        if self._stop_event.is_set():
+            record.status = PDF_OUTPUT_STATE_STOPPED
+            record.error = "任务已停止，这份文件还没有转成 Word 翻译。"
+            return
+        self._queue.put(StatusMsg(f"状态：正在把「{record.name}」转成 Word 并翻译…"))
+        self._log("INFO", f"[{record.name}] 正在转成 Word（Beta）…")
+        final_path = Path(prepared.translated_pdf_path).with_suffix(".docx")
+
+        def progress(done: int, total: int) -> None:
+            self._file_progress.emit(
+                prepared.item.path, "active", "translate", completed=done, total=max(1, total)
+            )
+
+        hooks = self._inplace_hooks
+        try:
+            result = translate_pdf_via_word(
+                Path(record.source_copy_path),
+                Path(prepared.translated_pages_dir) / "word",
+                final_path,
+                self._settings,
+                source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
+                should_stop=self._stop_event.is_set,
+                log=self._log,
+                progress=progress,
+                file_label=record.name,
+            )
+        except Exception as exc:  # noqa: BLE001 - one file only costs that file
+            logger.exception("[PDF] 转 Word 翻译失败")
+            record.status = PDF_OUTPUT_STATE_FAILED
+            record.error = "转成 Word 翻译失败：" + user_facing_reason(exc, fallback="处理这份文件时出错。")
+            self._log("ERROR", f"[{record.name}] {record.error}")
+            return
+        if result.ok:
+            record.translated_docx_path = result.output_path
+            record.status = PDF_OUTPUT_STATE_NEEDS_REVIEW if result.issues else PDF_OUTPUT_STATE_COMPLETED
+            note = f"，{len(result.issues)} 处需要复核" if result.issues else ""
+            self._log("OK", f"[{record.name}] 已转成 Word 翻译：{Path(result.output_path).name}{note}")
+            return
+        if result.stopped:
+            record.status = PDF_OUTPUT_STATE_STOPPED
+            record.error = "任务已停止，这份文件没有翻译完。"
+            return
+        record.status = PDF_OUTPUT_STATE_FAILED
+        record.error = (
+            _with_sentence_end(result.error)
+            + "可以把翻译方式换成「整页图像翻译」或「原位替换」后重新翻译这份文件。"
+        )
+        self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _run_inplace_pages(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
         """「原位替换文字（Beta）」：逐页删字写回；失败或自检不过的页保留原页。"""
@@ -4114,6 +4282,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         return any(
             record.status != PDF_OUTPUT_STATE_FAILED
             and record.page_count > 0
+            and record.translation_route != ROUTE_WORD
             and not self._record_has_all_pages_finished(record)
             for record in records
         )
@@ -4216,27 +4385,25 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         source_pages_dir: Path,
         file_name: str = "",
         source_pdf: str = "",
+        source_path_key: str = "",
     ) -> PdfPageRecord:
         page = doc.get_page(page_index)
         try:
             page_width_pt, page_height_pt = page.get_size()
-            pdf_settings = self._settings.pdf
-            oversized = is_oversized_for_threshold(
-                getattr(pdf_settings, "oversized_page_threshold", "A3"), page_width_pt, page_height_pt
+            route = self._decide_page_route(
+                page,
+                page_index=page_index,
+                width_pt=page_width_pt,
+                height_pt=page_height_pt,
+                source_path=source_path_key,
+                source_pdf=source_pdf,
             )
-            oversized_mode = getattr(pdf_settings, "oversized_page_mode", "skip")
-            # 旧开关被直接改过（没有经过设置校验）时以它为准：关掉「跳过」就是整页图像翻译。
-            if not pdf_settings.skip_oversized_pages and oversized_mode == "skip":
-                oversized_mode = "image"
-            elif pdf_settings.skip_oversized_pages and oversized_mode == "image":
-                oversized_mode = "skip"
-            inplace = self._inplace_hooks is not None and (
-                (oversized and oversized_mode == "inplace")
-                or (not oversized and getattr(pdf_settings, "normal_page_mode", "image") == "inplace"
-                    and _page_has_text_layer(page, source_pdf, page_index))
-            )
-            if (oversized and oversized_mode in {"skip", "inplace"}) or inplace:
-                # 大幅面页从不进入模型翻译流程：不渲染栅格化预览（A3 在
+            kept_reason = ""
+            if route == ROUTE_IMAGE and self._image_model_missing:
+                route = ROUTE_SKIP
+                kept_reason = "没有设置图像翻译模型，这一页需要整页图像翻译，已保留原样"
+            if route in {ROUTE_SKIP, ROUTE_INPLACE}:
+                # 不送图像模型的页（原样保留、原位替换）不渲染栅格化预览（A3 在
                 # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
                 # 从源 PDF 把这一页矢量导入，栅格化只会拖慢流程、拉低质量。
                 return PdfPageRecord(
@@ -4245,7 +4412,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     file_name=file_name,
                     status=PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
                     skipped_oversize=True,
-                    inplace_requested=inplace,
+                    inplace_requested=route == ROUTE_INPLACE,
+                    kept_reason=kept_reason,
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
                 )
@@ -4285,6 +4453,32 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_height_pt=float(page_height_pt),
             render_dpi=float(render_dpi),
         )
+
+    def _decide_page_route(
+        self,
+        page,
+        *,
+        page_index: int,
+        width_pt: float,
+        height_pt: float,
+        source_path: str,
+        source_pdf: str,
+    ) -> str:
+        pdf_settings = self._settings.pdf
+        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
+        page_kind = self._page_kind(source_path, page_index)
+        if not page_kind and getattr(pdf_settings, "translation_route", "image") != "image":
+            page_kind = KIND_TEXT if _page_has_text_layer(page, source_pdf, page_index) else KIND_SCAN
+        route = page_route(
+            pdf_settings,
+            oversized_a3=is_oversized_page(width_pt, height_pt),
+            oversized=is_oversized_for_threshold(threshold, width_pt, height_pt),
+            page_kind=page_kind,
+        )
+        if route == ROUTE_INPLACE and self._inplace_hooks is None:
+            # 原位替换的组件没接上（不该发生）：大图保留原样，普通页照旧整页图像翻译
+            route = ROUTE_SKIP if is_oversized_page(width_pt, height_pt) else ROUTE_IMAGE
+        return route
 
     def _render_source_image(
         self,
@@ -5187,6 +5381,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         total_pages = sum(record.page_count for record in file_records)
         generated_pdfs = sum(1 for record in file_records if record.translated_pdf_path)
         generated_images = sum(1 for record in file_records if record.translated_image_path)
+        generated_docx = sum(1 for record in file_records if record.translated_docx_path)
         compressed_pdfs = sum(1 for record in file_records if record.compressed_pdf_path)
         placeholder_count = sum(record.placeholder_page_count for record in file_records)
         emergency_count = sum(record.emergency_ratio_normalized_count for record in file_records)
@@ -5229,6 +5424,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             total_page_count=total_pages,
             generated_pdf_count=generated_pdfs,
             generated_image_count=generated_images,
+            generated_docx_count=generated_docx,
             placeholder_page_count=placeholder_count,
             emergency_ratio_normalized_count=emergency_count,
             retry_count=retry_count,

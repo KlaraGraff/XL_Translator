@@ -105,6 +105,8 @@ export type PdfPage = {
   inplace_review?: number;
   inplace_review_items?: { text: string; reason: string; box_px?: number[] }[];
   inplace_message?: string;
+  /** 要整页图像翻译、但没有设置图像翻译模型而保留原样的原因。 */
+  kept_reason?: string;
   /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
    *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
   quality_flagged: boolean;
@@ -125,6 +127,11 @@ export type PdfPageFile = {
   status: string;
   error: string;
   page_count: number;
+  /** 翻译方式（Beta 分支）：读文件时的判断 text / drawing / scan / mixed（整页图像翻译时为空）。 */
+  document_kind?: string;
+  /** "word"：整份转成 Word 翻译，没有逐页结果（pages 为空）。 */
+  translation_route?: string;
+  translated_docx_path?: string;
   pages: PdfPage[];
 };
 

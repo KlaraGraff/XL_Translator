@@ -56,15 +56,16 @@ def _hooks(translate=None) -> InplaceHooks:
 
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
 class InplaceTaskTests(unittest.TestCase):
-    def _run(self, *, mode="inplace", normal="image", target="zh", hooks=None, sizes=(A4, A3), text=(True, True)):
+    def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A3), text=(True, True),
+             image_model_missing="", extra=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         source_pdf = root / "source.pdf"
         _write_pdf(source_pdf, list(sizes), with_text=list(text))
         settings = AppSettings(target_lang=target)
-        settings.pdf = PdfSettings.model_validate({"target_lang": target, "oversized_page_mode": mode,
-                                                   "normal_page_mode": normal})
+        settings.pdf = PdfSettings.model_validate({"target_lang": target, "translation_route": route,
+                                                   **(extra or {})})
         settings.image_model_role.source_role = SOURCE_INDEPENDENT
         settings.image_model_role.cloud_provider = "custom_openai"
         settings.image_model_role.cloud_model = "image-model"
@@ -75,6 +76,7 @@ class InplaceTaskTests(unittest.TestCase):
             settings, source_root=root, image_client=client, task_logger_enabled=False,
             inplace_hooks=hooks or _hooks(),
         )
+        runner._image_model_missing = image_model_missing
         with patch("core.model_roles.get_key", return_value="secret"):
             prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
             runner._total_page_count = len(sizes)
@@ -137,17 +139,69 @@ class InplaceTaskTests(unittest.TestCase):
         self.assertEqual(page.inplace_status, "kept_original")
 
     def test_skip_mode_does_not_touch_oversized_page(self):
-        _runner, record, _client = self._run(mode="skip")
+        _runner, record, _client = self._run(route="image")
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
         self.assertFalse(page.inplace_requested)
         self.assertTrue(page.skipped_oversize)
 
     def test_normal_page_with_text_layer_goes_in_place(self):
-        _runner, record, client = self._run(mode="skip", normal="inplace", sizes=(A4, A4), text=(True, False))
+        _runner, record, client = self._run(route="inplace", sizes=(A4, A4), text=(True, False))
         pages = sorted(record.pages, key=lambda p: p.page_number)
         self.assertEqual(pages[0].inplace_status, "done")    # had a text layer
         self.assertFalse(pages[1].inplace_requested)         # no text: image route
         self.assertEqual(len(client.calls), 1)
+
+
+    def test_without_an_image_model_image_pages_are_kept_and_listed(self):
+        _runner, record, client = self._run(route="inplace", sizes=(A4, A3), text=(False, True),
+                                            image_model_missing="还没有填写 API 密钥")
+        pages = sorted(record.pages, key=lambda p: p.page_number)
+        self.assertEqual(len(client.calls), 0)
+        self.assertTrue(pages[0].kept_reason)          # scan-like page: needed the image model
+        self.assertEqual(pages[1].inplace_status, "done")
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+        self.assertEqual(record.skipped_oversize_page_count, 0)
+
+    def test_text_document_goes_to_word(self):
+        from core.pdf_word_route import WordRouteResult
+
+        calls = []
+
+        def fake_word(pdf_path, work_dir, final_path, settings, **kwargs):
+            calls.append(pdf_path)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
+                patch("core.pdf_image_translation.classify_document") as classify:
+            from core.pdf_routes import DocumentKind, PageKind
+
+            classify.return_value = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False)])
+            runner, record, client = self._run(route="word", sizes=(A4, A4))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(client.calls), 0)          # no page went to the image model
+        self.assertEqual(record.translation_route, "word")
+        self.assertTrue(record.translated_docx_path.endswith(".docx"))
+        self.assertEqual(record.status, "completed")
+        snap = runner.pdf_page_snapshot()["files"][0]
+        self.assertEqual(snap["translation_route"], "word")
+        self.assertEqual(snap["pages"], [])
+
+    def test_failed_word_conversion_fails_only_that_file(self):
+        from core.pdf_word_route import WordRouteResult
+
+        def fake_word(*_args, **_kwargs):
+            return WordRouteResult(ok=False, error="转成 Word 失败")
+
+        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
+                patch("core.pdf_image_translation.classify_document") as classify:
+            from core.pdf_routes import DocumentKind, PageKind
+
+            classify.return_value = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False)])
+            _runner, record, _client = self._run(route="word", sizes=(A4, A4))
+        self.assertEqual(record.status, "failed")
+        self.assertIn("整页图像翻译", record.error)
 
 
 class TextLayerTests(unittest.TestCase):

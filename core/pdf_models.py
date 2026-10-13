@@ -231,6 +231,9 @@ class PdfPageRecord:
     inplace_review: int = 0
     inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
     inplace_message: str = ""
+    # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
+    # 照样能跑）：原页放进输出，这里写原因。
+    kept_reason: str = ""
     review_enabled: bool = False
     review_status: str = "skipped"
     review_attempts: int = 0
@@ -291,6 +294,12 @@ class PdfFileRecord:
     source_pdf_size_bytes: int = 0
     high_quality_pdf_size_bytes: int = 0
     compressed_pdf_size_bytes: int = 0
+    # 翻译方式（Beta 分支）：document_kind 是读文件时的判断（text / drawing / scan /
+    # mixed，整页图像翻译时不判断，留空）；translation_route 为 "word" 时整份转成
+    # Word 翻译，输出 translated_docx_path，没有逐页记录。
+    document_kind: str = ""
+    translation_route: str = ""
+    translated_docx_path: str = ""
     pages: list[PdfPageRecord] = field(default_factory=list)
 
 
@@ -317,6 +326,8 @@ class PdfTaskSummary:
     compressed_pdf_enabled: bool = False
     compressed_pdf_count: int = 0
     generated_image_count: int = 0
+    # 转成 Word 翻译（Beta）写出的 .docx 份数
+    generated_docx_count: int = 0
     compression_quality: int = PDF_COMPRESSED_JPEG_QUALITY_DEFAULT
     compression_max_long_edge_px: int = PDF_COMPRESSED_MAX_LONG_EDGE_PX
     review_enabled: bool = False

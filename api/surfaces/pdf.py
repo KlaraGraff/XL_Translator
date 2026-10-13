@@ -82,32 +82,18 @@ class PdfSurface(Surface):
                 text_model = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             except Exception as exc:  # noqa: BLE001
                 raise TaskInputError(
-                    f"「原位替换文字」要用文档翻译模型，它的设置不可用：{_model_config_reason(exc)}"
+                    f"所选的 PDF 翻译方式要用文档翻译模型，它的设置不可用：{_model_config_reason(exc)}"
                 ) from exc
             if not text_model.model:
-                raise TaskInputError("「原位替换文字」要用文档翻译模型，请先在模型设置里填好它。")
+                raise TaskInputError("所选的 PDF 翻译方式要用文档翻译模型，请先在模型设置里填好它。")
         try:
-            image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
-        except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
-            raise TaskInputError(
-                f"PDF 与图片翻译模型的设置不可用：{_model_config_reason(exc)}",
-                reason=REASON_IMAGE_MODEL_MISSING,
-            ) from exc
-        if not image_model.model:
-            raise TaskInputError(
-                "请先填写 PDF 与图片翻译模型的名称。", reason=REASON_IMAGE_MODEL_MISSING
-            )
-        if not provider_supports_capability(image_model.provider, "image"):
-            raise TaskInputError(
-                unsupported_capability_message(
-                    "PDF 与图片翻译模型", image_model.provider, "image"
-                ),
-                reason=REASON_IMAGE_MODEL_MISSING,
-            )
-        if image_model.mode == "cloud" and not image_model.api_key:
-            raise TaskInputError(
-                "PDF 与图片翻译模型还没有填写 API 密钥。", reason=REASON_IMAGE_MODEL_MISSING
-            )
+            _validate_image_model(settings)
+        except TaskInputError:
+            # 原位替换、转 Word、自动组合不一定用到图像模型：没设置也能开始，
+            # 需要整页图像翻译的页保留原样，完成后列出来。
+            if _inplace_enabled(settings):
+                return
+            raise
         if not settings.pdf.review_enabled:
             return
         try:
@@ -186,8 +172,33 @@ class PdfSurface(Surface):
 
 
 def _inplace_enabled(settings: AppSettings) -> bool:
-    pdf = settings.pdf
-    return getattr(pdf, "oversized_page_mode", "skip") == "inplace" or getattr(pdf, "normal_page_mode", "image") == "inplace"
+    """翻译方式不是整页图像翻译（原位替换、转 Word、自动组合都要用文档翻译模型）。"""
+    return getattr(settings.pdf, "translation_route", "image") != "image"
+
+
+def _validate_image_model(settings: AppSettings) -> None:
+    try:
+        image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
+    except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
+        raise TaskInputError(
+            f"PDF 与图片翻译模型的设置不可用：{_model_config_reason(exc)}",
+            reason=REASON_IMAGE_MODEL_MISSING,
+        ) from exc
+    if not image_model.model:
+        raise TaskInputError(
+            "请先填写 PDF 与图片翻译模型的名称。", reason=REASON_IMAGE_MODEL_MISSING
+        )
+    if not provider_supports_capability(image_model.provider, "image"):
+        raise TaskInputError(
+            unsupported_capability_message(
+                "PDF 与图片翻译模型", image_model.provider, "image"
+            ),
+            reason=REASON_IMAGE_MODEL_MISSING,
+        )
+    if image_model.mode == "cloud" and not image_model.api_key:
+        raise TaskInputError(
+            "PDF 与图片翻译模型还没有填写 API 密钥。", reason=REASON_IMAGE_MODEL_MISSING
+        )
 
 
 def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):

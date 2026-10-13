@@ -45,6 +45,7 @@ import {
   type LanguageOption,
   type ModalAction,
   type ModalHandle,
+  type SelectFieldOption,
   type StatusTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
@@ -198,10 +199,10 @@ const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在常规输出之外，另生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
-  // 原来这里是「跳过 A3 及更大的页面」开关；大幅面页怎么处理现在有三种方式（原样保留 /
-  // 原位替换 / 整页图像翻译），加上普通页的「原位替换」Beta 选项，不再是单个布尔开关能
-  // 表达的，改成下面 buildPdfPageRoutingSection() 的单选卡组（见 settings.py PdfSettings
-  // 的 oversized_page_mode / oversized_page_threshold / normal_page_mode）。
+  // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
+  // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
+  // 翻译方式选「原位替换」「自动组合」时大幅面页另有处理，这个开关不显示（见 buildColRight）。
+  { key: "skipOversizedPages", label: t("跳过 A3 及更大的页面"), hint: t("长、宽均超出 A4 约 15% 以上的页面（A3 及更大，横向、纵向均适用）不翻译，按原样写入输出文件，清晰度不变。工程图纸常用此类幅面。略大于 A4 的页面（如带扫描白边）不受影响。"), default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ]));
 
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
@@ -369,14 +370,15 @@ interface SurfaceState {
   /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
    *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
   cadResumeDir: string;
-  /** PDF：普通页（比大幅面小）怎么处理——image 整页图像翻译（默认）/ inplace 原位替换
-   *  文字（Beta，取不到文字层的页仍走 image）。只有 pdf surface 用，见 settings.py
-   *  PdfSettings.normal_page_mode。 */
-  pdfNormalPageMode: "image" | "inplace";
-  /** PDF：大幅面页怎么处理——skip 原样保留（默认）/ inplace 原位替换文字，保留矢量（Beta）
-   *  / image 整页图像翻译。见 PdfSettings.oversized_page_mode。 */
-  pdfOversizedPageMode: "skip" | "inplace" | "image";
-  /** PDF：从多大算大幅面。见 PdfSettings.oversized_page_threshold。 */
+  /** PDF 翻译方式（Beta 分支）：image 整页图像翻译（默认）/ inplace 原位替换 / word 转成
+   *  Word 再翻译 / auto 自动组合。只有 pdf surface 用，见 settings.py PdfSettings 与
+   *  core/pdf_routes.py。 */
+  pdfRoute: PdfRoute;
+  /** 自动组合里「文字文档」怎么处理。 */
+  pdfAutoTextRoute: "word" | "inplace" | "image";
+  /** 自动组合里「图纸和大图」怎么处理。 */
+  pdfAutoDrawingRoute: "inplace" | "skip" | "image";
+  /** 从多大算大幅面（原位替换、自动组合用）。 */
   pdfOversizedPageThreshold: "A3" | "A2" | "A1" | "A0";
 }
 
@@ -419,8 +421,9 @@ function freshState(surface: Surface): SurfaceState {
     renderer: null,
     cadCapability: null,
     cadResumeDir: "",
-    pdfNormalPageMode: "image",
-    pdfOversizedPageMode: "skip",
+    pdfRoute: "image",
+    pdfAutoTextRoute: "word",
+    pdfAutoDrawingRoute: "inplace",
     pdfOversizedPageThreshold: "A3",
   };
 }
@@ -636,9 +639,9 @@ function applySettingsToStates(): void {
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
-      st.pdfNormalPageMode = text(pdf.normal_page_mode) === "inplace" ? "inplace" : "image";
-      const oversizedMode = text(pdf.oversized_page_mode);
-      st.pdfOversizedPageMode = oversizedMode === "inplace" || oversizedMode === "image" ? oversizedMode : "skip";
+      st.pdfRoute = oneOf(text(pdf.translation_route), ["image", "inplace", "word", "auto"] as const, "image");
+      st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
+      st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
       const threshold = text(pdf.oversized_page_threshold);
       st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
     } else {
@@ -2415,6 +2418,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   for (const toggle of TOGGLES[surface]) {
     // 缩小字号的开关和它的两档比例放在一起，挪到下面「译文写回」里画。
     if (surface === "cad" && toggle.key === "cadFitLayout") continue;
+    // 原位替换、自动组合有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
+    if (toggle.key === "skipOversizedPages" && (st.pdfRoute === "inplace" || st.pdfRoute === "auto")) continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
     // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
     // 角标说明，想全译走横幅上的「改为全部重译」。
@@ -2436,7 +2441,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     scroll.append(row);
   }
 
-  if (surface === "pdf") scroll.append(buildPdfPageRoutingSection(st, active));
+  if (surface === "pdf") scroll.append(buildPdfRouteSection(st, active));
   if (surface === "cad") scroll.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
 
   if (!active) {
@@ -2649,118 +2654,70 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// PDF：普通页 / 大幅面页的处理方式（取代原来的「跳过 A3 及更大的页面」单个开关）。
-// 两组都是单选卡：普通页 2 选项，大幅面页在「从多大算大幅面」下拉之后再给 3 选项。
-// 落盘路径见 settings.py PdfSettings：pdf.normal_page_mode / pdf.oversized_page_mode /
-// pdf.oversized_page_threshold；旧的 pdf.skip_oversized_pages 由后端跟着同步，这里不再管它。
+// PDF 翻译方式（Beta 分支）：单一路线或自动组合。样张见
+// .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-translation-routes.html。
+// 每行「名称 + ? + 右侧紧凑下拉」，自动组合时下面多出按内容分类的几行。
+// 落盘路径见 settings.py PdfSettings：translation_route / auto_text_route /
+// auto_drawing_route / oversized_page_threshold。
 // ---------------------------------------------------------------------------
 
-interface PageModeCardOption<T extends string> {
-  value: T;
+type PdfRoute = "image" | "inplace" | "word" | "auto";
+
+function oneOf<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
+  return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+function buildRouteRow(opts: {
   label: string;
-  /** 「当前方案」/「Beta」角标；Beta 复用 .chip 的 warn 色（设计系统里本来就是橙色）。 */
-  tag?: { label: string; tone: ChipTone };
   hint: string;
-}
-
-/** 单选卡组：原生 radiogroup 语义（role="radiogroup" + 每张卡 role="radio" / aria-checked），
- *  方向键在卡片间移动并即时选中（和原生 radio 一组的行为一致），Enter / Space 选中当前卡。
- *  为了紧凑，说明文字只在选中的卡下面展开，其它卡只留标题 + 角标（见派单里「样张」①②的
- *  对照：没出现的说明不是漏画，是「只给选中卡」的有意简化）。 */
-function createPageModeCards<T extends string>(opts: {
-  name: string;
-  value: T;
-  disabled?: boolean;
-  options: PageModeCardOption<T>[];
-  onChange: (value: T) => void;
-}): HTMLDivElement {
-  const group = el("div", "pagecards");
-  group.setAttribute("role", "radiogroup");
-  group.setAttribute("aria-label", opts.name);
-  opts.options.forEach((opt) => {
-    const selected = opt.value === opts.value;
-    const card = el("div", selected ? "pagecard sel" : "pagecard");
-    if (opts.disabled) card.classList.add("dis");
-    card.setAttribute("role", "radio");
-    card.setAttribute("aria-checked", String(selected));
-    card.tabIndex = opts.disabled ? -1 : selected ? 0 : -1;
-    const dot = el("span", "pagecard-dot");
-    const body = el("div", "pagecard-body");
-    const main = el("div", "pagecard-main");
-    const title = el("span", "pagecard-title");
-    title.textContent = opt.label;
-    main.append(title);
-    if (opt.tag) main.append(createChip({ label: opt.tag.label, tone: opt.tag.tone, className: "pagecard-tag" }));
-    body.append(main);
-    if (selected) {
-      const hint = el("div", "pagecard-hint");
-      hint.textContent = opt.hint;
-      body.append(hint);
-    }
-    card.append(dot, body);
-    const choose = (): void => {
-      if (opts.disabled || opt.value === opts.value) return;
-      opts.onChange(opt.value);
-    };
-    card.addEventListener("click", choose);
-    card.addEventListener("keydown", (event) => {
-      if (opts.disabled) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        choose();
-      } else if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowLeft") {
-        event.preventDefault();
-        focusAdjacentCard(group, card, event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1);
-      }
-    });
-    group.append(card);
+  options: SelectFieldOption[];
+  value: string;
+  disabled: boolean;
+  sub?: boolean;
+  wide?: boolean;
+  onChange: (value: string) => void;
+}): HTMLElement {
+  const row = el("div", opts.sub ? "selrow sub" : "selrow");
+  const name = el("span", "selrow-label");
+  name.textContent = opts.label;
+  row.append(name, createHintBadge(opts.hint));
+  const dropdown = createDropdown({
+    options: opts.options,
+    value: opts.value,
+    disabled: opts.disabled,
+    // className 还会拼成菜单的类名（compact-menu），只能是一个词；宽版另加类。
+    className: "compact",
+    onChange: opts.onChange,
   });
-  return group;
+  if (opts.wide) dropdown.root.classList.add("wide");
+  dropdown.button.setAttribute("aria-label", opts.label);
+  row.append(dropdown.root);
+  return row;
 }
 
-/** 方向键切换焦点：按原生 radio 组的习惯，移动到的那张卡立即被选中（不需要再按 Enter）。 */
-function focusAdjacentCard(group: HTMLElement, current: HTMLElement, dir: 1 | -1): void {
-  const items = Array.from(group.querySelectorAll<HTMLElement>(".pagecard"));
-  const index = items.indexOf(current);
-  if (index < 0 || items.length < 2) return;
-  const next = items[(index + dir + items.length) % items.length];
-  next.focus();
-  next.click();
-}
+function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
+  // 紧接在上面的开关后面，不另起小标题：小标题和下面这一行的名称都会是「翻译方式」。
+  const wrap = el("div", "route-block");
+  const beta = t("Beta");
 
-function buildPdfPageRoutingSection(st: SurfaceState, active: boolean): HTMLElement {
-  const wrap = el("div");
-
-  const normalSec = el("div", "rp-sec");
-  normalSec.textContent = t("普通页面（比大幅面小的页面）");
-  wrap.append(normalSec);
-  wrap.append(createPageModeCards<"image" | "inplace">({
-    name: t("普通页面（比大幅面小的页面）"),
-    value: st.pdfNormalPageMode,
-    disabled: active,
+  wrap.append(buildRouteRow({
+    label: t("翻译方式"),
+    hint: t("PDF 怎么翻译。整页图像翻译：交给图像模型重新生成整页（原来的做法）。原位替换：在原 PDF 上只把文字换成译文，线条和图片不动。转成 Word：能取到文字的文档转成 Word 再翻译，输出 .docx。自动组合：按每份文件、每一页的情况分别选。"),
     options: [
-      {
-        value: "image",
-        label: t("整页图像翻译"),
-        tag: { label: t("当前方案"), tone: "mute" },
-        hint: t("整页交给图像模型重新生成，排版最统一。"),
-      },
-      {
-        value: "inplace",
-        label: t("能直接取到文字时，原位替换"),
-        tag: { label: t("Beta"), tone: "warn" },
-        hint: t("只调用文本模型，更省钱；页面线条和图片不变。取不到文字的页（扫描件）仍走整页图像翻译。"),
-      },
+      { value: "image", label: t("整页图像翻译"), description: t("原来的做法：整页交给图像模型重新生成") },
+      { value: "inplace", label: t("原位替换（保留矢量）"), tag: beta, description: t("只换 PDF 上的文字，线条和清晰度不变") },
+      { value: "word", label: t("转成 Word 再翻译"), tag: beta, description: t("文字文档转成 Word，输出可编辑的 .docx") },
+      { value: "auto", label: t("自动组合"), tag: beta, description: t("按每份文件、每一页分别选，可以自己调整") },
     ],
-    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfNormalPageMode", "pdf.normal_page_mode", value),
+    value: st.pdfRoute,
+    disabled: active,
+    wide: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfRoute", "pdf.translation_route", value as PdfRoute),
   }));
 
-  const bigSec = el("div", "rp-sec");
-  bigSec.textContent = t("大幅面页面");
-  wrap.append(bigSec);
-
-  const thresholdSelect = createSelectField({
-    label: t("从多大算大幅面"),
+  const thresholdRow = (): HTMLElement => buildRouteRow({
+    label: t("大幅面起点"),
+    hint: t("多大的页面按图纸和大图处理。默认 A3 及以上（长、宽都超出 A4 约 15%）。"),
     options: [
       { value: "A3", label: t("A3 及以上") },
       { value: "A2", label: t("A2 及以上") },
@@ -2769,56 +2726,76 @@ function buildPdfPageRoutingSection(st: SurfaceState, active: boolean): HTMLElem
     ],
     value: st.pdfOversizedPageThreshold,
     disabled: active,
-    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as "A3" | "A2" | "A1" | "A0"),
+    sub: true,
+    onChange: (value) => void handlePdfRouteChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as SurfaceState["pdfOversizedPageThreshold"]),
   });
-  wrap.append(thresholdSelect.root);
 
-  wrap.append(createPageModeCards<"skip" | "inplace" | "image">({
-    name: t("大幅面页面"),
-    value: st.pdfOversizedPageMode,
-    disabled: active,
-    options: [
-      {
-        value: "skip",
-        label: t("不翻译，原样保留"),
-        tag: { label: t("当前方案"), tone: "mute" },
-        hint: t("按原样写入输出文件，清晰度不变。"),
-      },
-      {
-        value: "inplace",
-        label: t("原位替换文字（保留矢量）"),
-        tag: { label: t("Beta"), tone: "warn" },
-        hint: t("线条、尺寸、表格和清晰度都不变，只把图上的文字换成译文。测试中，效果还有缺陷：认不准的字保留原文，个别标签可能只译一半，完成后列出清单。"),
-      },
-      {
-        value: "image",
-        label: t("整页图像翻译"),
-        hint: t("和普通页面一样整页重新生成。线条会变成图片，放大后可能模糊。"),
-      },
-    ],
-    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfOversizedPageMode", "pdf.oversized_page_mode", value),
-  }));
+  const note = (text: string): HTMLElement => {
+    const node = el("div", "route-note");
+    node.textContent = text;
+    return node;
+  };
 
+  if (st.pdfRoute === "auto") {
+    wrap.append(buildRouteRow({
+      label: t("文字文档"),
+      hint: t("整份都是能取到文字的普通排版页（报告、说明、表格）。转成 Word：输出可编辑的 Word，版面会有变化。原位替换：输出 PDF，版面不变。"),
+      options: [
+        { value: "word", label: t("转成 Word"), tag: beta },
+        { value: "inplace", label: t("原位替换"), tag: beta },
+        { value: "image", label: t("整页图像翻译") },
+      ],
+      value: st.pdfAutoTextRoute,
+      disabled: active,
+      sub: true,
+      onChange: (value) => void handlePdfRouteChange(st, "pdfAutoTextRoute", "pdf.auto_text_route", value as SurfaceState["pdfAutoTextRoute"]),
+    }));
+    wrap.append(buildRouteRow({
+      label: t("图纸和大图"),
+      hint: t("大幅面页面，以及线条密集、文字都是零散标注的图纸页。原位替换：线条、尺寸、清晰度不变，只换文字。原样保留：不翻译。"),
+      options: [
+        { value: "inplace", label: t("原位替换"), tag: beta },
+        { value: "skip", label: t("原样保留") },
+        { value: "image", label: t("整页图像翻译") },
+      ],
+      value: st.pdfAutoDrawingRoute,
+      disabled: active,
+      sub: true,
+      onChange: (value) => void handlePdfRouteChange(st, "pdfAutoDrawingRoute", "pdf.auto_drawing_route", value as SurfaceState["pdfAutoDrawingRoute"]),
+    }));
+    const scanRow = el("div", "selrow sub");
+    const scanName = el("span", "selrow-label");
+    scanName.textContent = t("扫描件");
+    const scanValue = el("span", "selrow-fixed");
+    scanValue.textContent = t("整页图像翻译");
+    scanRow.append(scanName, createHintBadge(t("取不到文字的页（扫描件、照片）只能靠图像模型翻译。")), scanValue);
+    wrap.append(scanRow, thresholdRow());
+    wrap.append(note(t("Beta：文字文档转 Word 时输出 .docx，版面会有变化；其余输出 PDF。认不准的字保留原文，完成后列出清单。")));
+  } else if (st.pdfRoute === "inplace") {
+    wrap.append(thresholdRow());
+    wrap.append(note(t("Beta：认不准的字保留原文，完成后列出清单。取不到文字的页（扫描件）改用整页图像翻译。")));
+  } else if (st.pdfRoute === "word") {
+    wrap.append(note(t("Beta：只有整份都是普通排版页的文字文档转成 Word，输出 .docx，版面会有变化；图纸、扫描件和图文混合的文件改用整页图像翻译。")));
+  }
   return wrap;
 }
 
-/** 三个单选卡字段共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
+/** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
  *  见 persistSettingsOrRevert 顶部的说明）。 */
-async function handlePdfPageRoutingChange<K extends "pdfNormalPageMode" | "pdfOversizedPageMode" | "pdfOversizedPageThreshold">(
+async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfOversizedPageThreshold">(
   st: SurfaceState,
   stateKey: K,
   settingPath: string,
   value: SurfaceState[K],
 ): Promise<void> {
-  const st_ = st as unknown as Record<K, SurfaceState[K]>;
-  const prev = st_[stateKey];
-  st_[stateKey] = value;
+  const prev = st[stateKey];
+  st[stateKey] = value;
   rerender("pdf");
   await persistSettingsOrRevert(
     "pdf",
     nestedPatch(settingPath, value),
-    () => { st_[stateKey] = prev; },
-    t("大幅面页面处理方式"),
+    () => { st[stateKey] = prev; },
+    t("翻译方式"),
   );
 }
 

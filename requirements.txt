@@ -8,6 +8,9 @@ pypdfium2>=4.30,<5
 # 「原位替换文字（Beta）」分支临时依赖：PyMuPDF 是 AGPL 许可，合入主线前要换成
 # pypdfium2 或另行授权（见 core/pdf_vector/runner.py）。
 PyMuPDF>=1.24,<2
+# 「转成 Word 再翻译（Beta）」分支临时依赖：pdf2docx 本身是 MIT，但它依赖 PyMuPDF
+# 和 OpenCV（安装包约多 150 MB）。合入主线前要定许可和体积。
+pdf2docx==0.5.13
 Pillow>=10.0.0
 # 云端翻译引擎 HTTP 客户端
 httpx>=0.27.0
