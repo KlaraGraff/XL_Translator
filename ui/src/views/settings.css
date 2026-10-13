@@ -220,3 +220,11 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 数据与维护 →「自动保留上限」里可调的两行（任务过程文件）。和上面只读的几行同一套
+   字号与左右对齐，只把右侧的数值换成两个窄数字框；窄窗口下右侧整体换到下一行。 */
+.ret-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; font-size: 12.5px; padding-top: 4px; }
+.ret-name { display: flex; flex-direction: column; color: var(--ink-3); }
+.ret-name small { font-size: 11px; }
+.ret-ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.ret-ctl input[type="number"] { width: 64px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 6px; text-align: right; }

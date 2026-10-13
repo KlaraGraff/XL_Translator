@@ -19,10 +19,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from config import APP_DATA_DIR
+from config import (
+    APP_DATA_DIR,
+    PROCESS_RETENTION_FAILED_RUNS_DEFAULT,
+    PROCESS_RETENTION_MB_DEFAULT,
+    PROCESS_RETENTION_SUCCEEDED_RUNS_DEFAULT,
+)
 
-NORMAL_RETENTION = 5
-ERROR_RETENTION = 30
+# 两类的默认上限；用户在「设置 → 数据与维护」里改过就以 settings.process_retention 为准
+# （见 _retention_rules）。normal = 正常完成，errors = 需复核或出错。
+NORMAL_RETENTION = PROCESS_RETENTION_SUCCEEDED_RUNS_DEFAULT
+ERROR_RETENTION = PROCESS_RETENTION_FAILED_RUNS_DEFAULT
+RETENTION_BYTES = PROCESS_RETENTION_MB_DEFAULT * 1024 * 1024
 METADATA_FILENAME = ".process-run.json"
 _OWNER = "xl-translator-process-artifacts"
 _SCHEMA_VERSION = 1
@@ -165,26 +173,120 @@ def _retention_limit(value: int, default: int) -> int:
         return default
 
 
-def _prune(root: Path) -> None:
-    runs = _indexed_runs(root)
-    for category, limit in (
-        ("normal", _retention_limit(NORMAL_RETENTION, 5)),
-        ("errors", _retention_limit(ERROR_RETENTION, 30)),
-    ):
-        completed = [
-            (directory, metadata)
-            for directory, metadata in runs
-            if metadata["category"] == category and _safe_to_prune(directory, metadata, root)
-        ]
-        completed.sort(key=lambda item: (item[1].get("finished_ns", 0), item[0].name), reverse=True)
-        for directory, metadata in completed[limit:]:
+def _retention_bytes(value: int, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _configured_retention() -> dict[str, tuple[int, int]]:
+    """用户在设置里定的上限；读不到设置时返回空表，调用方退回模块默认值。"""
+    try:
+        # 延迟导入：settings 依赖链很长，这个模块被各个 runner 在导入期引用。
+        from settings import load_settings
+
+        retention = load_settings().process_retention
+    except Exception:  # noqa: BLE001 - fall back to defaults, never block a task
+        return {}
+    return {
+        category: (rule.max_runs, rule.max_mb * 1024 * 1024)
+        for category, rule in (("normal", retention.succeeded), ("errors", retention.failed))
+    }
+
+
+def _retention_rules() -> dict[str, tuple[int, int]]:
+    """每类的 (最多几次, 最多多少字节)。"""
+    configured = _configured_retention()
+    rules = {}
+    for category, default_runs in (("normal", NORMAL_RETENTION), ("errors", ERROR_RETENTION)):
+        runs, size = configured.get(category, (default_runs, RETENTION_BYTES))
+        rules[category] = (
+            _retention_limit(runs, 5 if category == "normal" else 30),
+            _retention_bytes(size, PROCESS_RETENTION_MB_DEFAULT * 1024 * 1024),
+        )
+    return rules
+
+
+def _directory_size(directory: Path) -> int:
+    total = 0
+    for parent, directories, files in os.walk(directory, followlinks=False):
+        directories[:] = [name for name in directories if not (Path(parent) / name).is_symlink()]
+        for name in files:
+            try:
+                total += (Path(parent) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _prunable_runs(root: Path, category: str) -> list[tuple[Path, dict, int]]:
+    """可自动清理的已结束任务，最近结束的在前，附带各自的体积。
+
+    暂停、停止、可续译和含断点的出错任务不在其中：它们既不清理，也不占这里的上限，
+    否则几份留着续译的大 PDF 就能把其余记录全部挤掉。
+    """
+    completed = [
+        (directory, metadata, _directory_size(directory))
+        for directory, metadata in _indexed_runs(root)
+        if metadata["category"] == category and _safe_to_prune(directory, metadata, root)
+    ]
+    completed.sort(key=lambda item: (item[1].get("finished_ns", 0), item[0].name), reverse=True)
+    return completed
+
+
+def _prune(root: Path) -> int:
+    """按条数和体积两道上限清理；最近一次始终保留。返回删掉的目录数。"""
+    removed = 0
+    for category, (max_runs, max_bytes) in _retention_rules().items():
+        kept_bytes = 0
+        over = False
+        for index, (directory, metadata, size) in enumerate(_prunable_runs(root, category)):
+            # 一旦某一次超出上限，比它更早的全部清掉：「从最早的开始清理」，
+            # 不会跳过一份大的、反而留下更早的几份小的。
+            if not over and (index == 0 or (index < max_runs and kept_bytes + size <= max_bytes)):
+                kept_bytes += size
+                continue
+            over = True
             # Recheck ownership/status immediately before deletion. Failed
             # cleanup leaves data in place and never fails a translation.
             try:
                 if _safe_to_prune(directory, metadata, root):
                     shutil.rmtree(directory)
+                    removed += 1
             except OSError:
                 continue
+    return removed
+
+
+def prune_now() -> int:
+    """保留上限改小后立即按新上限清理一次（设置保存时调用）。"""
+    try:
+        root = _process_root(create=False)
+        if not root.is_dir():
+            return 0
+        with _store_lock(root):
+            return _prune(root)
+    except OSError:
+        return 0
+
+
+def retention_overview() -> dict[str, dict[str, int]]:
+    """维护页「自动保留上限」用：每类当前可清理的次数、体积和生效中的上限。"""
+    rules = _retention_rules()
+    usage = {category: {"count": 0, "size_bytes": 0} for category in rules}
+    try:
+        root = _process_root(create=False)
+        if root.is_dir():
+            for category in rules:
+                runs = _prunable_runs(root, category)
+                usage[category] = {"count": len(runs), "size_bytes": sum(size for *_, size in runs)}
+    except OSError:
+        pass
+    return {
+        category: {**usage[category], "max_runs": rules[category][0], "max_bytes": rules[category][1]}
+        for category in rules
+    }
 
 
 @dataclass(frozen=True)

@@ -62,6 +62,13 @@ from config import (
     REQUEST_RETRY_ATTEMPTS_DEFAULT,
     REQUEST_RETRY_ATTEMPTS_MAX,
     REQUEST_RETRY_ATTEMPTS_MIN,
+    PROCESS_RETENTION_FAILED_RUNS_DEFAULT,
+    PROCESS_RETENTION_MB_DEFAULT,
+    PROCESS_RETENTION_MB_MAX,
+    PROCESS_RETENTION_MB_MIN,
+    PROCESS_RETENTION_RUNS_MAX,
+    PROCESS_RETENTION_RUNS_MIN,
+    PROCESS_RETENTION_SUCCEEDED_RUNS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
     normalize_cloud_base_url,
     configured_cloud_base_url,
@@ -908,6 +915,29 @@ class RequestRetrySettings(BaseModel):
     )
 
 
+class ProcessRetentionRule(BaseModel):
+    """一类任务过程文件的保留上限：最多几次、最多多大，任一先到就清理最早的。"""
+
+    max_runs: int = Field(default=PROCESS_RETENTION_FAILED_RUNS_DEFAULT, ge=PROCESS_RETENTION_RUNS_MIN, le=PROCESS_RETENTION_RUNS_MAX)
+    max_mb: int = Field(default=PROCESS_RETENTION_MB_DEFAULT, ge=PROCESS_RETENTION_MB_MIN, le=PROCESS_RETENTION_MB_MAX)
+
+
+def _succeeded_retention_rule() -> ProcessRetentionRule:
+    return ProcessRetentionRule(max_runs=PROCESS_RETENTION_SUCCEEDED_RUNS_DEFAULT)
+
+
+class ProcessRetentionSettings(BaseModel):
+    """任务过程文件的自动保留上限（v36 起），见 core/process_artifacts.py。
+
+    succeeded 对应正常完成的任务，failed 对应需复核、出错的任务（过程目录里的
+    ``normal`` / ``errors`` 两类）。旧设置文件没有这一节，读取时按默认值补齐（加法改动，
+    无需迁移）。
+    """
+
+    succeeded: ProcessRetentionRule = Field(default_factory=_succeeded_retention_rule)
+    failed: ProcessRetentionRule = Field(default_factory=ProcessRetentionRule)
+
+
 class WordReviewSettings(BaseModel):
     highlight_unresolved: bool = WORD_REVIEW_HIGHLIGHT_DEFAULT
     highlight_color: str = WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
@@ -1155,6 +1185,7 @@ class AppSettings(BaseModel):
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     request_retry: RequestRetrySettings = Field(default_factory=RequestRetrySettings)
+    process_retention: ProcessRetentionSettings = Field(default_factory=ProcessRetentionSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
     cleaner_model_role: ModelRoleSettings = Field(
