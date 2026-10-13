@@ -470,7 +470,9 @@ def _page_has_text_layer(page, source_pdf: str = "", page_index: int = -1) -> bo
     if not source_pdf or page_index < 0:
         return True
     try:
-        import fitz
+        from core.pdf_component import require_fitz
+
+        fitz = require_fitz()
 
         with fitz.open(source_pdf) as doc:
             visible = sum(len(span.get("chars", ())) for span in doc[page_index].get_texttrace()
@@ -1245,6 +1247,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._settings = settings
         # 「原位替换文字（Beta）」用到的翻译回调、Tesseract 路径；不开这个功能时为 None。
         self._inplace_hooks = inplace_hooks
+        self._pdf_component_ok: bool | None = None
         # 转 Word 翻译的各段正文的「记忆库」结果；收尾时和原位替换页的合并（_terms_result）。
         self._word_terms: list[dict[str, Any]] = []
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
@@ -4101,13 +4104,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 stem = Path(record.name).stem
                 seg_pdf = work / f"{stem}_p{first}-{last}.pdf"
                 try:
-                    import fitz
-
-                    with fitz.open(record.source_copy_path) as src:
-                        part = fitz.open()
-                        part.insert_pdf(src, from_page=first - 1, to_page=last - 1)
-                        part.save(seg_pdf)
-                        part.close()
+                    _extract_pdf_pages(Path(record.source_copy_path), seg_pdf, first, last)
                     result = translate_pdf_via_word(
                         seg_pdf, work, work / f"{stem}_p{first}-{last}_translated.docx", self._settings,
                         source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
@@ -4658,6 +4655,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if route == ROUTE_INPLACE:
             if self._inplace_hooks is None:
                 return "原位替换不可用"
+            if not self._pdf_component_ready():
+                return "未安装「PDF 处理组件」"
             if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
                 return "原位替换目前只支持译成中文"
         if route == ROUTE_WORD:
@@ -4666,6 +4665,16 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 return (entry or {}).get("message") or "转成 Word 不可用"
         return ""
 
+    def _pdf_component_ready(self) -> bool:
+        """原位替换要用的 PyMuPDF（「PDF 处理组件」）能不能用。只查一次。"""
+        if self._pdf_component_ok is None:
+            from core.pdf_component import is_available
+
+            self._pdf_component_ok = is_available(refresh=True)
+            if not self._pdf_component_ok:
+                self._log("WARN", "未安装「PDF 处理组件」：原位替换的页改用保底方式。可在插件页安装。")
+        return self._pdf_component_ok
+
     def _word_segments_possible(self) -> str:
         """可提取文字的页转 Word 要用的条件；全满足返回空串，否则返回原因。只查一次。"""
         if self._office_pdf_engine is None:
@@ -4673,7 +4682,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
             if not word_route_available():
                 self._office_pdf_engine = ""
-                self._office_pdf_message = "转成 Word 的组件不可用"
+                self._office_pdf_message = "未安装「PDF 处理组件」"
             else:
                 engine, message = office_pdf_engine()
                 self._office_pdf_engine = engine
@@ -5847,6 +5856,19 @@ def _open_pdf_document(path: Path):
 # 「自动识别场景」概括文档时最多读这么多页的文字层；够判断文档类型，又不至于把
 # 几百页的册子整本读一遍。
 _PROFILE_TEXT_MAX_PAGES = 30
+
+
+def _extract_pdf_pages(source: Path, target: Path, first: int, last: int) -> None:
+    """把第 first–last 页（从 1 数）另存成一份 PDF，用随安装包分发的 pypdfium2。"""
+    pdfium = _load_pdfium()
+    src = pdfium.PdfDocument(str(source))
+    part = pdfium.PdfDocument.new()
+    try:
+        part.import_pages(src, pages=list(range(first - 1, last)))
+        part.save(str(target))
+    finally:
+        part.close()
+        src.close()
 
 
 def _pdf_text_lines(path: Path, *, max_pages: int = _PROFILE_TEXT_MAX_PAGES) -> list[str]:

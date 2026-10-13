@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz
 
 from core.api_scheduler import WeightedApiScheduler
 from core.model_roles import ROLE_IMAGE, SOURCE_INDEPENDENT, resolve_effective_model_config
@@ -21,6 +22,9 @@ from core.pdf_image_translation import (
 from core.pdf_vector import InplaceHooks, find_cjk_font
 from settings import AppSettings, PdfSettings
 from tests.test_pdf_image_translation import _png_bytes, _RecordingImageClient
+
+# PyMuPDF 属于「PDF 处理组件」，不随安装包分发；没装它的环境跳过这些测试。
+fitz = pytest.importorskip("fitz")
 
 A4 = (595.276, 841.89)
 A3 = (841.89, 1190.551)
@@ -114,6 +118,19 @@ class InplaceTaskTests(unittest.TestCase):
         snap = runner.pdf_page_snapshot()["files"][0]["pages"][1]
         self.assertEqual(snap["inplace_status"], "done")
         self.assertEqual(snap["inplace_written"], 3)
+
+    def test_without_the_pdf_component_drawings_take_the_safety_net(self):
+        # 没装「PDF 处理组件」：页面类型照常判断（pypdfium2），原位替换的页改用保底方式，
+        # 大幅面图纸保留原样，A4 文字页照常走图像翻译。
+        with patch("core.pdf_component.is_available", return_value=False):
+            runner, record, client = self._run(extra={"auto_text_route": "image"})
+        self.assertEqual(len(client.calls), 1)
+        page = sorted(record.pages, key=lambda p: p.page_number)[1]
+        self.assertFalse(page.inplace_status)
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertIn("Plan de toiture", out[1].get_text())  # kept as it is
+        logs = "\n".join(str(getattr(msg, "message", "")) for msg in list(runner._queue.queue))
+        self.assertIn("未安装「PDF 处理组件」", logs)
 
     def test_failed_translation_keeps_the_original_page(self):
         def broken(_texts, _prompt):

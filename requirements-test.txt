@@ -1,2 +1,4 @@
 # 只用于跑测试，不进安装包。构建机（Python 3.11）和 scripts/run_release_env_tests.sh 都按这里装。
 pytest==9.1.1
+# 「PDF 处理组件」里的 PyMuPDF：测试要跑原位替换。它不进安装包（spec 里排除了）。
+PyMuPDF>=1.24,<2

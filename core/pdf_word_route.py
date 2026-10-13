@@ -48,9 +48,9 @@ class WordRouteResult:
 
 
 def word_route_available() -> bool:
-    """PDF 转 Word 组件（pdf2docx 插件）已连接并且能运行。"""
+    """PDF 处理组件已一键安装，或连接了用户自己装的 pdf2docx。"""
     try:
-        return _pdf2docx_executable() is not None
+        return _active_converter() is not None
     except Exception:  # noqa: BLE001 - missing or broken optional component
         return False
 
@@ -246,7 +246,9 @@ _TOKEN_START = re.compile(r"^[\w’'-]+")
 def pdf_words(pdf_path: Path) -> set[str]:
     """PDF 里的词（PyMuPDF 按字距判断词界，不依赖空格字符）：用来认出被拆成两段的同一个词。"""
     try:
-        import fitz
+        from core.pdf_component import require_fitz
+
+        fitz = require_fitz()
 
         with fitz.open(pdf_path) as doc:
             return {match.group(0) for page in doc for word in page.get_text("words")
@@ -353,19 +355,22 @@ def _all_tables(tables):
                 yield from _all_tables(cell.tables)
 
 
-def _pdf2docx_executable() -> Path | None:
-    from core.pdf2docx_plugin import resolve_pdf2docx
+def _active_converter() -> tuple[str, Path] | None:
+    from core.pdf_component import active_converter
 
-    return resolve_pdf2docx()
+    return active_converter()
 
 
 def _conversion_timeout(pdf_path: Path) -> float:
     """pdf2docx 一页大约一秒；按页数给足时间，卡死的转换也不会一直挂着。"""
     try:
-        import fitz
+        import pypdfium2 as pdfium
 
-        with fitz.open(pdf_path) as doc:
-            pages = doc.page_count
+        doc = pdfium.PdfDocument(str(pdf_path))
+        try:
+            pages = len(doc)
+        finally:
+            doc.close()
     except Exception:  # noqa: BLE001 - unreadable PDF: let the converter report it
         pages = 0
     return float(max(300, 30 * pages))
@@ -378,14 +383,21 @@ def convert_pdf_to_docx(
     should_stop: Callable[[], bool] | None = None,
     target_lang: str = "",
 ) -> None:
-    from core.pdf2docx_plugin import Pdf2DocxPluginError, convert_with_plugin
+    from core.pdf2docx_plugin import Pdf2DocxPluginError, convert_with_command, convert_with_plugin
+    from core.pdf_component import SOURCE_MANAGED, managed_convert_command
 
-    exe = _pdf2docx_executable()
-    if exe is None:
-        raise Pdf2DocxPluginError("PDF-to-Word plugin (pdf2docx) is not connected")
+    active = _active_converter()
+    if active is None:
+        raise Pdf2DocxPluginError("PDF component (pdf2docx) is not installed")
     if should_stop and should_stop():
         raise WordRouteStopped()
-    convert_with_plugin(exe, pdf_path, docx_path, _conversion_timeout(pdf_path))
+    source, where = active
+    timeout = _conversion_timeout(pdf_path)
+    if source == SOURCE_MANAGED:
+        # 一键安装的组件：在单独的子进程里跑 pdf2docx，NumPy、OpenCV 不进翻译引擎。
+        convert_with_command(managed_convert_command(where, pdf_path, docx_path), docx_path, timeout)
+    else:
+        convert_with_plugin(where, pdf_path, docx_path, timeout)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
@@ -494,7 +506,12 @@ def cjk_text_visible(pdf_path: Path, max_pages: int = 3) -> bool:
     中文照样写进了文字层，却画成空白；按中文字所在区域的墨迹判断。没有中文时算看得见。"""
     import statistics
 
-    import fitz
+    from core.pdf_component import PdfComponentMissing, require_fitz
+
+    try:
+        fitz = require_fitz()
+    except PdfComponentMissing:
+        return True  # 查不了就不拦：转回的 PDF 照常拼入
 
     values: list[float] = []
     with fitz.open(pdf_path) as doc:
