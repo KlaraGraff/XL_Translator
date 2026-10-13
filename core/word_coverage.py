@@ -31,6 +31,7 @@ from core.translation_coverage import (
     split_existing_bilingual_text,
 )
 from core.bilingual_writer import bilingual_output_name
+from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
@@ -250,6 +251,7 @@ def write_untranslated_docx(
                 _replace_cell_text(cell, translation, target_lang=target_lang)
             else:
                 _append_translation_to_cell(cell, translation, target_lang=target_lang)
+            loosen_row_height(cell)
             table_insertions += 1
             if review_mark:
                 if _apply_cell_review_mark(
@@ -289,6 +291,7 @@ def write_untranslated_docx(
     highlight_count += story_stats.highlight_count
     highlight_skip_count += story_stats.highlight_skip_count
 
+    apply_east_asian_language(doc, target_lang)
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""

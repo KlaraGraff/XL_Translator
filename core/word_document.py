@@ -34,6 +34,7 @@ from core.mixed_language import (
 from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
+from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
@@ -1259,6 +1260,7 @@ def write_bilingual_docx(
                 resolved.text,
                 target_lang=target_lang,
             )
+        loosen_row_height(cell)
         if review_mark:
             if _apply_cell_review_mark(
                 cell,
@@ -1296,6 +1298,7 @@ def write_bilingual_docx(
     highlight_count += story_stats.highlight_count
     highlight_skip_count += story_stats.highlight_skip_count
 
+    apply_east_asian_language(doc, target_lang)
     _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))
     if log_callback:
