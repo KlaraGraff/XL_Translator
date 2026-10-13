@@ -1,9 +1,10 @@
-// 插件管理视图 —— 管理三种可选插件的检测与连接：
-// 1. 图纸转换工具（ODA File Converter，CAD 翻译需要）；
-// 2. 文字识别组件（Tesseract OCR，PDF「原位替换文字」需要）；
+// 插件管理视图 —— 管理三种可选插件的安装、检测与连接：
+// 1. 图纸转换工具（ODA File Converter，翻译 DWG 需要）：一键安装从 ODA 官网下载（先确认 ODA 的
+//    使用条款，核对 ODA 的数字签名）；
+// 2. 文字识别组件（Tesseract OCR，PDF「原位替换文字」需要）：一键安装取 conda-forge 的固定版本；
 // 3. PDF 处理组件（PyMuPDF + pdf2docx，PDF「自动组合」的原位替换、页面判断和转 Word）：
-//    可一键安装（从 PyPI 下载固定版本、核对后装进应用数据目录），也可选择自行安装的位置。
-// 前两者只检测本机是否已装好这些第三方软件、以及让用户手动指定安装位置。
+//    一键安装取 PyPI 的固定版本。
+// 三者都保留「选择安装位置」，连接用户自行安装的版本。
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -51,15 +52,21 @@ function localizedOfficialCadUrl(value?: string): string {
   }
 }
 
+function cadInstalling(): boolean {
+  return Boolean(capability?.install?.running);
+}
+
 function statusLabel(): string {
   if (!capability) return t("正在检测");
   if (!capability.platform_supported) return t("当前平台不支持");
-  if (capability.oda === "connected") return t("已连接");
+  if (cadInstalling()) return t("正在安装");
+  if (capability.oda === "connected") return capability.source === "managed" ? t("已安装") : t("已连接");
   return capability.oda === "incompatible" ? t("转换工具不可用") : t("需要连接图纸转换工具");
 }
 
 function statusTone(): "idle" | "ok" | "warn" | "danger" {
   if (!capability) return "idle";
+  if (cadInstalling()) return "idle";
   if (!capability.platform_supported || capability.oda === "incompatible") return "danger";
   if (capability.oda === "connected") return "ok";
   return "warn";
@@ -78,6 +85,7 @@ export function unmount(): void {
   mounted = false;
   rootEl = null;
   stopAutoDetect();
+  stopCadPolling();
   stopWordPolling();
   stopOcrPolling();
 }
@@ -149,6 +157,7 @@ async function refresh(): Promise<void> {
     await client.connect();
     capability = await client.getCadCapability();
     errorText = "";
+    if (cadInstalling()) pollCadInstall();
   } catch (error) {
     errorText = error instanceof Error ? error.message : t("插件状态读取失败。");
   }
@@ -169,6 +178,98 @@ async function chooseOda(): Promise<void> {
     if (mounted) render();
   } catch (error) {
     showToast({ message: error instanceof Error ? error.message : t("无法连接图纸转换工具。"), error: true });
+  }
+}
+
+let cadPollTimer: number | null = null;
+
+function stopCadPolling(): void {
+  if (cadPollTimer !== null) {
+    window.clearTimeout(cadPollTimer);
+    cadPollTimer = null;
+  }
+}
+
+/** 一键安装在后台进行：每 0.6 秒取一次进度，结束后重新读一遍完整状态。 */
+function pollCadInstall(): void {
+  stopCadPolling();
+  cadPollTimer = window.setTimeout(async () => {
+    cadPollTimer = null;
+    try {
+      const client = new ApiClient();
+      await client.connect();
+      const progress = await client.cadConverterInstallProgress();
+      if (capability) capability = { ...capability, install: progress };
+      if (progress.running) {
+        if (mounted) render();
+        pollCadInstall();
+        return;
+      }
+      capability = await client.getCadCapability();
+      errorText = "";
+      if (progress.phase === "done") {
+        showToast({ message: t("图纸转换工具已安装。") });
+      } else if (progress.error) {
+        showToast({ message: tx(progress.error), error: !progress.cancelled });
+      }
+    } catch (error) {
+      errorText = error instanceof Error ? error.message : t("插件状态读取失败。");
+    }
+    if (mounted) render();
+  }, 600);
+}
+
+async function startCadInstall(): Promise<void> {
+  if (busy || cadInstalling()) return;
+  // ODA File Converter 不是开源软件：下载前先让用户知道它的来源和条款。
+  if (!window.confirm(t("图纸转换工具（ODA File Converter）由 Open Design Alliance 免费提供，不是开源软件，使用需遵守 ODA 的使用条款。一键安装将从 ODA 官网下载安装包，并安装到本软件的数据目录。是否继续？"))) return;
+  busy = true;
+  errorText = "";
+  stopAutoDetect();
+  render();
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.startCadConverterInstall();
+    if (capability) capability = { ...capability, install: progress };
+    pollCadInstall();
+  } catch (error) {
+    errorText = error instanceof Error ? error.message : t("无法开始安装。");
+    showToast({ message: errorText, error: true });
+  } finally {
+    busy = false;
+    if (mounted) render();
+  }
+}
+
+async function cancelCadInstall(): Promise<void> {
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.cancelCadConverterInstall();
+    if (capability) capability = { ...capability, install: progress };
+  } catch (error) {
+    showToast({ message: error instanceof Error ? error.message : t("无法取消安装。"), error: true });
+  }
+  if (mounted) render();
+}
+
+async function removeCadConverter(): Promise<void> {
+  if (busy) return;
+  if (!window.confirm(t("卸载将删除已下载的图纸转换工具，再次使用需重新下载。确定要卸载吗？"))) return;
+  busy = true;
+  render();
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    capability = await client.removeCadConverter();
+    errorText = "";
+    showToast({ message: t("已卸载图纸转换工具。") });
+  } catch (error) {
+    showToast({ message: error instanceof Error ? error.message : t("无法卸载图纸转换工具。"), error: true });
+  } finally {
+    busy = false;
+    if (mounted) render();
   }
 }
 
@@ -649,8 +750,10 @@ function componentInstallNotice(
     box.className = "plugins-notice plugins-progress";
     const text = document.createElement("div");
     let percent = 0;
-    if (job.phase === "download") {
-      percent = job.total > 0 ? (job.done / job.total) * 90 : 0;
+    if (job.phase === "download" && job.total <= 0) {
+      text.textContent = t("正在下载组件…");
+    } else if (job.phase === "download") {
+      percent = (job.done / job.total) * 90;
       text.textContent = t("正在下载组件：{0} / {1} MB", megabytes(job.done), megabytes(job.total));
     } else if (job.phase === "extract") {
       percent = 90 + (job.total > 0 ? (job.done / job.total) * 5 : 0);
@@ -738,12 +841,35 @@ function renderWordCard(): HTMLElement {
 function actionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
-  if (capability?.oda !== "connected") {
-    actions.append(createButton({ label: busy ? t("打开中…") : t("去官网下载"), variant: "primary", disabled: busy, onClick: () => void openOfficialDownloadAndDetect() }));
+  const connected = capability?.oda === "connected";
+  if (cadInstalling()) {
+    actions.append(createButton({ label: t("取消安装"), onClick: () => void cancelCadInstall() }));
+    return actions;
+  }
+  const oneClick = capability?.one_click_supported === true && capability.source !== "managed";
+  if (oneClick) {
+    actions.append(createButton({
+      label: t("一键安装"),
+      variant: connected ? "default" : "primary",
+      disabled: busy,
+      onClick: () => void startCadInstall(),
+    }));
   }
   // 保留手动兜底：即使自动检测已连接，用户仍可切换到另一套安装位置。
-  actions.append(createButton({ label: t("选择安装目录"), onClick: () => void chooseOda() }));
-  actions.append(createButton({ label: t("检测安装状态"), onClick: () => void refresh() }));
+  actions.append(createButton({ label: t("选择安装位置"), onClick: () => void chooseOda() }));
+  if (!connected) {
+    actions.append(createButton({
+      label: busy ? t("打开中…") : t("去官网下载"),
+      variant: oneClick ? "default" : "primary",
+      disabled: busy,
+      onClick: () => void openOfficialDownloadAndDetect(),
+    }));
+  }
+  actions.append(createButton({ label: t("重新检测"), onClick: () => void refresh() }));
+  // 只有一键安装的那一份能卸载；用户自己装的从不删除。
+  if (capability?.source === "managed") {
+    actions.append(createButton({ label: t("卸载"), disabled: busy, onClick: () => void removeCadConverter() }));
+  }
   return actions;
 }
 
@@ -769,7 +895,7 @@ function render(): void {
   const title = document.createElement("h2");
   title.textContent = t("图纸转换工具");
   const officialUrl = localizedOfficialCadUrl(capability?.official_download_url);
-  title.append(createHintBadge(t("使用 ODA File Converter，把翻译后的 DXF 转回 DWG。官方下载：{0}", officialUrl)));
+  title.append(createHintBadge(t("软件名称：ODA File Converter（Open Design Alliance 免费提供，不是开源软件）。一键安装：确认 ODA 的使用条款后，从 ODA 官网下载安装包，核对 ODA 的数字签名并试转换一张图纸，通过后安装到本软件的数据目录。也可以自行从官网下载安装，再选择它的安装位置；装在系统默认位置的会自动找到。未安装时：DXF 图纸照常翻译，DWG 图纸需要它才能翻译。官方下载：{0}", officialUrl)));
   const desc = document.createElement("p");
   desc.textContent = t("把 DWG 转为可翻译的 DXF，完成翻译后再转回 DWG。");
   copy.append(title, desc);
@@ -778,20 +904,30 @@ function render(): void {
   titleRow.append(actionButtons());
   body.append(titleRow);
 
+  const installNotice = componentInstallNotice(capability?.install, capability?.oda === "connected",
+    (error) => t("{0}可重试一键安装，或从 ODA 官网下载安装后选择它的安装位置。", error));
   if (errorText) {
     const error = document.createElement("div");
     error.className = "plugins-notice danger";
     error.textContent = errorText;
     body.append(error);
+  } else if (installNotice) {
+    body.append(installNotice);
   } else if (capability?.oda === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    ok.textContent = t("ODA File Converter 已连接，可开始选择 DWG / DXF 来源。");
+    ok.textContent = capability.source === "managed"
+      ? (capability.converter_version
+        ? t("图纸转换工具已安装（ODA File Converter {0}）。", capability.converter_version)
+        : t("图纸转换工具已安装。"))
+      : t("ODA File Converter 已连接，可开始选择 DWG / DXF 来源。");
     body.append(ok);
   } else if (capability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = t("尚未检测到图纸转换工具。可打开官网、选择安装目录或检测安装状态。");
+    warn.textContent = capability.one_click_supported === true
+      ? t("尚未检测到图纸转换工具。可一键安装，或从 ODA 官网下载安装后选择它的安装位置。")
+      : t("尚未检测到图纸转换工具。可从 ODA 官网下载安装后选择它的安装位置，或重新检测。");
     body.append(warn);
   }
   card.append(body);
