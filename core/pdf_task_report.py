@@ -191,8 +191,6 @@ def _pdf_file_status_label(record: PdfFileRecord) -> str:
         if record.status == PDF_OUTPUT_STATE_STOPPED:
             return "未完成图片，已保留页面素材"
         return "未完成图片"
-    if record.translated_docx_path:
-        return "已转成 Word 翻译（Beta）"
     if record.translated_pdf_path:
         return "已完成 PDF"
     if record.status == PDF_OUTPUT_STATE_FAILED:
@@ -271,16 +269,13 @@ def _route_report_lines(record: PdfFileRecord) -> list[str]:
     lines: list[str] = []
     if record.document_kind:
         lines.append(f"- 文件类型判断：{_DOCUMENT_KIND_TEXT.get(record.document_kind, record.document_kind)}")
-    if record.translation_route == "word":
-        lines.append(
-            "- 翻译方式：转成 Word 再翻译（Beta）；译文 Word："
-            + (record.translated_docx_path or "未生成")
-        )
+    if record.translated_docx_path:
+        lines.append(f"- 另存的 Word：{record.translated_docx_path}")
     for segment in getattr(record, "word_segments", []) or []:
         pages = (f"第 {segment.get('first_page')} 页" if segment.get("first_page") == segment.get("last_page")
                  else f"第 {segment.get('first_page')}–{segment.get('last_page')} 页")
         if segment.get("status") == "done":
-            lines.append(f"- {pages}：正文，转成 Word 翻译（Beta）后转回 PDF 拼入")
+            lines.append(f"- {pages}：文字可以提取，转成 Word 翻译（Beta）后转回 PDF 拼入")
         else:
             lines.append(f"- {pages}：转成 Word 没有成功：{segment.get('message', '')}")
     kept = [page.page_number for page in record.pages if getattr(page, "kept_reason", "")]
@@ -368,7 +363,8 @@ def _real_generated_page_count(record: PdfFileRecord) -> int:
     """
     finished = _finished_page_count(record)
     # 原页照搬的页（按设定保留、没有图像模型、原位替换没成功）都不是译文
-    copied = sum(1 for page in record.pages if page.skipped_oversize and page.inplace_status != "done")
+    copied = sum(1 for page in record.pages if page.skipped_oversize and page.inplace_status != "done"
+                 and getattr(page, "word_status", "") != "done")
     not_translated = max(0, int(record.placeholder_page_count or 0)) + max(
         copied, max(0, int(record.skipped_oversize_page_count or 0))
     )
@@ -376,8 +372,6 @@ def _real_generated_page_count(record: PdfFileRecord) -> int:
 
 
 def _generated_progress_label(record: PdfFileRecord) -> str:
-    if record.translation_route == "word":
-        return "整份转成 Word 翻译，不按页统计"
     page_count = max(0, int(record.page_count or 0))
     generated = _real_generated_page_count(record)
     return f"{generated}/{page_count}" if page_count else str(generated)
@@ -390,15 +384,13 @@ def _unstarted_page_count(record: PdfFileRecord) -> int:
     （历史清单、测试替身都是这样），那种情况下已生成页数才是真正处理过的页数。
     """
     page_count = max(0, int(record.page_count or 0))
-    if not page_count or record.translation_route == "word":
+    if not page_count:
         return 0
     touched = max(len(record.pages), _finished_page_count(record))
     return max(0, page_count - touched)
 
 
 def _last_finished_page_label(record: PdfFileRecord) -> str:
-    if record.translation_route == "word":
-        return "整份转成 Word 翻译，不按页统计"
     page_count = max(0, int(record.page_count or 0))
     last_page = _last_contiguous_finished_page(record)
     if not last_page:
@@ -578,7 +570,7 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     ) and not fully_skipped
     detail_parts = []
     if record.translated_docx_path:
-        detail_parts.append("已转成 Word 翻译（Beta）")
+        detail_parts.append("另存了一份 Word")
     kept_pages = sum(1 for page in record.pages if getattr(page, "kept_reason", ""))
     if kept_pages:
         detail_parts.append(f"{kept_pages} 页需要整页图像翻译，但没有设置图像翻译模型，保留原样")
@@ -603,9 +595,9 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "quality_flagged_page_count": record.quality_flagged_page_count,
         "ratio_letterboxed_page_count": record.ratio_letterboxed_page_count,
         "render_downscaled_page_count": record.render_downscaled_page_count,
-        "output": record.translated_docx_path or record.translated_pdf_path or record.translated_image_path,
-        "output_format": "docx" if record.translated_docx_path else ("image" if record.translated_image_path else "pdf"),
-        "translation_route": record.translation_route,
+        "output": record.translated_pdf_path or record.translated_image_path or record.translated_docx_path,
+        "output_format": "image" if record.translated_image_path else "pdf",
+        "word_output": record.translated_docx_path,
         "document_kind": record.document_kind,
         "compressed_output": record.compressed_pdf_path,
         "translated_image_path": record.translated_image_path,

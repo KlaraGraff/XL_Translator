@@ -1129,6 +1129,8 @@ class PdfSettings(BaseModel):
     auto_text_route: Literal["word", "inplace", "image"] = "word"
     auto_drawing_route: Literal["inplace", "skip", "image"] = "inplace"
     auto_fallback: Literal["image", "skip"] = "image"
+    # 自动组合：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
+    also_save_word: bool = False
     # 从多大算大幅面（原位替换、自动组合用）：A3（默认，即以前的判定）/ A2 / A1 / A0。
     oversized_page_threshold: Literal["A3", "A2", "A1", "A0"] = "A3"
     # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么

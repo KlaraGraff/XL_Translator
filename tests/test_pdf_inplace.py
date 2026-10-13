@@ -79,6 +79,7 @@ class InplaceTaskTests(unittest.TestCase):
         runner._image_model_missing = image_model_missing
         office = office or ("", "no office engine in tests")
         with patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_word_route.word_route_available", return_value=True), \
                 patch("core.pdf_word_route.office_pdf_engine", return_value=office):
             prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
             runner._run_word_segments([prepared])
@@ -166,47 +167,50 @@ class InplaceTaskTests(unittest.TestCase):
         self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
         self.assertEqual(record.skipped_oversize_page_count, 0)
 
-    def test_text_document_goes_to_word(self):
+    def _fake_word_and_pdf(self, pages_out=1):
         from core.pdf_word_route import WordRouteResult
 
-        calls = []
-
         def fake_word(pdf_path, work_dir, final_path, settings, **kwargs):
-            calls.append(pdf_path)
             final_path.parent.mkdir(parents=True, exist_ok=True)
             final_path.write_bytes(b"docx")
             return WordRouteResult(ok=True, output_path=str(final_path))
 
-        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
-                patch("core.pdf_image_translation.classify_document") as classify:
-            from core.pdf_routes import DocumentKind, PageKind
+        def fake_docx_to_pdf(_docx, pdf_path, **_kwargs):
+            doc = fitz.open()
+            for _ in range(pages_out):
+                doc.new_page(width=A4[0], height=A4[1]).insert_text((60, 100), "SEGMENT-TRANSLATED", fontsize=12)
+            doc.save(pdf_path)
+            return "word"
 
-            classify.return_value = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False)])
-            runner, record, client = self._run(route="word", sizes=(A4, A4))
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(len(client.calls), 0)          # no page went to the image model
-        self.assertEqual(record.translation_route, "word")
+        return fake_word, fake_docx_to_pdf
+
+    def test_text_document_comes_back_as_pdf(self):
+        fake_word, fake_pdf = self._fake_word_and_pdf()
+        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
+            _runner, record, client = self._run(sizes=(A4, A4), office=("word", "test"))
+        self.assertEqual(len(client.calls), 0)
+        self.assertTrue(record.translated_pdf_path.endswith(".pdf"))
+        self.assertEqual(record.translated_docx_path, "")          # no Word unless asked for
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertIn("SEGMENT-TRANSLATED", out[0].get_text())
+
+    def test_also_save_word_for_a_whole_text_document(self):
+        fake_word, fake_pdf = self._fake_word_and_pdf()
+        with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
+            _runner, record, _client = self._run(sizes=(A4, A4), office=("word", "test"),
+                                                 extra={"also_save_word": True})
         self.assertTrue(record.translated_docx_path.endswith(".docx"))
-        self.assertEqual(record.status, "completed")
-        snap = runner.pdf_page_snapshot()["files"][0]
-        self.assertEqual(snap["translation_route"], "word")
-        self.assertEqual(snap["pages"], [])
+        self.assertEqual(Path(record.translated_docx_path).parent, Path(record.translated_pdf_path).parent)
 
-    def test_failed_word_conversion_fails_only_that_file(self):
-        from core.pdf_word_route import WordRouteResult
-
-        def fake_word(*_args, **_kwargs):
-            return WordRouteResult(ok=False, error="转成 Word 失败")
-
+    def test_no_word_copy_for_a_mixed_file(self):
+        fake_word, fake_pdf = self._fake_word_and_pdf()
         with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
-                patch("core.pdf_image_translation.classify_document") as classify:
-            from core.pdf_routes import DocumentKind, PageKind
-
-            classify.return_value = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False)])
-            _runner, record, _client = self._run(route="word", sizes=(A4, A4))
-        self.assertEqual(record.status, "failed")
-        self.assertIn("整页图像翻译", record.error)
-
+                patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
+            _runner, record, _client = self._run(sizes=(A4, A3), office=("word", "test"),
+                                                 extra={"also_save_word": True})
+        self.assertEqual(record.translated_docx_path, "")
 
     def test_text_pages_of_a_mixed_file_become_a_word_segment(self):
         from core.pdf_word_route import WordRouteResult
@@ -308,7 +312,7 @@ if __name__ == "__main__":
 class WordRouteTaskTests(unittest.TestCase):
     """The whole task (``_run``) with a word-route file: stop and review status."""
 
-    def _run_task(self, fake_word, *, route="word", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None):
+    def _run_task(self, fake_word, *, route="auto", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None):
         from core.pdf_routes import DocumentKind, PageKind
         from core.task_runner import DoneMsg, ErrorMsg, StoppedMsg
 
@@ -329,7 +333,16 @@ class WordRouteTaskTests(unittest.TestCase):
             [PdfFileItem(path=src, name="source", size_kb=1.0, page_count=len(sizes))], settings,
             source_root=root, image_client=client, task_logger_enabled=False, inplace_hooks=_hooks())
         kinds = kinds or DocumentKind("text", [PageKind(i + 1, "text", False) for i in range(len(sizes))])
+        def fake_docx_to_pdf(_docx, pdf_path, **_kwargs):
+            doc = fitz.open()
+            doc.new_page(width=A4[0], height=A4[1]).insert_text((60, 100), "SEGMENT", fontsize=12)
+            doc.save(pdf_path)
+            return "word"
+
         with patch("core.pdf_word_route.translate_pdf_via_word", lambda *a, **k: fake_word(runner, *a, **k)), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_docx_to_pdf), \
+                patch("core.pdf_word_route.office_pdf_engine", return_value=("word", "test")), \
+                patch("core.pdf_word_route.word_route_available", return_value=True), \
                 patch("core.pdf_image_translation.classify_document", return_value=kinds), \
                 patch("core.model_roles.get_key", return_value="secret"), \
                 patch("core.pdf_image_translation.record_image_model_availability", lambda *a, **k: None):
@@ -353,7 +366,7 @@ class WordRouteTaskTests(unittest.TestCase):
 
         runner, final, _client = self._run_task(fake)
         self.assertIsInstance(final, StoppedMsg)
-        self.assertEqual(runner._prepared_files[0].record.status, "stopped")
+        self.assertEqual(runner._prepared_files[0].record.word_segments[0]["status"], "stopped")
 
     def test_word_issues_make_the_task_need_review(self):
         from core.pdf_word_route import WordRouteResult
@@ -368,7 +381,7 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertIsInstance(final, DoneMsg)
         self.assertTrue(final.issues)
         self.assertEqual(final.file_results[0]["status"], "needs_review")
-        self.assertEqual(final.file_results[0]["output_format"], "docx")
+        self.assertEqual(final.file_results[0]["output_format"], "pdf")
 
     def test_skipped_large_pages_count_whatever_the_saved_threshold(self):
         from core.task_runner import DoneMsg

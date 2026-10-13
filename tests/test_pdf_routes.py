@@ -15,7 +15,6 @@ from core.pdf_routes import (
     KIND_SCAN,
     KIND_TEXT,
     classify_document,
-    file_uses_word,
     page_route,
 )
 from core.pdf_word_route import normalize_fonts_xml
@@ -94,16 +93,6 @@ class PageRouteTests(unittest.TestCase):
         word_no_skip = PdfSettings(translation_route="word", skip_oversized_pages=False)
         self.assertEqual(word_no_skip.auto_drawing_route, "image")
 
-    def test_word_is_only_for_whole_text_documents(self) -> None:
-        from core.pdf_routes import DocumentKind
-
-        text, mixed = DocumentKind(KIND_TEXT), DocumentKind(KIND_MIXED)
-        self.assertTrue(file_uses_word(PdfSettings(translation_route="word"), text))   # mapped to auto
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="auto"), mixed))
-        self.assertTrue(file_uses_word(PdfSettings(translation_route="auto"), text))
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="auto", auto_text_route="inplace"), text))
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="image"), text))
-        self.assertFalse(file_uses_word(PdfSettings(translation_route="inplace"), text))  # text pages in place
 
 
 def _text_page(doc) -> None:

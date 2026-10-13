@@ -62,6 +62,13 @@ export type OcrPluginStatus = {
   message?: string;
 };
 
+/** PDF 转 Word 组件（pdf2docx 插件）状态。 */
+export type Pdf2DocxPluginStatus = {
+  state: "connected" | "missing" | "invalid";
+  path: string;
+  message?: string;
+};
+
 
 export type SseEvent = {
   id: number;
@@ -143,8 +150,6 @@ export type PdfPageFile = {
   page_count: number;
   /** 翻译方式（Beta 分支）：读文件时的判断 text / drawing / scan / mixed（整页图像翻译时为空）。 */
   document_kind?: string;
-  /** "word"：整份转成 Word 翻译，没有逐页结果（pages 为空）。 */
-  translation_route?: string;
   translated_docx_path?: string;
   pages: PdfPage[];
 };
@@ -478,6 +483,22 @@ export class ApiClient {
 
   async uninstallOcrPlugin(): Promise<OcrPluginStatus> {
     return this.request<OcrPluginStatus>("/api/plugins/ocr/uninstall", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async getPdf2DocxCapability(): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx");
+  }
+
+  async officialPdf2DocxDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/pdf2docx/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async connectPdf2Docx(path: string): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/install", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async uninstallPdf2DocxPlugin(): Promise<Pdf2DocxPluginStatus> {
+    return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/uninstall", { method: "POST", body: JSON.stringify({}) });
   }
 
   async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {

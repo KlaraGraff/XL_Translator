@@ -234,7 +234,7 @@ class PdfPageRecord:
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
     # 照样能跑）：原页放进输出，这里写原因。
     kept_reason: str = ""
-    # 混合文件里转 Word 翻译的正文页（Beta）：连续几页合成一段，word_segment 是段号
+    # 自动组合里转 Word 翻译的页（Beta）：连续几页合成一段，word_segment 是段号
     # （从 1 起），word_status 为 "" | done | failed | stopped。
     word_requested: bool = False
     word_segment: int = 0
@@ -304,10 +304,9 @@ class PdfFileRecord:
     high_quality_pdf_size_bytes: int = 0
     compressed_pdf_size_bytes: int = 0
     # 翻译方式（Beta 分支）：document_kind 是读文件时的判断（text / drawing / scan /
-    # mixed，整页图像翻译时不判断，留空）；translation_route 为 "word" 时整份转成
-    # Word 翻译，输出 translated_docx_path，没有逐页记录。
+    # mixed，整页图像翻译时不判断，留空）；translated_docx_path 是「同时输出 Word」
+    # 另存的 Word（只在整份文件都转 Word 翻译时才有）。
     document_kind: str = ""
-    translation_route: str = ""
     translated_docx_path: str = ""
     # 转 Word 翻译时 Word 流程报出的待复核处数（保留原文、疑似漏译等）
     word_issue_count: int = 0

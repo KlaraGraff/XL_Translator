@@ -391,18 +391,6 @@ function pageIsUnfinished(page: PdfPage): boolean {
  *
  *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
 function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewEnabled: boolean): HTMLElement[] {
-  if (file.translation_route === "word") {
-    // 整份转成 Word 翻译（Beta）：没有逐页结果，只说这份文件到哪一步了。
-    const span = el("span", file.status === "failed" ? "bad" : "");
-    span.textContent = file.status === "failed"
-      ? t("转成 Word 翻译失败")
-      : file.status === "completed" || file.status === "needs_review"
-        ? t("已转成 Word 翻译 · {0} 页", file.page_count)
-        : file.status === "stopped"
-          ? t("转成 Word 翻译 · 已停止")
-          : t("转成 Word 翻译 · 处理中");
-    return [span];
-  }
   if (file.pages.length === 0) {
     // 一页都没有：要么预处理就失败（打不开、图片校验没过），要么还没轮到预处理。
     // 有页的失败文件（例如单张图片那一页没生成出来）不是「打不开」，往下按页分桶说。
@@ -1012,7 +1000,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
   const oversizeSkipped = page.skipped_oversize;
   const oversizeReason = page.word_requested
-    ? t("该页是正文，和相邻正文页一起转成 Word 翻译后拼回 PDF，没有单独的页图。")
+    ? t("这一页的文字可以提取，和相邻几页一起转成 Word 翻译后拼回 PDF，没有单独的页图。")
     : page.inplace_requested
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
     : page.kept_reason

@@ -9,8 +9,9 @@
    的 .docx，放进 PDF 任务的输出文件夹。
 
 只用于整份都是普通排版页的文档（见 core.pdf_routes）；图纸、扫描件不走这里。
-pdf2docx（MIT）依赖 PyMuPDF（AGPL-3.0）和 OpenCV，只在用到时才导入；许可见
-THIRD_PARTY_NOTICES.md。
+pdf2docx 不随软件分发：它是用户在「插件」页自己连接的可选组件（开源命令行工具，
+见 core.pdf2docx_plugin），这里只是调用它的命令行。没连接时这条路不可用，
+调用方改用保底方式。
 """
 from __future__ import annotations
 
@@ -45,11 +46,11 @@ class WordRouteResult:
 
 
 def word_route_available() -> bool:
+    """PDF 转 Word 组件（pdf2docx 插件）已连接并且能运行。"""
     try:
-        _quiet_import_pdf2docx()
+        return _pdf2docx_executable() is not None
     except Exception:  # noqa: BLE001 - missing or broken optional component
         return False
-    return True
 
 
 def _fix_rfonts(tag: str) -> str:
@@ -257,18 +258,22 @@ def _all_tables(tables):
                 yield from _all_tables(cell.tables)
 
 
-def _quiet_import_pdf2docx():
-    """pdf2docx 导入时调 logging.basicConfig()：根 logging 没有处理器时会给它挂一个
-    输出到 stderr 的处理器、把级别调到 INFO，此后整个程序（httpx 等）的 INFO 日志都
-    会打到 stderr，它自己每页也打一行进度。先挂一个空处理器，basicConfig 就什么都
-    不做；只影响原本就没人接收的根日志。"""
-    import logging
+def _pdf2docx_executable() -> Path | None:
+    from core.pdf2docx_plugin import resolve_pdf2docx
 
-    if not logging.root.handlers:
-        logging.root.addHandler(logging.NullHandler())
-    from pdf2docx import Converter
+    return resolve_pdf2docx()
 
-    return Converter
+
+def _conversion_timeout(pdf_path: Path) -> float:
+    """pdf2docx 一页大约一秒；按页数给足时间，卡死的转换也不会一直挂着。"""
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as doc:
+            pages = doc.page_count
+    except Exception:  # noqa: BLE001 - unreadable PDF: let the converter report it
+        pages = 0
+    return float(max(300, 30 * pages))
 
 
 def convert_pdf_to_docx(
@@ -278,16 +283,14 @@ def convert_pdf_to_docx(
     should_stop: Callable[[], bool] | None = None,
     target_lang: str = "",
 ) -> None:
-    Converter = _quiet_import_pdf2docx()
+    from core.pdf2docx_plugin import Pdf2DocxPluginError, convert_with_plugin
 
-    docx_path.parent.mkdir(parents=True, exist_ok=True)
-    converter = Converter(str(pdf_path))
-    try:
-        if should_stop and should_stop():
-            raise WordRouteStopped()
-        converter.convert(str(docx_path), multi_processing=False)
-    finally:
-        converter.close()
+    exe = _pdf2docx_executable()
+    if exe is None:
+        raise Pdf2DocxPluginError("PDF-to-Word plugin (pdf2docx) is not connected")
+    if should_stop and should_stop():
+        raise WordRouteStopped()
+    convert_with_plugin(exe, pdf_path, docx_path, _conversion_timeout(pdf_path))
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     merge_wrapped_lines(docx_path)
 

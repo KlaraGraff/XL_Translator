@@ -91,6 +91,7 @@ from settings import AppSettings, provider_key_overrides
 
 # 数据模型与结果整理已拆到独立模块，这里原样再导出，保持旧的导入路径可用。
 from core.pdf_routes import (
+    KIND_BLANK,
     KIND_DRAWING,
     KIND_MIXED,
     KIND_SCAN,
@@ -101,10 +102,8 @@ from core.pdf_routes import (
     ROUTE_WORD,
     classify_document,
     fallback_route,
-    file_uses_word,
     page_route,
 )
-from core.pdf_word_route import word_route_available
 from core.pdf_models import (  # noqa: F401
     SOURCE_TYPE_PDF,
     SOURCE_TYPE_IMAGE,
@@ -1412,9 +1411,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             record = prepared.record
             by_number = {page.page_number: page for page in list(record.pages)}
             pages: list[dict[str, Any]] = []
-            # 转 Word 的文件没有逐页结果，面板上只显示一行文件状态
-            page_numbers = [] if record.translation_route == ROUTE_WORD else range(1, max(0, int(record.page_count)) + 1)
-            for page_number in page_numbers:
+            for page_number in range(1, max(0, int(record.page_count)) + 1):
                 page = by_number.get(page_number)
                 key = (record.relative_path, page_number)
                 pages.append(
@@ -1435,7 +1432,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     "error": _short_review_text(record.error),
                     "page_count": int(record.page_count),
                     "document_kind": record.document_kind,
-                    "translation_route": record.translation_route,
                     "translated_docx_path": record.translated_docx_path,
                     "pages": pages,
                 }
@@ -2764,10 +2760,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._prefill_resume_pages(prepared_files, output_dir=output_dir)
             # 自动组合：混合文件里的正文段先转 Word 翻好，转不成的页随后按保底方式翻译。
             self._run_word_segments(prepared_files)
-            # 转 Word 的文件不逐页翻译，不算进页数进度
-            total_pages = sum(
-                record.page_count for record in file_records if record.translation_route != ROUTE_WORD
-            )
+            total_pages = sum(record.page_count for record in file_records)
             self._total_page_count = total_pages
             self._emit_page_status()
             for prepared in prepared_files:
@@ -2926,8 +2919,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 and not fatal_error
                 and self._stop_event.is_set()
                 and any(
-                    (record.translation_route == ROUTE_WORD and record.status == PDF_OUTPUT_STATE_STOPPED)
-                    or any(item.get("status") == "stopped" for item in record.word_segments)
+                    any(item.get("status") == "stopped" for item in record.word_segments)
                     for record in file_records
                 )
             ):
@@ -3192,8 +3184,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if (
                 record.status != PDF_OUTPUT_STATE_FAILED
                 and profile_executor is not None
-                # 转 Word 的文件由 Word 流程自己写文档说明
-                and record.translation_route != ROUTE_WORD
             ):
                 future = self._submit_document_context(profile_executor, item.path)
                 if future is not None:
@@ -3231,12 +3221,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         self._document_kinds[str(item.path)] = kind
         record.document_kind = kind.kind
-        if file_uses_word(pdf_settings, kind):
-            if word_route_available():
-                record.translation_route = ROUTE_WORD
-                self._log("INFO", f"[{record.name}] 判断为文字文档，将转成 Word 再翻译（Beta），输出 .docx。")
-                return
-            self._log("WARN", f"[{record.name}] 转成 Word 的组件不可用，这份文件改为逐页处理。")
         label = _DOCUMENT_KIND_LABELS.get(kind.kind, "")
         if label:
             self._log("INFO", f"[{record.name}] 判断为{label}，按页处理。")
@@ -3759,11 +3743,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
         for prepared in prepared_files:
             record = prepared.record
-            if (
-                record.status == PDF_OUTPUT_STATE_FAILED
-                or record.page_count <= 0
-                or record.translation_route == ROUTE_WORD
-            ):
+            if record.status == PDF_OUTPUT_STATE_FAILED or record.page_count <= 0:
                 continue
             self._file_progress.emit(
                 prepared.item.path,
@@ -3897,9 +3877,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if record.status == PDF_OUTPUT_STATE_FAILED:
             self._refresh_file_record_counts(record)
             return
-        if record.translation_route == ROUTE_WORD:
-            self._finalize_word_record(prepared)
-            return
         if not should_assemble:
             record.status = PDF_OUTPUT_STATE_STOPPED
             self._refresh_file_record_counts(record)
@@ -3926,6 +3903,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         try:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)
             record.translated_pdf_path = str(prepared.translated_pdf_path)
+            self._save_word_copy(record, prepared)
             record.high_quality_pdf_size_bytes = _safe_file_size(prepared.translated_pdf_path)
             # 这一轮重新装配，上一轮的压缩结论（成功路径与失败原因）全部作废：
             # 单页重生成不再预删旧产物，不在这里显式收口的话，旧压缩版会连同旧的
@@ -3980,71 +3958,33 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='已翻译的页面未能合成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
 
-    def _finalize_word_record(self, prepared: _PreparedPdfFile) -> None:
-        """「转成 Word 再翻译」（Beta）：整份文件转 .docx，走 Word 翻译流程。"""
-        from core.pdf_word_route import translate_pdf_via_word
-
-        record = prepared.record
-        if record.translated_docx_path and Path(record.translated_docx_path).is_file():
-            return  # 单页重新生成等操作会再次收尾，已经翻好的 Word 不重做
-        if self._stop_event.is_set():
-            record.status = PDF_OUTPUT_STATE_STOPPED
-            record.error = "任务已停止，这份文件还没有转成 Word 翻译。"
+    def _save_word_copy(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
+        """「同时输出 Word」：整份文件（空白页除外）都在同一段里转 Word 翻好时，把那份
+        Word 放到译文 PDF 旁边。混合文件不出 Word：拆成几段的 Word 拼不回一份文件。"""
+        if not getattr(self._settings.pdf, "also_save_word", False):
             return
-        self._queue.put(StatusMsg(f"状态：正在把「{record.name}」转成 Word 并翻译…"))
-        self._log("INFO", f"[{record.name}] 正在转成 Word（Beta）…")
-        final_path = Path(prepared.translated_pdf_path).with_suffix(".docx")
-
-        def progress(done: int, total: int) -> None:
-            self._file_progress.emit(
-                prepared.item.path, "active", "translate", completed=done, total=max(1, total)
-            )
-
-        hooks = self._inplace_hooks
+        done = [item for item in record.word_segments if item.get("status") == "done" and item.get("docx_path")]
+        kind = self._document_kinds.get(str(prepared.item.path))
+        if len(done) != 1 or kind is None:
+            return
+        first, last = int(done[0]["first_page"]), int(done[0]["last_page"])
+        if any(not first <= page.page_number <= last for page in kind.pages if page.kind != KIND_BLANK):
+            return
+        target = Path(prepared.translated_pdf_path).with_suffix(".docx")
         try:
-            result = translate_pdf_via_word(
-                Path(record.source_copy_path),
-                Path(prepared.translated_pages_dir) / "word",
-                final_path,
-                self._settings,
-                source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
-                should_stop=self._stop_event.is_set,
-                log=self._log,
-                progress=progress,
-                file_label=record.name,
-                key_overrides=self._key_overrides,
-            )
-        except Exception as exc:  # noqa: BLE001 - one file only costs that file
-            logger.exception("[PDF] 转 Word 翻译失败")
-            record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = "转成 Word 翻译失败：" + user_facing_reason(exc, fallback="处理这份文件时出错。")
-            self._log("ERROR", f"[{record.name}] {record.error}")
+            shutil.copy2(done[0]["docx_path"], target)
+        except OSError as exc:
+            self._log("WARN", f"[{record.name}] 另存 Word 失败：" + user_facing_reason(exc, fallback="无法写入输出文件夹。"))
             return
-        if result.ok:
-            record.translated_docx_path = result.output_path
-            record.word_issue_count = len(result.issues)
-            record.status = PDF_OUTPUT_STATE_NEEDS_REVIEW if result.issues else PDF_OUTPUT_STATE_COMPLETED
-            note = f"，{len(result.issues)} 处需要复核" if result.issues else ""
-            self._log("OK", f"[{record.name}] 已转成 Word 翻译：{Path(result.output_path).name}{note}")
-            return
-        if result.stopped:
-            record.status = PDF_OUTPUT_STATE_STOPPED
-            record.error = "任务已停止，这份文件没有翻译完。"
-            return
-        record.status = PDF_OUTPUT_STATE_FAILED
-        record.error = (
-            _with_sentence_end(result.error)
-            + "可以把翻译方式换成「整页图像翻译」或「原位替换」后重新翻译这份文件。"
-        )
-        self._log("ERROR", f"[{record.name}] {record.error}")
+        record.translated_docx_path = str(target)
+        self._log("OK", f"[{record.name}] 另存了一份 Word：{target.name}")
 
     def _planned_word_pages(self, prepared: _PreparedPdfFile) -> list[int]:
-        """自动组合里首选转 Word 的正文页（整份都是正文的文件另走整份转 Word）。"""
+        """自动组合里首选转 Word 的页（可提取文字的页，且设置成转 Word）。"""
         record = prepared.record
         if (getattr(self._settings.pdf, "translation_route", "image") != "auto"
                 or record.source_type == SOURCE_TYPE_IMAGE
-                or record.status == PDF_OUTPUT_STATE_FAILED
-                or record.translation_route == ROUTE_WORD):
+                or record.status == PDF_OUTPUT_STATE_FAILED):
             return []
         kind = self._document_kinds.get(str(prepared.item.path))
         if kind is None:
@@ -4097,7 +4037,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     mark("stopped", "任务已停止")
                     continue
                 self._queue.put(StatusMsg(f"状态：正在把「{record.name}」{label}转成 Word 翻译…"))
-                self._log("INFO", f"[{record.name}] {label}是正文，先转成 Word 翻译（Beta）。")
+                self._log("INFO", f"[{record.name}] {label}的文字可以提取，先转成 Word 翻译（Beta）。")
                 work = Path(prepared.translated_pages_dir) / "word" / f"segment_{index:02d}"
                 work.mkdir(parents=True, exist_ok=True)
                 stem = Path(record.name).stem
@@ -4137,7 +4077,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 entry.update(docx_path=result.output_path, pdf_path=str(translated_pdf),
                              issue_count=len(result.issues), engine=engine)
                 record.word_issue_count += len(result.issues)
-                mark("done", note=f"{label}是正文，转成 Word 翻译后转回 PDF 拼入")
+                mark("done", note=f"{label}的文字可以提取，转成 Word 翻译后转回 PDF 拼入")
                 self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
 
     def _run_inplace_pages(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
@@ -4428,7 +4368,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         return any(
             record.status != PDF_OUTPUT_STATE_FAILED
             and record.page_count > 0
-            and record.translation_route != ROUTE_WORD
             and not self._record_has_all_pages_finished(record)
             for record in records
         )
@@ -4658,7 +4597,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         return ""
 
     def _word_segments_possible(self) -> str:
-        """混合文件里的正文页转 Word 要用的条件；全满足返回空串，否则返回原因。只查一次。"""
+        """可提取文字的页转 Word 要用的条件；全满足返回空串，否则返回原因。只查一次。"""
         if self._office_pdf_engine is None:
             from core.pdf_word_route import office_pdf_engine, word_route_available
 

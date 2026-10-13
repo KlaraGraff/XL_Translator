@@ -378,6 +378,8 @@ interface SurfaceState {
   pdfAutoTextRoute: "word" | "inplace" | "image";
   pdfAutoDrawingRoute: "inplace" | "skip" | "image";
   pdfAutoFallback: "image" | "skip";
+  /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
+  pdfAlsoSaveWord: boolean;
   /** 从多大算大幅面（原位替换、自动组合用）。 */
   pdfOversizedPageThreshold: "A3" | "A2" | "A1" | "A0";
 }
@@ -426,6 +428,7 @@ function freshState(surface: Surface): SurfaceState {
     pdfAutoTextRoute: "word",
     pdfAutoDrawingRoute: "inplace",
     pdfAutoFallback: "image",
+    pdfAlsoSaveWord: false,
     pdfOversizedPageThreshold: "A3",
   };
 }
@@ -647,6 +650,7 @@ function applySettingsToStates(): void {
       st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
       st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
       st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
+      st.pdfAlsoSaveWord = pdf.also_save_word === true;
       const threshold = text(pdf.oversized_page_threshold);
       st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
     } else {
@@ -2722,13 +2726,14 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const wrap = el("div", "route-block");
   const beta = t("Beta");
   const imageLabel = t("整页图像翻译");
+  const imageDesc = t("实测综合效果最好，费用最高；大页面受像素限制，不够清晰");
 
   wrap.append(buildRouteRow({
     label: t("翻译方式"),
-    hint: t("整页图像翻译：每页交给图像模型重画，是原来的做法。自动组合：先看每一页是扫描件、正文还是图纸，按下面几行分别翻译，最后按原来的页序合成一份 PDF。"),
+    hint: t("三种方式各有长处。整页图像翻译：实测综合效果最好，但译文是图片，受像素限制，大幅面页面会不够清晰，费用也最高。转成 Word：适合能提取文字的页，尤其是本来由 Word 导出的文件，排版还不错；不走图像模型，费用最低，综合效果中等偏上。原位替换：适合大型图纸，只替换文字，线条、尺寸等矢量细节完整保留；遇到画成线条的字要先识别，会慢一些。自动组合按每一页的类型分别选，最后按原页序合成一份 PDF。"),
     options: [
       { value: "image", label: imageLabel, description: t("原来的做法：每页交给图像模型重画") },
-      { value: "auto", label: t("自动组合"), tag: beta, description: t("扫描页用图像翻译，正文转 Word，图纸原位替换，合成一份 PDF") },
+      { value: "auto", label: t("自动组合"), tag: beta, description: t("按每一页的类型分别选方式，合成一份 PDF") },
     ],
     value: st.pdfRoute,
     disabled: active,
@@ -2741,20 +2746,23 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const keepLabel = t("原样保留");
   wrap.append(buildRouteRow({
     label: t("扫描页"),
-    hint: t("选不中文字的页，比如签字页、盖章的评审意见、拍照件。只有图像模型能翻。"),
-    options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
+    hint: t("提取不到文字的页，比如签字页、盖章的评审意见、拍照件。只有图像模型能翻。"),
+    options: [
+      { value: "image", label: imageLabel, description: imageDesc },
+      { value: "skip", label: keepLabel, description: t("不翻译，完成后列出来") },
+    ],
     value: st.pdfAutoScanRoute,
     disabled: active,
     sub: true,
     onChange: (value) => void handlePdfRouteChange(st, "pdfAutoScanRoute", "pdf.auto_scan_route", value as SurfaceState["pdfAutoScanRoute"]),
   }));
   wrap.append(buildRouteRow({
-    label: t("正文页"),
-    hint: t("能选中文字的正文、表格、说明页。转成 Word 费用最低、效果最好；夹在扫描页或图纸中间的正文，翻好后用电脑上的 Word 转回 PDF 拼回原位。整份都是正文的文件直接输出 Word。"),
+    label: t("可提取文字的页"),
+    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。需要在插件页安装「PDF 转 Word 组件」，电脑上还要有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
-      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用最低、效果最好") },
-      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面完全不变，中文小一号；只能译成中文") },
-      { value: "image", label: imageLabel, description: t("交给图像模型重画，费用最高") },
+      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用最低；由 Word 导出的文件排版不错，综合效果中等偏上") },
+      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面完全不变，中文略小；只能译成中文") },
+      { value: "image", label: imageLabel, description: imageDesc },
     ],
     value: st.pdfAutoTextRoute,
     disabled: active,
@@ -2763,11 +2771,11 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只换字，线条、尺寸和清晰度不变，目前只支持译成中文。"),
+    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。"),
     options: [
-      { value: "inplace", label: t("原位替换"), tag: beta },
-      { value: "image", label: imageLabel },
-      { value: "skip", label: keepLabel },
+      { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
+      { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
+      { value: "skip", label: keepLabel, description: t("不翻译") },
     ],
     value: st.pdfAutoDrawingRoute,
     disabled: active,
@@ -2776,7 +2784,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会画糊），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 转 Word 组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
     options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
     value: st.pdfAutoFallback,
     disabled: active,
@@ -2797,6 +2805,17 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
     sub: true,
     onChange: (value) => void handlePdfRouteChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as SurfaceState["pdfOversizedPageThreshold"]),
   }));
+  if (st.pdfAutoTextRoute === "word") {
+    const sw = createSwitchRow({
+      label: t("同时输出 Word"),
+      hint: t("整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 再给一份可以修改的 Word。夹有扫描页或图纸的文件不另出 Word。"),
+      checked: st.pdfAlsoSaveWord,
+      disabled: active,
+      onChange: (checked) => void handlePdfRouteChange(st, "pdfAlsoSaveWord", "pdf.also_save_word", checked),
+    });
+    sw.classList.add("sub");
+    wrap.append(sw);
+  }
 
   const note = (text: string, warn = false): HTMLElement => {
     const node = el("div", warn ? "route-note warn" : "route-note");
@@ -2806,7 +2825,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const routeName: Record<string, string> = {
     image: t("图像翻译"), word: t("Word"), inplace: t("原位替换"), skip: t("原样保留"),
   };
-  wrap.append(note(t("扫描页 → {0} · 正文 → {1} · 图纸 → {2}；用不了时{3}",
+  wrap.append(note(t("扫描页 → {0} · 可提取文字的页 → {1} · 图纸 → {2}；用不了时{3}",
     routeName[st.pdfAutoScanRoute],
     routeName[st.pdfAutoTextRoute],
     routeName[st.pdfAutoDrawingRoute],
@@ -2818,8 +2837,10 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   if (caps && usesImage && !caps.image_model_ready) {
     wrap.append(note(t("没有设置图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
   }
-  if (caps && st.pdfAutoTextRoute === "word" && !caps.office_engine) {
-    wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice：夹在扫描页、图纸中间的正文改用保底方式；整份都是正文的文件照常输出 Word。"), true));
+  if (caps && st.pdfAutoTextRoute === "word" && !caps.word_component) {
+    wrap.append(note(t("还没有安装「PDF 转 Word 组件」：能提取文字的页改用保底方式。可在插件页安装。"), true));
+  } else if (caps && st.pdfAutoTextRoute === "word" && !caps.office_engine) {
+    wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
   }
   const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
   if (usesInplace && !st.targetLang.toLowerCase().startsWith("zh")) {
@@ -2831,7 +2852,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
  *  见 persistSettingsOrRevert 顶部的说明）。 */
-async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfOversizedPageThreshold">(
+async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfAlsoSaveWord" | "pdfOversizedPageThreshold">(
   st: SurfaceState,
   stateKey: K,
   settingPath: string,

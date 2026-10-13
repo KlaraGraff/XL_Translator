@@ -346,6 +346,10 @@ tr.hid {
   font-size: 12.5px;
   color: var(--ink);
 }
+.swrow.sub {
+  color: var(--ink-2);
+  padding-left: 10px;
+}
 .selrow.sub {
   color: var(--ink-2);
   padding-left: 10px;
