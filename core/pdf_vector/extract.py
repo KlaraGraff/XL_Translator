@@ -25,6 +25,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from core.ocr_engine import tesseract_env
+
 from .common import fitz, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
@@ -80,6 +82,7 @@ def _tess(img: Image.Image, langs: str, exe: str = "tesseract") -> list[dict]:
         f = Path(td) / "t.png"
         img.save(f)
         res = subprocess.run([exe, str(f), "stdout", "--psm", "11", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
+                             env=tesseract_env(exe),
                              capture_output=True, text=True)
     words = []
     for line in res.stdout.splitlines()[1:]:
@@ -701,6 +704,7 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
                 f = Path(td) / "l.png"
                 img.save(f)
                 res = subprocess.run([exe, str(f), "stdout", "--psm", "7", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
+                                     env=tesseract_env(exe),
                                      capture_output=True, text=True)
             words = []
             for line in res.stdout.splitlines()[1:]:

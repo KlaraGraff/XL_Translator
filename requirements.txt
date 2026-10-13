@@ -6,10 +6,12 @@ python-docx>=1.1.0
 # PDF 翻译
 pypdfium2>=4.30,<5
 # PyMuPDF（AGPL-3.0，约 60MB）和 pdf2docx 都不随软件分发：两者合成「PDF 处理组件」，
-# 用户在「插件」页连接自己装好的 pdf2docx（`pip install pdf2docx` 会一并装上 PyMuPDF），
-# 原位替换从那个环境里加载 PyMuPDF（core/pdf_component.py）。开发和测试另装，见
+# 用户在「插件」页一键安装（core/pdf_component_install.py），或连接自己装好的 pdf2docx；
+# 原位替换按需加载其中的 PyMuPDF（core/pdf_component.py）。开发和测试另装，见
 # requirements-test.txt；打包脚本把它排除在安装包外（packaging/sidecar/translator_sidecar.spec）。
 Pillow>=10.0.0
+# 插件页一键安装「文字识别组件」：conda-forge 的包是 zstd 压缩的（core/component_download.py）
+zstandard>=0.23,<1
 # 云端翻译引擎 HTTP 客户端
 httpx>=0.27.0
 tenacity>=8.3.0

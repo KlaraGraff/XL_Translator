@@ -55,15 +55,21 @@ export type CadCapabilityStatus = {
 /** 文字识别组件（Tesseract OCR）状态；后端未提供时前端按 unavailable 处理。 */
 export type OcrPluginStatus = {
   state: "connected" | "missing" | "invalid";
+  /** managed：一键安装；manual：用户选的安装位置；system：系统里自动找到的。 */
+  source?: "managed" | "manual" | "system" | "";
   path: string;
   version?: string | null;
   languages: string[];
   has_latin: boolean;
   message?: string;
+  managed_installed?: boolean;
+  one_click_supported?: boolean;
+  download_bytes?: number;
+  install?: ComponentInstallProgress;
 };
 
-/** 「PDF 处理组件」一键安装的进度（后台安装，页面轮询）。 */
-export type PdfComponentInstallProgress = {
+/** 插件页「一键安装」的进度（后台安装，页面轮询）。 */
+export type ComponentInstallProgress = {
   running: boolean;
   phase: "" | "download" | "extract" | "verify" | "done" | "failed";
   done: number;
@@ -73,6 +79,7 @@ export type PdfComponentInstallProgress = {
   cancelled?: boolean;
   finished: number;
 };
+export type PdfComponentInstallProgress = ComponentInstallProgress;
 
 /** 「PDF 处理组件」（pdf2docx + PyMuPDF）状态：一键安装的，或用户自己装的 pdf2docx。 */
 export type Pdf2DocxPluginStatus = {
@@ -514,8 +521,20 @@ export class ApiClient {
     return this.request<OcrPluginStatus>("/api/plugins/ocr/install", { method: "POST", body: JSON.stringify({ path }) });
   }
 
-  async uninstallOcrPlugin(): Promise<OcrPluginStatus> {
-    return this.request<OcrPluginStatus>("/api/plugins/ocr/uninstall", { method: "POST", body: JSON.stringify({}) });
+  async uninstallOcrPlugin(target: "managed" | "manual" | "" = ""): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr/uninstall", { method: "POST", body: JSON.stringify({ target }) });
+  }
+
+  async startOcrComponentInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/ocr/one-click-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async ocrComponentInstallProgress(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/ocr/install-progress");
+  }
+
+  async cancelOcrComponentInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/ocr/cancel-install", { method: "POST", body: JSON.stringify({}) });
   }
 
   async getPdf2DocxCapability(): Promise<Pdf2DocxPluginStatus> {

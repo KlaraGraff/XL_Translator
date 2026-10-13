@@ -11,12 +11,9 @@ in-place replacement and page classification.
 """
 from __future__ import annotations
 
-import threading
-import time
 from typing import Any
 
-from loguru import logger
-
+from api.component_install_job import InstallJob
 from core import pdf_component_install as installer
 from core.pdf2docx_plugin import clear_pdf2docx_path, pdf2docx_status, prefer_managed, save_pdf2docx_path
 from core.pdf_component import (
@@ -29,20 +26,17 @@ from core.pdf_component import (
 
 OFFICIAL_PDF2DOCX_URL = "https://github.com/ArtifexSoftware/pdf2docx"
 
-_JOB_LOCK = threading.Lock()
-_JOB: dict[str, Any] = {"running": False, "phase": "", "done": 0, "total": 0, "error": "", "cancelled": False,
-                        "finished": 0.0}
-_CANCEL = threading.Event()
+
+def _installed() -> None:
+    prefer_managed()
+    forget_failures()
+
+
+_JOB = InstallJob("PDF 处理组件", lambda: installer.install, lambda: installer.ComponentInstallError, _installed)
 
 
 def install_progress() -> dict[str, Any]:
-    with _JOB_LOCK:
-        return dict(_JOB)
-
-
-def _set_job(**values: Any) -> None:
-    with _JOB_LOCK:
-        _JOB.update(values)
+    return _JOB.progress()
 
 
 def probe_status() -> dict[str, Any]:
@@ -89,39 +83,15 @@ def connect_pdf2docx(path: str) -> dict[str, Any]:
     return probe_status()
 
 
-def _run_install() -> None:
-    def progress(phase: str, done: int, total: int) -> None:
-        _set_job(phase=phase, done=done, total=total)
-
-    try:
-        installer.install(progress=progress, cancel=_CANCEL)
-        prefer_managed()
-        forget_failures()
-        _set_job(running=False, phase="done", error="", finished=time.time())
-    except installer.ComponentInstallError as exc:
-        _set_job(running=False, phase="failed", error=str(exc), cancelled=_CANCEL.is_set(), finished=time.time())
-    except Exception:  # noqa: BLE001 - every failure becomes a message on the page
-        logger.exception("[PDF 处理组件] 一键安装失败")
-        _set_job(running=False, phase="failed", error="组件安装失败。", cancelled=False, finished=time.time())
-
-
 def start_install() -> dict[str, Any]:
     """后台开始一键安装；进度用 install_progress() 查。已在安装时不重复开始。"""
     if not installer.manifest_files():
         raise ValueError("当前系统不支持一键安装，可自行安装 pdf2docx 后选择它的安装位置。")
-    with _JOB_LOCK:
-        if _JOB["running"]:
-            return dict(_JOB)
-        _CANCEL.clear()
-        _JOB.update(running=True, phase="download", done=0, total=installer.download_size(), error="",
-                    cancelled=False, finished=0.0)
-    threading.Thread(target=_run_install, name="pdf-component-install", daemon=True).start()
-    return install_progress()
+    return _JOB.start(installer.download_size())
 
 
 def cancel_install() -> dict[str, Any]:
-    _CANCEL.set()
-    return install_progress()
+    return _JOB.cancel()
 
 
 def uninstall(target: str = "") -> dict[str, Any]:
@@ -130,7 +100,7 @@ def uninstall(target: str = "") -> dict[str, Any]:
         active = active_converter()
         target = active[0] if active else SOURCE_MANUAL
     if target == SOURCE_MANAGED:
-        if install_progress().get("running"):
+        if _JOB.running():
             raise ValueError("组件正在安装，请稍候。")
         installer.uninstall()
     else:

@@ -34,6 +34,7 @@ metadata_packages = [
     "uvicorn",
     "xlrd",
     "xlwings",
+    "zstandard",
 ]
 for package_name in metadata_packages:
     datas += copy_metadata(package_name)
@@ -57,6 +58,9 @@ hiddenimports += [
     "uvicorn",
     "xlrd",
     "xlwings",
+    # 一键安装「文字识别组件」时解压 conda-forge 的 .conda 包。
+    "zstandard",
+    "zstandard.backend_c",
 ]
 # 「PDF 处理组件」的 PyMuPDF 不在安装包里，运行时才从用户的 pdf2docx 环境加载
 # （core/pdf_component.py）。它 import 的标准库模块得在包里：我们自己的代码没用到的那几个，

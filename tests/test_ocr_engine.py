@@ -164,11 +164,15 @@ def test_status_shape_when_missing(hermetic):
     status = ocr.ocr_status(hermetic / "missing-config.json")
     assert status == {
         "state": "missing",
+        "source": "",
         "path": "",
         "version": None,
         "languages": [],
         "has_latin": False,
         "message": status["message"],
+        "managed_installed": False,
+        "one_click_supported": status["one_click_supported"],
+        "download_bytes": status["download_bytes"],
     }
     assert isinstance(status["message"], str) and status["message"]
 
