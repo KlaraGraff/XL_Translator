@@ -6,7 +6,7 @@
 //     默认勾选；原文件、译文默认不勾（文件可能含客户资料）。「其他文件」单列，
 //     用户自己添加了才上传。
 //   - 日志、原文件、译文取自下面「选择任务」里选中的那几次；任务默认一个都不选，
-//     只有从任务中心「反馈此问题」进来时预先选上那一次。
+//     只有从「反馈此任务」弹窗转过来时预先选上那一次。
 //   - 日志里的文件名由后端换成「文件1」「文件2」，预览里看到的就是实际发送的内容。
 // 草稿存在模块变量里，切到别的页面再回来不会丢；发送成功后才清空。
 
@@ -15,10 +15,19 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createDropdown, createHintBadge, createProgressBar, openModal, showToast } from "../components";
+import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
+import {
+  SEND_FAILURES,
+  confirmSendWithoutEmail,
+  createPrivacyNote,
+  createSendProgress,
+  emailLooksValid,
+  formatBytes,
+  uploadFeedback,
+} from "../feedback-shared";
 import "./feedback.css";
 
 type Category = "problem" | "suggestion" | "other";
@@ -41,6 +50,8 @@ interface FeedbackContext {
   max_tasks: number;
   /** 上次成功发送时填的邮箱（只存在本机），新反馈默认填上。 */
   saved_email?: string;
+  /** 没填邮箱发送时要不要问一次。 */
+  ask_email?: boolean;
 }
 
 interface PickedFile {
@@ -131,10 +142,8 @@ let sentEmail = "";
 let sendFailure = "";
 /** 正在上传时后端报回的已发字节；null 表示还在打包。 */
 let sendProgress: { sent: number; total: number } | null = null;
-// 进度每 300 ms 更新一次，只改这两处，不重画整页（否则正在输入的内容和滚动位置会丢）。
-let progressLabel: HTMLElement | null = null;
-let progressBar: { setPercent: (percent: number) => void } | null = null;
-let progressBarEl: HTMLElement | null = null;
+// 进度每 300 ms 更新一次，只改进度这一块，不重画整页（否则正在输入的内容和滚动位置会丢）。
+let progressView: ReturnType<typeof createSendProgress> | null = null;
 let mounted = false;
 let rootEl: HTMLElement | null = null;
 let clientPromise: Promise<ApiClient> | null = null;
@@ -157,13 +166,19 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   rootEl = container;
   const taskId = typeof params.taskId === "string" ? params.taskId : "";
   if (taskId) {
-    // 从任务中心「反馈此问题」进来：这是一个具体的问题，预先勾上那次任务的日志。
+    // 从「反馈此任务」弹窗转过来：这是一个具体的问题，预先勾上那次任务的日志。
     if (sentId) {
       draft = emptyDraft();
       sentId = "";
     }
     draft.category = "problem";
     setTaskChecked(taskId, true);
+    // 从「反馈此任务」弹窗转过来：弹窗里已经写的描述和邮箱接着用。
+    if (typeof params.description === "string" && params.description && !draft.description) draft.description = params.description;
+    if (typeof params.contact === "string" && params.contact) {
+      draft.contact = params.contact;
+      draft.contactEdited = true;
+    }
   }
   render();
   void loadContext();
@@ -195,20 +210,8 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 空着可以；填了就得像个邮箱，不然没法通知到。 */
-function emailLooksValid(value: string): boolean {
-  const text = value.trim();
-  return !text || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
-}
-
 function errorReason(error: unknown): string {
   return error instanceof ApiError ? error.reason : "";
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
 function formatWhen(epoch: number): string {
@@ -634,15 +637,7 @@ function renderKinds(): void {
         onChange: (value) => { draft.includeOutputs = value; },
       }),
     );
-    // 勾了原文件或译文才出现：用户最担心的是自己的文件，就在勾选的地方说清楚怎么处理。
-    if (draft.includeSources || draft.includeOutputs) {
-      const privacy = document.createElement("p");
-      privacy.className = "feedback-privacy";
-      privacy.append(icon("lock", { size: "sm" }), document.createTextNode(
-        t("原文件和译文仅用于定位和修复问题，绝不会公开或泄露；问题处理完毕后立即删除，不再保存。"),
-      ));
-      el.append(privacy);
-    }
+    if (draft.includeSources || draft.includeOutputs) el.append(createPrivacyNote());
   }
   renderFileSummary();
 }
@@ -873,37 +868,9 @@ function buildActions(): HTMLElement {
 }
 
 function buildProgress(): HTMLElement {
-  const box = document.createElement("div");
-  box.className = "feedback-progress";
-  progressLabel = document.createElement("div");
-  progressLabel.className = "feedback-progress-label";
-  const handle = createProgressBar({ percent: 0 });
-  progressBar = handle;
-  progressBarEl = handle.root;
-  box.append(progressLabel, handle.root);
-  syncProgress();
-  return box;
-}
-
-function syncProgress(): void {
-  if (!progressLabel || !progressBar || !progressBarEl) return;
-  const progress = sendProgress;
-  // 打包和等服务器确认这两段拿不到字节数，用来回滑动的短条，不报百分比。
-  if (!progress) {
-    progressLabel.textContent = t("正在打包…");
-    progressBarEl.classList.add("indet");
-    return;
-  }
-  if (progress.total > 0 && progress.sent >= progress.total) {
-    progressLabel.textContent = t("已上传 {0}，正在等待服务器确认…", formatBytes(progress.total));
-    progressBarEl.classList.remove("indet");
-    progressBar.setPercent(100);
-    return;
-  }
-  const percent = progress.total > 0 ? Math.floor((progress.sent / progress.total) * 100) : 0;
-  progressLabel.textContent = t("正在上传 {0} / {1}（{2}%）", formatBytes(progress.sent), formatBytes(progress.total), String(percent));
-  progressBarEl.classList.remove("indet");
-  progressBar.setPercent(percent);
+  progressView = createSendProgress();
+  progressView.update(sendProgress);
+  return progressView.root;
 }
 
 async function showPreview(): Promise<void> {
@@ -993,45 +960,33 @@ async function saveZip(): Promise<void> {
   }
 }
 
-interface SendStatus {
-  job_id?: string;
-  state: "uploading" | "done" | "error";
-  sent: number;
-  total: number;
-  id: string;
-  message: string;
-  reason: string;
-}
-
-const SEND_FAILURES = ["network", "server", "rate_limited", "not_configured", "job_missing"];
-
 async function send(): Promise<void> {
+  // 没留邮箱时问一次（只到用户第一次不留邮箱发出为止）。
+  if (!draft.contact.trim() && context?.ask_email) {
+    if ((await confirmSendWithoutEmail()) === "fill") {
+      rootEl?.querySelector<HTMLInputElement>("input.feedback-input[type=email]")?.focus();
+      return;
+    }
+  }
   busy = "send";
   sendFailure = "";
   sendProgress = null;
   render();
   try {
     const client = await getClient();
-    // 后端打好包就返回，上传在后台进行；这里按真实已发出的字节更新进度条。
-    const started = await client.request<SendStatus>("/api/feedback/send", {
-      method: "POST",
-      body: JSON.stringify(requestBody()),
+    const status = await uploadFeedback(client, requestBody(), (progress) => {
+      sendProgress = progress;
+      progressView?.update(progress);
     });
-    let status = started;
-    while (status.state === "uploading") {
-      sendProgress = { sent: status.sent, total: status.total };
-      syncProgress();
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
-      status = await client.request<SendStatus>(`/api/feedback/send/${encodeURIComponent(started.job_id ?? "")}`);
-    }
     if (status.state === "error") {
       if (SEND_FAILURES.includes(status.reason)) sendFailure = status.message;
       else showToast({ message: tx(status.message), error: true });
     } else {
       sentId = status.id;
       sentEmail = draft.contact.trim();
-      // 后端发送成功后已把这个邮箱记在本机（留空就忘掉），下一条直接带上。
+      // 后端发送成功后已把这个邮箱记在本机（留空就忘掉，也不再问），下一条直接带上。
       rememberedEmail = sentEmail;
+      if (context) context.ask_email = false;
       draft = emptyDraft();
     }
   } catch (error) {
@@ -1045,9 +1000,7 @@ async function send(): Promise<void> {
   } finally {
     busy = "";
     sendProgress = null;
-    progressLabel = null;
-    progressBar = null;
-    progressBarEl = null;
+    progressView = null;
     render();
   }
 }

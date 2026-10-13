@@ -49,8 +49,6 @@
   "再写一条": {"en": "Send another", "fr": "Envoyer un autre retour"},
   "返回任务中心": {"en": "Back to task center", "fr": "Retour au centre des tâches"},
   "反馈此任务": {"en": "Send feedback on this task", "fr": "Signaler cette tâche"},
-  "附上这次任务的日志": {"en": "Attaches this task's log", "fr": "Joint le journal de cette tâche"},
-  "反馈此问题": {"en": "Report this problem", "fr": "Signaler ce problème"},
   "可在设置中检查更新：下载后先验证签名再安装，重启时间由您决定（Windows 将打开安装程序，安装完成后自动重新打开应用）。诊断信息仅在您主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。反馈仅在您点击「发送」后上传，附带哪些日志和文件由您逐项选择。": {"en": "You can check for updates in Settings: the download's signature is verified before installation, and you decide when to restart (on Windows, the installer opens and the app reopens automatically afterwards). Diagnostic information is created only when you export it, and never includes API keys, source text, translations, prompts or file paths. Feedback is uploaded only when you click “Send”, and you choose each log and file it includes.", "fr": "Vous pouvez rechercher des mises à jour directement dans les paramètres : la signature du téléchargement est vérifiée avant l'installation, et c'est vous qui choisissez quand redémarrer (sous Windows, le programme d'installation s'ouvre et l'application se relance automatiquement ensuite). Les informations de diagnostic ne sont créées que lorsque vous les exportez vous-même et ne contiennent jamais de clés API, de textes sources, de traductions, de prompts ni de chemins de fichiers. Un retour n'est envoyé que lorsque vous cliquez sur « Envoyer », et c'est vous qui choisissez chaque journal et fichier joint."},
   "所选任务的记录已不存在，请重新选择。": {"en": "The selected task record no longer exists. Please choose again.", "fr": "L'enregistrement de la tâche sélectionnée n'existe plus. Veuillez refaire votre choix."},
   "反馈类型无效。": {"en": "Invalid feedback type.", "fr": "Type de retour non valide."},
@@ -99,5 +97,16 @@
   "文件合计 {0} / {1}": {"en": "Files: {0} / {1}", "fr": "Fichiers : {0} / {1}"},
   "附件文件合计超过 40 MB，请只附上必要的文件。": {"en": "The attached files exceed 40 MB in total. Please attach only the files that are needed.", "fr": "Les fichiers joints dépassent 40 Mo au total. Joignez uniquement les fichiers nécessaires."},
   "截图合计超过 10 MB，请删掉几张。": {"en": "The screenshots exceed 10 MB in total. Please remove a few.", "fr": "Les captures dépassent 10 Mo au total. Supprimez-en quelques-unes."},
-  "截图合计不能超过 10 MB，请删掉几张再粘贴。": {"en": "Screenshots can total at most 10 MB. Remove a few before pasting more.", "fr": "Les captures ne peuvent pas dépasser 10 Mo au total. Supprimez-en quelques-unes avant d'en coller d'autres."}
+  "截图合计不能超过 10 MB，请删掉几张再粘贴。": {"en": "Screenshots can total at most 10 MB. Remove a few before pasting more.", "fr": "Les captures ne peuvent pas dépasser 10 Mo au total. Supprimez-en quelques-unes avant d'en coller d'autres."},
+  "反馈未发出：{0}": {"en": "Feedback not sent: {0}", "fr": "Retour non envoyé : {0}"},
+  "在反馈页填写": {"en": "Open in Feedback", "fr": "Ouvrir dans Retours"},
+  "填写邮箱": {"en": "Add email", "fr": "Saisir l'e-mail"},
+  "已附上这次任务的日志。可以补充您看到的情况，不写也能发送。": {"en": "This task's log is attached. You can add what you saw, or send without a description.", "fr": "Le journal de cette tâche est joint. Vous pouvez décrire ce que vous avez constaté, ou envoyer sans description."},
+  "是否留下邮箱？": {"en": "Leave an email address?", "fr": "Laisser une adresse e-mail ?"},
+  "此版本尚未开通在线发送，请点「在反馈页填写」保存为 ZIP。": {"en": "Online sending is not available in this version. Click “Open in Feedback” to save a ZIP.", "fr": "L'envoi en ligne n'est pas disponible dans cette version. Cliquez sur « Ouvrir dans Retours » pour enregistrer un ZIP."},
+  "留下邮箱后，问题处理完成或功能上线时，我们会发邮件通知您。不留邮箱也可以发送，此提示只出现这一次。": {"en": "If you leave an email address, we will let you know once the problem is resolved or the feature is available. You can also send without one; you will only be asked once.", "fr": "Si vous laissez une adresse e-mail, nous vous préviendrons dès que le problème sera résolu ou la fonctionnalité disponible. Vous pouvez aussi envoyer sans adresse ; cette question ne sera posée qu'une fois."},
+  "直接发送": {"en": "Send without email", "fr": "Envoyer sans e-mail"},
+  "请描述哪里不对，例如哪段译文有误、哪一步出错。": {"en": "Describe what is wrong, for example which translation is incorrect or which step failed.", "fr": "Décrivez ce qui ne va pas, par exemple quelle traduction est incorrecte ou quelle étape a échoué."},
+  "问题描述（选填）": {"en": "Description (optional)", "fr": "Description (facultative)"},
+  "（用户未填写描述，请查看所附任务的日志。）": {"en": "(No description given. Please see the attached task log.)", "fr": "(Aucune description. Veuillez consulter le journal de la tâche jointe.)"}
 }

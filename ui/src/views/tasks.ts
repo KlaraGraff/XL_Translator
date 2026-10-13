@@ -16,7 +16,6 @@ import {
   createChip,
   createButton,
   createEmptyState,
-  createHintBadge,
   openMenu,
   openModal,
   showToast,
@@ -27,6 +26,7 @@ import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
 import { openCadReview } from "./cad-review";
+import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
@@ -1608,8 +1608,8 @@ function renderDetail(): void {
   actions.style.gap = "8px";
   actions.style.flexWrap = "wrap";
   // 顶部只摆最常用的几个：第一个本地结果（通常是「打开输出目录」）、打开工作区、
-  // 任务控制和导出诊断；其余本地结果和「删除记录」收进「更多」。CAD 任务以前一排
-  // 8 个按钮挤成两行，还有两个同名的「打开本地结果」。
+  // 任务控制和「反馈此任务」；其余本地结果、导出诊断和「删除记录」收进「更多」。
+  // CAD 任务以前一排 8 个按钮挤成两行，还有两个同名的「打开本地结果」。
   const references = taskResultReferences(task);
   const [primaryReference, ...extraReferences] = references;
   if (primaryReference) actions.append(buildActionButton(primaryReference));
@@ -1666,32 +1666,28 @@ function renderDetail(): void {
       actions.append(createButton({ label: t("停止"), variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     }
   }
+  // 失败、中断、需复核：日志本身说明了问题，反馈时描述可以不写。
+  const feedbackOptions = {
+    taskId: task.task_id,
+    taskLabel: titleText,
+    hasProblem: task.state === "error" || task.state === "interrupted" || task.state === "completed_with_issues" || reviews.length > 0,
+  };
   if (task.terminal) {
-    // 详情页上的这个按钮说的是「这一次任务」，就该直接把这一次的诊断包存下来。
-    // 之前它把人扔到设置页去自己找——找的还是全部任务的合集。
+    actions.append(createTaskFeedbackButton({ ...feedbackOptions, size: "mini" }));
+    // 详情页上的「导出诊断」说的是「这一次任务」，直接把这一次的诊断包存下来。
     ensureDiagnosticAvailability(task.task_id);
     const availability = diagnosticAvailability.get(task.task_id);
-    actions.append(
-      createButton({
-        label: t("导出诊断"),
-        size: "mini",
-        disabled: availability !== true,
-        title: availability === false ? noDiagnosticText() : undefined,
-        onClick: () => void exportTaskDiagnostic(task.task_id),
-      }),
-    );
-    // 置灰的按钮收不到悬停，原生 title 提示不可靠，旁边放一个「?」说清为什么不能点。
-    if (availability === false) {
-      const hint = createHintBadge(noDiagnosticText());
-      // .hint 的皮肤只写在 .swrow 下面，这里照抄同一套样式。
-      hint.style.cssText =
-        "color:var(--ink-3);cursor:help;font-size:11px;border:1px solid var(--line-2);border-radius:99px;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex:none;margin-left:-4px";
-      actions.append(hint);
-    }
+    moreItems.push({
+      label: t("导出诊断"),
+      // 没有诊断记录时照样列出来，点了说明为什么导不了，免得用户以为功能没了。
+      description: availability === false ? noDiagnosticText() : undefined,
+      onSelect: () => {
+        if (diagnosticAvailability.get(task.task_id) === false) showToast({ message: noDiagnosticText() });
+        else void exportTaskDiagnostic(task.task_id);
+      },
+    });
     // 只删任务中心的这条记录；译文、报告、诊断包都在磁盘上原样留着。
     moreItems.push({ label: t("删除记录"), description: t("输出文件不会被删除"), onSelect: () => confirmDeleteTask(task.task_id) });
-    // 反馈页会预先勾上这次任务的日志；文件仍然默认不附带。
-    moreItems.push({ label: t("反馈此任务"), description: t("附上这次任务的日志"), onSelect: () => navigate("feedback", { taskId: task.task_id }) });
   }
   if (moreItems.length) {
     actions.append(
@@ -1722,7 +1718,7 @@ function renderDetail(): void {
     sub.textContent = tx(failure);
     copy.append(head, sub);
     banner.append(copy);
-    banner.append(createButton({ label: t("反馈此问题"), size: "mini", onClick: () => navigate("feedback", { taskId: task.task_id }) }));
+    // 「反馈此任务」就在上面的按钮行里，这里不再放第二个。
     detailRootEl.append(banner);
   }
 
