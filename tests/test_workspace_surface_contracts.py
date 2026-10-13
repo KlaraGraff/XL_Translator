@@ -68,3 +68,17 @@ def test_task_center_knows_every_translation_page():
     block = block[:block.index(";")]
     for surface in _translate_items():
         assert f'"{surface}"' in block, f"任务中心不能从 {surface} 任务打开工作区"
+
+
+def test_auto_detect_and_shape_switches_live_only_in_settings():
+    """maple 2026-10-13：「自动识别场景」只在设置页的提示词设置里出现，各翻译页右栏不再放；
+    Excel 的「翻译文本框和形状」去掉，文本框和形状里的字始终翻译。"""
+    source = WORKSPACE.read_text(encoding="utf-8")
+    toggles = source[source.index("const EXCEL_TOGGLES"):source.index("const TOGGLES:")]
+    assert "smart_context" not in toggles
+    assert "自动识别场景" not in toggles
+    assert "translate_shapes" not in toggles
+    assert "translateShapes" not in source
+    settings_view = (VIEWS / "settings.ts").read_text(encoding="utf-8")
+    assert 'saveSettingPath("pdf.smart_context", checked)' in settings_view
+    assert "smart_context: checked" in settings_view

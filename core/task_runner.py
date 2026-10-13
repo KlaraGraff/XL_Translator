@@ -3962,11 +3962,9 @@ class TaskRunner(BaseTaskRunner):
         source_lang: str,
         coverage: bool,
     ) -> set[str]:
-        """文本框里的字和批注（按设置开关），过一遍与单元格相同的「值不值得翻」判断。"""
-        shapes = bool(getattr(excel_output, "translate_shapes", False))
+        """文本框里的字（始终）和批注（按设置开关），过一遍与单元格相同的「值不值得翻」判断。"""
+        shapes = True
         comments = bool(getattr(excel_output, "translate_comments", False))
-        if not (shapes or comments):
-            return set()
         coverage_langs = (
             (resolve_coverage_source_lang(source_lang), target_lang) if coverage else None
         )
@@ -4006,10 +4004,8 @@ class TaskRunner(BaseTaskRunner):
         source_lang: str,
         coverage: bool,
     ) -> EmbeddedTextOptions | None:
-        shapes = bool(getattr(excel_output, "translate_shapes", False))
+        shapes = True
         comments = bool(getattr(excel_output, "translate_comments", False))
-        if not (shapes or comments):
-            return None
         allowed = None
         if coverage:
             # 补译只改还没有译文的段落和批注；按写入源当场重算，和收集时同一套判断。

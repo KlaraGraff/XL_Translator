@@ -159,6 +159,8 @@ from core.word_document import (
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
+from core.word_inline_marks import InlineMarkEngine, place_marks, strip_marks
+from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_batching import (
     WordBatchRunStats,
     estimate_api_request_weight,
@@ -369,6 +371,9 @@ class WordTaskRunner(BaseTaskRunner):
         self._protect_front_matter = bool(protect_front_matter)
         self._translate_headers_footers = bool(translate_headers_footers)
         self._allow_doc_fallback = bool(allow_doc_fallback)
+        # 段内有局部格式的原文 → 带标记的原文；翻译时由 InlineMarkEngine 换上（core/word_inline_marks.py）
+        self._marked_sources: dict[str, str] = {}
+        self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         self._queue: queue.Queue = queue.Queue()
         self._file_progress = FileProgressReporter(
@@ -1045,7 +1050,6 @@ class WordTaskRunner(BaseTaskRunner):
             self._term_session = term_session
             hits = term_session.resolve(text_tm_pairs, profile=document_profile)
             misses = [text for text in normal_texts if text not in hits]
-            term_engine = term_session.wrap(engine)
 
             def term_pair_for_text(text: str) -> str | None:
                 pairs = text_tm_pairs.get(text) or set()
@@ -1097,6 +1101,13 @@ class WordTaskRunner(BaseTaskRunner):
                 retry_batch_settings = settings.word_batch.model_copy(
                     update={"max_paragraphs_per_batch": 1}
                 )
+                # 带局部格式的段落换成带标记的原文发出；没有这类段落时不包
+                self._inline_mark_engine = (
+                    InlineMarkEngine(engine, self._marked_sources) if self._marked_sources else None
+                )
+                mark_engine = self._inline_mark_engine or engine
+                # 记忆库词条包在最外层：按原文（不带格式标记）查词、核对和重译。
+                term_engine = term_session.wrap(mark_engine)
                 recovery_pool = _WordRecoveryPool(
                     engine=term_engine,
                     target_lang=target_lang,
@@ -1577,6 +1588,8 @@ class WordTaskRunner(BaseTaskRunner):
                 else:
                     raise TaskStopped("任务已停止，未获得可写入的 Word 翻译结果。")
 
+            self._place_missing_inline_marks(engine, global_translations)
+
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word…"))
             self._file_progress.emit_many("waiting", "generate")
             self._queue.put(
@@ -1853,6 +1866,38 @@ class WordTaskRunner(BaseTaskRunner):
                         output_dir=str(output_dir),
                     )
                 )
+
+    def _place_missing_inline_marks(self, engine, global_translations: dict[str, str]) -> None:
+        """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
+        语言、模型弄丢标记、复查改过），让模型只补标记。失败的按整段写法写回。"""
+        if not self._marked_sources or self._stop_event.is_set():
+            return
+        if self._inline_mark_engine is None:
+            self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
+        known = self._inline_mark_engine.marked_translations
+        items = []
+        for source, marked in self._marked_sources.items():
+            value = global_translations.get(source)
+            if not value:
+                continue
+            translation = extract_replace_translation(value) if is_replace_translation(value) else value
+            translation = str(translation).strip()
+            if not translation or translation == source:
+                continue
+            entry = known.get(source)
+            if entry is not None and strip_marks(entry[1]).strip() == translation:
+                continue
+            items.append((source, marked, translation))
+        if not items:
+            return
+        placed = place_marks(
+            engine,
+            items,
+            should_stop=self.stop_requested,
+            log=lambda message: logger.info(message),
+        )
+        known.update(placed)
+        logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处")
 
     def _collect_file_texts(
         self,
@@ -2201,6 +2246,9 @@ class WordTaskRunner(BaseTaskRunner):
                     include_headers_footers=self._translate_headers_footers,
                 )
                 coverage_plans.append(None)
+                for segment in segments:
+                    if segment.marked_source:
+                        self._marked_sources.setdefault(segment.source, segment.marked_source)
                 _remember_segment_locations(
                     segment_locations,
                     _file_result_identity(file_item, self._source_root),
@@ -2966,6 +3014,9 @@ class WordTaskRunner(BaseTaskRunner):
                     protect_front_matter=self._protect_front_matter,
                     translate_headers_footers=self._translate_headers_footers,
                     output_translation_only=settings.word_output.output_translation_only,
+                    marked_translations=(
+                        self._inline_mark_engine.marked_translations if self._inline_mark_engine else None
+                    ),
                 )
             residual_count = _append_post_write_coverage_issues(
                 issues=quality_issues,
@@ -3429,6 +3480,10 @@ def _prepare_word_source_for_translation(
     normalized = normalize_docx_automatic_numbering(process_path)
     process_path = normalized.path
     temp_paths.append(normalized.path)
+    # 从 PDF 复制过来的段落里，句中折行的手动换行先换成空格，模型才拿得到整句
+    joined_breaks = join_wrapped_line_breaks_in_file(process_path)
+    if joined_breaks:
+        logger.info(f"Word 预处理：{joined_breaks} 处句中手动换行已并回句子 {source_path.name}")
 
     method_parts: list[str] = []
     if conversion_method != "not_required":
