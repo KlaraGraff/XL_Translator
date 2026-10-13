@@ -3510,6 +3510,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             total=prepared.record.page_count,
                         )
                         prepared.record.pages.append(page_record)
+                        if page_record.route_note:
+                            self._log(
+                                "WARN",
+                                f"[{prepared.record.name}] 第 {page_record.page_number} 页：{page_record.route_note}。",
+                            )
                         if page_record.skipped_oversize:
                             # 大幅面页：不进 executor.submit，直接按「已提交且已
                             # 完成」记账，否则「N/M 已完成」的进度会永远差这几页。
@@ -3522,7 +3527,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             if page_record.kept_reason:
                                 self._log(
                                     "WARN",
-                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页{page_record.kept_reason}。",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页：{page_record.kept_reason}。",
                                 )
                             elif page_record.word_requested:
                                 pass  # 正文段已经转好，开工前那一行日志说过了
@@ -3989,11 +3994,30 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         kind = self._document_kinds.get(str(prepared.item.path))
         if kind is None:
             return []
-        return [
-            item.page_number for item in kind.pages
+        # 「继续上次翻译」已经复用了译好页图的页不再转 Word：段首会把整段转回的 PDF
+        # 拼进来，复用的页再单独装一次，内容就重复了，还白花一次翻译。段在这些页处断开。
+        reused = {page.page_number for page in record.pages}
+        planned: list[int] = []
+        blanks: list[int] = []
+        for item in sorted(kind.pages, key=lambda page: page.page_number):
+            if item.page_number in reused:
+                blanks = []
+                planned.append(-1)  # 断开
+                continue
+            if item.kind == KIND_BLANK and not item.oversized:
+                blanks.append(item.page_number)
+                continue
             if page_route(self._settings.pdf, oversized_a3=False, oversized=item.oversized,
-                          page_kind=item.kind) == ROUTE_WORD
-        ]
+                          page_kind=item.kind) == ROUTE_WORD:
+                # 夹在两页转 Word 的页中间的空白页随段一起转：一份文字文件中间插一页
+                # 空白，不该被拆成两段（拆开就出不了「同时输出 Word」）。
+                if planned and planned[-1] > 0:
+                    planned.extend(blanks)
+                planned.append(item.page_number)
+            else:
+                planned.append(-1)
+            blanks = []
+        return [number for number in planned if number > 0]
 
     def _run_word_segments(self, prepared_files: list[_PreparedPdfFile]) -> None:
         """自动组合（Beta）：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
@@ -4033,7 +4057,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 if unavailable:
                     mark("failed", unavailable)
                     continue
-                if self._stop_event.is_set():
+                if not self._wait_while_paused():
                     mark("stopped", "任务已停止")
                     continue
                 self._queue.put(StatusMsg(f"状态：正在把「{record.name}」{label}转成 Word 翻译…"))
@@ -4577,6 +4601,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         if not auto:
             return route, ""
+        if page_kind == KIND_BLANK:
+            entry = self._word_pages.get((source_path, page_index + 1))
+            # 夹在转 Word 段里的空白页随段拼入；段没转成就照旧原样保留，不送图像模型。
+            return (ROUTE_WORD if entry is not None and entry.get("status") == "done" else route), ""
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
             return route, ""

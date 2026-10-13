@@ -229,6 +229,43 @@ class WordConversionCleanupTests(unittest.TestCase):
         self.assertEqual(texts[0], "Early-Age Strength of Mortars Prepared with Washed River Sand")
         self.assertEqual(texts[1:], ["1. Introduction", "Mortars use cement.", "- first item"])
 
+    def test_dropped_word_spaces_are_restored(self) -> None:
+        from docx import Document
+        from docx.enum.text import WD_BREAK
+
+        from core.pdf_word_route import restore_word_spaces
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "spaces.docx"
+        doc = Document()
+        p = doc.add_paragraph()
+        for text in ("Aspects of the shell’s", "syntax and command language.", "A", "number of builtins such as"):
+            p.add_run(text)
+        p.add_run("cd").bold = True
+        p.add_run("and ")
+        p.add_run("exec").bold = True
+        p.add_run("(see")
+        p.add_run("1").font.superscript = True
+        p.add_run(")")
+        line = doc.add_paragraph()
+        line.add_run("first line")
+        line.runs[0].add_break(WD_BREAK.LINE)
+        line.add_run("second")
+        doc.add_paragraph().add_run("中文")
+        doc.paragraphs[-1].add_run("内容")
+        split = doc.add_paragraph()
+        split.add_run("the ev")
+        split.add_run("al builtin")     # one word split across two runs: no space
+        doc.save(path)
+
+        self.assertEqual(restore_word_spaces(path, {"the", "eval", "builtin"}), 6)
+        texts = [p.text for p in Document(str(path)).paragraphs]
+        self.assertEqual(texts[0], "Aspects of the shell’s syntax and command language. A number of builtins such as cd and exec (see1)")
+        self.assertEqual(texts[1], "first line\nsecond")
+        self.assertEqual(texts[2], "中文内容")
+        self.assertEqual(texts[3], "the eval builtin")
+
     def test_row_heights_are_loosened(self) -> None:
         from core.pdf_word_route import loosen_row_heights_xml
 

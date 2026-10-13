@@ -251,7 +251,9 @@ def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
     ]
     first_error = next((error for error in page_errors if error), "")
     if record.pages and all(getattr(page, "kept_reason", "") for page in record.pages):
-        return "这份文件取不到文字，需要整页图像翻译，但还没有设置图像翻译模型，没有生成译文。"
+        if all(page.kept_reason.startswith("没有设置图像翻译模型") for page in record.pages):
+            return "这份文件取不到文字，需要整页图像翻译，但还没有设置图像翻译模型，没有生成译文。"
+        return f"没有一页能按所选方式翻译，没有生成译文。第 1 页：{record.pages[0].kept_reason}。"
     if record.source_type == SOURCE_TYPE_IMAGE:
         message = "图片翻译失败，未生成译图；已保留源图、页面素材和报告。"
     else:
@@ -278,13 +280,16 @@ def _route_report_lines(record: PdfFileRecord) -> list[str]:
             lines.append(f"- {pages}：文字可以提取，转成 Word 翻译（Beta）后转回 PDF 拼入")
         else:
             lines.append(f"- {pages}：转成 Word 没有成功：{segment.get('message', '')}")
-    kept = [page.page_number for page in record.pages if getattr(page, "kept_reason", "")]
-    if kept:
-        lines.append(
-            f"- 没有设置图像翻译模型而保留原样的页：{len(kept)} 页（第 "
-            + "、".join(str(number) for number in sorted(kept)[:30])
-            + " 页）"
-        )
+    # 没按首选方式翻译的页：同一个原因的页并成一行（「第 1、2 页：……，这一页保留原样」）。
+    for field_name in ("route_note", "kept_reason"):
+        grouped: dict[str, list[int]] = {}
+        for page in sorted(record.pages, key=lambda item: item.page_number):
+            reason = str(getattr(page, field_name, "") or "")
+            if reason:
+                grouped.setdefault(reason, []).append(page.page_number)
+        for reason, numbers in grouped.items():
+            shown = "、".join(str(number) for number in numbers[:30]) + ("…" if len(numbers) > 30 else "")
+            lines.append(f"- 第 {shown} 页：{reason}")
     return lines
 
 
@@ -573,7 +578,10 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         detail_parts.append("另存了一份 Word")
     kept_pages = sum(1 for page in record.pages if getattr(page, "kept_reason", ""))
     if kept_pages:
-        detail_parts.append(f"{kept_pages} 页需要整页图像翻译，但没有设置图像翻译模型，保留原样")
+        detail_parts.append(f"{kept_pages} 页没能按所选方式翻译，保留原样，原因见任务报告")
+    rerouted_pages = sum(1 for page in record.pages if getattr(page, "route_note", ""))
+    if rerouted_pages:
+        detail_parts.append(f"{rerouted_pages} 页改用整页图像翻译，原因见任务报告")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     if record.quality_flagged_page_count:

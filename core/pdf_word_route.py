@@ -231,6 +231,76 @@ def _join_soft_breaks(paragraph) -> int:
     return joined
 
 
+# 相邻两段文字之间补空格的条件：前一段以西文字母、数字或句读结尾，后一段以西文字母、
+# 数字或左括号、左引号开头。中日韩文字不在里面，不会被插进空格。
+_SPACE_BEFORE = re.compile(r"[A-Za-z0-9.,;:!?)\]’'\"”%]$")
+_SPACE_AFTER = re.compile(r"^[A-Za-z0-9(\[“‘\"]")
+_TOKEN_END = re.compile(r"[\w’'-]+$")
+_TOKEN_START = re.compile(r"^[\w’'-]+")
+
+
+def pdf_words(pdf_path: Path) -> set[str]:
+    """PDF 里的词（PyMuPDF 按字距判断词界，不依赖空格字符）：用来认出被拆成两段的同一个词。"""
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as doc:
+            return {match.group(0) for page in doc for word in page.get_text("words")
+                    for match in [_TOKEN_START.search(word[4].strip("([“‘\"")) ] if match}
+    except Exception:  # noqa: BLE001 - without the word list we only add spaces where both sides are words
+        return set()
+
+
+def _restore_spaces_in(paragraph, words: set[str]) -> int:
+    """pdf2docx 会丢掉只有空格的文字片段。不少 PDF（LaTeX、troff 排的论文）词和词之间
+    的空格是单独一段，转出来就成了「shell’ssyntax」「Anumber」，读着别扭，翻译也容易
+    失败。同一段里前后两段文字直接相接、两边都是西文时补回一个空格；换行、制表符、
+    上下标（脚注号）两侧不补；两段拼起来正好是 PDF 里的一个词（「ev」+「al」）也不补。"""
+    from docx.oxml.ns import qn
+
+    added = 0
+    prev = None  # 上一个 w:t
+    for node in paragraph._p.iter(qn("w:t"), qn("w:br"), qn("w:tab"), qn("w:cr")):
+        if node.tag != qn("w:t"):
+            prev = None
+            continue
+        text = node.text or ""
+        if not text:
+            continue
+        run = node.getparent()
+        rpr = run.find(qn("w:rPr")) if run is not None else None
+        script = rpr is not None and rpr.find(qn("w:vertAlign")) is not None
+        if (prev is not None and not script and prev.getparent() is not run
+                and _SPACE_BEFORE.search(prev.text or "") and _SPACE_AFTER.match(text)
+                and not _split_word(prev.text or "", text, words)):
+            node.text = " " + text
+            node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            added += 1
+        prev = None if script else node
+    return added
+
+
+def _split_word(before: str, after: str, words: set[str]) -> bool:
+    left, right = _TOKEN_END.search(before), _TOKEN_START.match(after)
+    return bool(left and right and left.group(0) + right.group(0) in words)
+
+
+def restore_word_spaces(path: Path, words: set[str] | None = None) -> int:
+    """words: 源 PDF 的词表（pdf_words），拼起来是一个词的两段不补空格。"""
+    from docx import Document
+
+    words = words or set()
+    doc = Document(str(path))
+    count = sum(_restore_spaces_in(p, words) for p in doc.paragraphs)
+    for table in _all_tables(doc.tables):
+        for row in table.rows:
+            for cell in row.cells:
+                count += sum(_restore_spaces_in(p, words) for p in cell.paragraphs)
+    if count:
+        doc.save(str(path))
+    return count
+
+
 def merge_wrapped_lines(path: Path) -> int:
     """pdf2docx 有时把同一段的几行（多见于标题、图注、居中的作者单位）拆成几个段落。
     按段翻译时每一行都成了半句话，译文出现「……」。相邻两段字体完全相同、前一段
@@ -292,6 +362,7 @@ def convert_pdf_to_docx(
         raise WordRouteStopped()
     convert_with_plugin(exe, pdf_path, docx_path, _conversion_timeout(pdf_path))
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
+    restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
 
 
@@ -481,8 +552,12 @@ def docx_to_pdf(docx_path: Path, pdf_path: Path, *, timeout: int = 300) -> str:
         if soffice is not None:
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
+                # 独立的临时配置目录：用户开着 LibreOffice 时，不带它的命令会转交给那个
+                # 正在运行的实例，结果什么都不生成。
+                profile = out_dir / "lo_profile"
                 subprocess.run(
-                    [str(soffice), "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(staged_docx)],
+                    [str(soffice), "--headless", "--norestore", f"-env:UserInstallation={profile.as_uri()}",
+                     "--convert-to", "pdf", "--outdir", str(out_dir), str(staged_docx)],
                     capture_output=True, timeout=timeout, check=False,
                 )
                 produced = out_dir / f"{staged_docx.stem}.pdf"

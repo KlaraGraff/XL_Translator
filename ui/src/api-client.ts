@@ -112,8 +112,10 @@ export type PdfPage = {
   inplace_review?: number;
   inplace_review_items?: { text: string; reason: string; box_px?: number[] }[];
   inplace_message?: string;
-  /** 要整页图像翻译、但没有设置图像翻译模型而保留原样的原因。 */
+  /** 首选方式用不了、保底也用不了而保留原样的原因（比如没有设置图像翻译模型）。 */
   kept_reason?: string;
+  /** 首选方式用不了、改用整页图像翻译的原因。 */
+  route_note?: string;
   /** 混合文件里转 Word 翻译的正文页（Beta）："" | done | failed | stopped。 */
   word_requested?: boolean;
   word_status?: string;

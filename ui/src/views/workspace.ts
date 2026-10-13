@@ -739,6 +739,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   const isCurrent = () => token === mountTokens[surface] && st.renderer !== null;
   const taskId = text(params.taskId);
   st.renderer = () => renderInto(container, surface);
+  if (surface === "pdf") pdfRouteCapsStale = true;
   // 中途切走再回来时任务还在跑（st.task 是模块级状态），静默计时器得跟着这一屏重新起。
   if (st.task && !st.task.task.terminal) startSilenceTicker(surface);
   renderLoading(container, surface);
@@ -2671,17 +2672,21 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
 
 type PdfRoute = "image" | "auto";
 
-/** 本机条件：后端 /api/pdf/route-capabilities 给，查一次就缓存；查不到时不提示。 */
+/** 本机条件：后端 /api/pdf/route-capabilities 给；查不到时不提示。每次进 PDF 页重查一次
+ *  （在插件页装好组件、在设置里配好图像模型再回来，提示要跟着消失），重查期间沿用旧值。 */
 let pdfRouteCaps: PdfRouteCapabilities | null = null;
 let pdfRouteCapsLoading = false;
+let pdfRouteCapsStale = true;
 
 function ensurePdfRouteCaps(): void {
-  if (pdfRouteCaps || pdfRouteCapsLoading) return;
+  if (pdfRouteCapsLoading || (pdfRouteCaps && !pdfRouteCapsStale)) return;
   pdfRouteCapsLoading = true;
+  pdfRouteCapsStale = false;
   client.pdfRouteCapabilities()
     .then((caps) => {
+      const changed = JSON.stringify(caps) !== JSON.stringify(pdfRouteCaps);
       pdfRouteCaps = caps;
-      rerender("pdf");
+      if (changed) rerender("pdf");
     })
     .catch(() => undefined)
     .finally(() => {

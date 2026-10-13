@@ -935,6 +935,14 @@ function inplaceNote(page: PdfPage): string {
   return head ? t("{0}。{1}", head, kept) : kept;
 }
 
+/** 首选方式在这一页用不了、改用了整页图像翻译：先说原因，再接这一页本身的结果。 */
+function pageNote(page: PdfPage, taskStopped: boolean, reviewEnabled: boolean): string {
+  const base = reviewNote(page, taskStopped, reviewEnabled);
+  if (!page.route_note) return base;
+  const reason = tx(page.route_note);
+  return base ? t("{0}。{1}", reason, base) : reason;
+}
+
 function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
   if (page.word_status === "done") return tx(page.word_message ?? "");
   if (page.inplace_requested && page.inplace_status) return inplaceNote(page);
@@ -986,7 +994,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? t("正在重新生成该页，完成后将更新输出文件") : reviewNote(page, taskStopped, snapshot.review_enabled);
+  noteCell.textContent = rerunning ? t("正在重新生成该页，完成后将更新输出文件") : pageNote(page, taskStopped, snapshot.review_enabled);
   row.append(noteCell);
 
   const actionsCell = el("td");
@@ -1004,7 +1012,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
     : page.inplace_requested
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
     : page.kept_reason
-      ? t("该页需要整页图像翻译，但还没有设置图像翻译模型，未生成页图。")
+      ? t("{0}；没有页图。", tx(page.kept_reason))
       : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或在「翻译方式」里改选原位替换后重新翻译。");
 
   actionsCell.append(

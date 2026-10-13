@@ -33,10 +33,12 @@ LABELS = {
 }
 
 
-def _write_pdf(path: Path, sizes, *, with_text: list[bool]) -> None:
+def _write_pdf(path: Path, sizes, *, with_text: list[bool], blank=()) -> None:
     doc = fitz.open()
-    for (w, h), text in zip(sizes, with_text):
+    for index, ((w, h), text) in enumerate(zip(sizes, with_text)):
         page = doc.new_page(width=w, height=h)
+        if index in blank:
+            continue  # nothing on it at all: a blank page
         page.draw_line((40, 200), (w - 40, 200), color=(1, 0, 0), width=1)  # a drawing line that must survive
         if text:
             y = 120
@@ -57,12 +59,12 @@ def _hooks(translate=None) -> InplaceHooks:
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
 class InplaceTaskTests(unittest.TestCase):
     def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A3), text=(True, True),
-             image_model_missing="", extra=None, office=None):
+             image_model_missing="", extra=None, office=None, blank=(), prefill=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         source_pdf = root / "source.pdf"
-        _write_pdf(source_pdf, list(sizes), with_text=list(text))
+        _write_pdf(source_pdf, list(sizes), with_text=list(text), blank=blank)
         settings = AppSettings(target_lang=target)
         settings.pdf = PdfSettings.model_validate({"target_lang": target, "translation_route": route,
                                                    **(extra or {})})
@@ -82,6 +84,8 @@ class InplaceTaskTests(unittest.TestCase):
                 patch("core.pdf_word_route.word_route_available", return_value=True), \
                 patch("core.pdf_word_route.office_pdf_engine", return_value=office):
             prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
+            if prefill:
+                prefill(prepared)   # what 「继续上次翻译」 adopts from the previous run
             runner._run_word_segments([prepared])
             runner._total_page_count = len(sizes)
             runner._process_prepared_pages(
@@ -245,6 +249,69 @@ class InplaceTaskTests(unittest.TestCase):
             self.assertIn("SEGMENT-TRANSLATED", out[0].get_text())
             self.assertIn("屋面平面图", out[1].get_text())
 
+    def _word_spy(self, seen: list[int]):
+        from core.pdf_word_route import WordRouteResult
+
+        def fake_word(pdf_path, work_dir, final_path, settings, **kwargs):
+            with fitz.open(pdf_path) as part:
+                seen.append(len(part))
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        return fake_word
+
+    def test_page_reused_by_resume_is_not_translated_again_via_word(self):
+        from core.pdf_models import PdfPageRecord
+
+        def prefill(prepared):
+            image = Path(prepared.translated_pages_dir) / "page_002.png"
+            image.parent.mkdir(parents=True, exist_ok=True)
+            image.write_bytes(_png_bytes(100, 141))
+            prepared.record.pages.append(PdfPageRecord(
+                page_number=2, source_image_path="", file_name="source", translated_image_path=str(image),
+                status="success", attempts=1, page_width_pt=A4[0], page_height_pt=A4[1]))
+
+        seen: list[int] = []
+        _fake, fake_pdf = self._fake_word_and_pdf()
+        with patch("core.pdf_word_route.translate_pdf_via_word", self._word_spy(seen)), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
+            _runner, record, client = self._run(sizes=(A4, A4, A4), text=(True, True, True),
+                                                office=("word", "test"), prefill=prefill)
+        self.assertEqual(seen, [1, 1])                  # pages 1 and 3, each on its own
+        self.assertEqual([(s["first_page"], s["last_page"]) for s in record.word_segments], [(1, 1), (3, 3)])
+        self.assertEqual(len(client.calls), 0)
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 3)               # segment, reused page, segment: nothing twice
+
+    def test_blank_page_inside_a_text_document_stays_in_one_segment(self):
+        seen: list[int] = []
+        _fake, fake_pdf = self._fake_word_and_pdf(pages_out=3)
+        with patch("core.pdf_word_route.translate_pdf_via_word", self._word_spy(seen)), \
+                patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
+            _runner, record, client = self._run(sizes=(A4, A4, A4), text=(True, False, True), blank=(1,),
+                                                office=("word", "test"), extra={"also_save_word": True})
+        self.assertEqual(seen, [3])
+        pages = sorted(record.pages, key=lambda p: p.page_number)
+        self.assertEqual([p.word_status for p in pages], ["done", "done", "done"])
+        self.assertTrue(record.translated_docx_path.endswith(".docx"))
+        self.assertEqual(len(client.calls), 0)
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 3)
+
+    def test_rerouted_and_kept_pages_are_explained_in_the_report(self):
+        from core.pdf_task_report import _file_record_to_result, _route_report_lines
+
+        _runner, record, _client = self._run(target="en", sizes=(A4, A3), text=(True, True),
+                                             extra={"auto_text_route": "inplace"})
+        lines = "\n".join(_route_report_lines(record))
+        self.assertIn("第 1 页：原位替换目前只支持译成中文，改用整页图像翻译", lines)
+        self.assertIn("第 2 页：原位替换目前只支持译成中文，这一页保留原样", lines)
+        detail = _file_record_to_result(record)
+        text = str(detail)
+        self.assertNotIn("没有设置图像翻译模型", text)
+        self.assertIn("改用整页图像翻译", text)
+
     def test_failed_word_segment_falls_back_to_the_safety_net(self):
         from core.pdf_word_route import WordRouteResult
 
@@ -367,6 +434,30 @@ class WordRouteTaskTests(unittest.TestCase):
         runner, final, _client = self._run_task(fake)
         self.assertIsInstance(final, StoppedMsg)
         self.assertEqual(runner._prepared_files[0].record.word_segments[0]["status"], "stopped")
+
+    def test_pause_holds_the_next_word_segment(self):
+        import threading
+
+        from core.pdf_routes import DocumentKind, PageKind
+        from core.pdf_word_route import WordRouteResult
+        from core.task_runner import DoneMsg
+
+        events: list[str] = []
+
+        def fake(runner, _pdf, _work, final_path, _settings, **_kwargs):
+            if not events:
+                runner.pause()
+                threading.Timer(0.3, lambda: (events.append("resumed"), runner.resume())).start()
+            events.append("segment")
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        kinds = DocumentKind("mixed", [PageKind(1, "text", False), PageKind(2, "scan", False),
+                                       PageKind(3, "text", False)])
+        _runner, final, _client = self._run_task(fake, sizes=(A4, A4, A4), text=(True, True, True), kinds=kinds)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertEqual(events, ["segment", "resumed", "segment"])   # the second waited for 继续
 
     def test_word_issues_make_the_task_need_review(self):
         from core.pdf_word_route import WordRouteResult
