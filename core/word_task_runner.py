@@ -77,6 +77,7 @@ from core.mixed_language import (
     MIXED_MARK_UNRESOLVED,
     MixedLanguageResult,
     MixedLanguageRunStats,
+    collapse_echoed_repeat,
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
@@ -1287,6 +1288,7 @@ class WordTaskRunner(BaseTaskRunner):
                         request_category=API_REQUEST_CATEGORY_NORMAL,
                         stats=mixed_stats,
                         drained_callback=main_drain_gate.queue_drained,
+                        translation_only=settings.word_output.output_translation_only,
                     )
 
                 with request_log:
@@ -1371,7 +1373,9 @@ class WordTaskRunner(BaseTaskRunner):
                         )
                         not_translated = []
                         for source in kept_bilingual:
-                            translation = str(retranslated.get(source) or "").strip()
+                            translation = collapse_echoed_repeat(
+                                str(retranslated.get(source) or "").strip(), source
+                            )
                             if translation and translation != source.strip():
                                 api_translations[source] = translation
                             elif not self._stop_event.is_set():
@@ -1385,6 +1389,12 @@ class WordTaskRunner(BaseTaskRunner):
                             problem="已含两种语言的段落未能翻成目标语言",
                             status="已保留原文并标记需复核。",
                             severity="needs_review",
+                        )
+                    leftover_count = sum(1 for result in mixed_results.values() if result.leftover)
+                    if leftover_count:
+                        self._log(
+                            "WARN",
+                            f"仅输出译文：{leftover_count} 处译文中仍夹带未翻译的外文，已标记需复核。",
                         )
                     _apply_mixed_language_word_results(
                         mixed_results=mixed_results,

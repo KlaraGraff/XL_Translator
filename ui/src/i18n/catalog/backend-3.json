@@ -207,6 +207,18 @@
     "en": "The source text was kept and marked for review.",
     "fr": "Le texte source a été conservé et marqué pour vérification."
   },
+  "仅输出译文：{0} 处译文中仍夹带未翻译的外文，已标记需复核。": {
+    "en": "Translation-only output: {0} {0|translation still contains|translations still contain} untranslated foreign words; marked for review.",
+    "fr": "Sortie traduction seule : {0} {0|traduction contient|traductions contiennent} encore des mots étrangers non traduits ; {0|marquée|marquées} pour vérification."
+  },
+  "译文中仍夹带未翻译的外文": {
+    "en": "The translation still contains untranslated foreign words",
+    "fr": "La traduction contient encore des mots étrangers non traduits"
+  },
+  "已输出译文并标记需复核。": {
+    "en": "The translation was written and marked for review.",
+    "fr": "La traduction a été écrite et marquée pour vérification."
+  },
   "{0} 处模型返回的译文与原文相同，已标记需复核。": {
     "en": "For {0} {0|item|items}, the model returned the source text unchanged; marked for review.",
     "fr": "Pour {0} {0|élément|éléments}, le modèle a renvoyé le texte source inchangé ; marqué pour vérification."
