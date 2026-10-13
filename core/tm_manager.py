@@ -977,6 +977,17 @@ def entry_public_dict(row: sqlite3.Row | dict) -> dict[str, object]:
     return data
 
 
+def get_entries_by_ids(entry_ids: Iterable[int]) -> list[dict[str, object]]:
+    """按 id 取词条的当前内容（任务详情里「本次自动保存的词条」用：撤销、编辑过的要如实显示）。"""
+    ids = sorted({int(entry_id) for entry_id in entry_ids if int(entry_id) > 0})[:200]
+    if not ids:
+        return []
+    placeholders = ", ".join("?" for _ in ids)
+    with _get_conn() as conn:
+        rows = conn.execute(f"SELECT * FROM tm_entries WHERE id IN ({placeholders})", ids).fetchall()
+    return [entry_public_dict(row) for row in rows]
+
+
 def _entry_version(row: sqlite3.Row | dict) -> str:
     """Return a stable optimistic-concurrency token for a TM entry."""
     return "|".join(

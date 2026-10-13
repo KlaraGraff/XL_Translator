@@ -94,5 +94,9 @@
   "记忆库尚未完成结构升级，暂时不能为同一原文保存带备注的词条。请重启应用后重试。": {
     "en": "The translation memory has not finished upgrading, so entries with a note cannot yet be saved for the same source text. Restart the app and try again.",
     "fr": "La mise à niveau de la mémoire de traduction n'est pas terminée : impossible pour l'instant d'enregistrer une entrée avec note pour le même texte source. Redémarrez l'application puis réessayez."
+  },
+  "记忆库：{0} 处整段旧译文未采用当前的设定译法，本次重新翻译": {
+    "en": "Translation memory: {0} saved whole-text {0|translation does|translations do} not use the current set translation and will be retranslated",
+    "fr": "Mémoire de traduction : {0} {0|traduction enregistrée n'utilise|traductions enregistrées n'utilisent} pas la traduction définie actuelle et {0|sera retraduite|seront retraduites}"
   }
 }

@@ -193,6 +193,37 @@ class TmEntryNotesTests(unittest.TestCase):
         self.assertEqual(report["not_applied"], [])
         self.assertEqual(report["manual_terms_hit"], 2)
 
+    def test_changed_manual_term_is_not_bypassed_by_an_old_whole_sentence(self):
+        from types import SimpleNamespace
+
+        from core.term_session import TaskTermSession
+
+        tm_manager.init_db()
+        tm_manager.insert_batch([("门框应与预埋件可靠连接", "Le cadre est fixé à l'embedded part")], "zh-fr", 200)
+        tm_manager.insert_batch([("卫生间地面做防水", "Sol des toilettes étanché")], "zh-fr", 200)
+        tm_manager.insert_manual_entry_detailed("预埋件", "pièce noyée", "zh-fr")
+        session = TaskTermSession(SimpleNamespace(apply_in_sentences=True), target_lang="fr", smart_mode=True)
+        texts = ["门框应与预埋件可靠连接", "卫生间地面做防水"]
+        hits = session.resolve({text: {"zh-fr"} for text in texts}, profile="")
+        # 旧句子里还是改之前的译法：不再整段贴回，交给模型带着词条重译。不含词条的照常复用。
+        self.assertEqual(hits, {"卫生间地面做防水": "Sol des toilettes étanché"})
+
+    def test_auto_scene_entry_is_only_offered_where_its_note_fits_the_document(self):
+        from types import SimpleNamespace
+
+        from core.term_session import TaskTermSession
+
+        tm_manager.init_db()
+        self.assertGreater(tm_manager.insert_scene_entry("甲", "Classe A", "zh-fr", "防火门耐火等级 A 级"), 0)
+        tm_settings = SimpleNamespace(apply_in_sentences=True)
+        contract = TaskTermSession(tm_settings, target_lang="fr", smart_mode=True)
+        contract.resolve({"甲": {"zh-fr"}}, profile="施工合同及配电系统说明，甲方为业主，乙方为承包商。")
+        self.assertNotIn("甲", contract.whole.scene_texts)
+        self.assertEqual(contract.index.entries, [])
+        fire = TaskTermSession(tm_settings, target_lang="fr", smart_mode=True)
+        fire.resolve({"甲": {"zh-fr"}}, profile="建筑消防设计说明，甲/乙/丙指防火门和防火分区的耐火等级。")
+        self.assertIn("甲", fire.whole.scene_texts)
+
     def test_api_round_trip_with_note_usage_filter_and_pinned_edit(self):
         from fastapi.testclient import TestClient
 

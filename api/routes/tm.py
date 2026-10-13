@@ -60,6 +60,13 @@ def register(app: FastAPI) -> None:
             "filter_counts": tm_manager.get_filter_counts(lang_pair, keyword),
         }
 
+    @app.get("/api/tm/entries/by-ids")
+    def get_tm_entries_by_ids(ids: str = "") -> dict[str, Any]:
+        """按 id 取词条当前内容；已删除的不在结果里。"""
+        tm_manager.init_db()
+        wanted = [int(part) for part in ids.split(",") if part.strip().isdigit()]
+        return {"entries": tm_manager.get_entries_by_ids(wanted)}
+
     @app.post("/api/tm/entries", status_code=201)
     def create_tm_entry(payload: TmEntryPayload) -> dict[str, Any]:
         """如实回报这次手工新增的去向，不再一律当成写入成功。

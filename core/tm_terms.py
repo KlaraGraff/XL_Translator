@@ -245,11 +245,22 @@ class TermIndex:
         lang_pairs: Iterable[str] | None = None,
         file_paths: Iterable[object] = (),
         apply_in_sentences: bool = True,
+        profile: str = "",
     ) -> TermIndex:
         from core import tm_manager
 
+        rows = tm_manager.list_entries_for_target(target_lang, lang_pairs)
+        if profile:
+            # 自动保存的场景词条只是参考：备注说的场景和这份文档的说明对不上，就不拿给
+            # 模型当候选（候选摆在眼前，模型很容易照抄，哪怕场景不符）。手动维护的不受影响。
+            rows = [
+                row
+                for row in rows
+                if str(row.get("origin") or "") == ORIGIN_MANUAL
+                or note_fits_profile(str(row.get("note") or ""), profile, str(row.get("source_text") or ""))
+            ]
         return cls(
-            tm_manager.list_entries_for_target(target_lang, lang_pairs),
+            rows,
             lang_pairs=lang_pairs,
             file_paths=file_paths,
             apply_in_sentences=apply_in_sentences,
@@ -326,9 +337,12 @@ class TermIndex:
 
     # ── 句中 ──────────────────────────────────────────────────────────────
 
-    def scan(self, text: str, *, include_scene: bool = True) -> list[TermHit]:
-        """这段文字里出现的词条；整段相同的词条优先，不再拆开扫描。"""
-        rows = self.whole_rows(text)
+    def scan(self, text: str, *, include_scene: bool = True, sentence_only: bool = False) -> list[TermHit]:
+        """这段文字里出现的词条；整段相同的词条优先，不再拆开扫描。
+
+        ``sentence_only``：跳过整段词条，只看句中出现的词条（核对整段复用的旧译文用）。
+        """
+        rows = [] if sentence_only else self.whole_rows(text)
         if rows:
             usage = _group_usage(rows)
             if usage == USAGE_SCENE and not include_scene:
@@ -380,6 +394,32 @@ class TermIndex:
                 )
             )
         return hits
+
+
+_SCENE_LATIN_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _scene_words(text: str, source: str) -> set[str]:
+    """一段说明里的「说法」：中日韩文字取相邻两字，拉丁文取四个字母以上的词。
+    含词条本身的字不算（「甲级」和「甲方」不能因为都有「甲」就算场景相同）。"""
+    key = scan_key(text)
+    skip = set(scan_key(source))
+    words: set[str] = set()
+    for left, right in zip(key, key[1:]):
+        if _is_cjk(left) and _is_cjk(right) and left not in skip and right not in skip:
+            words.add(left + right)
+    words.update(_SCENE_LATIN_WORD_RE.findall(_strip_accents(key)))
+    return words
+
+
+def note_fits_profile(note: str, profile: str, source: str) -> bool:
+    """备注和文档说明至少有一个相同的说法；任一方为空、或备注里取不出说法时不作判断（算相符）。"""
+    if not note.strip() or not profile.strip():
+        return True
+    note_words = _scene_words(note, source)
+    if not note_words:
+        return True
+    return bool(note_words & _scene_words(profile, source))
 
 
 # ── 提示词 ────────────────────────────────────────────────────────────────────

@@ -132,6 +132,38 @@ export function refreshTermsAdvancedMode(client: () => Promise<ApiClient>, onCha
 /** 已撤销的自动保存词条：只记在本次运行里，用来把那一行显示成「已撤销」。 */
 const undoneEntries = new Set<number>();
 
+/** 自动保存词条的当前内容（null 表示已删除）。在记忆库页编辑过的，回到任务详情要如实显示。 */
+interface CurrentEntry {
+  target: string;
+  note: string;
+  origin: string;
+}
+const currentEntries = new Map<number, CurrentEntry | null>();
+let currentEntriesTask = "";
+
+/** 进入任务中心时清空：从记忆库页改完回来，重新读一次。 */
+export function resetTermsEntryCache(): void {
+  currentEntries.clear();
+  currentEntriesTask = "";
+}
+
+function ensureCurrentEntries(taskId: string, ids: number[], client: () => Promise<ApiClient>, rerender: () => void): void {
+  if (!ids.length || currentEntriesTask === taskId) return;
+  currentEntriesTask = taskId;
+  void client()
+    .then((api) => api.request<{ entries?: Array<Record<string, unknown>> }>(`/api/tm/entries/by-ids?ids=${ids.join(",")}`))
+    .then((payload) => {
+      for (const id of ids) currentEntries.set(id, null);
+      for (const row of payload.entries ?? []) {
+        currentEntries.set(int(row.id), { target: str(row.target_text), note: str(row.note), origin: str(row.origin) });
+      }
+      if (currentEntriesTask === taskId) rerender();
+    })
+    .catch(() => {
+      if (currentEntriesTask === taskId) currentEntriesTask = "";
+    });
+}
+
 function sectionTitle(label: string, hint = ""): HTMLDivElement {
   const title = document.createElement("div");
   title.className = "tm-report-title";
@@ -289,14 +321,14 @@ export function renderTermsSection(
     );
   }
 
-  if (advanced) renderAdvanced(section, result, options);
+  if (advanced) renderAdvanced(section, result, { ...options, taskId: task.task_id });
   container.append(section);
 }
 
 function renderAdvanced(
   section: HTMLElement,
   result: TermsResult,
-  options: { client: () => Promise<ApiClient>; rerender: () => void },
+  options: { client: () => Promise<ApiClient>; rerender: () => void; taskId: string },
 ): void {
   const totalHits = result.hits.always + result.hits.scene + result.hits.segment;
   const grid = document.createElement("div");
@@ -335,12 +367,22 @@ function renderAdvanced(
   if (result.autoSaved.length) {
     section.append(sectionTitle(t("本次自动保存的词条"), t("如译法有误，请点击「撤销」；无误则无需处理。")));
     const el = table([t("原文"), t("译文"), t("备注（取自文档说明）"), t("出现次数"), t("操作")], ["14%", "20%", "36%", "12%", "18%"]);
+    ensureCurrentEntries(options.taskId, result.autoSaved.map((item) => item.id), options.client, options.rerender);
     for (const item of result.autoSaved) {
       const tr = document.createElement("tr");
-      tr.append(cell(item.term), cell(item.target, true), cell(item.note, true), cell(item.count > 0 ? String(item.count) : ""));
+      const current = currentEntries.get(item.id);
+      tr.append(
+        cell(item.term),
+        cell(current ? current.target : item.target, true),
+        cell(current ? current.note : item.note, true),
+        cell(item.count > 0 ? String(item.count) : ""),
+      );
       const action = document.createElement("td");
-      if (undoneEntries.has(item.id)) {
+      if (undoneEntries.has(item.id) || current === null) {
         action.append(createChip({ label: t("已撤销"), tone: "mute" }));
+      } else if (current && current.origin === "manual") {
+        // 已在记忆库页改过，成了手动维护的词条：不再提供「撤销」，免得删掉用户自己定的译法。
+        action.append(createChip({ label: t("手动维护"), tone: "ok" }));
       } else {
         const actions = document.createElement("div");
         actions.className = "tm-report-acts";

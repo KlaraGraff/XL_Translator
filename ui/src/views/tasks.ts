@@ -26,7 +26,7 @@ import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
 import { openCadReview } from "./cad-review";
-import { refreshTermsAdvancedMode, renderTermsSection } from "./task-terms";
+import { refreshTermsAdvancedMode, renderTermsSection, resetTermsEntryCache } from "./task-terms";
 import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
@@ -2048,6 +2048,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   void refreshRegistry();
   void loadLanguageNames();
   // 记忆库高级模式可能在别的页面切换过，进页时重新读一次。
+  resetTermsEntryCache();
   refreshTermsAdvancedMode(getClient, renderDetail);
   // 前台快速轮询：任务中心可见时更快发现新任务/刷新列表；后台巡检（12s）在任何视图下都跑。
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);

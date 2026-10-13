@@ -29,6 +29,7 @@ from core.tm_terms import (
     TermIndex,
     WholeSegmentResolution,
     chosen_candidate,
+    term_applied,
     whole_key,
 )
 from engines.base_engine import TranslationEngine, engine_supports_chat, strip_markdown_json
@@ -94,6 +95,7 @@ class TaskTermSession:
                 lang_pairs=all_pairs,
                 file_paths=self._file_paths,
                 apply_in_sentences=bool(getattr(self._tm, "apply_in_sentences", True)),
+                profile=self.profile,
             )
         except sqlite3.Error as exc:
             logger.warning(f"记忆库词条表读取失败，本次只整段复用：{exc!r}")
@@ -101,6 +103,7 @@ class TaskTermSession:
             self.index = TermIndex([])
         self.whole = self.index.resolve_whole(self._text_pairs, has_profile=bool(self.profile))
         self._add_plain_lookup_hits(tm_manager.lookup_batch)
+        self._drop_stale_whole_hits()
         if self.whole.scene_texts:
             self._log(
                 "INFO",
@@ -143,6 +146,29 @@ class TaskTermSession:
             if len(found) == 1:
                 self.whole.hits[text] = found[0]
                 self.whole.usage_by_text[text] = USAGE_SEGMENT
+
+    def _drop_stale_whole_hits(self) -> None:
+        """整段复用的旧译文里没用上句中「始终采用」的词条（多半是词条后来改过），就不复用，
+        交给模型带着词条重新翻译；否则改了词条，含它的旧句子还会一直照旧贴回去。"""
+        assert self.index is not None
+        if not self.index.apply_in_sentences:
+            return
+        stale: list[str] = []
+        for text, translation in self.whole.hits.items():
+            if self.whole.usage_by_text.get(text) == USAGE_ALWAYS:
+                continue
+            for hit in self.index.scan(text, include_scene=False, sentence_only=True):
+                if hit.usage != USAGE_ALWAYS:
+                    continue
+                if term_applied(translation, hit.expected, source=hit.source, target_lang=self.target_lang) is False:
+                    stale.append(text)
+                    break
+        for text in stale:
+            self.whole.hits.pop(text, None)
+            self.whole.entry_ids.pop(text, None)
+            self.whole.usage_by_text.pop(text, None)
+        if stale:
+            self._log("INFO", f"记忆库：{len(stale)} 处整段旧译文未采用当前的设定译法，本次重新翻译")
 
     # ── 批次 ──────────────────────────────────────────────────────────────
 

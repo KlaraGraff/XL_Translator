@@ -14,6 +14,7 @@ from core.tm_terms import (
     TermHit,
     build_prompt_block,
     chosen_candidate,
+    note_fits_profile,
     split_by_budget,
     term_applied,
 )
@@ -87,6 +88,18 @@ class SceneChoiceTests(unittest.TestCase):
         # 「classe A」里含有候选「A」，但这是模型新给的译法。
         self.assertIsNone(chosen_candidate(hit, "classe A", target_lang="fr"))
         self.assertEqual(chosen_candidate(hit, "Partie A", target_lang="fr").target, "Partie A")
+
+
+class NoteFitsProfileTests(unittest.TestCase):
+    def test_shared_wording_without_the_term_itself(self):
+        fire = "建筑消防设计说明，甲/乙/丙指防火门和防火分区的耐火等级。"
+        contract = "施工合同，甲方为业主，乙方为承包商。"
+        self.assertTrue(note_fits_profile("防火门耐火等级 A 级", fire, "甲"))
+        self.assertFalse(note_fits_profile("防火门耐火等级 A 级", contract, "甲"))
+        # 「甲方」「甲级」只靠「甲」字相同，不算同一场景。
+        self.assertFalse(note_fits_profile("合同甲方", "甲级防火门", "甲"))
+        self.assertTrue(note_fits_profile("", contract, "甲"))
+        self.assertTrue(note_fits_profile("Fire door rating", "fire door schedule", "甲"))
 
 
 class ScanTests(unittest.TestCase):
