@@ -302,7 +302,11 @@ table.review-tbl { table-layout: fixed; }
 
 /* ========== 任务中心 ========== */
 .tk-list { width: 340px; flex: none; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
-.tk-filters { display: flex; gap: 6px; }
+.tk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* 搜索框吃掉筛选按钮右侧剩下的宽度；窄到不足 140px（法语按钮更长）时整块换到下一行。 */
+.tk-search { flex: 1 1 140px; min-width: 140px; position: relative; display: flex; align-items: center; }
+.tk-search > svg { position: absolute; left: 10px; color: var(--ink-3); pointer-events: none; }
+.tk-search input { width: 100%; height: 27px; border: 1px solid var(--line-2); border-radius: 99px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; padding: 0 10px 0 30px; }
 .tk-filters .f { font-size: 12px; padding: 4.5px 12px; border-radius: 99px; border: 1px solid var(--line-2); color: var(--ink-2); cursor: pointer; background: var(--surface); }
 .tk-filters .f.on { background: var(--tint); border-color: var(--tint-line); color: var(--tint-ink); font-weight: 600; }
 .tkcard { padding: 13px 15px; cursor: pointer; }

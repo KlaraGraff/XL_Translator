@@ -46,18 +46,22 @@ import settings as settings_module
 FEEDBACK_CATEGORIES = ("problem", "suggestion", "other")
 MAX_DESCRIPTION_CHARS = 5_000
 MAX_CONTACT_CHARS = 200
+# 只附任务、没写描述时 issue 里的描述（中转站要求描述非空）。
+NO_DESCRIPTION = "（用户未填写描述，请查看所附任务的日志。）"
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 MAX_TASKS = 5
 # 用户自己另外挑的文件最多 10 个；加上所选任务的原文件和译文，整包最多 50 个。
 MAX_PICKED_FILES = 10
-# 描述框里粘贴的截图。
-MAX_IMAGES = 6
+# 描述框里粘贴的截图：不限张数，单张和合计都不超过 10 MB。截图的额度和文件分开算，
+# 文件再多也挤不掉截图。
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024
 MAX_FILES = 50
-# 附件（用户自己挑的文件）原始大小上限。中转站把包分段存进 Cloudflare KV（单个值
-# 上限 25 MiB，免费额度共 1 GB、保留 90 天），整包上限另给 ZIP 头和日志留出余量，
-# 须与 feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
-MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# 附件文件（所选任务的原文件、译文和用户另挑的文件）原始大小上限，截图另算。中转站
+# 把包分段存进 Cloudflare KV（单个值上限 25 MiB，免费额度共 1 GB、最长保留 90 天）；
+# 文件 40 MB + 截图 10 MB，整包上限再给 ZIP 头和日志留出余量，须与
+# feedback-relay/src/index.js 的 MAX_PACKAGE_BYTES 一致。
+MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024
 MAX_PACKAGE_BYTES = 54 * 1024 * 1024
 # 任务中心最多保留 200 条记录；界面上再按搜索和条数筛选。
 RECENT_TASK_LIMIT = 200
@@ -109,8 +113,6 @@ _IMAGE_SIGNATURES = (
 
 def image_names(images: list[bytes]) -> list[str]:
     """Package names for pasted screenshots (截图1.png …); rejects anything that is not an image."""
-    if len(images) > MAX_IMAGES:
-        raise FeedbackError("最多粘贴 6 张图片。", reason="too_many_images")
     names: list[str] = []
     for index, data in enumerate(images, start=1):
         if len(data) > MAX_IMAGE_BYTES:
@@ -155,7 +157,8 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
     """Check the draft and return the attached files as resolved paths."""
     if draft.category not in FEEDBACK_CATEGORIES:
         raise FeedbackError("反馈类型无效。", reason="invalid_category")
-    if not draft.description.strip():
+    # 「反馈此任务」附上了出问题的任务时，日志本身就说明了问题，描述可以不写。
+    if not draft.description.strip() and not draft.task_records:
         raise FeedbackError("请填写反馈内容。", reason="empty_description")
     if len(draft.description) > MAX_DESCRIPTION_CHARS:
         raise FeedbackError("反馈内容过长，请精简到 5000 字以内。", reason="description_too_long")
@@ -173,10 +176,11 @@ def validate_draft(draft: FeedbackDraft) -> list[Path]:
             raise FeedbackError(f"找不到文件：{path.name}", reason="file_missing")
         total += path.stat().st_size
         files.append(path)
-    image_names(draft.images)
-    total += sum(len(data) for data in draft.images)
     if total > MAX_ATTACHMENT_BYTES:
-        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
+        raise FeedbackError("附件文件合计超过 40 MB，请只附上必要的文件。", reason="too_large")
+    image_names(draft.images)
+    if sum(len(data) for data in draft.images) > MAX_IMAGES_TOTAL_BYTES:
+        raise FeedbackError("截图合计超过 10 MB，请删掉几张。", reason="images_too_large")
     return files
 
 
@@ -367,7 +371,7 @@ def _task_diagnostic_files(task_id: str) -> dict[str, bytes]:
 def _feedback_payload(draft: FeedbackDraft, files: list[Path]) -> dict[str, Any]:
     return {
         "category": draft.category,
-        "description": draft.description.strip(),
+        "description": draft.description.strip() or NO_DESCRIPTION,
         "contact": draft.contact.strip(),
         "app_version": APP_VERSION,
         "ui_language": draft.ui_language,
@@ -534,34 +538,46 @@ def saved_contact_path() -> Path:
     return settings_module.APP_DATA_DIR / "feedback_contact.json"
 
 
-def saved_email() -> str:
-    """The email the user left on their last sent feedback, or ""."""
+def _saved_contact() -> dict[str, Any]:
     try:
         data = json.loads(saved_contact_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
-    email = data.get("email") if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def saved_email() -> str:
+    """The email the user left on their last sent feedback, or ""."""
+    email = _saved_contact().get("email")
     return email if isinstance(email, str) and _EMAIL_RE.match(email) else ""
 
 
+def should_ask_for_email() -> bool:
+    """Whether to ask once before sending without an email.
+
+    Only until the user has sent a feedback without one: by then they have
+    made their choice and are not asked again.
+    """
+    return not saved_email() and not _saved_contact().get("sent_without_email")
+
+
 def remember_email(contact: str) -> None:
-    """Keep the address of a sent feedback on this machine; an empty one forgets it.
+    """Keep the address of a sent feedback on this machine.
 
     Only a successful send calls this, so an address that never left the
-    machine (a draft, a saved ZIP) is not kept. Failing to write just means
-    typing it again next time.
+    machine (a draft, a saved ZIP) is not kept. Sending without an address
+    forgets the old one and records that the user chose not to leave one, so
+    they are asked only once. Failing to write just means typing it again.
     """
     email = contact.strip()
     if email and not _EMAIL_RE.match(email):
         return
     path = saved_contact_path()
+    record = {"email": email} if email else {"sent_without_email": True}
     try:
-        if not email:
-            path.unlink(missing_ok=True)
-            return
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_text(json.dumps({"email": email}, ensure_ascii=False), encoding="utf-8")
+        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, path)
     except OSError:
         pass

@@ -5,6 +5,10 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
 
+# 每天删一次已处理完毕的反馈包（见 src/index.js 的 deleteResolvedPackages）。
+[triggers]
+crons = ["0 3 * * *"]
+
 [vars]
 FEEDBACK_REPO = "KlaraGraff/XL_Translator-feedback"
 

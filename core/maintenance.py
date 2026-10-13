@@ -10,7 +10,7 @@ from typing import Any
 from loguru import logger
 
 from config import APP_DATA_DIR, KEYS_PATH, LOG_PATH, SETTINGS_PATH
-from core import diagnostics, feedback, tm_manager
+from core import diagnostics, feedback, process_artifacts, tm_manager
 from core.task_history import TASK_HISTORY_RECOVERY_SCOPE, TaskHistoryStore, default_history_path
 from core.task_logger import clear_log_files
 import settings as settings_module
@@ -79,6 +79,8 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
     return {
         "app_data_dir": str(APP_DATA_DIR),
         "categories": categories,
+        # 任务过程文件（logs/process）的两类保留上限和当前占用，上限可在维护页调整。
+        "process_retention": process_artifacts.retention_overview(),
         "active_task_count": max(0, int(active_task_count)),
         "activity_guarded_categories": [
             "keys",

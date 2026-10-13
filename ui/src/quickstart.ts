@@ -18,7 +18,7 @@ import { t } from "./i18n";
 import "./quickstart.css";
 
 type JsonObject = Record<string, unknown>;
-type QuickStartDestination = "config" | "excel" | "word" | "pdf" | "cad";
+type QuickStartDestination = "config" | "excel" | "word" | "pdf" | "cad" | "feedback";
 
 const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
@@ -68,7 +68,7 @@ function finish(destination?: QuickStartDestination): void {
   void updatePreferences({ quick_start_completed: true }).catch(() => undefined);
   if (destination === "config") {
     navigate("settings", { page: "models" });
-  } else if (destination === "excel" || destination === "word" || destination === "pdf" || destination === "cad") {
+  } else if (destination) {
     navigate(destination);
   }
 }
@@ -100,6 +100,14 @@ function openQuickStartModal(): void {
       t("通过「浏览」选择文件或文件夹，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。"),
     ),
   );
+  // 不算翻译步骤，单独放在三步之后：首次使用就知道有问题可以反馈、处理完会收到邮件。
+  const feedback = buildStep(
+    t("遇到问题或有建议"),
+    t("可随时在侧栏「反馈」中告诉我们。问题修复或功能上线后，我们会发邮件通知您。"),
+    [createButton({ label: t("打开反馈"), size: "mini", onClick: () => finish("feedback") })],
+  );
+  feedback.classList.add("qs-tip");
+  steps.append(feedback);
 
   activeHandle = openModal({
     tone: "warn",

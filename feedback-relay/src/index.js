@@ -2,15 +2,18 @@
 // .github/workflows/feedback-relay.yml）。
 //
 // 应用把用户勾选的内容打成一个 ZIP 发过来；这里做三件事：
-//   1. 把 ZIP 存进 KV（FEEDBACK 绑定），90 天后自动过期删除；
+//   1. 把 ZIP 存进 KV（FEEDBACK 绑定），最长保存 90 天；
 //   2. 在私有仓库（FEEDBACK_REPO）里开一条 issue，正文是用户写的话和一个带签名、
 //      90 天内有效的下载链接，GitHub 会按仓库的关注设置发邮件提醒；
 //   3. 把反馈编号返回给应用，应用显示给用户。
 //
+// 另有每天一次的定时任务（wrangler.toml 的 crons）：问题处理完毕（issue 已关闭，或已修好、
+// 带「待通知」标签）的反馈包立即删除，不等 90 天到期。应用里对用户就是这样承诺的。
+//
 // 不记录 IP：限流只用「LINK_SECRET + IP」的哈希做一小时计数，计数一小时后过期。
 // GitHub 令牌只存在 Worker 的密钥里，应用里没有任何凭据。
 
-// 应用端附件上限 50 MB，ZIP 头和日志另占一点。KV 单个值最多 25 MiB，所以大包按
+// 应用端附件上限：文件 40 MB + 截图 10 MB，ZIP 头和日志另占一点。KV 单个值最多 25 MiB，所以大包按
 // CHUNK_BYTES 拆成几段存，下载时再按顺序拼回去。
 const MAX_PACKAGE_BYTES = 54 * 1024 * 1024;
 const CHUNK_BYTES = 20 * 1024 * 1024;
@@ -33,7 +36,60 @@ export default {
       return json({ error: "internal" }, 500);
     }
   },
+
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(deleteResolvedPackages(env).catch((error) => console.error("cleanup failed", error && error.message)));
+  },
 };
+
+// 已修好、等发版通知的问题也算处理完毕：用户的文件已经用不上了。
+const RESOLVED_OPEN_LABEL = "待通知";
+const PACKAGE_LINK_RE = /\/v1\/files\/(FB-\d{8}-[A-Z2-9]{6})\?/;
+
+/** Delete the packages of feedback that has been dealt with; return their ids. */
+export async function deleteResolvedPackages(env, now = new Date()) {
+  const githubApi = env.GITHUB_API || "https://api.github.com";
+  const date = now.toISOString().slice(0, 10);
+  const deleted = [];
+  for (const query of ["state=closed", `state=open&labels=${encodeURIComponent(RESOLVED_OPEN_LABEL)}`]) {
+    for (let page = 1; page <= 20; page += 1) {
+      const response = await fetch(`${githubApi}/repos/${env.FEEDBACK_REPO}/issues?${query}&per_page=100&page=${page}`, {
+        headers: githubHeaders(env),
+      });
+      if (!response.ok) throw new Error(`github list failed: ${response.status}`);
+      const batch = await response.json();
+      for (const issue of batch) {
+        const match = PACKAGE_LINK_RE.exec(issue.body || "");
+        if (issue.pull_request || !match) continue;
+        const id = match[1];
+        await deletePackage(env, id);
+        // 链接换成一句说明；正文里没有链接了，下次就不会再处理这条。
+        const body = issue.body
+          .split("\n")
+          .map((line) => (PACKAGE_LINK_RE.test(line) ? `反馈包 ${id}.zip 已在问题处理完毕后删除（${date}）。` : line))
+          .join("\n");
+        const patched = await fetch(`${githubApi}/repos/${env.FEEDBACK_REPO}/issues/${issue.number}`, {
+          method: "PATCH",
+          headers: { ...githubHeaders(env), "Content-Type": "application/json" },
+          body: JSON.stringify({ body }),
+        });
+        if (!patched.ok) console.error("github issue update failed", issue.number, patched.status);
+        deleted.push(id);
+      }
+      if (batch.length < 100) break;
+    }
+  }
+  return deleted;
+}
+
+function githubHeaders(env) {
+  return {
+    Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "xl-translator-feedback-relay",
+  };
+}
 
 async function handleFeedback(request, env, url) {
   const declared = Number(request.headers.get("Content-Length") || 0);
@@ -77,13 +133,7 @@ async function handleFeedback(request, env, url) {
   const githubApi = env.GITHUB_API || "https://api.github.com";
   const issue = await fetch(`${githubApi}/repos/${env.FEEDBACK_REPO}/issues`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "xl-translator-feedback-relay",
-      "Content-Type": "application/json",
-    },
+    headers: { ...githubHeaders(env), "Content-Type": "application/json" },
     body: JSON.stringify({
       title: issueTitle(id, category, description),
       body: issueBody({ id, category, description, contact, meta, link, size: hasPackage ? pkg.size : 0 }),
@@ -186,7 +236,7 @@ export function issueBody({ id, category, description, contact, meta, link, size
     description.split(/\r?\n/).map((line) => `> ${neutralize(line)}`).join("\n"),
   ];
   if (link) {
-    parts.push("", "### 附件", "", `[下载反馈包 ${id}.zip](${link})（${formatBytes(size)}，90 天内有效，到期自动删除）`);
+    parts.push("", "### 附件", "", `[下载反馈包 ${id}.zip](${link})（${formatBytes(size)}，问题处理完毕后自动删除，最长保存 90 天）`);
   }
   return parts.join("\n");
 }

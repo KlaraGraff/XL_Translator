@@ -180,6 +180,19 @@ WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
 REQUEST_RETRY_ATTEMPTS_DEFAULT = 2
 REQUEST_RETRY_ATTEMPTS_MIN     = 0
 REQUEST_RETRY_ATTEMPTS_MAX     = 5
+
+# 任务过程文件（APP_DATA_DIR/logs/process 下每次任务一个目录：运行摘要、断点、CAD 译文
+# 对照表、PDF 单页重跑用的页面文件）的自动保留上限，在「设置 → 数据与维护」里可调。
+# 「正常完成」与「需复核或出错」各一组，条数或体积任一先到就从最早的开始清理。
+# 正常完成原先只留 5 次：任务中心留 200 条记录，第 6 次以前的 CAD 任务点「查看与修改
+# 译文」就只剩「记录已被清理」；体积上限主要防 PDF（每页几 MB 的渲染图）。
+PROCESS_RETENTION_SUCCEEDED_RUNS_DEFAULT = 20
+PROCESS_RETENTION_FAILED_RUNS_DEFAULT    = 30
+PROCESS_RETENTION_RUNS_MIN               = 1
+PROCESS_RETENTION_RUNS_MAX               = 1000
+PROCESS_RETENTION_MB_DEFAULT             = 1024
+PROCESS_RETENTION_MB_MIN                 = 100
+PROCESS_RETENTION_MB_MAX                 = 100 * 1024
 WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
 # 复核底色只有两种，对应两类真正需要人动手的东西：译文没出来（保留了原文、
 # 译文里残留源语言）和原文本身可疑。程序自己判过并放行的不上底色——9.3.0 之前
@@ -369,4 +382,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 36
+SETTINGS_SCHEMA_VERSION = 37
