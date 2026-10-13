@@ -313,6 +313,71 @@ class PdfWordRouteScopeTests(unittest.TestCase):
         self.assertEqual(result.terms["not_applied"][0]["locations"], ["第 2 段"])
 
 
+class FreshDataDirTests(unittest.TestCase):
+    """全新数据目录：没人调过 init_db()（没开过记忆库页，也没跑过 Excel、Word、CAD）。
+
+    PDF 转 Word、原位替换第一次查记忆库时不能撞上「no such table: tm_entries」。
+    """
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.db_path = self.root / "tm.db"
+        for patcher in (
+            patch.object(tm_manager, "DB_PATH", self.db_path),
+            patch.object(tm_manager, "BACKUPS_DIR", self.root / "backups"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_reads_and_writes_build_the_tables_first(self):
+        # 本机实测：别处先建出了一个 4KB 的空库，里面一张表都没有。
+        import sqlite3
+
+        sqlite3.connect(self.db_path).execute("PRAGMA user_version").fetchone()
+        self.assertEqual(tm_manager.lookup_batch(["réception"], "fr-zh"), {"réception": None})
+        self.assertEqual(tm_manager.list_entries_for_target("zh"), [])
+        self.assertTrue(tm_manager.insert_manual_entry_detailed("béton armé", "钢筋混凝土", "fr-zh").changed)
+        self.assertEqual(tm_manager.count_entries(), 1)
+
+    def test_word_route_term_session_resolves_on_a_fresh_database(self):
+        from core.term_session import TaskTermSession
+
+        logs: list[tuple[str, str]] = []
+        session = TaskTermSession(TM_SETTINGS, target_lang="zh", smart_mode=False,
+                                  file_paths=[self.root / "plan.pdf"], log=lambda *item: logs.append(item))
+        self.assertEqual(session.resolve({"Coupe A-A": {"fr-zh"}}), {})
+        self.assertEqual(session.finish(pair_for_text=lambda _text: "fr-zh")["not_applied"], [])
+        self.assertEqual([item for item in logs if item[0] in {"WARN", "ERROR"}], [])
+
+    def test_inplace_page_uses_memory_on_a_fresh_database(self):
+        from core.pdf_vector.classify import classify_and_translate
+
+        class Engine(TranslationEngine):
+            engine_name = "test/mock"
+
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                return {text: "钢筋混凝土墙" for text in texts}
+
+        engine = Engine()
+        logs: list[tuple[str, str]] = []
+        memory = DocumentTermMemory(TM_SETTINGS, target_lang="zh", lang_pairs=(), smart_mode=False,
+                                    engine_provider=lambda: engine, marked_in="pdf_pages")
+
+        def translate(texts, prompt, should_stop=None, term_session=None):
+            wrapped = term_session.wrap(engine) if term_session is not None else engine
+            return translate_texts(texts, wrapped, "zh", prompt, 20, 1, source_lang="auto")
+
+        rows = [{"id": 1, "source_text": "Mur en béton armé", "origin": "native"}]
+        classify_and_translate(rows, translate=translate, source_lang="fr", memory=memory,
+                               memory_file=self.root / "plan.pdf", memory_location="plan.pdf 第 1 页",
+                               log=lambda level, message: logs.append((level, message)))
+        self.assertEqual(rows[0]["translation"], "钢筋混凝土墙")
+        self.assertFalse([message for _level, message in logs if "OperationalError" in message], logs)
+        self.assertEqual(memory.finish()["not_applied"], [])
+
+
 class MergeTermResultsTests(unittest.TestCase):
     def test_parts_are_summed_and_manual_ids_deduplicated(self):
         first = {

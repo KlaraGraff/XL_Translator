@@ -195,9 +195,25 @@ def _enable_wal(conn: sqlite3.Connection) -> str:
     return mode
 
 
+# 已在本进程里建好表的库文件。读写前没人调过 init_db()（例如全新数据目录上
+# 直接跑 PDF 转 Word 或原位替换）也不能撞上「no such table」：第一次连接时补做一次。
+_READY_DB_PATHS: set[str] = set()
+_init_state = threading.local()
+
+
+def _ensure_db_ready() -> None:
+    """Run ``init_db()`` once per database file before the first read or write."""
+    if getattr(_init_state, "active", False):
+        return  # init_db() itself is opening this connection
+    if str(DB_PATH) in _READY_DB_PATHS and DB_PATH.exists():
+        return
+    init_db()
+
+
 @contextmanager
 def _get_conn():
     """线程安全的连接上下文管理器（每次调用独立连接）。"""
+    _ensure_db_ready()
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # Concurrent tasks flush TM batches on their own connections; without a
@@ -223,7 +239,12 @@ _INIT_LOCK = threading.Lock()
 
 def init_db() -> None:
     with _INIT_LOCK:
-        _init_db_locked()
+        _init_state.active = True
+        try:
+            _init_db_locked()
+        finally:
+            _init_state.active = False
+        _READY_DB_PATHS.add(str(DB_PATH))
 
 
 def _init_db_locked() -> None:
