@@ -3541,11 +3541,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                     f"[{prepared.record.name}] 第 {page_record.page_number} 页{page_record.kept_reason}。",
                                 )
                             elif page_record.word_requested:
-                                self._log(
-                                    "INFO",
-                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页是正文，"
-                                    "和相邻的正文页一起转成 Word 翻译（Beta），在整份文件翻译完后处理。",
-                                )
+                                pass  # 正文段已经转好，开工前那一行日志说过了
                             elif page_record.inplace_requested:
                                 self._log(
                                     "INFO",
