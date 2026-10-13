@@ -675,6 +675,12 @@ class _SheetGeometry:
     def row_height(self, row_num: int) -> float:
         return self._row_heights.get(row_num, self.default_row_height)
 
+    def with_row_heights(self, heights: dict[int, float]) -> _SheetGeometry:
+        """同一张表、但 ``heights``（行号 1 起 → 磅）里的行换成给定高度的副本。"""
+        clone = copy.copy(self)
+        clone._row_heights = {**self._row_heights, **heights}
+        return clone
+
     def last_sized_col(self) -> int:
         """最后一个尺寸被显式定义过的列号（1-based）；一个都没有返回 0。
 
@@ -1157,8 +1163,16 @@ def fix_drawing_anchors(
     changed_rows: set[int],
     *,
     freeze_all: bool = False,
+    new_geometry: _SheetGeometry | None = None,
+    shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     """把受行高变化影响的悬浮图片锚点改写成定尺寸 / 定位置的 oneCellAnchor。
+
+    文本框另算：仍是两格锚定，右下角按 ``new_geometry``（调整行高之后）挪到原来的高度；
+    碰到下面有内容的行只能截短，截短的文本框名字记进 ``shortened``。文本框原来多高按
+    ``text_box_geometry`` 量（缺省同 ``geometry``）：写文本框时为放下译文加高过行，
+    它的锚点是按加高后的行写的。
 
     ``geometry`` 必须是**调整行高之前**的几何，这样算出的 ext 才是原渲染尺寸。
 
@@ -1168,8 +1182,10 @@ def fix_drawing_anchors(
     * ``absoluteAnchor`` 钉的是相对整表原点的绝对坐标，上方行变高后格子整体下移，
       图片却纹丝不动，最后盖到不相干的内容上。
 
-    两者都改写成 ``oneCellAnchor``（只钉左上角 + 写死尺寸），图片跟着所在单元格
-    走，既不拉伸也不错位。
+    ``absoluteAnchor`` 改写成 ``oneCellAnchor``（只钉左上角 + 原尺寸），图片跟着
+    所在单元格走，不再错位。``twoCellAnchor`` 在给了 ``new_geometry`` 时仍是两格锚定，
+    只把右下角挪到新行高下原来的高度：宽度跟着列走（列我们不动），不按 Windows 字宽
+    估算写死——Mac 上那样会窄一截。只有 ``freeze_all`` 时才改成定尺寸。
 
     ``freeze_all=True`` 表示调用方之后还要交给 Excel COM 做整表 autofit——那一刀
     会重排 used range 里的**所有**行高，我们无从预知哪些行会变，只能把整张表的悬浮
@@ -1185,7 +1201,13 @@ def fix_drawing_anchors(
         tag = _local(anchor)
         if tag == "twoCellAnchor":
             frozen += _freeze_two_cell_anchor(
-                anchor, geometry, changed_rows, freeze_all=freeze_all
+                anchor,
+                geometry,
+                changed_rows,
+                freeze_all=freeze_all,
+                new_geometry=new_geometry,
+                shortened=shortened,
+                text_box_geometry=text_box_geometry,
             )
         elif tag == "absoluteAnchor":
             frozen += _freeze_absolute_anchor(
@@ -1200,6 +1222,9 @@ def _freeze_two_cell_anchor(
     changed_rows: set[int],
     *,
     freeze_all: bool,
+    new_geometry: _SheetGeometry | None = None,
+    shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     start = _anchor_position(anchor, "from")
     end = _anchor_position(anchor, "to")
@@ -1220,6 +1245,33 @@ def _freeze_two_cell_anchor(
     cx = max(int(cx), 1)
     cy = max(int(cy), 1)
 
+    if _is_text_box_anchor(anchor):
+        # 文本框不改成定尺寸：宽度会被写死成按 Windows 字宽算的磅值，Mac 上列比这宽，
+        # 框就窄了一截、折行变多（Mac 实测窄约 6%）。仍用两格锚定、宽度跟着列走，
+        # 只把右下角挪到新行高下同样的高度，行变矮时框不跟着变矮、把字裁掉。
+        if new_geometry is None:
+            return 0
+        if text_box_geometry is not None:
+            cy = sum(text_box_geometry.row_emu(row + 1) for row in range(from_row, to_row))
+            cy = max(int(cy + to_row_off - from_row_off), 1)
+        last_col = to_col if to_col_off > 0 else to_col - 1
+        if _reanchor_bottom(
+            anchor,
+            new_geometry,
+            from_row,
+            from_row_off + cy,
+            stop=_first_filled_row(new_geometry, to_row + 1, from_col, max(from_col, last_col)),
+        ) and shortened is not None:
+            shortened.append(_anchor_shape_name(anchor))
+        return 1
+
+    if not freeze_all and new_geometry is not None:
+        # 图片同理：只是我们改了行高时，仍用两格锚定，右下角挪到新行高下同样的高度。
+        # 改成定尺寸会把宽度按 Windows 字宽写死，Mac 上列更宽，图片就窄了一截
+        # （Mac 实测 106 磅变 88.5 磅）；列我们不动，宽度跟着列走才对。
+        _reanchor_bottom(anchor, new_geometry, from_row, from_row_off + cy)
+        return 1
+
     one_cell = etree.Element(_xdr("oneCellAnchor"))
     from_node = anchor.find(_xdr("from"))
     to_node = anchor.find(_xdr("to"))
@@ -1237,6 +1289,67 @@ def _freeze_two_cell_anchor(
     parent = anchor.getparent()
     parent.replace(anchor, one_cell)
     return 1
+
+
+def _reanchor_bottom(
+    anchor, geometry: _SheetGeometry, row: int, offset_emu: int, *, stop: int | None = None
+) -> bool:
+    """把两格锚定的右下角放到第 ``row`` 行（0 起）顶部往下 ``offset_emu`` 处，按 ``geometry`` 的行高走。
+
+    ``stop``：最多到这一行（0 起）的顶部为止——那一行有内容，框不能盖过去。返回是否被它截短。
+    """
+    capped = False
+    for _ in range(1_048_576):
+        if stop is not None and row >= stop:
+            capped = row > stop or offset_emu > 0
+            row, offset_emu = stop, 0
+            break
+        height = geometry.row_emu(row + 1)
+        if height > 0 and offset_emu < height:
+            break
+        offset_emu -= max(0, height)
+        row += 1
+    end = anchor.find(_xdr("to"))
+    end.find(_xdr("row")).text = str(row)
+    end.find(_xdr("rowOff")).text = str(max(0, int(offset_emu)))
+    return capped
+
+
+def _first_filled_row(geometry: _SheetGeometry, first_row: int, first_col: int, last_col: int) -> int | None:
+    """从第 ``first_row`` 行（0 起）往下，框所在列（0 起）里第一行有内容的行号；没有返回 None。"""
+    best: int | None = None
+    for cell in geometry._root.iter(_m("c")):
+        match = re.fullmatch(r"\$?([A-Za-z]{1,3})\$?(\d+)", str(cell.get("r") or ""))
+        if not match:
+            continue
+        row, col = int(match.group(2)) - 1, _column_index(match.group(1)) - 1
+        if row < first_row or not (first_col <= col <= last_col) or (best is not None and row >= best):
+            continue
+        value = cell.find(_m("v"))
+        inline = cell.find(_m("is"))
+        if (
+            cell.find(_m("f")) is not None
+            or (value is not None and (value.text or "").strip())
+            or (inline is not None and any((t.text or "").strip() for t in inline.iter(_m("t"))))
+        ):
+            best = row
+    return best
+
+
+def _anchor_shape_name(anchor) -> str:
+    props = anchor.find(f"{_xdr('sp')}/{_xdr('nvSpPr')}/{_xdr('cNvPr')}")
+    return str(props.get("name") or "") if props is not None else ""
+
+
+def _is_text_box_anchor(anchor) -> bool:
+    """锚点下是一个带文字的形状（文本框、带字的图形），不是图片。"""
+    sp = anchor.find(_xdr("sp"))
+    if sp is None:
+        return False
+    tx_body = sp.find(_xdr("txBody"))
+    if tx_body is None:
+        return False
+    return any((t.text or "").strip() for t in tx_body.iter(f"{{{NS_A}}}t"))
 
 
 def _freeze_absolute_anchor(
@@ -1390,6 +1503,7 @@ def _process_sheet(
     output_translation_only: bool = False,
     allowed_coordinates: set[str] | None = None,
     external_autofit_planned: bool = False,
+    min_row_heights: dict[int, float] | None = None,
 ) -> _SheetOutcome:
     data = package.read(entry.part)
     if data is None:
@@ -1594,15 +1708,44 @@ def _process_sheet(
             root, geometry, row_texts, mutated_rows
         )
         dirty = dirty or touched_rows
+        # 文本框放不下时加高过的行（见 xlsx_embedded_text._grow_shape）：取两者较大的。
+        if min_row_heights:
+            raised = _raise_row_heights(root, geometry, min_row_heights)
+            changed_rows |= raised
+            dirty = dirty or bool(raised)
 
     # 锁定行高时行高压根不变，没有任何锚点需要动。
     # 否则：调用方若还要跑 Excel COM 的整表 autofit，我们预知不了它会改哪些行，
     # 只能整表冻结；不跑 autofit 时仍然只冻结自己改过的那些行。
     freeze_all = external_autofit_planned and not lock_row_height
     if changed_rows or freeze_all:
+        shortened: list[str] = []
         outcome.anchor_frozen_count = _patch_sheet_drawing(
-            package, entry, root, geometry, changed_rows, freeze_all=freeze_all
+            package,
+            entry,
+            root,
+            geometry,
+            changed_rows,
+            freeze_all=freeze_all,
+            shortened=shortened,
+            text_box_geometry=geometry.with_row_heights(min_row_heights) if min_row_heights else None,
         )
+        # 行变矮后文本框保不住原高度（下面紧挨着内容）：字可能被裁，列入复核。
+        if review_positions is not None and shortened:
+            from core.xlsx_embedded_text import (
+                REVIEW_ACTION_LISTED_ONLY,
+                REVIEW_CATEGORY_SHAPE_OVERFLOW,
+            )
+
+            for name in shortened:
+                item = {
+                    "worksheet": entry.name,
+                    "cell": name,
+                    "category": REVIEW_CATEGORY_SHAPE_OVERFLOW,
+                    "action": REVIEW_ACTION_LISTED_ONLY,
+                }
+                if item not in review_positions:
+                    review_positions.append(item)
 
     if dirty:
         package.write(entry.part, _serialize(root))
@@ -1815,6 +1958,36 @@ def _auto_adjust_row_heights(
     return changed, touched
 
 
+def _raise_row_heights(root, geometry: _SheetGeometry, min_heights: dict[int, float]) -> set[int]:
+    """把 ``min_heights``（行号 1 起 → 磅）里的行至少加高到这么高，缺的 ``<row>`` 补上。返回变高了的行。"""
+    sheet_data = root.find(_m("sheetData"))
+    if sheet_data is None:
+        return set()
+    existing = dict(_iter_rows(root))
+    raised: set[int] = set()
+    for row_num in sorted(min_heights):
+        height = min_heights[row_num]
+        row = existing.get(row_num)
+        if row is None:
+            row = etree.Element(_m("row"))
+            row.set("r", str(row_num))
+            following = next((num for num in sorted(existing) if num > row_num), None)
+            if following is None:
+                sheet_data.append(row)
+            else:
+                existing[following].addprevious(row)
+            existing[row_num] = row
+        current = _to_float(row.get("ht"), None)
+        if current is None:
+            current = geometry.default_row_height
+        if current + 1e-9 >= height:
+            continue
+        row.set("ht", _format_number(height))
+        row.set("customHeight", "1")
+        raised.add(row_num)
+    return raised
+
+
 def _patch_sheet_drawing(
     package: _Package,
     entry: _SheetEntry,
@@ -1823,6 +1996,8 @@ def _patch_sheet_drawing(
     changed_rows: set[int],
     *,
     freeze_all: bool = False,
+    shortened: list[str] | None = None,
+    text_box_geometry: _SheetGeometry | None = None,
 ) -> int:
     """返回本分表被冻结/改写的悬浮图片锚点数量。"""
     drawing_el = root.find(_m("drawing"))
@@ -1851,7 +2026,13 @@ def _patch_sheet_drawing(
 
     drawing_root = _parse(drawing_data)
     frozen = fix_drawing_anchors(
-        drawing_root, geometry, changed_rows, freeze_all=freeze_all
+        drawing_root,
+        geometry,
+        changed_rows,
+        freeze_all=freeze_all,
+        new_geometry=_SheetGeometry(root),
+        shortened=shortened,
+        text_box_geometry=text_box_geometry,
     )
     if frozen:
         package.write(drawing_part, _serialize(drawing_root))
@@ -2253,6 +2434,7 @@ def write_bilingual_workbook(
     allowed_positions: dict[str, set[str]] | None = None,
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
+    embedded_text=None,
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
 
@@ -2278,6 +2460,10 @@ def write_bilingual_workbook(
     另有 ``stats["truncated_cells"]``（因超 32767 字符被截断的单元格数）与
     ``stats["truncated_positions"]``（``分表名!坐标`` 列表），同样的信息也会
     通过 ``log_callback`` 报出来——截断绝不能是静默的。
+
+    ``embedded_text``：``core.xlsx_embedded_text.EmbeddedTextOptions``，翻译文本框和
+    批注；None 表示不动它们（旧行为）。写入数记进 ``stats["shape_paragraphs"]`` /
+    ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]`` / ``stats["row_grown_shapes"]`` / ``stats["overflow_shapes"]``。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -2382,6 +2568,21 @@ def write_bilingual_workbook(
             else []
         )
 
+        # 文本框和批注在快照之后、单元格之前写：快照要的是原文；单元格那一轮
+        # 冻结图片锚点时读到的绘图部件要已经是写好译文的版本，两处改动才不会互相覆盖。
+        embedded_stats = None
+        if embedded_text is not None and embedded_text.enabled:
+            from core.xlsx_embedded_text import apply_embedded_translations
+
+            embedded_stats = apply_embedded_translations(
+                package,
+                embedded_text,
+                translation_only=output_translation_only,
+                review_marks=review_mark_map,
+                review_positions=review_positions,
+                grow_rows=not lock_row_height,
+            )
+
         removed_formula = False
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
         total_mutated_cells = 0
@@ -2411,6 +2612,9 @@ def write_bilingual_workbook(
                 log_callback=log_callback,
                 allowed_coordinates=sheet_allowed,
                 external_autofit_planned=external_autofit_planned,
+                min_row_heights=(
+                    embedded_stats.row_heights.get(entry.part) if embedded_stats is not None else None
+                ),
             )
             removed_formula = removed_formula or outcome.removed_formula
             total_mutated_cells += outcome.mutated_cells
@@ -2477,6 +2681,13 @@ def write_bilingual_workbook(
             stats["anchor_frozen_count"] = total_anchor_frozen
             stats["truncated_cells"] = len(truncated_positions)
             stats["truncated_positions"] = truncated_positions
+            if embedded_stats is not None:
+                stats["shape_paragraphs"] = embedded_stats.shape_paragraphs
+                stats["comments"] = embedded_stats.comments
+                stats["shrunk_shapes"] = embedded_stats.shrunk_shapes
+                stats["grown_shapes"] = embedded_stats.grown_shapes
+                stats["row_grown_shapes"] = embedded_stats.row_grown_shapes
+                stats["overflow_shapes"] = embedded_stats.overflow_shapes
 
         if error_positions and log_callback:
             # 这些格子存的是 #N/A / #REF! 这类错误值。它们被抽取端当成普通文本

@@ -1782,5 +1782,61 @@
   "AutoCAD {0} 格式": {
     "en": "AutoCAD {0} format",
     "fr": "Format AutoCAD {0}"
+  },
+  "翻译文本框和形状": {
+    "en": "Translate text boxes and shapes",
+    "fr": "Traduire les zones de texte et formes"
+  },
+  "同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的，把文本框往下加高：先占下面的空白，不盖住单元格内容；空白不够时，把文本框覆盖的几行平均加高，下面的内容跟着下移。锁定了行高的列入复核清单。": {
+    "en": "Also translates text in text boxes and shapes, paragraph by paragraph. When a translation does not fit, the font size in that text box is reduced; boxes that still overflow at 60% of the original size are made taller: first into the blank space below, without covering cell contents; if that is not enough, the rows the box covers are made evenly taller and the content below moves down. With locked row heights, such boxes are listed for review.",
+    "fr": "Traduit aussi le texte des zones de texte et des formes, paragraphe par paragraphe. Si la traduction ne tient pas, la taille de police de la zone est réduite ; les zones qui débordent encore à 60 % de la taille d'origine sont agrandies vers le bas : d'abord dans l'espace vide, sans masquer le contenu des cellules ; si cela ne suffit pas, les lignes couvertes par la zone sont agrandies de façon égale et le contenu situé dessous descend. Si la hauteur des lignes est verrouillée, ces zones sont listées pour vérification."
+  },
+  "翻译批注": {
+    "en": "Translate comments",
+    "fr": "Traduire les commentaires"
+  },
+  "同时翻译单元格批注。双语时译文接在原批注下一行，作者署名保留不译。": {
+    "en": "Also translates cell comments. In bilingual output the translation goes on the line below the original comment; the author name is kept untranslated.",
+    "fr": "Traduit aussi les commentaires des cellules. En sortie bilingue, la traduction est ajoutée à la ligne sous le commentaire d'origine ; le nom de l'auteur n'est pas traduit."
+  },
+  "图片不翻译，原样保留": {
+    "en": "Images not translated, kept as is",
+    "fr": "Images non traduites, conservées telles quelles"
+  },
+  "图片和批注不翻译，原样保留": {
+    "en": "Images and comments not translated, kept as is",
+    "fr": "Images et commentaires non traduits, conservés tels quels"
+  },
+  "图片和文本框不翻译，原样保留": {
+    "en": "Images and text boxes not translated, kept as is",
+    "fr": "Images et zones de texte non traduites, conservées telles quelles"
+  },
+  "图片中的文字需要 OCR，暂不支持。": {
+    "en": "Text in images requires OCR, which is not supported yet. ",
+    "fr": "Le texte des images nécessiterait une reconnaissance de caractères, pas encore prise en charge. "
+  },
+  "「翻译文本框和形状」已关闭，文本框和形状中的文字不处理。": {
+    "en": "“Translate text boxes and shapes” is off, so text in text boxes and shapes is not processed. ",
+    "fr": "« Traduire les zones de texte et formes » est désactivé : le texte des zones de texte et des formes n'est pas traité. "
+  },
+  "「翻译批注」已关闭，批注不处理，需要时可在右侧选项中打开。": {
+    "en": "“Translate comments” is off, so comments are not processed; you can turn it on in the options on the right. ",
+    "fr": "« Traduire les commentaires » est désactivé : les commentaires ne sont pas traités ; vous pouvez l'activer dans les options à droite. "
+  },
+  "这些内容将按原样保留，不会丢失或变形。": {
+    "en": "This content is kept as is, without loss or distortion.",
+    "fr": "Ce contenu est conservé tel quel, sans perte ni déformation."
+  },
+  "图片中的文字不翻译，将按原样保留。": {
+    "en": "Text in images is not translated and is kept as is.",
+    "fr": "Le texte des images n'est pas traduit et est conservé tel quel."
+  },
+  "另有 {0} 个 .xls 文件需先转换为 .xlsx 才能统计，其中图片里的文字同样不会被翻译。": {
+    "en": " {0} .xls {0|file needs|files need} to be converted to .xlsx before they can be counted; text in their images is not translated either.",
+    "fr": " {0} {0|fichier .xls doit|fichiers .xls doivent} d'abord être {0|converti|convertis} en .xlsx pour être {0|compté|comptés} ; le texte de leurs images n'est pas traduit non plus."
+  },
+  "{0} 个 .xls 文件的图片、文本框和批注未能统计，其中图片里的文字同样未翻译。": {
+    "en": " Images, text boxes and comments in {0} .xls {0|file|files} could not be counted; text in their images was not translated either.",
+    "fr": " Les images, zones de texte et commentaires de {0} {0|fichier|fichiers} .xls n'ont pas pu être comptés ; le texte de leurs images n'a pas été traduit non plus."
   }
 }
