@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Response
 from loguru import logger
 
-from core import tm_manager
+from core import process_artifacts, tm_manager
 from core.language_preflight import (
     build_language_preflight_prompt,
     extract_language_probe_texts,
@@ -237,6 +237,9 @@ def register(app: FastAPI) -> None:
             owner.availability_signature = ""
             owner.availability_checked_at = ""
         save_settings(settings)
+        if settings.process_retention != before_settings.process_retention:
+            # 上限改小要立即生效，不等下一次任务结束才清理。
+            process_artifacts.prune_now()
         return settings.model_dump(mode="json")
 
 

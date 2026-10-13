@@ -6,7 +6,7 @@
 //     默认勾选；原文件、译文默认不勾（文件可能含客户资料）。「其他文件」单列，
 //     用户自己添加了才上传。
 //   - 日志、原文件、译文取自下面「选择任务」里选中的那几次；任务默认一个都不选，
-//     只有从任务中心「反馈此问题」进来时预先选上那一次。
+//     只有从「反馈此任务」弹窗转过来时预先选上那一次。
 //   - 日志里的文件名由后端换成「文件1」「文件2」，预览里看到的就是实际发送的内容。
 // 草稿存在模块变量里，切到别的页面再回来不会丢；发送成功后才清空。
 
@@ -15,10 +15,19 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createDropdown, createHintBadge, createProgressBar, openModal, showToast } from "../components";
+import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
+import {
+  SEND_FAILURES,
+  confirmSendWithoutEmail,
+  createPrivacyNote,
+  createSendProgress,
+  emailLooksValid,
+  formatBytes,
+  uploadFeedback,
+} from "../feedback-shared";
 import "./feedback.css";
 
 type Category = "problem" | "suggestion" | "other";
@@ -35,10 +44,14 @@ interface FeedbackContext {
   endpoint_configured: boolean;
   tasks: FeedbackTask[];
   max_attachment_bytes: number;
+  /** 截图合计上限，和文件分开算。 */
+  max_images_bytes?: number;
   max_files: number;
   max_tasks: number;
   /** 上次成功发送时填的邮箱（只存在本机），新反馈默认填上。 */
   saved_email?: string;
+  /** 没填邮箱发送时要不要问一次。 */
+  ask_email?: boolean;
 }
 
 interface PickedFile {
@@ -129,10 +142,8 @@ let sentEmail = "";
 let sendFailure = "";
 /** 正在上传时后端报回的已发字节；null 表示还在打包。 */
 let sendProgress: { sent: number; total: number } | null = null;
-// 进度每 300 ms 更新一次，只改这两处，不重画整页（否则正在输入的内容和滚动位置会丢）。
-let progressLabel: HTMLElement | null = null;
-let progressBar: { setPercent: (percent: number) => void } | null = null;
-let progressBarEl: HTMLElement | null = null;
+// 进度每 300 ms 更新一次，只改进度这一块，不重画整页（否则正在输入的内容和滚动位置会丢）。
+let progressView: ReturnType<typeof createSendProgress> | null = null;
 let mounted = false;
 let rootEl: HTMLElement | null = null;
 let clientPromise: Promise<ApiClient> | null = null;
@@ -155,13 +166,26 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   rootEl = container;
   const taskId = typeof params.taskId === "string" ? params.taskId : "";
   if (taskId) {
-    // 从任务中心「反馈此问题」进来：这是一个具体的问题，预先勾上那次任务的日志。
+    // 从「反馈此任务」弹窗转过来：这是一个具体的问题，预先勾上那次任务的日志。
     if (sentId) {
       draft = emptyDraft();
       sentId = "";
     }
     draft.category = "problem";
     setTaskChecked(taskId, true);
+    // 从「反馈此任务」弹窗转过来：弹窗里已经写的描述和邮箱接着用。
+    if (typeof params.description === "string" && params.description && !draft.description) draft.description = params.description;
+    if (typeof params.contact === "string" && params.contact) {
+      draft.contact = params.contact;
+      draft.contactEdited = true;
+    }
+    const include = params.include as Partial<Record<"system" | "logs" | "sources" | "outputs", boolean>> | undefined;
+    if (include && typeof include === "object") {
+      if (typeof include.system === "boolean") draft.includeSystem = include.system;
+      if (typeof include.logs === "boolean") draft.includeLogs = include.logs;
+      if (typeof include.sources === "boolean") draft.includeSources = include.sources;
+      if (typeof include.outputs === "boolean") draft.includeOutputs = include.outputs;
+    }
   }
   render();
   void loadContext();
@@ -193,20 +217,8 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 空着可以；填了就得像个邮箱，不然没法通知到。 */
-function emailLooksValid(value: string): boolean {
-  const text = value.trim();
-  return !text || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
-}
-
 function errorReason(error: unknown): string {
   return error instanceof ApiError ? error.reason : "";
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
 function formatWhen(epoch: number): string {
@@ -344,10 +356,18 @@ function buildMessageCard(): HTMLElement {
 
   card.append(sectionTitle(t("描述")));
   // 跟 Claude 的输入框一样：截图以缩略图卡片排在框内文字上方，框和图是一个整体。
+  // 截图不限张数，只排一行、横向滚动，粘得再多也不会挤掉写字的地方。
   const composer = document.createElement("div");
   composer.className = "feedback-composer";
   imagesEl = document.createElement("div");
   imagesEl.className = "feedback-images";
+  // 普通鼠标只有竖向滚轮：指针在截图行上时，把竖向滚动换成横向。
+  imagesEl.addEventListener("wheel", (event) => {
+    const strip = event.currentTarget as HTMLElement;
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || strip.scrollWidth <= strip.clientWidth) return;
+    event.preventDefault();
+    strip.scrollLeft += event.deltaY;
+  }, { passive: false });
   const area = document.createElement("textarea");
   area.className = "feedback-text";
   area.rows = 12;
@@ -436,7 +456,6 @@ function checkRow(options: { checked: boolean; disabled?: boolean; title: string
 }
 
 // 描述框粘贴截图 ----------------------------------------------------------
-const MAX_IMAGES = 6;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 let imagesEl: HTMLElement | null = null;
@@ -457,13 +476,14 @@ function readBase64(file: File): Promise<string> {
 
 async function addImages(files: File[]): Promise<void> {
   for (const file of files) {
-    if (draft.images.length >= MAX_IMAGES) {
-      showToast({ message: t("最多粘贴 6 张图片。"), error: true });
-      break;
-    }
     if (file.size > MAX_IMAGE_BYTES) {
       showToast({ message: t("单张图片不能超过 10 MB。"), error: true });
       continue;
+    }
+    const used = draft.images.reduce((sum, image) => sum + image.bytes, 0);
+    if (used + file.size > (context?.max_images_bytes ?? MAX_IMAGE_BYTES)) {
+      showToast({ message: t("截图合计不能超过 10 MB，请删掉几张再粘贴。"), error: true });
+      break;
     }
     try {
       draft.images.push({ data: await readBase64(file), bytes: file.size, url: URL.createObjectURL(file) });
@@ -471,8 +491,11 @@ async function addImages(files: File[]): Promise<void> {
       showToast({ message: t("无法读取图片：{0}", errorText(error)), error: true });
     }
   }
+  const added = draft.images.length;
   renderImages();
   renderFileSummary();
+  // 新粘的截图排在最后，滚到能看见它。
+  if (added && imagesEl) imagesEl.scrollLeft = imagesEl.scrollWidth;
 }
 
 function renderImages(): void {
@@ -621,6 +644,7 @@ function renderKinds(): void {
         onChange: (value) => { draft.includeOutputs = value; },
       }),
     );
+    if (draft.includeSources || draft.includeOutputs) el.append(createPrivacyNote());
   }
   renderFileSummary();
 }
@@ -663,17 +687,17 @@ function renderOtherFiles(): void {
 
 let fileSummaryEl: HTMLElement | null = null;
 
-// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。
+// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。截图另有额度，不算在这里。
 function renderFileSummary(): void {
   const el = fileSummaryEl;
   if (!el) return;
   const files = checkedFiles();
-  const total = sizeOf(files) + draft.images.reduce((sum, image) => sum + image.bytes, 0);
-  const limit = context?.max_attachment_bytes ?? 50 * 1024 * 1024;
+  const total = sizeOf(files);
+  const limit = context?.max_attachment_bytes ?? 40 * 1024 * 1024;
   el.className = total > limit ? "feedback-total over" : "feedback-total";
   const needsTask = (draft.includeLogs || draft.includeSources || draft.includeOutputs) && !draft.taskIds.size;
   if (needsTask) el.textContent = t("尚未选择任务，任务日志、原文件和译文不会附上。");
-  else if (total) el.textContent = t("附件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
+  else if (total) el.textContent = t("文件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
   else el.textContent = t("不附带文件。");
 }
 
@@ -843,7 +867,7 @@ function buildActions(): HTMLElement {
   bar.className = "feedback-bar";
   const configured = context ? context.endpoint_configured : true;
   bar.append(busy === "send" ? buildProgress() : note(configured
-    ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，保存 90 天后自动删除。")
+    ? t("仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。")
     : t("此版本尚未开通在线发送，可先保存为 ZIP。")), actions);
   wrap.append(bar);
   syncActionState();
@@ -851,37 +875,9 @@ function buildActions(): HTMLElement {
 }
 
 function buildProgress(): HTMLElement {
-  const box = document.createElement("div");
-  box.className = "feedback-progress";
-  progressLabel = document.createElement("div");
-  progressLabel.className = "feedback-progress-label";
-  const handle = createProgressBar({ percent: 0 });
-  progressBar = handle;
-  progressBarEl = handle.root;
-  box.append(progressLabel, handle.root);
-  syncProgress();
-  return box;
-}
-
-function syncProgress(): void {
-  if (!progressLabel || !progressBar || !progressBarEl) return;
-  const progress = sendProgress;
-  // 打包和等服务器确认这两段拿不到字节数，用来回滑动的短条，不报百分比。
-  if (!progress) {
-    progressLabel.textContent = t("正在打包…");
-    progressBarEl.classList.add("indet");
-    return;
-  }
-  if (progress.total > 0 && progress.sent >= progress.total) {
-    progressLabel.textContent = t("已上传 {0}，正在等待服务器确认…", formatBytes(progress.total));
-    progressBarEl.classList.remove("indet");
-    progressBar.setPercent(100);
-    return;
-  }
-  const percent = progress.total > 0 ? Math.floor((progress.sent / progress.total) * 100) : 0;
-  progressLabel.textContent = t("正在上传 {0} / {1}（{2}%）", formatBytes(progress.sent), formatBytes(progress.total), String(percent));
-  progressBarEl.classList.remove("indet");
-  progressBar.setPercent(percent);
+  progressView = createSendProgress();
+  progressView.update(sendProgress);
+  return progressView.root;
 }
 
 async function showPreview(): Promise<void> {
@@ -971,45 +967,33 @@ async function saveZip(): Promise<void> {
   }
 }
 
-interface SendStatus {
-  job_id?: string;
-  state: "uploading" | "done" | "error";
-  sent: number;
-  total: number;
-  id: string;
-  message: string;
-  reason: string;
-}
-
-const SEND_FAILURES = ["network", "server", "rate_limited", "not_configured", "job_missing"];
-
 async function send(): Promise<void> {
+  // 没留邮箱时问一次（只到用户第一次不留邮箱发出为止）。
+  if (!draft.contact.trim() && context?.ask_email) {
+    if ((await confirmSendWithoutEmail()) === "fill") {
+      rootEl?.querySelector<HTMLInputElement>("input.feedback-input[type=email]")?.focus();
+      return;
+    }
+  }
   busy = "send";
   sendFailure = "";
   sendProgress = null;
   render();
   try {
     const client = await getClient();
-    // 后端打好包就返回，上传在后台进行；这里按真实已发出的字节更新进度条。
-    const started = await client.request<SendStatus>("/api/feedback/send", {
-      method: "POST",
-      body: JSON.stringify(requestBody()),
+    const status = await uploadFeedback(client, requestBody(), (progress) => {
+      sendProgress = progress;
+      progressView?.update(progress);
     });
-    let status = started;
-    while (status.state === "uploading") {
-      sendProgress = { sent: status.sent, total: status.total };
-      syncProgress();
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
-      status = await client.request<SendStatus>(`/api/feedback/send/${encodeURIComponent(started.job_id ?? "")}`);
-    }
     if (status.state === "error") {
       if (SEND_FAILURES.includes(status.reason)) sendFailure = status.message;
       else showToast({ message: tx(status.message), error: true });
     } else {
       sentId = status.id;
       sentEmail = draft.contact.trim();
-      // 后端发送成功后已把这个邮箱记在本机（留空就忘掉），下一条直接带上。
+      // 后端发送成功后已把这个邮箱记在本机（留空就忘掉，也不再问），下一条直接带上。
       rememberedEmail = sentEmail;
+      if (context) context.ask_email = false;
       draft = emptyDraft();
     }
   } catch (error) {
@@ -1023,9 +1007,7 @@ async function send(): Promise<void> {
   } finally {
     busy = "";
     sendProgress = null;
-    progressLabel = null;
-    progressBar = null;
-    progressBarEl = null;
+    progressView = null;
     render();
   }
 }

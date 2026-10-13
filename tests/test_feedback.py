@@ -136,6 +136,15 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         archive = self._package(images=[{"data": base64.b64encode(png).decode()}])
         self.assertEqual(archive.read("images/截图1.png"), png)
         self.assertEqual(json.loads(archive.read("feedback.json"))["includes"]["images"], 1)
+        # 截图不限张数，只受附件总大小限制。
+        many = self._package(images=[{"data": base64.b64encode(png).decode()}] * 12)
+        self.assertIn("images/截图12.png", many.namelist())
+        # 截图的额度（合计 10 MB）和文件分开算。
+        with patch.object(feedback, "MAX_IMAGES_TOTAL_BYTES", len(png) * 3):
+            over = self.client.post(
+                "/api/feedback/preview", json=self._body(images=[{"data": base64.b64encode(png).decode()}] * 4)
+            )
+        self.assertEqual(over.json()["reason"], "images_too_large")
 
         response = self.client.post(
             "/api/feedback/package", json=self._body(images=[{"data": base64.b64encode(b"not an image").decode()}])
@@ -158,8 +167,11 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertEqual(response.json()["reason"], "too_large")
 
     def test_empty_description_and_missing_task_are_refused(self) -> None:
-        empty = self.client.post("/api/feedback/preview", json=self._body(description="  "))
+        empty = self.client.post("/api/feedback/preview", json=self._body(description="  ", task_ids=[]))
         self.assertEqual(empty.json()["reason"], "empty_description")
+        # 附上了任务（「反馈此任务」）时描述可以不写，issue 里写明用户没填。
+        archive = self._package(description="")
+        self.assertEqual(json.loads(archive.read("feedback.json"))["description"], feedback.NO_DESCRIPTION)
         missing = self.client.post("/api/feedback/preview", json=self._body(task_ids=["gone"]))
         self.assertEqual(missing.json()["reason"], "task_missing")
 
@@ -228,7 +240,11 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         def context_email() -> str:
             return self.client.get("/api/feedback/context").json()["saved_email"]
 
+        def asks_for_email() -> bool:
+            return self.client.get("/api/feedback/context").json()["ask_email"]
+
         self.assertEqual(context_email(), "")
+        self.assertTrue(asks_for_email())
         # 只是保存 ZIP 或发送失败，邮箱并没有交出去，不记。
         self.client.post("/api/feedback/package", json=self._body(contact="a@example.com"))
         self._send_with(lambda r: httpx.Response(500), contact="a@example.com")
@@ -240,9 +256,11 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         # 改成别的邮箱就记新的；清空后发送就忘掉。
         self._send_with(ok, contact="b@example.com")
         self.assertEqual(context_email(), "b@example.com")
+        self.assertFalse(asks_for_email())
+        # 不留邮箱发出一次，就是用户做了选择：忘掉旧邮箱，以后也不再问。
         self._send_with(ok, contact="")
         self.assertEqual(context_email(), "")
-        self.assertFalse(feedback.saved_contact_path().exists())
+        self.assertFalse(asks_for_email())
 
     def test_unknown_send_job_is_reported(self) -> None:
         response = self.client.get("/api/feedback/send/nope")

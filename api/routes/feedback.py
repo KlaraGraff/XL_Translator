@@ -25,9 +25,11 @@ def register(app: FastAPI) -> None:
             "endpoint_configured": bool(feedback.feedback_endpoint()),
             "tasks": feedback.recent_tasks(recent),
             "max_attachment_bytes": feedback.MAX_ATTACHMENT_BYTES,
+            "max_images_bytes": feedback.MAX_IMAGES_TOTAL_BYTES,
             "max_files": feedback.MAX_PICKED_FILES,
             "max_tasks": feedback.MAX_TASKS,
             "saved_email": feedback.saved_email(),
+            "ask_email": feedback.should_ask_for_email(),
         }
 
     @app.post("/api/feedback/files")

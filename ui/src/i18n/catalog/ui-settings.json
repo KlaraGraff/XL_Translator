@@ -1287,6 +1287,42 @@
     "en": "+ New extra instructions",
     "fr": "+ Nouvelles consignes"
   },
+  "正常完成的过程文件": {
+    "en": "Working files of completed tasks",
+    "fr": "Fichiers de travail des tâches terminées"
+  },
+  "需复核或出错的过程文件": {
+    "en": "Working files of tasks needing review or failed",
+    "fr": "Fichiers de travail des tâches à vérifier ou en échec"
+  },
+  "过程文件用于查看与修改译文、重新生成单页和排查问题。次数或体积任一达到上限时，从最早的开始清理；留空表示不设上限。最近一次和可续译的任务始终保留。": {
+    "en": "Working files are used to view and edit translations, regenerate a single page and troubleshoot. When either the number of runs or the size reaches its limit, the oldest are removed first; leave a box empty for no limit. The latest run and resumable tasks are always kept.",
+    "fr": "Les fichiers de travail servent à consulter et modifier les traductions, à régénérer une page et à diagnostiquer les problèmes. Dès que le nombre d'exécutions ou la taille atteint sa limite, les plus anciens sont supprimés en premier ; laissez un champ vide pour ne fixer aucune limite. La dernière exécution et les tâches reprenables sont toujours conservées."
+  },
+  "当前 {0} 次 · {1}": {
+    "en": "{0} {0|run|runs} now · {1}",
+    "fr": "{0} {0|exécution|exécutions} actuellement · {1}"
+  },
+  "最多": {
+    "en": "Up to",
+    "fr": "Jusqu'à"
+  },
+  "次，或": {
+    "en": "runs, or",
+    "fr": "exécutions, ou"
+  },
+  "{0}：最多保留次数": {
+    "en": "{0}: maximum runs kept",
+    "fr": "{0} : nombre maximal d'exécutions conservées"
+  },
+  "{0}：最多占用空间（GB）": {
+    "en": "{0}: maximum size (GB)",
+    "fr": "{0} : taille maximale (Go)"
+  },
+  "不限": {
+    "en": "No limit",
+    "fr": "Illimité"
+  },
   "开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。每份文件多调用一次模型。": {
     "en": "When on, the document translation model reads each document before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is sent with every batch, so the same word can be translated differently in different documents. Each file uses one extra model request.",
     "fr": "Une fois activée, le modèle de traduction de documents lit chaque document avant de le traduire et rédige un court résumé : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Ce résumé est envoyé avec chaque lot ; un même mot peut donc être traduit différemment d'un document à l'autre. Chaque fichier demande une requête supplémentaire au modèle."
