@@ -14,6 +14,7 @@ from config import (
     RETRY_WAIT_MIN,
     RETRY_WAIT_MAX,
 )
+from core.prompt_cache import compose_system, record_usage, split_system
 from engines.base_engine import (
     TASK_INSTRUCTION,
     TranslationEngine,
@@ -30,6 +31,7 @@ class ClaudeEngine(TranslationEngine):
         self._api_key = api_key
         self._model = model
         self._base_url = str(base_url or CLAUDE_BASE_URL).rstrip("/")
+        self._plain_system = False
 
     @property
     def engine_name(self) -> str:
@@ -51,7 +53,7 @@ class ClaudeEngine(TranslationEngine):
             source_lang_name=source_lang_name,
             target_lang_name=target_lang_name,
         )
-        full_system = f"{system_prompt}\n\n{instruction}".strip()
+        full_system = compose_system(system_prompt, instruction)
         user_msg    = json.dumps(texts, ensure_ascii=False)
 
         raw = self._call_api(full_system, user_msg)
@@ -69,10 +71,11 @@ class ClaudeEngine(TranslationEngine):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        stable, volatile = split_system(system)
         payload = {
             "model": self._model,
             "max_tokens": 8096,
-            "system": system,
+            "system": self._system_field(stable, volatile),
             "messages": [{"role": "user", "content": user_msg}],
         }
         with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
@@ -81,9 +84,36 @@ class ClaudeEngine(TranslationEngine):
                 headers=headers,
                 json=payload,
             )
+            if (
+                response.status_code in {400, 422}
+                and not self._plain_system
+                and any(word in response.text.casefold() for word in ("cache", "system"))
+            ):
+                # 转发 Claude 的平台不认缓存标记：去掉标记重发一次，之后这个引擎
+                # 都不再带（maple 2026-10-13：第三方也按官方做法加，被退回再去掉）。
+                self._plain_system = True
+                payload["system"] = self._system_field(stable, volatile)
+                response = client.post(
+                    f"{self._base_url}/messages",
+                    headers=headers,
+                    json=payload,
+                )
             response.raise_for_status()
             response_payload = response.json()
+        if isinstance(response_payload, dict):
+            record_usage(response_payload.get("usage"))
         return _extract_claude_text(response_payload)
+
+    def _system_field(self, stable: str, volatile: str):
+        """固定段末尾打上缓存标记（Claude 只缓存标记之前的部分），本批段放在标记后面。"""
+        if self._plain_system:
+            return "\n\n".join(part for part in (stable, volatile) if part)
+        blocks: list[dict] = []
+        if stable:
+            blocks.append({"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}})
+        if volatile:
+            blocks.append({"type": "text", "text": volatile})
+        return blocks
 
     def chat(self, system: str, user: str) -> str:
         return self._call_api(system, user)

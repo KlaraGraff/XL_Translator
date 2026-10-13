@@ -30,6 +30,7 @@ from core.api_scheduler import (
 )
 from core.engine_dispatcher import user_facing_batch_reason
 from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.prompt_cache import carry_meter
 from core.translation_filter import (
     TranslationValidationResult,
     validate_translation,
@@ -318,7 +319,7 @@ def translate_mixed_language_texts(
                 except StopIteration:
                     _notify_drained()
                     return False
-                future = executor.submit(_translate_one_batch, batch)
+                future = executor.submit(carry_meter(_translate_one_batch), batch)
                 future_map[future] = batch
                 return True
 
@@ -656,7 +657,7 @@ def _recover_one_mixed_result(
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures.append(
             executor.submit(
-                _retry_one_mixed_source,
+                carry_meter(_retry_one_mixed_source),
                 result.source,
                 engine=engine,
                 target_lang=target_lang,
@@ -671,7 +672,7 @@ def _recover_one_mixed_result(
         if engine_supports_chat(engine):
             futures.append(
                 executor.submit(
-                    _semantic_review_mixed_result,
+                    carry_meter(_semantic_review_mixed_result),
                     result,
                     engine=engine,
                     target_lang=target_lang,

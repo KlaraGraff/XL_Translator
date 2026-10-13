@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from core.language_preflight import TranslationLanguageResult
+from core.prompt_cache import append_batch_block
 from core.tm_terms import (
     DEFAULT_BATCH_BUDGET,
     USAGE_ALWAYS,
@@ -47,10 +48,8 @@ def excerpt(text: str, limit: int = 80) -> str:
 
 
 def _append_block(system_prompt: str, block: str) -> str:
-    if not block:
-        return system_prompt
-    prompt = str(system_prompt or "").rstrip()
-    return f"{prompt}\n\n{block}" if prompt else block
+    # 每批不同：排在返回格式要求和文档说明之后，前面那段才能被模型服务缓存。
+    return append_batch_block(system_prompt, block)
 
 
 @dataclass

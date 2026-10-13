@@ -1587,9 +1587,9 @@
     "en": "General page translation rules and writing rules for the target language. Set by the app and cannot be changed.",
     "fr": "Règles générales de traduction de page et règles d'écriture de la langue cible. Fixées par l'application, non modifiables."
   },
-  "依次为内置规则、补充要求、文档说明、本批涉及的词条、返回格式和待翻译内容。": {
-    "en": "In order: built-in rules, extra instructions, document summary, entries in this batch, response format and text to translate.",
-    "fr": "Dans l'ordre : règles intégrées, consignes supplémentaires, résumé du document, entrées du lot, format de réponse et texte à traduire."
+  "依次为内置规则、补充要求、返回格式、文档说明、本批涉及的词条和待翻译内容。": {
+    "en": "In order: built-in rules, extra instructions, response format, document summary, entries in this batch and text to translate.",
+    "fr": "Dans l'ordre : règles intégrées, consignes supplémentaires, format de réponse, résumé du document, entrées du lot et texte à traduire."
   },
   "按「Word」页签的提示词设置": {
     "en": "Follows the Word tab's prompt settings",

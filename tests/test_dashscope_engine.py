@@ -11,6 +11,9 @@ from engines.dashscope_engine import DashscopeEngine
 
 
 class _FakeResponse:
+    status_code = 200
+    text = ""
+
     def __init__(self, payload: dict) -> None:
         self._payload = payload
 
@@ -84,6 +87,10 @@ class DashscopeEngineTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["headers"]["x-api-key"], "claude-key")
         self.assertEqual(client.calls[0]["headers"]["anthropic-version"], "2023-06-01")
         self.assertEqual(client.calls[0]["json"]["max_tokens"], 8096)
+        self.assertEqual(
+            client.calls[0]["json"]["system"],
+            [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}],
+        )
 
 
 if __name__ == "__main__":

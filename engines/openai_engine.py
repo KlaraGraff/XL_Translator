@@ -2,6 +2,7 @@
 import json
 
 from config import OPENAI_BASE_URL
+from core.prompt_cache import compose_system
 from core.text_transport import (
     request_text,
 )
@@ -54,7 +55,7 @@ class OpenAIEngine(TranslationEngine):
             source_lang_name=source_lang_name,
             target_lang_name=target_lang_name,
         )
-        full_system = f"{system_prompt}\n\n{instruction}".strip()
+        full_system = compose_system(system_prompt, instruction)
         user_msg    = json.dumps(texts, ensure_ascii=False)
 
         raw = self._call_api(full_system, user_msg)

@@ -11,6 +11,7 @@ import httpx
 from loguru import logger
 
 from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT, RETRY_MAX_ATTEMPTS
+from core.prompt_cache import compose_system, plain_system
 from engines.base_engine import (
     TASK_INSTRUCTION,
     TranslationEngine,
@@ -71,7 +72,7 @@ class OllamaEngine(TranslationEngine):
             source_lang_name=source_lang_name,
             target_lang_name=target_lang_name,
         )
-        full_system = f"{system_prompt}\n\n{instruction}".strip()
+        full_system = compose_system(system_prompt, instruction)
 
         # 将 texts 拆成最多 concurrency 份并发请求（向上取整确保 chunk 数不超过并发上限）
         chunk_size = max(1, math.ceil(len(texts) / self._concurrency))
@@ -125,7 +126,7 @@ class OllamaEngine(TranslationEngine):
             "model": self._model,
             "stream": False,
             "messages": [
-                {"role": "system",  "content": system},
+                {"role": "system",  "content": plain_system(system)},
                 {"role": "user",    "content": user_msg},
             ],
         }
