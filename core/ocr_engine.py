@@ -1,9 +1,13 @@
 """Tesseract OCR discovery and configuration.
 
-Mirrors the discovery/config pattern of ``api.cad_plugin`` for the ODA
-converter, but this module lives under ``core`` and must never import from
-``api`` — it has no install lifecycle of its own, only "find the user's
-Tesseract install, remember where it is, report whether it works".
+Three ways to have it, checked in this order: a path the user picked on the
+plugins page (「选择安装位置」), the one-click install under the app data
+directory (``core.ocr_component_install``), then whatever is on PATH or in the
+usual install locations. This module lives under ``core`` and must never
+import from ``api``.
+
+The one-click install keeps its language data next to the program, so every
+call to it must carry ``tesseract_env(exe)`` (TESSDATA_PREFIX).
 """
 from __future__ import annotations
 
@@ -73,6 +77,18 @@ def _known_locations() -> list[Path]:
     return [Path("/usr/bin/tesseract")]
 
 
+def tesseract_env(path: Path | str | None) -> dict[str, str] | None:
+    """调用 tesseract 时要用的环境变量；一键安装的版本要指明语言数据目录，其余用 None（照常继承）。"""
+    if not path:
+        return None
+    from core.ocr_component_install import tessdata_dir
+
+    tessdata = tessdata_dir(Path(path))
+    if tessdata is None:
+        return None
+    return {**os.environ, "TESSDATA_PREFIX": str(tessdata)}
+
+
 def tesseract_version(path: Path) -> str | None:
     """Run ``tesseract --version``; never raises, returns None on any failure."""
     try:
@@ -83,6 +99,7 @@ def tesseract_version(path: Path) -> str | None:
             timeout=_SUBPROCESS_TIMEOUT,
             check=False,
             creationflags=_NO_WINDOW,
+            env=tesseract_env(path),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -105,6 +122,7 @@ def tesseract_languages(path: Path) -> list[str]:
             timeout=_SUBPROCESS_TIMEOUT,
             check=False,
             creationflags=_NO_WINDOW,
+            env=tesseract_env(path),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -154,11 +172,34 @@ def _configured_path(config_path: Path | None) -> Path | None:
         return None
 
 
+def _managed_path() -> Path | None:
+    from core.ocr_component_install import installed_executable
+
+    executable = installed_executable()
+    if executable is None or not _validate_tesseract(executable):
+        return None
+    try:
+        return executable.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _source(candidate: Path, config_path: Path | None) -> str:
+    if _configured_path(config_path) == candidate:
+        return "manual"
+    if _managed_path() == candidate:
+        return "managed"
+    return "system"
+
+
 def resolve_tesseract(config_path: Path | None = None) -> Path | None:
-    """config 文件里用户选过的路径 > PATH 里的 tesseract > 常见安装位置。"""
+    """config 文件里用户选过的路径 > 一键安装的 > PATH 里的 tesseract > 常见安装位置。"""
     configured = _configured_path(config_path)
     if configured is not None:
         return configured
+    managed = _managed_path()
+    if managed is not None:
+        return managed
     found = shutil.which("tesseract")
     if found:
         candidate = Path(found)
@@ -177,12 +218,23 @@ def resolve_tesseract(config_path: Path | None = None) -> Path | None:
 
 
 def ocr_status(config_path: Path | None = None) -> dict[str, Any]:
+    from core import ocr_component_install as installer
+
+    status = _connection_status(config_path)
+    status["managed_installed"] = installer.installed_executable() is not None
+    status["one_click_supported"] = installer.manifest() is not None
+    status["download_bytes"] = installer.download_size()
+    return status
+
+
+def _connection_status(config_path: Path | None) -> dict[str, Any]:
     raw = _configured_raw(config_path)
     if raw is not None and not _validate_tesseract(raw):
         # 之前保存过一条路径，但它现在用不了了——跟「从没配置过」区分开，
         # 这样界面能提示「请重新选择」而不是「从未检测到」。
         return {
             "state": "invalid",
+            "source": "",
             "path": str(raw),
             "version": None,
             "languages": [],
@@ -193,6 +245,7 @@ def ocr_status(config_path: Path | None = None) -> dict[str, Any]:
     if candidate is None:
         return {
             "state": "missing",
+            "source": "",
             "path": "",
             "version": None,
             "languages": [],
@@ -202,13 +255,15 @@ def ocr_status(config_path: Path | None = None) -> dict[str, Any]:
     version = tesseract_version(candidate)
     languages = tesseract_languages(candidate)
     has_latin = any(language in _LATIN_LANGUAGES for language in languages)
+    source = _source(candidate, config_path)
     return {
         "state": "connected",
+        "source": source,
         "path": str(candidate),
         "version": version,
         "languages": languages,
         "has_latin": has_latin,
-        "message": "文字识别组件已连接。",
+        "message": "文字识别组件已安装。" if source == "managed" else "文字识别组件已连接。",
     }
 
 

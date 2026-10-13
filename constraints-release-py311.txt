@@ -45,3 +45,4 @@ uvicorn==0.51.0
 win32-setctime==1.2.0; platform_system == "Windows"
 xlrd==2.0.2
 xlwings==0.36.3
+zstandard==0.25.0

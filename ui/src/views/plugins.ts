@@ -9,7 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { ApiClient, type CadCapabilityStatus, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
+import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
 import { createButton, createCard, createHintBadge, createProgressBar, createStatus, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
@@ -79,6 +79,7 @@ export function unmount(): void {
   rootEl = null;
   stopAutoDetect();
   stopWordPolling();
+  stopOcrPolling();
 }
 
 function stopAutoDetect(): void {
@@ -171,17 +172,61 @@ async function chooseOda(): Promise<void> {
   }
 }
 
+function ocrInstalling(): boolean {
+  return Boolean(ocrCapability?.install?.running);
+}
+
 function ocrStatusLabel(): string {
   if (!ocrCapability) return t("正在检测");
-  if (ocrCapability.state === "connected") return t("已连接");
+  if (ocrInstalling()) return t("正在安装");
+  if (ocrCapability.state === "connected") return ocrCapability.source === "managed" ? t("已安装") : t("已连接");
   return ocrCapability.state === "invalid" ? t("不可用") : t("未找到");
 }
 
 function ocrStatusTone(): "idle" | "ok" | "warn" | "danger" {
   if (!ocrCapability) return "idle";
+  if (ocrInstalling()) return "idle";
   if (ocrCapability.state === "connected") return "ok";
   if (ocrCapability.state === "invalid") return "danger";
   return "warn";
+}
+
+let ocrPollTimer: number | null = null;
+
+function stopOcrPolling(): void {
+  if (ocrPollTimer !== null) {
+    window.clearTimeout(ocrPollTimer);
+    ocrPollTimer = null;
+  }
+}
+
+/** 一键安装在后台进行：每 0.6 秒取一次进度，结束后重新读一遍完整状态。 */
+function pollOcrInstall(): void {
+  stopOcrPolling();
+  ocrPollTimer = window.setTimeout(async () => {
+    ocrPollTimer = null;
+    try {
+      const client = new ApiClient();
+      await client.connect();
+      const progress = await client.ocrComponentInstallProgress();
+      if (ocrCapability) ocrCapability = { ...ocrCapability, install: progress };
+      if (progress.running) {
+        if (mounted) render();
+        pollOcrInstall();
+        return;
+      }
+      ocrCapability = await client.getOcrCapability();
+      ocrErrorText = "";
+      if (progress.phase === "done") {
+        showToast({ message: t("文字识别组件已安装。") });
+      } else if (progress.error) {
+        showToast({ message: tx(progress.error), error: !progress.cancelled });
+      }
+    } catch (error) {
+      ocrErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
+    }
+    if (mounted) render();
+  }, 600);
 }
 
 async function refreshOcr(): Promise<void> {
@@ -190,8 +235,41 @@ async function refreshOcr(): Promise<void> {
     await client.connect();
     ocrCapability = await client.getOcrCapability();
     ocrErrorText = "";
+    if (ocrInstalling()) pollOcrInstall();
   } catch (error) {
     ocrErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
+  }
+  if (mounted) render();
+}
+
+async function startOcrInstall(): Promise<void> {
+  if (ocrBusy || ocrInstalling()) return;
+  ocrBusy = true;
+  ocrErrorText = "";
+  render();
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.startOcrComponentInstall();
+    ocrCapability = { ...(ocrCapability ?? { state: "missing", path: "", languages: [], has_latin: false }), install: progress };
+    pollOcrInstall();
+  } catch (error) {
+    ocrErrorText = error instanceof Error ? error.message : t("无法开始安装。");
+    showToast({ message: ocrErrorText, error: true });
+  } finally {
+    ocrBusy = false;
+    if (mounted) render();
+  }
+}
+
+async function cancelOcrInstall(): Promise<void> {
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.cancelOcrComponentInstall();
+    if (ocrCapability) ocrCapability = { ...ocrCapability, install: progress };
+  } catch (error) {
+    showToast({ message: error instanceof Error ? error.message : t("无法取消安装。"), error: true });
   }
   if (mounted) render();
 }
@@ -236,14 +314,54 @@ async function chooseTesseract(): Promise<void> {
   }
 }
 
+async function removeOcrComponent(): Promise<void> {
+  if (ocrBusy) return;
+  const managed = ocrCapability?.source === "managed";
+  ocrBusy = true;
+  render();
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    ocrCapability = await client.uninstallOcrPlugin(managed ? "managed" : "manual");
+    ocrErrorText = "";
+    showToast({ message: managed ? t("已卸载文字识别组件。") : t("已断开文字识别组件。") });
+  } catch (error) {
+    showToast({ message: error instanceof Error ? error.message : t("无法卸载文字识别组件。"), error: true });
+  } finally {
+    ocrBusy = false;
+    if (mounted) render();
+  }
+}
+
 function ocrActionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
-  if (ocrCapability?.state !== "connected") {
-    actions.append(createButton({ label: ocrBusy ? t("打开中…") : t("项目主页"), variant: "primary", disabled: ocrBusy, onClick: () => void openOcrOfficialUrl() }));
+  const connected = ocrCapability?.state === "connected";
+  if (ocrInstalling()) {
+    actions.append(createButton({ label: t("取消安装"), onClick: () => void cancelOcrInstall() }));
+    return actions;
+  }
+  if (ocrCapability?.one_click_supported !== false && ocrCapability?.source !== "managed") {
+    actions.append(createButton({
+      label: t("一键安装"),
+      variant: connected ? "default" : "primary",
+      disabled: ocrBusy || !ocrCapability,
+      onClick: () => void startOcrInstall(),
+    }));
   }
   actions.append(createButton({ label: t("选择安装位置"), onClick: () => void chooseTesseract() }));
+  if (!connected) {
+    actions.append(createButton({ label: t("项目主页"), disabled: ocrBusy, onClick: () => void openOcrOfficialUrl() }));
+  }
   actions.append(createButton({ label: t("重新检测"), onClick: () => void refreshOcr() }));
+  // 系统里自动找到的不是我们装的，也没记过路径：没有可卸载或断开的。
+  if (ocrCapability?.source === "managed" || ocrCapability?.source === "manual" || ocrCapability?.state === "invalid") {
+    actions.append(createButton({
+      label: ocrCapability?.source === "managed" ? t("卸载") : t("断开"),
+      disabled: ocrBusy,
+      onClick: () => void removeOcrComponent(),
+    }));
+  }
   return actions;
 }
 
@@ -264,7 +382,8 @@ function renderOcrCard(): HTMLElement {
   betaTag.className = "plugins-beta-tag";
   betaTag.textContent = t("Beta");
   title.append(betaTag);
-  title.append(createHintBadge(t("软件名称：Tesseract OCR（开源）。安装后选择它的安装位置；放在系统默认位置会自动找到。项目主页：{0}", OFFICIAL_OCR_URL)));
+  const sizeMb = megabytes(ocrCapability?.download_bytes ?? 0);
+  title.append(createHintBadge(t("软件名称：Tesseract OCR（开源，Apache-2.0）。一键安装：从 conda-forge 下载固定版本的程序（含英语、法语、德语、西班牙语、意大利语、葡萄牙语的识别数据，约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。也可以自行安装，再选择它的安装位置；装在系统默认位置的会自动找到。未安装时：「原位替换」只处理图纸里本来就能提取的文字，画成线条的字保留原样。项目主页：{1}", sizeMb, OFFICIAL_OCR_URL)));
   const desc = document.createElement("p");
   desc.textContent = t("识别 PDF 图纸里画成线条的文字，供「原位替换文字」使用。只在本机运行，不上传图纸。");
   copy.append(title, desc);
@@ -273,28 +392,40 @@ function renderOcrCard(): HTMLElement {
   titleRow.append(ocrActionButtons());
   body.append(titleRow);
 
+  const installNotice = componentInstallNotice(ocrCapability?.install, ocrCapability?.state === "connected",
+    (error) => t("{0}可重试一键安装，或自行安装 Tesseract OCR 后选择它的安装位置。", error));
   if (ocrErrorText) {
     const error = document.createElement("div");
     error.className = "plugins-notice danger";
     error.textContent = ocrErrorText;
     body.append(error);
+  } else if (installNotice) {
+    body.append(installNotice);
   } else if (ocrCapability?.state === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    const languageCount = ocrCapability.languages.length;
-    ok.textContent = ocrCapability.version
-      ? t("Tesseract OCR 已连接（版本 {0}，已安装 {1} 种语言包）。", ocrCapability.version, String(languageCount))
-      : t("Tesseract OCR 已连接（已安装 {0} 种语言包）。", String(languageCount));
+    const languageCount = String(ocrCapability.languages.length);
+    if (ocrCapability.source === "managed") {
+      ok.textContent = ocrCapability.version
+        ? t("文字识别组件已安装（Tesseract {0}，{1} 种语言）。", ocrCapability.version, languageCount)
+        : t("文字识别组件已安装（{0} 种语言）。", languageCount);
+    } else {
+      ok.textContent = ocrCapability.version
+        ? t("Tesseract OCR 已连接（版本 {0}，已安装 {1} 种语言包）。", ocrCapability.version, languageCount)
+        : t("Tesseract OCR 已连接（已安装 {0} 种语言包）。", languageCount);
+    }
     body.append(ok);
   } else if (ocrCapability?.state === "invalid") {
     const warn = document.createElement("div");
     warn.className = "plugins-notice danger";
-    warn.textContent = t("之前连接的文字识别组件已不可用，请重新选择安装位置。");
+    warn.textContent = t("之前连接的文字识别组件已不可用，请重新安装或重新选择安装位置。");
     body.append(warn);
   } else if (ocrCapability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = t("尚未检测到文字识别组件。可打开项目主页、选择安装位置或重新检测。");
+    warn.textContent = ocrCapability.one_click_supported === false
+      ? t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。")
+      : t("尚未检测到文字识别组件。可一键安装，或选择自行安装的 Tesseract OCR 的位置。");
     body.append(warn);
   }
   card.append(body);
@@ -503,8 +634,12 @@ function megabytes(bytes: number): string {
   return String(Math.max(1, Math.round(bytes / 1048576)));
 }
 
-function wordInstallNotice(): HTMLElement | null {
-  const job = wordCapability?.install;
+/** 一键安装进行中（进度条）或刚失败（原因 + 改用手动安装的提示）时的提示框；其余情况返回 null。 */
+function componentInstallNotice(
+  job: ComponentInstallProgress | undefined,
+  connected: boolean,
+  failedHint: (error: string) => string,
+): HTMLElement | null {
   if (!job) return null;
   if (job.running) {
     const box = document.createElement("div");
@@ -524,12 +659,10 @@ function wordInstallNotice(): HTMLElement | null {
     box.append(text, createProgressBar({ percent }).root);
     return box;
   }
-  if (job.phase === "failed" && job.error && wordCapability?.state !== "connected") {
+  if (job.phase === "failed" && job.error && !connected) {
     const box = document.createElement("div");
     box.className = "plugins-notice danger";
-    box.textContent = job.cancelled
-      ? tx(job.error)
-      : t("{0}可重试一键安装，或使用「选择安装位置」连接自行安装的 pdf2docx。", tx(job.error));
+    box.textContent = job.cancelled ? tx(job.error) : failedHint(tx(job.error));
     return box;
   }
   return null;
@@ -558,7 +691,8 @@ function renderWordCard(): HTMLElement {
   titleRow.append(wordActionButtons());
   body.append(titleRow);
 
-  const installNotice = wordInstallNotice();
+  const installNotice = componentInstallNotice(wordCapability?.install, wordCapability?.state === "connected",
+    (error) => t("{0}可重试一键安装，或使用「选择安装位置」连接自行安装的 pdf2docx。", error));
   if (wordErrorText) {
     const error = document.createElement("div");
     error.className = "plugins-notice danger";
