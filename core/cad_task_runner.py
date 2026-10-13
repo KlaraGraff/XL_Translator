@@ -26,6 +26,7 @@ from core.cad_translation import (
     CadTranslationPipeline,
     read_profile_inputs,
 )
+from core.cad_review import pipeline_options_snapshot
 from core.concurrent_calls import wait_result
 from core.file_progress import FileProgressReporter, file_progress_id
 from core.language_registry import get_target_lang_display
@@ -471,6 +472,8 @@ class CadTaskRunner(BaseTaskRunner):
             "schema_version": 2,
             "status": status,
             "run_id": self._run_id,
+            # 译文对照表「重新写回」按这份设置写，和第一次翻译的写法一致（见 core.cad_review）。
+            "pipeline_options": pipeline_options_snapshot(self._options),
             "output_dir": str(self._output_dir),
             "translated_dir": str(self._translated_dir),
             "publication_dir": str(self._publication_dir),

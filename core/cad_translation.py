@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -29,7 +30,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, fit_added_lines, fit_translated_texts, short_text_rows
+from core.cad_layout import FitSettings, fit_added_lines, fit_table_cells, fit_translated_texts, short_text_rows
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
@@ -286,11 +287,17 @@ class DxfRecord:
 
 @dataclass(frozen=True)
 class CadTextRun:
-    """A translatable run inside an entity, excluding MTEXT controls."""
+    """A translatable run inside an entity, excluding MTEXT controls.
+
+    ``parts``：一句话被换字体、下划线这类格式代码切成几段时（「平面{\\fSimSun;图}」），
+    几段合成一个 run 送去翻译，写回时译文放在第一段，其余几段清空，格式代码照留。
+    空着表示整个 ``start:end`` 就是一段。
+    """
 
     start: int
     end: int
     text: str
+    parts: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -788,7 +795,43 @@ def _mtext_runs(value: str) -> tuple[CadTextRun, ...]:
         plain = _plain_text(value[start:])
         if plain:
             runs.append(CadTextRun(start, len(value), plain))
-    return tuple(runs)
+    return _join_split_runs(value, runs)
+
+
+# 两段文字之间只隔着这些（换字体、字高、颜色、下划线、括号）时，看上去就是连在一起的一句话。
+# \P 换行不算：换了行就是两句。
+_INLINE_GAP_RE = re.compile(r"(?:\\[fFhHwWcCaAtTqQsS][^;]*;|\\[LlOoKk]|[{}])*")
+
+
+def _join_split_runs(value: str, runs: Sequence[CadTextRun]) -> tuple[CadTextRun, ...]:
+    """把被格式代码切开的同一句话合成一个 run。
+
+    「平面图」中间夹一个换字体的代码时，以前拆成「平面」「图」分别翻译，拼回去成了
+    「Vue en planDessin」。
+    """
+    out: list[CadTextRun] = []
+    group: list[CadTextRun] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        if len(group) == 1:
+            out.append(group[0])
+        else:
+            raw = "".join(value[run.start:run.end] for run in group)
+            out.append(CadTextRun(
+                group[0].start, group[-1].end, _plain_text(raw), tuple((run.start, run.end) for run in group),
+            ))
+        group.clear()
+
+    for run in runs:
+        if group and _INLINE_GAP_RE.fullmatch(value[group[-1].end:run.start]):
+            group.append(run)
+            continue
+        flush()
+        group.append(run)
+    flush()
+    return tuple(out)
 
 
 def _record_copy(record: DxfRecord, *, value: str, code: int | None = None) -> DxfRecord:
@@ -1330,6 +1373,20 @@ def _replace_runs(
         target = translations.get(run.text)
         if not target:
             continue
+        if run.parts:
+            # 译文放进第一段，后面几段只留空白，中间的格式代码不动。
+            for part_start, part_end in reversed(run.parts[1:]):
+                span = assembled[part_start:part_end]
+                assembled = assembled[:part_start] + ("" if span.strip() else span) + assembled[part_end:]
+            first_start, first_end = run.parts[0]
+            span = assembled[first_start:first_end]
+            leading = re.match(r"\s*", span).group(0)
+            trailing = re.search(r"\s*$", span).group(0)
+            replacement = _encode_dxf_text(
+                leading + _safe_translation(span.strip(), target) + trailing, multiline=False, escape=escape,
+            )
+            assembled = assembled[:first_start] + replacement + assembled[first_end:]
+            continue
         span = assembled[run.start:run.end]
         leading = re.match(r"\s*", span).group(0)
         trailing = re.search(r"\s*$", span).group(0)
@@ -1404,6 +1461,15 @@ def _translated_plain(unit: CadTextUnit, translations: Mapping[str, str]) -> str
 
 
 _BILINGUAL_MODES = frozenset({"source_first", "translation_first"})
+_SAME_TEXT_SPACES = re.compile(r"\s+")
+
+
+def _same_as_source(source: str, translation: str) -> bool:
+    """译文和原文只差全角半角、大小写、空格或 ×/X：双语时不必再写一遍。"""
+    def norm(text: str) -> str:
+        text = unicodedata.normalize("NFKC", text).replace("×", "x").casefold()
+        return _SAME_TEXT_SPACES.sub("", text)
+    return norm(source) == norm(translation)
 _CJK_TRANSLATION_FONT = compatible_font("zh")
 # 双语时译文比原文小一号；多行文字里用相对字高写。
 _BILINGUAL_SCALE = 0.8
@@ -2114,14 +2180,24 @@ class CadTranslationPipeline:
             # 写进图纸的译文：用兼容的 SHX 字体时，弯引号、长破折号、œ 这类字体里可能没有的
             # 字符换成同义写法（报告里仍是模型给的原样）。
             written = {key: shx_safe(value) for key, value in translations.items()} if font == compatible_font("en") else translations
+            # 双语时编号、规格这类译前译后一样的（M1、300×300×20）不再重复写一行。
+            unchanged: set[str] = set()
+            if bilingual:
+                unchanged = {key for key, value in written.items() if _same_as_source(key, value)}
+                written = {key: value for key, value in written.items() if key not in unchanged}
             table_plans = plan_table_cells(
                 records, candidates, written, display_mode=options.display_mode, escape=escape_unicode,
             )
             fit_sources: dict[int, str] = {}
+            # 改过的多行文字 → 原文：表格格子里的放不下时整段缩小（见 fit_table_cells）。
+            cell_sources: dict[int, str] = {}
             # 双语新增的译文行 → (它的原文实体, 是否在原文下方)，按对象认。
             added_lines: dict[int, int] = {}
             for unit in reversed(candidates):
-                fully = bool(unit.runs) and all(run.text in written for run in unit.runs if _has_translatable_content(run.text))
+                fully = bool(unit.runs) and all(
+                    run.text in written or run.text in unchanged
+                    for run in unit.runs if _has_translatable_content(run.text)
+                )
                 changed_unit = any(run.text in written for run in unit.runs)
                 if not unit.runs and unit.plain_text in written:
                     changed_unit = fully = True
@@ -2129,6 +2205,8 @@ class CadTranslationPipeline:
                     continue
                 stats.changed += 1
                 start = _entity_start(records, unit.record_indices[0])
+                if unit.entity_type == "MTEXT":
+                    cell_sources[id(records[start])] = unit.plain_text
                 if bilingual:
                     added = _write_bilingual(
                         records, unit, written, start,
@@ -2188,6 +2266,14 @@ class CadTranslationPipeline:
                 stats.layout_fitted += fit_translated_texts(
                     records,
                     {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
+                    _plain_text,
+                    FitSettings(options.fit_default_scale, options.fit_min_scale),
+                    layout_unresolved,
+                )
+                # 表格格子不会跟着译文变高：双语多出的一行、折成几行的英文按格子高度整段缩小。
+                stats.layout_fitted += fit_table_cells(
+                    records,
+                    {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
                     _plain_text,
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,

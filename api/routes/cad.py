@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from loguru import logger
 
 from api.cad_plugin import (
@@ -25,10 +27,15 @@ from core.cad_translation import (
     scan_cad_paths,
 )
 from core.task_runner import user_facing_reason
+from api.cad_review_service import CadReviewService
 from api.schemas import (
     CadInspectRequest,
+    CadReviewEditsRequest,
+    CadReviewImportRequest,
+    CadReviewRewriteRequest,
     CadScanRequest,
 )
+from api.task_contracts import TaskInputError
 
 
 def register(app: FastAPI) -> None:
@@ -158,3 +165,38 @@ def register(app: FastAPI) -> None:
             "blocks": inspection.blocks,
             "layers": inspection.layers,
         }
+
+    # ── 任务中心「查看与修改译文」：译文对照表 ─────────────────────
+
+    def _review() -> CadReviewService:
+        service = getattr(app.state, "cad_review", None)
+        if service is None:
+            service = app.state.cad_review = CadReviewService(app.state.task_manager)
+        return service
+
+    @app.get("/api/tasks/{task_id}/cad-review")
+    def cad_review(task_id: str) -> dict[str, Any]:
+        return _review().review(task_id)
+
+    @app.put("/api/tasks/{task_id}/cad-review/edits")
+    def save_cad_review_edits(task_id: str, payload: CadReviewEditsRequest) -> dict[str, Any]:
+        return _review().save(task_id, payload.file, payload.edits)
+
+    @app.get("/api/tasks/{task_id}/cad-review/export")
+    def export_cad_review(task_id: str) -> Response:
+        return Response(
+            _review().export(task_id),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.post("/api/tasks/{task_id}/cad-review/import")
+    def import_cad_review(task_id: str, payload: CadReviewImportRequest) -> dict[str, Any]:
+        try:
+            data = base64.b64decode(payload.data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise TaskInputError("读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。") from exc
+        return _review().import_workbook(task_id, data)
+
+    @app.post("/api/tasks/{task_id}/cad-review/rewrite")
+    def rewrite_cad_review(task_id: str, payload: CadReviewRewriteRequest) -> dict[str, Any]:
+        return _review().rewrite(task_id, payload.files)
