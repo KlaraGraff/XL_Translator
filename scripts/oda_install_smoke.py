@@ -26,10 +26,17 @@ def _signer(executable: Path) -> str:
         app = next(parent for parent in executable.parents if parent.suffix == ".app")
         detail = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True, check=False)
         return "\n".join(line for line in detail.stderr.splitlines() if line.startswith(("Authority=", "TeamIdentifier=")))
-    return ""
+    from core import oda_component_install as oda
+
+    result = oda._powershell(oda._AUTHENTICODE, 120, ODA_PACKAGE=str(executable))
+    return "signature: " + " | ".join(line.strip() for line in result.stdout.splitlines() if line.strip())
 
 
 def main() -> int:
+    # Windows 控制台默认 cp1252，打不出中文报错。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     data_dir = tempfile.mkdtemp(prefix="oda-smoke-")
     os.environ["TRANSLATOR_APP_DATA_DIR"] = data_dir
     from api import cad_plugin

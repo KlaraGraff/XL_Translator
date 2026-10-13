@@ -43,8 +43,10 @@ PACKAGES = {
     "macos-x64": "ODAFileConverter_QT6_macOsX_x64_15.0dll.dmg",
     "windows-x64": "ODAFileConverter_QT6_vc16_amd64dll.msi",
 }
-# 签名者名称里必须出现的字样（macOS 的 Authority、Windows 证书的 Subject）。
+# 签名者名称里必须出现的字样（macOS 的 Authority、Windows 证书的 Subject）；macOS 另核对
+# ODA 的 Apple 开发者团队编号（2026-10 实测 Developer ID Application: Open Design Alliance (4SVB9F72E4)）。
 SIGNER = "Open Design Alliance"
+MAC_TEAM_ID = "4SVB9F72E4"
 _MAX_BYTES = 800 * 1024 * 1024
 _CHUNK = 256 * 1024
 _TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=15.0)
@@ -214,10 +216,12 @@ def _mac_signature_ok(app: Path) -> bool:
         logger.warning(f"[图纸转换工具] 签名校验未通过：{(verify.stderr or verify.stdout)[-800:]}")
         return False
     detail = _run(["codesign", "-dvv", str(app)])
-    authorities = [line.split("=", 1)[1] for line in (detail.stderr + detail.stdout).splitlines()
-                   if line.startswith("Authority=")]
-    if not authorities or SIGNER not in authorities[0] or not authorities[0].startswith("Developer ID Application"):
-        logger.warning(f"[图纸转换工具] 签名者不是 {SIGNER}：{authorities}")
+    lines = (detail.stderr + detail.stdout).splitlines()
+    authorities = [line.split("=", 1)[1] for line in lines if line.startswith("Authority=")]
+    teams = [line.split("=", 1)[1].strip() for line in lines if line.startswith("TeamIdentifier=")]
+    if not authorities or SIGNER not in authorities[0] or not authorities[0].startswith("Developer ID Application") \
+            or teams != [MAC_TEAM_ID]:
+        logger.warning(f"[图纸转换工具] 签名者不是 {SIGNER}：{authorities} {teams}")
         return False
     return True
 
@@ -270,9 +274,22 @@ _AUTHENTICODE = (
 )
 
 
+def _powershell(script: str, timeout: float, **variables: str) -> subprocess.CompletedProcess[str]:
+    """用系统自带的 Windows PowerShell 5.1 跑一小段脚本，参数走环境变量（不拼进命令行）。
+
+    不继承 PSModulePath：从 PowerShell 7 里启动时它指向 7 的模块目录，5.1 会加载不了
+    Get-AuthenticodeSignature 所在的 Microsoft.PowerShell.Security。
+    """
+    root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+    executable = root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    env = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    env.update(variables)
+    return _run([str(executable) if executable.is_file() else "powershell", "-NoProfile", "-NonInteractive",
+                 "-Command", script], env=env, timeout=timeout)
+
+
 def _windows_signature_ok(package: Path) -> bool:
-    result = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _AUTHENTICODE],
-                  env={**os.environ, "ODA_PACKAGE": str(package)}, timeout=120)
+    result = _powershell(_AUTHENTICODE, 120, ODA_PACKAGE=str(package))
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if result.returncode != 0 or len(lines) < 2 or lines[0] != "Valid" or SIGNER not in lines[1]:
         logger.warning(f"[图纸转换工具] 安装包签名核对未通过：{lines} {result.stderr[-400:]}")
@@ -304,9 +321,8 @@ def _windows_unpack(package: Path, staging: Path) -> Path:
 
 
 def _windows_version(executable: Path) -> str:
-    result = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                   "(Get-Item -LiteralPath $env:ODA_EXE).VersionInfo.ProductVersion"],
-                  env={**os.environ, "ODA_EXE": str(executable)}, timeout=60)
+    result = _powershell("(Get-Item -LiteralPath $env:ODA_EXE).VersionInfo.ProductVersion", 60,
+                         ODA_EXE=str(executable))
     return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
 
 

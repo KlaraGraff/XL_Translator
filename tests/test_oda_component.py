@@ -51,9 +51,10 @@ def _client(body: bytes, status: int = 200, seen: list[str] | None = None) -> ht
 class FakeMac:
     """假的 hdiutil / codesign / ditto：DMG 里放一个 ODAFileConverter.app。"""
 
-    def __init__(self, authority: str = "Developer ID Application: Open Design Alliance (ABCDE12345)",
-                 verify_code: int = 0, app_name: str | None = "ODAFileConverter.app") -> None:
+    def __init__(self, authority: str = "Developer ID Application: Open Design Alliance (4SVB9F72E4)",
+                 verify_code: int = 0, app_name: str | None = "ODAFileConverter.app", team: str = "4SVB9F72E4") -> None:
         self.authority = authority
+        self.team = team
         self.verify_code = verify_code
         self.app_name = app_name
         self.calls: list[list[str]] = []
@@ -80,7 +81,7 @@ class FakeMac:
         if tool == "codesign" and args[1] == "--verify":
             return subprocess.CompletedProcess(args, self.verify_code, "", "invalid signature" if self.verify_code else "")
         if tool == "codesign":
-            return subprocess.CompletedProcess(args, 0, "", f"Executable=x\nAuthority={self.authority}\nAuthority=Developer ID Certification Authority\n")
+            return subprocess.CompletedProcess(args, 0, "", f"Executable=x\nAuthority={self.authority}\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier={self.team}\n")
         if tool == "ditto":
             shutil.copytree(args[1], args[2])
             return subprocess.CompletedProcess(args, 0, "", "")
@@ -137,6 +138,7 @@ def test_reinstall_replaces_the_old_copy(mac, monkeypatch):
     (FakeMac(verify_code=1), oda.SIGNATURE_FAILED),
     (FakeMac(authority="Developer ID Application: Someone Else (ZZZ)"), oda.SIGNATURE_FAILED),
     (FakeMac(authority="Apple Development: Open Design Alliance (ABC)"), oda.SIGNATURE_FAILED),
+    (FakeMac(team="ZZZZZZZZZZ"), oda.SIGNATURE_FAILED),
     (FakeMac(app_name=None), oda.UNPACK_FAILED),
 ])
 def test_mac_rejects_wrong_signatures_and_contents(mac, monkeypatch, fake, message):
@@ -208,10 +210,12 @@ class FakeWindows:
 
     def __call__(self, args, *, timeout=300, input_text=None, env=None):
         self.calls.append(list(args))
-        if args[0] == "powershell" and "Get-AuthenticodeSignature" in args[-1]:
+        powershell = args[0] == "powershell" or args[0].lower().endswith("powershell.exe")
+        if powershell and "Get-AuthenticodeSignature" in args[-1]:
             assert env and env["ODA_PACKAGE"].endswith(".msi")
+            assert not any(key.upper() == "PSMODULEPATH" for key in env)
             return subprocess.CompletedProcess(args, 0, f"{self.status}\r\n{self.subject}\r\n", "")
-        if args[0] == "powershell":
+        if powershell:
             return subprocess.CompletedProcess(args, 0, "26.9.0.0\r\n", "")
         if args[0].endswith("msiexec.exe"):
             assert args[1] == "/a" and "/qn" in args
@@ -225,13 +229,14 @@ class FakeWindows:
 
 
 def test_windows_unpack_checks_signature_then_extracts(monkeypatch, tmp_path):
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
     fake = FakeWindows()
     monkeypatch.setattr(oda, "_run", fake)
     package = tmp_path / "ODAFileConverter.msi"
     package.write_bytes(MSI)
     executable = oda._windows_unpack(package, tmp_path / "app")
     assert executable.name == "ODAFileConverter.exe" and (executable.parent / "TD_Db.dll").exists()
-    assert fake.calls[0][0] == "powershell"  # 签名先于解包
+    assert "Get-AuthenticodeSignature" in fake.calls[0][-1]  # 签名先于解包
     assert oda._windows_version(executable) == "26.9.0.0"
 
 
