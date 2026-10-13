@@ -12,8 +12,8 @@ crons = ["0 3 * * *", "*/30 * * * *"]
 
 [vars]
 FEEDBACK_REPO = "KlaraGraff/XL_Translator-feedback"
-# Claude「每日反馈检查」定时任务的 API 触发地址；令牌 ROUTINE_FIRE_TOKEN 是密钥，不进仓库。
-ROUTINE_FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/trig_01W6JGQbdhoCUutqq1ojAZfM/fire"
+# Claude「每日反馈分拣」定时任务的 API 触发地址；令牌 ROUTINE_FIRE_TOKEN 是密钥，不进仓库。
+ROUTINE_FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/trig_018rE3ZmLn11ZewRMKyLxowc/fire"
 
 [[kv_namespaces]]
 binding = "FEEDBACK"
