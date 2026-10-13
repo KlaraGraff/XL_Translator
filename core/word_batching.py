@@ -27,6 +27,13 @@ from core.api_scheduler import (
 )
 from core.engine_dispatcher import is_local_engine_name, user_facing_batch_reason
 from core.language_preflight import TranslationLanguageResult
+from core.request_progress import (
+    BATCH_EVENT_DONE,
+    BATCH_EVENT_PLAN,
+    BATCH_EVENT_SENT,
+    BatchRequestEvent,
+    notify_batch_event,
+)
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
 
@@ -68,6 +75,8 @@ class WordBatchRunStats:
     adaptive_concurrency_reductions: int = 0
     adaptive_lowest_concurrency: int = 0
     local_resource_retry_count: int = 0
+    # 拆到单段仍失败、按原文交回的片段（source, part_index），逐批日志据此数「未获得译文」。
+    failed_unit_keys: set[tuple[str, int]] = dataclass_field(default_factory=set)
     _local_resource_notice_sent: bool = False
     _resource_lock: threading.Lock = dataclass_field(default_factory=threading.Lock, repr=False)
 
@@ -117,8 +126,14 @@ def translate_word_texts(
     report_source_languages: bool = False,
     source_result_callback: SourceResultCallback | None = None,
     drained_callback: DrainedCallback | None = None,
+    request_callback: Callable[[BatchRequestEvent], None] | None = None,
 ) -> dict[str, str]:
-    """Translate Word paragraphs using character-budgeted batches with fallback retries."""
+    """Translate Word paragraphs using character-budgeted batches with fallback retries.
+
+    ``request_callback`` gets the same per-batch events as ``translate_texts``
+    (plan / sent / done); entries are request units, so a long paragraph split
+    into parts counts once per part.
+    """
     if not texts:
         return {}
 
@@ -152,7 +167,12 @@ def translate_word_texts(
         if drained_callback:
             drained_callback()
 
-    def _translate_one_batch(batch: list[WordTranslationUnit]) -> dict[tuple[str, int], str]:
+    def _translate_one_batch(index: int, batch: list[WordTranslationUnit]) -> dict[tuple[str, int], str]:
+        notify_batch_event(
+            request_callback,
+            BatchRequestEvent(BATCH_EVENT_SENT, index=index, batch_total=len(batches), items=len(batch)),
+        )
+        started = time.monotonic()
         partial = _translate_units_with_fallback(
             batch,
             engine=engine,
@@ -168,11 +188,30 @@ def translate_word_texts(
             error_callback=error_callback,
             stats=run_stats,
         )
+        if request_callback is not None:
+            keys = [(unit.source, unit.part_index) for unit in batch]
+            notify_batch_event(
+                request_callback,
+                BatchRequestEvent(
+                    BATCH_EVENT_DONE,
+                    index=index,
+                    batch_total=len(batches),
+                    items=len(batch),
+                    elapsed=time.monotonic() - started,
+                    failed=sum(1 for key in keys if key in run_stats.failed_unit_keys),
+                    # 停止后没发出去的片段不在返回结果里。
+                    stopped=sum(1 for key in keys if key not in partial),
+                ),
+            )
         _record_progress(len(batch))
         return partial
 
     max_workers = 1 if is_local_engine_name(engine.engine_name) else max(1, int(concurrency))
     max_workers = min(max_workers, len(batches))
+    notify_batch_event(
+        request_callback,
+        BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=len(batches), items=len(units), concurrency=max_workers),
+    )
 
     try:
         _run_batches(
@@ -202,32 +241,32 @@ def _run_batches(
     batches: list[list[WordTranslationUnit]],
     *,
     max_workers: int,
-    translate_one_batch: Callable[[list[WordTranslationUnit]], dict[tuple[str, int], str]],
+    translate_one_batch: Callable[[int, list[WordTranslationUnit]], dict[tuple[str, int], str]],
     notify_drained: Callable[[], None],
     unit_results: dict[tuple[str, int], str],
     should_stop,
 ) -> None:
     if max_workers <= 1:
-        for batch in batches:
+        for index, batch in enumerate(batches, start=1):
             if should_stop and should_stop():
                 logger.info("Word 翻译任务收到停止信号，停止提交后续批次。")
                 break
-            unit_results.update(translate_one_batch(batch))
+            unit_results.update(translate_one_batch(index, batch))
         notify_drained()
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map: dict = {}
-            batch_iter = iter(batches)
+            batch_iter = iter(enumerate(batches, start=1))
 
             def _submit_next() -> bool:
                 if should_stop and should_stop():
                     return False
                 try:
-                    batch = next(batch_iter)
+                    index, batch = next(batch_iter)
                 except StopIteration:
                     notify_drained()
                     return False
-                future = executor.submit(translate_one_batch, batch)
+                future = executor.submit(translate_one_batch, index, batch)
                 future_map[future] = batch
                 return True
 
@@ -495,6 +534,8 @@ def _translate_units_with_fallback(
             return {**left, **right}
 
         stats.failed_unit_count += len(units)
+        with stats._resource_lock:
+            stats.failed_unit_keys.update((item.source, item.part_index) for item in units)
         unit = units[0]
         logger.debug(f"Word 单段翻译仍失败，已暂时保留原文：{unit.text[:40]}... | {exc!r}")
         if error_callback:

@@ -30,6 +30,10 @@
 
   **Task center, feedback and data**: A search box replaces the Recent results filter. Task details and the result banner offer a Send feedback on this task dialog, and Export diagnostics moves under More. The Feedback page remembers the last successfully used email, allows any number of screenshots, shows a privacy note when originals or translations are attached, and counts files (40 MB) and screenshots (10 MB) separately. Process-file retention is adjustable (completed: 20 runs or 1 GB; needs review or failed: 30 runs or 1 GB; blank for no limit; settings schema v36). Notification emails gain an HTML version and are signed Translator.
 
+- **运行日志（Excel、Word）**：翻译时与 CAD 一样逐批记录：开头写分几批、每次同时发送几批，每批返回写条数和用时，30 秒没有返回时提示还在等几批。逐批日志统一由 core/request_log.py 写出，CAD 改用同一模块；自动识别源语言的路径（translate_texts_with_sources）和 Word 分批（translate_word_texts）也发出逐批事件。进度条仍只按已返回的批次推进。
+
+  **Run log (Excel, Word)**: Translation now logs each batch as CAD does: the batch plan and concurrency up front, each returned batch with its item count and time, and a note on how many batches are still out after 30 s without a return. One module (core/request_log.py) writes these lines for every page, CAD included; the auto-language path and Word batching now emit per-batch events too. Progress still advances only on returned batches.
+
 ## V10.0.0
 
 - **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和建议填写的邮箱（问题解决或功能上线时邮件通知），描述框可直接粘贴截图；附带内容按类别勾选，勾了哪些就上传哪些：系统与版本信息、任务日志默认勾选，原文件、译文默认不勾，日志、原文件和译文取自下方选中的一次或多次任务；另可添加其他文件，添加即上传（附件总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后底栏显示按实际已发出字节计算的上传进度，经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。

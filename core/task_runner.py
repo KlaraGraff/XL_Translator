@@ -25,6 +25,7 @@ from lxml import etree
 from core import bilingual_writer
 from core.excel_sheet_naming import rename_worksheets
 from core.phase_progress import PhaseProgress
+from core.request_log import BatchRequestLog
 from core.output_name_translation import (
     avoid_bilingual_name_collision,
     output_stem_from_translation,
@@ -1652,7 +1653,14 @@ class TaskRunner(BaseTaskRunner):
                 "active", "translate", active_translation_paths
             )
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译记忆库中没有的内容…"))
-            self._log("INFO", f"开始翻译 {api_call_count} 处内容")
+            # 逐批日志与 CAD、Word 共用 core.request_log：开头一行写分几批发送，之后每批
+            # 返回一行，久不返回时说明还在等几批。只有夹杂多种语言的内容时没有批次计划，
+            # 照旧写一行开头。
+            request_log = BatchRequestLog(
+                self._log, unit="处", subject="内容", thread_name="excel-translate-wait-log"
+            )
+            if not misses:
+                self._log("INFO", f"开始翻译 {api_call_count} 处内容")
 
             progress_lock = threading.Lock()
             progress_done = {"normal": 0, "mixed": 0}
@@ -1757,6 +1765,7 @@ class TaskRunner(BaseTaskRunner):
                         stats=batch_stats,
                         throughput_unlocked=self._settings.engine.concurrency_unlocked,
                         transient_retries=self._settings.request_retry.excel,
+                        request_callback=request_log.on_event,
                     )
                     normal_api_language_results.update(language_results)
                     return {
@@ -1778,6 +1787,7 @@ class TaskRunner(BaseTaskRunner):
                     stats=batch_stats,
                     throughput_unlocked=self._settings.engine.concurrency_unlocked,
                     transient_retries=self._settings.request_retry.excel,
+                    request_callback=request_log.on_event,
                 )
 
             def run_mixed_api_translation():
@@ -1818,15 +1828,16 @@ class TaskRunner(BaseTaskRunner):
                     stats=mixed_stats,
                 )
 
-            if misses and mixed_texts and shared_scheduler is not None:
-                with ThreadPoolExecutor(max_workers=2) as main_executor:
-                    normal_future = main_executor.submit(run_normal_api_translation)
-                    mixed_future = main_executor.submit(run_mixed_api_translation)
-                    normal_api_translations = normal_future.result()
-                    mixed_results = mixed_future.result()
-            else:
-                normal_api_translations = run_normal_api_translation()
-                mixed_results = run_mixed_api_translation()
+            with request_log:
+                if misses and mixed_texts and shared_scheduler is not None:
+                    with ThreadPoolExecutor(max_workers=2) as main_executor:
+                        normal_future = main_executor.submit(run_normal_api_translation)
+                        mixed_future = main_executor.submit(run_mixed_api_translation)
+                        normal_api_translations = normal_future.result()
+                        mixed_results = mixed_future.result()
+                else:
+                    normal_api_translations = run_normal_api_translation()
+                    mixed_results = run_mixed_api_translation()
 
             # 停止时没翻的批次按原文占位交回（batch_stats.stopped_sources）。占位留在
             # 词典里，写盘会把它当成「模型原样返回」——整格标黄需复核、续译核查也认不出
@@ -1935,16 +1946,11 @@ class TaskRunner(BaseTaskRunner):
                     else ""
                 )
             )
-            if batch_stats.batch_count:
+            # 分几批已在开头的批次计划里写过（core.request_log），这里只补拆小重试的次数。
+            if batch_stats.batch_count and batch_stats.retry_count:
                 self._log(
                     "INFO",
-                    f"共分 {batch_stats.batch_count} 批发送"
-                    + (
-                        f"，其中 {batch_stats.retry_count} 次拆分为更小的批次重试"
-                        if batch_stats.retry_count
-                        else ""
-                    )
-                    + "。",
+                    f"共分 {batch_stats.batch_count} 批发送，其中 {batch_stats.retry_count} 次拆分为更小的批次重试。",
                 )
             untranslated_count = (
                 batch_stats.untranslated_count or batch_stats.failed_batch_count
