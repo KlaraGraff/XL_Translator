@@ -229,6 +229,8 @@ class PdfPageRecord:
     inplace_written: int = 0
     inplace_kept: int = 0
     inplace_review: int = 0
+    # 译文已写入、但未采用记忆库「始终采用」词条设定译法的处数（也列在 inplace_review_items）。
+    inplace_term_review: int = 0
     inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
     inplace_message: str = ""
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务

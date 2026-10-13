@@ -71,7 +71,7 @@ from core.request_progress import (
 )
 
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
-_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成", "kept": "已是目标语言"}
+_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成", "kept": "已是目标语言", "review": "需复核"}
 
 CAD_SUPPORTED_EXTENSIONS = frozenset({".dwg", ".dxf"})
 # Stage weights are part of the UI contract and sum to 100.
@@ -626,6 +626,8 @@ class CadTranslationStats:
     bilingual_added: int = 0
     # 改用兼容字体写回的译文条数。
     restyled: int = 0
+    # 译文未采用记忆库「始终采用」词条设定译法（重译后仍不符）、标记需复核的条数。
+    term_not_applied: int = 0
 
 
 @dataclass
@@ -650,6 +652,8 @@ class CadTranslationResult:
     unresolved: list[dict[str, str]] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     summary: Path | None = None
+    # 译文已写入、但未采用记忆库「始终采用」词条设定译法的文字：{source, reason}，需复核。
+    term_review: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1727,11 +1731,18 @@ class CadTranslationPipeline:
         language_translator: CadLanguageTranslator | None = None,
         dxf_cache: CadDxfCache | None = None,
         profile_requester: Callable[..., str] | None = None,
+        term_memory: Any = None,
     ) -> None:
         self.converter = converter
         # 扫描时转换过的 DWG 留在这里，翻译时直接复用，不再转第二遍。
         self.dxf_cache = dxf_cache
         self.memory_lookup = memory_lookup
+        # 记忆库（core.term_session.DocumentTermMemory）：整段复用、句中采用设定译法、
+        # 按场景选用、核对重译、自动保存短词，与 Excel / Word 同一套规则。传了它就
+        # 不再用 ``memory_lookup`` 的旧式整段查找。
+        self.term_memory = term_memory
+        self._term_session: Any = None
+        self._term_stage = "match"
         self.translator = translator
         # 程序判断不了语种的文字走这个翻译器：模型同时回报每条原文的语种代码，
         # 回报的就是目标语言时保留原文。不传时这些文字和其余文字一起照常翻译。
@@ -1751,6 +1762,11 @@ class CadTranslationPipeline:
         # Set per drawing by ``translate_file``: a DWG spends real time in the
         # converter at scan / write / verify.
         self._stage_weights: dict[str, int] = CAD_STAGE_WEIGHTS
+
+    def _term_log(self, level: str, message: str) -> None:
+        """记忆库的运行日志：查记忆库时记在「匹配」阶段，翻完后的记在「翻译」阶段。"""
+        stage = self._term_stage
+        self._emit(stage, 0 if stage == "match" else 1, 1, message, level=level)
 
     def _wait_if_paused(self) -> None:
         if self.pause_gate is not None:
@@ -1889,6 +1905,9 @@ class CadTranslationPipeline:
             kwargs["error_callback"] = on_error
         if "context" in parameters and self.document_profile:
             kwargs["context"] = self.document_profile
+        # 记忆库词条随批附上、翻完核对：翻译器用会话把引擎包一层（TaskTermSession.wrap）。
+        if "term_session" in parameters and self._term_session is not None:
+            kwargs["term_session"] = self._term_session
         ticker_stop = threading.Event()
         ticker: threading.Thread | None = None
         if "request_callback" in parameters:
@@ -2070,7 +2089,18 @@ class CadTranslationPipeline:
                     or ""
                 ).strip()
                 self._check_stop()
-            if self.memory_lookup and texts:
+            self._term_session = None
+            self._term_stage = "match"
+            if self.term_memory is not None and texts:
+                self._term_session = self.term_memory.open(
+                    texts,
+                    profile=self.document_profile,
+                    file_path=source,
+                    location=source.name,
+                    log=self._term_log,
+                )
+                memory_hits = {key: value for key, value in self._term_session.hits.items() if value}
+            elif self.memory_lookup and texts:
                 memory_hits = {key: value for key, value in self.memory_lookup(texts).items() if value}
             glossary = dict(glossary or {})
             translations: dict[str, str] = dict(memory_hits)
@@ -2175,6 +2205,24 @@ class CadTranslationPipeline:
             else:
                 self._emit("translate", len(translations), max(1, len(texts)), "翻译完成", fraction=1.0)
             stats.untranslated = sum(1 for text in texts if text not in translations and text not in kept_texts)
+            # 记忆库：未采用「始终采用」词条设定译法的（已重译仍不符），译文照常写进图纸，
+            # 在译文对照表里标记需复核；模型新译的短词在「自动识别场景」下自动保存。
+            term_review: dict[str, str] = {}
+            if self._term_session is not None:
+                for text in sorted(self._term_session.not_applied_texts()):
+                    if text in translations:
+                        term_review[text] = self._term_session.not_applied_detail(text)
+                stats.term_not_applied = len(term_review)
+                self._term_stage = "translate"
+                occurrences: dict[str, int] = {}
+                for unit in candidates:
+                    for run in unit.runs or (CadTextRun(0, len(unit.plain_text), unit.plain_text),):
+                        occurrences[run.text] = occurrences.get(run.text, 0) + 1
+                self.term_memory.close(
+                    self._term_session,
+                    {text: translations[text] for text in remaining if text in translations},
+                    counts=occurrences,
+                )
             timings["translate"] = round(time.perf_counter() - started_at - timings["scan"] - timings["match"], 4)
             self._check_stop()
             # 写进图纸的译文：用兼容的 SHX 字体时，弯引号、长破折号、œ 这类字体里可能没有的
@@ -2405,7 +2453,9 @@ class CadTranslationPipeline:
                     if not source_text:
                         continue
                     target_text = translations.get(source_text, "")
-                    if target_text:
+                    if target_text and source_text in term_review:
+                        unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "review", "reason": term_review[source_text]})
+                    elif target_text:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "translated", "reason": ""})
                     elif source_text in kept_texts:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": "", "status": "kept", "reason": ""})
@@ -2436,7 +2486,8 @@ class CadTranslationPipeline:
             summary_lines = [
                 f"# CAD 翻译摘要：{source.name}", "",
                 f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
-                f"- 未完成：{len(unresolved)} 处", f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
+                f"- 未完成：{len(unresolved)} 处", f"- 未采用记忆库设定译法：{len(term_review)} 处",
+                f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
                 f"- 缩到最小比例仍会压到旁边文字：{stats.layout_unresolved} 处", "",
                 "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
@@ -2449,7 +2500,11 @@ class CadTranslationPipeline:
                 raise CadPipelineError("处理期间输出位置出现同名文件，为避免覆盖，未写入译文图纸。")
             shutil.copy2(staged_output, output)
             _discard_evidence(evidence_dir)
-            return CadTranslationResult(source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf, manifest_path, report_path, stats, unresolved, timings, summary_path)
+            return CadTranslationResult(
+                source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf,
+                manifest_path, report_path, stats, unresolved, timings, summary_path,
+                term_review=[{"source": text, "reason": detail} for text, detail in term_review.items()],
+            )
 
 
 def _discard_evidence(evidence_dir: Path) -> None:

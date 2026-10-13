@@ -43,6 +43,8 @@ class WordRouteResult:
     stopped: bool = False
     issues: list[dict] = field(default_factory=list)
     word_result: dict = field(default_factory=dict)
+    # 这一段的「记忆库」结果（TaskTermSession.finish），PDF 任务把几段合并后显示。
+    terms: dict = field(default_factory=dict)
 
 
 def word_route_available() -> bool:
@@ -401,6 +403,7 @@ def translate_pdf_via_word(
     progress: ProgressFn | None = None,
     file_label: str = "",
     key_overrides: dict[str, str] | None = None,
+    term_file_paths: list[Path] | None = None,
 ) -> WordRouteResult:
     """Convert, translate with the Word pipeline, and place the .docx at final_path."""
     from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StoppedMsg
@@ -431,13 +434,16 @@ def translate_pdf_via_word(
     if not items:
         return WordRouteResult(ok=False, error="转出来的 Word 里没有可翻译的文字。")
     # 用 PDF 任务开始时拿到的密钥快照，和整个任务用同一套连接
+    # 记忆库词条的「只在…中生效」按原 PDF 的文件名和文件夹判断，不按临时转出的 Word。
     runner = WordTaskRunner(items, word_settings, source_root=work_dir, source_lang=source_lang,
-                            key_overrides=key_overrides)
+                            key_overrides=key_overrides,
+                            term_file_paths=term_file_paths or [pdf_path])
     runner.start()
     stop_sent = False
     done = None
     failure = ""
     stopped = False
+    terms: dict = {}
     while runner.needs_poll():
         if not stop_sent and should_stop():
             runner.stop()
@@ -453,6 +459,8 @@ def translate_pdf_via_word(
             if progress is not None and message.step_total:
                 progress(int(message.step_done), int(message.step_total))
             continue
+        if isinstance(message, (DoneMsg, ErrorMsg, StoppedMsg)):
+            terms = dict(getattr(message, "terms", None) or {})
         if isinstance(message, DoneMsg):
             done = message
         elif isinstance(message, ErrorMsg):
@@ -460,16 +468,16 @@ def translate_pdf_via_word(
         elif isinstance(message, StoppedMsg):
             stopped = True
     if done is None:
-        return WordRouteResult(ok=False, stopped=stopped or stop_sent,
+        return WordRouteResult(ok=False, stopped=stopped or stop_sent, terms=terms,
                                error="任务已停止" if (stopped or stop_sent) else (failure or "Word 翻译没有完成。"))
     outputs = [item for item in done.file_results if item.get("success") and item.get("output")]
     if not outputs or not Path(outputs[0]["output"]).is_file():
         errors = [str(item.get("error") or "") for item in done.file_results]
-        return WordRouteResult(ok=False, error=next((e for e in errors if e), "Word 翻译没有生成文件。"))
+        return WordRouteResult(ok=False, terms=terms, error=next((e for e in errors if e), "Word 翻译没有生成文件。"))
     final_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs[0]["output"], final_path)
     return WordRouteResult(ok=True, output_path=str(final_path), issues=list(done.issues or []),
-                           word_result=dict(outputs[0]))
+                           word_result=dict(outputs[0]), terms=terms)
 
 
 # --------------------------------------------------------------------------

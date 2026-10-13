@@ -18,7 +18,7 @@ import { icon } from "../icons";
 import { el } from "./workspace-util";
 import "./cad-review.css";
 
-type Filter = "all" | "unresolved" | "edited" | "crowded";
+type Filter = "all" | "unresolved" | "review" | "edited" | "crowded";
 
 /** 一次最多画这么多行，其余点「显示更多」：上千段文字的总图一次铺开会卡。 */
 const PAGE_ROWS = 200;
@@ -316,6 +316,7 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
       options: [
         { value: "all", label: t("全部") },
         { value: "unresolved", label: t("未译出") },
+        { value: "review", label: t("需复核") },
         { value: "edited", label: t("已修改") },
         { value: "crowded", label: t("排版拥挤") },
       ],
@@ -354,6 +355,7 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
   function matches(row: CadReviewRow, pending: string | undefined): boolean {
     const translation = pending ?? row.translation;
     if (filter === "unresolved" && !(row.status === "unresolved" && !translation)) return false;
+    if (filter === "review" && !(row.status === "review" && !row.edited && pending === undefined)) return false;
     if (filter === "edited" && !(row.edited || pending !== undefined)) return false;
     if (filter === "crowded" && !row.crowded) return false;
     if (!keyword.trim()) return true;
@@ -365,6 +367,11 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
     if (pending !== undefined || row.edited) return createChip({ label: t("已修改"), tone: "tint" });
     if (row.status === "unresolved") return createChip({ label: t("未译出"), tone: "warn" });
     if (row.status === "kept") return createChip({ label: t("保留原文"), tone: "mute" });
+    if (row.status === "review") {
+      const chip = createChip({ label: t("需复核"), tone: "warn" });
+      if (row.reason) chip.title = tx(row.reason);
+      return chip;
+    }
     return createChip({ label: t("已翻译"), tone: "ok" });
   }
 

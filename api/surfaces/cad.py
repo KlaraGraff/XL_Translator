@@ -21,6 +21,7 @@ from api.surfaces.base import (
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
 from core.cad_task_runner import CadTaskRunner
+from core.term_session import DocumentTermMemory
 from core.document_profile import (
     append_profile,
     is_context_sensitive,
@@ -348,6 +349,7 @@ class CadSurface(Surface):
             error_callback: Callable[[str], None] | None = None,
             request_callback: Callable[[Any], None] | None = None,
             context: str = "",
+            term_session: Any = None,
         ) -> dict[str, str]:
             prompt = append_profile(system_prompt, context)
             if glossary:
@@ -356,7 +358,8 @@ class CadSurface(Surface):
             stats = TranslationBatchRunStats()
             results = translate_texts(
                 texts,
-                engine,
+                # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
+                term_session.wrap(engine) if term_session is not None else engine,
                 settings.target_lang,
                 prompt,
                 max(1, int(settings.engine.batch_size)),
@@ -395,6 +398,7 @@ class CadSurface(Surface):
             should_stop: Callable[[], bool] | None = None,
             error_callback: Callable[[str], None] | None = None,
             context: str = "",
+            term_session: Any = None,
         ) -> dict[str, Any]:
             """程序判断不了语种的文字：翻译的同时让模型回报原文语种（与 Excel/Word 自动识别相同的协议）。"""
             prompt = append_profile(system_prompt, context)
@@ -403,7 +407,7 @@ class CadSurface(Surface):
             stats = TranslationBatchRunStats()
             results = translate_texts_with_sources(
                 texts,
-                engine,
+                term_session.wrap(engine) if term_session is not None else engine,
                 settings.target_lang,
                 prompt,
                 max(1, int(settings.engine.batch_size)),
@@ -446,12 +450,28 @@ class CadSurface(Surface):
                 remaining = [text for text in remaining if not hits.get(text)]
             return hits
 
+        # 记忆库与 Excel / Word 同一套规则：整段复用（手动维护的优先）、句中采用设定译法、
+        # 按备注场景选用、核对后重译、自动保存短词（core.term_session）。
+        term_memory = (
+            DocumentTermMemory(
+                settings.tm,
+                target_lang=settings.target_lang,
+                lang_pairs=memory_pairs,
+                smart_mode=smart_mode,
+                engine_provider=lambda: engine,
+                marked_in="cad_review",
+            )
+            if options.cad_use_memory
+            else None
+        )
+
         return CadTaskRunner(
             files,
             source_root=request.source_root,
             output_dir=output_dir,
             converter=SubprocessCadConverter(converter_path) if converter_path else None,
             memory_lookup=memory_lookup if options.cad_use_memory else None,
+            term_memory=term_memory,
             translator=translate_batch,
             language_translator=translate_batch_with_sources,
             profile_requester=profile_requester if smart_mode else None,

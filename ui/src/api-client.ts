@@ -110,7 +110,9 @@ export type PdfPage = {
   inplace_written?: number;
   inplace_kept?: number;
   inplace_review?: number;
-  inplace_review_items?: { text: string; reason: string; box_px?: number[] }[];
+  /** 译文已写入、但未采用记忆库中设定的译法的处数（也在 inplace_review_items 里，kind 为 term）。 */
+  inplace_term_review?: number;
+  inplace_review_items?: { text: string; reason: string; detail?: string; kind?: string; box_px?: number[] }[];
   inplace_message?: string;
   /** 首选方式用不了、保底也用不了而保留原样的原因（比如没有设置图像翻译模型）。 */
   kept_reason?: string;
@@ -163,7 +165,10 @@ export type CadReviewRow = {
   original: string;
   /** 当前译文：改过就是改后的。 */
   translation: string;
-  status: "translated" | "kept" | "unresolved";
+  /** review：译文已写入，但未采用记忆库中设定的译法，需复核。 */
+  status: "translated" | "kept" | "unresolved" | "review";
+  /** 需复核的原因（设定译法和重译次数）。 */
+  reason?: string;
   count: number;
   crowded: boolean;
   edited: boolean;
