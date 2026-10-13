@@ -51,7 +51,6 @@ MAX_TASKS = 5
 # 用户自己另外挑的文件最多 10 个；加上所选任务的原文件和译文，整包最多 50 个。
 MAX_PICKED_FILES = 10
 # 描述框里粘贴的截图。
-MAX_IMAGES = 6
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_FILES = 50
 # 附件（用户自己挑的文件）原始大小上限。中转站把包分段存进 Cloudflare KV（单个值
@@ -109,8 +108,6 @@ _IMAGE_SIGNATURES = (
 
 def image_names(images: list[bytes]) -> list[str]:
     """Package names for pasted screenshots (截图1.png …); rejects anything that is not an image."""
-    if len(images) > MAX_IMAGES:
-        raise FeedbackError("最多粘贴 6 张图片。", reason="too_many_images")
     names: list[str] = []
     for index, data in enumerate(images, start=1):
         if len(data) > MAX_IMAGE_BYTES:
