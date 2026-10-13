@@ -46,7 +46,9 @@ def _box_xml(texts: list[str], ppr: str = "") -> str:
     return f"<w:txbxContent>{paragraphs}</w:txbxContent>"
 
 
-def _textbox_paragraph(texts: list[str], *, cx: int, cy: int, autofit: bool = False, ppr: str = "") -> str:
+def _textbox_paragraph(
+    texts: list[str], *, cx: int, cy: int, autofit: bool = False, ppr: str = "", wrap: str = "wrapSquare"
+) -> str:
     box = _box_xml(texts, ppr)
     fit = "<a:spAutoFit/>" if autofit else ""
     return (
@@ -59,7 +61,7 @@ def _textbox_paragraph(texts: list[str], *, cx: int, cy: int, autofit: bool = Fa
         '<wp:simplePos x="0" y="0"/>'
         '<wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>'
         '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>'
-        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:wrapNone/><wp:docPr id="1" name="文本框 1"/>'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:{wrap}/><wp:docPr id="1" name="文本框 1"/>'
         '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
         '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr>'
         f"<wps:txbx>{box}</wps:txbx>"
@@ -85,12 +87,12 @@ def _notes_part(doc, *, name: str, tag: str, ref_tag: str, text: str, rel_type: 
 
 
 def build_document(
-    path: Path, *, cx: int = 2286000, cy: int = 914400, autofit: bool = False, ppr: str = ""
+    path: Path, *, cx: int = 2286000, cy: int = 914400, autofit: bool = False, ppr: str = "", wrap: str = "wrapSquare"
 ) -> None:
     """``ppr``：文本框里每段的 ``<w:pPr>``，用来给段落设行距。"""
     doc = Document()
     end = doc.element.body.find(qn("w:sectPr"))
-    end.addprevious(parse_xml(_textbox_paragraph(BOX_TEXTS, cx=cx, cy=cy, autofit=autofit, ppr=ppr)))
+    end.addprevious(parse_xml(_textbox_paragraph(BOX_TEXTS, cx=cx, cy=cy, autofit=autofit, ppr=ppr, wrap=wrap)))
     end.addprevious(
         parse_xml(
             f'<w:p {nsdecls("w")}><w:r><w:t>这一段带脚注</w:t></w:r>'
@@ -201,7 +203,8 @@ class WordStoryTests(unittest.TestCase):
         self.assertTrue(sizes and all(12 <= int(size) < 22 for size in sizes), sizes)
         self.assertEqual(issues, [])
 
-        # 1 英寸 × 0.25 英寸：缩到 60% 还放不下，框往下加高（正本、VML 备份一起），不报问题。
+        # 1 英寸 × 0.25 英寸：缩到 60% 还放不下，框往下加高（正本、VML 备份一起），正文绕着框排、
+        # 跟着往下让，不报问题。
         tiny = self.root / "tiny.docx"
         build_document(tiny, cx=914400, cy=228600)
         output = self._write(tiny, name="tiny", issues=issues)
@@ -212,6 +215,14 @@ class WordStoryTests(unittest.TestCase):
         vml_height = float(re.search(r'style="width:144pt;height:([\d.]+)pt"', xml).group(1))
         self.assertAlmostEqual(vml_height, 60 + (extent_cy - 228600) / 12700, delta=0.1)
         self.assertEqual(issues, [])
+
+        # 浮在文字上方的框（不环绕）加高会盖住正文：保持原样，报进质量报告。
+        floating = self.root / "floating.docx"
+        build_document(floating, cx=914400, cy=228600, wrap="wrapNone")
+        output = self._write(floating, name="floating", issues=issues)
+        self.assertIn('<wp:extent cx="914400" cy="228600"/>', _xml(output, "word/document.xml"))
+        self.assertEqual([issue["kind"] for issue in issues], ["textbox_overflow"])
+        issues.clear()
 
         # 旋转过的框加高会错位：保持原样，报进质量报告。
         rotated = self.root / "rotated.docx"

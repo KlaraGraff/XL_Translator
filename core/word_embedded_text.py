@@ -536,6 +536,10 @@ def _grow_textbox(story: _Story, layout: _BoxLayout | None, scale: float) -> boo
     extent = holder.find(f"{{{_WP}}}extent") if holder is not None else None
     if extent is None or holder.find(f"{{{_WP14}}}sizeRelV") is not None:
         return False  # 高度按页面比例算的框，改 extent 不起作用
+    if holder.find(f"{{{_WP}}}wrapNone") is not None:
+        # 浮在文字上方/衬于文字下方的框，正文不绕着它排：加高会盖住下面的正文
+        # （和 Excel 一样不盖内容，maple 2026-10-12）。环绕的框加高时正文自己往下让。
+        return False
     paragraphs = list(layout.paragraphs)
     margin = max((p.size_pt for p in paragraphs), default=0.0) * scale * 1.4
     extra = paragraphs_height(paragraphs, layout.width, scale) + margin - layout.height
