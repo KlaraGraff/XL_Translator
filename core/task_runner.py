@@ -1079,10 +1079,16 @@ class TaskRunner(BaseTaskRunner):
             )
 
             # 「自动识别场景」下短词在本文档场景里的译法，存成带备注的新词条。
+            short_words = (
+                {text for text in misses if is_context_sensitive(text)}
+                if term_session.will_auto_save()
+                else set()
+            )
             term_session.auto_save_short_words(
                 engine,
                 {text: global_translations.get(text, "") for text in misses},
                 pair_for_text=term_pair_for_text,
+                counts=self._count_cell_occurrences(process_paths, short_words),
                 engine_name=engine.engine_name,
             )
 
@@ -3260,6 +3266,7 @@ class TaskRunner(BaseTaskRunner):
         文件相左。
         """
         finals = final_translations or {}
+        self._retire_stale_terms()
 
         def _final_text(source_text: str, fallback: str) -> str:
             value = finals.get(source_text)
@@ -4028,6 +4035,37 @@ class TaskRunner(BaseTaskRunner):
             translations=translations,
             allowed_keys=allowed,
         )
+
+    @staticmethod
+    def _count_cell_occurrences(paths: list[Path], texts: set[str]) -> dict[str, int]:
+        """这几段文字各在多少个单元格里出现（任务详情「本次自动保存的词条」的出现次数）。
+
+        只在要自动保存短词时调用，只数整格相同的单元格；读不了的文件跳过，次数照算其余文件。
+        """
+        counts: dict[str, int] = {}
+        if not texts:
+            return counts
+        from core.openpyxl_compat import load_workbook
+
+        for path in paths:
+            try:
+                wb = load_workbook(str(path), read_only=True, data_only=True)
+            except Exception as exc:  # noqa: BLE001 - counts are informational only
+                logger.debug(f"统计出现次数时无法读取 {path}：{exc!r}")
+                continue
+            try:
+                for ws in wb.worksheets:
+                    for row in ws.iter_rows(values_only=True):
+                        for value in row:
+                            if isinstance(value, str):
+                                text = value.strip()
+                                if text in texts:
+                                    counts[text] = counts.get(text, 0) + 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"统计出现次数时读取中断 {path}：{exc!r}")
+            finally:
+                wb.close()
+        return counts
 
     @staticmethod
     def _collect_texts(

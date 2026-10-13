@@ -77,6 +77,8 @@ class TaskTermSession:
         self.profile = ""
         self.auto_saved: list[dict[str, object]] = []
         self._text_pairs: dict[str, set[str]] = {}
+        # 过期的整段自动词条 {id: 旧译文}：重译结果入库前删掉（retire_stale_entries）。
+        self._stale_entries: dict[int, str] = {}
 
     # ── 整段 ──────────────────────────────────────────────────────────────
 
@@ -154,8 +156,13 @@ class TaskTermSession:
         if not self.index.apply_in_sentences:
             return
         stale: list[str] = []
+        manual_ids = {entry.id for entry in self.index.entries if entry.origin == "manual"}
         for text, translation in self.whole.hits.items():
             if self.whole.usage_by_text.get(text) == USAGE_ALWAYS:
+                continue
+            ids = self.whole.entry_ids.get(text, ())
+            # 用户自己维护的整段译法照用，不替用户改。
+            if manual_ids.intersection(ids):
                 continue
             for hit in self.index.scan(text, include_scene=False, sentence_only=True):
                 if hit.usage != USAGE_ALWAYS:
@@ -165,11 +172,26 @@ class TaskTermSession:
                     break
         for text in stale:
             self.index.stale_whole_keys.add(whole_key(text))
+            old_translation = self.whole.hits.get(text, "")
+            for entry_id in self.whole.entry_ids.get(text, ()):
+                self._stale_entries[int(entry_id)] = old_translation
             self.whole.hits.pop(text, None)
             self.whole.entry_ids.pop(text, None)
             self.whole.usage_by_text.pop(text, None)
         if stale:
             self._log("INFO", f"记忆库：{len(stale)} 处整段旧译文未采用当前的设定译法，本次重新翻译")
+
+    def retire_stale_entries(self) -> None:
+        """重译结果入库前，删掉那些过期的整段自动词条，让新译文顶替（只做一次）。"""
+        if not self._stale_entries:
+            return
+        entries, self._stale_entries = self._stale_entries, {}
+        from core import tm_manager
+
+        try:
+            tm_manager.retire_stale_auto_entries(entries)
+        except sqlite3.Error as exc:
+            logger.warning(f"删除过期的整段词条失败（不影响本次翻译）：{exc!r}")
 
     # ── 批次 ──────────────────────────────────────────────────────────────
 
@@ -214,6 +236,15 @@ class TaskTermSession:
 
     # ── 自动保存短词 ──────────────────────────────────────────────────────
 
+    def will_auto_save(self) -> bool:
+        """本次会不会自动保存短词（决定要不要先数出现次数）。"""
+        return bool(
+            self.smart_mode
+            and getattr(self._tm, "auto_save_short_scene", True)
+            and self.profile
+            and self.index is not None
+        )
+
     def auto_save_short_words(
         self,
         engine: TranslationEngine,
@@ -224,10 +255,9 @@ class TaskTermSession:
         engine_name: str = "",
     ) -> None:
         """「自动识别场景」下：短词在新场景里的译法存为带备注的新词条（每任务最多 20 条）。"""
-        if not (self.smart_mode and getattr(self._tm, "auto_save_short_scene", True) and self.profile):
+        if not self.will_auto_save():
             return
-        if self.index is None:
-            return
+        assert self.index is not None
         skipped = self.not_applied_texts()
         picked: list[tuple[str, str, str]] = []
         for text, translation in translations.items():

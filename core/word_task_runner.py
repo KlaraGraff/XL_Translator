@@ -2736,6 +2736,7 @@ class WordTaskRunner(BaseTaskRunner):
                     return value
                 return fallback
 
+            self._retire_stale_terms()
             # 写库失败不许弄死任务（Excel store_api_results_in_tm 的另一半
             # 规矩）：此刻 API 已全部付费返回、双语文件还没写，词库写不进去
             # （典型：词库页长写入持锁）只降级为 WARN + 报告条目，阶段 3

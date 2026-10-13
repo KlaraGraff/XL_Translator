@@ -15,7 +15,7 @@ import shutil
 import sqlite3
 import threading
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -986,6 +986,30 @@ def get_entries_by_ids(entry_ids: Iterable[int]) -> list[dict[str, object]]:
     with _get_conn() as conn:
         rows = conn.execute(f"SELECT * FROM tm_entries WHERE id IN ({placeholders})", ids).fetchall()
     return [entry_public_dict(row) for row in rows]
+
+
+def retire_stale_auto_entries(entry_targets: Mapping[int, str]) -> int:
+    """删掉已过期的自动保存整段词条：{id: 当时读到的旧译文}。返回删除条数。
+
+    整段旧译文没用上后来改过的设定译法时，任务会带着词条重译；重译结果入库前先
+    删掉旧的那条，新译文才能正常写入，而不是每次都多挂一条冲突候选、下次又重译。
+    只删仍是那句旧译文、未固定的自动保存词条；手动维护的一律不动。
+    """
+    retired = 0
+    with _get_conn() as conn:
+        for entry_id, old_target in entry_targets.items():
+            row = conn.execute("SELECT * FROM tm_entries WHERE id = ?", [int(entry_id)]).fetchone()
+            if row is None or entry_origin(row) != ORIGIN_AUTO:
+                continue
+            if str(row["target_text"] or "") != str(old_target or ""):
+                continue
+            conn.execute("DELETE FROM tm_entries WHERE id = ?", [int(entry_id)])
+            conn.execute(
+                "DELETE FROM tm_conflict_candidates WHERE entry_id = ? AND status = 'pending'",
+                [int(entry_id)],
+            )
+            retired += 1
+    return retired
 
 
 def _entry_version(row: sqlite3.Row | dict) -> str:

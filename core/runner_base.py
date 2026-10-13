@@ -92,6 +92,12 @@ class BaseTaskRunner:
         self._queue.put(LogMsg(level=level, message=message))
         logger.info(f"[{level}] {message}")
 
+    def _retire_stale_terms(self) -> None:
+        """本次重译的过期整段词条，在新译文入库前删掉（见 TaskTermSession.retire_stale_entries）。"""
+        session = getattr(self, "_term_session", None)
+        if session is not None:
+            session.retire_stale_entries()
+
     def _finish_terms(self) -> dict[str, object]:
         """记忆库词条的采用情况（结果里的 ``terms``）；整个任务只算一次。
 

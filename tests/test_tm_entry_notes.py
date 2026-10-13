@@ -229,6 +229,30 @@ class TmEntryNotesTests(unittest.TestCase):
         report = session.finish(pair_for_text=lambda _text: "zh-fr")
         self.assertEqual((report["applied_after_retry"], report["scene_choices"], report["manual_terms_hit"]), (1, [], 1))
 
+        # 重译结果入库：旧整句被新译文顶替，不留冲突候选；下次直接整段复用，不再重译。
+        session.retire_stale_entries()
+        tm_manager.insert_batch([("门框应与预埋件可靠连接", "Le cadre est fixé à la pièce noyée")], "zh-fr", 200)
+        self.assertEqual(tm_manager.list_conflict_candidates(), [])
+        again = TaskTermSession(SimpleNamespace(apply_in_sentences=True), target_lang="fr", smart_mode=True)
+        hits = again.resolve({text: {"zh-fr"} for text in texts}, profile="")
+        self.assertEqual(hits["门框应与预埋件可靠连接"], "Le cadre est fixé à la pièce noyée")
+
+    def test_stale_retire_leaves_manual_and_changed_rows_alone(self):
+        tm_manager.init_db()
+        tm_manager.insert_batch([("旧句一", "old one"), ("旧句二", "old two")], "zh-fr", 200)
+        tm_manager.insert_manual_entry_detailed("旧句三", "mine", "zh-fr")
+        rows = {row["source_text"]: row for row in tm_manager.get_entries_by_ids(range(1, 10))}
+        retired = tm_manager.retire_stale_auto_entries(
+            {
+                int(rows["旧句一"]["id"]): "old one",
+                int(rows["旧句二"]["id"]): "changed since",  # 期间被改过：不删
+                int(rows["旧句三"]["id"]): "mine",  # 手动维护：不删
+            }
+        )
+        self.assertEqual(retired, 1)
+        left = {row["source_text"] for row in tm_manager.get_entries_by_ids(range(1, 10))}
+        self.assertEqual(left, {"旧句二", "旧句三"})
+
     def test_auto_scene_entry_is_only_offered_where_its_note_fits_the_document(self):
         from types import SimpleNamespace
 
