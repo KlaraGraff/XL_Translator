@@ -1620,6 +1620,58 @@ class TaskRunner(BaseTaskRunner):
             )
         return source_lang, system_prompt, raw_text_count, file_language_preflights
 
+    def _translate_kept_bilingual(
+        self,
+        sources: list[str],
+        *,
+        api_translations: dict[str, str],
+        batch_stats: TranslationBatchRunStats,
+        engine,
+        target_lang: str,
+        system_prompt: str,
+        batch_size: int,
+        concurrency: int,
+        source_lang: str,
+        shared_scheduler,
+        error_callback,
+    ) -> None:
+        """仅译文模式下，把模型判为「已有双语」的格子整格翻成目标语言。
+
+        输出只留译文时，原样保留「6.1.1 土石方工程合计  Total of Earthworks」这种
+        中文＋外文的格子，用户看到的就是没翻；模型还会把中文＋英文误判成中译法的
+        「已有双语」（反馈 FB-20261013-UVW95F）。原文＋译文模式照旧保留原样。
+        """
+        self._log(
+            "INFO",
+            f"仅输出译文：{len(sources)} 处已含两种语言的内容改为整体翻成目标语言。",
+        )
+        stats = TranslationBatchRunStats()
+        translated = translate_texts(
+            sources,
+            engine,
+            target_lang,
+            system_prompt,
+            batch_size,
+            concurrency,
+            None,
+            error_callback,
+            should_stop=self.stop_requested,
+            source_lang=source_lang,
+            api_scheduler=shared_scheduler,
+            stats=stats,
+            throughput_unlocked=self._settings.engine.concurrency_unlocked,
+            transient_retries=self._settings.request_retry.excel,
+        )
+        errors = {item["source"]: item.get("error", "") for item in stats.failed_items}
+        for source in stats.untranslated_sources:
+            # 记进总的未译计数：结果报告和「N 条未获得译文」要把这些也算上。
+            batch_stats.record_untranslated([source], errors.get(source, ""))
+        for source, translation in translated.items():
+            if source in stats.stopped_sources:
+                continue
+            # 译文与原文相同（含失败交回的原文）的格子由后面的汇总统一标需复核。
+            api_translations[source] = translation
+
     def _translate_misses_via_api(
         self,
         *,
@@ -1914,6 +1966,30 @@ class TaskRunner(BaseTaskRunner):
                             source,
                             result.mark_kind,
                         )
+                kept_bilingual = [
+                    source
+                    for source, result in mixed_results.items()
+                    if result.action == MIXED_ACTION_EXISTING_BILINGUAL
+                ]
+                if (
+                    kept_bilingual
+                    and self._settings.excel_output.output_translation_only
+                    and not rate_limited
+                    and not self._stop_event.is_set()
+                ):
+                    self._translate_kept_bilingual(
+                        kept_bilingual,
+                        api_translations=api_translations,
+                        batch_stats=batch_stats,
+                        engine=engine,
+                        target_lang=target_lang,
+                        system_prompt=system_prompt,
+                        batch_size=batch_size,
+                        concurrency=concurrency,
+                        source_lang=source_lang,
+                        shared_scheduler=shared_scheduler,
+                        error_callback=api_error_cb,
+                    )
                 self._log(
                     "INFO",
                     (
