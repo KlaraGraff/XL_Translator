@@ -100,9 +100,9 @@ def test_fit_tiers_start_at_the_default_and_step_down_to_the_minimum():
 
 
 def test_default_scales_follow_the_target_language():
-    # 译成中文很少超长、超出也只长两三成：先缩到 0.9；译成其他语言先统一缩到 0.7。
+    # 译成中文很少超长、超出也只长两三成：不预先缩小，从原字号起逐档缩；译成其他语言先统一缩到 0.7。
     assert DEFAULT_FIT_SETTINGS == FitSettings(0.7, 0.4)
-    assert DEFAULT_FIT_SETTINGS_ZH == FitSettings(0.9, 0.4)
+    assert DEFAULT_FIT_SETTINGS_ZH == FitSettings(1.0, 0.4)
     for lang in ("zh", "zh-CN", "zh-TW", "ZH-Hant"):
         assert default_fit_settings(lang) == DEFAULT_FIT_SETTINGS_ZH
     for lang in ("en", "fr", "ja", "", "auto"):
@@ -110,6 +110,9 @@ def test_default_scales_follow_the_target_language():
     # 「N° → 序号」这类刚好要 0.8 的中文译文停在 0.8，不再一下压到 0.7。
     assert _pick_scale(0.82, DEFAULT_FIT_SETTINGS_ZH) == (0.8, True)
     assert _pick_scale(0.82, DEFAULT_FIT_SETTINGS) == (0.7, True)
+    # 初始 1.0 只是起点：要缩的译文从 0.9 起逐档往下，最多到 0.4。
+    assert DEFAULT_FIT_SETTINGS_ZH.tiers() == [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
+    assert _pick_scale(0.95, DEFAULT_FIT_SETTINGS_ZH) == (0.9, True)
 
 
 def test_cad_settings_keep_a_separate_pair_of_scales_for_chinese():
@@ -117,10 +120,10 @@ def test_cad_settings_keep_a_separate_pair_of_scales_for_chinese():
 
     fresh = CadOutputSettings()
     assert (fresh.fit_default_scale, fresh.fit_min_scale) == (0.7, 0.4)
-    assert (fresh.fit_default_scale_zh, fresh.fit_min_scale_zh) == (0.9, 0.4)
+    assert (fresh.fit_default_scale_zh, fresh.fit_min_scale_zh) == (1.0, 0.4)
     # 旧文件只有一对比例、还是默认值：中文那对用新的默认值。
     old_default = CadOutputSettings.model_validate({"fit_default_scale": 0.7, "fit_min_scale": 0.4})
-    assert (old_default.fit_default_scale_zh, old_default.fit_min_scale_zh) == (0.9, 0.4)
+    assert (old_default.fit_default_scale_zh, old_default.fit_min_scale_zh) == (1.0, 0.4)
     # 用户改过旧的那对：中文也照用，换成中文后自己的设置不失效。
     customised = CadOutputSettings.model_validate({"fit_default_scale": 0.6, "fit_min_scale": 0.3})
     assert (customised.fit_default_scale, customised.fit_min_scale) == (0.6, 0.3)

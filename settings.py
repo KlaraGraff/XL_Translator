@@ -822,7 +822,7 @@ class CadOutputSettings(BaseModel):
     fit_min_scale: float = 0.4
     # 目标语言为中文时的那对比例。旧文件没有这两个键时按默认值补齐；旧版只有一对比例，
     # 用户改过的（不是 0.7 / 0.4）照搬过来，免得换成中文后自己的设置失效。加法改动，不升版本号。
-    fit_default_scale_zh: float = 0.9
+    fit_default_scale_zh: float = 1.0
     fit_min_scale_zh: float = 0.4
     # translation 纯译文；source_first 原文在上、译文在下；translation_first 译文在上。
     display_mode: str = "translation"

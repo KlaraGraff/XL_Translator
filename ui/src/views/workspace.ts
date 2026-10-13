@@ -4468,7 +4468,7 @@ async function openTaskLocalFile(path: string | undefined, reveal: boolean): Pro
 const CAD_DISPLAY_MODES = ["translation", "source_first", "translation_first"] as const;
 const CAD_FONT_CHOICES = ["compatible", "original"] as const;
 const CAD_OUTPUT_VERSIONS = ["source", "2018", "2013", "2010", "2007", "2004", "2000"] as const;
-const CAD_DEFAULT_SCALES = ["0.9", "0.8", "0.7", "0.6", "0.5"];
+const CAD_DEFAULT_SCALES = ["1", "0.9", "0.8", "0.7", "0.6", "0.5"];
 const CAD_MIN_SCALES = ["0.7", "0.6", "0.5", "0.4", "0.3"];
 const CAD_AUTO_COUNT_MAX_FILES = 10;
 const CAD_AUTO_COUNT_MAX_BYTES = 50 * 1024 * 1024;
@@ -4520,11 +4520,11 @@ function cadScale(key: string, fallback: number): number {
 }
 
 /** 字号比例按目标语言分两套存（同后端 cad_output.fit_*_scale 与 fit_*_scale_zh）：
- *  译成中文很少超长、超出也只长两三成，默认先缩到 90%；译成其他语言默认先缩到 70%。 */
+ *  译成中文很少超长、超出也只长两三成，默认 100%（不预先缩小，放不下时逐档缩）；译成其他语言默认先缩到 70%。 */
 function cadFitKeys(targetLang: string): { defaultKey: string; minKey: string; defaultFallback: number; minFallback: number } {
   const zh = /^(zh|cn)/i.test(targetLang.trim());
   return zh
-    ? { defaultKey: "fit_default_scale_zh", minKey: "fit_min_scale_zh", defaultFallback: 0.9, minFallback: 0.4 }
+    ? { defaultKey: "fit_default_scale_zh", minKey: "fit_min_scale_zh", defaultFallback: 1, minFallback: 0.4 }
     : { defaultKey: "fit_default_scale", minKey: "fit_min_scale", defaultFallback: 0.7, minFallback: 0.4 };
 }
 

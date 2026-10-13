@@ -77,7 +77,7 @@ def test_cad_fit_scales_follow_the_target_language():
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
     helper = source[source.index("function cadFitKeys"):source.index("function cadChoice")]
     assert '"fit_default_scale_zh"' in helper and '"fit_min_scale_zh"' in helper
-    assert "defaultFallback: 0.9" in helper and "defaultFallback: 0.7" in helper
+    assert "defaultFallback: 1," in helper and "defaultFallback: 0.7" in helper
     payload = source[source.index("function buildPayload"):source.index("async function startTask")]
     assert "cadFitScales(st.targetLang)" in payload
     fields = source[source.index("function buildCadScaleFields"):source.index("function buildCadLockFields")]
