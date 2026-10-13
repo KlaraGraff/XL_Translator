@@ -47,7 +47,7 @@ def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
     return (
         f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
         "输出 PDF 与源文件一致。如需翻译这些页面，"
-        "请关闭「跳过 A3 及更大的页面」后重新翻译。"
+        "请在「大幅面页面」里改选其他处理方式后重新翻译。"
     )
 
 
@@ -257,6 +257,24 @@ def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
     return message
 
 
+def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
+    """「原位替换文字（Beta）」的逐页结果：替换了多少处、哪些地方保留了原文。"""
+    pages = [page for page in record.pages if getattr(page, "inplace_requested", False)]
+    if not pages:
+        return []
+    done = [page for page in pages if page.inplace_status == "done"]
+    lines = [
+        f"- 原位替换文字（Beta）：{len(done)}/{len(pages)} 页已替换，"
+        f"共替换 {sum(page.inplace_written for page in done)} 处，"
+        f"保留原文 {sum(page.inplace_review for page in done)} 处"
+    ]
+    for page in sorted(pages, key=lambda item: item.page_number):
+        lines.append(f"  - 第 {page.page_number} 页：{page.inplace_message or page.inplace_status}")
+        for item in page.inplace_review_items[:30]:
+            lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
+    return lines
+
+
 def _finished_page_numbers(record: PdfFileRecord) -> list[int]:
     numbers: list[int] = []
     for page in record.pages:
@@ -433,6 +451,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"- 大幅面页处理：本文件 {file_record.skipped_oversize_page_count} 页判定为大幅面，"
                 f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
                 "页参与翻译",
+                *_inplace_report_lines(file_record),
                 f"- 自动修正比例的页：{file_record.emergency_ratio_normalized_count}",
                 f"- 自动检查发现问题、待复核的页：{file_record.quality_flagged_page_count}",
                 f"- 补白边保持比例的页：{file_record.ratio_letterboxed_page_count}",

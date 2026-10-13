@@ -422,6 +422,50 @@ def is_oversized_page(page_width_pt: float, page_height_pt: float) -> bool:
     )
 
 
+# 「从多大算大幅面」：A3 沿用原来的判定（长短边都超出 A4 约 15%），更大的档按
+# 纸张标准尺寸的九成算，扫描白边、裁切误差不会把 A1 判成 A2。
+_PAPER_EDGES_MM = {"A2": (420.0, 594.0), "A1": (594.0, 841.0), "A0": (841.0, 1189.0)}
+
+
+def is_oversized_for_threshold(threshold: str, page_width_pt: float, page_height_pt: float) -> bool:
+    if threshold not in _PAPER_EDGES_MM:
+        return is_oversized_page(page_width_pt, page_height_pt)
+    short_mm, long_mm = _PAPER_EDGES_MM[threshold]
+    long_pt = max(page_width_pt, page_height_pt)
+    short_pt = min(page_width_pt, page_height_pt)
+    return long_pt >= long_mm / 25.4 * 72 * 0.9 and short_pt >= short_mm / 25.4 * 72 * 0.9
+
+
+def _page_has_text_layer(page, source_pdf: str = "", page_index: int = -1) -> bool:
+    """A page whose words can be read directly (at least a few visible letters).
+
+    A scanner's "searchable PDF" carries an invisible text layer over the scan
+    image; those words cannot be replaced in place (the visible ones are
+    pixels), so invisible text (render mode 3) does not count.
+    """
+    try:
+        textpage = page.get_textpage()
+        try:
+            text = textpage.get_text_range() or ""
+        finally:
+            textpage.close()
+    except Exception:  # noqa: BLE001 - unreadable text layer counts as none
+        return False
+    if sum(1 for ch in text if ch.isalpha()) < 20:
+        return False
+    if not source_pdf or page_index < 0:
+        return True
+    try:
+        import fitz
+
+        with fitz.open(source_pdf) as doc:
+            visible = sum(len(span.get("chars", ())) for span in doc[page_index].get_texttrace()
+                          if span.get("type") != 3 and span.get("opacity", 1) > 0)
+    except Exception:  # noqa: BLE001 - cannot tell: let the in-place QA decide
+        return True
+    return visible >= 20
+
+
 def _pt_to_mm(value_pt: float) -> float:
     return value_pt / 72.0 * 25.4
 
@@ -841,7 +885,24 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         or record.review_failed_page_count
         or record.quality_flagged_page_count
         or _record_is_fully_skipped_oversize(record)
+        # 原位替换没成功（出错、自检不过、中途停止）的页，输出里是原页，要提醒复核。
+        or any(page.inplace_requested and page.inplace_status in {"kept_original", "stopped"}
+               for page in record.pages)
     )
+
+
+def _with_stop(translate, should_stop):
+    """Hand the task's stop signal to the text engine when the hook accepts it."""
+    if translate is None:
+        return None
+
+    def wrapped(texts, prompt):
+        try:
+            return translate(texts, prompt, should_stop=should_stop)
+        except TypeError:
+            return translate(texts, prompt)
+
+    return wrapped
 
 
 def max_page_generation_attempts(retry_count: int | None) -> int:
@@ -1150,9 +1211,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         resume_output_dir: str | None = None,
         profile_requester: Callable[[list[str], Callable[[str, str], None]], str] | None = None,
         profile_concurrency: int = 1,
+        inplace_hooks: Any = None,
     ) -> None:
         self._files = file_items
         self._settings = settings
+        # 「原位替换文字（Beta）」用到的翻译回调、Tesseract 路径；不开这个功能时为 None。
+        self._inplace_hooks = inplace_hooks
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
         # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
         self._profile_requester = profile_requester
@@ -2062,6 +2126,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 「跳过大幅面页」命中的页面：前端要能区分「未翻译，原样保留」和普通
             # 失败/占位页，不能只靠 status 字符串。
             "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
+            "inplace_requested": bool(page.inplace_requested) if page is not None else False,
+            "inplace_status": page.inplace_status if page is not None else "",
+            "inplace_written": int(page.inplace_written) if page is not None else 0,
+            "inplace_kept": int(page.inplace_kept) if page is not None else 0,
+            "inplace_review": int(page.inplace_review) if page is not None else 0,
+            "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
+            "inplace_message": page.inplace_message if page is not None else "",
             "error": _short_review_text(page.error if page is not None else ""),
             # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
             # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
@@ -3334,11 +3405,18 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             short_mm = _pt_to_mm(
                                 min(page_record.page_width_pt, page_record.page_height_pt)
                             )
-                            self._log(
-                                "INFO",
-                                f"[{prepared.record.name}] 第 {page_record.page_number} 页为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），不予翻译，"
-                                "原页将直接放入输出 PDF。",
-                            )
+                            if page_record.inplace_requested:
+                                self._log(
+                                    "INFO",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页（{short_mm:.0f}×{long_mm:.0f} mm）"
+                                    "将原位替换文字（Beta），在整份文件翻译完后处理。",
+                                )
+                            else:
+                                self._log(
+                                    "INFO",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），不予翻译，"
+                                    "原页将直接放入输出 PDF。",
+                                )
                             self._record_page_submitted()
                             self._record_page_completed(page_record)
                             self._emit_file_page_progress(
@@ -3600,6 +3678,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 page_count=record.page_count,
                                 source_pages_dir=prepared.source_pages_dir,
                                 file_name=record.name,
+                                source_pdf=record.source_copy_path,
                             )
                         except Exception as exc:  # noqa: BLE001 - one broken page only costs that page.
                             # 一页对象损坏绝不能拖垮整份文件：第 180 页读不出来，
@@ -3697,6 +3776,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._finalize_image_record(record, prepared)
             return
 
+        self._run_inplace_pages(record, prepared)
+        self._refresh_file_record_counts(record)
         try:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)
             record.translated_pdf_path = str(prepared.translated_pdf_path)
@@ -3753,6 +3834,66 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
             record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='已翻译的页面未能合成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
+
+    def _run_inplace_pages(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
+        """「原位替换文字（Beta）」：逐页删字写回；失败或自检不过的页保留原页。"""
+        # 只处理还没试过的页。单页重新生成、「换回上一版」也会走到这里，它们不该
+        # 顺带把别的原位替换页重跑一遍（又花一分钟、又调一次模型）。
+        pages = [page for page in record.pages if page.inplace_requested and not page.inplace_status]
+        if not pages or self._inplace_hooks is None:
+            return
+        from core.pdf_vector import translate_page_inplace
+
+        hooks = self._inplace_hooks
+        if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
+            for page in pages:
+                page.inplace_status = "kept_original"
+                page.inplace_message = "原位替换文字（Beta）目前只支持译成中文，这一页保留原样"
+            self._log("WARN", f"[{record.name}] 原位替换文字（Beta）目前只支持译成中文，相关页面保留原样。")
+            return
+        work_root = Path(prepared.translated_pages_dir) / "inplace"
+        for page in sorted(pages, key=lambda item: item.page_number):
+            if self._stop_event.is_set():
+                page.inplace_status = "stopped"
+                page.inplace_message = "任务已停止，这一页保留原样"
+                continue
+            self._log("INFO", f"[{record.name}] 第 {page.page_number} 页：原位替换文字（Beta）开始，大图约需 1–2 分钟。")
+            work = work_root / f"page_{page.page_number:04d}"
+            try:
+                result = translate_page_inplace(
+                    Path(record.source_copy_path),
+                    page.page_number - 1,
+                    work,
+                    translate=_with_stop(hooks.translate, self._stop_event.is_set),
+                    profile=hooks.profile,
+                    tesseract=hooks.tesseract,
+                    tesseract_languages=hooks.tesseract_languages,
+                    source_lang=hooks.source_lang,
+                    log=self._log,
+                )
+            except Exception as exc:  # noqa: BLE001 - one page only costs that page
+                logger.debug(f"[PDF] 原位替换失败：{exc!r}")
+                page.inplace_status = "kept_original"
+                page.inplace_message = "原位替换出错，这一页保留原样：" + user_facing_reason(exc, fallback="处理这一页时出错。")
+                self._log("WARN", f"[{record.name}] 第 {page.page_number} 页{page.inplace_message}")
+                continue
+            page.inplace_written = result.written
+            page.inplace_kept = result.kept
+            page.inplace_review = result.review + result.not_written
+            page.inplace_review_items = result.review_items
+            if result.ok and result.written > 0:
+                page.inplace_status = "done"
+                page.inplace_pdf_path = result.output_pdf
+                note = "" if result.ocr_used or not hooks.ocr_wanted else "（没有安装文字识别组件，画成线条的字未识别）"
+                page.inplace_message = (
+                    f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
+                    f"{page.inplace_review} 处认不准保留原文{note}"
+                )
+                self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
+            else:
+                page.inplace_status = "kept_original"
+                page.inplace_message = result.error or "没有找到可以替换的文字，这一页保留原样"
+                self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 
     def _finalize_image_record(
         self,
@@ -3864,8 +4005,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             for page in record.pages
             if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
+        threshold = getattr(self._settings.pdf, "oversized_page_threshold", "A3")
         record.skipped_oversize_page_count = sum(
-            1 for page in record.pages if page.skipped_oversize
+            1 for page in record.pages
+            if page.skipped_oversize and page.inplace_status != "done"
+            and is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt)
         )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)
@@ -4066,13 +4210,27 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page_count: int,
         source_pages_dir: Path,
         file_name: str = "",
+        source_pdf: str = "",
     ) -> PdfPageRecord:
         page = doc.get_page(page_index)
         try:
             page_width_pt, page_height_pt = page.get_size()
-            if self._settings.pdf.skip_oversized_pages and is_oversized_page(
-                page_width_pt, page_height_pt
-            ):
+            pdf_settings = self._settings.pdf
+            oversized = is_oversized_for_threshold(
+                getattr(pdf_settings, "oversized_page_threshold", "A3"), page_width_pt, page_height_pt
+            )
+            oversized_mode = getattr(pdf_settings, "oversized_page_mode", "skip")
+            # 旧开关被直接改过（没有经过设置校验）时以它为准：关掉「跳过」就是整页图像翻译。
+            if not pdf_settings.skip_oversized_pages and oversized_mode == "skip":
+                oversized_mode = "image"
+            elif pdf_settings.skip_oversized_pages and oversized_mode == "image":
+                oversized_mode = "skip"
+            inplace = self._inplace_hooks is not None and (
+                (oversized and oversized_mode == "inplace")
+                or (not oversized and getattr(pdf_settings, "normal_page_mode", "image") == "inplace"
+                    and _page_has_text_layer(page, source_pdf, page_index))
+            )
+            if (oversized and oversized_mode in {"skip", "inplace"}) or inplace:
                 # 大幅面页从不进入模型翻译流程：不渲染栅格化预览（A3 在
                 # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
                 # 从源 PDF 把这一页矢量导入，栅格化只会拖慢流程、拉低质量。
@@ -4082,6 +4240,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     file_name=file_name,
                     status=PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
                     skipped_oversize=True,
+                    inplace_requested=inplace,
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
                 )
@@ -4914,6 +5073,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         # 无论这一页是矢量导入还是栅格化图片页，只要在这里按
                         # 顺序处理，输出页序就和原文档一致，不需要额外记录
                         # 插入位置。压缩版也走这条分支：大幅面页不能被有损压缩。
+                        if page.inplace_status == "done" and page.inplace_pdf_path and Path(page.inplace_pdf_path).exists():
+                            # 原位替换后的单页：矢量、图片都在，压缩版同样不做有损处理。
+                            inplace_doc = _open_pdf_document(Path(page.inplace_pdf_path))
+                            try:
+                                out_doc.import_pages(inplace_doc, pages=[0])
+                            finally:
+                                inplace_doc.close()
+                            continue
                         if source_doc is None:
                             source_doc = _open_pdf_document(Path(record.source_copy_path))
                         out_doc.import_pages(source_doc, pages=[page.page_number - 1])

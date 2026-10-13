@@ -52,6 +52,16 @@ export type CadCapabilityStatus = {
   detail?: string;
 };
 
+/** 文字识别组件（Tesseract OCR）状态；后端未提供时前端按 unavailable 处理。 */
+export type OcrPluginStatus = {
+  state: "connected" | "missing" | "invalid";
+  path: string;
+  version?: string | null;
+  languages: string[];
+  has_latin: boolean;
+  message?: string;
+};
+
 
 export type SseEvent = {
   id: number;
@@ -86,6 +96,15 @@ export type PdfPage = {
   /** 按「跳过 A3 及更大的页面」的尺寸判定被跳过——原始矢量内容整页直传到输出，没有译文也没有页图。
    *  和 user_skipped（用户在逐页面板里手动跳过）是两回事，展示上也必须分开：这个不是异常。 */
   skipped_oversize: boolean;
+  /** 「原位替换文字（Beta）」：这一页按设置走了原位替换。done = 已替换并装进输出；
+   *  kept_original = 没成功（出错/自检不过/没有可替换的字），输出里是原页。 */
+  inplace_requested?: boolean;
+  inplace_status?: "" | "done" | "kept_original" | "stopped";
+  inplace_written?: number;
+  inplace_kept?: number;
+  inplace_review?: number;
+  inplace_review_items?: { text: string; reason: string; box_px?: number[] }[];
+  inplace_message?: string;
   /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
    *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
   quality_flagged: boolean;
@@ -416,6 +435,24 @@ export class ApiClient {
 
   async connectCadOda(path: string): Promise<CadCapabilityStatus> {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async getOcrCapability(): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr");
+  }
+
+  async refreshOcrCapability(): Promise<OcrPluginStatus> { return this.getOcrCapability(); }
+
+  async officialOcrDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/ocr/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async connectOcrTesseract(path: string): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr/install", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async uninstallOcrPlugin(): Promise<OcrPluginStatus> {
+    return this.request<OcrPluginStatus>("/api/plugins/ocr/uninstall", { method: "POST", body: JSON.stringify({}) });
   }
 
   async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {

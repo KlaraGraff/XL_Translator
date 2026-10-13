@@ -410,7 +410,7 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
   const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
   // 按幅面跳过的 A3+ 页没有翻译，只是原样保留——不能算进「通过」。以前一份只有一页
   // A3 的文件汇总写着「1 页全部通过」，展开才看到那一页是「按幅面跳过」。
-  const isSkippedOversize = (page: PdfPage): boolean => Boolean(page.skipped_oversize);
+  const isSkippedOversize = (page: PdfPage): boolean => Boolean(page.skipped_oversize) && page.inplace_status !== "done";
   const oversize = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !flagged.includes(page) && !unfinished.includes(page) && isSkippedOversize(page));
   const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length - oversize.length;
 
@@ -865,6 +865,13 @@ function deadUnitsLabel(rows: PdfPageRow[]): string {
 function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = true): HTMLElement {
   // 按尺寸跳过的页必须排在最前面判断，而且不能落到「待复核」上：它没有译文也没有页图，
   // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
+  if (page.inplace_status === "done") {
+    const review = Number(page.inplace_review ?? 0);
+    return review > 0
+      ? createChip({ label: t("原位替换 · {0} 处保留原文", review), tone: "warn" })
+      : createChip({ label: t("原位替换"), tone: "ok" });
+  }
+  if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
   if (page.skipped_oversize) return createChip({ label: t("按幅面跳过"), tone: "mute" });
   if (page.status === "failed" || page.placeholder) {
     return createChip({ label: page.user_skipped ? t("已跳过占位") : t("生成失败"), tone: "dgr" });
@@ -913,8 +920,20 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
   return createChip({ label: t("待复核"), tone: "warn" });
 }
 
+/** 原位替换（Beta）页的说明：结果一句话 + 前几条保留原文的位置，用户能对着图找到。 */
+function inplaceNote(page: PdfPage): string {
+  const head = page.inplace_message ? tx(page.inplace_message) : "";
+  const items = (page.inplace_review_items ?? []).slice(0, 5);
+  if (!items.length) return head;
+  const list = items.map((item) => t("「{0}」{1}", item.text, tx(item.reason))).join(t("；"));
+  const more = (page.inplace_review_items ?? []).length > items.length ? t("等") : "";
+  const kept = t("保留原文的地方：{0}{1}", list, more);
+  return head ? t("{0}。{1}", head, kept) : kept;
+}
+
 function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
-  if (page.skipped_oversize) return t("幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。");
+  if (page.inplace_requested && page.inplace_status) return inplaceNote(page);
+  if (page.skipped_oversize) return t("幅面较大，未送翻译，原始内容已原样保留在输出文件中。");
   if (page.pending_action === "regenerate") return t("待执行重新生成，继续翻译后执行。");
   if (page.pending_action === "skip") return t("待执行跳过，继续翻译后执行。");
   if (page.review_summary) return tx(redactedText(page.review_summary));
@@ -973,7 +992,9 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   // 按幅面跳过的页既没有原页图也没有译文页图（压根没渲染过），重新生成也只会按同一条尺寸
   // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
   const oversizeSkipped = page.skipped_oversize;
-  const oversizeReason = t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」后重新翻译。");
+  const oversizeReason = page.inplace_requested
+    ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
+    : t("该页因幅面被跳过，未生成页图；如需翻译，请在「大幅面页面」里改选其他处理方式后重新翻译。");
 
   actionsCell.append(
     buildActionLink(

@@ -198,9 +198,10 @@ const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在常规输出之外，另生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
-  // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
-  // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
-  { key: "skipOversizedPages", label: t("跳过 A3 及更大的页面"), hint: t("长、宽均超出 A4 约 15% 以上的页面（A3 及更大，横向、纵向均适用）不翻译，按原样写入输出文件，清晰度不变。工程图纸常用此类幅面。略大于 A4 的页面（如带扫描白边）不受影响。"), default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
+  // 原来这里是「跳过 A3 及更大的页面」开关；大幅面页怎么处理现在有三种方式（原样保留 /
+  // 原位替换 / 整页图像翻译），加上普通页的「原位替换」Beta 选项，不再是单个布尔开关能
+  // 表达的，改成下面 buildPdfPageRoutingSection() 的单选卡组（见 settings.py PdfSettings
+  // 的 oversized_page_mode / oversized_page_threshold / normal_page_mode）。
 ]));
 
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
@@ -368,6 +369,15 @@ interface SurfaceState {
   /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
    *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
   cadResumeDir: string;
+  /** PDF：普通页（比大幅面小）怎么处理——image 整页图像翻译（默认）/ inplace 原位替换
+   *  文字（Beta，取不到文字层的页仍走 image）。只有 pdf surface 用，见 settings.py
+   *  PdfSettings.normal_page_mode。 */
+  pdfNormalPageMode: "image" | "inplace";
+  /** PDF：大幅面页怎么处理——skip 原样保留（默认）/ inplace 原位替换文字，保留矢量（Beta）
+   *  / image 整页图像翻译。见 PdfSettings.oversized_page_mode。 */
+  pdfOversizedPageMode: "skip" | "inplace" | "image";
+  /** PDF：从多大算大幅面。见 PdfSettings.oversized_page_threshold。 */
+  pdfOversizedPageThreshold: "A3" | "A2" | "A1" | "A0";
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -409,6 +419,9 @@ function freshState(surface: Surface): SurfaceState {
     renderer: null,
     cadCapability: null,
     cadResumeDir: "",
+    pdfNormalPageMode: "image",
+    pdfOversizedPageMode: "skip",
+    pdfOversizedPageThreshold: "A3",
   };
 }
 
@@ -623,6 +636,11 @@ function applySettingsToStates(): void {
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
+      st.pdfNormalPageMode = text(pdf.normal_page_mode) === "inplace" ? "inplace" : "image";
+      const oversizedMode = text(pdf.oversized_page_mode);
+      st.pdfOversizedPageMode = oversizedMode === "inplace" || oversizedMode === "image" ? oversizedMode : "skip";
+      const threshold = text(pdf.oversized_page_threshold);
+      st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
     } else {
       const fallbackTarget = surface === "word" ? "fr" : surface === "cad" ? "zh" : text(settings.target_lang, "en");
       st.targetLang = text(settings[`${surface}_target_lang`], fallbackTarget);
@@ -2418,6 +2436,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     scroll.append(row);
   }
 
+  if (surface === "pdf") scroll.append(buildPdfPageRoutingSection(st, active));
   if (surface === "cad") scroll.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
 
   if (!active) {
@@ -2627,6 +2646,180 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
     container.append(line);
   }
   return container;
+}
+
+// ---------------------------------------------------------------------------
+// PDF：普通页 / 大幅面页的处理方式（取代原来的「跳过 A3 及更大的页面」单个开关）。
+// 两组都是单选卡：普通页 2 选项，大幅面页在「从多大算大幅面」下拉之后再给 3 选项。
+// 落盘路径见 settings.py PdfSettings：pdf.normal_page_mode / pdf.oversized_page_mode /
+// pdf.oversized_page_threshold；旧的 pdf.skip_oversized_pages 由后端跟着同步，这里不再管它。
+// ---------------------------------------------------------------------------
+
+interface PageModeCardOption<T extends string> {
+  value: T;
+  label: string;
+  /** 「当前方案」/「Beta」角标；Beta 复用 .chip 的 warn 色（设计系统里本来就是橙色）。 */
+  tag?: { label: string; tone: ChipTone };
+  hint: string;
+}
+
+/** 单选卡组：原生 radiogroup 语义（role="radiogroup" + 每张卡 role="radio" / aria-checked），
+ *  方向键在卡片间移动并即时选中（和原生 radio 一组的行为一致），Enter / Space 选中当前卡。
+ *  为了紧凑，说明文字只在选中的卡下面展开，其它卡只留标题 + 角标（见派单里「样张」①②的
+ *  对照：没出现的说明不是漏画，是「只给选中卡」的有意简化）。 */
+function createPageModeCards<T extends string>(opts: {
+  name: string;
+  value: T;
+  disabled?: boolean;
+  options: PageModeCardOption<T>[];
+  onChange: (value: T) => void;
+}): HTMLDivElement {
+  const group = el("div", "pagecards");
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-label", opts.name);
+  opts.options.forEach((opt) => {
+    const selected = opt.value === opts.value;
+    const card = el("div", selected ? "pagecard sel" : "pagecard");
+    if (opts.disabled) card.classList.add("dis");
+    card.setAttribute("role", "radio");
+    card.setAttribute("aria-checked", String(selected));
+    card.tabIndex = opts.disabled ? -1 : selected ? 0 : -1;
+    const dot = el("span", "pagecard-dot");
+    const body = el("div", "pagecard-body");
+    const main = el("div", "pagecard-main");
+    const title = el("span", "pagecard-title");
+    title.textContent = opt.label;
+    main.append(title);
+    if (opt.tag) main.append(createChip({ label: opt.tag.label, tone: opt.tag.tone, className: "pagecard-tag" }));
+    body.append(main);
+    if (selected) {
+      const hint = el("div", "pagecard-hint");
+      hint.textContent = opt.hint;
+      body.append(hint);
+    }
+    card.append(dot, body);
+    const choose = (): void => {
+      if (opts.disabled || opt.value === opts.value) return;
+      opts.onChange(opt.value);
+    };
+    card.addEventListener("click", choose);
+    card.addEventListener("keydown", (event) => {
+      if (opts.disabled) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        focusAdjacentCard(group, card, event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1);
+      }
+    });
+    group.append(card);
+  });
+  return group;
+}
+
+/** 方向键切换焦点：按原生 radio 组的习惯，移动到的那张卡立即被选中（不需要再按 Enter）。 */
+function focusAdjacentCard(group: HTMLElement, current: HTMLElement, dir: 1 | -1): void {
+  const items = Array.from(group.querySelectorAll<HTMLElement>(".pagecard"));
+  const index = items.indexOf(current);
+  if (index < 0 || items.length < 2) return;
+  const next = items[(index + dir + items.length) % items.length];
+  next.focus();
+  next.click();
+}
+
+function buildPdfPageRoutingSection(st: SurfaceState, active: boolean): HTMLElement {
+  const wrap = el("div");
+
+  const normalSec = el("div", "rp-sec");
+  normalSec.textContent = t("普通页面（比大幅面小的页面）");
+  wrap.append(normalSec);
+  wrap.append(createPageModeCards<"image" | "inplace">({
+    name: t("普通页面（比大幅面小的页面）"),
+    value: st.pdfNormalPageMode,
+    disabled: active,
+    options: [
+      {
+        value: "image",
+        label: t("整页图像翻译"),
+        tag: { label: t("当前方案"), tone: "mute" },
+        hint: t("整页交给图像模型重新生成，排版最统一。"),
+      },
+      {
+        value: "inplace",
+        label: t("能直接取到文字时，原位替换"),
+        tag: { label: t("Beta"), tone: "warn" },
+        hint: t("只调用文本模型，更省钱；页面线条和图片不变。取不到文字的页（扫描件）仍走整页图像翻译。"),
+      },
+    ],
+    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfNormalPageMode", "pdf.normal_page_mode", value),
+  }));
+
+  const bigSec = el("div", "rp-sec");
+  bigSec.textContent = t("大幅面页面");
+  wrap.append(bigSec);
+
+  const thresholdSelect = createSelectField({
+    label: t("从多大算大幅面"),
+    options: [
+      { value: "A3", label: t("A3 及以上") },
+      { value: "A2", label: t("A2 及以上") },
+      { value: "A1", label: t("A1 及以上") },
+      { value: "A0", label: t("A0") },
+    ],
+    value: st.pdfOversizedPageThreshold,
+    disabled: active,
+    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as "A3" | "A2" | "A1" | "A0"),
+  });
+  wrap.append(thresholdSelect.root);
+
+  wrap.append(createPageModeCards<"skip" | "inplace" | "image">({
+    name: t("大幅面页面"),
+    value: st.pdfOversizedPageMode,
+    disabled: active,
+    options: [
+      {
+        value: "skip",
+        label: t("不翻译，原样保留"),
+        tag: { label: t("当前方案"), tone: "mute" },
+        hint: t("按原样写入输出文件，清晰度不变。"),
+      },
+      {
+        value: "inplace",
+        label: t("原位替换文字（保留矢量）"),
+        tag: { label: t("Beta"), tone: "warn" },
+        hint: t("线条、尺寸、表格和清晰度都不变，只把图上的文字换成译文。测试中，效果还有缺陷：认不准的字保留原文，个别标签可能只译一半，完成后列出清单。"),
+      },
+      {
+        value: "image",
+        label: t("整页图像翻译"),
+        hint: t("和普通页面一样整页重新生成。线条会变成图片，放大后可能模糊。"),
+      },
+    ],
+    onChange: (value) => void handlePdfPageRoutingChange(st, "pdfOversizedPageMode", "pdf.oversized_page_mode", value),
+  }));
+
+  return wrap;
+}
+
+/** 三个单选卡字段共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
+ *  见 persistSettingsOrRevert 顶部的说明）。 */
+async function handlePdfPageRoutingChange<K extends "pdfNormalPageMode" | "pdfOversizedPageMode" | "pdfOversizedPageThreshold">(
+  st: SurfaceState,
+  stateKey: K,
+  settingPath: string,
+  value: SurfaceState[K],
+): Promise<void> {
+  const st_ = st as unknown as Record<K, SurfaceState[K]>;
+  const prev = st_[stateKey];
+  st_[stateKey] = value;
+  rerender("pdf");
+  await persistSettingsOrRevert(
+    "pdf",
+    nestedPatch(settingPath, value),
+    () => { st_[stateKey] = prev; },
+    t("大幅面页面处理方式"),
+  );
 }
 
 function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {

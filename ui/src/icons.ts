@@ -8,6 +8,7 @@ export const ICON_NAMES = [
   "pdf",
   "cad",
   "convert",
+  "ocr",
   "tasks",
   "book",
   "gear",
@@ -63,6 +64,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // Two opposing arrows communicate DWG ↔ DXF conversion without another file glyph.
     body: '<path d="M4 7h14l-3-3M20 17H6l3 3"/>',
+  },
+  ocr: {
+    viewBox: "0 0 24 24",
+    // Corner scan brackets around a text line communicate "read text out of a picture".
+    body: '<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M7.5 10.5h9M7.5 13.5h6"/>',
   },
   tasks: {
     viewBox: "0 0 24 24",

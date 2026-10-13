@@ -221,6 +221,16 @@ class PdfPageRecord:
     # 「跳过大幅面页」命中的页面：从未提交给翻译模型，装订时从源 PDF 矢量直传。
     # UI 需要靠这个字段和别的终态区分开，单独给张「未翻译，原样保留」的角标。
     skipped_oversize: bool = False
+    # 「原位替换文字（保留矢量，Beta）」：这一页按设置走原位替换。不送图像模型，
+    # 装订时用替换后的单页 PDF（失败或自检不过则用源页，等同原样保留）。
+    inplace_requested: bool = False
+    inplace_status: str = ""          # "" | "done" | "kept_original" | "stopped"
+    inplace_pdf_path: str = ""
+    inplace_written: int = 0
+    inplace_kept: int = 0
+    inplace_review: int = 0
+    inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
+    inplace_message: str = ""
     review_enabled: bool = False
     review_status: str = "skipped"
     review_attempts: int = 0

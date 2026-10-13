@@ -77,6 +77,15 @@ class PdfSurface(Surface):
             )
             if output_error:
                 raise TaskInputError(output_error)
+        if _inplace_enabled(settings):
+            try:
+                text_model = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            except Exception as exc:  # noqa: BLE001
+                raise TaskInputError(
+                    f"「原位替换文字」要用文档翻译模型，它的设置不可用：{_model_config_reason(exc)}"
+                ) from exc
+            if not text_model.model:
+                raise TaskInputError("「原位替换文字」要用文档翻译模型，请先在模型设置里填好它。")
         try:
             image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
         except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
@@ -157,6 +166,11 @@ class PdfSurface(Surface):
                 tuple(request.connection_chains.get("translation") or ()),
             )
             profile_concurrency = _document_profile_concurrency(settings)
+        inplace_hooks = None
+        if _inplace_enabled(settings):
+            inplace_hooks = _inplace_hooks(
+                settings, tuple(request.connection_chains.get("translation") or ())
+            )
         return PdfImageTranslationRunner(
             request.files,
             settings,
@@ -167,7 +181,66 @@ class PdfSurface(Surface):
             resume_output_dir=request.options.resume_output_dir,
             profile_requester=profile_requester,
             profile_concurrency=profile_concurrency,
+            inplace_hooks=inplace_hooks,
         )
+
+
+def _inplace_enabled(settings: AppSettings) -> bool:
+    pdf = settings.pdf
+    return getattr(pdf, "oversized_page_mode", "skip") == "inplace" or getattr(pdf, "normal_page_mode", "image") == "inplace"
+
+
+def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
+    """「原位替换文字（Beta）」：文档翻译模型 + 可选的文字识别组件。
+
+    引擎在第一次用到时才建（在任务线程里，拿任务开始时的密钥快照）；批量和并发
+    沿用文档翻译模型的设置。
+    """
+    from core.document_profile import request_document_profile
+    from core.engine_dispatcher import build_role_engine, translate_texts
+    from core.model_throughput import get_model_throughput
+    from core.ocr_engine import resolve_tesseract, tesseract_languages
+    from core.pdf_vector import InplaceHooks
+    from engines.base_engine import engine_supports_chat
+
+    state: dict[str, Any] = {}
+    lock = threading.Lock()
+
+    def engine():
+        with lock:
+            if "engine" not in state:
+                state["engine"] = build_role_engine(settings, "translation", connection_ids=connection_ids)
+            return state["engine"]
+
+    try:
+        throughput = get_model_throughput(settings, resolve_effective_model_config(settings, ROLE_TRANSLATION))
+        batch_size = int(throughput.batch_size or 20)
+        concurrency = 1 if settings.engine.mode == "local" else int(throughput.concurrency or 4)
+    except Exception as exc:  # noqa: BLE001 - defaults are fine for a Beta path
+        logger.debug(f"[PDF] 原位替换：读取文档翻译模型批量设置失败：{exc!r}")
+        batch_size, concurrency = 20, 4
+
+    def translate(texts: list[str], prompt: str, should_stop=None) -> dict:
+        return translate_texts(texts, engine(), "zh", prompt, batch_size=batch_size,
+                               concurrency=concurrency, source_lang="auto", should_stop=should_stop)
+
+    profile = None
+    if getattr(settings.pdf, "smart_context", False):
+        def profile(texts: list[str]) -> str:
+            eng = engine()
+            if not engine_supports_chat(eng):
+                return ""
+            return request_document_profile(eng.chat, texts, target_language="简体中文")
+
+    exe = resolve_tesseract()
+    return InplaceHooks(
+        translate=translate,
+        profile=profile,
+        tesseract=str(exe) if exe else None,
+        tesseract_languages=tesseract_languages(exe) if exe else None,
+        source_lang="auto",
+        ocr_wanted=True,
+    )
 
 
 def _document_profile_concurrency(settings: AppSettings) -> int:
