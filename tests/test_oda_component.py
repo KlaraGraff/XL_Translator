@@ -201,7 +201,8 @@ def test_record_cannot_point_outside(mac, value):
 
 
 class FakeWindows:
-    def __init__(self, status: str = "Valid", subject: str = "CN=Open Design Alliance, O=Open Design Alliance, C=US",
+    def __init__(self, status: str = "Valid",
+                 subject: str = "CN=OPEN DESIGN ALLIANCE, O=OPEN DESIGN ALLIANCE, L=Scottsdale, S=Arizona, C=US",
                  msi_code: int = 0) -> None:
         self.status = status
         self.subject = subject
@@ -243,6 +244,7 @@ def test_windows_unpack_checks_signature_then_extracts(monkeypatch, tmp_path):
 @pytest.mark.parametrize("fake, message", [
     (FakeWindows(status="NotSigned"), oda.SIGNATURE_FAILED),
     (FakeWindows(subject="CN=Someone Else"), oda.SIGNATURE_FAILED),
+    (FakeWindows(subject="CN=Open Design Alliance, O=Someone Else, C=US"), oda.SIGNATURE_FAILED),
     (FakeWindows(msi_code=1603), oda.UNPACK_FAILED),
 ])
 def test_windows_rejects_bad_packages(monkeypatch, tmp_path, fake, message):

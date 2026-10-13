@@ -291,7 +291,11 @@ def _powershell(script: str, timeout: float, **variables: str) -> subprocess.Com
 def _windows_signature_ok(package: Path) -> bool:
     result = _powershell(_AUTHENTICODE, 120, ODA_PACKAGE=str(package))
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if result.returncode != 0 or len(lines) < 2 or lines[0] != "Valid" or SIGNER not in lines[1]:
+    # 证书的组织（O=）必须是 ODA；2026-10 实测 Subject 为全大写的
+    # "CN=OPEN DESIGN ALLIANCE, O=OPEN DESIGN ALLIANCE, L=Scottsdale, S=Arizona, C=US"。
+    organizations = {part.strip()[2:].strip().casefold() for part in (lines[1] if len(lines) > 1 else "").split(",")
+                     if part.strip().upper().startswith("O=")}
+    if result.returncode != 0 or len(lines) < 2 or lines[0] != "Valid" or SIGNER.casefold() not in organizations:
         logger.warning(f"[图纸转换工具] 安装包签名核对未通过：{lines} {result.stderr[-400:]}")
         return False
     return True
