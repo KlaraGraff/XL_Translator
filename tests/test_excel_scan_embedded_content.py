@@ -184,6 +184,29 @@ def _legacy_comments_xml(refs: list[str]) -> bytes:
     ).encode()
 
 
+def _sheet_comment_rels(comments: str = "", threaded: str = "") -> dict[str, bytes]:
+    """Sheet1 的关系文件，指向批注部件。扫描按关系找批注，和翻译时读取的方式一致。"""
+    rels = []
+    if comments:
+        rels.append(
+            '<Relationship Id="rIdC1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+            f'relationships/comments" Target="{comments}"/>'
+        )
+    if threaded:
+        rels.append(
+            '<Relationship Id="rIdT1" Type="http://schemas.microsoft.com/office/2017/10/'
+            f'relationships/threadedComment" Target="{threaded}"/>'
+        )
+    return {
+        "xl/worksheets/_rels/sheet1.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(rels)
+            + "</Relationships>"
+        ).encode()
+    }
+
+
 def _threaded_comments_xml(entries: list[tuple[str, bool]]) -> bytes:
     """新版对话式批注部件。第二项为 True 表示这条是回复（挂在同一个格子上）。"""
     body = "".join(
@@ -327,7 +350,10 @@ class ExcelScanEmbeddedContentTests(unittest.TestCase):
     def test_legacy_comments_are_counted_per_cell(self) -> None:
         path = self.root / "notes.xlsx"
         _build_base_xlsx(path)
-        _inject_parts(path, {"xl/comments1.xml": _legacy_comments_xml(["B2", "C7"])})
+        _inject_parts(
+            path,
+            {"xl/comments1.xml": _legacy_comments_xml(["B2", "C7"]), **_sheet_comment_rels("../comments1.xml")},
+        )
 
         item, result = self._scan_single(path)
         self.assertEqual(item.comment_count, 2)
@@ -346,12 +372,42 @@ class ExcelScanEmbeddedContentTests(unittest.TestCase):
                 "xl/threadedComments/threadedComment1.xml": _threaded_comments_xml(
                     [("B2", False), ("B2", True), ("D4", False)],
                 ),
+                **_sheet_comment_rels("../comments1.xml", "../threadedComments/threadedComment1.xml"),
             },
         )
 
         item, _result = self._scan_single(path)
         # B2 一条（含一条回复）+ D4 一条 = 2
         self.assertEqual(item.comment_count, 2)
+
+    def test_comments_written_by_openpyxl_are_counted(self) -> None:
+        # openpyxl 把批注存成 xl/comments/comment1.xml，不是 Excel 的 xl/comments1.xml。
+        # 以前按文件名找，这类表扫描时批注数显示 0，翻译时其实照样翻了。
+        from openpyxl.comments import Comment
+
+        path = self.root / "openpyxl_comments.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "hello"
+        ws["A1"].comment = Comment("第一条批注", "tester")
+        ws["C3"].comment = Comment("第二条批注", "tester")
+        wb.save(path)
+        wb.close()
+        with zipfile.ZipFile(path) as archive:
+            self.assertIn("xl/comments/comment1.xml", archive.namelist())
+
+        item, result = self._scan_single(path)
+        self.assertEqual(item.comment_count, 2)
+        self.assertEqual(result.summary["comment_count"], 2)
+
+    def test_comment_part_not_linked_from_any_sheet_is_ignored(self) -> None:
+        # 没有工作表引用的批注部件，翻译时也不会读，扫描不能把它算进去。
+        path = self.root / "orphan_comments.xlsx"
+        _build_base_xlsx(path)
+        _inject_parts(path, {"xl/comments1.xml": _legacy_comments_xml(["B2"])})
+
+        item, _result = self._scan_single(path)
+        self.assertEqual(item.comment_count, 0)
 
     def test_clean_workbook_has_zero_comments_not_none(self) -> None:
         path = self.root / "clean_comments.xlsx"
@@ -375,7 +431,7 @@ class ExcelScanEmbeddedContentTests(unittest.TestCase):
     def test_corrupt_comments_part_does_not_fail_the_scan(self) -> None:
         path = self.root / "corrupt_comments.xlsx"
         _build_base_xlsx(path)
-        _inject_parts(path, {"xl/comments1.xml": b"<not-well-formed-xml"})
+        _inject_parts(path, {"xl/comments1.xml": b"<not-well-formed-xml", **_sheet_comment_rels("../comments1.xml")})
 
         item, _result = self._scan_single(path)
         self.assertEqual(item.comment_count, 0)
