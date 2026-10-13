@@ -24,10 +24,10 @@ const RATE_LIMIT_PER_HOUR = 10;
 const CATEGORY_LABELS = { problem: "问题", suggestion: "建议", other: "其他" };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
-      if (request.method === "POST" && url.pathname === "/v1/feedback") return await handleFeedback(request, env, url);
+      if (request.method === "POST" && url.pathname === "/v1/feedback") return await handleFeedback(request, env, url, ctx);
       if (request.method === "GET" && url.pathname.startsWith("/v1/files/")) return await handleDownload(env, url);
       if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
       return json({ error: "not_found" }, 404);
@@ -37,10 +37,60 @@ export default {
     }
   },
 
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(deleteResolvedPackages(env).catch((error) => console.error("cleanup failed", error && error.message)));
+  async scheduled(event, env, ctx) {
+    if (event.cron === CLEANUP_CRON) {
+      ctx.waitUntil(deleteResolvedPackages(env).catch((error) => console.error("cleanup failed", error && error.message)));
+    } else {
+      ctx.waitUntil(wakeRoutine(env, { retryOnly: true }).catch((error) => console.error("routine wake failed", error && error.message)));
+    }
   },
 };
+
+const CLEANUP_CRON = "0 3 * * *";
+
+// 收到反馈后叫醒 Claude 的「每日反馈检查」定时任务（它的 API 触发地址），不用等到第二天早上。
+// 一次运行会处理所有没处理的反馈，所以 30 分钟内最多叫一次；被挡下的记一笔，由每 30 分钟的
+// 定时检查补叫，保证新反馈最晚约一小时内有人看。只发固定的一句提醒，不带用户写的任何内容。
+// 没配 ROUTINE_FIRE_URL / ROUTINE_FIRE_TOKEN 时什么都不做。
+const WAKE_INTERVAL_MS = 30 * 60 * 1000;
+const WAKE_TEXT = "反馈中转站：收到新的用户反馈，请按例行规则处理私有仓库里未处理的 issue。";
+
+export async function wakeRoutine(env, { retryOnly = false, now = Date.now() } = {}) {
+  if (!env.ROUTINE_FIRE_URL || !env.ROUTINE_FIRE_TOKEN) return "disabled";
+  const pending = (await env.FEEDBACK.get("wake:pending")) === "1";
+  if (retryOnly && !pending) return "idle";
+  const last = Number((await env.FEEDBACK.get("wake:last")) || 0);
+  if (now - last < WAKE_INTERVAL_MS) {
+    await env.FEEDBACK.put("wake:pending", "1");
+    return "deferred";
+  }
+  await env.FEEDBACK.put("wake:last", String(now));
+  let status = 0;
+  try {
+    const response = await fetch(env.ROUTINE_FIRE_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.ROUTINE_FIRE_TOKEN}`,
+        "anthropic-beta": "experimental-cc-routine-2026-04-01",
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: WAKE_TEXT }),
+    });
+    status = response.status;
+  } catch (error) {
+    console.error("routine wake failed", error && error.message);
+  }
+  if (status < 200 || status >= 300) {
+    // 没叫醒就留着待办，下一轮定时检查再试；每天的例行检查也会兜底。
+    await env.FEEDBACK.put("wake:pending", "1");
+    await env.FEEDBACK.delete("wake:last");
+    if (status) console.error("routine wake failed", status);
+    return "failed";
+  }
+  await env.FEEDBACK.delete("wake:pending");
+  return "fired";
+}
 
 // 已修好、等发版通知的问题也算处理完毕：用户的文件已经用不上了。
 const RESOLVED_OPEN_LABEL = "待通知";
@@ -91,7 +141,7 @@ function githubHeaders(env) {
   };
 }
 
-async function handleFeedback(request, env, url) {
+async function handleFeedback(request, env, url, ctx) {
   const declared = Number(request.headers.get("Content-Length") || 0);
   if (declared > MAX_PACKAGE_BYTES + 1024 * 1024) return json({ error: "too_large" }, 413);
 
@@ -144,6 +194,9 @@ async function handleFeedback(request, env, url) {
     if (hasPackage) await deletePackage(env, id);
     return json({ error: "upstream" }, 502);
   }
+  const wake = wakeRoutine(env).catch((error) => console.error("routine wake failed", error && error.message));
+  if (ctx) ctx.waitUntil(wake);
+  else await wake;
   return json({ ok: true, id });
 }
 

@@ -1,7 +1,7 @@
 // 反馈中转站（feedback-relay/src/index.js）的行为测试：用内存 KV 和假的 GitHub API 跑一遍。
 // 运行：node tests/feedback_relay.test.mjs
 import assert from "node:assert/strict";
-import worker, { deleteResolvedPackages, issueBody, issueTitle } from "../feedback-relay/src/index.js";
+import worker, { deleteResolvedPackages, issueBody, issueTitle, wakeRoutine } from "../feedback-relay/src/index.js";
 
 function memoryKv() {
   const store = new Map();
@@ -176,6 +176,52 @@ const META = {
     assert.ok(!github[0].body.includes("/v1/files/") && github[0].body.includes("### 描述"));
     // 第二次运行不再重复处理。
     assert.deepEqual(await deleteResolvedPackages(env), []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// 收到反馈叫醒「每日反馈检查」：30 分钟内只叫一次，被挡下或失败的由每 30 分钟的定时检查补叫；
+// 只发固定提醒，不带用户内容；没配令牌时什么都不做。
+{
+  const env = { ...makeEnv(), ROUTINE_FIRE_URL: "https://api.example/routines/trig_x/fire", ROUTINE_FIRE_TOKEN: "routine-token" };
+  const fires = [];
+  let fireStatus = 200;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (url === env.ROUTINE_FIRE_URL) {
+      assert.equal(init.headers.Authorization, "Bearer routine-token");
+      assert.equal(init.headers["anthropic-beta"], "experimental-cc-routine-2026-04-01");
+      fires.push(JSON.parse(init.body).text);
+      return new Response("{}", { status: fireStatus });
+    }
+    return realFetch(url, init);
+  };
+  try {
+    const t0 = Date.UTC(2026, 9, 13, 12, 0);
+    assert.equal(await wakeRoutine({ ...env, ROUTINE_FIRE_TOKEN: "" }, { now: t0 }), "disabled");
+    assert.equal(await wakeRoutine(env, { retryOnly: true, now: t0 }), "idle");
+
+    // 提交反馈后马上叫醒一次，提醒里没有用户写的内容。
+    const response = await worker.fetch(feedbackRequest(META, undefined, "8.0.0.1"), env);
+    assert.equal(response.status, 200);
+    assert.equal(fires.length, 1);
+    assert.ok(!fires[0].includes("导出时报错") && !fires[0].includes("a@b.c"));
+
+    // 30 分钟内再来：不叫，记待办；定时检查在间隔过后补叫一次，之后无事可做。
+    const last = Number(await env.FEEDBACK.get("wake:last"));
+    assert.equal(await wakeRoutine(env, { now: last + 10 * 60 * 1000 }), "deferred");
+    assert.equal(await wakeRoutine(env, { retryOnly: true, now: last + 20 * 60 * 1000 }), "deferred");
+    assert.equal(await wakeRoutine(env, { retryOnly: true, now: last + 31 * 60 * 1000 }), "fired");
+    assert.equal(fires.length, 2);
+    assert.equal(await wakeRoutine(env, { retryOnly: true, now: last + 70 * 60 * 1000 }), "idle");
+
+    // 叫醒失败：留待办、不占间隔，下一轮定时检查再试。
+    fireStatus = 500;
+    assert.equal(await wakeRoutine(env, { now: last + 80 * 60 * 1000 }), "failed");
+    fireStatus = 200;
+    assert.equal(await wakeRoutine(env, { retryOnly: true, now: last + 81 * 60 * 1000 }), "fired");
+    assert.equal(fires.length, 4);
   } finally {
     globalThis.fetch = realFetch;
   }

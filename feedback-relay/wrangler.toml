@@ -1,16 +1,19 @@
 # 反馈中转站的部署配置。KV 命名空间的 id 由部署流程（.github/workflows/feedback-relay.yml）
-# 查到或新建后替换进来，这里只放占位符；密钥（GITHUB_TOKEN、LINK_SECRET）不进仓库。
+# 查到或新建后替换进来，这里只放占位符；密钥（GITHUB_TOKEN、LINK_SECRET、ROUTINE_FIRE_TOKEN）不进仓库。
 name = "xl-translator-feedback"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
 
-# 每天删一次已处理完毕的反馈包（见 src/index.js 的 deleteResolvedPackages）。
+# 每天 03:00 删一次已处理完毕的反馈包（见 src/index.js 的 deleteResolvedPackages）；
+# 每 30 分钟补叫一次之前被限频挡下或没叫醒的「每日反馈检查」（见 wakeRoutine）。
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["0 3 * * *", "*/30 * * * *"]
 
 [vars]
 FEEDBACK_REPO = "KlaraGraff/XL_Translator-feedback"
+# Claude「每日反馈检查」定时任务的 API 触发地址；令牌 ROUTINE_FIRE_TOKEN 是密钥，不进仓库。
+ROUTINE_FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/trig_01W6JGQbdhoCUutqq1ojAZfM/fire"
 
 [[kv_namespaces]]
 binding = "FEEDBACK"
