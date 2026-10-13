@@ -65,6 +65,7 @@ import {
   renderModelsPage,
 } from "./settings-models";
 import "./settings.css";
+import { docPromptAnatomy, openPromptAnatomy, pdfPromptAnatomy, promptAnatomyButton, type PromptAnatomy } from "./prompt-anatomy";
 import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLocale, t, tx, type Locale, localized } from "../i18n";
 
 // ---------------------------------------------------------------------------
@@ -1561,6 +1562,46 @@ function smartContextRow(checked: boolean, note: string, persist: (checked: bool
   return row;
 }
 
+const PARAMS_SURFACE_LABELS: Record<ParamsSurface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+
+/** 按已保存的设置写出这一页的提示词组成（「?」弹窗的内容）。 */
+function buildPromptAnatomy(surface: ParamsSurface): PromptAnatomy {
+  if (surface === "pdf") {
+    const pdf = pdfParamsSettings();
+    return pdfPromptAnatomy({
+      smartContext: pdf.smart_context !== false,
+      reviewEnabled: pdf.review_enabled === true,
+      route: text(pdf.translation_route) === "auto" ? "auto" : "image",
+      scanRoute: text(pdf.auto_scan_route, "image"),
+      textRoute: text(pdf.auto_text_route, "word"),
+      drawingRoute: text(pdf.auto_drawing_route, "inplace"),
+      fallback: text(pdf.auto_fallback, "image"),
+    });
+  }
+  const domain = domainSettingsFor(surface);
+  const entry = domain.preset !== NO_EXTRA_PROMPT ? domain.customPrompts[domain.preset] : undefined;
+  const extraText = entry
+    ? (entry._base || entry[targetLangForDomain(surface)] || Object.values(entry).find((value) => value.trim()) || "")
+    : "";
+  return docPromptAnatomy({
+    surface,
+    corePrompt,
+    extraName: domain.preset,
+    extraText,
+    smartContext: domain.smartContext,
+    termRetries: num(record(settings?.tm).term_retry_attempts, 2),
+  });
+}
+
+/** 提示词设置的卡片标题：标题旁一个「?」，点开组成说明弹窗。 */
+function promptCardHead(surface: ParamsSurface, tools: HTMLElement[] = []): HTMLDivElement {
+  const head = tcHead(t("提示词设置"), tools);
+  head.querySelector("b")?.after(promptAnatomyButton(() => {
+    openPromptAnatomy(PARAMS_SURFACE_LABELS[surface], buildPromptAnatomy(surface));
+  }));
+  return head;
+}
+
 /** PDF 的提示词设置：PDF 只有「自动识别场景」一项可调，内置规则由程序按页面固定生成。 */
 function renderPdfPromptCard(): HTMLDivElement {
   const card = createCard([]);
@@ -1574,7 +1615,7 @@ function renderPdfPromptCard(): HTMLDivElement {
     t("开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。"),
     (checked) => saveSettingPath("pdf.smart_context", checked),
   ));
-  card.append(tcHead(t("提示词设置")), body);
+  card.append(promptCardHead("pdf"), body);
   return card;
 }
 
@@ -1906,7 +1947,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     createButton({ label: t("导出提示词"), size: "mini", onClick: () => void exportPromptConfig() }),
     createButton({ label: t("导入提示词"), size: "mini", onClick: () => importPromptConfig() }),
   );
-  card.append(tcHead(t("提示词设置"), tools), body);
+  card.append(promptCardHead(surface, tools), body);
   return card;
 }
 
