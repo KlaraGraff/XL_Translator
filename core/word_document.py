@@ -11,6 +11,8 @@ import threading
 import uuid
 import zipfile
 from copy import deepcopy
+
+from lxml import etree
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
@@ -2949,7 +2951,11 @@ def _replace_paragraph_text(
 def _adopt_dominant_run_shape(anchor, runs: list) -> None:
     """整段译文写进第一个 run，就沿用第一个 run 的格式。段首只是一个加粗的小标签
     （「Abstract —」「Note:」）时，整段译文都会变成加粗。第一个 run 的字数不到全段
-    一半时，改用字数最多的那个 run 的格式。"""
+    一半时，改用覆盖字数最多的那种格式。
+
+    按格式累计字数，不是挑最长的一个 run：PDF 转来的段落一行一个 run，加粗的首行
+    往往是最长的一行，正文却分在后面几行里。超链接里的 run 不算，免得整段译文
+    套上链接样式（蓝色下划线）而链接本身已经没了。"""
     lengths = [(len(run.text or ""), run) for run in runs]
     total = sum(length for length, _run in lengths)
     if total == 0:
@@ -2957,8 +2963,20 @@ def _adopt_dominant_run_shape(anchor, runs: list) -> None:
     anchor_len = next((length for length, run in lengths if run._r is anchor._r), 0)
     if anchor_len * 2 >= total:
         return
-    _length, dominant = max(lengths, key=lambda item: item[0])
-    if dominant._r is anchor._r:
+
+    def look(run) -> bytes:
+        rpr = run._r.find(qn("w:rPr"))
+        return b"" if rpr is None else etree.tostring(rpr)
+
+    by_look: dict[bytes, list] = {}
+    for length, run in lengths:
+        if length and run._r.getparent().tag != qn("w:hyperlink"):
+            entry = by_look.setdefault(look(run), [0, run])
+            entry[0] += length
+    if not by_look:
+        return
+    _count, dominant = max(by_look.values(), key=lambda item: item[0])
+    if dominant._r is anchor._r or look(dominant) == look(anchor):
         return
     source = dominant._r.find(qn("w:rPr"))
     current = anchor._r.find(qn("w:rPr"))

@@ -219,12 +219,14 @@ def _join_soft_breaks(paragraph) -> int:
                 before.clear()
                 continue
             (after if seen else before).append(node.text or "")
-        head, tail = "".join(before).rstrip(), "".join(after).strip()
+        raw_head, raw_tail = "".join(before), "".join(after)
+        head, tail = raw_head.rstrip(), raw_tail.strip()
         if not tail or not head or not re.search(r"[^\W\d_]", head) or head.endswith(_SENTENCE_END):
             continue
         run = br.getparent()
         t = run.makeelement(qn("w:t"), {})
-        t.text = " "
+        # 折行前后本来就带空格（pdf2docx 常见）时不再加，免得原文里出现两个空格
+        t.text = "" if raw_head[-1:].isspace() or raw_tail[:1].isspace() else " "
         t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
         run.replace(br, t)
         joined += 1
@@ -259,6 +261,11 @@ def _restore_spaces_in(paragraph, words: set[str]) -> int:
     from docx.oxml.ns import qn
 
     added = 0
+    weight: dict[bytes, int] = {}
+    for t in paragraph._p.iter(qn("w:t")):
+        key = _run_look_xml(t.getparent())
+        weight[key] = weight.get(key, 0) + len(t.text or "")
+    base = max(weight, key=weight.get) if weight else b""
     prev = None  # 上一个 w:t
     for node in paragraph._p.iter(qn("w:t"), qn("w:br"), qn("w:tab"), qn("w:cr")):
         if node.tag != qn("w:t"):
@@ -273,11 +280,27 @@ def _restore_spaces_in(paragraph, words: set[str]) -> int:
         if (prev is not None and not script and prev.getparent() is not run
                 and _SPACE_BEFORE.search(prev.text or "") and _SPACE_AFTER.match(text)
                 and not _split_word(prev.text or "", text, words)):
-            node.text = " " + text
-            node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            # 两段格式不同时，空格补在段落主体格式那一侧，免得落进加粗、链接这类格式
+            # 标记里（译文里成了「<g1> STOP</g1>」）。
+            target = node
+            if _run_look_xml(run) != _run_look_xml(prev.getparent()) and _run_look_xml(prev.getparent()) == base:
+                target = prev
+            if target is node:
+                node.text = " " + text
+            else:
+                prev.text = (prev.text or "") + " "
+            target.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
             added += 1
         prev = None if script else node
     return added
+
+
+def _run_look_xml(run) -> bytes:
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    rpr = run.find(qn("w:rPr")) if run is not None else None
+    return b"" if rpr is None else etree.tostring(rpr)
 
 
 def _split_word(before: str, after: str, words: set[str]) -> bool:

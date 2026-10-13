@@ -1118,10 +1118,10 @@ class PdfSettings(BaseModel):
     skip_oversized_pages: bool = True
     # 翻译方式（Beta 分支新增，见 core.pdf_routes）：
     #   image —— 整页图像翻译（默认，和以前一样；大幅面页按上面的开关跳过或翻译）
-    #   auto  —— 自动组合：逐页按类型处理，扫描页按 auto_scan_route，正文页按
-    #            auto_text_route（转 Word 时连续的正文页合成一段转 Word 翻译，再转回
-    #            PDF 拼回原位；整份都是正文的文件直接输出 Word），图纸和大幅面页按
-    #            auto_drawing_route；首选用不了时按 auto_fallback 保底。
+    #   auto  —— 自动组合：逐页按类型处理，扫描页按 auto_scan_route，可提取文字的页
+    #            按 auto_text_route（转 Word 时连续几页合成一段转 Word 翻译，再转回
+    #            PDF 拼回原位；输出始终是 PDF，also_save_word 可另存 Word），图纸和
+    #            大幅面页按 auto_drawing_route；首选用不了时按 auto_fallback 保底。
     # 分支早先还有 inplace / word 两个单一路线，读到时换算成等价的自动组合（见下面的
     # 校验）。没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
     translation_route: Literal["image", "inplace", "word", "auto"] = "image"
@@ -1157,7 +1157,21 @@ class PdfSettings(BaseModel):
                 auto_text_route="word",
                 auto_drawing_route="image" if migrated.get("skip_oversized_pages") is False else "skip",
             )
+        # 认不出的取值（比如更新版本写下的新选项）退回默认，不能让整份设置读不进来。
+        for key, allowed in _PDF_ROUTE_CHOICES.items():
+            if key in migrated and migrated[key] not in allowed:
+                migrated.pop(key)
         return migrated
+
+
+_PDF_ROUTE_CHOICES: dict[str, tuple[str, ...]] = {
+    "translation_route": ("image", "auto"),
+    "auto_scan_route": ("image", "skip"),
+    "auto_text_route": ("word", "inplace", "image"),
+    "auto_drawing_route": ("inplace", "skip", "image"),
+    "auto_fallback": ("image", "skip"),
+    "oversized_page_threshold": ("A3", "A2", "A1", "A0"),
+}
 
 
 class ModelThroughputSettings(BaseModel):

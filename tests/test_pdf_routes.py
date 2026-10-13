@@ -93,6 +93,13 @@ class PageRouteTests(unittest.TestCase):
         word_no_skip = PdfSettings(translation_route="word", skip_oversized_pages=False)
         self.assertEqual(word_no_skip.auto_drawing_route, "image")
 
+    def test_unknown_route_values_fall_back_to_defaults(self) -> None:
+        # a newer build may write options this one does not know: never refuse the file
+        pdf = PdfSettings.model_validate({"translation_route": "auto", "auto_text_route": "ocr",
+                                          "oversized_page_threshold": "A5", "auto_fallback": "skip"})
+        self.assertEqual((pdf.translation_route, pdf.auto_text_route, pdf.oversized_page_threshold,
+                          pdf.auto_fallback), ("auto", "word", "A3", "skip"))
+
 
 
 def _text_page(doc) -> None:
@@ -266,6 +273,43 @@ class WordConversionCleanupTests(unittest.TestCase):
         self.assertEqual(texts[2], "中文内容")
         self.assertEqual(texts[3], "the eval builtin")
 
+    def test_restored_space_stays_outside_a_formatted_run(self) -> None:
+        from docx import Document
+
+        from core.pdf_word_route import restore_word_spaces
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "marks.docx"
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("Press the")
+        p.add_run("STOP").bold = True
+        p.add_run("button.")
+        doc.save(path)
+        restore_word_spaces(path, set())
+        runs = [run.text for run in Document(str(path)).paragraphs[0].runs]
+        self.assertEqual(runs, ["Press the ", "STOP", " button."])
+
+    def test_soft_break_after_a_trailing_space_adds_no_second_space(self) -> None:
+        from docx import Document
+        from docx.enum.text import WD_BREAK
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "br.docx"
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("may open the cabinet and replace the ")
+        p.add_run().add_break(WD_BREAK.LINE)
+        p.add_run("fuses after isolation.")
+        doc.save(path)
+        merge_wrapped_lines(path)
+        self.assertEqual(Document(str(path)).paragraphs[0].text,
+                         "may open the cabinet and replace the fuses after isolation.")
+
     def test_row_heights_are_loosened(self) -> None:
         from core.pdf_word_route import loosen_row_heights_xml
 
@@ -297,6 +341,47 @@ class DominantRunShapeTests(unittest.TestCase):
         p.add_run(" (2024)")
         _replace_paragraph_text(p, "ICAO 护照照片一般要求（2024）", target_lang="zh")
         self.assertTrue(next(run for run in p.runs if run.text).bold)
+
+
+    def test_bold_first_line_of_a_converted_paragraph_does_not_win(self) -> None:
+        # pdf2docx: one run per line; the bold first line is the longest single run,
+        # but most of the paragraph is regular text.
+        from docx import Document
+
+        from core.word_document import _replace_paragraph_text
+
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("Warning: the cabinet must only be opened by qualified staff members").bold = True
+        p.add_run("after the supply has been isolated and locked out at the ")
+        p.add_run("main switch, and the residual voltage has been verified as safe.")
+        _replace_paragraph_text(p, "警告：……", target_lang="zh")
+        self.assertFalse(next(run for run in p.runs if run.text).bold)
+
+    def test_a_leading_link_does_not_style_the_whole_translation(self) -> None:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        from core.word_document import _replace_paragraph_text
+
+        doc = Document()
+        p = doc.add_paragraph()
+        link = OxmlElement("w:hyperlink")
+        run = OxmlElement("w:r")
+        rpr = OxmlElement("w:rPr")
+        style = OxmlElement("w:rStyle")
+        style.set(qn("w:val"), "Hyperlink")
+        rpr.append(style)
+        run.append(rpr)
+        text = OxmlElement("w:t")
+        text.text = "Installation and maintenance manual for the pump"
+        run.append(text)
+        link.append(run)
+        p._p.append(link)
+        p.add_run(" p. 12")
+        _replace_paragraph_text(p, "泵的安装和维护手册 第 12 页", target_lang="zh")
+        self.assertNotIn("Hyperlink", p._p.xml.split("泵的安装")[0].rsplit("<w:r>", 1)[-1])
 
 
 class EastAsianLangTests(unittest.TestCase):
