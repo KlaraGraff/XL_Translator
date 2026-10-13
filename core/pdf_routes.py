@@ -96,19 +96,99 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
     return PageKind(page_number, KIND_DRAWING if drawing else KIND_TEXT, False, words, items, slanted)
 
 
+def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind:
+    """没装「PDF 处理组件」时用随安装包分发的 pypdfium2 判断，规则同 classify_page。
+
+    计数口径和 PyMuPDF 不完全一样（矩形按几条边计），但只用来分扫描页、空白页、可提取
+    文字的页和图纸：没有组件时后两种都改用保底方式，差别不影响结果。
+    """
+    import ctypes
+
+    import pypdfium2.raw as pdfium_c
+
+    if oversized:
+        return PageKind(page_number, KIND_DRAWING, True)
+    has_ink = False
+    visible = items = slanted = curve_points = 0
+    x, y = ctypes.c_float(), ctypes.c_float()
+    textpage = page.get_textpage()
+    try:
+        for obj in page.get_objects(max_depth=8):
+            kind = obj.type
+            if kind == pdfium_c.FPDF_PAGEOBJ_FORM:
+                continue
+            if kind == pdfium_c.FPDF_PAGEOBJ_TEXT:
+                # 扫描件「可搜索 PDF」叠的隐形文字层不算：看得见的字是像素。
+                if pdfium_c.FPDFTextObj_GetTextRenderMode(obj.raw) != pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE:
+                    # 返回的是 UTF-16 字节数，含结尾的两个零字节。
+                    size = pdfium_c.FPDFTextObj_GetText(obj.raw, textpage.raw, None, 0)
+                    visible += max(0, (int(size) - 2) // 2)
+                continue
+            has_ink = True
+            if kind != pdfium_c.FPDF_PAGEOBJ_PATH or items >= _DRAWING_ITEMS or slanted >= _DRAWING_SLANTED_ITEMS:
+                continue
+            last = None
+            for index in range(pdfium_c.FPDFPath_CountSegments(obj.raw)):
+                segment = pdfium_c.FPDFPath_GetPathSegment(obj.raw, index)
+                if not segment or not pdfium_c.FPDFPathSegment_GetPoint(segment, ctypes.byref(x), ctypes.byref(y)):
+                    continue
+                point = (x.value, y.value)
+                seg_type = pdfium_c.FPDFPathSegment_GetType(segment)
+                if seg_type == pdfium_c.FPDF_SEGMENT_LINETO:
+                    items += 1
+                    if last is not None and abs(point[0] - last[0]) > 0.5 and abs(point[1] - last[1]) > 0.5:
+                        slanted += 1
+                elif seg_type == pdfium_c.FPDF_SEGMENT_BEZIERTO:
+                    curve_points += 1
+                    if curve_points % 3 == 0:  # 一段曲线三个点
+                        items += 1
+                        slanted += 1
+                last = point
+        text = textpage.get_text_bounded() if visible >= _VISIBLE_MIN_CHARS else ""
+    finally:
+        textpage.close()
+    if visible < _VISIBLE_MIN_CHARS:
+        return PageKind(page_number, KIND_SCAN if has_ink else KIND_BLANK, False)
+    words = sum(1 for token in (text or "").split() if any(ch.isalpha() for ch in token))
+    drawing = slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
+    return PageKind(page_number, KIND_DRAWING if drawing else KIND_TEXT, False, words, items, slanted)
+
+
+def _classify_with_pdfium(path: str | Path, *, is_oversized) -> list[PageKind]:
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(path))
+    try:
+        pages: list[PageKind] = []
+        for index in range(len(doc)):
+            page = doc[index]
+            try:
+                width, height = page.get_size()
+                pages.append(classify_page_pdfium(page, index + 1, oversized=is_oversized(width, height)))
+            finally:
+                page.close()
+        return pages
+    finally:
+        doc.close()
+
+
 def classify_document(path: str | Path, *, is_oversized) -> DocumentKind:
     """Sort one PDF into text document / drawing / scan / mixed.
 
     ``is_oversized(width_pt, height_pt)`` decides the large-format pages.
     """
-    try:
-        import fitz
+    from core.pdf_component import is_available, require_fitz
 
-        with fitz.open(path) as doc:
-            pages = [
-                classify_page(page, index + 1, oversized=is_oversized(page.rect.width, page.rect.height))
-                for index, page in enumerate(doc)
-            ]
+    try:
+        if not is_available(refresh=True):
+            pages = _classify_with_pdfium(path, is_oversized=is_oversized)
+        else:
+            fitz = require_fitz()
+            with fitz.open(path) as doc:
+                pages = [
+                    classify_page(page, index + 1, oversized=is_oversized(page.rect.width, page.rect.height))
+                    for index, page in enumerate(doc)
+                ]
     except Exception as exc:  # noqa: BLE001 - unreadable: let the page route handle it
         return DocumentKind(KIND_MIXED, [], error=str(exc))
     kinds = {page.kind for page in pages if page.kind != KIND_BLANK}

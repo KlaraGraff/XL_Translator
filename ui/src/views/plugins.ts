@@ -1,18 +1,18 @@
 // 插件管理视图 —— 管理三种可选插件的检测与连接：
 // 1. 图纸转换工具（ODA File Converter，CAD 翻译需要）；
 // 2. 文字识别组件（Tesseract OCR，PDF「原位替换文字」需要）；
-// 3. PDF 转 Word 组件（pdf2docx，PDF「自动组合」里把文字页转成 Word 再翻译）。
-// 三者的调用逻辑都已内置在 Translator 的处理逻辑中，这里不提供虚假的安装/卸载，
-// 只是检测本机是否已装好这些第三方依赖、以及让用户手动指定安装位置。
+// 3. PDF 处理组件（PyMuPDF + pdf2docx，PDF「自动组合」的原位替换、页面判断和转 Word）：
+//    可一键安装（从 PyPI 下载固定版本、核对后装进应用数据目录），也可选择自行安装的位置。
+// 前两者只检测本机是否已装好这些第三方软件、以及让用户手动指定安装位置。
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
-import { createButton, createCard, createHintBadge, createStatus, showToast } from "../components";
+import { createButton, createCard, createHintBadge, createProgressBar, createStatus, showToast } from "../components";
 import { icon } from "../icons";
-import { currentLocale, t } from "../i18n";
+import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
 
 const OFFICIAL_OCR_URL = "https://github.com/tesseract-ocr/tesseract";
@@ -78,6 +78,7 @@ export function unmount(): void {
   mounted = false;
   rootEl = null;
   stopAutoDetect();
+  stopWordPolling();
 }
 
 function stopAutoDetect(): void {
@@ -207,7 +208,7 @@ async function openOcrOfficialUrl(): Promise<void> {
     const url = download.url || download.authorization_url || OFFICIAL_OCR_URL;
     await openExternalUrl(url);
   } catch (error) {
-    ocrErrorText = error instanceof Error ? error.message : t("无法打开官方页面。");
+    ocrErrorText = error instanceof Error ? error.message : t("无法打开项目主页。");
     showToast({ message: ocrErrorText, error: true });
   } finally {
     ocrBusy = false;
@@ -239,7 +240,7 @@ function ocrActionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
   if (ocrCapability?.state !== "connected") {
-    actions.append(createButton({ label: ocrBusy ? t("打开中…") : t("去官网下载"), variant: "primary", disabled: ocrBusy, onClick: () => void openOcrOfficialUrl() }));
+    actions.append(createButton({ label: ocrBusy ? t("打开中…") : t("项目主页"), variant: "primary", disabled: ocrBusy, onClick: () => void openOcrOfficialUrl() }));
   }
   actions.append(createButton({ label: t("选择安装位置"), onClick: () => void chooseTesseract() }));
   actions.append(createButton({ label: t("重新检测"), onClick: () => void refreshOcr() }));
@@ -263,7 +264,7 @@ function renderOcrCard(): HTMLElement {
   betaTag.className = "plugins-beta-tag";
   betaTag.textContent = t("Beta");
   title.append(betaTag);
-  title.append(createHintBadge(t("软件名称：Tesseract OCR（开源）。安装后选择它的安装位置；放在系统默认位置会自动找到。官方链接：{0}", OFFICIAL_OCR_URL)));
+  title.append(createHintBadge(t("软件名称：Tesseract OCR（开源）。安装后选择它的安装位置；放在系统默认位置会自动找到。项目主页：{0}", OFFICIAL_OCR_URL)));
   const desc = document.createElement("p");
   desc.textContent = t("识别 PDF 图纸里画成线条的文字，供「原位替换文字」使用。只在本机运行，不上传图纸。");
   copy.append(title, desc);
@@ -293,24 +294,68 @@ function renderOcrCard(): HTMLElement {
   } else if (ocrCapability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = t("尚未检测到文字识别组件。可打开官网、选择安装位置或重新检测。");
+    warn.textContent = t("尚未检测到文字识别组件。可打开项目主页、选择安装位置或重新检测。");
     body.append(warn);
   }
   card.append(body);
   return card;
 }
 
+function wordInstalling(): boolean {
+  return Boolean(wordCapability?.install?.running);
+}
+
 function wordStatusLabel(): string {
   if (!wordCapability) return t("正在检测");
-  if (wordCapability.state === "connected") return t("已连接");
-  return wordCapability.state === "invalid" ? t("不可用") : t("未找到");
+  if (wordInstalling()) return t("正在安装");
+  if (wordCapability.state === "connected") return wordCapability.source === "managed" ? t("已安装") : t("已连接");
+  return wordCapability.state === "invalid" ? t("不可用") : t("未安装");
 }
 
 function wordStatusTone(): "idle" | "ok" | "warn" | "danger" {
   if (!wordCapability) return "idle";
-  if (wordCapability.state === "connected") return "ok";
+  if (wordInstalling()) return "idle";
+  if (wordCapability.state === "connected") return wordCapability.inplace === false ? "warn" : "ok";
   if (wordCapability.state === "invalid") return "danger";
   return "warn";
+}
+
+let wordPollTimer: number | null = null;
+
+function stopWordPolling(): void {
+  if (wordPollTimer !== null) {
+    window.clearTimeout(wordPollTimer);
+    wordPollTimer = null;
+  }
+}
+
+/** 一键安装在后台进行：每 0.6 秒取一次进度，结束后重新读一遍完整状态。 */
+function pollWordInstall(): void {
+  stopWordPolling();
+  wordPollTimer = window.setTimeout(async () => {
+    wordPollTimer = null;
+    try {
+      const client = new ApiClient();
+      await client.connect();
+      const progress = await client.pdfComponentInstallProgress();
+      if (wordCapability) wordCapability = { ...wordCapability, install: progress };
+      if (progress.running) {
+        if (mounted) render();
+        pollWordInstall();
+        return;
+      }
+      wordCapability = await client.getPdf2DocxCapability();
+      wordErrorText = "";
+      if (progress.phase === "done") {
+        showToast({ message: t("PDF 处理组件已安装。") });
+      } else if (progress.error) {
+        showToast({ message: tx(progress.error), error: !progress.cancelled });
+      }
+    } catch (error) {
+      wordErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
+    }
+    if (mounted) render();
+  }, 600);
 }
 
 async function refreshWord(): Promise<void> {
@@ -319,13 +364,46 @@ async function refreshWord(): Promise<void> {
     await client.connect();
     wordCapability = await client.getPdf2DocxCapability();
     wordErrorText = "";
+    if (wordInstalling()) pollWordInstall();
   } catch (error) {
     wordErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
   }
   if (mounted) render();
 }
 
-async function openWordOfficialUrl(): Promise<void> {
+async function startWordInstall(): Promise<void> {
+  if (wordBusy || wordInstalling()) return;
+  wordBusy = true;
+  wordErrorText = "";
+  render();
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.startPdfComponentInstall();
+    wordCapability = { ...(wordCapability ?? { state: "missing", path: "" }), install: progress };
+    pollWordInstall();
+  } catch (error) {
+    wordErrorText = error instanceof Error ? error.message : t("无法开始安装。");
+    showToast({ message: wordErrorText, error: true });
+  } finally {
+    wordBusy = false;
+    if (mounted) render();
+  }
+}
+
+async function cancelWordInstall(): Promise<void> {
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const progress = await client.cancelPdfComponentInstall();
+    if (wordCapability) wordCapability = { ...wordCapability, install: progress };
+  } catch (error) {
+    showToast({ message: error instanceof Error ? error.message : t("无法取消安装。"), error: true });
+  }
+  if (mounted) render();
+}
+
+async function openWordProjectPage(): Promise<void> {
   if (wordBusy) return;
   wordBusy = true;
   wordErrorText = "";
@@ -337,7 +415,7 @@ async function openWordOfficialUrl(): Promise<void> {
     const url = download.url || download.authorization_url || OFFICIAL_PDF2DOCX_URL;
     await openExternalUrl(url);
   } catch (error) {
-    wordErrorText = error instanceof Error ? error.message : t("无法打开官方页面。");
+    wordErrorText = error instanceof Error ? error.message : t("无法打开项目主页。");
     showToast({ message: wordErrorText, error: true });
   } finally {
     wordBusy = false;
@@ -356,27 +434,32 @@ async function choosePdf2Docx(): Promise<void> {
     wordCapability = await client.connectPdf2Docx(path);
     wordErrorText = "";
     showToast({
-      message: wordCapability.state === "connected" ? t("PDF 转 Word 组件已连接。") : t("选择的位置不是可用的 PDF 转 Word 组件。"),
+      message: wordCapability.state === "connected" ? t("PDF 处理组件已连接。") : t("选择的位置不是可用的 PDF 处理组件。"),
       error: wordCapability.state !== "connected",
     });
     if (mounted) render();
   } catch (error) {
-    showToast({ message: error instanceof Error ? error.message : t("无法连接 PDF 转 Word 组件。"), error: true });
+    showToast({ message: error instanceof Error ? error.message : t("无法连接 PDF 处理组件。"), error: true });
   }
 }
 
-async function disconnectPdf2Docx(): Promise<void> {
+async function removePdfComponent(): Promise<void> {
   if (wordBusy) return;
+  const managed = wordCapability?.source === "managed";
   wordBusy = true;
   render();
   try {
     const client = new ApiClient();
     await client.connect();
-    wordCapability = await client.uninstallPdf2DocxPlugin();
+    wordCapability = await client.uninstallPdf2DocxPlugin(managed ? "managed" : "manual");
     wordErrorText = "";
-    showToast({ message: t("已断开 PDF 转 Word 组件。能提取文字的页会改用保底方式翻译。") });
+    showToast({
+      message: managed
+        ? t("已卸载 PDF 处理组件。原位替换和转成 Word 的页会改用保底方式。")
+        : t("已断开 PDF 处理组件。原位替换和转成 Word 的页会改用保底方式。"),
+    });
   } catch (error) {
-    showToast({ message: error instanceof Error ? error.message : t("无法断开 PDF 转 Word 组件。"), error: true });
+    showToast({ message: error instanceof Error ? error.message : t("无法卸载 PDF 处理组件。"), error: true });
   } finally {
     wordBusy = false;
     if (mounted) render();
@@ -386,15 +469,70 @@ async function disconnectPdf2Docx(): Promise<void> {
 function wordActionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
-  if (wordCapability?.state !== "connected") {
-    actions.append(createButton({ label: wordBusy ? t("打开中…") : t("打开官网"), variant: "primary", disabled: wordBusy, onClick: () => void openWordOfficialUrl() }));
+  const installing = wordInstalling();
+  const connected = wordCapability?.state === "connected";
+  const canOneClick = wordCapability?.one_click_supported !== false;
+  if (installing) {
+    actions.append(createButton({ label: t("取消安装"), onClick: () => void cancelWordInstall() }));
+    return actions;
+  }
+  if (canOneClick && wordCapability?.source !== "managed") {
+    actions.append(createButton({
+      label: t("一键安装"),
+      variant: connected ? "default" : "primary",
+      disabled: wordBusy || !wordCapability,
+      onClick: () => void startWordInstall(),
+    }));
   }
   actions.append(createButton({ label: t("选择安装位置"), onClick: () => void choosePdf2Docx() }));
+  if (!connected) {
+    actions.append(createButton({ label: t("项目主页"), disabled: wordBusy, onClick: () => void openWordProjectPage() }));
+  }
   actions.append(createButton({ label: t("重新检测"), onClick: () => void refreshWord() }));
-  if (wordCapability?.state === "connected" || wordCapability?.state === "invalid") {
-    actions.append(createButton({ label: t("断开"), disabled: wordBusy, onClick: () => void disconnectPdf2Docx() }));
+  if (connected || wordCapability?.state === "invalid") {
+    actions.append(createButton({
+      label: wordCapability?.source === "managed" ? t("卸载") : t("断开"),
+      disabled: wordBusy,
+      onClick: () => void removePdfComponent(),
+    }));
   }
   return actions;
+}
+
+function megabytes(bytes: number): string {
+  return String(Math.max(1, Math.round(bytes / 1048576)));
+}
+
+function wordInstallNotice(): HTMLElement | null {
+  const job = wordCapability?.install;
+  if (!job) return null;
+  if (job.running) {
+    const box = document.createElement("div");
+    box.className = "plugins-notice plugins-progress";
+    const text = document.createElement("div");
+    let percent = 0;
+    if (job.phase === "download") {
+      percent = job.total > 0 ? (job.done / job.total) * 90 : 0;
+      text.textContent = t("正在下载组件：{0} / {1} MB", megabytes(job.done), megabytes(job.total));
+    } else if (job.phase === "extract") {
+      percent = 90 + (job.total > 0 ? (job.done / job.total) * 5 : 0);
+      text.textContent = t("正在解压组件…");
+    } else {
+      percent = 96;
+      text.textContent = t("正在检查组件能否在本机运行…");
+    }
+    box.append(text, createProgressBar({ percent }).root);
+    return box;
+  }
+  if (job.phase === "failed" && job.error && wordCapability?.state !== "connected") {
+    const box = document.createElement("div");
+    box.className = "plugins-notice danger";
+    box.textContent = job.cancelled
+      ? tx(job.error)
+      : t("{0}可重试一键安装，或使用「选择安装位置」连接自行安装的 pdf2docx。", tx(job.error));
+    return box;
+  }
+  return null;
 }
 
 function renderWordCard(): HTMLElement {
@@ -409,35 +547,51 @@ function renderWordCard(): HTMLElement {
   const copy = document.createElement("div");
   copy.className = "plugins-copy";
   const title = document.createElement("h2");
-  title.textContent = t("PDF 转 Word 组件");
-  title.append(createHintBadge(t("软件名称：pdf2docx（开源）。安装后选择它的安装位置；已加入系统路径会自动找到。官方链接：{0}", OFFICIAL_PDF2DOCX_URL)));
+  title.textContent = t("PDF 处理组件");
+  const sizeMb = megabytes(wordCapability?.download_bytes ?? 0);
+  title.append(createHintBadge(t("包含开源软件 PyMuPDF（AGPL-3.0）和 pdf2docx（MIT）。一键安装：从 PyPI 下载固定版本（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。也可以自行安装 pdf2docx（会一并装上 PyMuPDF），再选择它的安装位置。未安装时：整页图像翻译不受影响；「自动组合」照常按页分类，原位替换和转成 Word 的页改用保底方式。项目主页：{1}", sizeMb, OFFICIAL_PDF2DOCX_URL)));
   const desc = document.createElement("p");
-  desc.textContent = t("PDF 翻译「自动组合」里，能提取文字的页先转成 Word 再翻译，最后转回 PDF。不装也能翻译，这些页会改用保底方式。");
+  desc.textContent = t("PDF 翻译「自动组合」用它判断图纸页、原位替换文字，并把可提取文字的页转成 Word 翻译。不安装也能翻译，这些页会改用保底方式。");
   copy.append(title, desc);
   titleRow.append(iconBox, copy);
   if (wordCapability) titleRow.append(createStatus({ label: wordStatusLabel(), tone: wordStatusTone() }));
   titleRow.append(wordActionButtons());
   body.append(titleRow);
 
+  const installNotice = wordInstallNotice();
   if (wordErrorText) {
     const error = document.createElement("div");
     error.className = "plugins-notice danger";
     error.textContent = wordErrorText;
     body.append(error);
+  } else if (installNotice) {
+    body.append(installNotice);
   } else if (wordCapability?.state === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    ok.textContent = t("pdf2docx 已连接：{0}", wordCapability.path);
+    ok.textContent = wordCapability.source === "managed"
+      ? (wordCapability.pymupdf_version
+        ? t("PDF 处理组件已安装（PyMuPDF {0}）。", wordCapability.pymupdf_version)
+        : t("PDF 处理组件已安装。"))
+      : t("已连接 pdf2docx：{0}", wordCapability.path);
     body.append(ok);
+    if (wordCapability.inplace === false) {
+      const warn = document.createElement("div");
+      warn.className = "plugins-notice warn";
+      warn.textContent = t("原位替换暂不可用：{0}。转成 Word 不受影响。", wordCapability.inplace_message || t("组件里的 PyMuPDF 无法加载"));
+      body.append(warn);
+    }
   } else if (wordCapability?.state === "invalid") {
     const warn = document.createElement("div");
     warn.className = "plugins-notice danger";
-    warn.textContent = t("之前连接的 PDF 转 Word 组件已不可用，请重新选择安装位置。");
+    warn.textContent = t("之前连接的 PDF 处理组件已不可用，请重新安装或重新选择安装位置。");
     body.append(warn);
   } else if (wordCapability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = t("尚未连接 PDF 转 Word 组件。可打开官网、选择安装位置或重新检测。");
+    warn.textContent = wordCapability.one_click_supported === false
+      ? t("尚未安装 PDF 处理组件。当前系统不支持一键安装，可自行安装 pdf2docx 后选择它的安装位置。")
+      : t("尚未安装 PDF 处理组件。可一键安装，或选择自行安装的 pdf2docx 的位置。");
     body.append(warn);
   }
   card.append(body);

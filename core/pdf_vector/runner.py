@@ -4,7 +4,7 @@
 字）→ 分类、去重、写图纸说明、翻译 → 删掉原文字形、按原字号和颜色写中文 →
 自检。自检不过的页不交付，调用方保留原页。
 
-PDF 的读写用 PyMuPDF（AGPL-3.0，沿用其原许可，见 THIRD_PARTY_NOTICES.md）。
+PDF 的读写用 PyMuPDF（AGPL-3.0，沿用其原许可，见 THIRD_PARTY_NOTICES.md），它属于「PDF 处理组件」，不随安装包分发。
 """
 from __future__ import annotations
 
@@ -14,11 +14,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-import fitz
-
 from . import extract, qa, writeback
 from .classify import ProfileFn, TranslateFn, classify_and_translate
-from .common import write_json
+from .common import fitz, write_json
 
 LogFn = Callable[[str, str], None]
 

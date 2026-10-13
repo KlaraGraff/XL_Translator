@@ -15,10 +15,9 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-import fitz
 from PIL import Image, ImageChops
 
-from .common import display_pt_to_page, numbers, px_to_display_pt, read_json, sha256, write_json  # noqa: F401
+from .common import display_pt_to_page, fitz, numbers, px_to_display_pt, read_json, sha256, write_json  # noqa: F401
 from .writeback import _item_geom, apply_removal, ink_count, redaction_rect, render
 
 Image.MAX_IMAGE_PIXELS = None
