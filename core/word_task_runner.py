@@ -160,6 +160,7 @@ from core.word_document import (
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
+from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_batching import (
     WordBatchRunStats,
     estimate_api_request_weight,
@@ -3358,6 +3359,10 @@ def _prepare_word_source_for_translation(
     normalized = normalize_docx_automatic_numbering(process_path)
     process_path = normalized.path
     temp_paths.append(normalized.path)
+    # 从 PDF 复制过来的段落里，句中折行的手动换行先换成空格，模型才拿得到整句
+    joined_breaks = join_wrapped_line_breaks_in_file(process_path)
+    if joined_breaks:
+        logger.info(f"Word 预处理：{joined_breaks} 处句中手动换行已并回句子 {source_path.name}")
 
     method_parts: list[str] = []
     if conversion_method != "not_required":
