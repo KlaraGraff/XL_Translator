@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from collections import deque
 from pathlib import Path
@@ -80,6 +81,9 @@ class ApiAppTests(unittest.TestCase):
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary_directory.name)
         self.addCleanup(self._temporary_directory.cleanup)
+        # 清理按注册的逆序执行：先等任务后台线程收尾，再删临时目录。停止后的任务
+        # 线程还会写任务历史和记忆库，删早了 rmtree 会撞上刚写进去的文件。
+        self.addCleanup(self._join_task_threads)
         self._patchers = [
             patch.multiple(
                 settings_module,
@@ -95,6 +99,12 @@ class ApiAppTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.client = TestClient(create_app())
+
+    @staticmethod
+    def _join_task_threads() -> None:
+        for thread in threading.enumerate():
+            if thread.name.startswith(("api-task-", "api-rerun-")):
+                thread.join(timeout=10)
 
     def test_settings_keys_and_source_scan(self) -> None:
         self.assertEqual(self.client.get("/api/settings").status_code, 200)
