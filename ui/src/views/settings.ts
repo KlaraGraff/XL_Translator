@@ -408,8 +408,6 @@ let selectedTmClearPair = "";
 let paramsTab: ParamsSurface = "excel";
 let pendingDomainPreset: string | null = null;
 let pendingNewPrompt = false;
-// 提示词设置标题旁「?」展开的组成说明：开关、下拉一改整页会重画，展开状态要跨重画保留。
-let promptAnatomyOpen = false;
 
 // ---------------------------------------------------------------------------
 // mount / unmount
@@ -1454,7 +1452,7 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
 }
 
 // ---------------------------------------------------------------------------
-// 提示词设置：「自动识别场景」开关行和标题旁「?」展开的组成说明
+// 提示词设置：「自动识别场景」开关行
 // ---------------------------------------------------------------------------
 
 /** 「自动识别场景」开关行。保存失败时开关退回原状并提示。 */
@@ -1485,159 +1483,6 @@ function smartContextRow(checked: boolean, note: string, persist: (checked: bool
   return row;
 }
 
-interface PromptAnatomyBlock {
-  title: string;
-  /** 标题后的小字：每次发送 / 当前选用 / 未开启。 */
-  state: string;
-  /** 这一段这次会不会发送：不发送的整块变淡。 */
-  sent: boolean;
-  /** 实际发送的内容（或示例），过长时截断。 */
-  content: string;
-  /** 待翻译内容按发送时的数组格式显示，用等宽字体。 */
-  mono?: boolean;
-}
-
-interface PromptAnatomy {
-  heading: string;
-  steps: string[];
-  blocks: PromptAnatomyBlock[];
-  notes: string[];
-}
-
-/** 取前几行，超出时以「……」结尾：内置规则全文在下方，这里只示意开头。 */
-function promptExcerpt(text: string, maxChars = 70): string {
-  const flat = text.trim().split(/\n+/).join("");
-  return flat.length > maxChars ? `${flat.slice(0, maxChars)}……` : flat;
-}
-
-/** 按当前设置写出一批（PDF 是一页）发给模型的内容由哪几段组成，顺序与实际发送顺序一致。
- *  只写已经上线的部分；拼装逻辑见 core/engine_dispatcher.get_system_prompt、
- *  core/document_profile.append_profile 和 core/image_generation.build_pdf_image_translation_prompt。 */
-function promptAnatomyBlocks(surface: ParamsSurface): PromptAnatomy {
-  const profileExample = t("例：建筑消防设计说明，甲/乙/丙指防火门和防火分区的耐火等级。");
-  if (surface === "pdf") {
-    const smart = pdfParamsSettings().smart_context !== false;
-    return {
-      heading: t("每页发送给图像模型的内容"),
-      steps: [
-        t("开启「自动识别场景」时，先读取整份 PDF 的文字，由文档翻译模型写一段文档说明，每份文件一次；扫描件没有可读文字时跳过。"),
-        t("每页转成图片，按图中所列内容发送给图像模型，生成翻译后的页面。"),
-        t("开启「逐页审核」时，由审核模型检查每页；未通过的页面附上审核意见重新生成。"),
-        t("单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。"),
-      ],
-      blocks: [
-        { title: t("内置规则"), state: t("每次发送"), sent: true, content: t("页面翻译的通用要求，由程序固定，不能修改。") },
-        { title: t("文档说明"), state: smart ? t("由「自动识别场景」生成") : t("未开启，不发送"), sent: smart, content: profileExample },
-        { title: t("原页面图片"), state: t("每页一张"), sent: true, content: t("当前页面的图片。") },
-      ],
-      notes: [],
-    };
-  }
-  const domain = domainSettingsFor(surface);
-  const preset = domain.preset;
-  const entry = preset !== NO_EXTRA_PROMPT ? domain.customPrompts[preset] : undefined;
-  const extraText = entry
-    ? (entry._base || Object.values(entry).find((value) => value.trim()) || "").trim()
-    : "";
-  const hasExtra = Boolean(extraText);
-  return {
-    heading: t("每批发送给文档翻译模型的内容"),
-    steps: [
-      t("任务开始时查找记忆库：已有译文的内容直接套用，不发送给模型。"),
-      t("开启「自动识别场景」时，先由文档翻译模型通读整份文件，写一段文档说明，每份文件一次。"),
-      t("其余内容分批发送，每批的组成如图所示。"),
-      t("请求失败或回答中断时，按「失败重试次数」重新发送；仍失败的内容保留原文，并标记为需复核。"),
-    ],
-    blocks: [
-      { title: t("内置规则"), state: t("每次发送"), sent: true, content: corePrompt ? promptExcerpt(corePrompt) : t("内置规则读取失败，请稍后重新打开此页。") },
-      { title: t("补充要求"), state: hasExtra ? t("当前选用：{0}", preset) : t("未选用，不发送"), sent: hasExtra, content: hasExtra ? promptExcerpt(extraText, 120) : tx(NO_EXTRA_PROMPT) },
-      { title: t("文档说明"), state: domain.smartContext ? t("由「自动识别场景」生成") : t("未开启，不发送"), sent: domain.smartContext, content: profileExample },
-      { title: t("返回格式"), state: t("程序附上"), sent: true, content: t("只返回译文，按 JSON 数组输出，条数和顺序与原文一致。") },
-      { title: t("待翻译内容"), state: t("本批原文"), sent: true, mono: true, content: t("[\"1. 本工程防火门均采用甲级防火门\", … 本批若干条]") },
-    ],
-    notes: [t("目标语言为自定义语言时，另附该语言的说明。")],
-  };
-}
-
-/** 「?」展开的组成说明面板：左边处理流程，右边逐段列出实际发送的内容。
- *  refresh() 按当前设置重画，收起时不占位置。 */
-function promptAnatomyPanel(build: () => PromptAnatomy): { root: HTMLDivElement; refresh: () => void; toggle: () => boolean } {
-  const root = document.createElement("div");
-  root.className = "prompt-anatomy";
-  root.id = "prompt-anatomy";
-  const refresh = (): void => {
-    clearElement(root);
-    root.hidden = !promptAnatomyOpen;
-    if (!promptAnatomyOpen) return;
-    const data = build();
-
-    const flow = document.createElement("div");
-    flow.className = "prompt-anatomy-flow";
-    const flowTitle = document.createElement("b");
-    flowTitle.textContent = t("处理流程");
-    const steps = document.createElement("ol");
-    for (const step of data.steps) {
-      const li = document.createElement("li");
-      li.textContent = step;
-      steps.append(li);
-    }
-    flow.append(flowTitle, steps);
-
-    const sent = document.createElement("div");
-    sent.className = "prompt-anatomy-sent";
-    const sentTitle = document.createElement("b");
-    sentTitle.textContent = data.heading;
-    sent.append(sentTitle);
-    for (const block of data.blocks) {
-      const item = document.createElement("div");
-      item.className = block.sent ? "prompt-anatomy-blk" : "prompt-anatomy-blk off";
-      const tag = document.createElement("span");
-      tag.className = "prompt-anatomy-tag";
-      tag.textContent = block.state ? t("{0}（{1}）", block.title, block.state) : block.title;
-      const body = document.createElement("div");
-      body.className = block.mono ? "prompt-anatomy-body mono" : "prompt-anatomy-body";
-      body.textContent = block.content;
-      item.append(tag, body);
-      sent.append(item);
-    }
-    for (const note of data.notes) {
-      const p = document.createElement("p");
-      p.className = "prompt-note";
-      p.textContent = note;
-      sent.append(p);
-    }
-    root.append(flow, sent);
-  };
-  refresh();
-  return {
-    root,
-    refresh,
-    toggle: () => {
-      promptAnatomyOpen = !promptAnatomyOpen;
-      refresh();
-      return promptAnatomyOpen;
-    },
-  };
-}
-
-/** 提示词设置的卡片标题：标题旁一个「?」，点开或收起组成说明。 */
-function promptCardHead(tools: HTMLElement[], anatomy: { toggle: () => boolean }): HTMLDivElement {
-  const head = tcHead(t("提示词设置"), tools);
-  const help = document.createElement("button");
-  help.type = "button";
-  help.className = "swrow-hint prompt-anatomy-toggle";
-  help.textContent = "?";
-  help.setAttribute("aria-label", t("提示词的组成"));
-  help.setAttribute("aria-controls", "prompt-anatomy");
-  help.setAttribute("aria-expanded", String(promptAnatomyOpen));
-  help.title = t("提示词的组成");
-  help.addEventListener("click", () => {
-    help.setAttribute("aria-expanded", String(anatomy.toggle()));
-  });
-  head.querySelector("b")?.after(help);
-  return head;
-}
-
 /** PDF 的提示词设置：PDF 只有「自动识别场景」一项可调，内置规则由程序按页面固定生成。 */
 function renderPdfPromptCard(): HTMLDivElement {
   const card = createCard([]);
@@ -1646,17 +1491,12 @@ function renderPdfPromptCard(): HTMLDivElement {
   body.style.display = "flex";
   body.style.flexDirection = "column";
   body.style.gap = "10px";
-  const anatomy = promptAnatomyPanel(() => promptAnatomyBlocks("pdf"));
-  body.append(anatomy.root);
   body.append(smartContextRow(
     pdfParamsSettings().smart_context !== false,
     t("开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。"),
-    async (checked) => {
-      await saveSettingPath("pdf.smart_context", checked);
-      anatomy.refresh();
-    },
+    (checked) => saveSettingPath("pdf.smart_context", checked),
   ));
-  card.append(promptCardHead([], anatomy), body);
+  card.append(tcHead(t("提示词设置")), body);
   return card;
 }
 
@@ -1716,10 +1556,6 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     return saveQueue;
   };
 
-  // 「?」展开的组成说明，放在卡片最上面；开关和补充要求变了就按当前设置重画。
-  const anatomy = promptAnatomyPanel(() => promptAnatomyBlocks(surface));
-  body.append(anatomy.root);
-
   // ① 自动识别场景：开关。翻译前先通读文档写一段文档说明，随每批内容一起发送。
   body.append(smartContextRow(
     current.smartContext,
@@ -1727,7 +1563,6 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     (checked) => enqueueSave(async () => {
       await putDomain({ ...basePayload(), smart_context: checked });
       Object.assign(current, domainSettingsFor(surface));
-      anatomy.refresh();
     }),
   ));
 
@@ -1993,7 +1828,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     createButton({ label: t("导出提示词"), size: "mini", onClick: () => void exportPromptConfig() }),
     createButton({ label: t("导入提示词"), size: "mini", onClick: () => importPromptConfig() }),
   );
-  card.append(promptCardHead(tools, anatomy), body);
+  card.append(tcHead(t("提示词设置"), tools), body);
   return card;
 }
 
