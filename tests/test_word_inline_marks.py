@@ -19,6 +19,7 @@ from core.word_document import extract_word_segments, write_bilingual_docx
 from core.word_inline_marks import (
     MARK_PROMPT_RULE,
     InlineMarkEngine,
+    add_boundary_spaces,
     marks_match,
     paragraph_marks,
     parse_marked,
@@ -203,6 +204,38 @@ class InlineMarkEngineTests(unittest.TestCase):
         self.assertEqual(results[0].translation, "Attention : x.")
         self.assertEqual(engine.engine_name, "fake")
         self.assertTrue(engine_supports_chat(engine) is engine_supports_chat(inner))
+
+
+    def test_missing_space_after_tagged_colon_is_restored(self) -> None:
+        inner = _FakeEngine(lambda t: "<g1>Attention :</g1>briefing obligatoire.")
+        engine = InlineMarkEngine(inner, self.MARKED)
+        result = engine.translate_batch(["注意：施工前必须完成技术交底。"], "fr", "SYS")
+        self.assertEqual(result["注意：施工前必须完成技术交底。"], "Attention : briefing obligatoire.")
+        self.assertEqual(
+            engine.marked_translations["注意：施工前必须完成技术交底。"][1], "<g1>Attention :</g1> briefing obligatoire."
+        )
+
+
+class BoundarySpaceTests(unittest.TestCase):
+    def test_space_goes_outside_the_formatting(self) -> None:
+        self.assertEqual(add_boundary_spaces("<g1>Note :</g1>les cotes.", "fr"), "<g1>Note :</g1> les cotes.")
+        self.assertEqual(add_boundary_spaces("Note :<g1>les cotes</g1>.", "fr"), "Note : <g1>les cotes</g1>.")
+        self.assertEqual(add_boundary_spaces("fini.<g1>Attention</g1> !", "fr"), "fini. <g1>Attention</g1> !")
+
+    def test_leaves_correct_or_intended_joins_alone(self) -> None:
+        for text in (
+            "<g1>Note :</g1> les cotes.",
+            "120 m<g1>2</g1>.",
+            "<g1>pré</g1>fabriqué",
+            "www.example.<g1>com</g1>",
+            "3,<g1>5</g1> m",
+            "Note :les cotes.",
+        ):
+            self.assertEqual(add_boundary_spaces(text, "en"), text)
+
+    def test_languages_written_without_spaces_are_untouched(self) -> None:
+        for lang in ("zh", "zh-CN", "ja", "ko"):
+            self.assertEqual(add_boundary_spaces("<g1>注:</g1>尺寸", lang), "<g1>注:</g1>尺寸")
 
 
 class _ChatEngine(_FakeEngine):
