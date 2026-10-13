@@ -34,6 +34,15 @@ from core.mixed_language import (
 from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
+from core.word_inline_marks import (
+    build_run_nodes,
+    cell_marks,
+    iter_new_runs,
+    paragraph_marks,
+    parse_marked,
+    replace_paragraph_content,
+    strip_marks,
+)
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
@@ -252,6 +261,8 @@ class WordSegment:
     kind: str
     location: str
     section_path: str = ""
+    # 段内有局部格式时带 <g1>…</g1> 标记的原文（core/word_inline_marks.py），否则为空
+    marked_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -448,12 +459,14 @@ def extract_word_segments(
         if source in seen:
             continue
         seen.add(source)
+        marks = paragraph_marks(paragraph)
         segments.append(
             WordSegment(
                 source=source,
                 kind="paragraph",
                 location=f"body.paragraph[{index}]",
                 section_path=_format_section_path(section_stack),
+                marked_source=marks.marked_text if marks is not None and marks.groups else "",
             )
         )
 
@@ -471,12 +484,14 @@ def extract_word_segments(
             if source in seen:
                 continue
             seen.add(source)
+            marks = cell_marks(_cell_text_paragraphs(cell))
             segments.append(
                 WordSegment(
                     source=source,
                     kind="table_cell",
                     location=f"table[{table_index}].cell[{cell_index}]",
                     section_path=f"表格 {table_index + 1}",
+                    marked_source=marks.marked_text if marks is not None else "",
                 )
             )
 
@@ -1039,8 +1054,12 @@ def write_bilingual_docx(
     protect_front_matter: bool = False,
     translate_headers_footers: bool = False,
     output_translation_only: bool = False,
+    marked_translations: dict[str, tuple[str, str]] | None = None,
 ) -> Path:
     """Write a bilingual Word document to the output directory.
+
+    ``marked_translations``：原文 → (发出的带标记原文, 带标记的译文)，见
+    core/word_inline_marks.py。对得上的段落和单元格按标记拆成多个 run，保留段内格式。
 
     ``issue_callback``：替换式译文行数与单元格源文段数对不上、写入器退到"保留原文
     +追加译文"时，对每个这样的单元格回调一次，参数是
@@ -1132,6 +1151,7 @@ def write_bilingual_docx(
     paragraph_insertions = 0
     table_insertions = 0
     cell_line_mismatch_count = 0
+    marked_write_count = 0
     highlight_count = 0
     highlight_skip_count = 0
 
@@ -1169,12 +1189,21 @@ def write_bilingual_docx(
             continue
         leading_prefix = original_paragraph_prefixes.get(paragraph_key, "")
         translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
+        marks = paragraph_marks(paragraph) if marked_translations and source in marked_translations else None
+        marked = _usable_marked_pieces(marks, (marked_translations or {}).get(source), resolved.text)
+        pieces = parse_marked(marked, marks.groups) if marked else None
+        if pieces:
+            pieces = _with_prefix(pieces, leading_prefix)
+            marked_write_count += 1
         if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
-            _replace_paragraph_text(
-                paragraph,
-                translated_text,
-                target_lang=target_lang,
-            )
+            if pieces:
+                _write_marked_runs(paragraph, pieces, marks.groups, marks.base_rpr, target_lang=target_lang)
+            else:
+                _replace_paragraph_text(
+                    paragraph,
+                    translated_text,
+                    target_lang=target_lang,
+                )
             if review_mark:
                 _apply_paragraph_review_mark(
                     paragraph,
@@ -1210,6 +1239,8 @@ def write_bilingual_docx(
                 translated_text,
                 target_lang=target_lang,
             )
+            if pieces:
+                _rewrite_translation_paragraph(translation_paragraph, pieces, marks.groups, target_lang=target_lang)
             if review_mark:
                 _apply_paragraph_review_mark(
                     translation_paragraph,
@@ -1243,7 +1274,21 @@ def write_bilingual_docx(
                 else:
                     highlight_skip_count += 1
             continue
-        if resolved.replace_only or output_translation_only:
+        cell_mark = (
+            cell_marks(_cell_text_paragraphs(cell)) if marked_translations and source in marked_translations else None
+        )
+        cell_marked = _usable_marked_pieces(cell_mark, (marked_translations or {}).get(source), resolved.text)
+        if cell_marked and (resolved.replace_only or output_translation_only):
+            _replace_cell_text_marked(cell, cell_marked, cell_mark, target_lang=target_lang)
+            marked_write_count += 1
+        elif cell_marked and len(cell_mark.paragraphs) == 1:
+            translation_paragraph = _append_translation_to_cell(cell, resolved.text, target_lang=target_lang)
+            only = cell_mark.paragraphs[0]
+            _rewrite_translation_paragraph(
+                translation_paragraph, parse_marked(cell_marked, only.groups), only.groups, target_lang=target_lang
+            )
+            marked_write_count += 1
+        elif resolved.replace_only or output_translation_only:
             if not _replace_cell_text(cell, resolved.text, target_lang=target_lang):
                 cell_line_mismatch_count += 1
                 if issue_callback:
@@ -1301,6 +1346,8 @@ def write_bilingual_docx(
     apply_east_asian_language(doc, target_lang)
     _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))
+    if marked_write_count:
+        logger.info(f"Word 写回：{out_path.name} 有 {marked_write_count} 处按标记保留了段内格式")
     if log_callback:
         highlight_summary = ""
         if review_mark_map:
@@ -1654,6 +1701,51 @@ def _apply_leading_prefix(text: str, prefix: str) -> str:
     if str(text or "").startswith(prefix):
         return text
     return f"{prefix}{text}"
+
+
+def _cell_text_paragraphs(cell: _Cell) -> list[Paragraph]:
+    """拼成单元格原文的那几段（见 _cell_source_text）。"""
+    return [paragraph for paragraph in _iter_cell_direct_paragraphs(cell) if _paragraph_source_text(paragraph)]
+
+
+def _usable_marked_pieces(marks, entry, text: str):
+    """翻译时发出的带标记原文和这一处对得上、译文去掉标记后就是最终译文时，返回拆好的
+    译文；否则 None（按整段写法写回）。复查、修数字等后续步骤改过译文的，也会对不上。"""
+    if marks is None or entry is None or not marks.groups:
+        return None
+    sent, translation = entry
+    if marks.marked_text != sent or strip_marks(translation).strip() != str(text or "").strip():
+        return None
+    return translation
+
+
+def _write_marked_runs(paragraph: Paragraph, pieces, groups, base_rpr, *, target_lang: str) -> None:
+    nodes = build_run_nodes(pieces, groups, base_rpr)
+    replace_paragraph_content(paragraph, nodes)
+    for run in iter_new_runs(nodes):
+        _set_latin_run_font(Run(run, paragraph), target_lang=target_lang)
+
+
+def _with_prefix(pieces, prefix: str):
+    if not prefix or (pieces and pieces[0][0].startswith(prefix)):
+        return pieces
+    return [(prefix, None), *pieces]
+
+
+def _rewrite_translation_paragraph(paragraph: Paragraph, pieces, groups, *, target_lang: str) -> None:
+    """双语版式新插的译文段：主体沿用刚生成的那个 run 的格式，标记那几截用原文格式。"""
+    base = paragraph.runs[0]._r.find(qn("w:rPr")) if paragraph.runs else None
+    _write_marked_runs(paragraph, pieces, groups, base, target_lang=target_lang)
+
+
+def _replace_cell_text_marked(cell: _Cell, translation: str, marks, *, target_lang: str) -> None:
+    """单元格逐段写回：译文一行对一段（翻译时已核对过行数和每行的标记）。"""
+    for paragraph, paragraph_mark, line in zip(_cell_text_paragraphs(cell), marks.paragraphs, translation.split("\n")):
+        pieces = parse_marked(line, paragraph_mark.groups) if paragraph_mark.groups else None
+        if pieces:
+            _write_marked_runs(paragraph, pieces, paragraph_mark.groups, paragraph_mark.base_rpr, target_lang=target_lang)
+        else:
+            _replace_paragraph_text(paragraph, strip_marks(line), target_lang=target_lang)
 
 
 def _cell_source_text(cell: _Cell) -> str:
@@ -2844,6 +2936,7 @@ def _replace_paragraph_text(
 
     keep_tags = _layout_tags_to_keep(text)
     anchor = _paragraph_text_anchor_run(paragraph, runs)
+    _adopt_dominant_run_shape(anchor, runs)
     _set_run_text_keeping_layout(anchor, text, keep_tags)
     _set_latin_run_font(anchor, target_lang=target_lang)
     for run in runs:
@@ -2851,6 +2944,28 @@ def _replace_paragraph_text(
             continue
         _set_run_text_keeping_layout(run, "", keep_tags)
     _drop_emptied_hyperlinks(paragraph)
+
+
+def _adopt_dominant_run_shape(anchor, runs: list) -> None:
+    """整段译文写进第一个 run，就沿用第一个 run 的格式。段首只是一个加粗的小标签
+    （「Abstract —」「Note:」）时，整段译文都会变成加粗。第一个 run 的字数不到全段
+    一半时，改用字数最多的那个 run 的格式。"""
+    lengths = [(len(run.text or ""), run) for run in runs]
+    total = sum(length for length, _run in lengths)
+    if total == 0:
+        return
+    anchor_len = next((length for length, run in lengths if run._r is anchor._r), 0)
+    if anchor_len * 2 >= total:
+        return
+    _length, dominant = max(lengths, key=lambda item: item[0])
+    if dominant._r is anchor._r:
+        return
+    source = dominant._r.find(qn("w:rPr"))
+    current = anchor._r.find(qn("w:rPr"))
+    if current is not None:
+        anchor._r.remove(current)
+    if source is not None:
+        anchor._r.insert(0, deepcopy(source))
 
 
 def _replace_paragraph_text_around_fields(
