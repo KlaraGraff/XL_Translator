@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, _pick_scale
+from core.cad_layout import DEFAULT_FIT_SETTINGS, DEFAULT_FIT_SETTINGS_ZH, FitSettings, _pick_scale, default_fit_settings
 from core.cad_translation import (
     CadPipelineOptions,
     CadTranslationPipeline,
@@ -97,6 +97,43 @@ def test_fit_tiers_start_at_the_default_and_step_down_to_the_minimum():
     # 最小比例不能大于默认比例；超出范围的值收回范围内。
     assert FitSettings(0.6, 0.9).normalized() == FitSettings(0.6, 0.6)
     assert FitSettings(2, 0.1).normalized() == FitSettings(1.0, 0.3)
+
+
+def test_default_scales_follow_the_target_language():
+    # 译成中文很少超长、超出也只长两三成：不预先缩小，从原字号起逐档缩；译成其他语言先统一缩到 0.7。
+    assert DEFAULT_FIT_SETTINGS == FitSettings(0.7, 0.4)
+    assert DEFAULT_FIT_SETTINGS_ZH == FitSettings(1.0, 0.4)
+    for lang in ("zh", "zh-CN", "zh-TW", "ZH-Hant"):
+        assert default_fit_settings(lang) == DEFAULT_FIT_SETTINGS_ZH
+    for lang in ("en", "fr", "ja", "", "auto"):
+        assert default_fit_settings(lang) == DEFAULT_FIT_SETTINGS
+    # 「N° → 序号」这类刚好要 0.8 的中文译文停在 0.8，不再一下压到 0.7。
+    assert _pick_scale(0.82, DEFAULT_FIT_SETTINGS_ZH) == (0.8, True)
+    assert _pick_scale(0.82, DEFAULT_FIT_SETTINGS) == (0.7, True)
+    # 初始 1.0 只是起点：要缩的译文从 0.9 起逐档往下，最多到 0.4。
+    assert DEFAULT_FIT_SETTINGS_ZH.tiers() == [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
+    assert _pick_scale(0.95, DEFAULT_FIT_SETTINGS_ZH) == (0.9, True)
+
+
+def test_cad_settings_keep_a_separate_pair_of_scales_for_chinese():
+    from settings import CadOutputSettings
+
+    fresh = CadOutputSettings()
+    assert (fresh.fit_default_scale, fresh.fit_min_scale) == (0.7, 0.4)
+    assert (fresh.fit_default_scale_zh, fresh.fit_min_scale_zh) == (1.0, 0.4)
+    # 旧文件只有一对比例、还是默认值：中文那对用新的默认值。
+    old_default = CadOutputSettings.model_validate({"fit_default_scale": 0.7, "fit_min_scale": 0.4})
+    assert (old_default.fit_default_scale_zh, old_default.fit_min_scale_zh) == (1.0, 0.4)
+    # 用户改过旧的那对：中文也照用，换成中文后自己的设置不失效。
+    customised = CadOutputSettings.model_validate({"fit_default_scale": 0.6, "fit_min_scale": 0.3})
+    assert (customised.fit_default_scale, customised.fit_min_scale) == (0.6, 0.3)
+    assert (customised.fit_default_scale_zh, customised.fit_min_scale_zh) == (0.6, 0.3)
+    # 已经有中文那对的不再动；两套各自校正范围。
+    saved = CadOutputSettings.model_validate(
+        {"fit_default_scale": 0.6, "fit_min_scale": 0.3, "fit_default_scale_zh": 2, "fit_min_scale_zh": 0.1}
+    )
+    assert (saved.fit_default_scale_zh, saved.fit_min_scale_zh) == (1.0, 0.3)
+    assert (saved.fit_default_scale, saved.fit_min_scale) == (0.6, 0.3)
 
 
 def test_overflow_shrinks_to_the_default_first_even_when_less_would_do():

@@ -54,6 +54,11 @@ _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
 
 
+def is_chinese_target(target_lang: str) -> bool:
+    """目标语言是不是中文（简体、繁体都算）。"""
+    return str(target_lang or "").strip().lower().startswith(("zh", "cn"))
+
+
 @dataclass(frozen=True)
 class FitSettings:
     """放不下时缩到多少：先到 ``default_scale``，再按 0.1 一档降到 ``min_scale``。"""
@@ -77,6 +82,22 @@ class FitSettings:
         if tiers[-1] > settings.min_scale + 1e-9:
             tiers.append(settings.min_scale)
         return tiers
+
+
+# 两套默认比例，按目标语言自动套用（2026-10-13 用 4 张真实图纸实测，见 PR 说明）：
+# * 中文译成外文：译文普遍是原文的三四倍宽，同一张图里要缩的字成百上千，先统一缩到 0.7，
+#   同一张图里缩过的字大小一致；再往下最多到 0.4；降到 0.3 也只多放下约一成，字却小得难认。
+# * 外文译成中文：只有百分之几的译文比原文宽，多是「C → 丙」「N° → 序号」这类只长两三成的，
+#   刚好放下要 0.8 上下。初始比例取 1.0：不预先统一缩小，放不下时从原字号起每次缩 0.1，
+#   缩到刚好放下为止，整张图的观感和原图一致。最小比例同样 0.4：
+#   双语时新增的中文行要挤进原文和下一行之间，提高到 0.5，放不下的行会从约四成升到六成多。
+DEFAULT_FIT_SETTINGS = FitSettings(0.7, 0.4)
+DEFAULT_FIT_SETTINGS_ZH = FitSettings(1.0, 0.4)
+
+
+def default_fit_settings(target_lang: str) -> FitSettings:
+    """目标语言对应的那套默认比例。"""
+    return DEFAULT_FIT_SETTINGS_ZH if is_chinese_target(target_lang) else DEFAULT_FIT_SETTINGS
 
 
 @dataclass(frozen=True)

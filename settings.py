@@ -815,9 +815,15 @@ class CadOutputSettings(BaseModel):
     # v34 起：译文排版、显示模式、锁定不翻译的图块/图层、译文字体。旧文件没有这些键时
     # 按默认值补齐（加法改动，无需迁移）。
     # 译文会压到旁边的文字时缩小字号；先缩到默认比例，再按 0.1 一档缩到最小比例。
+    # 比例按目标语言分两套：下面这对用于中文以外的目标语言，``*_zh`` 那对用于目标语言为中文
+    # （默认值见 core.cad_layout.default_fit_settings）。开关两套共用。
     fit_layout: bool = True
     fit_default_scale: float = 0.7
     fit_min_scale: float = 0.4
+    # 目标语言为中文时的那对比例。旧文件没有这两个键时按默认值补齐；旧版只有一对比例，
+    # 用户改过的（不是 0.7 / 0.4）照搬过来，免得换成中文后自己的设置失效。加法改动，不升版本号。
+    fit_default_scale_zh: float = 1.0
+    fit_min_scale_zh: float = 0.4
     # translation 纯译文；source_first 原文在上、译文在下；translation_first 译文在上。
     display_mode: str = "translation"
     # 用户手写的锁定名单，逗号或换行分隔，可用 * 通配；原样保存，下次打开照原样显示。
@@ -829,6 +835,21 @@ class CadOutputSettings(BaseModel):
     # 按默认值补齐；不升版本号，老版本应用读到这个键也只是忽略。
     output_version: str = "source"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _seed_chinese_fit_scales(cls, data):
+        if not isinstance(data, dict) or "fit_default_scale_zh" in data or "fit_min_scale_zh" in data:
+            return data
+        from core.cad_layout import DEFAULT_FIT_SETTINGS, FitSettings
+
+        legacy = FitSettings(
+            data.get("fit_default_scale", DEFAULT_FIT_SETTINGS.default_scale),
+            data.get("fit_min_scale", DEFAULT_FIT_SETTINGS.min_scale),
+        ).normalized()
+        if legacy == DEFAULT_FIT_SETTINGS:
+            return data
+        return {**data, "fit_default_scale_zh": legacy.default_scale, "fit_min_scale_zh": legacy.min_scale}
+
     @model_validator(mode="after")
     def _normalize_cad_layout(self):
         from core.cad_layout import FitSettings
@@ -836,6 +857,9 @@ class CadOutputSettings(BaseModel):
         fit = FitSettings(self.fit_default_scale, self.fit_min_scale).normalized()
         self.fit_default_scale = fit.default_scale
         self.fit_min_scale = fit.min_scale
+        fit_zh = FitSettings(self.fit_default_scale_zh, self.fit_min_scale_zh).normalized()
+        self.fit_default_scale_zh = fit_zh.default_scale
+        self.fit_min_scale_zh = fit_zh.min_scale
         if self.display_mode not in {"translation", "source_first", "translation_first"}:
             self.display_mode = "translation"
         if self.translation_font not in {"compatible", "original"}:
