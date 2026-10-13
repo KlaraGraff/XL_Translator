@@ -170,13 +170,11 @@ interface ToggleDef {
 }
 
 const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
-  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "excel_smart_context" },
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后工作表中仅保留译文。是否另存原文，由下方「另存原文工作表」决定。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "translateSheetNames", label: t("翻译工作表名称"), hint: t("同时翻译工作表标签名，并同步更新公式中引用的表名；无法安全重命名的工作表保留原名。"), default: true, pathKind: "output", path: "translate_sheet_names" },
   { key: "keepOriginal", label: t("另存原文工作表"), hint: t("在每张工作表旁保留一份未翻译的原文副本，表名后加「_原文」。"), default: true, pathKind: "output", path: "keep_original_sheets" },
-  { key: "translateShapes", label: t("翻译文本框和形状"), hint: t("同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的，把文本框往下加高：先占下面的空白，不盖住单元格内容；空白不够时，把文本框覆盖的几行平均加高，下面的内容跟着下移。锁定了行高的列入复核清单。"), default: true, pathKind: "output", path: "translate_shapes" },
   { key: "translateComments", label: t("翻译批注"), hint: t("同时翻译单元格批注。双语时译文接在原批注下一行，作者署名保留不译。"), default: false, pathKind: "output", path: "translate_comments" },
   { key: "formulaBackfill", label: t("翻译公式单元格"), hint: t("公式单元格按当前显示内容写为双语文本，此后不再自动计算。关闭时公式单元格保持原样，不予翻译。"), default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: t("用 Excel 调整行高"), hint: t("需要本机安装 Excel。开启后由 Excel 按译文重新计算行高，结果更准确；Excel 不可用时保留估算行高，并在结果中提示。"), default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
@@ -185,7 +183,6 @@ const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
 ]));
 
 const WORD_TOGGLES: ToggleDef[] = localized(() => ([
-  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "word_smart_context" },
   { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("仅翻译尚无译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
   { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后输出文件只保留译文；关闭时保留原文与译文。"), default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
@@ -197,7 +194,6 @@ const WORD_TOGGLES: ToggleDef[] = localized(() => ([
 
 const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "pdfSmartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型读一遍 PDF 里的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，每页按这个理解翻译。每份文件多调用一次文档翻译模型；扫描件没有可读文字时自动跳过。"), default: true, pathKind: "flat", path: "pdf.smart_context" },
   { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在常规输出之外，另生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
@@ -209,7 +205,6 @@ const PDF_TOGGLES: ToggleDef[] = localized(() => ([
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
 // 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
 const CAD_TOGGLES: ToggleDef[] = localized(() => ([
-  { key: "smartContext", label: t("自动识别场景"), hint: t("翻译前先用文档翻译模型通读这份文件的文字，概括这是什么文档、单独出现的短词（如「甲」）在这里指什么，按这个理解翻译。每份文件多调用一次文档翻译模型。"), default: true, pathKind: "flat", path: "cad_smart_context" },
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
@@ -1459,7 +1454,7 @@ function fileLabel(f: FileItem): string {
 // ---------------------------------------------------------------------------
 // Excel「单元格外内容」——嵌入图片里的字、文本框/形状里的字
 //
-// 图片里的字一律不翻译；文本框和批注按「翻译文本框和形状」「翻译批注」两个开关决定。
+// 图片里的字一律不翻译；文本框和形状里的字始终翻译；批注按「翻译批注」开关决定。
 // 不翻的部分写入器逐字节原样保留。本节负责把「哪些没翻」说出来——用户看到「翻译完成」
 // 时，默认理解是「整个文件都翻了」，而实际上图片里的字一个都没动，不说清楚就是误导。
 //
@@ -1509,12 +1504,12 @@ function outsideCellStats(files: FileItem[]): OutsideCellStats {
   return stats;
 }
 
-/** 只留下按当前开关不会被翻译的那几类：开了「翻译文本框和形状」就不再把文本框算进去，
- *  批注同理。图片里的字始终不翻。 */
+/** 只留下按当前开关不会被翻译的那几类：文本框始终翻译，不算进去；开了「翻译批注」
+ *  就不再把批注算进去。图片里的字始终不翻。 */
 function untranslatedOutside(stats: OutsideCellStats, st: SurfaceState): OutsideCellStats {
   return {
     ...stats,
-    shapes: st.toggles.get("translateShapes") ? 0 : stats.shapes,
+    shapes: 0,
     comments: st.toggles.get("translateComments") ? 0 : stats.comments,
   };
 }
@@ -1540,15 +1535,9 @@ function outsideCellStat(stats: OutsideCellStats, st: SurfaceState): StatCell {
   const unknownNote = stats.unknownFiles > 0 ? t("{0} 个 .xls 未统计", stats.unknownFiles) : "";
   const n = (value: number) => fmtNum(value);
   if (hasKnownOutside(stats)) {
-    const shapes = Boolean(st.toggles.get("translateShapes"));
-    const comments = Boolean(st.toggles.get("translateComments"));
-    const note = shapes && comments
+    const note = st.toggles.get("translateComments")
       ? t("图片不翻译，原样保留")
-      : shapes
-        ? t("图片和批注不翻译，原样保留")
-        : comments
-          ? t("图片和文本框不翻译，原样保留")
-          : t("不翻译，原样保留");
+      : t("图片和批注不翻译，原样保留");
     return {
       label,
       value: `${n(stats.images)} / ${n(stats.shapes)} / ${n(stats.comments)}`,
@@ -1631,7 +1620,6 @@ function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
   const body = el("div", "bd");
   const reasons: string[] = [];
   if (stats.images > 0) reasons.push(t("图片中的文字需要 OCR，暂不支持。"));
-  if (stats.shapes > 0) reasons.push(t("「翻译文本框和形状」已关闭，文本框和形状中的文字不处理。"));
   if (stats.comments > 0) reasons.push(t("「翻译批注」已关闭，批注不处理，需要时可在右侧选项中打开。"));
   body.textContent = known
     ? reasons.join("") + t("这些内容将按原样保留，不会丢失或变形。")
@@ -1657,7 +1645,7 @@ function showOutsideCellModal(st: SurfaceState): void {
     }
     const phrase = outsideCellPhrase({
       images: typeof images === "number" ? images : 0,
-      shapes: typeof shapes === "number" && !st.toggles.get("translateShapes") ? shapes : 0,
+      shapes: 0,
       comments: typeof comments === "number" && !st.toggles.get("translateComments") ? comments : 0,
     });
     if (phrase) lines.push(`${fileLabel(file)} — ${phrase}`);

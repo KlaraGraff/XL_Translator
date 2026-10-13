@@ -44,10 +44,6 @@ def test_every_cad_switch_is_persisted_and_reaches_the_task_payload():
         if "key:" not in line:
             continue
         key = re.search(r'key: "(\w+)"', line).group(1)
-        if key == "smartContext":
-            # 「自动识别场景」存在设置里，任务开始时服务端按 cad_smart_context 读，不走任务参数。
-            assert 'pathKind: "flat", path: "cad_smart_context"' in line, line
-            continue
         assert 'pathKind: "output"' in line, line
         keys.append(key)
     assert keys, "CAD toggles not found"

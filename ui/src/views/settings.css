@@ -220,3 +220,25 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 提示词设置标题旁的「?」：和字段里的说明角标同一皮肤，只是点开的是下面的组成说明。 */
+.prompt-anatomy-toggle { background: none; padding: 0; font: inherit; font-size: 11px; cursor: pointer; margin-left: -4px; }
+.prompt-anatomy-toggle:hover, .prompt-anatomy-toggle[aria-expanded="true"] { color: var(--tint-ink); border-color: var(--tint-line); background: var(--tint); }
+.prompt-anatomy-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.prompt-anatomy { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.prompt-anatomy[hidden] { display: none; }
+.prompt-anatomy-heading { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.prompt-anatomy-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; counter-reset: anatomy; }
+/* 每段一行：序号、名称、说明、状态；窄窗口时说明换到下一行。 */
+.prompt-anatomy-item { counter-increment: anatomy; display: grid; grid-template-columns: 18px 5.5em minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.prompt-anatomy-item::before { content: counter(anatomy); align-self: center; width: 18px; height: 18px; border-radius: 99px; background: var(--tint); color: var(--tint-ink); font-size: 11px; font-weight: 650; display: flex; align-items: center; justify-content: center; }
+.prompt-anatomy-item b { font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.prompt-anatomy-item p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-2); }
+.prompt-anatomy-item span { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; text-align: right; }
+@media (max-width: 1100px) {
+  .prompt-anatomy-item { grid-template-columns: 18px minmax(0, 1fr) auto; row-gap: 2px; }
+  .prompt-anatomy-item p { grid-column: 2 / -1; grid-row: 2; }
+}
+.prompt-anatomy-item.off { border-style: dashed; background: transparent; }
+.prompt-anatomy-item.off::before { background: var(--ground-2); color: var(--ink-3); }
+.prompt-anatomy-item.off b, .prompt-anatomy-item.off p { color: var(--ink-3); }

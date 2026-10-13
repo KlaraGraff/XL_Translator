@@ -607,7 +607,7 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def _run(self, *, shapes: bool, comments: bool, untranslated_only: bool = False, source: Path | None = None):
+    def _run(self, *, comments: bool, untranslated_only: bool = False, source: Path | None = None):
         from contextlib import ExitStack
         from unittest.mock import MagicMock, patch
 
@@ -637,7 +637,6 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
         settings.excel_output.enable_excel_autofit = False
         settings.excel_output.translate_sheet_names = False
         settings.excel_output.keep_original_sheets = False
-        settings.excel_output.translate_shapes = shapes
         settings.excel_output.translate_comments = comments
         runner = TaskRunner(
             [FileItem(path=source, name=source.stem, size_kb=1.0)],
@@ -669,7 +668,7 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
         return engine, output, done[0]
 
     def test_shapes_and_comments_are_translated_when_switched_on(self) -> None:
-        engine, output, _done = self._run(shapes=True, comments=True)
+        engine, output, _done = self._run(comments=True)
         self.assertIn("图例说明", engine.requested)
         self.assertIn("这里要核对", engine.requested)
         self.assertIn("对话批注原文", engine.requested)
@@ -681,9 +680,7 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
         from settings import ExcelOutputSettings
 
         defaults = ExcelOutputSettings()
-        engine, output, _done = self._run(
-            shapes=defaults.translate_shapes, comments=defaults.translate_comments
-        )
+        engine, output, _done = self._run(comments=defaults.translate_comments)
         self.assertIn("图例说明", engine.requested)
         self.assertNotIn("这里要核对", engine.requested)
         self.assertIn("Légende", _shape_paragraphs(output))
@@ -691,11 +688,17 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
             _part(output, "xl/comments/comment1.xml"), _part(self.root / "图例.xlsx", "xl/comments/comment1.xml")
         )
 
-    def test_switched_off_leaves_everything_outside_cells_untouched(self) -> None:
-        engine, output, _done = self._run(shapes=False, comments=False)
-        self.assertEqual(sorted(engine.requested), sorted(["单元格原文", "有批注", "有对话批注"]))
-        # 行高变了，图片锚点会被固定，绘图部件本身会改；文字不能动。
-        self.assertEqual(_shape_paragraphs(output), ["图例说明", "红色表示待施工区域"])
+    def test_shapes_have_no_switch_and_old_off_setting_is_ignored(self) -> None:
+        # 文本框和形状里的字始终翻译。旧版 settings.json 里关掉的 translate_shapes
+        # 读取时忽略，不能再让它把文本框跳过去。
+        from settings import ExcelOutputSettings
+
+        self.assertNotIn("translate_shapes", ExcelOutputSettings.model_fields)
+        legacy = ExcelOutputSettings.model_validate({"translate_shapes": False, "translate_comments": False})
+        self.assertNotIn("translate_shapes", legacy.model_dump())
+        engine, output, _done = self._run(comments=False)
+        self.assertIn("图例说明", engine.requested)
+        self.assertIn("Légende", _shape_paragraphs(output))
         self.assertEqual(
             _part(output, "xl/comments/comment1.xml"), _part(self.root / "图例.xlsx", "xl/comments/comment1.xml")
         )
@@ -712,7 +715,7 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
                 shapes=True, translations={"图例说明": TRANSLATIONS["图例说明"]}
             ),
         )
-        engine, output, _done = self._run(shapes=True, comments=False, untranslated_only=True, source=source)
+        engine, output, _done = self._run(comments=False, untranslated_only=True, source=source)
         self.assertNotIn("图例说明", engine.requested)
         self.assertIn("红色表示待施工区域", engine.requested)
         self.assertEqual(
