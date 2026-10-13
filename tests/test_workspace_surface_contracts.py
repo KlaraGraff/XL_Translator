@@ -82,3 +82,17 @@ def test_auto_detect_and_shape_switches_live_only_in_settings():
     settings_view = (VIEWS / "settings.ts").read_text(encoding="utf-8")
     assert 'saveSettingPath("pdf.smart_context", checked)' in settings_view
     assert "smart_context: checked" in settings_view
+
+
+def test_prompt_settings_explain_composition_in_a_dialog():
+    """maple 2026-10-13：提示词设置标题旁的「?」单独弹窗说明组成，四个页签都有；
+    内容跟着已上线的流程走：Excel/Word 带「本批涉及的词条」，PDF 按翻译方式分组。"""
+    settings_view = (VIEWS / "settings.ts").read_text(encoding="utf-8")
+    assert 'card.append(promptCardHead("pdf"), body);' in settings_view
+    assert "card.append(promptCardHead(surface, tools), body);" in settings_view
+    assert 'tcHead(t("提示词设置")' not in settings_view.replace('const head = tcHead(t("提示词设置"), tools);', "")
+    anatomy = (VIEWS / "prompt-anatomy.ts").read_text(encoding="utf-8")
+    assert 'el("div", "modal prompt-anatomy-modal")' in anatomy
+    assert 't("本批涉及的词条")' in anatomy
+    for route in ("整页图像翻译", "转成 Word", "原位替换"):
+        assert f't("{route} · 发送给' in anatomy

@@ -1330,5 +1330,269 @@
   "开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。": {
     "en": "When on, the document translation model reads the text of the PDF before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is attached to every page. Each file uses one extra model request; scanned files with no readable text are skipped.",
     "fr": "Une fois activée, le modèle de traduction de documents lit le texte du PDF avant de le traduire et rédige un court résumé : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Ce résumé est joint à chaque page. Chaque fichier demande une requête supplémentaire au modèle ; les fichiers numérisés sans texte lisible sont ignorés."
+  },
+  "[\"1. 本工程防火门均采用甲级防火门\", … 本批若干条]": {
+    "en": "[\"1. 本工程防火门均采用甲级防火门\", … the rest of this batch]",
+    "fr": "[\"1. 本工程防火门均采用甲级防火门\", … reste du lot]"
+  },
+  "例：建筑消防设计说明，甲/乙/丙指防火门和防火分区的耐火等级。": {
+    "en": "Example: fire protection design notes for a building; 甲/乙/丙 are the fire ratings of fire doors and fire compartments.",
+    "fr": "Exemple : notice de sécurité incendie d'un bâtiment ; 甲/乙/丙 désignent les degrés coupe-feu des portes et des compartiments."
+  },
+  "单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。": {
+    "en": "A page that fails to generate or fails review is regenerated up to the \"Retries per page\" limit.",
+    "fr": "Une page dont la génération échoue ou qui est refusée au contrôle est régénérée dans la limite de « Tentatives par page »."
+  },
+  "原页面图片": {
+    "en": "Original page image",
+    "fr": "Image de la page d'origine"
+  },
+  "只返回译文，按 JSON 数组输出，条数和顺序与原文一致。": {
+    "en": "Return only the translations as a JSON array, with the same number of items in the same order as the source.",
+    "fr": "Renvoyer uniquement les traductions sous forme de tableau JSON, en même nombre et dans le même ordre que le texte source."
+  },
+  "处理流程": {
+    "en": "Process",
+    "fr": "Déroulement"
+  },
+  "开启「自动识别场景」时，先由文档翻译模型通读整份文件，写一段文档说明，每份文件一次。": {
+    "en": "With Auto-detect on, the document translation model first reads the whole file and writes a document summary, once per file.",
+    "fr": "Avec la détection automatique activée, le modèle de traduction de documents lit d'abord tout le fichier et rédige un résumé, une fois par fichier."
+  },
+  "当前选用：{0}": {
+    "en": "In use: {0}",
+    "fr": "Utilisée : {0}"
+  },
+  "当前页面的图片。": {
+    "en": "The image of the current page.",
+    "fr": "L'image de la page en cours."
+  },
+  "待翻译内容": {
+    "en": "Text to translate",
+    "fr": "Texte à traduire"
+  },
+  "提示词的组成": {
+    "en": "How the prompt is built",
+    "fr": "Composition du prompt"
+  },
+  "文档说明": {
+    "en": "Document summary",
+    "fr": "Résumé du document"
+  },
+  "未开启，不发送": {
+    "en": "Off, not sent",
+    "fr": "Inactif, non envoyé"
+  },
+  "未选用，不发送": {
+    "en": "None selected, not sent",
+    "fr": "Aucune sélection, non envoyé"
+  },
+  "本批原文": {
+    "en": "Source text of this batch",
+    "fr": "Texte source du lot"
+  },
+  "每批发送给文档翻译模型的内容": {
+    "en": "What each batch sends to the document translation model",
+    "fr": "Contenu envoyé au modèle de traduction de documents pour chaque lot"
+  },
+  "每次发送": {
+    "en": "Always sent",
+    "fr": "Envoi systématique"
+  },
+  "每页一张": {
+    "en": "One per page",
+    "fr": "Une par page"
+  },
+  "由「自动识别场景」生成": {
+    "en": "Written by Auto-detect",
+    "fr": "Rédigé par la détection automatique"
+  },
+  "目标语言为自定义语言时，另附该语言的说明。": {
+    "en": "When the target language is a custom language, its description is also attached.",
+    "fr": "Si la langue cible est une langue personnalisée, sa description est également jointe."
+  },
+  "程序附上": {
+    "en": "Added by the app",
+    "fr": "Ajouté par l'application"
+  },
+  "请求失败或回答中断时，按「失败重试次数」重新发送；仍失败的内容保留原文，并标记为需复核。": {
+    "en": "If a request fails or a reply is cut off, the batch is resent up to the \"Retries on failure\" limit; text that still fails keeps its source text and is marked for review.",
+    "fr": "Si une requête échoue ou qu'une réponse est interrompue, le lot est renvoyé dans la limite de « Nouvelles tentatives en cas d'échec » ; le texte toujours en échec garde le texte source et est marqué à vérifier."
+  },
+  "返回格式": {
+    "en": "Response format",
+    "fr": "Format de réponse"
+  },
+  "- [第 17 条] 上次译文：porte coupe-feu A；须采用：甲级防火门 → porte coupe-feu de classe A": {
+    "en": "- [Item 17] Previous translation: porte coupe-feu A; required: 甲级防火门 → porte coupe-feu de classe A",
+    "fr": "- [Élément 17] Traduction précédente : porte coupe-feu A ; à appliquer : 甲级防火门 → porte coupe-feu de classe A"
+  },
+  "[\"Porte coupe-feu\", \"Local technique\", … 本页若干条]": {
+    "en": "[\"Porte coupe-feu\", \"Local technique\", … the rest of this page]",
+    "fr": "[\"Porte coupe-feu\", \"Local technique\", … reste de la page]"
+  },
+  "与 Word 文档相同": {
+    "en": "Same as for Word documents",
+    "fr": "Identique aux documents Word"
+  },
+  "仅含本批出现的词条，没有时不发送": {
+    "en": "Only entries found in this batch; not sent if none",
+    "fr": "Uniquement les entrées présentes dans ce lot ; non envoyé s'il n'y en a pas"
+  },
+  "仅在审核未通过、重新生成时发送": {
+    "en": "Sent only when a page fails review and is regenerated",
+    "fr": "Envoyé uniquement quand une page refusée au contrôle est régénérée"
+  },
+  "仅在重新翻译时发送": {
+    "en": "Sent only on retranslation",
+    "fr": "Envoyé uniquement lors d'une nouvelle traduction"
+  },
+  "任务开始时查找记忆库：整段与记忆库词条相同的内容直接套用，不发送给模型。": {
+    "en": "At the start of the task, the translation memory is checked: text identical to an entry is reused directly and not sent to the model.",
+    "fr": "Au début de la tâche, la mémoire de traduction est consultée : un texte identique à une entrée est repris tel quel et n'est pas envoyé au modèle."
+  },
+  "全部完成后，按原页序合成一份 PDF。": {
+    "en": "Once all pages are done, they are assembled into one PDF in the original page order.",
+    "fr": "Une fois toutes les pages traitées, elles sont réunies en un seul PDF dans l'ordre d'origine."
+  },
+  "其余内容分批发送。每批发送前，查找本批实际出现的记忆库词条，随本批一起发送。": {
+    "en": "The remaining text is sent in batches. Before each batch is sent, the translation memory entries that actually appear in it are looked up and sent with it.",
+    "fr": "Le reste du texte est envoyé par lots. Avant chaque envoi, les entrées de la mémoire de traduction présentes dans le lot sont recherchées et envoyées avec lui."
+  },
+  "其余内容分批发送给文档翻译模型。": {
+    "en": "The remaining text is sent to the document translation model in batches.",
+    "fr": "Le reste du texte est envoyé par lots au modèle de traduction de documents."
+  },
+  "原位替换 · 发送给文档翻译模型": {
+    "en": "In-place replacement · sent to the document translation model",
+    "fr": "Remplacement sur place · envoyé au modèle de traduction de documents"
+  },
+  "原位替换的页：取出页面上的文字发送给文档翻译模型，译文按原字号和颜色写回原位置。": {
+    "en": "In-place pages: the text on the page is extracted and sent to the document translation model; translations are written back in place with the original size and color.",
+    "fr": "Pages en remplacement sur place : le texte de la page est extrait et envoyé au modèle de traduction de documents ; la traduction est réécrite au même endroit, dans la taille et la couleur d'origine."
+  },
+  "各翻译方式发送给模型的内容": {
+    "en": "What each translation method sends to the models",
+    "fr": "Contenu envoyé aux modèles selon la méthode de traduction"
+  },
+  "审核意见": {
+    "en": "Review comments",
+    "fr": "Remarques du contrôle"
+  },
+  "审核模型指出的问题，要求只改正这些问题，其余保持不变。": {
+    "en": "The issues found by the review model, with an instruction to fix only those and keep the rest unchanged.",
+    "fr": "Les problèmes relevés par le modèle de contrôle, avec la consigne de corriger uniquement ceux-ci et de conserver le reste."
+  },
+  "工程图纸标注的翻译要求：逐条译成简体中文，保留数字、单位、编号和缩写，由程序固定。": {
+    "en": "Rules for drawing annotations: translate each item into Simplified Chinese, keep numbers, units, codes and abbreviations. Set by the app.",
+    "fr": "Règles pour les annotations de plans : traduire chaque élément en chinois simplifié, en conservant chiffres, unités, repères et abréviations. Fixées par l'application."
+  },
+  "开启「自动识别场景」时，先读取 PDF 中的文字，由文档翻译模型写一段文档说明；扫描件没有可读文字时跳过。": {
+    "en": "With Auto-detect on, the text in the PDF is read first and the document translation model writes a document summary; skipped for scans with no readable text.",
+    "fr": "Avec la détection automatique activée, le texte du PDF est d'abord lu et le modèle de traduction de documents rédige un résumé ; étape ignorée pour les numérisations sans texte lisible."
+  },
+  "当前使用": {
+    "en": "In use",
+    "fr": "Utilisée"
+  },
+  "当前未使用": {
+    "en": "Not in use",
+    "fr": "Non utilisée"
+  },
+  "必须采用：\n- [第 1、17 条] 甲级防火门 → porte coupe-feu de classe A\n按场景选用：\n- [第 12 条] 甲：a. A（配电回路编号）；b. 原样保留（属于编号的一部分）": {
+    "en": "Must apply:\n- [Items 1, 17] 甲级防火门 → porte coupe-feu de classe A\nChoose by context:\n- [Item 12] 甲: a. A (circuit number); b. Keep as is (part of a code)",
+    "fr": "À appliquer :\n- [Éléments 1, 17] 甲级防火门 → porte coupe-feu de classe A\nSelon le contexte :\n- [Élément 12] 甲 : a. A (numéro de circuit) ; b. Conserver tel quel (partie d'un repère)"
+  },
+  "按当前设置列出处理顺序和发送给模型的内容；虚线框表示当前不发送。": {
+    "en": "Shows, for the current settings, the processing order and what is sent to the model. Dashed boxes are not sent.",
+    "fr": "Présente, selon les paramètres actuels, l'ordre de traitement et le contenu envoyé au modèle. Les cadres en pointillés ne sont pas envoyés."
+  },
+  "按页面类型分别处理：扫描页、可提取文字的页、图纸和大图各按 PDF 页面「翻译方式」中的设定；某页无法使用所选方式时改用保底方式。": {
+    "en": "Each page is handled by type: scanned pages, pages with extractable text, and drawings and large pages each follow the Translation method set on the PDF page; a page that cannot use its method uses the safety net instead.",
+    "fr": "Chaque page est traitée selon son type : pages numérisées, pages au texte extractible, plans et grands formats suivent chacun la méthode de traduction définie sur la page PDF ; une page qui ne peut pas utiliser sa méthode passe à la solution de repli."
+  },
+  "改正说明": {
+    "en": "Correction note",
+    "fr": "Note de correction"
+  },
+  "数字、编号等不需要翻译的文字不发送。": {
+    "en": "Numbers, codes and other text that needs no translation are not sent.",
+    "fr": "Les chiffres, repères et autres textes sans traduction ne sont pas envoyés."
+  },
+  "整页图像翻译 · 发送给图像模型": {
+    "en": "Full-page image translation · sent to the image model",
+    "fr": "Traduction d'image pleine page · envoyé au modèle d'image"
+  },
+  "整页图像翻译的页：每页转成图片发送给图像模型；开启「逐页审核」时，未通过的页面附上审核意见重新生成。": {
+    "en": "Full-page image pages: each page is converted to an image and sent to the image model; with Page review on, pages that fail review are regenerated with the review comments.",
+    "fr": "Pages en traduction d'image : chaque page est convertie en image et envoyée au modèle d'image ; avec le contrôle des pages activé, une page refusée est régénérée avec les remarques du contrôle."
+  },
+  "每页转成图片发送给图像模型，生成翻译后的页面；开启「逐页审核」时，未通过的页面附上审核意见重新生成。": {
+    "en": "Each page is converted to an image and sent to the image model, which generates the translated page; with Page review on, pages that fail review are regenerated with the review comments.",
+    "fr": "Chaque page est convertie en image et envoyée au modèle d'image, qui génère la page traduite ; avec le contrôle des pages activé, une page refusée est régénérée avec les remarques du contrôle."
+  },
+  "未开启逐页审核，不发送": {
+    "en": "Page review off, not sent",
+    "fr": "Contrôle des pages inactif, non envoyé"
+  },
+  "本批涉及的词条": {
+    "en": "Entries in this batch",
+    "fr": "Entrées du lot"
+  },
+  "本页取出的文字": {
+    "en": "Text extracted from this page",
+    "fr": "Texte extrait de la page"
+  },
+  "用作保底方式": {
+    "en": "Used as safety net",
+    "fr": "Solution de repli"
+  },
+  "由「自动识别场景」按本页文字生成": {
+    "en": "Written by Auto-detect from this page's text",
+    "fr": "Rédigé par la détection automatique à partir du texte de la page"
+  },
+  "记忆库中未在本批出现的词条不发送。": {
+    "en": "Translation memory entries that do not appear in the batch are not sent.",
+    "fr": "Les entrées de la mémoire de traduction absentes du lot ne sont pas envoyées."
+  },
+  "设置 · 翻译参数 · {0}": {
+    "en": "Settings · Translation options · {0}",
+    "fr": "Paramètres · Options de traduction · {0}"
+  },
+  "译文为空或不完整时，按「单段最多重试次数」重新翻译；仍失败的段落保留原文，并标记为需复核。": {
+    "en": "If a translation is empty or incomplete, the paragraph is retranslated up to the \"Max retries per paragraph\" limit; paragraphs that still fail keep their source text and are marked for review.",
+    "fr": "Si une traduction est vide ou incomplète, le paragraphe est retraduit dans la limite de « Tentatives max. par paragraphe » ; les paragraphes toujours en échec gardent le texte source et sont marqués à vérifier."
+  },
+  "译文返回后核对「始终采用」的词条；未采用时附上改正说明重新翻译，最多 {0} 次，仍未采用的位置标记为需复核。": {
+    "en": "Returned translations are checked against \"Always apply\" entries; if one was not applied, the text is retranslated with a correction note, up to {0} times, and places still not applied are marked for review.",
+    "fr": "Les traductions reçues sont vérifiées par rapport aux entrées « Toujours appliquer » ; si une entrée n'est pas appliquée, le texte est retraduit avec une note de correction, jusqu'à {0} fois, et les endroits toujours non conformes sont marqués à vérifier."
+  },
+  "译文返回后核对「始终采用」的词条；未采用的位置直接标记为需复核。": {
+    "en": "Returned translations are checked against \"Always apply\" entries; places where one was not applied are marked for review.",
+    "fr": "Les traductions reçues sont vérifiées par rapport aux entrées « Toujours appliquer » ; les endroits non conformes sont marqués à vérifier."
+  },
+  "转成 Word · 发送给文档翻译模型": {
+    "en": "Convert to Word · sent to the document translation model",
+    "fr": "Conversion en Word · envoyé au modèle de traduction de documents"
+  },
+  "转成 Word 的页：连续几页合成一份 Word，按 Word 的提示词设置和记忆库翻译，再转回 PDF。": {
+    "en": "Convert-to-Word pages: consecutive pages are combined into one Word file, translated with the Word prompt settings and translation memory, then converted back to PDF.",
+    "fr": "Pages converties en Word : les pages consécutives sont réunies dans un fichier Word, traduites selon les paramètres de prompt Word et la mémoire de traduction, puis reconverties en PDF."
+  },
+  "重试次数为 0，不发送": {
+    "en": "Retries set to 0, not sent",
+    "fr": "Tentatives à 0, non envoyé"
+  },
+  "页面翻译的通用要求和目标语言的书写规则，由程序固定，不能修改。": {
+    "en": "General page translation rules and writing rules for the target language. Set by the app and cannot be changed.",
+    "fr": "Règles générales de traduction de page et règles d'écriture de la langue cible. Fixées par l'application, non modifiables."
+  },
+  "依次为内置规则、补充要求、文档说明、本批涉及的词条、返回格式和待翻译内容。": {
+    "en": "In order: built-in rules, extra instructions, document summary, entries in this batch, response format and text to translate.",
+    "fr": "Dans l'ordre : règles intégrées, consignes supplémentaires, résumé du document, entrées du lot, format de réponse et texte à traduire."
+  },
+  "按「Word」页签的提示词设置": {
+    "en": "Follows the Word tab's prompt settings",
+    "fr": "Selon les paramètres de prompt de l'onglet Word"
   }
 }
