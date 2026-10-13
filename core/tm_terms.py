@@ -560,6 +560,11 @@ def normalize_contains(expected: str, translation: str) -> bool:
 
 def chosen_candidate(hit: TermHit, translation: str, *, target_lang: str) -> TermCandidate | None:
     """按场景选用的词条，译文用了哪一种候选；都没用（按常规翻译）返回 None。"""
+    if hit.whole:
+        # 整段就是这个词：译文得和某个候选一致才算选了它。「classe A」里虽然含有候选
+        # 「A」，却是模型新给的译法。
+        wanted = whole_key(translation)
+        return next((candidate for candidate in hit.candidates if whole_key(candidate.target) == wanted), None)
     for candidate in hit.candidates:
         if term_applied(
             translation,

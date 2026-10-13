@@ -171,8 +171,9 @@ class TaskTermSession:
         for outcome in self.stats.not_applied():
             if outcome.text == text:
                 wanted = "；".join(f"{hit.source} → {hit.expected}" for hit in outcome.missed)
-                retried = f"重译 {outcome.retries} 次后仍未采用" if outcome.retries else "未重译"
-                return f"设定译法：{wanted}；{retried}，需人工复核。"
+                if outcome.retries:
+                    return f"设定译法：{wanted}；重译 {outcome.retries} 次后仍未采用，需人工复核。"
+                return f"设定译法：{wanted}；未重译，需人工复核。"
         return "需人工复核。"
 
     def log_not_applied(self) -> None:
@@ -300,6 +301,22 @@ class TaskTermSession:
         except Exception as exc:  # noqa: BLE001 - statistics never fail a finished task
             logger.warning(f"记录记忆库使用次数失败：{exc!r}")
         summary = self.stats.summary()
+        # 「均已采用」只说必须采用的词条：按场景选用的候选本来就可能一条都不用。
+        involved: set[int] = {
+            entry_id
+            for text, ids in self.whole.entry_ids.items()
+            if self.whole.usage_by_text.get(text, USAGE_SEGMENT) != USAGE_SCENE
+            for entry_id in ids
+        }
+        for outcome in self.stats.outcomes():
+            for hit in outcome.hits:
+                if hit.usage == USAGE_ALWAYS:
+                    involved.update(hit.entry_ids)
+        manual_ids = (
+            {entry.id for entry in self.index.entries if entry.origin == "manual"}
+            if self.index is not None
+            else set()
+        )
         if locations_for_text is not None:
             by_snippet = {outcome.text: outcome for outcome in self.stats.not_applied()}
             for item, outcome in zip(summary["not_applied"], by_snippet.values()):
@@ -318,5 +335,7 @@ class TaskTermSession:
             "auto_saved": list(self.auto_saved),
             "scene_choices": summary["scene_choices"],
             "manual_terms_total": self.index.manual_entry_count if self.index is not None else 0,
+            # 本次涉及（整段或句中出现过）的手动维护词条数，任务详情「均已采用」那一行用。
+            "manual_terms_hit": len(involved & manual_ids),
             "retry_attempts": int(getattr(self._tm, "term_retry_attempts", 2)),
         }

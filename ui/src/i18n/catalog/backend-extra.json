@@ -58,5 +58,41 @@
   "- 缩到最小比例仍会压到旁边文字：{0} 处": {
     "en": "- Still overlapping nearby text at the minimum size: {0}",
     "fr": "- Chevauche encore le texte voisin à la taille minimale : {0}"
+  },
+  "记忆库词条读取失败，本次仅整段复用已有译文，不在句中采用设定译法": {
+    "en": "Could not read the translation memory entries. This task only reuses whole-text translations and does not apply set translations inside sentences",
+    "fr": "Impossible de lire les entrées de la mémoire de traduction. Cette tâche réutilise uniquement les traductions de textes entiers et n'applique pas les traductions définies dans les phrases"
+  },
+  "记忆库中有 {0} 处文字对应按场景选用的词条，将随批附上候选译法，由模型结合文档说明选用": {
+    "en": "{0} {0|text matches|texts match} “By context” entries in the translation memory. The candidate translations are sent with each batch and the model chooses based on the document description",
+    "fr": "{0} {0|texte correspond|textes correspondent} à des entrées « Selon le contexte » de la mémoire de traduction. Les traductions candidates sont envoyées avec chaque lot et le modèle choisit d'après la description du document"
+  },
+  "记忆库：{0} 个词条将在句中出现时采用，翻译完成后核对": {
+    "en": "Translation memory: {0} {0|entry is|entries are} applied when they appear inside sentences and checked after translation",
+    "fr": "Mémoire de traduction : {0} {0|entrée est appliquée|entrées sont appliquées} lorsqu'elles apparaissent dans des phrases, puis vérifiées après la traduction"
+  },
+  "设定译法：{0}；重译 {1} 次后仍未采用，需人工复核。": {
+    "en": "Set translation: {0}; still not used after {1} {1|retry|retries}. Needs manual review.",
+    "fr": "Traduction définie : {0} ; toujours non utilisée après {1} {1|nouvelle tentative|nouvelles tentatives}. À vérifier manuellement."
+  },
+  "设定译法：{0}；未重译，需人工复核。": {
+    "en": "Set translation: {0}; not retranslated. Needs manual review.",
+    "fr": "Traduction définie : {0} ; non retraduit. À vérifier manuellement."
+  },
+  "需人工复核。": {
+    "en": "Needs manual review.",
+    "fr": "À vérifier manuellement."
+  },
+  "有 {0} 处译文未采用记忆库中的设定译法，已在输出文件中标记需复核，且不保存到记忆库": {
+    "en": "{0} {0|translation does|translations do} not use the set translation from the translation memory. {0|It is|They are} marked for review in the output file and not saved to the translation memory",
+    "fr": "{0} {0|traduction n'utilise|traductions n'utilisent} pas la traduction définie dans la mémoire de traduction. {0|Elle est marquée|Elles sont marquées} à vérifier dans le fichier de sortie et {0|n'est|ne sont} pas {0|enregistrée|enregistrées} dans la mémoire de traduction"
+  },
+  "记忆库：已自动保存 {0} 个短词在本文档场景中的译法，备注取自文档说明": {
+    "en": "Translation memory: saved the translations of {0} short {0|word|words} in this document's context automatically, with notes taken from the document description",
+    "fr": "Mémoire de traduction : les traductions de {0} {0|mot court|mots courts} dans le contexte de ce document ont été enregistrées automatiquement, avec des notes issues de la description du document"
+  },
+  "记忆库尚未完成结构升级，暂时不能为同一原文保存带备注的词条。请重启应用后重试。": {
+    "en": "The translation memory has not finished upgrading, so entries with a note cannot yet be saved for the same source text. Restart the app and try again.",
+    "fr": "La mise à niveau de la mémoire de traduction n'est pas terminée : impossible pour l'instant d'enregistrer une entrée avec note pour le même texte source. Redémarrez l'application puis réessayez."
   }
 }

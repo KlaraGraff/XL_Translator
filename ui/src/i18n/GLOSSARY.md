@@ -67,6 +67,14 @@
 | 运行日志 | Activity log | Journal d'activité |
 | 记忆库词条 | Entry | Entrée |
 | 固定词条 | Locked entry | Entrée verrouillée |
+| 手动维护 / 自动保存（词条来源） | Manual / Auto-saved | Manuelles / Automatiques |
+| 备注（词条适用场景） | Note | Note |
+| 设定译法 | Set translation | Traduction définie |
+| 采用方式 | How to apply | Mode d'application |
+| 始终采用 / 按场景选用 / 仅整段复用 | Always apply / By context / Whole text only | Toujours appliquer / Selon le contexte / Texte entier uniquement |
+| 生效范围 | Applies to | Portée |
+| 未采用设定译法 | Set translation not used | Traduction définie non utilisée |
+| 高级模式 | Advanced mode | Mode avancé |
 | 清洗记忆库 | Clean up memory | Nettoyer la mémoire |
 | 补译 | Fill in missing translations | Compléter les traductions |
 | 双语 | Bilingual | Bilingue |

@@ -1406,6 +1406,84 @@ function renderParamsPage(host: HTMLElement): void {
     host.append(renderDomainPromptCard(paramsTab));
   }
 
+  // 记忆库对 Excel、Word 都生效，不跟着上面的页签切换。
+  host.append(renderTmTermsCard());
+}
+
+/** 设置 · 记忆库：高级模式开关；其余选项只在高级模式下显示。 */
+function renderTmTermsCard(): HTMLElement {
+  const tm = record(settings?.tm);
+  const advanced = tm.advanced_mode === true;
+  const card = createCard([]);
+  const body = document.createElement("div");
+  body.style.padding = "14px 16px";
+  body.style.display = "flex";
+  body.style.flexDirection = "column";
+  body.style.gap = "12px";
+  body.append(sectionLabel(t("记忆库")));
+
+  const switchField = (label: string, checked: boolean, path: string, note: string): HTMLDivElement => {
+    const field = document.createElement("div");
+    field.className = "field";
+    const row = document.createElement("div");
+    row.className = "swrow";
+    row.append(document.createTextNode(label));
+    row.append(createSwitch({ checked, onChange: (next) => void reRenderAfter(() => saveSettingPath(path, next), { rerenderOnError: true }) }));
+    const hint = document.createElement("p");
+    hint.className = "prompt-note";
+    hint.textContent = note;
+    field.append(row, hint);
+    return field;
+  };
+
+  body.append(switchField(
+    t("高级模式"),
+    advanced,
+    "tm.advanced_mode",
+    t("开启后，记忆库页面、记忆条目编辑窗口和任务详情中将显示采用方式、生效范围、使用次数等信息。默认关闭，也可在记忆库页面右上角切换。"),
+  ));
+  if (advanced) {
+    const lead = document.createElement("p");
+    lead.className = "prompt-note";
+    lead.style.margin = "0";
+    lead.textContent = t("以下选项仅在高级模式下显示。");
+    body.append(lead);
+    body.append(switchField(
+      t("在句中采用设定译法"),
+      tm.apply_in_sentences !== false,
+      "tm.apply_in_sentences",
+      t("开启后，采用方式为「始终采用」的词条在句中出现时同样采用其译法；关闭时仅在整段文字完全相同时采用。"),
+    ));
+    const grid = document.createElement("div");
+    grid.className = "grid2";
+    grid.append(numberField(
+      t("未采用设定译法时重试次数"),
+      num(tm.term_retry_attempts, 2),
+      (v) => void reRenderAfter(() => saveSettingPath("tm.term_retry_attempts", v), { rerenderOnError: true }),
+      { min: 0, max: 5, integer: true, hint: t("译文未采用设定译法时，段落自动重新翻译的最多次数，范围 0 到 5。仍未采用的位置将在输出文件中标记需复核；设为 0 时不重新翻译，直接标记。") },
+    ));
+    grid.append(numberField(
+      t("每批词条上限"),
+      num(tm.term_batch_budget, 20),
+      (v) => void reRenderAfter(() => saveSettingPath("tm.term_batch_budget", v), { rerenderOnError: true }),
+      { min: 5, max: 100, integer: true, hint: t("单批内容涉及的词条超过此数时，将自动拆分为更小的批次，确保相关词条均随内容发送。") },
+    ));
+    body.append(grid);
+    body.append(switchField(
+      t("自动保存短词的场景译法"),
+      tm.auto_save_short_scene !== false,
+      "tm.auto_save_short_scene",
+      t("开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。"),
+    ));
+    body.append(switchField(
+      t("本地模型也按场景选用"),
+      tm.local_scene_candidates === true,
+      "tm.local_scene_candidates",
+      t("开启后，本地模型同样会收到「按场景选用」的候选译法；关闭时仅发送「始终采用」的词条。本地模型较易受候选译法干扰，默认关闭。"),
+    ));
+  }
+  card.append(body);
+  return card;
 }
 
 function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color: string) => void): HTMLDivElement {

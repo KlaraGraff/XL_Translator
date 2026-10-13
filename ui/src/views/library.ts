@@ -14,6 +14,7 @@ import {
   createDropdown,
   createSelectField,
   createLanguagePicker,
+  createSwitch,
   createSwitchRow,
   createEmptyState,
   openModal,
@@ -43,9 +44,50 @@ interface TmEntry {
   id: number;
   source_text: string;
   target_text: string;
+  lang_pair?: string;
   pinned: number;
   word_type: string;
   updated_at?: string;
+  /** 备注（适用场景）；空串为通用词条。 */
+  note?: string;
+  /** 用户选过的采用方式；空串表示按默认。 */
+  usage?: string;
+  /** 实际采用方式：always 始终采用 / scene 按场景选用 / segment 仅整段复用。 */
+  effective_usage?: string;
+  scope?: string;
+  use_count?: number;
+  last_used_at?: string;
+  /** 来源：manual 手动维护 / auto 自动保存。 */
+  origin?: string;
+}
+
+type EntryFilter = "all" | "manual" | "auto" | "always" | "scene" | "segment" | "recent_auto" | "unused";
+/** 普通模式只有前三个筛选；其余在高级模式下出现。 */
+const BASIC_FILTERS: EntryFilter[] = ["all", "manual", "auto"];
+const ADVANCED_FILTERS: EntryFilter[] = ["always", "scene", "segment", "recent_auto", "unused"];
+const FILTER_LABELS: Record<EntryFilter, string> = localized(() => ({
+  all: t("全部"),
+  manual: t("手动维护"),
+  auto: t("自动保存"),
+  always: t("始终采用"),
+  scene: t("按场景选用"),
+  segment: t("仅整段复用"),
+  recent_auto: t("最近 7 天自动保存"),
+  unused: t("一年以上未使用"),
+}));
+const USAGE_LABELS: Record<string, string> = localized(() => ({
+  always: t("始终采用"),
+  scene: t("按场景选用"),
+  segment: t("仅整段复用"),
+}));
+const USAGE_HINTS: Record<string, string> = localized(() => ({
+  always: t("整段文字完全相同或在句中出现时均采用此译法，翻译完成后核对。"),
+  scene: t("由模型对照备注和文档说明判断是否采用。填写备注时默认选择此项。"),
+  segment: t("仅在整段文字完全相同时采用，在句中出现时不采用。"),
+}));
+
+function originLabel(entry: TmEntry): string {
+  return entry.origin === "manual" ? t("手动维护") : t("自动保存");
 }
 
 interface TmConflict {
@@ -172,6 +214,10 @@ let pageSize = 25;
 let total = 0;
 let entries: TmEntry[] = [];
 let stats: JsonObject = {};
+let filterCounts: JsonObject = {};
+let entryFilter: EntryFilter = "all";
+/** 高级模式（设置 tm.advanced_mode）：多出采用方式、生效范围、使用次数等。 */
+let advancedMode = false;
 const selectedIds = new Set<number>();
 let conflicts: TmConflict[] = [];
 let conflictMessage = "";
@@ -190,16 +236,17 @@ let mountGeneration = 0;
 let tmRequestRevision = 0;
 let tmQueryRevision = 0;
 // 回滚到最后一次真正显示的数据，不能回滚到另一个仍在等待的查询。
-let confirmedQuery = { page, keyword, pageSize, sourceLang, targetLang };
+let confirmedQuery: { page: number; keyword: string; pageSize: number; sourceLang: string; targetLang: string; entryFilter: EntryFilter } = { page, keyword, pageSize, sourceLang, targetLang, entryFilter };
 let confirmedSelectedIds: number[] = [];
 let tmQueryPending = true;
 function tmQueryReady(): boolean {
   return mounted && !tmQueryPending && sourceLang === confirmedQuery.sourceLang
     && targetLang === confirmedQuery.targetLang && keyword === confirmedQuery.keyword
-    && page === confirmedQuery.page && pageSize === confirmedQuery.pageSize;
+    && page === confirmedQuery.page && pageSize === confirmedQuery.pageSize
+    && entryFilter === confirmedQuery.entryFilter;
 }
 function restoreConfirmedQuery(): void {
-  ({ page, keyword, pageSize, sourceLang, targetLang } = confirmedQuery);
+  ({ page, keyword, pageSize, sourceLang, targetLang, entryFilter } = confirmedQuery);
   selectedIds.clear();
   for (const id of confirmedSelectedIds) selectedIds.add(id);
   tmQueryPending = false;
@@ -273,8 +320,10 @@ async function refreshLanguagePairs(): Promise<void> {
     target_options: LanguageOption[];
     selected?: { source_lang?: string; target_lang?: string };
     recent?: string[];
+    advanced_mode?: boolean;
   }>("/api/tm/language-pairs");
   if (!mounted || generation !== mountGeneration) return;
+  advancedMode = payload.advanced_mode === true;
   sourceOptions = payload.source_options.filter((option) => option.builtin !== false && option.can_source !== false);
   targetOptions = payload.target_options.filter((option) => option.can_target !== false);
   recentPairs = strings(payload.recent);
@@ -288,14 +337,14 @@ async function refreshTm(): Promise<boolean> {
   const generation = mountGeneration;
   const queryRevision = tmQueryRevision;
   const requestRevision = ++tmRequestRevision;
-  const query = { pair: tmLangPair(), keyword, page, pageSize };
+  const query = { pair: tmLangPair(), keyword, page, pageSize, filter: entryFilter };
   const isCurrent = () => currentTmScope(generation, queryRevision) && requestRevision === tmRequestRevision;
   try {
     const client = await getClient();
     if (!isCurrent()) return false;
     while (true) {
-      const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number }>(
-        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${query.page}&page_size=${query.pageSize}`,
+      const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number; filter_counts?: JsonObject }>(
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${query.page}&page_size=${query.pageSize}&entry_filter=${encodeURIComponent(query.filter)}`,
       );
       if (!isCurrent()) return false;
       const nextTotal = num(payload.total, payload.entries.length);
@@ -306,9 +355,10 @@ async function refreshTm(): Promise<boolean> {
       }
       entries = payload.entries;
       stats = payload.stats ?? {};
+      filterCounts = record(payload.filter_counts);
       total = nextTotal;
       page = query.page;
-      confirmedQuery = { page, keyword: query.keyword, pageSize: query.pageSize, sourceLang, targetLang };
+      confirmedQuery = { page, keyword: query.keyword, pageSize: query.pageSize, sourceLang, targetLang, entryFilter: query.filter };
       tmQueryPending = false;
       return true;
     }
@@ -359,7 +409,7 @@ const SELECT_ALL_CAP = 5000;
 let selectAllBusy = false;
 
 async function fetchAllMatchingTmIds(): Promise<{ ids: number[]; truncated: boolean }> {
-  const query = { pair: tmLangPair(), keyword, total };
+  const query = { pair: tmLangPair(), keyword, total, filter: entryFilter };
   const targetCount = Math.min(query.total, SELECT_ALL_CAP);
   if (targetCount <= 0) return { ids: [], truncated: false };
   const client = await getClient();
@@ -367,7 +417,7 @@ async function fetchAllMatchingTmIds(): Promise<{ ids: number[]; truncated: bool
   const pagePayloads = await Promise.all(
     Array.from({ length: pageCount }, (_, index) =>
       client.request<{ entries: TmEntry[] }>(
-        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}`,
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}&entry_filter=${encodeURIComponent(query.filter)}`,
       ),
     ),
   );
@@ -488,7 +538,7 @@ function renderTopbarStatus(): void {
   setTopbar({
     title: t("记忆库"),
     status: { label: t("{0} 条", fmtNum(total)), tone: "idle" },
-    subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高"),
+    subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法"),
   });
 }
 
@@ -496,31 +546,29 @@ function renderTopbarStatus(): void {
 // 条目 CRUD
 // ---------------------------------------------------------------------------
 
-async function tmPin(entryId: number, pinned: boolean): Promise<void> {
-  if (!tmQueryReady()) return;
-  const generation = mountGeneration;
-  const revision = tmQueryRevision;
-  const client = await getClient();
-  if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
-  await client.request(`/api/tm/entries/${entryId}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
-  await refreshTm();
-  renderTable();
+/** 切换高级模式：存进设置（tm.advanced_mode），任务详情和设置页读同一项。 */
+async function setAdvancedMode(next: boolean): Promise<void> {
+  const previous = advancedMode;
+  advancedMode = next;
+  if (!next && ADVANCED_FILTERS.includes(entryFilter)) {
+    await applyTmQueryChange(() => {
+      entryFilter = "all";
+      page = 1;
+      selectedIds.clear();
+    });
+  }
+  rebuildToolbar();
   renderStatsRow();
-}
-
-async function tmBulkPin(pinned: boolean): Promise<void> {
-  if (!tmQueryReady() || !selectedIds.size) return;
-  const generation = mountGeneration;
-  const revision = tmQueryRevision;
-  const ids = [...selectedIds];
-  const client = await getClient();
-  if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
-  await client.request("/api/tm/entries/bulk/pin", { method: "POST", body: JSON.stringify({ ids, pinned }) });
-  selectedIds.clear();
-  await refreshTm();
   renderTable();
-  renderStatsRow();
-  showToast({ message: pinned ? t("已固定所选记忆条目。") : t("已解除所选记忆条目的固定。") });
+  try {
+    await persistSettings({ tm: { advanced_mode: next } });
+  } catch (error) {
+    advancedMode = previous;
+    rebuildToolbar();
+    renderStatsRow();
+    renderTable();
+    showToast({ message: t("保存失败：{0}", errorMessage(error)), error: true });
+  }
 }
 
 function confirmBulkDelete(): void {
@@ -533,7 +581,7 @@ function confirmBulkDelete(): void {
     tone: "danger",
     icon: "trash",
     title: t("批量删除记忆条目？"),
-    body: [t("将永久删除已选中的 {0} 条记忆条目（固定词条会被保护，不会被删除）。此操作不能撤销。", fmtNum(count))],
+    body: [t("将永久删除已选中的 {0} 条记忆条目。此操作不能撤销。", fmtNum(count))],
     actions: [
       { label: t("取消"), variant: "default" },
       {
@@ -544,7 +592,8 @@ function confirmBulkDelete(): void {
           if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
           const result = await client.request<{ deleted: number; protected: number; missing: number }>("/api/tm/entries/bulk/delete", {
             method: "POST",
-            body: JSON.stringify({ ids }),
+            // 记忆库页不再有「固定」的概念：页面上选中的就是要删的。
+            body: JSON.stringify({ ids, allow_pinned: true }),
           });
           selectedIds.clear();
           await refreshTm();
@@ -562,28 +611,85 @@ function confirmBulkDelete(): void {
   });
 }
 
+function fieldHint(textContent: string): HTMLDivElement {
+  const hint = document.createElement("div");
+  hint.className = "tm-hint";
+  hint.textContent = textContent;
+  return hint;
+}
+
+/** 新增 / 编辑记忆条目。普通模式只有原文、译文、备注；高级模式多出采用方式、生效范围等。 */
 function openAddEditModal(editing: TmEntry | null): void {
   if (!tmQueryReady()) return;
   const generation = mountGeneration;
   const revision = tmQueryRevision;
   const sourceField = createTextField({ label: t("原文"), value: editing?.source_text ?? "" });
   const targetField = createTextField({ label: t("译文"), value: editing?.target_text ?? "" });
+  const noteField = createTextField({ label: t("备注（可选）"), value: editing?.note ?? "" });
+  noteField.root.append(fieldHint(t("填写后，仅在备注所述场景中采用此译法；留空则适用于所有文档。")));
+  const body: HTMLElement[] = [sourceField.root, targetField.root, noteField.root];
+
+  // 采用方式：只有用户动过单选才写进去，否则按来源和备注推出默认值（备注一填就变成按场景选用）。
+  let chosenUsage: string | null = null;
+  const scopeField = createTextField({ label: t("生效范围（可选）"), value: editing?.scope ?? "" });
   const pairField = createTextField({ label: t("语言对"), value: tmLangPair(), disabled: Boolean(editing) });
   const allowReverse = pairAllowsReverse();
   let syncReverse = false;
-  const syncRow = createSwitchRow({
-    label: t("同时创建/更新反向术语（默认关闭）"),
-    disabled: !allowReverse,
-    onChange: (value) => {
-      syncReverse = value;
-    },
-  });
-  const body: HTMLElement[] = [sourceField.root, targetField.root, pairField.root, syncRow];
-  if (!allowReverse) {
-    const note = document.createElement("p");
-    note.textContent = t("自定义目标语言不能生成反向语言对。");
-    body.push(note);
+  if (advancedMode) {
+    const box = document.createElement("div");
+    box.className = "tm-adv";
+    const usageLabel = document.createElement("span");
+    usageLabel.className = "tm-adv-label";
+    usageLabel.textContent = t("采用方式");
+    box.append(usageLabel);
+    const current = text(editing?.effective_usage, noteField.input.value.trim() ? "scene" : "always");
+    const radioName = `tm-usage-${Date.now()}`;
+    for (const usage of ["always", "scene", "segment"]) {
+      const option = document.createElement("label");
+      option.className = "tm-opt";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = radioName;
+      radio.value = usage;
+      radio.checked = usage === current;
+      radio.addEventListener("change", () => {
+        if (radio.checked) chosenUsage = usage;
+      });
+      const copy = document.createElement("span");
+      const name = document.createElement("b");
+      name.textContent = USAGE_LABELS[usage];
+      copy.append(name, fieldHint(USAGE_HINTS[usage]));
+      option.append(radio, copy);
+      box.append(option);
+    }
+    scopeField.root.append(fieldHint(t("仅当文件名或文件夹名包含所填文字时生效。")));
+    box.append(scopeField.root, pairField.root);
+    const syncRow = createSwitchRow({
+      label: t("同时创建/更新反向术语（默认关闭）"),
+      disabled: !allowReverse,
+      onChange: (value) => {
+        syncReverse = value;
+      },
+    });
+    box.append(syncRow);
+    if (!allowReverse) box.append(fieldHint(t("自定义目标语言不能生成反向语言对。")));
+    if (editing) {
+      const meta = document.createElement("div");
+      meta.className = "tm-meta";
+      for (const item of [
+        t("来源：{0}", originLabel(editing)),
+        t("使用次数：{0}", fmtNum(num(editing.use_count))),
+        t("上次使用：{0}", text(editing.last_used_at).slice(0, 10) || "—"),
+      ]) {
+        const span = document.createElement("span");
+        span.textContent = item;
+        meta.append(span);
+      }
+      box.append(meta);
+    }
+    body.push(box);
   }
+
   trackModal(openModal({
     tone: "warn",
     icon: editing ? "edit" : "plus",
@@ -598,6 +704,7 @@ function openAddEditModal(editing: TmEntry | null): void {
         onClick: async (): Promise<void> => {
           const sourceText = sourceField.input.value.trim();
           const targetText = targetField.input.value.trim();
+          const note = noteField.input.value.trim();
           if (!sourceText || !targetText) {
             showToast({ message: t("原文和译文都不能为空。"), error: true });
             return;
@@ -610,7 +717,16 @@ function openAddEditModal(editing: TmEntry | null): void {
             if (editing) {
               await client.request(`/api/tm/entries/${editing.id}`, {
                 method: "PUT",
-                body: JSON.stringify({ source_text: sourceText, target_text: targetText, sync_reverse: syncReverse }),
+                body: JSON.stringify({
+                  source_text: sourceText,
+                  target_text: targetText,
+                  sync_reverse: syncReverse,
+                  note,
+                  usage: chosenUsage,
+                  scope: advancedMode ? scopeField.input.value.trim() : null,
+                  // 记忆库页不再有「固定」的概念：固定过的旧词条同样可以直接编辑。
+                  allow_pinned: true,
+                }),
               });
               showToast({ message: t("记忆条目已更新。") });
             } else {
@@ -620,7 +736,15 @@ function openAddEditModal(editing: TmEntry | null): void {
                 "/api/tm/entries",
                 {
                   method: "POST",
-                  body: JSON.stringify({ source_text: sourceText, target_text: targetText, lang_pair: pairField.input.value.trim() || tmLangPair(), sync_reverse: syncReverse }),
+                  body: JSON.stringify({
+                    source_text: sourceText,
+                    target_text: targetText,
+                    lang_pair: pairField.input.value.trim() || tmLangPair(),
+                    sync_reverse: syncReverse,
+                    note,
+                    usage: chosenUsage ?? "",
+                    scope: advancedMode ? scopeField.input.value.trim() : "",
+                  }),
                 },
               );
               const status = text(saved.status, saved.changed === false ? "unchanged" : "written");
@@ -639,6 +763,7 @@ function openAddEditModal(editing: TmEntry | null): void {
             }
             if (!keepConflictMessage) conflictMessage = "";
             await refreshTm();
+            rebuildToolbar();
             renderTable();
             renderStatsRow();
             currentModalClose?.();
@@ -688,7 +813,7 @@ function openDeleteModal(entryToDelete: TmEntry): void {
             const client = await getClient();
             if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
             try {
-              await client.request(`/api/tm/entries/${entryToDelete.id}`, { method: "DELETE" });
+              await client.request(`/api/tm/entries/${entryToDelete.id}?allow_pinned=true`, { method: "DELETE" });
             } catch (error) {
               // 固定词条后端回 409。不接住就只剩一个不关也不报错的弹窗，
               // 用户点「删除」什么都不发生（openModal 现在兜底，这里再补上「删除失败」前缀）。
@@ -1427,7 +1552,7 @@ function rebuildToolbar(): void {
   searchWrap.style.cssText = "flex:1 1 180px;position:relative;max-width:340px;min-width:160px";
   const searchInput = document.createElement("input");
   searchInput.type = "text";
-  searchInput.placeholder = t("搜索原文或译文…");
+  searchInput.placeholder = t("搜索原文、译文或备注…");
   searchInput.value = keyword;
   searchInput.style.cssText =
     "width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 10px 0 32px";
@@ -1475,8 +1600,53 @@ function rebuildToolbar(): void {
   actions.append(importBtn, exportBtn);
   // 清洗会调用模型、按条数花钱，所以是普通按钮、点了先确认；库是空的时候没东西可洗。
   actions.append(createButton({ label: t("清洗记忆库"), disabled: cleaningState === "running" || (!keyword && total === 0), onClick: () => confirmTmClean() }));
+  // 高级模式开关放在右上角，默认关闭；设置页「翻译参数 · 记忆库」是同一项。
+  const advancedToggle = document.createElement("label");
+  advancedToggle.className = "tm-adv-toggle";
+  advancedToggle.append(
+    createSwitch({ checked: advancedMode, onChange: (value) => void setAdvancedMode(value) }),
+    document.createTextNode(t("高级模式")),
+  );
+  actions.append(advancedToggle);
   row.append(actions);
   toolbarCardEl.append(row);
+
+  // 三条规则说明：来源和备注决定译法怎么用，用户不必理解更多概念。
+  const rules = document.createElement("div");
+  rules.className = "tm-rule";
+  for (const [name, desc] of [
+    [t("手动维护"), t("始终按您设定的译法翻译，在句中出现时同样采用。")],
+    [t("自动保存"), t("仅供参考，由模型对照备注和文档说明判断是否采用。")],
+    [t("备注"), t("填写后，仅在备注所述场景中采用。")],
+  ]) {
+    const item = document.createElement("span");
+    const strong = document.createElement("b");
+    strong.textContent = name;
+    item.append(strong, document.createTextNode(t("：{0}", desc)));
+    rules.append(item);
+  }
+  toolbarCardEl.append(rules);
+
+  const filters = document.createElement("div");
+  filters.className = "tk-filters wrap";
+  for (const filter of advancedMode ? [...BASIC_FILTERS, ...ADVANCED_FILTERS] : BASIC_FILTERS) {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = filter === entryFilter ? "f on" : "f";
+    const count = document.createElement("b");
+    count.textContent = fmtNum(num(filterCounts[filter]));
+    pill.append(document.createTextNode(FILTER_LABELS[filter]), count);
+    pill.addEventListener("click", () => {
+      if (filter === entryFilter) return;
+      void applyTmQueryChange(() => {
+        entryFilter = filter;
+        page = 1;
+        selectedIds.clear();
+      }).then(() => rebuildToolbar());
+    });
+    filters.append(pill);
+  }
+  toolbarCardEl.append(filters);
 
   if (recentPairs.length) {
     const recentRow = document.createElement("div");
@@ -1582,23 +1752,30 @@ function renderConflictArea(): void {
 function renderStatsRow(): void {
   if (!statsRowEl) return;
   statsRowEl.innerHTML = "";
-  const tiles: Array<[string, string, "book" | "pin" | "check" | "doc-file"]> = [
-    [t("总条目"), fmtNum(num(stats.total)), "book"],
-    [t("已固定"), fmtNum(num(stats.pinned)), "pin"],
-    [t("手动维护"), fmtNum(num(stats.manual)), "check"],
-    [t("未固定"), fmtNum(num(stats.unpinned)), "doc-file"],
+  const notApplied = num(stats.month_not_applied);
+  const tiles: Array<{ label: string; value: string; iconName: "book" | "check" | "doc-file" | "spark" | "warn"; attn?: boolean }> = [
+    { label: t("总条目"), value: fmtNum(num(stats.total)), iconName: "book" },
+    { label: t("手动维护"), value: fmtNum(num(stats.origin_manual)), iconName: "check" },
+    { label: t("自动保存"), value: fmtNum(num(stats.origin_auto)), iconName: "doc-file" },
   ];
-  for (const [label, value, iconName] of tiles) {
+  if (advancedMode) {
+    tiles.push(
+      { label: t("本月使用"), value: t("{0} 次", fmtNum(num(stats.month_uses))), iconName: "spark" },
+      { label: t("未采用设定译法"), value: t("{0} 处", fmtNum(notApplied)), iconName: "warn", attn: notApplied > 0 },
+    );
+  }
+  statsRowEl.className = tiles.length > 4 ? "stats five" : "stats three";
+  for (const tileInfo of tiles) {
     const tile = document.createElement("div");
-    tile.className = "stat";
+    tile.className = tileInfo.attn ? "stat attn" : "stat";
     const head = document.createElement("div");
     head.style.cssText = "display:flex;align-items:center;gap:6px;color:var(--ink-3)";
-    head.append(icon(iconName, { size: "sm" }));
+    head.append(icon(tileInfo.iconName, { size: "sm" }));
     const span = document.createElement("span");
-    span.textContent = label;
+    span.textContent = tileInfo.label;
     head.append(span);
     const b = document.createElement("b");
-    b.textContent = value;
+    b.textContent = tileInfo.value;
     tile.append(head, b);
     statsRowEl.append(tile);
   }
@@ -1610,9 +1787,7 @@ function updateSelectionUi(): void {
   // 「已选 x / xx」：分母是当前语言对 + 搜索关键词过滤后的匹配总数（与「选择全部」
   // 圈定的范围一致），不是当前页的条数，避免用户误以为只有一页那么多可选。
   if (chip) chip.textContent = t("已选 {0} / {1}", fmtNum(selectedIds.size), fmtNum(total));
-  const pinBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-pin]");
   const deleteBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
-  if (pinBtn) pinBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
   if (deleteBtn) deleteBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
   const selectAllLink = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=select-all]");
   if (selectAllLink) {
@@ -1668,9 +1843,17 @@ function renderTable(): void {
     const columns: Array<{ id: string; label: string; width?: string }> = [
       { id: "source", label: t("原文") },
       { id: "target", label: t("译文") },
-      { id: "pinned", label: t("固定"), width: "64px" },
-      { id: "updated", label: t("更新时间"), width: "120px" },
-      { id: "actions", label: t("操作"), width: "118px" },
+      { id: "note", label: t("备注（适用场景）") },
+      { id: "origin", label: t("来源"), width: "88px" },
+      ...(advancedMode
+        ? [
+            { id: "usage", label: t("采用方式"), width: "96px" },
+            { id: "scope", label: t("生效范围"), width: "120px" },
+            { id: "uses", label: t("使用次数"), width: "72px" },
+          ]
+        : []),
+      { id: "updated", label: t("更新时间"), width: "96px" },
+      { id: "actions", label: t("操作"), width: "96px" },
     ];
     for (const column of columns) {
       const th = document.createElement("th");
@@ -1703,17 +1886,33 @@ function renderTable(): void {
       targetTd.textContent = entry.target_text;
       tr.append(targetTd);
 
-      const pinTd = document.createElement("td");
-      const pinIcon = icon("pin", { size: "sm" });
-      pinIcon.style.color = entry.pinned ? "var(--accent)" : "var(--line-2)";
-      pinIcon.style.cursor = "pointer";
-      pinTd.append(pinIcon);
-      pinTd.addEventListener("click", () => void tmPin(entry.id, !entry.pinned));
-      tr.append(pinTd);
+      const noteTd = document.createElement("td");
+      noteTd.className = "tm-note";
+      noteTd.textContent = entry.note || "";
+      tr.append(noteTd);
+
+      const originTd = document.createElement("td");
+      originTd.append(createChip({ label: originLabel(entry), tone: entry.origin === "manual" ? "tint" : "mute" }));
+      tr.append(originTd);
+
+      if (advancedMode) {
+        const usage = text(entry.effective_usage, "segment");
+        const usageTd = document.createElement("td");
+        usageTd.append(createChip({ label: USAGE_LABELS[usage] ?? usage, tone: usage === "always" ? "ok" : usage === "scene" ? "tint" : "mute" }));
+        tr.append(usageTd);
+        const scopeTd = document.createElement("td");
+        scopeTd.textContent = entry.scope ? t("文件名或文件夹名包含「{0}」", entry.scope) : "—";
+        tr.append(scopeTd);
+        const usesTd = document.createElement("td");
+        usesTd.className = "num";
+        usesTd.textContent = fmtNum(num(entry.use_count));
+        tr.append(usesTd);
+      }
 
       const updatedTd = document.createElement("td");
       updatedTd.className = "num";
-      updatedTd.textContent = entry.updated_at ?? "—";
+      updatedTd.textContent = entry.updated_at ? entry.updated_at.slice(0, 10) : "—";
+      if (entry.updated_at) updatedTd.title = entry.updated_at;
       tr.append(updatedTd);
 
       const actionsTd = document.createElement("td");
@@ -1725,18 +1924,8 @@ function renderTable(): void {
       const deleteLink = document.createElement("span");
       deleteLink.className = "linklike";
       deleteLink.textContent = t("删除");
-      if (entry.pinned) {
-        // 固定词条后端一定回 409。与其让用户点开弹窗、确认、再看一条失败提示，
-        // 不如在这一行就说清楚下一步该做什么（先解除固定）。
-        deleteLink.style.color = "var(--ink-3)";
-        deleteLink.title = t("固定词条不能直接删除，请先解除固定。");
-        deleteLink.addEventListener("click", () => {
-          showToast({ message: t("固定词条不能直接删除，请先点击该行的固定图标解除固定。"), error: true });
-        });
-      } else {
-        deleteLink.style.color = "var(--danger)";
-        deleteLink.addEventListener("click", () => openDeleteModal(entry));
-      }
+      deleteLink.style.color = "var(--danger)";
+      deleteLink.addEventListener("click", () => openDeleteModal(entry));
       // 「编辑 · 删除」不折行：法文「Modifier · Supprimer」比中文宽，让列跟着变宽。
       actionsTd.style.whiteSpace = "nowrap";
       actionsTd.append(editLink, sep, deleteLink);
@@ -1772,7 +1961,7 @@ function buildTcHead(): HTMLDivElement {
   bar.append(chip);
 
   // 「选择全部」紧挨着「已选」徽章，跟它组成一组（已选 x / xx · 选择全部），
-  // 「批量固定」「批量删除」留在右边——原来在最右边的「本页全选」按钮挪到这里，
+  // 「批量删除」留在右边——原来在最右边的「本页全选」按钮挪到这里，
   // 语义也从「只选本页」换成「选中当前筛选条件下的全部匹配项（跨页）」。
   const selectAllLink = document.createElement("span");
   selectAllLink.className = "linklike";
@@ -1780,10 +1969,6 @@ function buildTcHead(): HTMLDivElement {
   selectAllLink.textContent = t("选择全部");
   selectAllLink.addEventListener("click", () => void handleSelectAllTm());
   bar.append(document.createTextNode(" · "), selectAllLink);
-
-  const pinBtn = createButton({ label: t("批量固定"), icon: "pin", size: "mini", onClick: () => void tmBulkPin(true) });
-  pinBtn.dataset.role = "bulk-pin";
-  bar.append(pinBtn);
 
   const deleteBtn = createButton({ label: t("批量删除"), icon: "trash", size: "mini", variant: "danger", onClick: () => confirmBulkDelete() });
   deleteBtn.dataset.role = "bulk-delete";
@@ -1881,21 +2066,40 @@ function buildLayout(container: HTMLElement): void {
   container.append(tableCard);
 }
 
-async function loadLibrary(container: HTMLElement, reviewTaskId: string | null): Promise<void> {
+/** 任务详情「编辑」深链：定位到这条词条所在的语言对并按原文搜索，找到后直接打开编辑窗口。 */
+interface EntryFocus {
+  id: number;
+  term: string;
+  langPair: string;
+}
+
+function applyEntryFocus(focus: EntryFocus): void {
+  const pair = splitTmPair(focus.langPair);
+  if (pair && sourceOptions.some((option) => option.code === pair.source) && targetOptions.some((option) => option.code === pair.target)) {
+    sourceLang = pair.source;
+    targetLang = pair.target;
+  }
+  keyword = focus.term;
+  entryFilter = "all";
+  page = 1;
+}
+
+async function loadLibrary(container: HTMLElement, reviewTaskId: string | null, focus: EntryFocus | null = null): Promise<void> {
   const generation = mountGeneration;
   const isCurrent = () => mounted && generation === mountGeneration;
   try {
     await refreshLanguagePairs();
     if (!isCurrent()) return;
+    if (focus) applyEntryFocus(focus);
     await Promise.all([refreshTm(), refreshConflicts()]);
   } catch (error) {
     if (!isCurrent()) return;
-    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
+    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
     renderLoadFailure(container, errorMessage(error), () => {
       if (!isCurrent()) return;
-      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
+      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
       renderLoadingPlaceholder(container);
-      void loadLibrary(container, reviewTaskId);
+      void loadLibrary(container, reviewTaskId, focus);
     });
     return;
   }
@@ -1907,6 +2111,8 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null):
   renderStatsRow();
   renderTable();
   renderTopbarStatus();
+  const focused = focus ? entries.find((item) => item.id === focus.id) : undefined;
+  if (focused) openAddEditModal(focused);
   if (reviewTaskId) {
     // 任务中心深链进来：loadCleanSuggestions 自己会把 pendingCleanCount 和
     // stale_count 一起拉齐，不必再单独调 refreshCleanBadge 重复请求一次。
@@ -1927,12 +2133,16 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   selectedIds.clear();
   container.style.flexDirection = "column";
 
-  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
+  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
 
   renderLoadingPlaceholder(container);
 
   const reviewTaskId = typeof params.reviewCleanTaskId === "string" ? params.reviewCleanTaskId : null;
-  void loadLibrary(container, reviewTaskId);
+  const rawFocus = params.focusEntry as Partial<EntryFocus> | undefined;
+  const focus = rawFocus && typeof rawFocus.id === "number" && typeof rawFocus.term === "string"
+    ? { id: rawFocus.id, term: rawFocus.term, langPair: typeof rawFocus.langPair === "string" ? rawFocus.langPair : "" }
+    : null;
+  void loadLibrary(container, reviewTaskId, focus);
 }
 
 export function unmount(): void {

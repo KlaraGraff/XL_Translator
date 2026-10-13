@@ -10,7 +10,10 @@ from core.term_engine import TermAwareEngine
 from core.tm_terms import (
     TermEntry,
     TermIndex,
+    TermCandidate,
+    TermHit,
     build_prompt_block,
+    chosen_candidate,
     split_by_budget,
     term_applied,
 )
@@ -71,6 +74,19 @@ class WholeSegmentTests(unittest.TestCase):
         self.assertEqual(result.hits, {})
         scoped = TermIndex([entry(2, "卫生间", "sanitaires", usage="always", scope="公建")], file_paths=["/work/公建/a.xlsx"])
         self.assertEqual(scoped.resolve_whole({"卫生间": ["zh-fr"]}, has_profile=False).hits, {"卫生间": "sanitaires"})
+
+
+class SceneChoiceTests(unittest.TestCase):
+    def test_whole_segment_choice_must_equal_a_candidate(self):
+        hit = TermHit(
+            source="甲",
+            usage="scene",
+            candidates=(TermCandidate("Partie A", ("合同甲方",), (1,)), TermCandidate("A", ("配电回路编号",), (2,))),
+            whole=True,
+        )
+        # 「classe A」里含有候选「A」，但这是模型新给的译法。
+        self.assertIsNone(chosen_candidate(hit, "classe A", target_lang="fr"))
+        self.assertEqual(chosen_candidate(hit, "Partie A", target_lang="fr").target, "Partie A")
 
 
 class ScanTests(unittest.TestCase):
