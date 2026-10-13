@@ -75,6 +75,7 @@ _LEXICON: dict[str, frozenset[str]] = {
         see refer schedule legend unless otherwise noted shown
         drawn checked approved key
         between above below under over each per only shall must should
+        rebar embedded earthworks formwork
     """.split()),
     "fr": frozenset("""
         le la les de des du et au aux pour avec sur sous par un une dans est sont

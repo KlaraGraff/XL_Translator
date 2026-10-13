@@ -65,6 +65,7 @@ from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
     MIXED_MARK_UNRESOLVED,
     MixedLanguageRunStats,
+    collapse_echoed_repeat,
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
@@ -1671,7 +1672,7 @@ class TaskRunner(BaseTaskRunner):
             if source in stats.stopped_sources:
                 continue
             # 译文与原文相同（含失败交回的原文）的格子由后面的汇总统一标需复核。
-            api_translations[source] = translation
+            api_translations[source] = collapse_echoed_repeat(translation, source)
 
     def _translate_misses_via_api(
         self,
@@ -1887,6 +1888,7 @@ class TaskRunner(BaseTaskRunner):
                     api_scheduler=shared_scheduler,
                     request_category=API_REQUEST_CATEGORY_NORMAL,
                     stats=mixed_stats,
+                    translation_only=self._settings.excel_output.output_translation_only,
                 )
 
             with request_log:
@@ -1967,6 +1969,12 @@ class TaskRunner(BaseTaskRunner):
                             source,
                             result.mark_kind,
                         )
+                leftover_count = sum(1 for result in mixed_results.values() if result.leftover)
+                if leftover_count:
+                    self._log(
+                        "WARN",
+                        f"仅输出译文：{leftover_count} 处译文中仍夹带未翻译的外文，已标记需复核。",
+                    )
                 kept_bilingual = [
                     source
                     for source, result in mixed_results.items()

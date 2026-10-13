@@ -355,6 +355,7 @@ def _apply_mixed_language_word_results(
     foreign_noise: list[str] = []
     uncertain: list[str] = []
     semantic_translate: list[str] = []
+    leftover: list[str] = []
 
     for source, result in mixed_results.items():
         if result.action == MIXED_ACTION_EXISTING_BILINGUAL:
@@ -369,6 +370,11 @@ def _apply_mixed_language_word_results(
         if result.action == MIXED_ACTION_TRANSLATE:
             if result.translation.strip():
                 translations[source] = result.translation.strip()
+            if result.leftover:
+                # 仅输出译文时重试过仍夹着没翻的外文：译文照写，标需复核。
+                leftover.append(source)
+                _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+                continue
             if result.accepted_by == "semantic":
                 # 语义仲裁放行的不上底色，只在报告里留一条记录。
                 semantic_translate.append(source)
@@ -398,6 +404,15 @@ def _apply_mixed_language_word_results(
             ),
             # 程序能做的只是把这段照常翻出来，它没法判断原文里那串外文是不是写错了——
             # 那要对着原件看。这是"原文可能有问题"，不是"程序已经处理好了"。
+            severity="needs_review",
+        )
+    if leftover:
+        _add_quality_issues(
+            quality_issues,
+            segment_locations,
+            leftover,
+            problem="译文中仍夹带未翻译的外文",
+            status="已输出译文并标记需复核。",
             severity="needs_review",
         )
     if uncertain:

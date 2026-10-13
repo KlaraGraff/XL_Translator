@@ -28,6 +28,7 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
+from core.cad_language import FOREIGN, classify_text_language, has_latin_words
 from core.engine_dispatcher import user_facing_batch_reason
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.prompt_cache import carry_meter
@@ -111,6 +112,8 @@ class MixedLanguageResult:
     note: str = ""
     accepted_by: str = ""
     validation: TranslationValidationResult = field(default_factory=TranslationValidationResult)
+    # 仅输出译文时，译文里原样留着的非目标语言外文片段（见 leftover_foreign_fragments）。
+    leftover: tuple[str, ...] = ()
 
     @property
     def has_translation(self) -> bool:
@@ -140,6 +143,9 @@ class MixedLanguageResult:
         if self.action == MIXED_ACTION_FOREIGN_NOISE:
             return MIXED_MARK_FOREIGN_NOISE
         if self.action == MIXED_ACTION_UNCERTAIN:
+            return MIXED_MARK_UNRESOLVED
+        if self.leftover:
+            # 重试过仍夹着外文：译文照写，但这格要人看一眼。
             return MIXED_MARK_UNRESOLVED
         return None
 
@@ -235,8 +241,14 @@ def translate_mixed_language_texts(
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: MixedLanguageRunStats | None = None,
     drained_callback: Callable[[], None] | None = None,
+    translation_only: bool = False,
 ) -> dict[str, MixedLanguageResult]:
-    """Translate mixed-language sources with structured actions keyed by source text."""
+    """Translate mixed-language sources with structured actions keyed by source text.
+
+    ``translation_only``: the output file drops the source, so a result must
+    carry the whole meaning in the target language — no ``existing_bilingual``
+    and no foreign fragment left in the translation.
+    """
     if not texts:
         return {}
 
@@ -281,6 +293,7 @@ def translate_mixed_language_texts(
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
+            translation_only=translation_only,
         )
         recovered = _recover_failed_mixed_results(
             partial,
@@ -293,6 +306,7 @@ def translate_mixed_language_texts(
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
+            translation_only=translation_only,
         )
         _record_progress(len(batch))
         return recovered
@@ -339,6 +353,86 @@ def translate_mixed_language_texts(
         result = results.setdefault(text, _uncertain_result(text, note="missing_result"))
         run_stats.record_result(result)
     return results
+
+
+_LATIN_RUN_RE = re.compile(
+    r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*(?:[ \t]+[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*)*"
+)
+_REPEATED_PHRASE_RE = re.compile(
+    r"(?<!\w)(?P<phrase>\w[\w'’-]*(?:\s+\w[\w'’-]*){0,5})(?P<gap>\s+)(?P=phrase)(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def collapse_echoed_repeat(translation: str, source: str) -> str:
+    """Drop a phrase the model wrote twice because it was already in the source.
+
+    「合计 Total」译成法文时，模型把「合计」译成 Total、又把原文里的 Total 照抄，
+    得到「Total Total」。只合并原文里出现过、原文本身又没有连写两遍的短语，
+    正常的叠词不受影响。
+    """
+    text = str(translation or "")
+    folded_source = _WHITESPACE_RE.sub(" ", str(source or "")).casefold()
+
+    def _merge(match: re.Match) -> str:
+        phrase = match.group("phrase")
+        folded = _WHITESPACE_RE.sub(" ", phrase).casefold()
+        if folded not in folded_source or f"{folded} {folded}" in folded_source:
+            return match.group(0)
+        return phrase
+
+    while True:
+        merged = _REPEATED_PHRASE_RE.sub(_merge, text)
+        if merged == text:
+            return text
+        text = merged
+
+
+def leftover_foreign_fragments(source: str, translation: str, *, target_lang: str) -> list[str]:
+    """Latin-script fragments of ``source`` copied verbatim into ``translation``
+    although they are clearly not in the target language.
+
+    只认有把握的：片段要有真正的词（型号、缩写不算），词表判成「不是目标语言」，
+    并且整段原样出现在译文里。判不准的（如 Rebar）不报，避免把专名当成漏译。
+    """
+    found: list[str] = []
+    for match in _LATIN_RUN_RE.finditer(str(source or "")):
+        fragment = match.group(0).strip(" \t-'’")
+        if not has_latin_words(fragment):
+            continue
+        if classify_text_language(fragment, target_lang) != FOREIGN:
+            continue
+        # 边界只看字母：「Rebar HRB400」里片段是「Rebar HRB」，后面紧跟数字。
+        pattern = (
+            r"(?<![A-Za-zÀ-ÖØ-öø-ÿ])"
+            + r"\s+".join(re.escape(word) for word in fragment.split())
+            + r"(?![A-Za-zÀ-ÖØ-öø-ÿ])"
+        )
+        if re.search(pattern, str(translation or ""), re.IGNORECASE) and fragment not in found:
+            found.append(fragment)
+    return found
+
+
+def _check_mixed_result(
+    result: MixedLanguageResult,
+    *,
+    target_lang: str,
+    source_lang: str,
+    translation_only: bool,
+) -> MixedLanguageResult:
+    if result.has_translation:
+        result.translation = collapse_echoed_repeat(result.translation, result.source)
+        result.validation = validate_translation(
+            result.source,
+            result.translation,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        )
+        if translation_only:
+            result.leftover = tuple(
+                leftover_foreign_fragments(result.source, result.translation, target_lang=target_lang)
+            )
+    return result
 
 
 def _strip_long_body_whitelist(text: str) -> str:
@@ -395,6 +489,7 @@ def _translate_mixed_batch_with_fallback(
     should_stop,
     error_callback,
     stats: MixedLanguageRunStats,
+    translation_only: bool = False,
 ) -> dict[str, MixedLanguageResult]:
     if not batch:
         return {}
@@ -412,6 +507,7 @@ def _translate_mixed_batch_with_fallback(
                 system_prompt=system_prompt,
                 source_lang=source_lang,
                 retry_hint=False,
+                translation_only=translation_only,
             )
         else:
             with api_scheduler.slot(
@@ -429,8 +525,14 @@ def _translate_mixed_batch_with_fallback(
                     system_prompt=system_prompt,
                     source_lang=source_lang,
                     retry_hint=False,
+                    translation_only=translation_only,
                 )
-        return _validate_mixed_results(raw_results, target_lang=target_lang, source_lang=source_lang)
+        return _validate_mixed_results(
+            raw_results,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            translation_only=translation_only,
+        )
     except Exception as exc:  # noqa: BLE001 - fallback controls degradation
         if isinstance(exc, ApiSchedulerAcquireCancelled):
             return {text: _uncertain_result(text, note="stopped") for text in batch}
@@ -464,6 +566,7 @@ def _translate_mixed_batch_with_fallback(
                     should_stop=should_stop,
                     error_callback=error_callback,
                     stats=stats,
+                    translation_only=translation_only,
                 )
 
         if len(batch) > 1 and not (should_stop and should_stop()):
@@ -492,6 +595,7 @@ def _translate_mixed_batch_with_fallback(
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
+                translation_only=translation_only,
             )
             right = _translate_mixed_batch_with_fallback(
                 batch[midpoint:],
@@ -505,6 +609,7 @@ def _translate_mixed_batch_with_fallback(
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
+                translation_only=translation_only,
             )
             return {**left, **right}
 
@@ -526,6 +631,7 @@ def _translate_mixed_batch_once(
     system_prompt: str,
     source_lang: str,
     retry_hint: bool,
+    translation_only: bool = False,
 ) -> list[MixedLanguageResult]:
     if not engine_supports_chat(engine):
         raise NotImplementedError(f"{engine.__class__.__name__} 不支持混合语言结构化调用")
@@ -541,6 +647,7 @@ def _translate_mixed_batch_once(
             source_lang=source_lang,
             base_prompt=system_prompt,
             retry_hint=retry_hint,
+            translation_only=translation_only,
         ),
         json.dumps(entries, ensure_ascii=False),
     )
@@ -585,18 +692,16 @@ def _validate_mixed_results(
     *,
     target_lang: str,
     source_lang: str,
+    translation_only: bool = False,
 ) -> dict[str, MixedLanguageResult]:
     results: dict[str, MixedLanguageResult] = {}
     for result in raw_results:
-        if result.has_translation:
-            validation = validate_translation(
-                result.source,
-                result.translation,
-                target_lang=target_lang,
-                source_lang=source_lang,
-            )
-            result.validation = validation
-        results[result.source] = result
+        results[result.source] = _check_mixed_result(
+            result,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            translation_only=translation_only,
+        )
     return results
 
 
@@ -612,10 +717,11 @@ def _recover_failed_mixed_results(
     should_stop,
     error_callback,
     stats: MixedLanguageRunStats,
+    translation_only: bool = False,
 ) -> dict[str, MixedLanguageResult]:
     recovered: dict[str, MixedLanguageResult] = {}
     for source, result in results.items():
-        if not _mixed_result_needs_recovery(result):
+        if not _mixed_result_needs_recovery(result, translation_only=translation_only):
             recovered[source] = result
             continue
         recovered[source] = _recover_one_mixed_result(
@@ -629,12 +735,15 @@ def _recover_failed_mixed_results(
             should_stop=should_stop,
             error_callback=error_callback,
             stats=stats,
+            translation_only=translation_only,
         )
     return recovered
 
 
-def _mixed_result_needs_recovery(result: MixedLanguageResult) -> bool:
-    return result.has_translation and result.validation.is_fail
+def _mixed_result_needs_recovery(result: MixedLanguageResult, *, translation_only: bool = False) -> bool:
+    if translation_only and result.action == MIXED_ACTION_EXISTING_BILINGUAL:
+        return True
+    return result.has_translation and (result.validation.is_fail or bool(result.leftover))
 
 
 def _recover_one_mixed_result(
@@ -649,6 +758,7 @@ def _recover_one_mixed_result(
     should_stop,
     error_callback,
     stats: MixedLanguageRunStats,
+    translation_only: bool = False,
 ) -> MixedLanguageResult:
     if should_stop and should_stop():
         return _uncertain_result(result.source, note="stopped")
@@ -667,6 +777,7 @@ def _recover_one_mixed_result(
                 retry_attempts=retry_attempts,
                 should_stop=should_stop,
                 stats=stats,
+                translation_only=translation_only,
             )
         )
         if engine_supports_chat(engine):
@@ -680,6 +791,7 @@ def _recover_one_mixed_result(
                     api_scheduler=api_scheduler,
                     stats=stats,
                     should_stop=should_stop,
+                    translation_only=translation_only,
                 )
             )
         pending = set(futures)
@@ -697,7 +809,10 @@ def _recover_one_mixed_result(
                     continue
                 if fallback is None:
                     fallback = candidate
-                if not _mixed_result_needs_recovery(candidate) and candidate.action != MIXED_ACTION_UNCERTAIN:
+                if (
+                    not _mixed_result_needs_recovery(candidate, translation_only=translation_only)
+                    and candidate.action != MIXED_ACTION_UNCERTAIN
+                ):
                     return candidate
 
     stats.failed_count += 1
@@ -715,6 +830,7 @@ def _retry_one_mixed_source(
     retry_attempts: int,
     should_stop,
     stats: MixedLanguageRunStats,
+    translation_only: bool = False,
 ) -> MixedLanguageResult:
     attempts = max(1, int(retry_attempts or 1))
     last_result = _uncertain_result(source, note="retry_not_run")
@@ -732,6 +848,7 @@ def _retry_one_mixed_source(
                     system_prompt=system_prompt,
                     source_lang=source_lang,
                     retry_hint=True,
+                    translation_only=translation_only,
                 )
             else:
                 with api_scheduler.slot(
@@ -747,15 +864,17 @@ def _retry_one_mixed_source(
                         system_prompt=system_prompt,
                         source_lang=source_lang,
                         retry_hint=True,
+                        translation_only=translation_only,
                     )
             result = _validate_mixed_results(
                 raw_results,
                 target_lang=target_lang,
                 source_lang=source_lang,
+                translation_only=translation_only,
             ).get(source, _uncertain_result(source, note="retry_missing_result"))
             result.accepted_by = "retry"
             last_result = result
-            if not _mixed_result_needs_recovery(result):
+            if not _mixed_result_needs_recovery(result, translation_only=translation_only):
                 return result
         except Exception as exc:  # noqa: BLE001 - retry loop degrades safely
             if api_scheduler is not None:
@@ -782,13 +901,18 @@ def _semantic_review_mixed_result(
     api_scheduler: WeightedApiScheduler | None,
     stats: MixedLanguageRunStats,
     should_stop=None,
+    translation_only: bool = False,
 ) -> MixedLanguageResult | None:
     if should_stop and should_stop():
         return None
     if not engine_supports_chat(engine):
         return None
     stats.semantic_check_count += 1
-    prompt = _build_mixed_semantic_prompt(target_lang=target_lang, source_lang=source_lang)
+    prompt = _build_mixed_semantic_prompt(
+        target_lang=target_lang,
+        source_lang=source_lang,
+        translation_only=translation_only,
+    )
     user_payload = json.dumps(
         {
             "source": result.source,
@@ -832,14 +956,16 @@ def _semantic_review_mixed_result(
         note=str(payload.get("reason") or result.note or "").strip(),
         accepted_by="semantic",
     )
+    if translation_only and action == MIXED_ACTION_EXISTING_BILINGUAL:
+        return None
     if corrected.has_translation:
-        corrected.validation = validate_translation(
-            corrected.source,
-            corrected.translation,
+        _check_mixed_result(
+            corrected,
             target_lang=target_lang,
             source_lang=source_lang,
+            translation_only=translation_only,
         )
-        if corrected.validation.is_fail and action == MIXED_ACTION_TRANSLATE:
+        if (corrected.validation.is_fail or corrected.leftover) and action == MIXED_ACTION_TRANSLATE:
             return None
     stats.semantic_accepted_count += 1
     return corrected
@@ -851,12 +977,22 @@ def _build_mixed_translation_prompt(
     source_lang: str,
     base_prompt: str,
     retry_hint: bool,
+    translation_only: bool = False,
 ) -> str:
     source_lang_name = get_source_lang_display(source_lang)
     target_lang_name = get_target_lang_display(target_lang, include_optional=True)
     retry_block = (
-        "\n上一轮结果未通过质量校验。请重新判断 action，并确保 translation 完整翻译源语言主体、保留数字/单位/编号。"
+        "\n上一轮结果未通过质量校验。请重新判断 action，并确保 translation 完整翻译源语言主体、保留数字/单位/编号；"
+        f"译文里不得留下不属于{target_lang_name}的普通外文词语，也不得把同一意思写两遍。"
         if retry_hint
+        else ""
+    )
+    # 仅输出译文时原文不进输出文件，「已有双语、保留原样」等于这格没翻（反馈
+    # FB-20261013-UVW95F）：这里不再允许 existing_bilingual。
+    translation_only_block = (
+        "\n本次输出只保留译文、不保留原文：不得使用 existing_bilingual；"
+        f"text 已含{target_lang_name}对照时也使用 translate，translation 填一份完整的{target_lang_name}表达。"
+        if translation_only
         else ""
     )
     return (
@@ -869,19 +1005,30 @@ def _build_mixed_translation_prompt(
         "判定规则：\n"
         f"1. 只有 text 已经包含“{source_lang_name} + {target_lang_name}”且目标语言片段准确覆盖源语言主体时，才使用 existing_bilingual；translation 留空。\n"
         "2. 外文片段若只是专名、品牌、机构名、地点名、型号、标准号、单位或缩写，不得判为 existing_bilingual；请使用 translate，并在 translation 中保留这些片段。\n"
+        f"2a. translation 只能使用{target_lang_name}：除第 2 条那些片段外，原文中不属于{target_lang_name}的普通外文词语也必须翻成{target_lang_name}，不得原样留在译文里。\n"
+        "2b. 外文片段与中文是同一意思的对照时，translation 只写一份目标语言表达，不得重复（例如「合计 Total」译成法文是「Total」，不是「Total Total」）。\n"
         f"3. 外文片段若不是{target_lang_name}，不得判为 existing_bilingual；请使用 translate 或 uncertain。\n"
         "4. 外文片段疑似无意义误输入、键盘误敲或与上下文无关时，使用 foreign_noise_suspected，并返回源语言主体的目标语言译文。\n"
         "5. translate 和 foreign_noise_suspected 必须返回非空 translation；existing_bilingual 和 uncertain 的 translation 必须为空字符串。\n"
         "6. 必须保留原文中的编号、轴线、规格型号、工程专名与计量单位，一个字符都不能改动；"
         "日期、时间等数值中的数字保持不变，但其中的中文计量用语（年、月、日等）须换成目标语言的书写习惯；"
         "不得添加解释或多版本。\n"
+        f"{translation_only_block}"
         f"{retry_block}"
     ).strip()
 
 
-def _build_mixed_semantic_prompt(*, target_lang: str, source_lang: str) -> str:
+def _build_mixed_semantic_prompt(
+    *,
+    target_lang: str,
+    source_lang: str,
+    translation_only: bool = False,
+) -> str:
     source_lang_name = get_source_lang_display(source_lang)
     target_lang_name = get_target_lang_display(target_lang, include_optional=True)
+    translation_only_line = (
+        "\n本次输出只保留译文：不得接受 existing_bilingual。" if translation_only else ""
+    )
     return (
         "你是混合语言翻译结果校验器。输入为 JSON 对象，包含 source、action、translation、note。\n"
         f"源语言：{source_lang_name}。目标语言：{target_lang_name}。\n"
@@ -891,7 +1038,9 @@ def _build_mixed_semantic_prompt(*, target_lang: str, source_lang: str) -> str:
         "如果 source 已含完整目标语言译文，可接受 existing_bilingual。\n"
         "如果 translation 完整表达源语言主体且保留数字/单位/编号，可接受 translate。\n"
         "如果外文片段明显是错误输入且 translation 已翻译源语言主体，可接受 foreign_noise_suspected。\n"
+        f"translation 里留着不属于{target_lang_name}的普通外文词语、或把同一意思重复写了两遍，不可接受。\n"
         "只有高置信时才修正 corrected_action/corrected_translation；拿不准返回 uncertain。"
+        f"{translation_only_line}"
     )
 
 
