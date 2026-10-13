@@ -47,6 +47,7 @@ def build_sidecar(*, python: Path, output_parent: Path = RESOURCE_PARENT) -> Pat
         raise RuntimeError(f"PyInstaller did not produce the sidecar executable: {executable}")
     assert_pdf_component_not_bundled(target_dir)
     verify_pdf_component_loads(executable, python=python)
+    run_frozen_smoke(executable)
     return executable
 
 
@@ -105,6 +106,16 @@ def verify_pdf_component_loads(executable: Path, *, python: Path) -> None:
             f"{verdict.get('error') or (result.stderr or '').strip()[-800:]}"
         )
     print(f"[INFO] Frozen sidecar loads the PDF component: PyMuPDF {verdict.get('version', '')}")
+
+
+def run_frozen_smoke(executable: Path) -> None:
+    """冻结后的 sidecar 自检关键模块（scripts/frozen_smoke.py）：漏收的原生扩展（比如一键安装
+    要用的 zstandard）在这里就报错，而不是等用户点安装时才暴露。"""
+    result = subprocess.run([str(executable), "--smoke-test"], capture_output=True, text=True, timeout=300,
+                            check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"The frozen sidecar smoke test failed: {(result.stderr or result.stdout).strip()[-800:]}")
+    print("[INFO] Frozen sidecar smoke test passed")
 
 
 def main() -> int:
