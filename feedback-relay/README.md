@@ -23,6 +23,16 @@
 之后改动 `feedback-relay/` 并合进 main 会自动重新部署。GitHub 令牌过期后发送会失败（应用
 会提示保存为 ZIP），换一个新令牌填进 `FEEDBACK_GITHUB_TOKEN` 再运行一次部署即可。
 
+## 收到反馈即叫醒 Claude
+
+Claude 的「每日反馈检查」定时任务（每天摩洛哥时间 4:29）另开了 API 触发地址（`wrangler.toml` 的
+`ROUTINE_FIRE_URL`）。中转站建好 issue 后请求一次这个地址，Claude 马上开始处理，不用等到第二天早上。
+一次处理会看完所有未处理的反馈，所以 30 分钟内最多叫一次；被挡下或没叫醒的，由每 30 分钟一次的定时检查
+补叫。请求里只有一句固定提醒，不带用户写的内容。
+
+触发令牌在 claude.ai/code/routines 里这个定时任务的编辑页生成（添加 API 触发 → Generate token），只显示一次。
+填进主仓库 Actions 密钥 `FEEDBACK_ROUTINE_TOKEN`，再运行一次部署即可；没配就只靠每天的定时检查。
+
 ## 测试
 
 `node tests/feedback_relay.test.mjs` 用内存 KV 和假的 GitHub 跑一遍提交、下载、限流和失败回滚。

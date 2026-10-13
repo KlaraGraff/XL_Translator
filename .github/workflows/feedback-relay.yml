@@ -5,6 +5,8 @@ name: Deploy feedback relay
 #   CLOUDFLARE_API_TOKEN   Cloudflare「Edit Cloudflare Workers」模板生成的令牌
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare 账户 ID
 #   FEEDBACK_GITHUB_TOKEN  只对私有仓库 XL_Translator-feedback 有 Issues 读写权限的细粒度令牌
+# 可选：FEEDBACK_ROUTINE_TOKEN  Claude「每日反馈检查」定时任务的 API 触发令牌；有了它，收到新反馈
+#   就马上叫醒 Claude 处理。没配就只靠每天的定时检查；配过一次后，以后的部署不带它也保留原值。
 # 缺任何一个就跳过部署（不报红），所以合进 main 时不会因为还没配好而让检查失败。
 # 第一次部署时自动建 KV 命名空间和下载链接签名用的 LINK_SECRET；之后重复部署保持不变，
 # 以前发出的下载链接继续有效。
@@ -44,6 +46,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       FEEDBACK_GITHUB_TOKEN: ${{ secrets.FEEDBACK_GITHUB_TOKEN }}
+      FEEDBACK_ROUTINE_TOKEN: ${{ secrets.FEEDBACK_ROUTINE_TOKEN }}
     steps:
       - name: Check that the secrets are configured
         id: gate
@@ -109,6 +112,10 @@ jobs:
             echo "Generating LINK_SECRET for the first deployment"
             jq -n --arg gh "$FEEDBACK_GITHUB_TOKEN" --arg link "$(openssl rand -hex 32)" \
               '{GITHUB_TOKEN: $gh, LINK_SECRET: $link}' > "$RUNNER_TEMP/secrets.json"
+          fi
+          if [ -n "$FEEDBACK_ROUTINE_TOKEN" ]; then
+            jq --arg routine "$FEEDBACK_ROUTINE_TOKEN" '. + {ROUTINE_FIRE_TOKEN: $routine}' \
+              "$RUNNER_TEMP/secrets.json" > "$RUNNER_TEMP/secrets.tmp" && mv "$RUNNER_TEMP/secrets.tmp" "$RUNNER_TEMP/secrets.json"
           fi
 
       - name: Deploy
