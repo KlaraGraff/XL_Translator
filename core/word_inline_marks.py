@@ -28,7 +28,8 @@ _LITERAL_TAG_RE = re.compile(r"</?g\d+>", re.IGNORECASE)
 MARK_PROMPT_RULE = (
     "部分词条带有 <g1>…</g1> 这样成对的格式标记，标出原文中加粗、斜体、链接等局部格式。"
     "译文必须保留每一对标记，各包住与原文标记内容对应的译文；标记位置可以随译文语序调整，"
-    "但不得增加、删除、合并、嵌套或改动标记。"
+    "但不得增加、删除、合并、嵌套或改动标记。标记两侧的空格按译文语言的习惯书写，"
+    "如「<g1>Note :</g1> les cotes…」冒号后照常留空格。"
 )
 
 _PARAGRAPH_CHILDREN = frozenset(
@@ -225,6 +226,29 @@ def strip_marks(text: str) -> str:
     return _TAG_RE.sub("", str(text or ""))
 
 
+# 标点紧贴标记、标记后紧跟字母：「<g1>Note :</g1>les…」。原文是中文时冒号后本来没有空格，
+# 模型在标记边界常照抄，去掉标记就成了「Note :les」。只补这一种明显缺的空格：
+# 冒号、分号、逗号、问号、叹号、右括号后跟字母，或句号后跟大写字母；空格放在格式外面
+# （闭标记之后、开标记之前）。上标「m<g1>2</g1>」、半个词加粗这类不碰。
+_BOUNDARY_GAP_RE = re.compile(
+    r"(?:(?<=[:;,!?)\]»])|(?<=\.)(?=(?:<[^>]*>)+[A-ZÀ-ÖØ-Þ]))"
+    r"((?:<\s*/\s*[gG]\s*\d+\s*>)*)((?:<\s*[gG]\s*\d+\s*>)*)(?=[^\W\d_])"
+)
+
+
+def add_boundary_spaces(translation: str, target_lang: str | None) -> str:
+    """译文用空格分词时，补上标记边界处模型漏掉的空格（见 _BOUNDARY_GAP_RE）。"""
+    lang = str(target_lang or "").strip().lower().replace("_", "-").split("-")[0]
+    if lang in ("zh", "ja", "ko", "th", "lo", "km", "my"):
+        return translation
+
+    def fill(match: re.Match) -> str:
+        closing, opening = match.group(1), match.group(2)
+        return f"{closing} {opening}" if closing or opening else match.group(0)
+
+    return _BOUNDARY_GAP_RE.sub(fill, str(translation or ""))
+
+
 def parse_marked(text: str, allowed_ids) -> list[tuple[str, int | None]] | None:
     """把带标记的译文拆成 [(文字, 组号或 None)]。每个组号必须恰好一开一闭、不嵌套，
     组号集合和原文完全一致；否则返回 None。"""
@@ -335,10 +359,12 @@ class InlineMarkEngine:
             return sent, system_prompt
         return sent, f"{system_prompt}\n\n{MARK_PROMPT_RULE}".strip()
 
-    def _receive(self, plain: str, sent: str, translation: str) -> str:
+    def _receive(self, plain: str, sent: str, translation: str, target_lang: str) -> str:
         if sent is plain or sent == plain:
             return translation
         ok = marks_match(sent, translation)
+        if ok:
+            translation = add_boundary_spaces(translation, target_lang)
         with self._lock:
             if ok:
                 self.marked_translations[plain] = (sent, translation)
@@ -354,7 +380,7 @@ class InlineMarkEngine:
         result: dict[str, str] = {}
         for plain, outgoing in zip(texts, sent):
             if outgoing in raw:
-                result[plain] = self._receive(plain, outgoing, raw[outgoing])
+                result[plain] = self._receive(plain, outgoing, raw[outgoing], target_lang)
         return result
 
     def translate_batch_with_sources(self, texts, target_lang, system_prompt, source_lang="auto"):
@@ -367,7 +393,8 @@ class InlineMarkEngine:
         for item in reported:
             plain = plain_by_sent.get(item.source_text, item.source_text)
             out.append(replace(item, source_text=plain,
-                               translation=self._receive(plain, item.source_text, item.translation)))
+                               translation=self._receive(plain, item.source_text, item.translation,
+                                                         target_lang)))
         return out
 
 
