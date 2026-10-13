@@ -317,6 +317,8 @@ async function chooseTesseract(): Promise<void> {
 async function removeOcrComponent(): Promise<void> {
   if (ocrBusy) return;
   const managed = ocrCapability?.source === "managed";
+  // 卸载会删掉下载的文件，再用要重新下载；断开只是忘掉路径，不用确认。
+  if (managed && !window.confirm(t("卸载将删除已下载的文字识别组件，再次使用需重新下载。确定要卸载吗？"))) return;
   ocrBusy = true;
   render();
   try {
@@ -577,6 +579,7 @@ async function choosePdf2Docx(): Promise<void> {
 async function removePdfComponent(): Promise<void> {
   if (wordBusy) return;
   const managed = wordCapability?.source === "managed";
+  if (managed && !window.confirm(t("卸载将删除已下载的 PDF 处理组件，再次使用需重新下载。确定要卸载吗？"))) return;
   wordBusy = true;
   render();
   try {

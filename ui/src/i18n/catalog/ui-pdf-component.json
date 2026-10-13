@@ -57,5 +57,6 @@
   "组件文件不完整。": {"en": "The component files are incomplete.", "fr": "Les fichiers du composant sont incomplets."},
   "组件文件解压失败。": {"en": "The component files could not be unpacked.", "fr": "Les fichiers du composant n'ont pas pu être décompressés."},
   "安装已取消。": {"en": "Installation cancelled.", "fr": "Installation annulée."},
-  "组件安装失败。": {"en": "The component could not be installed.", "fr": "L'installation du composant a échoué."}
+  "组件安装失败。": {"en": "The component could not be installed.", "fr": "L'installation du composant a échoué."},
+  "卸载将删除已下载的 PDF 处理组件，再次使用需重新下载。确定要卸载吗？": {"en": "Uninstalling deletes the downloaded PDF processing component. It will need to be downloaded again to be used. Uninstall?", "fr": "La désinstallation supprime le composant de traitement PDF téléchargé. Il faudra le télécharger à nouveau pour l'utiliser. Désinstaller ?"}
 }
