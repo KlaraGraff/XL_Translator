@@ -1487,64 +1487,80 @@ function smartContextRow(checked: boolean, note: string, persist: (checked: bool
 
 interface PromptAnatomyBlock {
   title: string;
-  /** 右侧的状态小字：每次发送 / 当前选用 / 未开启。 */
+  /** 标题后的小字：每次发送 / 当前选用 / 未开启。 */
   state: string;
   /** 这一段这次会不会发送：不发送的整块变淡。 */
   sent: boolean;
-  text: string;
+  /** 实际发送的内容（或示例），过长时截断。 */
+  content: string;
+  /** 待翻译内容按发送时的数组格式显示，用等宽字体。 */
+  mono?: boolean;
 }
 
 interface PromptAnatomy {
   heading: string;
+  steps: string[];
   blocks: PromptAnatomyBlock[];
   notes: string[];
+}
+
+/** 取前几行，超出时以「……」结尾：内置规则全文在下方，这里只示意开头。 */
+function promptExcerpt(text: string, maxChars = 70): string {
+  const flat = text.trim().split(/\n+/).join("");
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}……` : flat;
 }
 
 /** 按当前设置写出一批（PDF 是一页）发给模型的内容由哪几段组成，顺序与实际发送顺序一致。
  *  只写已经上线的部分；拼装逻辑见 core/engine_dispatcher.get_system_prompt、
  *  core/document_profile.append_profile 和 core/image_generation.build_pdf_image_translation_prompt。 */
 function promptAnatomyBlocks(surface: ParamsSurface): PromptAnatomy {
+  const profileExample = t("例：建筑消防设计说明，甲/乙/丙指防火门和防火分区的耐火等级。");
   if (surface === "pdf") {
     const smart = pdfParamsSettings().smart_context !== false;
     return {
       heading: t("每页发送给图像模型的内容"),
-      blocks: [
-        { title: t("内置规则"), state: t("每次发送"), sent: true, text: t("页面翻译的通用要求，每页都会发送，不能修改。") },
-        {
-          title: t("文档说明"), state: smart ? t("自动识别场景已开启") : t("未开启，不发送"), sent: smart,
-          text: t("由「自动识别场景」生成：翻译前先读一遍整份 PDF 的文字，写成一段说明，此后每页都附上。扫描件没有可读文字时不生成。"),
-        },
-        { title: t("原页面图片"), state: "", sent: true, text: t("当前页面的图片，由图像模型生成翻译后的页面。") },
+      steps: [
+        t("开启「自动识别场景」时，先读取整份 PDF 的文字，由文档翻译模型写一段文档说明，每份文件一次；扫描件没有可读文字时跳过。"),
+        t("每页转成图片，按图中所列内容发送给图像模型，生成翻译后的页面。"),
+        t("开启「逐页审核」时，由审核模型检查每页；未通过的页面附上审核意见重新生成。"),
+        t("单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。"),
       ],
-      notes: [t("开启「逐页审核」后，未通过审核的页面重新生成时，另附审核意见。")],
+      blocks: [
+        { title: t("内置规则"), state: t("每次发送"), sent: true, content: t("页面翻译的通用要求，由程序固定，不能修改。") },
+        { title: t("文档说明"), state: smart ? t("由「自动识别场景」生成") : t("未开启，不发送"), sent: smart, content: profileExample },
+        { title: t("原页面图片"), state: t("每页一张"), sent: true, content: t("当前页面的图片。") },
+      ],
+      notes: [],
     };
   }
   const domain = domainSettingsFor(surface);
   const preset = domain.preset;
-  const hasExtra = preset !== NO_EXTRA_PROMPT && preset in domain.customPrompts;
+  const entry = preset !== NO_EXTRA_PROMPT ? domain.customPrompts[preset] : undefined;
+  const extraText = entry
+    ? (entry._base || Object.values(entry).find((value) => value.trim()) || "").trim()
+    : "";
+  const hasExtra = Boolean(extraText);
   return {
     heading: t("每批发送给文档翻译模型的内容"),
+    steps: [
+      t("任务开始时查找记忆库：已有译文的内容直接套用，不发送给模型。"),
+      t("开启「自动识别场景」时，先由文档翻译模型通读整份文件，写一段文档说明，每份文件一次。"),
+      t("其余内容分批发送，每批的组成如图所示。"),
+      t("请求失败或回答中断时，按「失败重试次数」重新发送；仍失败的内容保留原文，并标记为需复核。"),
+    ],
     blocks: [
-      { title: t("内置规则"), state: t("每次发送"), sent: true, text: t("专业文档翻译的通用要求，每批都会发送，不能修改。") },
-      {
-        title: t("补充要求"), state: hasExtra ? t("当前选用：{0}", preset) : t("未选用，不发送"), sent: hasExtra,
-        text: t("在下方选用或填写，接在内置规则后面；选「无」时不发送。"),
-      },
-      {
-        title: t("文档说明"), state: domain.smartContext ? t("自动识别场景已开启") : t("未开启，不发送"), sent: domain.smartContext,
-        text: t("由「自动识别场景」生成：翻译前先通读整份文件，写成一段说明，此后每批都附上。"),
-      },
-      { title: t("返回格式"), state: t("每次发送"), sent: true, text: t("由程序附上：只返回译文，条数和顺序与原文一致。") },
-      { title: t("待翻译内容"), state: "", sent: true, text: t("本批的若干条原文，按文件中的顺序排列。") },
+      { title: t("内置规则"), state: t("每次发送"), sent: true, content: corePrompt ? promptExcerpt(corePrompt) : t("内置规则读取失败，请稍后重新打开此页。") },
+      { title: t("补充要求"), state: hasExtra ? t("当前选用：{0}", preset) : t("未选用，不发送"), sent: hasExtra, content: hasExtra ? promptExcerpt(extraText, 120) : tx(NO_EXTRA_PROMPT) },
+      { title: t("文档说明"), state: domain.smartContext ? t("由「自动识别场景」生成") : t("未开启，不发送"), sent: domain.smartContext, content: profileExample },
+      { title: t("返回格式"), state: t("程序附上"), sent: true, content: t("只返回译文，按 JSON 数组输出，条数和顺序与原文一致。") },
+      { title: t("待翻译内容"), state: t("本批原文"), sent: true, mono: true, content: t("[\"1. 本工程防火门均采用甲级防火门\", … 本批若干条]") },
     ],
-    notes: [
-      t("记忆库中已有译文的内容直接套用，不发送给模型。"),
-      t("目标语言为自定义语言时，另附该语言的说明。"),
-    ],
+    notes: [t("目标语言为自定义语言时，另附该语言的说明。")],
   };
 }
 
-/** 「?」展开的组成说明面板。refresh() 按当前设置重画，收起时不占位置。 */
+/** 「?」展开的组成说明面板：左边处理流程，右边逐段列出实际发送的内容。
+ *  refresh() 按当前设置重画，收起时不占位置。 */
 function promptAnatomyPanel(build: () => PromptAnatomy): { root: HTMLDivElement; refresh: () => void; toggle: () => boolean } {
   const root = document.createElement("div");
   root.className = "prompt-anatomy";
@@ -1554,30 +1570,43 @@ function promptAnatomyPanel(build: () => PromptAnatomy): { root: HTMLDivElement;
     root.hidden = !promptAnatomyOpen;
     if (!promptAnatomyOpen) return;
     const data = build();
-    const heading = document.createElement("div");
-    heading.className = "prompt-anatomy-heading";
-    heading.textContent = data.heading;
-    const list = document.createElement("ol");
-    list.className = "prompt-anatomy-list";
-    for (const block of data.blocks) {
-      const item = document.createElement("li");
-      item.className = block.sent ? "prompt-anatomy-item" : "prompt-anatomy-item off";
-      const title = document.createElement("b");
-      title.textContent = block.title;
-      const desc = document.createElement("p");
-      desc.textContent = block.text;
-      const state = document.createElement("span");
-      state.textContent = block.state;
-      item.append(title, desc, state);
-      list.append(item);
+
+    const flow = document.createElement("div");
+    flow.className = "prompt-anatomy-flow";
+    const flowTitle = document.createElement("b");
+    flowTitle.textContent = t("处理流程");
+    const steps = document.createElement("ol");
+    for (const step of data.steps) {
+      const li = document.createElement("li");
+      li.textContent = step;
+      steps.append(li);
     }
-    root.append(heading, list);
+    flow.append(flowTitle, steps);
+
+    const sent = document.createElement("div");
+    sent.className = "prompt-anatomy-sent";
+    const sentTitle = document.createElement("b");
+    sentTitle.textContent = data.heading;
+    sent.append(sentTitle);
+    for (const block of data.blocks) {
+      const item = document.createElement("div");
+      item.className = block.sent ? "prompt-anatomy-blk" : "prompt-anatomy-blk off";
+      const tag = document.createElement("span");
+      tag.className = "prompt-anatomy-tag";
+      tag.textContent = block.state ? t("{0}（{1}）", block.title, block.state) : block.title;
+      const body = document.createElement("div");
+      body.className = block.mono ? "prompt-anatomy-body mono" : "prompt-anatomy-body";
+      body.textContent = block.content;
+      item.append(tag, body);
+      sent.append(item);
+    }
     for (const note of data.notes) {
       const p = document.createElement("p");
       p.className = "prompt-note";
       p.textContent = note;
-      root.append(p);
+      sent.append(p);
     }
+    root.append(flow, sent);
   };
   refresh();
   return {

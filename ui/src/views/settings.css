@@ -225,20 +225,22 @@
 .prompt-anatomy-toggle { background: none; padding: 0; font: inherit; font-size: 11px; cursor: pointer; margin-left: -4px; }
 .prompt-anatomy-toggle:hover, .prompt-anatomy-toggle[aria-expanded="true"] { color: var(--tint-ink); border-color: var(--tint-line); background: var(--tint); }
 .prompt-anatomy-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.prompt-anatomy { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.prompt-anatomy { display: grid; grid-template-columns: minmax(200px, 30%) minmax(0, 1fr); gap: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .prompt-anatomy[hidden] { display: none; }
-.prompt-anatomy-heading { font-size: 12.5px; font-weight: 600; color: var(--ink); }
-.prompt-anatomy-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; counter-reset: anatomy; }
-/* 每段一行：序号、名称、说明、状态；窄窗口时说明换到下一行。 */
-.prompt-anatomy-item { counter-increment: anatomy; display: grid; grid-template-columns: 18px 5.5em minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-.prompt-anatomy-item::before { content: counter(anatomy); align-self: center; width: 18px; height: 18px; border-radius: 99px; background: var(--tint); color: var(--tint-ink); font-size: 11px; font-weight: 650; display: flex; align-items: center; justify-content: center; }
-.prompt-anatomy-item b { font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; }
-.prompt-anatomy-item p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-2); }
-.prompt-anatomy-item span { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; text-align: right; }
+.prompt-anatomy b { font-size: 13px; font-weight: 600; color: var(--ink); }
+/* 左：处理流程，圆形序号 + 一句话。 */
+.prompt-anatomy-flow { display: flex; flex-direction: column; gap: 10px; }
+.prompt-anatomy-flow ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; counter-reset: flow; }
+.prompt-anatomy-flow li { counter-increment: flow; position: relative; padding-left: 30px; font-size: 12px; line-height: 1.6; color: var(--ink-2); }
+.prompt-anatomy-flow li::before { content: counter(flow); position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 99px; background: var(--ground-2); color: var(--ink); font-size: 11px; font-weight: 650; display: flex; align-items: center; justify-content: center; }
+/* 右：实际发送的内容，一段一块，顺序与发送顺序一致。 */
+.prompt-anatomy-sent { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); min-width: 0; }
+.prompt-anatomy-blk { padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.prompt-anatomy-tag { display: block; margin-bottom: 3px; font-size: 11.5px; font-weight: 600; color: var(--ink-3); }
+.prompt-anatomy-body { font-size: 12px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-anatomy-body.mono { font-family: var(--mono); font-size: 11.5px; }
+.prompt-anatomy-blk.off { border-style: dashed; background: transparent; }
+.prompt-anatomy-blk.off .prompt-anatomy-body { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-2); }
 @media (max-width: 1100px) {
-  .prompt-anatomy-item { grid-template-columns: 18px minmax(0, 1fr) auto; row-gap: 2px; }
-  .prompt-anatomy-item p { grid-column: 2 / -1; grid-row: 2; }
+  .prompt-anatomy { grid-template-columns: minmax(0, 1fr); }
 }
-.prompt-anatomy-item.off { border-style: dashed; background: transparent; }
-.prompt-anatomy-item.off::before { background: var(--ground-2); color: var(--ink-3); }
-.prompt-anatomy-item.off b, .prompt-anatomy-item.off p { color: var(--ink-3); }
