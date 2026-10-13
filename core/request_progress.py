@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from loguru import logger
+
 # 逐批请求事件（translate_texts 的 request_callback）。
 BATCH_EVENT_PLAN = "plan"
 BATCH_EVENT_SENT = "sent"
@@ -42,6 +44,16 @@ class BatchRequestEvent:
     elapsed: float = 0.0
     failed: int = 0
     stopped: int = 0
+
+
+def notify_batch_event(callback: Callable[[BatchRequestEvent], None] | None, event: BatchRequestEvent) -> None:
+    """Hand ``event`` to ``callback``; a broken log hook must never break translation."""
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"批次请求事件回调出错：{exc!r}")
 
 
 class InFlightRequestTracker:

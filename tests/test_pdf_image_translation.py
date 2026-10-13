@@ -4,6 +4,7 @@ import errno
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -2048,6 +2049,10 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(review_client.calls, 1)
             self.assertTrue(any("生成成功，审核通过" in msg.message for msg in success_logs))
             self.assertTrue(all("1/" not in msg.message for msg in success_logs))
+            # 每页结果带上从第一次发出请求起的用时（与 Excel、Word、CAD 的逐批日志一致）。
+            self.assertTrue(all(re.search(r"，用时 \d+\.\d 秒$", msg.message) for msg in success_logs))
+            self.assertEqual(runner._page_requests.in_flight_count(), 0)
+            self.assertEqual(runner._page_started, {})
 
     def test_local_descriptor_error_retries_pdf_review_without_regenerating_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
