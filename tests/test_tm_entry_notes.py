@@ -140,5 +140,42 @@ class TmEntryNotesTests(unittest.TestCase):
         self.assertEqual((stats["month_uses"], stats["origin_manual"]), (5, 1))
 
 
+    def test_api_round_trip_with_note_usage_filter_and_pinned_edit(self):
+        from fastapi.testclient import TestClient
+
+        import settings as settings_module
+        from api.app import create_app
+
+        with (
+            patch.object(settings_module, "APP_DATA_DIR", self.root),
+            patch.object(settings_module, "SETTINGS_PATH", self.root / "settings.json"),
+            patch.object(settings_module, "KEYS_PATH", self.root / "keys.json"),
+            patch.object(settings_module, "RECOVERY_PATH", self.root / "recovery.json"),
+            patch.object(settings_module, "BACKUPS_DIR", self.backups_dir),
+        ):
+            client = TestClient(create_app())
+            created = client.post(
+                "/api/tm/entries",
+                json={"source_text": "甲", "target_text": "A", "lang_pair": "zh-fr", "note": "配电回路编号"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            client.post("/api/tm/entries", json={"source_text": "门", "target_text": "porte", "lang_pair": "zh-fr"})
+            listed = client.get("/api/tm/entries", params={"lang_pair": "zh-fr", "entry_filter": "scene"}).json()
+            self.assertEqual([row["source_text"] for row in listed["entries"]], ["甲"])
+            self.assertEqual(listed["filter_counts"]["all"], 2)
+            entry = listed["entries"][0]
+            self.assertEqual((entry["note"], entry["effective_usage"], entry["origin"]), ("配电回路编号", "scene", "manual"))
+            client.post(f"/api/tm/entries/{entry['id']}/pin", json={"pinned": True})
+            updated = client.put(
+                f"/api/tm/entries/{entry['id']}",
+                json={"source_text": "甲", "target_text": "A", "usage": "always", "allow_pinned": True},
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(client.delete(f"/api/tm/entries/{entry['id']}").status_code, 409)
+            self.assertEqual(
+                client.delete(f"/api/tm/entries/{entry['id']}", params={"allow_pinned": True}).status_code, 200
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
