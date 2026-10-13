@@ -90,3 +90,10 @@
 .feedback-kind-count { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 6px; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feedback-other-files { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .feedback-task-list > * { flex: none; }
+/* 「反馈此任务」弹窗：和反馈页同一套控件，排得更紧凑。 */
+.task-feedback { display: flex; flex-direction: column; gap: 8px; }
+.task-feedback .feedback-text { min-height: 96px; resize: vertical; }
+.task-feedback .feedback-section-title { margin-top: 4px; }
+.task-feedback .feedback-note { margin: 0; }
+.task-feedback-status:empty { display: none; }
+.modal .macts .task-feedback-full { margin-right: auto; }

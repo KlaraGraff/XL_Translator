@@ -55,6 +55,7 @@ import { stopConfirmBody, taskStateWord } from "../task-state-labels";
 import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { createTaskControlFoot, createTaskListPanel, createTaskLogPanel, createTaskProgressPanel, createTaskTerminalBanner } from "../task-panels";
+import { createTaskFeedbackButton } from "../task-feedback";
 import { normalizeUserPath } from "../path-input";
 
 import {
@@ -224,6 +225,8 @@ const NO_EXTRA_PROMPT = "无"; // i18n-ignore 发回后端的值
 
 export const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
 const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
+// 和任务中心卡片标题一样的叫法（「Excel · 报价单.xlsx」）。
+const SURFACE_SHORT_NAME: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
 const SURFACE_PAGE_TITLE: Record<Surface, string> = localized(() => ({ excel: t("Excel 表格翻译"), word: t("Word 文档翻译"), pdf: t("PDF 与图片翻译"), cad: t("CAD 图纸翻译") }));
 const SURFACE_FILE_NOUN: Record<Surface, string> = localized(() => ({ excel: t("表格文件"), word: t("文档"), pdf: t("PDF / 图片文件"), cad: t("DWG / DXF 图纸") }));
 
@@ -1127,6 +1130,15 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
     icon: "ext",
     onClick: () => navigate("tasks", { taskId: st.lastTaskId }),
   }));
+  // 结果不对就地反馈，不用先去任务中心找这一次任务。停止是用户自己按的，不算异常。
+  if (st.lastTaskId) {
+    const label = text(record(lastTask).source_label);
+    actions.push(createTaskFeedbackButton({
+      taskId: st.lastTaskId,
+      taskLabel: label ? `${SURFACE_SHORT_NAME[surface]} · ${tx(label)}` : SURFACE_PAGE_TITLE[surface],
+      hasProblem: info.tone === "fail" || (info.tone === "warn" && lastTask?.state !== "stopped"),
+    }));
+  }
   return createTaskTerminalBanner({
     title: info.title,
     subtitle: info.subtitle,
