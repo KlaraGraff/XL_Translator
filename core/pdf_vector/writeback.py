@@ -65,6 +65,15 @@ def ink_count(gray: Image.Image, box, light: bool = False) -> tuple[int, int]:
     return ink, (b[2] - b[0]) * (b[3] - b[1])
 
 
+def dark_ground(gray: Image.Image, box) -> bool:
+    b = clamp_box(box, gray)
+    if b[2] <= b[0] or b[3] <= b[1]:
+        return False
+    hist = gray.crop(b).histogram()
+    total = sum(hist)
+    return sum(hist[:128]) > total * 0.5
+
+
 def is_light(color) -> bool:
     r, g, b = (list(color or (0, 0, 0)) + [0, 0, 0])[:3]
     return 0.299 * r + 0.587 * g + 0.114 * b > 0.7
@@ -629,7 +638,9 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
         trial_gray.save(trial_preview)
     ok = []
     for r in active:
-        light = is_light(r["_color"])
+        # 亮色字只在深色底上按亮墨迹算（深色标题栏里的白字）；白底上的黄字、青字
+        # （CAD 常见）照常按深色墨迹算，否则整片白底都会被当成残留。
+        light = is_light(r["_color"]) and dark_ground(src_gray, r["display_box"])
         si = sum(ink_count(src_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
         ti = sum(ink_count(trial_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
         r["_residual"] = (ti / si) if si else 0.0

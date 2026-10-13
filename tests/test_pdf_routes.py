@@ -184,3 +184,13 @@ class WritebackGeometryTests(unittest.TestCase):
         layout = Layout(Image.new("L", (600, 800), 255), 72, bounds=box)
         self.assertTrue(layout.blank((100, 200, 300, 220)))
         self.assertFalse(layout.blank((500, 200, 560, 220)))  # would run into the margin
+
+
+class LightTextGroundTests(unittest.TestCase):
+    def test_light_ink_only_on_a_dark_ground(self) -> None:
+        from PIL import Image
+
+        from core.pdf_vector.writeback import dark_ground
+
+        self.assertTrue(dark_ground(Image.new("L", (50, 20), 30), (0, 0, 50, 20)))
+        self.assertFalse(dark_ground(Image.new("L", (50, 20), 250), (0, 0, 50, 20)))  # yellow text on white paper
