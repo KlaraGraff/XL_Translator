@@ -96,5 +96,8 @@
   "所选任务翻译的原始文件。文件可能包含客户资料，仅在需要我们查看时勾选。": {"en": "Original files translated by the chosen tasks. Files may contain client data, so tick this only when we need to see them.", "fr": "Fichiers originaux traduits par les tâches choisies. Les fichiers peuvent contenir des données client : cochez uniquement si nous devons les consulter."},
   "查看大图": {"en": "View full size", "fr": "Afficher en grand"},
   "统计中…": {"en": "Counting…", "fr": "Décompte…"},
-  "附件合计 {0} / {1}": {"en": "Attachments: {0} / {1}", "fr": "Pièces jointes : {0} / {1}"}
+  "文件合计 {0} / {1}": {"en": "Files: {0} / {1}", "fr": "Fichiers : {0} / {1}"},
+  "附件文件合计超过 40 MB，请只附上必要的文件。": {"en": "The attached files exceed 40 MB in total. Please attach only the files that are needed.", "fr": "Les fichiers joints dépassent 40 Mo au total. Joignez uniquement les fichiers nécessaires."},
+  "截图合计超过 10 MB，请删掉几张。": {"en": "The screenshots exceed 10 MB in total. Please remove a few.", "fr": "Les captures dépassent 10 Mo au total. Supprimez-en quelques-unes."},
+  "截图合计不能超过 10 MB，请删掉几张再粘贴。": {"en": "Screenshots can total at most 10 MB. Remove a few before pasting more.", "fr": "Les captures ne peuvent pas dépasser 10 Mo au total. Supprimez-en quelques-unes avant d'en coller d'autres."}
 }

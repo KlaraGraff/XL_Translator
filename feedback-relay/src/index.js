@@ -13,7 +13,7 @@
 // 不记录 IP：限流只用「LINK_SECRET + IP」的哈希做一小时计数，计数一小时后过期。
 // GitHub 令牌只存在 Worker 的密钥里，应用里没有任何凭据。
 
-// 应用端附件上限 50 MB，ZIP 头和日志另占一点。KV 单个值最多 25 MiB，所以大包按
+// 应用端附件上限：文件 40 MB + 截图 10 MB，ZIP 头和日志另占一点。KV 单个值最多 25 MiB，所以大包按
 // CHUNK_BYTES 拆成几段存，下载时再按顺序拼回去。
 const MAX_PACKAGE_BYTES = 54 * 1024 * 1024;
 const CHUNK_BYTES = 20 * 1024 * 1024;

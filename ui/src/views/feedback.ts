@@ -35,6 +35,8 @@ interface FeedbackContext {
   endpoint_configured: boolean;
   tasks: FeedbackTask[];
   max_attachment_bytes: number;
+  /** 截图合计上限，和文件分开算。 */
+  max_images_bytes?: number;
   max_files: number;
   max_tasks: number;
   /** 上次成功发送时填的邮箱（只存在本机），新反馈默认填上。 */
@@ -468,6 +470,11 @@ async function addImages(files: File[]): Promise<void> {
       showToast({ message: t("单张图片不能超过 10 MB。"), error: true });
       continue;
     }
+    const used = draft.images.reduce((sum, image) => sum + image.bytes, 0);
+    if (used + file.size > (context?.max_images_bytes ?? MAX_IMAGE_BYTES)) {
+      showToast({ message: t("截图合计不能超过 10 MB，请删掉几张再粘贴。"), error: true });
+      break;
+    }
     try {
       draft.images.push({ data: await readBase64(file), bytes: file.size, url: URL.createObjectURL(file) });
     } catch (error) {
@@ -678,17 +685,17 @@ function renderOtherFiles(): void {
 
 let fileSummaryEl: HTMLElement | null = null;
 
-// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。
+// 卡片底部一行：一共会上传几个文件、多大。超过上限时变红。截图另有额度，不算在这里。
 function renderFileSummary(): void {
   const el = fileSummaryEl;
   if (!el) return;
   const files = checkedFiles();
-  const total = sizeOf(files) + draft.images.reduce((sum, image) => sum + image.bytes, 0);
-  const limit = context?.max_attachment_bytes ?? 50 * 1024 * 1024;
+  const total = sizeOf(files);
+  const limit = context?.max_attachment_bytes ?? 40 * 1024 * 1024;
   el.className = total > limit ? "feedback-total over" : "feedback-total";
   const needsTask = (draft.includeLogs || draft.includeSources || draft.includeOutputs) && !draft.taskIds.size;
   if (needsTask) el.textContent = t("尚未选择任务，任务日志、原文件和译文不会附上。");
-  else if (total) el.textContent = t("附件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
+  else if (total) el.textContent = t("文件合计 {0} / {1}", formatBytes(total), formatBytes(limit));
   else el.textContent = t("不附带文件。");
 }
 

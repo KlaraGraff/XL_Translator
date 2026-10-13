@@ -359,7 +359,8 @@ class FeedbackRequest(BaseModel):
     ui_language: str = Field(default="zh", max_length=16)
     task_ids: list[str] = Field(default_factory=list, max_length=20)
     file_paths: list[str] = Field(default_factory=list, max_length=50)
-    images: list[FeedbackRequestImage] = Field(default_factory=list, max_length=20)
+    # 截图不限张数，真正的上限是 core.feedback 里截图合计的大小；这里只挡离谱的请求。
+    images: list[FeedbackRequestImage] = Field(default_factory=list, max_length=500)
 
     @field_validator("file_paths", mode="before")
     @classmethod
