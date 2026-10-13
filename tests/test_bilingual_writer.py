@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
@@ -262,10 +264,14 @@ class OutputDirNamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "fixtures"
             source.mkdir()
-            first = build_output_dir(source)
-            first.mkdir()
-            second = build_output_dir(source)
-            self.assertNotEqual(first, second)
+            # 固定在同一秒：两次调用跨过整秒边界时，第二次本来就会拿到新时间戳，测不到 _2。
+            frozen = datetime(2026, 10, 13, 16, 36, 5, 999_000)
+            with patch("core.bilingual_writer.datetime", wraps=datetime) as clock:
+                clock.now.return_value = frozen
+                first = build_output_dir(source)
+                first.mkdir()
+                second = build_output_dir(source)
+            self.assertEqual(first.name, "fixtures_翻译输出_20261013_163605")
             self.assertEqual(second.name, f"{first.name}_2")
 
     def test_custom_root_is_honoured(self) -> None:
