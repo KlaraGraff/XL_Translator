@@ -16,3 +16,4 @@
 .plugins-notice.plugins-progress { color: var(--ink-2); background: var(--tint); display: flex; flex-direction: column; gap: 8px; }
 .plugins-note { padding: 14px 16px; display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 12px; }
 @media (max-width: 720px) { .plugins-title-row { align-items: flex-start; flex-wrap: wrap; } }
+.oda-terms-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }

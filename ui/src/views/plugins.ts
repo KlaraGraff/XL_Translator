@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
-import { createButton, createCard, createHintBadge, createProgressBar, createStatus, showToast } from "../components";
+import { createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
@@ -219,10 +219,45 @@ function pollCadInstall(): void {
   }, 600);
 }
 
+/** ODA 官网上说明 File Converter 使用条件的页面（官网没有单独的条款页）。 */
+const ODA_TERMS_URL = "https://www.opendesign.com/faq/question/what-are-oda-viewer-and-oda-file-converter";
+
+/** ODA File Converter 不是开源软件：下载前先让用户看到它的来源和条款，同意了才装。 */
+function confirmOdaTerms(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const open = (url: string) => () => {
+      openExternalUrl(url).catch((error) => {
+        showToast({ message: error instanceof Error ? error.message : t("无法打开网页。"), error: true });
+      });
+    };
+    const links = document.createElement("span");
+    links.className = "oda-terms-links";
+    links.append(
+      createButton({ label: t("查看 ODA 条款"), icon: "ext", size: "mini", onClick: open(ODA_TERMS_URL) }),
+      createButton({ label: t("打开官网"), icon: "ext", size: "mini", onClick: open(DEFAULT_OFFICIAL_CAD_URL) }),
+    );
+    openModal({
+      tone: "tint",
+      icon: "down",
+      sourceLabel: t("插件 · 图纸转换工具"),
+      title: t("安装图纸转换工具"),
+      body: [
+        t("图纸转换工具（ODA File Converter）由 Open Design Alliance 免费提供，不是开源软件，使用需遵守 ODA 的条款。ODA 官网说明：非 ODA 会员仅可用于非商业用途。"),
+        t("一键安装将从 ODA 官网下载安装包，核对 ODA 的数字签名后安装到本软件的数据目录。"),
+        links,
+      ],
+      actions: [
+        { label: t("取消"), onClick: () => resolve(false) },
+        { label: t("同意并安装"), variant: "primary", onClick: () => resolve(true) },
+      ],
+    });
+  });
+}
+
 async function startCadInstall(): Promise<void> {
   if (busy || cadInstalling()) return;
-  // ODA File Converter 不是开源软件：下载前先让用户知道它的来源和条款。
-  if (!window.confirm(t("图纸转换工具（ODA File Converter）由 Open Design Alliance 免费提供，不是开源软件，使用需遵守 ODA 的使用条款。一键安装将从 ODA 官网下载安装包，并安装到本软件的数据目录。是否继续？"))) return;
+  if (!(await confirmOdaTerms())) return;
+  if (busy || cadInstalling()) return;
   busy = true;
   errorText = "";
   stopAutoDetect();
