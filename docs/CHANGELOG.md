@@ -34,6 +34,26 @@
 
   **Run log (Excel, Word, PDF)**: Translation now logs each batch as CAD does: the batch plan and concurrency up front, each returned batch with its item count and time, and a note on how many batches are still out after 30 s without a return. PDF full-page image translation adds the time taken to each page result (from its first request) and notes how many pages are still pending; text pages that Automatic mix sends through Word relay the Word batch lines. One module (core/request_log.py) writes these lines for every page, CAD included; the auto-language path and Word batching now emit per-batch events too. Progress still advances only on returned batches.
 
+- **Excel 慢回答与超时**：180 秒时限改为每次请求各自计算（以前整批共用，重试、拆批、换连接只能用剩下的时间）；并发批次等第一批确认协议的时间不计入各自时限，第一批超时或被截断时其余批次不再跟着失败；重试后仍超时的批次拆成两半再试一次。「请求总时限已用尽；协议仍未确定」改为说明模型服务多少秒内没有返回；全部因超时失败时提示可用「仅补译未翻译内容」再翻。日志补记「模型返回的译文与原文相同」的条数。丢了空格的英文词句（如 Exhaustfan(withbackdraftdamper)）不再判为无需翻译，型号、单位、邮箱、文件名照旧跳过。
+
+  **Excel slow responses and timeouts**: The 180 s limit now applies to each request on its own (it used to be shared by a whole batch, so retries, splits and connection switches only got what was left). Waiting for the first batch to settle the protocol no longer counts against concurrent batches, and a timed-out or truncated first batch no longer fails the others. A batch that still times out after its retry is split in two and tried once more. The "total request time used up; protocol still undetermined" message now says how many seconds the model service went without answering, and when everything failed by timeout the result suggests "Translate untranslated content only". The log counts translations returned identical to the source. Run-together English (e.g. Exhaustfan(withbackdraftdamper)) is no longer treated as needing no translation; model numbers, units, emails and file names are still skipped.
+
+- **仅译文模式下「中文＋外文」整体翻译（Excel、Word）**：模型会把「6.1.1 土石方工程合计  Total of Earthworks」判成已有双语，中译法时那半句英文不是法文，仅译文模式下原样保留就等于没翻（反馈 FB-20261013-UVW95F）。现在这类格子或段落在仅译文模式下再按普通内容整体翻一遍，翻不出来的保留原文并标需复核；原文＋译文模式不变。
+
+  **Mixed Chinese + other language in Translation only (Excel, Word)**: The model may treat "6.1.1 土石方工程合计  Total of Earthworks" as already bilingual, but for Chinese → French the English half is not French, so keeping it as is in Translation only mode left it untranslated (feedback FB-20261013-UVW95F). Such cells and paragraphs are now translated again as ordinary content in Translation only mode; anything that still fails keeps its source and is marked for review. Source + translation mode is unchanged.
+
+- **记忆库在全新数据目录上自动建表**：PDF 转 Word 和原位替换不经过任务开始时的 init_db()，在从没用过记忆库的数据目录上会报「no such table: tm_entries」；tm_manager 在本进程第一次打开某个库文件（或文件被删掉后）先建表。
+
+  **Translation memory tables on a fresh data directory**: PDF-to-Word and in-place replacement skip the task-start init_db(), so a data directory that had never used the memory hit "no such table: tm_entries". tm_manager now creates the tables the first time a process opens a database file (or after it was deleted).
+
+- **插件卸载先确认**：卸载一键安装的组件会删掉下载的文件，所以「卸载」先弹确认框；「断开」只忘掉选过的路径，不确认。
+
+  **Confirm before uninstalling a plugin**: Uninstalling a one-click component deletes its downloaded files, so Uninstall now asks first; Disconnect only forgets the chosen path and does not ask.
+
+- **安装包瘦身**：macOS DMG 约 31 MB（V10.0.0 约 50 MB），Windows 安装程序约 29 MB（V10.0.0 约 32 MB），功能不变。sidecar 打包后用 ditto 放回（Tauri 复制资源会展开符号链接），DMG 改 ULMO（LZMA）；Tauri 外壳 release 开启 lto、codegen-units=1、opt-level="s"、strip；PyInstaller spec 排除 pygments、pytest、Pythonwin，不再打包 assets。
+
+  **Smaller installers**: The macOS DMG is about 31 MB (V10.0.0: about 50 MB) and the Windows installer about 29 MB (V10.0.0: about 32 MB), with no change in features. The sidecar is put back with ditto after bundling (Tauri's resource copy expands symlinks) and the DMG uses ULMO (LZMA); the Tauri shell release build uses lto, codegen-units=1, opt-level="s" and strip; the PyInstaller spec excludes pygments, pytest and Pythonwin and no longer bundles assets.
+
 ## V10.0.0
 
 - **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和建议填写的邮箱（问题解决或功能上线时邮件通知），描述框可直接粘贴截图；附带内容按类别勾选，勾了哪些就上传哪些：系统与版本信息、任务日志默认勾选，原文件、译文默认不勾，日志、原文件和译文取自下方选中的一次或多次任务；另可添加其他文件，添加即上传（附件总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后底栏显示按实际已发出字节计算的上传进度，经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
