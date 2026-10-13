@@ -194,6 +194,11 @@ REVIEW_MARK_COLOR_DEFAULTS = {
     REVIEW_MARK_UNRESOLVED: REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT,
     REVIEW_MARK_FOREIGN_NOISE: REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT,
 }
+# 译文没有采用记忆库里「始终采用」的设定译法（重译后仍未采用）。它要人动手，
+# 但不另设颜色、不多一个配色选项：沿用「需复核」那一种底色，只在复核清单里
+# 写明问题是「未采用设定译法」。
+REVIEW_MARK_TERM_NOT_APPLIED = "term_not_applied"
+REVIEW_MARK_COLOR_ALIASES = {REVIEW_MARK_TERM_NOT_APPLIED: REVIEW_MARK_UNRESOLVED}
 # 分三色之前只有一个 word_review.highlight_color。这个值是当年的默认值，留在这里
 # 只当迁移哨兵用：旧配置里**没有 mark_colors**、而 highlight_color 又与它不同时，
 # 说明用户在单色时代自己调过色，那就把两种标记都涂成用户调的那个色。已经有
@@ -364,4 +369,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 35
+SETTINGS_SCHEMA_VERSION = 36

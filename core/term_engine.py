@@ -41,6 +41,11 @@ DEFAULT_TERM_RETRY_ATTEMPTS = 2
 MAX_TERM_RETRY_ATTEMPTS = 5
 
 
+def excerpt(text: str, limit: int = 80) -> str:
+    value = " ".join(str(text or "").split())
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
 def _append_block(system_prompt: str, block: str) -> str:
     if not block:
         return system_prompt
@@ -116,7 +121,7 @@ class TermRunStats:
                 item = scene.setdefault(
                     hit.source,
                     {
-                        "source": hit.source,
+                        "term": hit.source,
                         "candidates": [
                             {"target": cand.target, "note": cand.note} for cand in hit.candidates
                         ],
@@ -125,7 +130,7 @@ class TermRunStats:
                     },
                 )
                 item["count"] = int(item["count"]) + 1
-                label = chosen.target if chosen is not None else (outcome.translation if hit.whole else "")
+                label = chosen.target if chosen is not None else (excerpt(outcome.translation) if hit.whole else "")
                 item["chosen"][label] += 1  # type: ignore[index]
         scene_choices = []
         for item in scene.values():
@@ -140,13 +145,15 @@ class TermRunStats:
             "scene_hits": scene_hits,
             "applied_first": applied_first,
             "applied_after_retry": applied_retry,
+            # 键名避开 text / source / translation：任务中心存结果时按这几个键名剔除
+            # 文档正文，这里只留摘录（与 Word 复核清单的 snippet 同一口径）。
             "not_applied": [
                 {
-                    "text": outcome.text,
-                    "translation": outcome.translation,
+                    "snippet": excerpt(outcome.text),
+                    "output_snippet": excerpt(outcome.translation),
                     "retries": outcome.retries,
                     "terms": [
-                        {"source": hit.source, "expected": hit.expected} for hit in outcome.missed
+                        {"term": hit.source, "expected": hit.expected} for hit in outcome.missed
                     ],
                 }
                 for outcome in outcomes
@@ -158,6 +165,9 @@ class TermRunStats:
 
 class TermAwareEngine(TranslationEngine):
     """在批次层面注入词条、核对并重译的引擎包装器。"""
+
+    # engine_supports_chat 等能力判断看里面那个真正的引擎。
+    _delegates_capabilities = True
 
     def __init__(
         self,

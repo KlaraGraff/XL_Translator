@@ -236,7 +236,7 @@ class TermAwareEngineTests(unittest.TestCase):
         self.assertEqual(engine.stats.not_applied_texts(), {"门框与预埋件连接"})
         summary = engine.stats.summary()
         self.assertEqual(summary["not_applied"][0]["retries"], 2)
-        self.assertEqual(summary["not_applied"][0]["terms"], [{"source": "预埋件", "expected": "pièce noyée"}])
+        self.assertEqual(summary["not_applied"][0]["terms"], [{"term": "预埋件", "expected": "pièce noyée"}])
         self.assertEqual(engine.stats.entry_uses(), {})
 
     def test_zero_retries_marks_directly(self):
@@ -265,7 +265,7 @@ class TermAwareEngineTests(unittest.TestCase):
         engine = TermAwareEngine(inner, self.index, target_lang="fr")
         engine.translate_batch(["甲"], "fr", "SYS")
         choices = engine.stats.summary()["scene_choices"]
-        self.assertEqual(choices[0]["source"], "甲")
+        self.assertEqual(choices[0]["term"], "甲")
         self.assertEqual(choices[0]["chosen"], [{"target": "FR:甲", "count": 1}])
 
 

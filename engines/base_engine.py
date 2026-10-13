@@ -225,5 +225,8 @@ class TranslationEngine(ABC):
 
 def engine_supports_chat(engine) -> bool:
     """引擎是否真正实现了 chat()（基类默认实现只会抛 NotImplementedError）。"""
+    # 记忆库词条包装器（core.term_engine）只是转手：看它里面的引擎。
+    while getattr(type(engine), "_delegates_capabilities", False):
+        engine = engine.inner
     chat = getattr(type(engine), "chat", None)
     return chat is not None and chat is not TranslationEngine.chat

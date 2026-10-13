@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 from collections import defaultdict
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -2600,16 +2601,31 @@ def get_filter_counts(lang_pair: str, keyword: str = "") -> dict[str, int]:
 
 # ── 翻译时用的整表读取、按场景自动保存、使用次数 ────────────────────────────────
 
-def list_entries_for_target(target_lang: str) -> list[dict[str, object]]:
-    """读出译入 ``target_lang`` 的全部词条（任意源语言），供一次任务建对照表。"""
+def list_entries_for_target(
+    target_lang: str, lang_pairs: Iterable[str] | None = None
+) -> list[dict[str, object]]:
+    """读出译入 ``target_lang`` 的词条，供一次任务建对照表。
+
+    ``lang_pairs`` 给出时只读这几个语言对（任务里实际用到的），否则读任意源语言。
+    """
     target = str(target_lang or "").strip()
     if not target:
         return []
     with _get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT {_ENTRY_COLUMNS} FROM tm_entries WHERE lang_pair LIKE ?",
-            [f"%-{target}"],
-        ).fetchall()
+        if lang_pairs is not None:
+            pairs = sorted({str(pair) for pair in lang_pairs if str(pair).strip()})
+            if not pairs:
+                return []
+            rows = conn.execute(
+                f"SELECT {_ENTRY_COLUMNS} FROM tm_entries "
+                f"WHERE lang_pair IN ({','.join('?' * len(pairs))})",
+                pairs,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {_ENTRY_COLUMNS} FROM tm_entries WHERE lang_pair LIKE ?",
+                [f"%-{target}"],
+            ).fetchall()
     result: list[dict[str, object]] = []
     for row in rows:
         split_pair = _split_lang_pair(str(row["lang_pair"] or ""))

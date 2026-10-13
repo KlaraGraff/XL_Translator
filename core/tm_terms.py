@@ -209,6 +209,7 @@ class TermIndex:
     ) -> None:
         allowed_pairs = {str(pair) for pair in lang_pairs} if lang_pairs is not None else None
         path_parts = _path_parts(file_paths)
+        self.out_of_scope_keys: set[str] = set()
         entries: list[TermEntry] = []
         for row in rows:
             entry = row if isinstance(row, TermEntry) else TermEntry.from_row(row)
@@ -217,6 +218,8 @@ class TermIndex:
             if allowed_pairs is not None and entry.lang_pair not in allowed_pairs:
                 continue
             if entry.scope and not any(entry.scope.lower() in part for part in path_parts):
+                # 生效范围不含本次文件：整段也不能再从别处查回来（见 TaskTermSession）。
+                self.out_of_scope_keys.add(whole_key(entry.source))
                 continue
             entries.append(entry)
         self.entries = entries
@@ -246,7 +249,7 @@ class TermIndex:
         from core import tm_manager
 
         return cls(
-            tm_manager.list_entries_for_target(target_lang),
+            tm_manager.list_entries_for_target(target_lang, lang_pairs),
             lang_pairs=lang_pairs,
             file_paths=file_paths,
             apply_in_sentences=apply_in_sentences,

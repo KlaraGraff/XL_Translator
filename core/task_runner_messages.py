@@ -94,6 +94,8 @@ class DoneMsg:
     connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
+    # 记忆库词条在本次任务里的采用情况（core.term_session.TaskTermSession.finish）。
+    terms: dict[str, object] = field(default_factory=dict)
     # 用户按了停止、但任务还是正常跑完时留下的痕迹（requested / truncated）。没有它，
     # 小结会写「已完成 · 全部通过」，用户看不出自己那一下停止到底起没起作用。
     stop: dict[str, object] = field(default_factory=dict)
@@ -118,6 +120,8 @@ class ErrorMsg:
     connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
+    # 记忆库词条在本次任务里的采用情况（core.term_session.TaskTermSession.finish）。
+    terms: dict[str, object] = field(default_factory=dict)
     translated_dir: str = ""
     review_dir: str = ""
     summary_path: str = ""
@@ -139,6 +143,8 @@ class StoppedMsg:
     connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
+    # 记忆库词条在本次任务里的采用情况（core.term_session.TaskTermSession.finish）。
+    terms: dict[str, object] = field(default_factory=dict)
     translated_dir: str = ""
     review_dir: str = ""
     summary_path: str = ""

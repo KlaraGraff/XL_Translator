@@ -732,7 +732,21 @@ class EngineSettings(TextProtocolSettings):
 
 
 class TMSettings(BaseModel):
+    """记忆库。v36 起加了词条采用方面的几项（加法改动：旧文件按默认补齐）。"""
+
     max_len: int = Field(default=DEFAULT_MAX_LEN, ge=1, le=200)
+    # 高级模式：记忆库页、编辑窗口和任务详情显示采用方式、生效范围、使用次数等。
+    advanced_mode: bool = False
+    # 「始终采用」的词条在句中出现时同样采用；关闭时只在整段相同时采用。
+    apply_in_sentences: bool = True
+    # 译文未采用设定译法时自动重译的最多次数；0 表示不重译、直接标记需复核。
+    term_retry_attempts: int = Field(default=2, ge=0, le=5)
+    # 「自动识别场景」下，短词在新场景里的译法自动保存为带备注的新词条。
+    auto_save_short_scene: bool = True
+    # 单批涉及的词条超过此数时把批拆小，词条一条不丢。
+    term_batch_budget: int = Field(default=20, ge=5, le=100)
+    # 本地模型也收到「按场景选用」的候选译法（本地模型较易受干扰，默认关闭）。
+    local_scene_candidates: bool = False
 
 
 class OutputSettings(BaseModel):
