@@ -64,6 +64,12 @@ def run_smoke_test() -> int:
                 raise RuntimeError(
                     f"required distribution has no version: {distribution_name}"
                 )
+        # 原位替换的词表是数据文件，漏收时 import 照样成功，只会悄悄把识别结果都判成「查不到」。
+        from core.pdf_vector.classify import lexicon
+
+        for lang in ("fr", "en"):
+            if not lexicon(lang):
+                raise RuntimeError(f"in-place word list is missing: {lang}")
     except Exception as exc:
         _emit(f"[ERROR] Frozen application smoke test failed: {exc}", error=True)
         return 1

@@ -51,6 +51,46 @@ def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
     )
 
 
+def _page_copied_from_source(page: Any) -> bool:
+    """输出里这一页是源文件原页（按设定保留、没有图像模型、原位替换没换成…）。"""
+    return bool(
+        getattr(page, "skipped_oversize", False)
+        and getattr(page, "inplace_status", "") != "done"
+        and getattr(page, "word_status", "") != "done"
+    )
+
+
+def _record_translated_nothing(record: PdfFileRecord) -> bool:
+    """Every page of the output is the source page, whatever the reason."""
+    return bool(
+        record.page_count > 0
+        and len(record.pages) >= record.page_count
+        and all(_page_copied_from_source(page) for page in record.pages)
+    )
+
+
+def _page_kept_reason(page: Any) -> str:
+    if getattr(page, "inplace_requested", False) and getattr(page, "inplace_status", ""):
+        reason = page.inplace_message or ""
+    else:
+        reason = getattr(page, "kept_reason", "") or ""
+    return reason
+
+
+def translated_nothing_message(record: PdfFileRecord) -> str:
+    reasons = [
+        (page.page_number, _page_kept_reason(page))
+        for page in sorted(record.pages, key=lambda item: item.page_number)
+    ]
+    reasons = [(number, reason) for number, reason in reasons if reason]
+    message = "本文件没有翻译任何内容，输出 PDF 与源文件一致。"
+    if len({reason for _number, reason in reasons}) == 1:
+        return message + f"原因：{reasons[0][1]}。"
+    if reasons:
+        return message + "各页原因见任务报告。"
+    return message
+
+
 def _page_archive_stem(relative_pdf: Path) -> Path:
     return relative_pdf.with_suffix("")
 
@@ -571,11 +611,12 @@ def _page_review_issue_text(page: PdfPageRecord) -> str:
 
 def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     fully_skipped = _record_is_fully_skipped_oversize(record)
-    # 全部页面都被大幅面跳过时产物只是源文件副本：文件确实生成了，但翻译
-    # 一个字都没有，所以这里不能算 success。
+    # 全部页面都被大幅面跳过（或因别的原因全是原页）时产物只是源文件副本：文件
+    # 确实生成了，但翻译一个字都没有，所以这里不能算 success。
+    untranslated = fully_skipped or _record_translated_nothing(record)
     success = bool(
         record.translated_docx_path or record.translated_pdf_path or record.translated_image_path
-    ) and not fully_skipped
+    ) and not untranslated
     detail_parts = []
     if record.translated_docx_path:
         detail_parts.append("另存了一份 Word")
@@ -587,6 +628,8 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         detail_parts.append(f"{rerouted_pages} 页改用整页图像翻译，原因见任务报告")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
+    elif untranslated:
+        detail_parts.append("没有翻译任何内容，原因见任务报告")
     if record.quality_flagged_page_count:
         detail_parts.append(f"{record.quality_flagged_page_count} 页自动检查发现问题，待复核")
     if record.compression_error:
@@ -601,8 +644,10 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "error": (
             record.error
             or (fully_skipped_oversize_message(record) if fully_skipped else "")
+            or (translated_nothing_message(record) if untranslated else "")
         ),
         "all_pages_skipped_oversize": fully_skipped,
+        "untranslated": untranslated,
         "quality_flagged_page_count": record.quality_flagged_page_count,
         "ratio_letterboxed_page_count": record.ratio_letterboxed_page_count,
         "render_downscaled_page_count": record.render_downscaled_page_count,
@@ -702,6 +747,18 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                     "severity": "needs_review",
                     "problem": fully_skipped_oversize_message(file_record),
                     "status": "全部页面因幅面过大跳过，未翻译",
+                    "source_image_path": file_record.source_path,
+                    "translated_image_path": "",
+                }
+            )
+        elif _record_translated_nothing(file_record):
+            issues.append(
+                {
+                    "file": file_record.name,
+                    "location_label": "整份文件",
+                    "severity": "needs_review",
+                    "problem": translated_nothing_message(file_record),
+                    "status": "未翻译任何内容",
                     "source_image_path": file_record.source_path,
                     "translated_image_path": "",
                 }

@@ -110,7 +110,7 @@ _REASON_TEXT = {
     "ocr_garbage": "识别结果像乱码",
     "ocr_short_fragment": "只认出零碎几个字母",
     "ocr_not_in_lexicon": "识别出的词查不到",
-    "ocr_rotated_unverified": "竖排文字未能确认",
+    "ocr_rotated_unverified": "旋转的文字未能确认",
     "ocr_code_uncertain": "编号或数字可能认错",
     "ocr_operator_uncertain": "比较符号（≤ ≥ < >）可能认错",
     "model_missing": "翻译没有返回结果",

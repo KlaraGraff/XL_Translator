@@ -16,4 +16,6 @@
 .plugins-notice.plugins-progress { color: var(--ink-2); background: var(--tint); display: flex; flex-direction: column; gap: 8px; }
 .plugins-note { padding: 14px 16px; display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 12px; }
 @media (max-width: 720px) { .plugins-title-row { align-items: flex-start; flex-wrap: wrap; } }
-.oda-terms-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.oda-terms-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 2px; }
+.oda-terms-links .linklike { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--tint-ink); cursor: pointer; }
+.oda-terms-links .linklike svg { width: 12px; height: 12px; }

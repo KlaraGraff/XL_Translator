@@ -4565,7 +4565,7 @@ function fileResultProduced(item: JsonObject): boolean {
  *  `_record_is_fully_skipped_oversize`），可它有输出路径，`fileResultProduced` 仍会算「已生成」。
  *  不单独认出来的话，这一行就是干干净净一句「已生成」，而任务中心给同一份文件挂着「需复核」。 */
 function fileResultUntranslated(item: JsonObject): boolean {
-  if (item.all_pages_skipped_oversize === true) return true;
+  if (item.all_pages_skipped_oversize === true || item.untranslated === true) return true;
   const pages = num(item.page_count);
   return pages > 0 && num(item.skipped_oversize_page_count) >= pages;
 }

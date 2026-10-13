@@ -15,6 +15,10 @@ datas = [
     (str(ROOT / "app_meta.py"), "."),
     (str(ROOT / "config.py"), "."),
     (str(ROOT / "settings.py"), "."),
+    # 原位替换判断文字识别结果靠这两份词表（core/pdf_vector/classify.py）。漏收时不报错，
+    # 只是每一处识别出的字都「查不到」：旋转的字一律不替换，横排的也大多保留原文。
+    (str(ROOT / "core" / "pdf_vector" / "lexicon" / "eng.words.txt.gz"), "core/pdf_vector/lexicon"),
+    (str(ROOT / "core" / "pdf_vector" / "lexicon" / "fra.words.txt.gz"), "core/pdf_vector/lexicon"),
 ]
 
 metadata_packages = [

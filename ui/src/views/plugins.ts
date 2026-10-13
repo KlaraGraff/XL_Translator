@@ -225,18 +225,19 @@ const ODA_TERMS_URL = "https://www.opendesign.com/faq/question/what-are-oda-view
 /** ODA File Converter 不是开源软件：下载前先让用户看到它的来源和条款，同意了才装。 */
 function confirmOdaTerms(): Promise<boolean> {
   return new Promise((resolve) => {
-    const open = (url: string) => () => {
-      openExternalUrl(url).catch((error) => {
-        showToast({ message: error instanceof Error ? error.message : t("无法打开网页。"), error: true });
+    const link = (label: string, url: string): HTMLButtonElement => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "linklike";
+      button.append(label, icon("ext"));
+      button.addEventListener("click", () => {
+        openExternalUrl(url).catch((error) => {
+          showToast({ message: error instanceof Error ? error.message : t("无法打开网页。"), error: true });
+        });
       });
+      return button;
     };
-    const links = document.createElement("span");
-    links.className = "oda-terms-links";
-    links.append(
-      createButton({ label: t("查看 ODA 条款"), icon: "ext", size: "mini", onClick: open(ODA_TERMS_URL) }),
-      createButton({ label: t("打开官网"), icon: "ext", size: "mini", onClick: open(DEFAULT_OFFICIAL_CAD_URL) }),
-    );
-    openModal({
+    const modal = openModal({
       tone: "tint",
       icon: "down",
       sourceLabel: t("插件 · 图纸转换工具"),
@@ -244,13 +245,18 @@ function confirmOdaTerms(): Promise<boolean> {
       body: [
         t("图纸转换工具（ODA File Converter）由 Open Design Alliance 免费提供，不是开源软件，使用需遵守 ODA 的条款。ODA 官网说明：非 ODA 会员仅可用于非商业用途。"),
         t("一键安装将从 ODA 官网下载安装包，核对 ODA 的数字签名后安装到本软件的数据目录。"),
-        links,
       ],
       actions: [
         { label: t("取消"), onClick: () => resolve(false) },
         { label: t("同意并安装"), variant: "primary", onClick: () => resolve(true) },
       ],
     });
+    // 两个链接做成正文下方的一行文字链接，不跟「取消」「同意并安装」抢视线；
+    // 不塞进按钮行，英法文较长时按钮才不会被挤得折行。
+    const links = document.createElement("div");
+    links.className = "oda-terms-links";
+    links.append(link(t("查看 ODA 条款"), ODA_TERMS_URL), link(t("打开官网"), DEFAULT_OFFICIAL_CAD_URL));
+    modal.element.insertBefore(links, modal.element.querySelector(".macts"));
   });
 }
 

@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
@@ -154,7 +155,9 @@ from core.pdf_models import (  # noqa: F401
 )
 from core.pdf_task_report import (  # noqa: F401
     _record_is_fully_skipped_oversize,
+    _record_translated_nothing,
     fully_skipped_oversize_message,
+    translated_nothing_message,
     _page_archive_stem,
     _format_file_size,
     _review_failure_summary,
@@ -902,6 +905,27 @@ def determine_pdf_task_status(
     return PDF_OUTPUT_STATE_COMPLETED
 
 
+def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False) -> str:
+    """原位替换一处都没写：照实说认出了什么、为什么没换，不能笼统说「没有找到文字」。"""
+    items = [item for item in (getattr(result, "review_items", None) or []) if item.get("kind") != "term"]
+    kept = int(getattr(result, "kept", 0) or 0)
+    if items:
+        counts = Counter(str(item.get("reason") or "未能确认") for item in items)
+        if len(counts) == 1:
+            reasons = next(iter(counts))
+        else:
+            reasons = "、".join(reason for reason, _count in counts.most_common())
+        message = f"识别到 {len(items)} 处文字，均未替换（{reasons}）"
+        if kept:
+            message += f"；另有 {kept} 处数字和编号等不需要翻译"
+        return message + "，这一页保留原样"
+    if kept:
+        return f"识别到的 {kept} 处都是数字和编号等不需要翻译的内容，这一页保留原样"
+    if ocr_missing:
+        return "没有找到可以替换的文字（没有安装文字识别组件，画成线条的字未识别），这一页保留原样"
+    return "没有找到可以替换的文字，这一页保留原样"
+
+
 def _record_needs_review(record: PdfFileRecord) -> bool:
     return bool(
         record.placeholder_page_count
@@ -909,6 +933,7 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         or record.review_failed_page_count
         or record.quality_flagged_page_count
         or _record_is_fully_skipped_oversize(record)
+        or _record_translated_nothing(record)
         # 原位替换没成功（出错、自检不过、中途停止）的页，输出里是原页，要提醒复核。
         or any(page.inplace_requested and page.inplace_status in {"kept_original", "stopped"}
                for page in record.pages)
@@ -3982,6 +4007,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 # 「翻译完成」是在骗用户，必须直说。
                 record.error = fully_skipped_oversize_message(record)
                 self._log("WARN", f"[{record.name}] {record.error}")
+            elif _record_translated_nothing(record):
+                # 同样一个字没翻，但原因不是幅面（例如原位替换认出的字都没能确认）。
+                record.error = translated_nothing_message(record)
+                self._log("WARN", f"[{record.name}] {record.error}")
             record.status = (
                 PDF_OUTPUT_STATE_NEEDS_REVIEW
                 if _record_needs_review(record)
@@ -4236,7 +4265,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
             else:
                 page.inplace_status = "kept_original"
-                page.inplace_message = result.error or "没有找到可以替换的文字，这一页保留原样"
+                page.inplace_message = result.error or _inplace_nothing_written_message(
+                    result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only)
+                )
                 self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 
     def _finalize_image_record(
@@ -4351,13 +4382,16 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         threshold = getattr(self._settings.pdf, "oversized_page_threshold", "A3")
         # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
-        # 模型而保留的页、普通页原位替换没成功的页另有说法，不算在这里。
+        # 模型而保留的页、原位替换试过但没换成的页（大幅面页也一样）另有说法，不算
+        # 在这里——那一页是试过了没换成，说成「因幅面过大被跳过」会让用户去关一个
+        # 跟它无关的开关。
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages
             if page.skipped_oversize and page.inplace_status != "done" and not page.kept_reason
             and not page.word_requested
             and (not page.inplace_requested
-                 or is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt))
+                 or (not page.inplace_status
+                     and is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt)))
         )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)
