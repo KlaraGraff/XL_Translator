@@ -274,7 +274,12 @@ class TaskTermSession:
 
     # ── 收尾 ──────────────────────────────────────────────────────────────
 
-    def finish(self, *, pair_for_text: Callable[[str], str | None]) -> dict[str, object]:
+    def finish(
+        self,
+        *,
+        pair_for_text: Callable[[str], str | None],
+        locations_for_text: Callable[[str], list[str]] | None = None,
+    ) -> dict[str, object]:
         """记下使用次数，返回任务详情里的「记忆库」一节（结果 ``terms``）。"""
         uses: Counter[int] = Counter(self.stats.entry_uses())
         whole_counts = {USAGE_ALWAYS: 0, USAGE_SCENE: 0, USAGE_SEGMENT: 0}
@@ -295,6 +300,10 @@ class TaskTermSession:
         except Exception as exc:  # noqa: BLE001 - statistics never fail a finished task
             logger.warning(f"记录记忆库使用次数失败：{exc!r}")
         summary = self.stats.summary()
+        if locations_for_text is not None:
+            by_snippet = {outcome.text: outcome for outcome in self.stats.not_applied()}
+            for item, outcome in zip(summary["not_applied"], by_snippet.values()):
+                item["locations"] = locations_for_text(outcome.text)[:20]
         direct = sum(whole_counts.values())
         return {
             "profile": self.profile,

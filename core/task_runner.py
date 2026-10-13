@@ -3873,19 +3873,6 @@ class TaskRunner(BaseTaskRunner):
             "terms": self._finish_terms(),
         }
 
-    def _finish_terms(self) -> dict[str, object]:
-        """记忆库词条的采用情况；整个任务只算一次（停止、失败、完成三条路都会走到）。"""
-        cached = getattr(self, "_term_result", None)
-        if cached is not None:
-            return cached
-        session = getattr(self, "_term_session", None)
-        result: dict[str, object] = {}
-        if session is not None:
-            pairs_by_text = getattr(self, "_term_pair_for_text", None) or (lambda _text: None)
-            result = session.finish(pair_for_text=pairs_by_text)
-        self._term_result = result
-        return result
-
     def _record_unfinished_after_stop(
         self,
         file_results: list[dict],

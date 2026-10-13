@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from api.app import create_app
 from api.task_manager import TaskOptions, TranslationTaskManager
-from core import word_converter
+from core import tm_manager, word_converter
 from core.api_config_check import ApiConfigCheckResult
 from core.language_preflight import TranslationLanguageResult
 from core.mixed_language import MIXED_MARK_UNRESOLVED
@@ -840,11 +840,6 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
                 translated.extend(texts)
                 return {text: {"甲": "Class A"}.get(text, "New note") for text in texts}
 
-            def lookup(texts, _pair, *, locked_only=False):
-                if locked_only:
-                    return {text: None for text in texts}
-                return {text: ("Party A" if text == "甲" else None) for text in texts}
-
             def capture_insert(entries, *_args, **_kwargs):
                 inserted.extend(entries)
                 return len(entries)
@@ -854,20 +849,35 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
                 WordSegment(source="防火门应满足耐火完整性要求。", kind="paragraph", location="正文第 2 段"),
             ]
             with ExitStack() as stack:
+                # 隔离的真实记忆库：自动存过「甲 → Party A」（别的文档里的合同甲方）。
+                stack.enter_context(patch.object(tm_manager, "DB_PATH", root / "tm.db"))
+                stack.enter_context(patch.object(tm_manager, "BACKUPS_DIR", root / "backups"))
+                tm_manager.init_db()
+                tm_manager.insert_auto_entries(
+                    [{"source_text": "甲", "translation": "Party A", "source_lang": "zh", "tm_eligible": True}],
+                    "en",
+                    200,
+                    "mock",
+                )
+                real_lookup = tm_manager.lookup_batch
                 self._runner_patches(stack, root=root, prepared_by_path={source: prepared})
+                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", side_effect=real_lookup))
                 stack.enter_context(patch("core.word_task_runner.build_engine", return_value=engine))
                 stack.enter_context(patch("core.word_task_runner.extract_word_segments", return_value=segments))
-                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", side_effect=lookup))
                 stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
                 stack.enter_context(patch("core.word_task_runner.tm_manager.insert_batch", side_effect=capture_insert))
                 runner._run()
+                saved = [row for row in tm_manager.list_entries_for_target("en") if row["note"]]
 
             self._terminal_message(runner, DoneMsg)
-            self.assertEqual(len(engine.calls), 1)
+            # 第一次是通读文档，第二次是给自动保存的短词写场景说明。
+            self.assertEqual(len(engine.calls), 2)
             self.assertIn("防火门应满足耐火完整性要求。", engine.calls[0][1])
             self.assertEqual(sorted(translated), sorted(["甲", "防火门应满足耐火完整性要求。"]))
             self.assertTrue(prompts and all("甲级防火门" in prompt for prompt in prompts))
             self.assertEqual([source_text for source_text, _target in inserted], ["防火门应满足耐火完整性要求。"])
+            # 短词不存成通用词条，存成带场景备注的新词条；旧的「Party A」原样保留。
+            self.assertEqual([(row["source_text"], row["target_text"]) for row in saved], [("甲", "Class A")])
 
     def test_quality_report_write_failure_only_warns_and_keeps_successful_word_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

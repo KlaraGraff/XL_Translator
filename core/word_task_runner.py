@@ -49,11 +49,10 @@ from core.engine_dispatcher import (
 from core.concurrent_calls import map_concurrently, run_in_background, wait_result
 from core.document_profile import (
     append_profile,
-    drop_unlocked_short_hits,
     is_context_sensitive,
-    lookup_locked_tm,
     request_document_profile,
 )
+from core.term_session import TaskTermSession
 from core.language_registry import (
     build_lang_pair,
     get_default_source_lang,
@@ -994,13 +993,12 @@ class WordTaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
+            document_profile = ""
             if profile_future is not None:
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
-                system_prompt = append_profile(
-                    system_prompt,
-                    wait_result(profile_future, should_stop=self.stop_requested, default=""),
-                )
+                document_profile = wait_result(profile_future, should_stop=self.stop_requested, default="")
+                system_prompt = append_profile(system_prompt, document_profile)
                 _raise_if_stopped()
 
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在查找记忆库中已有的译文…"))
@@ -1034,29 +1032,36 @@ class WordTaskRunner(BaseTaskRunner):
             elif lang_pair:
                 text_tm_pairs = {text: {lang_pair} for text in normal_texts}
 
-            tm_values_by_text: dict[str, list[str]] = {text: [] for text in normal_texts}
-            tm_texts_by_pair: dict[str, list[str]] = {}
-            for text, pairs in text_tm_pairs.items():
-                for pair in pairs:
-                    tm_texts_by_pair.setdefault(pair, []).append(text)
-            for pair, pair_texts in tm_texts_by_pair.items():
-                tm_result = tm_manager.lookup_batch(pair_texts, pair)
-                for text, value in tm_result.items():
-                    if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
-                        tm_values_by_text[text].append(str(value))
-            hits = {
-                text: values[0]
-                for text, values in tm_values_by_text.items()
-                if len(values) == 1
-            }
-            if smart_mode:
-                dropped = drop_unlocked_short_hits(hits, tm_texts_by_pair, lookup_locked_tm)
-                if dropped:
-                    self._log(
-                        "INFO",
-                        f"自动识别场景：{dropped} 个短词和缩写不直接套用记忆库里自动存下的译文，按本文档重新翻译",
-                    )
+            # 整段与记忆库词条相同的直接套用；按场景选用的、两个语言对说法不一的
+            # 交给模型（随批附上候选译法），不替模型猜（core/tm_terms.py）。
+            term_session = TaskTermSession(
+                settings.tm,
+                target_lang=target_lang,
+                smart_mode=smart_mode,
+                file_paths=[item.path for item in self._files],
+                log=self._log,
+                task_id=self.task_id,
+            )
+            self._term_session = term_session
+            hits = term_session.resolve(text_tm_pairs, profile=document_profile)
             misses = [text for text in normal_texts if text not in hits]
+            term_engine = term_session.wrap(engine)
+
+            def term_pair_for_text(text: str) -> str | None:
+                pairs = text_tm_pairs.get(text) or set()
+                if len(pairs) == 1:
+                    return next(iter(pairs))
+                with model_source_results_lock:
+                    reported = {
+                        item.source_lang
+                        for item in model_source_results.get(text, ())
+                        if item.tm_eligible and item.source_lang
+                    }
+                if len(reported) == 1:
+                    return build_lang_pair(target_lang, source_lang=next(iter(reported)))
+                return lang_pair or None
+
+            self._term_pair_for_text = term_pair_for_text
             tm_hit_count = len(hits)
             api_call_count = len(misses) + len(mixed_texts)
             self._log(
@@ -1093,7 +1098,7 @@ class WordTaskRunner(BaseTaskRunner):
                     update={"max_paragraphs_per_batch": 1}
                 )
                 recovery_pool = _WordRecoveryPool(
-                    engine=engine,
+                    engine=term_engine,
                     target_lang=target_lang,
                     retry_prompt=retry_prompt,
                     retry_batch_settings=retry_batch_settings,
@@ -1203,7 +1208,7 @@ class WordTaskRunner(BaseTaskRunner):
                         return {}
                     return translate_word_texts(
                         misses,
-                        engine,
+                        term_engine,
                         target_lang,
                         word_prompt,
                         settings.word_batch,
@@ -1458,6 +1463,16 @@ class WordTaskRunner(BaseTaskRunner):
                     for source in recovery_outcome.unresolved_sources:
                         for label in _iter_source_location_labels(source, segment_locations):
                             self._log("WARN", f"{label} 保留原文，需复核")
+                self._mark_terms_not_applied(
+                    term_session,
+                    misses=misses,
+                    translations=api_translations,
+                    skip_sources=unresolved_review_sources | identity_fallback_sources,
+                    review_marks=review_marks,
+                    quality_issues=quality_issues,
+                    segment_locations=segment_locations,
+                    no_tm_sources=recovery_review_sources,
+                )
 
                 elapsed = (datetime.now() - t0).total_seconds()
                 self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
@@ -1512,6 +1527,19 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 text_source_candidates=text_source_candidates,
                 unresolved_review_sources=unresolved_review_sources,
+            )
+
+            # 「自动识别场景」下短词在本文档场景里的译法，存成带备注的新词条。
+            term_session.auto_save_short_words(
+                engine,
+                {
+                    source: global_translations.get(source, "")
+                    for source in misses
+                    if source not in recovery_review_sources and source not in unresolved_review_sources
+                },
+                pair_for_text=term_pair_for_text,
+                counts={source: len(segment_locations.get(source) or ()) for source in misses},
+                engine_name=engine.engine_name,
             )
 
             # ── 页眉页脚专用通道：放在 TM 写入之后，正文译文全部定稿之后。
@@ -2590,6 +2618,48 @@ class WordTaskRunner(BaseTaskRunner):
                 )
         return heading_majority
 
+    def _term_sources(self, text: str, misses: list[str]) -> list[str]:
+        """词条核对按请求片段记账；长段拆过片段时找回它所在的整段。"""
+        if text in self._term_miss_set:
+            return [text]
+        return [source for source in misses if text and text in source]
+
+    def _mark_terms_not_applied(
+        self,
+        term_session: TaskTermSession,
+        *,
+        misses: list[str],
+        translations: dict[str, str],
+        skip_sources: set[str],
+        review_marks: dict[str, str],
+        quality_issues: list[dict],
+        segment_locations: dict[str, list[dict]],
+        no_tm_sources: set[str],
+    ) -> None:
+        """未采用「始终采用」词条设定译法的段落：标记需复核、写进复核清单、不进记忆库。"""
+        self._term_miss_set = set(misses)
+        self._term_locations_for_text = lambda text: [
+            label
+            for source in self._term_sources(text, misses)
+            for label in _iter_source_location_labels(source, segment_locations)
+        ]
+        for text in sorted(term_session.not_applied_texts()):
+            for source in self._term_sources(text, misses):
+                # 已经保留原文、另有复核记录的段落不再重复记一条。
+                if source in skip_sources or translations.get(source) == source:
+                    continue
+                no_tm_sources.add(source)
+                _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+                _add_quality_issues(
+                    quality_issues,
+                    segment_locations,
+                    [source],
+                    problem="未采用设定译法",
+                    status=term_session.not_applied_detail(text),
+                    severity="needs_review",
+                )
+        term_session.log_not_applied()
+
     def _store_final_translations_in_tm(
         self,
         *,
@@ -3302,6 +3372,7 @@ class WordTaskRunner(BaseTaskRunner):
             },
             "error": {"message": error_message} if error_message else {},
             "report_warning": report_warning,
+            "terms": self._finish_terms(),
         }
 
 
