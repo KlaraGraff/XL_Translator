@@ -390,9 +390,14 @@ table.review-tbl { table-layout: fixed; }
   position: fixed; z-index: 260; max-width: 260px; padding: 8px 11px;
   background: var(--surface); color: var(--ink-2); border: 1px solid var(--line-2);
   border-radius: 10px; box-shadow: var(--sh-lg);
-  font-size: 12px; line-height: 1.6; text-align: left; white-space: normal;
+  font-size: 12px; line-height: 1.6; white-space: normal;
+  /* 两端对齐：中英混排时英文单词不能拆，左对齐会让每行右边参差不齐。最后一行照常靠左。
+     网址由 JS 包成 .tip-url 单独成行、在「/」后可断；break-word 兜底：一段仍放不下时
+     才在任意字符处断开，绝不伸出框外。 */
+  text-align: justify; overflow-wrap: break-word;
   pointer-events: none; animation: tip-in 120ms ease-out;
 }
+.tip .tip-url { display: block; text-align: left; }
 .tip::after {
   content: ""; position: absolute; left: var(--tip-arrow, 50%); margin-left: -5px;
   width: 9px; height: 9px; background: var(--surface);

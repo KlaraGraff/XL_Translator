@@ -224,13 +224,19 @@ export function createSwitchRow(options: SwitchRowOptions): HTMLDivElement {
 interface ActiveTip {
   element: HTMLElement;
   anchor: HTMLElement;
+  message: string;
   /** true = 点击钉住，移开鼠标不关；false = 悬停临时显示。 */
   pinned: boolean;
+  /** 上次定位时锚点的位置；滚动事件据此判断锚点是不是真的动了。 */
+  anchorRect: { left: number; top: number };
 }
 
 let activeTip: ActiveTip | null = null;
 let hoverTimer = 0;
 let tipListenersInstalled = false;
+
+/** 每个「?」角标对应的提示文字。视图重绘后靠它找到「同一个」角标的新节点。 */
+const badgeMessages = new WeakMap<HTMLElement, string>();
 
 /** 关闭当前提示浮层；没有打开时是空操作。视图重建前也可以主动调用。 */
 export function hideHint(): void {
@@ -240,11 +246,48 @@ export function hideHint(): void {
   activeTip = null;
 }
 
+/**
+ * 插件页安装进度、运行中的任务等会定时整页重绘，「?」角标每次都换成新节点。
+ * 锚点已脱离文档时，按提示文字找重绘后的同一个角标（优先鼠标正停着的那个）；
+ * 找不到返回 null。直接拿脱离文档的旧节点定位，算出来是 (0,0)，浮层就会跳到左上角。
+ */
+function resolveAnchor(anchor: HTMLElement, message: string): HTMLElement | null {
+  if (anchor.isConnected) return anchor;
+  let fallback: HTMLElement | null = null;
+  for (const node of document.querySelectorAll<HTMLElement>("[data-hint-badge]")) {
+    if (badgeMessages.get(node) !== message) continue;
+    if (node.matches(":hover")) return node;
+    if (!fallback) fallback = node;
+  }
+  return fallback;
+}
+
+function followAnchor(): void {
+  if (!activeTip || activeTip.anchor.isConnected) return;
+  const next = resolveAnchor(activeTip.anchor, activeTip.message);
+  if (!next) {
+    hideHint();
+    return;
+  }
+  // 换绑到新节点、原地挪位置，不重建浮层：重建会重放淡入动画，每次重绘都闪一下。
+  activeTip.anchor = next;
+  placeTip(activeTip);
+}
+
 function installTipListeners(): void {
   if (tipListenersInstalled) return;
   tipListenersInstalled = true;
-  // 捕获阶段：任何祖先容器滚动都要跟着关，否则浮层会停在原地。
-  window.addEventListener("scroll", () => hideHint(), true);
+  // 捕获阶段：任何祖先容器滚动都要跟着关，否则浮层会停在原地。重绘时内容区先清空、
+  // 滚动位置被浏览器夹回去也会发 scroll，那种锚点其实没动，不关。
+  window.addEventListener("scroll", () => {
+    if (!activeTip) return;
+    followAnchor();
+    if (!activeTip) return;
+    const rect = activeTip.anchor.getBoundingClientRect();
+    const moved = Math.abs(rect.left - activeTip.anchorRect.left) > 1
+      || Math.abs(rect.top - activeTip.anchorRect.top) > 1;
+    if (moved) hideHint();
+  }, true);
   window.addEventListener("resize", () => hideHint());
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") hideHint();
@@ -255,12 +298,22 @@ function installTipListeners(): void {
     if (target && activeTip.anchor.contains(target)) return;
     hideHint();
   }, true);
+  // 换绑后的新角标收不到旧角标的 mouseleave；悬停提示改由这里兜底：鼠标离开角标就关。
+  document.addEventListener("pointermove", (event) => {
+    if (!activeTip || activeTip.pinned) return;
+    const target = event.target as Node | null;
+    if (target && activeTip.anchor.contains(target)) return;
+    hideHint();
+  }, true);
+  new MutationObserver(() => followAnchor()).observe(document.body, { childList: true, subtree: true });
 }
 
-function placeTip(tip: HTMLElement, anchor: HTMLElement): void {
+function placeTip(state: ActiveTip): void {
+  const { element: tip, anchor } = state;
   const gap = 8;
   const margin = 8;
   const rect = anchor.getBoundingClientRect();
+  state.anchorRect = { left: rect.left, top: rect.top };
   const width = tip.offsetWidth;
   const height = tip.offsetHeight;
 
@@ -279,14 +332,51 @@ function placeTip(tip: HTMLElement, anchor: HTMLElement): void {
   tip.style.setProperty("--tip-arrow", `${Math.round(arrowX)}px`);
 }
 
+const TIP_URL = /https?:\/\/[^\s，。；、）)]+/g;
+
+/**
+ * 提示正文两端对齐；里面的网址单独占一行，并且只在「/」后面断行。网址和前文挤在
+ * 一行时，放不下的网址会把「官方下载：」那一行的字拉得稀稀拉拉。
+ */
+function appendTipText(tip: HTMLElement, message: string): void {
+  let last = 0;
+  for (const match of message.matchAll(TIP_URL)) {
+    const index = match.index ?? 0;
+    if (index > last) tip.append(message.slice(last, index));
+    const url = el("span", { className: "tip-url" });
+    // 不用正则后行断言：老版本 WKWebView（Safari 16.4 以前）不支持。
+    const parts = match[0].split("/");
+    parts.forEach((part, i) => {
+      const isLast = i === parts.length - 1;
+      url.append(isLast ? part : `${part}/`);
+      if (!isLast) url.append(document.createElement("wbr"));
+    });
+    tip.append(url);
+    last = index + match[0].length;
+  }
+  if (last < message.length) tip.append(message.slice(last));
+}
+
 function showHint(anchor: HTMLElement, message: string, pinned: boolean): void {
-  hideHint();
   installTipListeners();
-  const tip = el("div", { className: "tip", text: message });
+  const target = resolveAnchor(anchor, message);
+  if (!target) return;
+  // 同一条提示已经开着（悬停后再点击钉住、重绘后的新角标又收到 mouseenter）：
+  // 只更新状态和位置，不重建。
+  if (activeTip && activeTip.message === message) {
+    window.clearTimeout(hoverTimer);
+    activeTip.anchor = target;
+    activeTip.pinned = activeTip.pinned || pinned;
+    placeTip(activeTip);
+    return;
+  }
+  hideHint();
+  const tip = el("div", { className: "tip" });
+  appendTipText(tip, message);
   tip.setAttribute("role", "tooltip");
   document.body.append(tip);
-  activeTip = { element: tip, anchor, pinned };
-  placeTip(tip, anchor);
+  activeTip = { element: tip, anchor: target, message, pinned, anchorRect: { left: 0, top: 0 } };
+  placeTip(activeTip);
 }
 
 /**
@@ -298,15 +388,20 @@ export function createHintBadge(message: string, className = "hint"): HTMLSpanEl
   badge.tabIndex = 0;
   badge.setAttribute("role", "button");
   badge.setAttribute("aria-label", t("说明：{0}", message));
+  badge.dataset.hintBadge = "";
+  badgeMessages.set(badge, message);
 
-  const isOpen = () => activeTip?.anchor === badge;
+  const isOpen = () => activeTip?.message === message && activeTip.anchor === badge;
   const toggle = () => {
     if (isOpen()) hideHint();
     else showHint(badge, message, true);
   };
 
   badge.addEventListener("mouseenter", () => {
-    if (isOpen()) return;
+    if (activeTip?.message === message) {
+      showHint(badge, message, false);
+      return;
+    }
     window.clearTimeout(hoverTimer);
     hoverTimer = window.setTimeout(() => showHint(badge, message, false), 120);
   });
@@ -331,8 +426,11 @@ export function createHintBadge(message: string, className = "hint"): HTMLSpanEl
       toggle();
     }
   });
+  // 延到微任务再判断：被重绘移走的角标可能也会触发 blur，那时浮层已换绑到新角标，不该关。
   badge.addEventListener("blur", () => {
-    if (isOpen()) hideHint();
+    queueMicrotask(() => {
+      if (isOpen()) hideHint();
+    });
   });
   return badge;
 }
