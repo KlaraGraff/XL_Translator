@@ -70,3 +70,16 @@ def test_only_pausable_surfaces_get_a_pause_button():
     foot = source[source.index("function buildRightFoot"):source.index("// 续译（接着上次继续）")]
     assert 'const pausable = surface === "pdf" || surface === "cad";' in foot
     assert "onPause: pausable ?" in foot
+
+
+def test_cad_fit_scales_follow_the_target_language():
+    """字号比例按目标语言分两套存：中文一套、其他语言一套，发给后端的是当前目标语言那套。"""
+    source = WORKSPACE_VIEW.read_text(encoding="utf-8")
+    helper = source[source.index("function cadFitKeys"):source.index("function cadChoice")]
+    assert '"fit_default_scale_zh"' in helper and '"fit_min_scale_zh"' in helper
+    assert "defaultFallback: 0.9" in helper and "defaultFallback: 0.7" in helper
+    payload = source[source.index("function buildPayload"):source.index("async function startTask")]
+    assert "cadFitScales(st.targetLang)" in payload
+    fields = source[source.index("function buildCadScaleFields"):source.index("function buildCadLockFields")]
+    assert "cadFitKeys(st.targetLang)" in fields
+    assert '"fit_default_scale"' not in fields and '"fit_min_scale"' not in fields

@@ -210,7 +210,7 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
-  { key: "cadFitLayout", label: t("超长译文自动缩小"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。"), default: true, pathKind: "output", path: "fit_layout" },
+  { key: "cadFitLayout", label: t("超长译文自动缩小"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。目标语言为中文和其他语言各用一套比例，分别保存。"), default: true, pathKind: "output", path: "fit_layout" },
 ]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
@@ -2354,6 +2354,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     onChange: (value) => {
       st.targetLang = value;
       void persistSettings(surface === "pdf" ? nestedPatch("pdf.target_lang", value) : { [`${surface}_target_lang`]: value });
+      // CAD 的字号比例按目标语言分两套，换语言后右栏要显示另一套。
+      if (surface === "cad") rerender(surface);
       // 历史产物的文件名里带目标语言，换了语言这份检测就对不上号了。静默作废，不弹提示：
       // 用户此刻在做的是选语言，不是在处理续译。
       if (st.resumeInfo && st.resumeDetectedLang && st.resumeDetectedLang !== value) {
@@ -3304,8 +3306,9 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.cad_keep_work_dxf = Boolean(st.toggles.get("cadKeepWorkDxf"));
     payload.cad_copy_related_files = Boolean(st.toggles.get("cadCopyRelated"));
     payload.cad_fit_layout = Boolean(st.toggles.get("cadFitLayout"));
-    payload.cad_fit_default_scale = cadScale("fit_default_scale", 0.7);
-    payload.cad_fit_min_scale = cadScale("fit_min_scale", 0.4);
+    const fit = cadFitScales(st.targetLang);
+    payload.cad_fit_default_scale = fit.defaultScale;
+    payload.cad_fit_min_scale = fit.minScale;
     payload.cad_display_mode = cadChoice("display_mode", CAD_DISPLAY_MODES, "translation");
     payload.cad_translation_font = cadChoice("translation_font", CAD_FONT_CHOICES, "compatible");
     payload.cad_output_version = cadChoice("output_version", CAD_OUTPUT_VERSIONS, "source");
@@ -4511,9 +4514,26 @@ function cadOutputValue(key: string): unknown {
   return outputRecord("cad")[key];
 }
 
-function cadScale(key: "fit_default_scale" | "fit_min_scale", fallback: number): number {
+function cadScale(key: string, fallback: number): number {
   const value = Number(cadOutputValue(key));
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** 字号比例按目标语言分两套存（同后端 cad_output.fit_*_scale 与 fit_*_scale_zh）：
+ *  译成中文很少超长、超出也只长两三成，默认先缩到 90%；译成其他语言默认先缩到 70%。 */
+function cadFitKeys(targetLang: string): { defaultKey: string; minKey: string; defaultFallback: number; minFallback: number } {
+  const zh = /^(zh|cn)/i.test(targetLang.trim());
+  return zh
+    ? { defaultKey: "fit_default_scale_zh", minKey: "fit_min_scale_zh", defaultFallback: 0.9, minFallback: 0.4 }
+    : { defaultKey: "fit_default_scale", minKey: "fit_min_scale", defaultFallback: 0.7, minFallback: 0.4 };
+}
+
+function cadFitScales(targetLang: string): { defaultScale: number; minScale: number } {
+  const keys = cadFitKeys(targetLang);
+  return {
+    defaultScale: cadScale(keys.defaultKey, keys.defaultFallback),
+    minScale: cadScale(keys.minKey, keys.minFallback),
+  };
 }
 
 function cadChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
@@ -4620,27 +4640,27 @@ function buildCadWritebackFields(st: SurfaceState, active: boolean): HTMLElement
       disabled: active,
       onChange: (checked) => void handleToggleChange("cad", st, fitToggle, checked),
     }));
-    if (fitOn) nodes.push(buildCadScaleFields(active));
+    if (fitOn) nodes.push(buildCadScaleFields(st, active));
   }
   return nodes;
 }
 
-function buildCadScaleFields(active: boolean): HTMLElement {
-  const defaultScale = cadScale("fit_default_scale", 0.7);
-  const minScale = cadScale("fit_min_scale", 0.4);
+function buildCadScaleFields(st: SurfaceState, active: boolean): HTMLElement {
+  const keys = cadFitKeys(st.targetLang);
+  const { defaultScale, minScale } = cadFitScales(st.targetLang);
   const scaleLabel = (value: string) => `${Math.round(Number(value) * 100)}%`;
   const group = el("div", "rp-sub");
   const row = el("div", "rp-pair");
   const first = createSelectField({
     label: t("初始字号比例"),
     options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
-    value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? "0.7",
+    value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? String(keys.defaultFallback),
     disabled: active,
     onChange: (value) => {
       const scale = Number(value);
-      persistCadOutput("fit_default_scale", scale, t("初始字号比例"));
+      persistCadOutput(keys.defaultKey, scale, t("初始字号比例"));
       // 最小字号比例不能大于初始比例；后端也会这样收，界面先对齐，免得显示一个不生效的值。
-      if (cadScale("fit_min_scale", 0.4) > scale) persistCadOutput("fit_min_scale", scale, t("最小字号比例"));
+      if (cadScale(keys.minKey, keys.minFallback) > scale) persistCadOutput(keys.minKey, scale, t("最小字号比例"));
     },
   });
   const last = createSelectField({
@@ -4648,7 +4668,7 @@ function buildCadScaleFields(active: boolean): HTMLElement {
     options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
     value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
     disabled: active,
-    onChange: (value) => persistCadOutput("fit_min_scale", Number(value), t("最小字号比例")),
+    onChange: (value) => persistCadOutput(keys.minKey, Number(value), t("最小字号比例")),
   });
   row.append(first.root, last.root);
   group.append(row);
