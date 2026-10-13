@@ -22,7 +22,13 @@ from loguru import logger
 from lxml import etree
 
 from core.user_facing_errors import humanize_error
-from core.xlsx_patcher import NS_A, NS_XDR
+from core.xlsx_patcher import (
+    NS_A,
+    NS_XDR,
+    REL_TYPE_COMMENTS,
+    REL_TYPE_THREADED_COMMENT,
+    _resolve_part,
+)
 
 SUPPORTED_EXCEL_SUFFIXES = {".xlsx", ".xls"}
 # Translator owns output folders with this marker.  Keeping the exclusion at
@@ -283,12 +289,12 @@ def _count_xls_text_cells(wb) -> int:
 
 _DRAWING_PART_RE = re.compile(r"^xl/drawings/drawing\d+\.xml$")
 # 传统批注（Excel 里的「注释」）与新版对话式批注。Excel 写新版批注时会同时留一份
-# 传统批注做兼容，两边的 ref 指的是同一个格子——按 (部件序号, ref) 去重，否则同一条
-# 批注会被数两遍。序号来自文件名：comments3.xml 与 threadedComment3.xml 对同一张表。
-_COMMENTS_PART_RE = re.compile(r"^xl/comments(\d+)\.xml$")
-_THREADED_COMMENTS_PART_RE = re.compile(
-    r"^xl/threadedComments/threadedComment(\d+)\.xml$"
-)
+# 传统批注做兼容，两边的 ref 指的是同一个格子——按 (工作表, ref) 去重，否则同一条
+# 批注会被数两遍。批注部件按工作表的关系文件找，不按文件名猜：Excel 写成
+# xl/comments1.xml，openpyxl 等工具写成 xl/comments/comment1.xml，名字不可靠，
+# 关系才是翻译时实际读取的依据（见 core.xlsx_embedded_text._sheet_parts）。
+_SHEET_RELS_PART_RE = re.compile(r"^xl/worksheets/_rels/([^/]+\.xml)\.rels$")
+_COMMENT_REL_TAGS = {REL_TYPE_COMMENTS: "comment", REL_TYPE_THREADED_COMMENT: "threadedComment"}
 _CELL_IMAGES_PART = "xl/cellimages.xml"
 _RICH_VALUE_PART = "xl/richData/rdrichvalue.xml"
 _RICH_VALUE_STRUCTURE_PART = "xl/richData/rdrichvaluestructure.xml"
@@ -389,22 +395,32 @@ def _count_comment_refs(data: bytes, tag: str) -> set[str]:
 
 def _count_xlsx_comments(archive: zipfile.ZipFile, names: list[str], label: str) -> int:
     """统计 .xlsx 内带批注的单元格数量（传统批注 ∪ 新版对话式批注）。"""
-    per_sheet: dict[str, set[str]] = {}
+    available = set(names)
+    total = 0
     for name in names:
-        legacy = _COMMENTS_PART_RE.match(name)
-        threaded = _THREADED_COMMENTS_PART_RE.match(name)
-        match = legacy or threaded
+        match = _SHEET_RELS_PART_RE.match(name)
         if not match:
             continue
+        sheet_part = f"xl/worksheets/{match.group(1)}"
+        refs: set[str] = set()
         try:
-            refs = _count_comment_refs(
-                archive.read(name), "comment" if legacy else "threadedComment"
-            )
+            rels = etree.fromstring(archive.read(name))
         except Exception as exc:
             logger.debug(f"解析 {name} 失败（{label}）：{exc}")
             continue
-        per_sheet.setdefault(match.group(1), set()).update(refs)
-    return sum(len(refs) for refs in per_sheet.values())
+        for rel in rels:
+            tag = _COMMENT_REL_TAGS.get(str(rel.get("Type") or ""))
+            if tag is None or str(rel.get("TargetMode") or "") == "External":
+                continue
+            part = _resolve_part(sheet_part, rel.get("Target") or "")
+            if part not in available:
+                continue
+            try:
+                refs.update(_count_comment_refs(archive.read(part), tag))
+            except Exception as exc:
+                logger.debug(f"解析 {part} 失败（{label}）：{exc}")
+        total += len(refs)
+    return total
 
 
 def _count_xlsx_images_and_shapes(path: Path) -> tuple[int, int, int]:
