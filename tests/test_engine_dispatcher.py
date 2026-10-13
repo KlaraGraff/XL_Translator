@@ -669,7 +669,7 @@ class TransientTransportRetryTests(unittest.TestCase):
         from core.text_transport import TextTransportError
 
         engine = _TransportFailingEngine(failures=[
-            TextTransportError("read_timeout：请求超时", kind="read_timeout") for _ in range(3)
+            TextTransportError("read_timeout：请求超时", kind="read_timeout") for _ in range(5)
         ])
         errors: list[str] = []
         stats = TranslationBatchRunStats()
@@ -677,12 +677,31 @@ class TransientTransportRetryTests(unittest.TestCase):
             ["alpha", "beta"], engine, "fr", "system prompt",
             batch_size=20, concurrency=1, error_callback=errors.append, source_lang="en", stats=stats,
         )
-        # 1 try + 2 resends of the whole batch; never split into smaller ones.
-        self.assertEqual(engine.calls, [["alpha", "beta"]] * 3)
+        # 1 try + 2 resends of the whole batch, then one halving; the halves
+        # do not resend on their own.
+        self.assertEqual(engine.calls, [["alpha", "beta"]] * 3 + [["alpha"], ["beta"]])
         self.assertEqual(result, {"alpha": "alpha", "beta": "beta"})
         self.assertEqual(stats.untranslated_count, 2)
-        self.assertIn("重试 2 次后仍失败", errors[-1])
+        self.assertEqual(stats.retry_count, 1)
+        self.assertIn("已拆分为更小的批次重试", errors[2])
+        self.assertIn("该批 1 条内容已保留原文", errors[-1])
         self.assertFalse(any("无法通过重试" in message for message in errors))
+
+    def test_a_batch_that_keeps_timing_out_is_halved_and_the_halves_translated(self) -> None:
+        from core.text_transport import TextTransportError
+
+        engine = _TransportFailingEngine(failures=[
+            TextTransportError("模型服务在 180 秒内未返回完整结果。", kind="total_timeout")
+            for _ in range(3)
+        ])
+        stats = TranslationBatchRunStats()
+        result = translate_texts(
+            ["alpha", "beta", "gamma"], engine, "fr", "system prompt",
+            batch_size=20, concurrency=1, source_lang="en", stats=stats,
+        )
+        self.assertEqual(engine.calls[3:], [["alpha"], ["beta", "gamma"]])
+        self.assertEqual(result, {text: f"ok:{text}" for text in ("alpha", "beta", "gamma")})
+        self.assertEqual(stats.untranslated_count, 0)
 
     def test_a_refused_request_is_not_resent(self) -> None:
         engine = _TransportFailingEngine(failures=[_transport_http_error(422)])

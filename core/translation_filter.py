@@ -368,6 +368,10 @@ _STANDARD_CODE_RE = re.compile(
 )
 
 
+_LOWERCASE_WORD_RE = re.compile(r"[a-z]{4,}")
+_ADDRESS_OR_FILENAME_RE = re.compile(r"@|://|^www\.|\.[A-Za-z][A-Za-z0-9]{1,4}$")
+
+
 def should_translate(
     text: str,
     target_lang: str = "",
@@ -383,6 +387,7 @@ def should_translate(
       1. 空字符串  → 跳过
       2. 含中文字符 → 翻译
       3. 纯数字/符号/空白 → 跳过
+      3b. 无空格但含连续 4 个以上小写字母（空格丢了的英文词句） → 翻译
       4. 无空格且字母数字混合（型号代码，如 "A3B12"） → 跳过
       5. 含空格（词组或短句） → 翻译
       6. 纯字母的单词 → 翻译（拉丁字母要长度 > 3，非拉丁文字见规则内注释）
@@ -432,6 +437,18 @@ def should_translate(
     # 规则 3：纯数字、符号、空白
     if re.match(r'^[\d\s\W_]+$', text):
         return False
+
+    # 规则 3b：没打空格的英文词句。「Exhaustfan(withbackdraftdamper),Airflow:180m3/h」
+    # 这类从别处粘过来、空格丢了的描述带着数字，会被规则 4 当成型号代码跳过，用户
+    # 拿到的就是一格没翻的英文（反馈 FB-20261013-UVW95F）。型号、牌号、单位里不会
+    # 出现连续 4 个以上的小写字母（FAA1、PVC32、DN100mm、HRB400、kVA、M12x1.5），
+    # 有这样一段就当成词句送去翻。邮箱、网址、文件名照旧跳过。
+    if (
+        ' ' not in text
+        and _LOWERCASE_WORD_RE.search(text)
+        and not _ADDRESS_OR_FILENAME_RE.search(text)
+    ):
+        return True
 
     # 规则 4：无空格且字母数字混合（型号代码）
     if ' ' not in text and _contains_non_chinese_letters(text) and re.search(r'\d', text):

@@ -103,6 +103,26 @@ class AsciiBehaviourIsUnchangedTests(unittest.TestCase):
                 )
 
 
+    def test_english_words_that_lost_their_spaces_are_translated(self) -> None:
+        # 反馈 FB-20261013-UVW95F：带数字、没空格的英文描述被当成型号跳过。
+        for text in (
+            "Exhaustfan(withbackdraftdamper),Airflow:180m3/h,TotalPressure:45Pa",
+            "Airflow:180m3/h",
+            "Steel,Galvanized",
+            "Damper(motorized)",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(should_translate(text, target_lang="fr", source_lang="zh"))
+
+    def test_codes_units_addresses_and_file_names_stay_skipped(self) -> None:
+        for text in (
+            "FAA1", "PVC32", "DN100mm", "HRB400", "IP55", "Cu/XLPE/PVC", "BV-2.5mm2",
+            "220V/50Hz", "Q=180m3/h,P=45Pa", "M12x1.5", "kVA", "info@example.com",
+            "www.example.com", "https://example.com/spec", "drawing01.dwg", "report.xlsx",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(should_translate(text, target_lang="fr", source_lang="zh"))
+
 class ChineseTargetBranchTests(unittest.TestCase):
     """外译中那条分支本来就是 Unicode 感知的，这次不动它。"""
 

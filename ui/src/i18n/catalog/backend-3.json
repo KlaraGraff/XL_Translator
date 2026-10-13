@@ -191,6 +191,14 @@
     "en": "{0} {0|item|items} received no translation from the model; those places in the file contain the source text. Check the API key, Base URL, model name or service status, then reconfigure and try again.",
     "fr": "Le modèle n'a renvoyé aucune traduction pour {0} {0|élément|éléments} ; à ces endroits, le fichier contient le texte source. Vérifiez la clé API, la Base URL, le nom du modèle ou l'état du service, puis reconfigurez et réessayez."
   },
+  "有 {0} 条内容未能从模型获得译文，文件中这些位置保留的是原文。原因是模型服务响应超时，可稍后对输出文件开启「仅补译未翻译内容」再翻译一次。": {
+    "en": "{0} {0|item|items} received no translation from the model; those places in the file contain the source text. The model service took too long to respond; later, run the output file again with “Only fill in untranslated content” turned on.",
+    "fr": "Le modèle n'a renvoyé aucune traduction pour {0} {0|élément|éléments} ; à ces endroits, le fichier contient le texte source. Le service du modèle a mis trop de temps à répondre ; relancez plus tard le fichier de sortie avec « Compléter uniquement le contenu non traduit » activé."
+  },
+  "{0} 处模型返回的译文与原文相同，已标记需复核。": {
+    "en": "For {0} {0|item|items}, the model returned the source text unchanged; marked for review.",
+    "fr": "Pour {0} {0|élément|éléments}, le modèle a renvoyé le texte source inchangé ; marqué pour vérification."
+  },
   "有 {0} 条译文未通过质量校验，已回退为原文。这些单元格中保留原文，": {
     "en": "{0} {0|translation|translations} failed the quality check and {0|was|were} reverted to the source text. These cells contain the source text; ",
     "fr": "{0} {0|traduction n'a|traductions n'ont} pas passé le contrôle qualité et le texte source a été rétabli. Ces cellules contiennent le texte source ; "
@@ -923,9 +931,9 @@
     "en": "Request cancelled.",
     "fr": "Requête annulée."
   },
-  "请求总时限已用尽；协议仍未确定。": {
-    "en": "The overall request time limit ran out before the API protocol could be determined.",
-    "fr": "Le délai total de la requête est écoulé ; le protocole de l'API n'a pas pu être déterminé."
+  "模型服务在 {0} 秒内未返回完整结果，服务端可能正在排队。": {
+    "en": "The model service did not return a complete result within {0} seconds; the server may be queuing requests.",
+    "fr": "Le service du modèle n'a pas renvoyé de résultat complet en {0} secondes ; le serveur traite peut-être une file d'attente."
   },
   "本次请求尝试预算已用尽。": {
     "en": "This request has used up all of its attempts.",

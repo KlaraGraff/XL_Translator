@@ -18,6 +18,7 @@ from unittest.mock import patch
 from core.cad_task_runner import CadTaskRunner
 from core.cad_translation import CadPipelineOptions, CadProgress
 from core.file_scanner import FileItem
+from core.language_preflight import TranslationLanguageResult
 from core.mixed_language import translate_mixed_language_texts
 from core.task_runner import LogMsg, ProgressMsg, StatusMsg, TaskRunner
 from core.word_document import WordFileItem
@@ -108,6 +109,35 @@ class ExcelWordRunLogTests(IsolatedAppDataTestCase):
             self.assertIsNone(_TIMING_RE.search(line), line)
             self.assertNotIn("[阶段", line)
         self.assertLessEqual(_stage_names(messages), CANONICAL_STAGES)
+
+    def test_excel_echoed_translations_are_counted_in_the_log(self) -> None:
+        # 反馈 FB-20261013-UVW95F：自动识别源语言时，模型原样照抄回来的格子标了
+        # 需复核，日志里却一句不提，复核数对不上失败数。
+        def _echo_one(texts, engine, target_lang, *args, **kwargs):
+            return {
+                text: TranslationLanguageResult(
+                    text, text if text == "Total" else "Bonjour",
+                    source_lang="en", target_lang=target_lang,
+                )
+                for text in texts
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = excel_helpers._make_xlsx(root / "a.xlsx", {"A1": "你好", "A2": "Total"})
+            with excel_helpers._pipeline_patches(
+                translate_side_effect=excel_helpers._fake_translate([]),
+                translate_with_sources_side_effect=_echo_one,
+            ), patch("core.task_runner.preflight_files", side_effect=_preflight):
+                runner = TaskRunner(
+                    [FileItem(path=path, name="a", size_kb=1.0)],
+                    excel_helpers._settings(source_lang="auto", target_lang="fr"),
+                    source_root=root,
+                )
+                runner._run()
+            logs = _visible_logs(list(runner._queue.queue))
+
+        self.assertIn("1 处模型返回的译文与原文相同，已标记需复核。", logs)
 
     def test_word_auto_source_reports_language_check_and_hides_timings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

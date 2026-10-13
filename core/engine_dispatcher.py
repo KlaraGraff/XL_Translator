@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-from core.text_transport import FAILED_REQUEST_CACHE_SECONDS, bounded_text_operation
+from core.text_transport import FAILED_REQUEST_CACHE_SECONDS, cancellable_text_operation
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
@@ -84,6 +84,7 @@ _TRANSIENT_RETRY_MAX_DELAY = 8.0
 _TRANSIENT_TRANSPORT_KINDS = frozenset({
     "connect_timeout", "read_timeout", "total_timeout", "incomplete",
 })
+_SLOW_ANSWER_KINDS = frozenset({"read_timeout", "total_timeout"})
 # Failed source samples are attached to the task result for the UI; the counts
 # stay exact while the sample list stays bounded.
 _FAILED_ITEM_SAMPLE_LIMIT = 200
@@ -841,7 +842,7 @@ def _build_text_batches(
     return batches
 
 
-@bounded_text_operation
+@cancellable_text_operation
 def _translate_batch_with_fallback(
     batch: list[str],
     *,
@@ -968,7 +969,7 @@ def _translate_batch_with_fallback(
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
             )
-        if _is_permanent_request_error(exc):
+        if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 翻译请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
@@ -1003,7 +1004,7 @@ def _translate_batch_with_fallback(
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
-                max_transient_retries=max_transient_retries,
+                max_transient_retries=_split_retries(exc, max_transient_retries),
             )
             right = _translate_batch_with_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1011,7 +1012,7 @@ def _translate_batch_with_fallback(
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
-                max_transient_retries=max_transient_retries,
+                max_transient_retries=_split_retries(exc, max_transient_retries),
             )
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
@@ -1057,7 +1058,7 @@ def _batch_failure_reason(exc: BaseException) -> str:
     return user_facing_batch_reason(exc)
 
 
-@bounded_text_operation
+@cancellable_text_operation
 def _translate_batch_with_sources_fallback(
     batch: list[str],
     *,
@@ -1190,7 +1191,7 @@ def _translate_batch_with_sources_fallback(
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
             )
-        if _is_permanent_request_error(exc):
+        if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 语言回报请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
@@ -1218,7 +1219,7 @@ def _translate_batch_with_sources_fallback(
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
-                max_transient_retries=max_transient_retries,
+                max_transient_retries=_split_retries(exc, max_transient_retries),
             )
             right = _translate_batch_with_sources_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1226,7 +1227,7 @@ def _translate_batch_with_sources_fallback(
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
-                max_transient_retries=max_transient_retries,
+                max_transient_retries=_split_retries(exc, max_transient_retries),
             )
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
@@ -1279,6 +1280,26 @@ def _is_transient_request_error(exc: BaseException) -> bool:
     if getattr(exc, "kind", "") in _TRANSIENT_TRANSPORT_KINDS:
         return True
     return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _split_after_slow_answer(exc: BaseException, batch: Sequence[str], split_depth: int) -> bool:
+    """A batch that still times out after its resends gets halved once.
+
+    Half the items is half the answer to wait for.  Resending the same batch a
+    third time would most likely time out again, and the batch was then kept
+    as source text (feedback FB-20261013-UVW95F).
+    """
+    return (
+        split_depth == 0
+        and len(batch) > 1
+        and getattr(exc, "kind", "") in _SLOW_ANSWER_KINDS
+    )
+
+
+def _split_retries(exc: BaseException, limit: int) -> int:
+    # The halves of a slow batch do not resend on their own: if the server
+    # does not answer at all, each batch costs two more requests, not six.
+    return 0 if getattr(exc, "kind", "") in _SLOW_ANSWER_KINDS else limit
 
 
 def _should_retry_transient(exc: BaseException, transient_round: int, limit: int) -> bool:
