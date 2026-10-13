@@ -253,6 +253,25 @@ def test_task_option_reaches_the_pipeline():
     assert cad_layout_options(TaskOptions())["output_version"] == "source"
 
 
+def test_fit_scales_default_by_target_language_when_not_sent():
+    """界面总会按目标语言传比例；没传时（直接调接口、旧任务记录）后端也按目标语言取默认值。"""
+    from api.surfaces.cad import cad_layout_options
+    from api.task_contracts import TaskOptions
+
+    def scales(options, lang):
+        layout = cad_layout_options(options, lang)
+        return layout["fit_default_scale"], layout["fit_min_scale"]
+
+    assert scales(TaskOptions(), "zh") == (1.0, 0.4)
+    assert scales(TaskOptions(), "zh-TW") == (1.0, 0.4)
+    assert scales(TaskOptions(), "fr") == (0.7, 0.4)
+    assert scales(TaskOptions(), "") == (0.7, 0.4)
+    # 传了的照用；只传一项时另一项取该语言的默认值。
+    assert scales(TaskOptions(cad_fit_default_scale=0.8, cad_fit_min_scale=0.5), "zh") == (0.8, 0.5)
+    assert scales(TaskOptions(cad_fit_min_scale=0.6), "en") == (0.7, 0.6)
+    assert scales(TaskOptions(cad_fit_default_scale=0.9), "zh") == (0.9, 0.4)
+
+
 def test_underlined_latin_text_is_not_swallowed_by_the_format_code(tmp_path):
     # 带下划线的标题：译成法文后 \L 紧跟单词，读回时整段被当成格式代码删掉，
     # 校验数出来少一条，「仅译文」整张图被拦下不出图。
