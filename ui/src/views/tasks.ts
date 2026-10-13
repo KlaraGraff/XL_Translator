@@ -851,7 +851,9 @@ interface TaskEntry {
 
 const tasks = new Map<string, TaskEntry>();
 let order: string[] = [];
-let filter: "all" | "active" | "terminal" = "all";
+let filter: "all" | "active" = "all";
+/** 搜索框里的关键词。跟 filter 一样是模块级状态：离开任务中心再回来，搜索条件还在。 */
+let searchQuery = "";
 let selectedId: string | null = null;
 
 let mounted = false;
@@ -1091,8 +1093,8 @@ async function refreshRegistry(): Promise<void> {
       if (!upsert(task)) continue;
       if (isTaskActive(task)) void watchTask(task.task_id);
     }
-    // 只能选当前筛选下看得见的任务。用 order[0]（全量顺序）的话，「最近结果」筛选下删掉
-    // 最后一条记录、列表进入空态之后，12 秒后的这次巡检会把选中项挪到一个运行中的任务上：
+    // 只能选当前筛选下看得见的任务。用 order[0]（全量顺序）的话，「活动」筛选或搜索下删掉
+    // 最后一条记录、列表进入空态之后，12 秒后的这次巡检会把选中项挪到一条看不见的任务上：
     // 左边列表空空如也，右边详情却显示着另一条任务的内容。
     if (!selectedId) selectedId = visibleOrder()[0] ?? null;
     touch();
@@ -1309,10 +1311,11 @@ async function deleteTaskRecord(taskId: string): Promise<void> {
 // 渲染
 // ---------------------------------------------------------------------------
 
-const FILTERS: Array<["all" | "active" | "terminal", string]> = localized(() => ([
+/** 「全部」本来就按时间倒序排（运行中的置顶），原先第三个「最近结果」只是把运行中的
+ *  去掉，和「全部」几乎一样，已删除；找某条任务改用旁边的搜索框。 */
+const FILTERS: Array<["all" | "active", string]> = localized(() => ([
   ["all", t("全部")],
   ["active", t("活动")],
-  ["terminal", t("最近结果")],
 ]));
 
 /** 卡片排序用的时间戳。优先用 created_at（用户发起这批任务的时刻）——用户在列表里
@@ -1341,13 +1344,35 @@ function compareTaskOrder(a: TaskStatus, b: TaskStatus): number {
   return bt - at;
 }
 
+function normalizeSearch(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** 搜索按卡片上看得见的字：文件名（含「等 N 个文件」的完整来源）、类型、状态徽章和副标题。
+ *  多个词用空格隔开时要全部命中（「CAD 需复核」= 需复核的 CAD 任务）。 */
+function matchesSearch(entry: TaskEntry): boolean {
+  const words = normalizeSearch(searchQuery).split(" ").filter(Boolean);
+  if (!words.length) return true;
+  const haystack = normalizeSearch([
+    cardTitle(entry.task),
+    tx(text(entry.task.source_label)),
+    taskSurfaceLabel(entry.task.surface),
+    cardChip(entry).label,
+    // 运行中的徽章是百分比，状态词（翻译中、已暂停）只在副标题里；已结束的任务只认徽章上
+    // 写的字，免得搜「有问题」搜出一排徽章写着「已完成」的卡片。
+    isTaskActive(entry.task) ? taskStateMeta(entry.task, entry.streamState).label : "",
+    cardSubtitle(entry),
+  ].join(" "));
+  return words.every((word) => haystack.includes(word));
+}
+
 function visibleOrder(): string[] {
   return order
     .filter((id) => {
       const entry = tasks.get(id);
       if (!entry) return false;
-      if (filter === "all") return true;
-      return filter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task);
+      if (filter === "active" && !isTaskActive(entry.task)) return false;
+      return matchesSearch(entry);
     })
     .sort((idA, idB) => compareTaskOrder(tasks.get(idA)!.task, tasks.get(idB)!.task));
 }
@@ -1536,6 +1561,16 @@ function renderList(): void {
   if (!listRootEl) return;
   while (listRootEl.children.length > 1) listRootEl.removeChild(listRootEl.lastChild!);
   const ids = visibleOrder();
+  if (!ids.length && normalizeSearch(searchQuery)) {
+    const empty = createEmptyState({
+      title: t("没有符合条件的任务"),
+      description: t("请尝试其他关键词，或清空搜索框。"),
+      icon: "search",
+    });
+    empty.style.flex = "1";
+    listRootEl.append(empty);
+    return;
+  }
   if (!ids.length) {
     const empty = createEmptyState({
       title: t("当前没有可显示的任务"),
@@ -1949,11 +1984,11 @@ function renderDetail(): void {
 
 /** 从顶栏「N 个任务运行中」进来时选中正在跑的任务。selectedId 是模块级状态，
  *  不处理的话右边打开的是上次看过的那条（往往是刚完成的旧任务），左边第一张才是在跑的。
- *  「最近结果」筛选下运行中的任务不显示，所以顺带切回「全部」。 */
+ *  上次留下的搜索词可能把运行中的任务筛掉，所以顺带清空搜索。 */
 function focusRunningTask(): void {
+  searchQuery = "";
   const current = selectedId ? tasks.get(selectedId) : undefined;
-  if (current && isTaskActive(current.task) && filter !== "terminal") return;
-  if (filter === "terminal") filter = "all";
+  if (current && isTaskActive(current.task)) return;
   const running = visibleOrder().find((id) => {
     const entry = tasks.get(id);
     return entry ? isTaskActive(entry.task) : false;
@@ -1989,6 +2024,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
     });
     filtersEl.append(f);
   }
+  filtersEl.append(buildSearchBox());
   listRootEl.append(filtersEl);
 
   detailRootEl = document.createElement("div");
@@ -2004,6 +2040,33 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   void loadLanguageNames();
   // 前台快速轮询：任务中心可见时更快发现新任务/刷新列表；后台巡检（12s）在任何视图下都跑。
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);
+}
+
+/** 筛选按钮右侧的搜索框。放在 filtersEl 里：renderList() 只重建卡片、不动第一个子节点，
+ *  每 4 秒一次的巡检刷新不会让输入框失焦或丢掉光标位置。 */
+function buildSearchBox(): HTMLLabelElement {
+  const wrap = document.createElement("label");
+  wrap.className = "tk-search";
+  const searchIcon = icon("search", { size: "sm" });
+  const input = document.createElement("input");
+  input.type = "search";
+  input.placeholder = t("搜索任务");
+  input.setAttribute("aria-label", t("搜索任务"));
+  input.value = searchQuery;
+  input.addEventListener("input", () => {
+    searchQuery = input.value;
+    renderList();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && input.value) {
+      event.stopPropagation();
+      input.value = "";
+      searchQuery = "";
+      renderList();
+    }
+  });
+  wrap.append(searchIcon, input);
+  return wrap;
 }
 
 function renderFilters(): void {
