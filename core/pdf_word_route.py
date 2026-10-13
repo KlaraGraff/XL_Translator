@@ -430,52 +430,72 @@ def office_pdf_engine() -> tuple[str, str]:
 
 
 def docx_to_pdf(docx_path: Path, pdf_path: Path, *, timeout: int = 300) -> str:
-    """Render a .docx to PDF with Microsoft Word (or LibreOffice); returns the engine used."""
+    """Render a .docx to PDF with Microsoft Word (or LibreOffice); returns the engine used.
+
+    先把文件复制到一个短路径、固定的临时文件夹里，用唯一的文件名交给 Word：
+    - 过程文件夹的路径很长，macOS 版 Word 另存超过约 255 个字符的路径会直接报错
+      （Windows 也有 260 的上限）；
+    - macOS 版 Word 在沙盒里，每遇到一个没授权过的文件夹都要弹窗请用户授权，所以
+      文件夹必须固定，和软件转 .doc 时用的是同一个（word_converter._get_temp_docx_path），
+      授权一次就够；
+    - 唯一的文件名避免撞上 Word 里已经开着的同名文档。
+    """
     import platform
     import subprocess
+    import tempfile
+    import uuid
 
     from core.word_converter import _find_soffice, get_local_word_automation_availability
 
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.unlink(missing_ok=True)
     errors: list[str] = []
-    word_ok, _message = get_local_word_automation_availability()
-    if word_ok:
-        try:
-            if platform.system() == "Windows":
-                _docx_to_pdf_windows_word(docx_path, pdf_path)
-            else:
-                _docx_to_pdf_macos_word(docx_path, pdf_path, timeout)
-            if pdf_path.is_file() and pdf_path.stat().st_size > 0:
-                if cjk_text_visible(pdf_path):
-                    return "word"
-                errors.append("Word 转出的 PDF 里中文显示不出来")
-            else:
-                errors.append("Word 没有生成 PDF")
-        except Exception as exc:  # noqa: BLE001 - try LibreOffice next
-            logger.debug(f"[PDF] Word 转 PDF 失败：{exc!r}")
-            errors.append(f"Word：{exc}")
-    soffice = _find_soffice()
-    if soffice is not None:
-        out_dir = pdf_path.parent / f".lo-{pdf_path.stem}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                [str(soffice), "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
-                capture_output=True, timeout=timeout, check=False,
-            )
-            produced = out_dir / f"{docx_path.stem}.pdf"
-            if produced.is_file() and produced.stat().st_size > 0:
-                if cjk_text_visible(produced):
-                    produced.replace(pdf_path)
-                    return "libreoffice"
-                errors.append("LibreOffice 转出的 PDF 里中文显示不出来（缺少中文字体）")
-            else:
-                errors.append("LibreOffice 没有生成 PDF")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"LibreOffice：{exc}")
-        finally:
-            shutil.rmtree(out_dir, ignore_errors=True)
+    stage = Path(tempfile.gettempdir()) / "word_translator_temp"
+    stage.mkdir(parents=True, exist_ok=True)
+    staged_docx = stage / f"pdfseg_{uuid.uuid4().hex[:8]}.docx"
+    staged_pdf = stage / f"{staged_docx.stem}.pdf"
+    out_dir = stage / f"{staged_docx.stem}_lo"
+    try:
+        shutil.copy2(docx_path, staged_docx)
+        word_ok, _message = get_local_word_automation_availability()
+        if word_ok:
+            try:
+                if platform.system() == "Windows":
+                    _docx_to_pdf_windows_word(staged_docx, staged_pdf)
+                else:
+                    _docx_to_pdf_macos_word(staged_docx, staged_pdf, timeout)
+                if staged_pdf.is_file() and staged_pdf.stat().st_size > 0:
+                    if cjk_text_visible(staged_pdf):
+                        shutil.move(str(staged_pdf), str(pdf_path))
+                        return "word"
+                    errors.append("Word 转出的 PDF 里中文显示不出来")
+                else:
+                    errors.append("Word 没有生成 PDF")
+            except Exception as exc:  # noqa: BLE001 - try LibreOffice next
+                logger.debug(f"[PDF] Word 转 PDF 失败：{exc!r}")
+                errors.append(f"Word：{exc}")
+        soffice = _find_soffice()
+        if soffice is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                subprocess.run(
+                    [str(soffice), "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(staged_docx)],
+                    capture_output=True, timeout=timeout, check=False,
+                )
+                produced = out_dir / f"{staged_docx.stem}.pdf"
+                if produced.is_file() and produced.stat().st_size > 0:
+                    if cjk_text_visible(produced):
+                        shutil.move(str(produced), str(pdf_path))
+                        return "libreoffice"
+                    errors.append("LibreOffice 转出的 PDF 里中文显示不出来（缺少中文字体）")
+                else:
+                    errors.append("LibreOffice 没有生成 PDF")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"LibreOffice：{exc}")
+    finally:
+        for leftover in (staged_docx, staged_pdf):
+            leftover.unlink(missing_ok=True)
+        shutil.rmtree(out_dir, ignore_errors=True)
     raise OfficePdfError("；".join(errors) or "本机没有可以把 Word 转成 PDF 的程序。")
 
 
@@ -508,7 +528,7 @@ on run argv
         -- 文件刚打开时 Word 可能还在排版，这时另存会报「不认识 save as」；等一下再试。
         set lastErr to ""
         set didExport to false
-        repeat with attempt from 1 to 6
+        repeat with attempt from 1 to 3
             delay 2
             try
                 save as theDoc file name outputPath file format format PDF
