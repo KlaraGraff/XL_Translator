@@ -28,6 +28,7 @@ from core.tm_terms import (
     USAGE_SEGMENT,
     TermIndex,
     WholeSegmentResolution,
+    chosen_candidate,
     whole_key,
 )
 from engines.base_engine import TranslationEngine, engine_supports_chat, strip_markdown_json
@@ -301,7 +302,8 @@ class TaskTermSession:
         except Exception as exc:  # noqa: BLE001 - statistics never fail a finished task
             logger.warning(f"记录记忆库使用次数失败：{exc!r}")
         summary = self.stats.summary()
-        # 「均已采用」只说必须采用的词条：按场景选用的候选本来就可能一条都不用。
+        # 「均已采用」数的是真正用上的手动词条：必须采用的命中都算；按场景选用的只算
+        # 模型选中的那一种（其余候选本来就不该用）。
         involved: set[int] = {
             entry_id
             for text, ids in self.whole.entry_ids.items()
@@ -312,6 +314,10 @@ class TaskTermSession:
             for hit in outcome.hits:
                 if hit.usage == USAGE_ALWAYS:
                     involved.update(hit.entry_ids)
+                    continue
+                chosen = chosen_candidate(hit, outcome.translation, target_lang=self.target_lang)
+                if chosen is not None:
+                    involved.update(chosen.entry_ids)
         manual_ids = (
             {entry.id for entry in self.index.entries if entry.origin == "manual"}
             if self.index is not None

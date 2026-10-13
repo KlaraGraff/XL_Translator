@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -72,6 +73,30 @@ class TmEntryNotesTests(unittest.TestCase):
         tm_manager.init_db()
         self.assertEqual(len(list(self.backups_dir.rglob("*"))), before)
 
+    def test_concurrent_first_open_upgrades_once_without_errors(self):
+        # 记忆库页面打开时并发的几个请求都会先 init_db()：旧库只能升级一次，谁也不能报错。
+        self.make_v10_db()
+        barrier = threading.Barrier(5)
+        errors: list[str] = []
+
+        def open_page() -> None:
+            try:
+                barrier.wait()
+                tm_manager.init_db()
+                tm_manager.search_entries("zh-fr")
+            except Exception as exc:  # noqa: BLE001 - collected for the assertion
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=open_page) for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(tm_manager.entries_layout_supports_notes())
+        backups = [path for path in self.backups_dir.rglob("tm_before_layout2_*.db") if path.is_file()]
+        self.assertEqual(len(backups), 1)
+
     def test_failed_backup_leaves_the_old_layout_working(self):
         self.make_v10_db()
         with patch.object(tm_manager, "_backup_db", side_effect=OSError("disk full")):
@@ -139,6 +164,34 @@ class TmEntryNotesTests(unittest.TestCase):
         stats = tm_manager.get_stats("zh-fr")
         self.assertEqual((stats["month_uses"], stats["origin_manual"]), (5, 1))
 
+
+    def test_task_report_counts_manual_entries_that_were_used(self):
+        # 普通模式那一行「本次涉及的 N 条手动维护词条均已采用」：句中照用的和按场景选中的都算。
+        from types import SimpleNamespace
+
+        from core.term_session import TaskTermSession
+        from engines.base_engine import TranslationEngine
+
+        class Engine(TranslationEngine):
+            engine_name = "test/mock"
+
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                answers = {"门框应与预埋件可靠连接": "Le cadre est fixé à la pièce noyée", "甲": "Partie A"}
+                return {text: answers[text] for text in texts}
+
+        tm_manager.init_db()
+        tm_manager.insert_manual_entry_detailed("预埋件", "pièce noyée", "zh-fr")
+        tm_manager.insert_manual_entry_detailed("甲", "Partie A", "zh-fr", note="合同甲方")
+        tm_manager.insert_manual_entry_detailed("甲", "A", "zh-fr", note="配电回路编号")
+        tm_settings = SimpleNamespace(apply_in_sentences=True, term_retry_attempts=2, term_batch_budget=20)
+        session = TaskTermSession(tm_settings, target_lang="fr", smart_mode=True)
+        texts = ["门框应与预埋件可靠连接", "甲"]
+        hits = session.resolve({text: {"zh-fr"} for text in texts}, profile="施工合同附件")
+        self.assertEqual(hits, {})
+        session.wrap(Engine()).translate_batch(texts, "fr", "system", "zh")
+        report = session.finish(pair_for_text=lambda _text: "zh-fr")
+        self.assertEqual(report["not_applied"], [])
+        self.assertEqual(report["manual_terms_hit"], 2)
 
     def test_api_round_trip_with_note_usage_filter_and_pinned_edit(self):
         from fastapi.testclient import TestClient

@@ -157,6 +157,11 @@ function listSep(): string {
   return currentLocale() === "zh" ? "、" : ", ";
 }
 
+/** 「译文（备注）」：英法界面用半角括号，备注本身是用户或模型写的原文，不翻。 */
+function withNote(target: string, note: string): string {
+  return currentLocale() === "zh" ? `${target}（${note}）` : `${target} (${note})`;
+}
+
 function termLabel(pair: TermPair): string {
   return `${pair.term} → ${pair.expected}`;
 }
@@ -360,7 +365,7 @@ function renderAdvanced(
     const el = table([t("原文"), t("候选译法"), t("本次采用"), t("出现次数")], ["16%", "42%", "30%", "12%"]);
     for (const item of result.sceneChoices.slice(0, 50)) {
       const tr = document.createElement("tr");
-      const candidates = item.candidates.map((cand) => (cand.note ? `${cand.target}（${cand.note}）` : cand.target)).join(" · ");
+      const candidates = item.candidates.map((cand) => (cand.note ? withNote(cand.target, cand.note) : cand.target)).join(" · ");
       const chosen = item.chosen
         .map((choice) => {
           const label = choice.target || t("未判定");

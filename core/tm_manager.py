@@ -13,6 +13,7 @@ import hashlib
 import re
 import shutil
 import sqlite3
+import threading
 from collections import defaultdict
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -214,7 +215,18 @@ def _get_conn():
         conn.close()
 
 
+# 记忆库页面一打开就并发发出好几个请求，每个都先 init_db()。旧库第一次升级时它们
+# 会同时补列、同时重建表而互相撞上（「duplicate column name」），页面显示加载失败。
+# 同一进程里的升级排成一队：第一个做完，后面的只是确认一下已是最新。
+_INIT_LOCK = threading.Lock()
+
+
 def init_db() -> None:
+    with _INIT_LOCK:
+        _init_db_locked()
+
+
+def _init_db_locked() -> None:
     """Bring the TM database to the current schema, keeping every entry it can.
 
     Every schema bump so far has been additive — new tables and indexes beside
@@ -369,7 +381,12 @@ def _add_missing_entry_columns() -> None:
             if sql is None:
                 continue
             logger.info(f"TM 数据库补列：{name}")
-            conn.execute(sql)
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as exc:
+                # 另一个进程刚补上同一列：结果一样，不算失败。
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
 
 # The companion files that belong with the database: WAL mode keeps the first
