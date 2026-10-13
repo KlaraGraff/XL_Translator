@@ -109,6 +109,18 @@ class ProcessArtifactStoreTests(unittest.TestCase):
             self.assertEqual(prune_now(), 2)
         self.assertEqual(find_process_dirs(self.output, "excel"), [runs[3], runs[2]])
 
+    def test_empty_limits_mean_unlimited(self) -> None:
+        unlimited = {"normal": (None, None), "errors": (2, None)}
+        with patch("core.process_artifacts._configured_retention", return_value=unlimited):
+            kept = [self._finished("word", "succeeded", 1_000_000) for _ in range(4)]
+            failed = [self._finished("excel", "failed") for _ in range(3)]
+            self.assertEqual(find_process_dirs(self.output, "word"), kept[::-1])
+            self.assertEqual(find_process_dirs(self.output, "excel"), [failed[2], failed[1]])
+            overview = retention_overview()
+        self.assertIsNone(overview["normal"]["max_runs"])
+        self.assertIsNone(overview["normal"]["max_bytes"])
+        self.assertEqual(overview["errors"]["max_runs"], 2)
+
     def test_prune_now_without_a_store_is_a_no_op(self) -> None:
         self.assertEqual(prune_now(), 0)
         self.assertFalse((self.app_data / "logs" / "process").exists())
@@ -198,6 +210,12 @@ class RetentionSettingsTests(IsolatedAppDataTestCase):
             self.assertEqual((overview["normal"]["count"], overview["normal"]["max_runs"]), (2, 2))
             rejected = client.put("/api/settings", json={"process_retention": {"failed": {"max_mb": 1}}})
             self.assertEqual(rejected.status_code, 422)
+            # 留空（null）= 不设这一项上限，存得下、读得回。
+            cleared = client.put("/api/settings", json={"process_retention": {"succeeded": {"max_runs": None, "max_mb": None}}})
+            self.assertEqual(cleared.status_code, 200)
+            self.assertEqual(cleared.json()["process_retention"]["succeeded"], {"max_runs": None, "max_mb": None})
+            overview = client.get("/api/maintenance/overview").json()["process_retention"]["normal"]
+            self.assertEqual((overview["max_runs"], overview["max_bytes"]), (None, None))
 
     def test_an_older_settings_file_gets_the_defaults(self) -> None:
         settings = settings_module.AppSettings.model_validate({"settings_version": 35})

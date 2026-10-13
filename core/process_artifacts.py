@@ -166,21 +166,25 @@ def _safe_to_prune(directory: Path, metadata: dict, root: Path) -> bool:
     return True
 
 
-def _retention_limit(value: int, default: int) -> int:
+def _retention_limit(value: int | None, default: int) -> int | None:
+    if value is None:
+        return None
     try:
         return max(1, min(1000, int(value)))
     except (TypeError, ValueError, OverflowError):
         return default
 
 
-def _retention_bytes(value: int, default: int) -> int:
+def _retention_bytes(value: int | None, default: int) -> int | None:
+    if value is None:
+        return None
     try:
         return max(1, int(value))
     except (TypeError, ValueError, OverflowError):
         return default
 
 
-def _configured_retention() -> dict[str, tuple[int, int]]:
+def _configured_retention() -> dict[str, tuple[int | None, int | None]]:
     """用户在设置里定的上限；读不到设置时返回空表，调用方退回模块默认值。"""
     try:
         # 延迟导入：settings 依赖链很长，这个模块被各个 runner 在导入期引用。
@@ -190,13 +194,13 @@ def _configured_retention() -> dict[str, tuple[int, int]]:
     except Exception:  # noqa: BLE001 - fall back to defaults, never block a task
         return {}
     return {
-        category: (rule.max_runs, rule.max_mb * 1024 * 1024)
+        category: (rule.max_runs, None if rule.max_mb is None else rule.max_mb * 1024 * 1024)
         for category, rule in (("normal", retention.succeeded), ("errors", retention.failed))
     }
 
 
-def _retention_rules() -> dict[str, tuple[int, int]]:
-    """每类的 (最多几次, 最多多少字节)。"""
+def _retention_rules() -> dict[str, tuple[int | None, int | None]]:
+    """每类的 (最多几次, 最多多少字节)；None 表示这一项不设上限。"""
     configured = _configured_retention()
     rules = {}
     for category, default_runs in (("normal", NORMAL_RETENTION), ("errors", ERROR_RETENTION)):
@@ -244,7 +248,10 @@ def _prune(root: Path) -> int:
         for index, (directory, metadata, size) in enumerate(_prunable_runs(root, category)):
             # 一旦某一次超出上限，比它更早的全部清掉：「从最早的开始清理」，
             # 不会跳过一份大的、反而留下更早的几份小的。
-            if not over and (index == 0 or (index < max_runs and kept_bytes + size <= max_bytes)):
+            within = (max_runs is None or index < max_runs) and (
+                max_bytes is None or kept_bytes + size <= max_bytes
+            )
+            if not over and (index == 0 or within):
                 kept_bytes += size
                 continue
             over = True
@@ -271,8 +278,8 @@ def prune_now() -> int:
         return 0
 
 
-def retention_overview() -> dict[str, dict[str, int]]:
-    """维护页「自动保留上限」用：每类当前可清理的次数、体积和生效中的上限。"""
+def retention_overview() -> dict[str, dict[str, int | None]]:
+    """维护页「自动保留上限」用：每类当前可清理的次数、体积和生效中的上限（None = 不限）。"""
     rules = _retention_rules()
     usage = {category: {"count": 0, "size_bytes": 0} for category in rules}
     try:

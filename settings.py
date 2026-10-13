@@ -916,10 +916,13 @@ class RequestRetrySettings(BaseModel):
 
 
 class ProcessRetentionRule(BaseModel):
-    """一类任务过程文件的保留上限：最多几次、最多多大，任一先到就清理最早的。"""
+    """一类任务过程文件的保留上限：最多几次、最多多大，任一先到就清理最早的。
 
-    max_runs: int = Field(default=PROCESS_RETENTION_FAILED_RUNS_DEFAULT, ge=PROCESS_RETENTION_RUNS_MIN, le=PROCESS_RETENTION_RUNS_MAX)
-    max_mb: int = Field(default=PROCESS_RETENTION_MB_DEFAULT, ge=PROCESS_RETENTION_MB_MIN, le=PROCESS_RETENTION_MB_MAX)
+    None 表示这一项不设上限（界面上留空）；两项都为 None 时这一类永不自动清理。
+    """
+
+    max_runs: int | None = Field(default=PROCESS_RETENTION_FAILED_RUNS_DEFAULT, ge=PROCESS_RETENTION_RUNS_MIN, le=PROCESS_RETENTION_RUNS_MAX)
+    max_mb: int | None = Field(default=PROCESS_RETENTION_MB_DEFAULT, ge=PROCESS_RETENTION_MB_MIN, le=PROCESS_RETENTION_MB_MAX)
 
 
 def _succeeded_retention_rule() -> ProcessRetentionRule:

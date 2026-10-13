@@ -2140,13 +2140,19 @@ function maintenanceCategory(id: string): MaintenanceCategoryInfo | undefined {
 
 /**
  * 「自动保留上限」里可调的一行：一类任务过程文件最多留几次、最多占多大（core/process_artifacts.py）。
- * 上下限对齐 config.py 的 PROCESS_RETENTION_*；体积按 GB 填、按 MB 存。
+ * 上下限对齐 config.py 的 PROCESS_RETENTION_*；体积按 GB 填、按 MB 存。留空 = 这一项不设上限（存 null）。
  */
 function processRetentionRow(kind: "succeeded" | "failed", labelText: string): HTMLDivElement {
   const rule = record(record(settings?.process_retention)[kind]);
   const usage = record(record(maintenanceOverview?.process_retention)[kind === "succeeded" ? "normal" : "errors"]);
-  const maxRuns = num(rule.max_runs, num(usage.max_runs, kind === "succeeded" ? 20 : 30));
-  const maxMb = num(rule.max_mb, Math.round(num(usage.max_bytes, 1024 * 1024 * 1024) / (1024 * 1024)));
+  // 设置里显式存了 null 就是「不限」；设置还没读到时退回维护概览里生效中的值（字节换成 MB）。
+  const limitOf = (saved: unknown, effective: unknown, fallback: number): number | null => {
+    const value = saved !== undefined ? saved : effective;
+    return value === null ? null : num(value, fallback);
+  };
+  const effectiveMb = usage.max_bytes === null || usage.max_bytes === undefined ? usage.max_bytes : num(usage.max_bytes, 0) / (1024 * 1024);
+  const maxRuns = limitOf(rule.max_runs, usage.max_runs, kind === "succeeded" ? 20 : 30);
+  const maxMb = limitOf(rule.max_mb, effectiveMb, 1024);
 
   const row = document.createElement("div");
   row.className = "ret-row";
@@ -2158,15 +2164,16 @@ function processRetentionRow(kind: "succeeded" | "failed", labelText: string): H
   meta.textContent = t("当前 {0} 次 · {1}", num(usage.count, 0), formatBytes(num(usage.size_bytes, 0)));
   name.append(label, meta);
 
-  const save = (field: "max_runs" | "max_mb", value: number) =>
+  const save = (field: "max_runs" | "max_mb", value: number | null) =>
     void reRenderAfter(async () => {
       await saveSettingPath(`process_retention.${kind}.${field}`, value);
       await refreshMaintenance();
     }, { rerenderOnError: true });
-  const runsInput = retentionInput(maxRuns, { min: 1, max: 1000, step: 1 }, (value) => save("max_runs", Math.round(value)));
+  const runsInput = retentionInput(maxRuns, { min: 1, max: 1000, step: 1 }, (value) => save("max_runs", value === null ? null : Math.round(value)));
   runsInput.setAttribute("aria-label", t("{0}：最多保留次数", labelText));
-  const gbInput = retentionInput(Math.round((maxMb / 1024) * 10) / 10, { min: 0.1, max: 100, step: 0.1 }, (value) =>
-    save("max_mb", Math.min(100 * 1024, Math.max(100, Math.round(value * 1024)))),
+  const gbValue = maxMb === null ? null : Math.round((maxMb / 1024) * 10) / 10;
+  const gbInput = retentionInput(gbValue, { min: 0.1, max: 100, step: 0.1 }, (value) =>
+    save("max_mb", value === null ? null : Math.min(100 * 1024, Math.max(100, Math.round(value * 1024)))),
   );
   gbInput.setAttribute("aria-label", t("{0}：最多占用空间（GB）", labelText));
   const controls = document.createElement("span");
@@ -2181,18 +2188,27 @@ function processRetentionRow(kind: "succeeded" | "failed", labelText: string): H
   return row;
 }
 
-function retentionInput(value: number, bounds: { min: number; max: number; step: number }, onCommit: (value: number) => void): HTMLInputElement {
+/** 保留上限的数字框。留空提交 null（不设上限），占位符写「不限」；越界的贴着边界夹住，和 numberField 一致。 */
+function retentionInput(
+  value: number | null,
+  bounds: { min: number; max: number; step: number },
+  onCommit: (value: number | null) => void,
+): HTMLInputElement {
   const input = document.createElement("input");
   input.type = "number";
   input.min = String(bounds.min);
   input.max = String(bounds.max);
   input.step = String(bounds.step);
-  input.value = String(value);
+  input.placeholder = t("不限");
+  input.value = value === null ? "" : String(value);
   input.addEventListener("change", () => {
+    if (input.value.trim() === "") {
+      if (value !== null) onCommit(null);
+      return;
+    }
     const parsed = Number(input.value);
-    // 清空或填了非数字：退回原值，不提交。越界的贴着边界夹住，和 numberField 一致。
-    if (input.value.trim() === "" || Number.isNaN(parsed)) {
-      input.value = String(value);
+    if (Number.isNaN(parsed)) {
+      input.value = value === null ? "" : String(value);
       return;
     }
     const clamped = Math.min(bounds.max, Math.max(bounds.min, parsed));
@@ -2357,7 +2373,7 @@ function renderDataPage(host: HTMLElement): void {
   retentionNote.className = "note";
   retentionNote.style.fontSize = "12px";
   retentionNote.style.color = "var(--ink-3)";
-  retentionNote.textContent = t("过程文件用于查看与修改译文、重新生成单页和排查问题。次数或体积任一达到上限时，从最早的开始清理；最近一次和可续译的任务始终保留。");
+  retentionNote.textContent = t("过程文件用于查看与修改译文、重新生成单页和排查问题。次数或体积任一达到上限时，从最早的开始清理；留空表示不设上限。最近一次和可续译的任务始终保留。");
   limitsBody.append(retentionNote);
   const note = document.createElement("p");
   note.className = "note";

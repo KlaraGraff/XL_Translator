@@ -227,4 +227,4 @@
 .ret-name { display: flex; flex-direction: column; color: var(--ink-3); }
 .ret-name small { font-size: 11px; }
 .ret-ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
-.ret-ctl input[type="number"] { width: 64px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 6px; text-align: right; }
+.ret-ctl input[type="number"] { width: 72px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 6px; text-align: right; }
