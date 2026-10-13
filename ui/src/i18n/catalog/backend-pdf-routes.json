@@ -82,7 +82,7 @@
   "状态：正在把「{0}」转成 Word 并翻译…": {"en": "Status: converting \"{0}\" to Word and translating…", "fr": "Statut : conversion de « {0} » en Word et traduction…"},
   "电脑上没有 Microsoft Word 或 LibreOffice，译好的正文转不回 PDF": {"en": "neither Microsoft Word nor LibreOffice is on this computer, so the translated text cannot be turned back into PDF", "fr": "ni Microsoft Word ni LibreOffice n'est sur cet ordinateur ; le texte traduit ne peut pas être reconverti en PDF"},
   "空间不够，放不下译文": {"en": "Not enough space to fit the translation", "fr": "Pas assez de place pour la traduction"},
-  "竖排文字未能确认": {"en": "Vertical text could not be confirmed", "fr": "Le texte vertical n'a pas pu être confirmé"},
+  "旋转的文字未能确认": {"en": "Rotated text could not be confirmed", "fr": "Le texte pivoté n'a pas pu être confirmé"},
   "第 {0}–{1} 页": {"en": "pages {0}–{1}", "fr": "pages {0} à {1}"},
   "编号或数字可能认错": {"en": "A code or number may have been misread", "fr": "Un code ou un chiffre a peut-être été mal reconnu"},
   "翻译没有返回结果": {"en": "The translation returned no result", "fr": "La traduction n'a renvoyé aucun résultat"},
@@ -111,5 +111,15 @@
   "这份文件还没有转成 Word 翻译。": {"en": "This file has not been converted to Word and translated yet.", "fr": "Ce fichier n'a pas encore été converti en Word et traduit."},
   "页面尺寸或方向变了": {"en": "The page size or orientation has changed", "fr": "La taille ou l'orientation de la page a changé"},
   "（没有安装文字识别组件，画成线条的字未识别）": {"en": "(No text recognition component installed; text drawn as lines was not recognized)", "fr": "(Aucun composant de reconnaissance de texte installé ; le texte dessiné en traits n'a pas été reconnu)"},
-  "，{0} 处需要复核": {"en": ", {0} need review", "fr": ", {0} à revérifier"}
+  "，{0} 处需要复核": {"en": ", {0} need review", "fr": ", {0} à revérifier"},
+  "识别到 {0} 处文字，均未替换（{1}），这一页保留原样": {"en": "{0} text items were recognized, none replaced ({1}); this page was kept as is", "fr": "{0} textes reconnus, aucun remplacé ({1}) ; cette page a été conservée telle quelle"},
+  "识别到 {0} 处文字，均未替换（{1}）；另有 {2} 处数字和编号等不需要翻译，这一页保留原样": {"en": "{0} text items were recognized, none replaced ({1}); {2} more (numbers, codes, etc.) did not need translation; this page was kept as is", "fr": "{0} textes reconnus, aucun remplacé ({1}) ; {2} autres (nombres, codes, etc.) n'avaient pas besoin de traduction ; cette page a été conservée telle quelle"},
+  "识别到的 {0} 处都是数字和编号等不需要翻译的内容，这一页保留原样": {"en": "All {0} recognized items are numbers, codes, etc. that need no translation; this page was kept as is", "fr": "Les {0} éléments reconnus sont des nombres, codes, etc. sans traduction nécessaire ; cette page a été conservée telle quelle"},
+  "没有找到可以替换的文字（没有安装文字识别组件，画成线条的字未识别），这一页保留原样": {"en": "No replaceable text was found (no text recognition component installed; text drawn as lines was not recognized); this page was kept as is", "fr": "Aucun texte remplaçable trouvé (aucun composant de reconnaissance de texte installé ; le texte dessiné en traits n'a pas été reconnu) ; cette page a été conservée telle quelle"},
+  "本文件没有翻译任何内容，输出 PDF 与源文件一致。": {"en": "Nothing in this file was translated; the output PDF matches the source file.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source."},
+  "本文件没有翻译任何内容，输出 PDF 与源文件一致。原因：{0}。": {"en": "Nothing in this file was translated; the output PDF matches the source file. Reason: {0}.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source. Raison : {0}."},
+  "没有翻译任何内容，原因见任务报告": {"en": "Nothing was translated; see the task report for the reason", "fr": "Rien n'a été traduit ; voir le rapport de tâche pour la raison"},
+  "未翻译任何内容": {"en": "Nothing translated", "fr": "Rien traduit"},
+  "识别到 {0} 处文字，均未替换（{1}）": {"en": "{0} text items were recognized, none replaced ({1})", "fr": "{0} textes reconnus, aucun remplacé ({1})"},
+  "本文件没有翻译任何内容，输出 PDF 与源文件一致。各页原因见任务报告。": {"en": "Nothing in this file was translated; the output PDF matches the source file. See the task report for the reason on each page.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source. Les raisons page par page figurent dans le rapport de tâche."}
 }

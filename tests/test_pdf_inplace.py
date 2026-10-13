@@ -139,9 +139,42 @@ class InplaceTaskTests(unittest.TestCase):
         _runner, record, _client = self._run(hooks=_hooks(broken))
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
         self.assertEqual(page.inplace_status, "kept_original")
-        self.assertEqual(record.skipped_oversize_page_count, 1)
+        # 试过没换成，不是「因幅面过大被跳过」
+        self.assertEqual(record.skipped_oversize_page_count, 0)
+        self.assertNotIn("幅面", page.inplace_message)
         with fitz.open(record.translated_pdf_path) as out:
             self.assertIn("Plan de toiture", out[1].get_text())
+
+    def test_large_page_where_only_rotated_text_was_found_says_so(self):
+        # 只有一页大幅面图纸，识别到的字都是旋转的、没能确认：页面和整份文件都要照实说，
+        # 不能说成「全部页面因幅面过大被跳过，请关闭「跳过 A3 及更大的页面」」。
+        from core.pdf_task_report import _file_record_to_result
+        from core.pdf_vector import InplaceResult
+
+        rotated = InplaceResult(ok=True, written=0, review=2, review_items=[
+            {"text": "NIVEAU R+1", "reason": "旋转的文字未能确认", "box_px": [0, 0, 1, 1]},
+            {"text": "COUPE A-A", "reason": "旋转的文字未能确认", "box_px": [0, 0, 1, 1]},
+        ])
+        with patch("core.pdf_vector.translate_page_inplace", return_value=rotated):
+            runner, record, client = self._run(sizes=(A3,), text=(True,))
+        self.assertEqual(len(client.calls), 0)
+        page = record.pages[0]
+        self.assertEqual(page.inplace_status, "kept_original")
+        self.assertEqual(page.inplace_message, "识别到 2 处文字，均未替换（旋转的文字未能确认），这一页保留原样")
+        self.assertEqual(record.skipped_oversize_page_count, 0)
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+        self.assertNotIn("幅面", record.error)
+        self.assertEqual(
+            record.error,
+            "本文件没有翻译任何内容，输出 PDF 与源文件一致。原因：识别到 2 处文字，均未替换（旋转的文字未能确认），这一页保留原样。",
+        )
+        result = _file_record_to_result(record)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["untranslated"])
+        self.assertFalse(result["all_pages_skipped_oversize"])
+        snap = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+        self.assertEqual(snap["inplace_status"], "kept_original")
+        self.assertIn("旋转的文字未能确认", snap["inplace_message"])
 
     def test_failed_page_flags_the_file_for_review_and_is_not_retried_on_rerun(self):
         calls = []
