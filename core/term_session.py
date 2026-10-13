@@ -164,6 +164,7 @@ class TaskTermSession:
                     stale.append(text)
                     break
         for text in stale:
+            self.index.stale_whole_keys.add(whole_key(text))
             self.whole.hits.pop(text, None)
             self.whole.entry_ids.pop(text, None)
             self.whole.usage_by_text.pop(text, None)

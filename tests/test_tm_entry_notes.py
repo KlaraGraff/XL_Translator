@@ -207,6 +207,27 @@ class TmEntryNotesTests(unittest.TestCase):
         hits = session.resolve({text: {"zh-fr"} for text in texts}, profile="")
         # 旧句子里还是改之前的译法：不再整段贴回，交给模型带着词条重译。不含词条的照常复用。
         self.assertEqual(hits, {"卫生间地面做防水": "Sol des toilettes étanché"})
+        # 送模型时旧整句不再当候选，按句中的「预埋件」注入和核对。
+        [hit] = session.index.scan("门框应与预埋件可靠连接")
+        self.assertEqual((hit.source, hit.usage, hit.expected, hit.whole), ("预埋件", "always", "pièce noyée", False))
+
+        from engines.base_engine import TranslationEngine
+
+        prompts: list[str] = []
+
+        class Engine(TranslationEngine):
+            engine_name = "test/mock"
+
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                prompts.append(system_prompt)
+                fixed = "以下各条的上次译文未采用设定译法" in system_prompt
+                return {text: "Le cadre est fixé à la pièce noyée" if fixed else "Le cadre est fixé à l'embedded part" for text in texts}
+
+        session.wrap(Engine()).translate_batch(["门框应与预埋件可靠连接"], "fr", "system", "zh")
+        self.assertNotIn("embedded part", prompts[0])
+        self.assertIn("预埋件 → pièce noyée", prompts[0])
+        report = session.finish(pair_for_text=lambda _text: "zh-fr")
+        self.assertEqual((report["applied_after_retry"], report["scene_choices"], report["manual_terms_hit"]), (1, [], 1))
 
     def test_auto_scene_entry_is_only_offered_where_its_note_fits_the_document(self):
         from types import SimpleNamespace

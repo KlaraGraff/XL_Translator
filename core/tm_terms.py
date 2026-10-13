@@ -224,6 +224,9 @@ class TermIndex:
             entries.append(entry)
         self.entries = entries
         self.apply_in_sentences = apply_in_sentences
+        # 整段旧译文已判定过期的文字（见 TaskTermSession）：送模型时不再把旧整句当候选，
+        # 只按句中词条注入和核对。
+        self.stale_whole_keys: set[str] = set()
         self._by_whole: dict[str, list[TermEntry]] = defaultdict(list)
         for entry in entries:
             self._by_whole[whole_key(entry.source)].append(entry)
@@ -342,7 +345,7 @@ class TermIndex:
 
         ``sentence_only``：跳过整段词条，只看句中出现的词条（核对整段复用的旧译文用）。
         """
-        rows = [] if sentence_only else self.whole_rows(text)
+        rows = [] if sentence_only or whole_key(text) in self.stale_whole_keys else self.whole_rows(text)
         if rows:
             usage = _group_usage(rows)
             if usage == USAGE_SCENE and not include_scene:
