@@ -107,6 +107,26 @@ if [[ ! -d "$APP_PATH" || ! -x "$SIDECAR_PATH" ]]; then
   exit 1
 fi
 
+# Tauri copies bundle resources file by file and follows symlinks (tauri-build
+# 2.6 `copy_file` is a plain `fs::copy`), so every symlink PyInstaller made in
+# the sidecar arrives as a full second copy: the Python library three times,
+# each Pillow dylib twice — about 20MB of duplicates in the app. Put back the
+# sidecar exactly as PyInstaller laid it out, before anything is signed.
+# ditto preserves symlinks.
+SIDECAR_SOURCE_DIR="$ROOT_DIR/src-tauri/resources/sidecar/translator-sidecar"
+SIDECAR_BUNDLED_DIR="$(dirname "$SIDECAR_PATH")"
+if [[ ! -x "$SIDECAR_SOURCE_DIR/translator-sidecar" ]]; then
+  echo "PyInstaller sidecar output was not found: $SIDECAR_SOURCE_DIR" >&2
+  exit 1
+fi
+rm -rf "$SIDECAR_BUNDLED_DIR"
+ditto "$SIDECAR_SOURCE_DIR" "$SIDECAR_BUNDLED_DIR"
+if [[ ! -x "$SIDECAR_PATH" ]]; then
+  echo "Bundled sidecar is missing after restoring its symlinks: $SIDECAR_PATH" >&2
+  exit 1
+fi
+echo "[INFO] Sidecar restored with $(find "$SIDECAR_BUNDLED_DIR" -type l | wc -l | tr -d ' ') symlinks intact."
+
 "$PYTHON_BIN" scripts/verify_macos_minimum_version.py \
   "$APP_PATH" \
   --declared "$MINIMUM_MACOS_VERSION" \
@@ -184,7 +204,9 @@ rm -f "$DMG_PATH" "$DMG_PATH.sha256"
 mkdir -p "$STAGING_DIR"
 cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
-hdiutil create -volname Translator -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
+# ULMO (LZMA) rather than the default UDZO (zlib): about 20% smaller for this
+# app. Mounting it needs macOS 10.15+, below the 12.0 minimum we declare.
+hdiutil create -volname Translator -srcfolder "$STAGING_DIR" -ov -format ULMO "$DMG_PATH"
 
 if [[ -n "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
   codesign --force --timestamp --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY" "$DMG_PATH"
