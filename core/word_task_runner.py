@@ -155,6 +155,7 @@ from core.word_document import (
     docx_has_possible_automatic_numbering,
     extract_word_header_footer_segments,
     extract_word_segments,
+    extract_word_story_segments,
     find_word_front_matter_boundary_for_path,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
@@ -175,6 +176,7 @@ from core.word_quality_report import (  # noqa: F401
     _set_review_mark,
     _add_quality_issues,
     _word_cell_line_mismatch_issue,
+    _word_write_issue,
     _append_post_write_coverage_issues,
     _append_residual_cjk_issues,
     _apply_mixed_language_word_results,
@@ -1989,7 +1991,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "snippet": "",
                         "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
                         "status": (
-                            "这些内容位于内容控件、未接受的修订、文本框或脚注里，"
+                            "这些内容位于内容控件或未接受的修订里，"
                             "未参与翻译，输出文档中保持原文。"
                         ),
                         "severity": "needs_review",
@@ -2122,6 +2124,22 @@ class WordTaskRunner(BaseTaskRunner):
                             entries=header_channel_entries,
                         )
                     )
+                # 文本框和脚注/尾注也不在覆盖率计划里，同样单独取一次。
+                story_segments = extract_word_story_segments(
+                    process_path,
+                    target_lang=target_lang,
+                    source_lang=(
+                        source_lang
+                        if not auto_source_lang
+                        else get_default_source_lang()
+                    ),
+                )
+                _remember_segment_locations(
+                    segment_locations,
+                    _file_result_identity(file_item, self._source_root),
+                    story_segments,
+                )
+                text_set.update(segment.source for segment in story_segments)
                 summary = coverage_plan.summary
                 self._log(
                     "INFO",
@@ -2842,6 +2860,14 @@ class WordTaskRunner(BaseTaskRunner):
                     log_callback=write_log_messages.append,
                     translate_headers_footers=self._translate_headers_footers,
                     output_translation_only=settings.word_output.output_translation_only,
+                    issue_callback=lambda info: quality_issues.append(
+                        _word_write_issue(
+                            file_name=_file_result_identity(
+                                file_item, source_root
+                            ),
+                            info=info,
+                        )
+                    ),
                 )
             else:
                 out_path = write_bilingual_docx(
@@ -2860,7 +2886,7 @@ class WordTaskRunner(BaseTaskRunner):
                     existing_highlight_policy=settings.word_review.existing_highlight_policy,
                     log_callback=write_log_messages.append,
                     issue_callback=lambda info: quality_issues.append(
-                        _word_cell_line_mismatch_issue(
+                        _word_write_issue(
                             file_name=_file_result_identity(
                                 file_item, source_root
                             ),

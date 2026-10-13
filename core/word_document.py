@@ -293,7 +293,8 @@ class WordHiddenContentReport:
     content_control_count: int = 0
     tracked_insertion_count: int = 0
     # 文本框（w:txbxContent）挂在 w:r/w:drawing 里，脚注/尾注在单独的 XML 部件里，
-    # python-docx 的段落遍历同样走不到——一样必然漏译（审计 高-13）。
+    # python-docx 的段落遍历走不到（审计 高-13）。现在由 core/word_embedded_text.py
+    # 单独翻译，这两项只计数，不进 total。
     textbox_count: int = 0
     footnote_count: int = 0
     # 自动目录也住在内容控件里，但它不是漏译：目录是域，内容由 Word 按标题自动生成，
@@ -302,12 +303,8 @@ class WordHiddenContentReport:
 
     @property
     def total(self) -> int:
-        return (
-            self.content_control_count
-            + self.tracked_insertion_count
-            + self.textbox_count
-            + self.footnote_count
-        )
+        # 文本框和脚注/尾注自 V10.1 起参与翻译，只留计数供过程记录，不再算漏译。
+        return self.content_control_count + self.tracked_insertion_count
 
     @property
     def found(self) -> bool:
@@ -323,10 +320,6 @@ class WordHiddenContentReport:
             parts.append(f"内容控件 {self.content_control_count} 处")
         if self.tracked_insertion_count:
             parts.append(f"未接受的修订插入 {self.tracked_insertion_count} 处")
-        if self.textbox_count:
-            parts.append(f"文本框 {self.textbox_count} 个")
-        if self.footnote_count:
-            parts.append(f"脚注/尾注 {self.footnote_count} 条")
         return "、".join(parts)
 
     def advice(self) -> str:
@@ -336,10 +329,6 @@ class WordHiddenContentReport:
             tips.append("在 Word 中接受全部修订")
         if self.content_control_count:
             tips.append("将内容控件转换为普通文本")
-        if self.textbox_count:
-            tips.append("将文本框中的文字移至正文")
-        if self.footnote_count:
-            tips.append("脚注/尾注需要另行手工翻译")
         return "；".join(tips)
 
     def as_dict(self) -> dict[str, int]:
@@ -501,7 +490,58 @@ def extract_word_segments(
             seen.add(segment.source)
             segments.append(segment)
 
+    for segment in _collect_story_segments(doc, target_lang=target_lang, source_lang=source_lang):
+        if segment.source in seen:
+            continue
+        seen.add(segment.source)
+        segments.append(segment)
+
     return segments
+
+
+def extract_word_story_segments(
+    path: str | Path,
+    *,
+    target_lang: str,
+    source_lang: str = "zh",
+) -> list[WordSegment]:
+    """补译模式：文本框和脚注/尾注里还没译过的段落。
+
+    覆盖率计划只按正文段落和表格的下标定位，这几处不在计划里，要单独取一次。
+    """
+    segments: list[WordSegment] = []
+    seen: set[str] = set()
+    for segment in _collect_story_segments(
+        Document(str(path)),
+        target_lang=target_lang,
+        source_lang=source_lang,
+        untranslated_only=True,
+    ):
+        if segment.source not in seen:
+            seen.add(segment.source)
+            segments.append(segment)
+    return segments
+
+
+def _collect_story_segments(
+    doc: Document,
+    *,
+    target_lang: str,
+    source_lang: str,
+    untranslated_only: bool = False,
+) -> list[WordSegment]:
+    from core.word_embedded_text import extract_story_segments
+
+    try:
+        return extract_story_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            untranslated_only=untranslated_only,
+        )
+    except Exception as exc:  # noqa: BLE001 - 文本框和脚注异常不该拖垮正文翻译
+        logger.warning(f"读取 Word 文本框和脚注/尾注失败：{exc!r}")
+        return []
 
 
 def extract_word_header_footer_segments(
@@ -1242,6 +1282,19 @@ def write_bilingual_docx(
         if translate_headers_footers
         else 0
     )
+    story_stats = _apply_story_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        output_translation_only=output_translation_only,
+        review_mark_map=review_mark_map,
+        highlight_policy=highlight_policy,
+        review_color_map=review_color_map,
+        issue_callback=issue_callback,
+    )
+    highlight_count += story_stats.highlight_count
+    highlight_skip_count += story_stats.highlight_skip_count
 
     _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))
@@ -1264,7 +1317,40 @@ def write_bilingual_docx(
             f"表格单元格 {table_insertions}{mismatch_summary}"
             f"{header_footer_summary}{highlight_summary}）"
         )
+        log_story_summary(log_callback, out_path.name, story_stats)
     return out_path
+
+
+def _apply_story_translations(doc: Document, translations: dict[str, str], **kwargs):
+    """文本框和脚注/尾注这一趟。全译和补译共用；出错只告警，不拖垮正文的输出。"""
+    from core.word_embedded_text import StoryWriteStats, apply_story_translations
+
+    try:
+        return apply_story_translations(doc, translations, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"写入 Word 文本框和脚注/尾注失败：{exc!r}")
+        return StoryWriteStats()
+
+
+def log_story_summary(log_callback, file_name: str, stats) -> None:
+    """文本框和脚注/尾注的写入结果，单独几行日志。
+
+    每种组合写成整句：界面按整句模板翻译日志，拼进「[OK] 已输出」那一行的片段对不上模板。
+    文本框缩字号 / 加高两句和 Excel 共用词条。
+    """
+    if log_callback is None:
+        return
+    boxes, notes = stats.textbox_paragraphs, stats.note_paragraphs
+    if boxes and notes:
+        log_callback(f"  → {file_name}：已翻译文本框 {boxes} 段、脚注/尾注 {notes} 段")
+    elif boxes:
+        log_callback(f"  → {file_name}：已翻译文本框 {boxes} 段")
+    elif notes:
+        log_callback(f"  → {file_name}：已翻译脚注/尾注 {notes} 段")
+    if stats.shrunk_textboxes:
+        log_callback(f"  → {file_name}：{stats.shrunk_textboxes} 个文本框的译文放不下，已缩小字号")
+    if stats.grown_textboxes:
+        log_callback(f"  → {file_name}：{stats.grown_textboxes} 个文本框缩小字号后仍放不下，已往下加高")
 
 
 def build_word_output_dir(
@@ -1521,7 +1607,11 @@ def _paragraph_text_anchor_run(paragraph: Paragraph, runs: list):
     段落以超链接开头时不能直接写进超链接内部的 run：那样整段译文都会变成可点击的
     链接。改为在该超链接之前插入一个段落级的普通 run。
     """
-    first_run = runs[0]
+    # 脚注/尾注段落开头是编号标记那个 run（上标样式），译文不能写进去。
+    first_run = next(
+        (run for run in runs if next(run._r.iter(*_NOTE_MARK_TAGS), None) is None),
+        runs[0],
+    )
     holder = first_run._r.getparent()
     if holder is paragraph._p:
         return first_run
@@ -2230,9 +2320,19 @@ def _read_numbering_level_definition(level) -> NumberingLevelDefinition:
     return NumberingLevelDefinition(
         start=_to_int(_child_val(level, "w:start"), fallback=1),
         number_format=_child_val(level, "w:numFmt", default="decimal"),
-        level_text=_child_val(level, "w:lvlText", default="%1."),
+        level_text=_level_text(level),
         legal_numbering=_on_off_value(level.find(qn("w:isLgl"))) is True,
     )
+
+
+def _level_text(level) -> str:
+    """编号格式串。写了 ``w:lvlText`` 但值为空，是「这一级不显示编号」（LibreOffice 导出的
+    标题样式就是这样），不能当成没写、退回默认的「%1.」——那样每个标题前都会凭空多出
+    「1.」「2.」。"""
+    element = level.find(qn("w:lvlText")) if level is not None else None
+    if element is None:
+        return "%1."
+    return str(element.get(qn("w:val")) or "")
 
 
 def _child_val(element, child_tag: str, default: str = "") -> str:
@@ -2338,7 +2438,9 @@ def _format_numbering_label(
     if definition is None:
         return ""
 
-    label = definition.level_text or "%1."
+    label = definition.level_text
+    if not label.strip() or (definition.number_format == "none" and "%" not in label):
+        return label.strip()
     if definition.number_format == "bullet":
         return _normalize_bullet_label(label)
 
@@ -2390,6 +2492,8 @@ def _number_format_for_level_text_placeholder(
 
 
 def _format_number(number: int, number_format: str) -> str:
+    if number_format == "none":
+        return ""
     if number <= 0:
         number = 1
     if number_format in _CHINESE_NUMBER_FORMATS:
@@ -2680,6 +2784,14 @@ _EMBEDDED_RUN_CONTENT_TAGS = frozenset(
         qn("w:commentReference"),
         "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent",
     }
+)
+
+
+_NOTE_MARK_TAGS = (
+    qn("w:footnoteRef"),
+    qn("w:endnoteRef"),
+    qn("w:footnoteReference"),
+    qn("w:endnoteReference"),
 )
 
 

@@ -39,6 +39,7 @@ from core.word_document import (
     _replace_cell_text,
     _apply_cell_review_mark,
     _apply_paragraph_review_mark,
+    _apply_story_translations,
     _cell_has_review_highlight,
     _cell_source_text,
     _ensure_owner_writable,
@@ -55,6 +56,7 @@ from core.word_document import (
     _replace_paragraph_text,
     _replace_paragraph_text_around_fields,
     apply_header_footer_translations,
+    log_story_summary,
     _review_mark_highlight_values,
     _sanitize_filename_fragment,
     find_word_front_matter_boundary,
@@ -147,6 +149,7 @@ def write_untranslated_docx(
     log_callback=None,
     translate_headers_footers: bool = False,
     output_translation_only: bool = False,
+    issue_callback=None,
 ) -> Path:
     """Copy a Word document and insert translations only at source-only positions.
 
@@ -270,6 +273,21 @@ def write_untranslated_docx(
         if translate_headers_footers
         else 0
     )
+    # 文本框和脚注/尾注同样不在覆盖率计划里：只补后面还没跟着译文的段落。
+    story_stats = _apply_story_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        output_translation_only=output_translation_only,
+        untranslated_only=True,
+        review_mark_map=review_mark_map,
+        highlight_policy=highlight_policy,
+        review_color_map=review_color_map,
+        issue_callback=issue_callback,
+    )
+    highlight_count += story_stats.highlight_count
+    highlight_skip_count += story_stats.highlight_skip_count
 
     doc.save(str(out_path))
     if log_callback:
@@ -286,6 +304,7 @@ def write_untranslated_docx(
             f"[OK] 已输出：{out_path.name}（补译段落 {paragraph_insertions}，"
             f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
         )
+        log_story_summary(log_callback, out_path.name, story_stats)
     return out_path
 
 

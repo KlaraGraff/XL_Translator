@@ -1588,5 +1588,53 @@
   "原图纸在翻译之后改过，对照表已经对不上，请重新翻译这张图纸。": {"en": "The source drawing changed after translation, so the table no longer matches. Translate this drawing again.", "fr": "Le plan d'origine a changé après la traduction ; la table ne correspond plus. Traduisez ce plan à nouveau."},
   "重新写回 DWG 图纸前，请先在「插件」中连接图纸转换工具。": {"en": "Connect the drawing converter in Plugins before rewriting DWG drawings.", "fr": "Connectez le convertisseur de plans dans Plugins avant de réécrire des plans DWG."},
   "这次任务的译文记录已被清理或损坏，无法查看。请重新翻译这批图纸。": {"en": "This task's translation record was cleaned up or is damaged and cannot be shown. Translate these drawings again.", "fr": "Le relevé de traduction de cette tâche a été supprimé ou est endommagé. Traduisez ces plans à nouveau."},
-  "读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。": {"en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.", "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."}
+  "读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。": {"en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.", "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."},
+  "文本框 {0}": {
+    "en": "Text box {0}",
+    "fr": "Zone de texte {0}"
+  },
+  "脚注 {0}": {
+    "en": "Footnote {0}",
+    "fr": "Note de bas de page {0}"
+  },
+  "尾注 {0}": {
+    "en": "Endnote {0}",
+    "fr": "Note de fin {0}"
+  },
+  "文本框": {
+    "en": "Text box",
+    "fr": "Zone de texte"
+  },
+  "文本框放不下译文": {
+    "en": "Translation does not fit in the text box",
+    "fr": "La traduction ne tient pas dans la zone de texte"
+  },
+  "已把文本框里的字缩到原来的 60%，仍可能有文字被遮住，请在 Word 里调大文本框。": {
+    "en": "The text in the text box was reduced to 60% of its size; some text may still be hidden. Enlarge the text box in Word.",
+    "fr": "Le texte de la zone de texte a été réduit à 60 % de sa taille ; une partie peut encore être masquée. Agrandissez la zone de texte dans Word."
+  },
+  "文本框 {0} / 段落 {1}": {
+    "en": "Text box {0} / paragraph {1}",
+    "fr": "Zone de texte {0} / paragraphe {1}"
+  },
+  "脚注 {0} / 段落 {1}": {
+    "en": "Footnote {0} / paragraph {1}",
+    "fr": "Note de bas de page {0} / paragraphe {1}"
+  },
+  "尾注 {0} / 段落 {1}": {
+    "en": "Endnote {0} / paragraph {1}",
+    "fr": "Note de fin {0} / paragraphe {1}"
+  },
+  "这些内容位于内容控件或未接受的修订里，未参与翻译，输出文档中保持原文。": {
+    "en": "This content is inside content controls or unaccepted tracked changes. It was not translated and stays in the original language in the output document.",
+    "fr": "Ce contenu se trouve dans des contrôles de contenu ou des modifications suivies non acceptées. Il n'a pas été traduit et reste dans la langue d'origine dans le document produit."
+  },
+  "  → {0}：已翻译文本框 {1} 段、脚注/尾注 {2} 段": {
+    "en": "  → {0}: translated {1} text box {1|paragraph|paragraphs} and {2} footnote/endnote {2|paragraph|paragraphs}",
+    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de zones de texte et {2} {2|paragraphe|paragraphes} de notes traduits"
+  },
+  "  → {0}：已翻译脚注/尾注 {1} 段": {
+    "en": "  → {0}: translated {1} footnote/endnote {1|paragraph|paragraphs}",
+    "fr": "  → {0} : {1} {1|paragraphe de note de bas de page/de fin traduit|paragraphes de notes de bas de page/de fin traduits}"
+  }
 }

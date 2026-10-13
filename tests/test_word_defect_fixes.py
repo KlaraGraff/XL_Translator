@@ -470,8 +470,8 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             self.assertIn("内容控件", report.describe())
             self.assertIn("修订", report.describe())
 
-    def test_textboxes_and_footnotes_are_reported(self) -> None:
-        """审计 高-13：文本框和脚注同样走不进 python-docx 的段落遍历。"""
+    def test_textboxes_and_footnotes_are_counted_but_not_reported(self) -> None:
+        """审计 高-13：文本框和脚注走不进 python-docx 的段落遍历；现在单独翻译，只计数不报漏译。"""
         from docx.opc.packuri import PackURI
         from docx.opc.part import Part
 
@@ -510,10 +510,9 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             report = detect_hidden_word_content(path)
             self.assertEqual(report.textbox_count, 1)
             self.assertEqual(report.footnote_count, 1)
-            self.assertTrue(report.found)
-            self.assertIn("文本框 1 个", report.describe())
-            self.assertIn("脚注/尾注 1 条", report.describe())
-            self.assertIn("将文本框中的文字移至正文", report.advice())
+            self.assertFalse(report.found)
+            self.assertEqual(report.describe(), "")
+            self.assertEqual(report.advice(), "")
 
     def test_plain_document_reports_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
