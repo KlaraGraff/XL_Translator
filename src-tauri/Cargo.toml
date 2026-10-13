@@ -1,6 +1,6 @@
 [package]
 name = "translator"
-version = "10.0.0"
+version = "10.1.0"
 description = "Translator desktop shell"
 authors = ["OA"]
 license = "MIT"

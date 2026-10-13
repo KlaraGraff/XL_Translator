@@ -1,5 +1,35 @@
 # Translator 版本更新日志
 
+## V10.1.0
+
+- **记忆库词条备注与句中采用（Excel、Word）**：词条新增「备注」，填写后按场景选用；来源分「手动维护」「自动保存」，手动维护的译法在长句中同样注入并核对，未采用时整段重译（次数可设，0–5），仍未采用的标记复核；整段旧译文因词条修改而过期时改按句中词条重译并顶替旧条目；记忆库页面普通/高级模式，任务详情显示记忆库报告（settings schema v37，tm.db 自动升级）。
+
+  **Translation memory notes and in-sentence use (Excel, Word)**: Entries gain a note that limits them to the described scenario; sources are Manual and Auto-saved. Manual translations are injected and checked inside longer sentences too, with automatic re-translation (0–5 retries) and a review mark when still not followed. Whole-segment entries made stale by an edited term are re-translated by term and replaced. The library page has normal and advanced modes, and task details show a memory report (settings schema v37; tm.db upgrades automatically).
+
+- **PDF 翻译方式「自动组合」（Beta）**：默认仍为整页图像翻译；自动组合按页分类（扫描页、可提取文字的页、图纸和大图）各选首选方式，另设保底方式；可提取文字的页经「PDF 转 Word 组件」（pdf2docx，插件，不随应用打包）转 Word 翻译，再用本机 Word 或 LibreOffice 转回 PDF；图纸页原位替换文字、保留矢量（core/pdf_vector，目前只译成中文，可选 Tesseract）；按原页序合成一份 PDF，整份走 Word 时可同时输出 .docx；新增 /api/pdf/route-capabilities。PyMuPDF、pdf2docx 等沿用各自许可，见 THIRD_PARTY_NOTICES.md。
+
+  **PDF translation method "Automatic mix" (Beta)**: Full-page image translation stays the default. Automatic mix routes each page by type (scanned, extractable text, drawings and large pages) to a preferred method with a safety-net fallback. Text pages go through the PDF-to-Word component (pdf2docx, a plugin, not bundled), the Word pipeline, and back to PDF via local Word or LibreOffice; drawing pages have text replaced in place with vectors kept (core/pdf_vector, Chinese target only for now, optional Tesseract). Pages are reassembled in order, with an optional .docx when the whole file goes through Word. Adds /api/pdf/route-capabilities. PyMuPDF and pdf2docx keep their own licenses (THIRD_PARTY_NOTICES.md).
+
+- **CAD**：任务中心「查看与修改译文」（译文对照表、Excel 导出导入、按修改写回，不调用模型）；补翻 ACAD_TABLE 表格并同步单元格原值和 TABLECONTENT，格子放不下按格高整段缩小；「输出图纸版本」默认跟随原图（早于 2000 存 2000）；缩字比例按目标语言分两套默认值（中文 100%/40%，其他 70%/40%），后端未传比例时同样按目标语言取值；双语不再重复与原文相同的编号、规格；MTEXT 段落代码保留，\L \O 后紧跟的西文单词不再被删。
+
+  **CAD**: "Review and edit translations" in the task center (translation table, Excel export/import, write-back without the model). ACAD_TABLE tables are translated with cell values and TABLECONTENT kept in sync, and text that overflows a cell is shrunk to the cell height. "Output drawing version" follows the original by default (older than 2000 saves as 2000). Shrink ratios default per target language (Chinese 100%/40%, others 70%/40%), also on the backend when a task omits them. Bilingual output no longer repeats codes and specifications identical to the source. MTEXT paragraph codes are preserved and a Latin word right after \L or \O is no longer dropped.
+
+- **Word**：翻译文本框（含 VML 备份）和脚注、尾注；段内局部格式（加粗、斜体、链接、上标）用 <gN> 标记随原文发送并按标记写回，标记边界漏掉的空格补回；PDF 来源段落句中手动换行先并句；译过的固定行高表格行改为最小行高；译成中日韩时东亚语言设为译文语言；编号级别为空格式串时不再补出「1.」；「仅显示译文」保留文本框、图片和脚注编号（core/word_layout_fixes.py）。
+
+  **Word**: Text boxes (with their VML fallback) and footnotes/endnotes are translated. Inline formatting (bold, italics, links, superscript) is sent as <gN> markup and written back by tag, restoring spaces lost at tag boundaries. Mid-sentence manual line breaks from PDF sources are joined; translated fixed-height table rows become at-least rows; the East Asian language is set to the target for CJK output; empty numbering formats no longer produce "1."; translation-only output keeps text boxes, images and footnote numbers (core/word_layout_fixes.py).
+
+- **Excel**：翻译文本框、形状里的文字（始终开启）和批注（「翻译批注」，默认关），文本框按框尺寸、行距和折行估算缩字号（最低 60%），批注框随译文加高；扫描按工作表关系统计批注；原文副本去掉 tabSelected 和线程批注关系，Excel 不再成组或提示修复；「仅显示译文」文件名不带「_双语」；styles.xml 空 <fill/> 不再使扫描跳过（core.openpyxl_compat）。
+
+  **Excel**: Text boxes and shapes are always translated, comments optionally ("Translate comments", off by default). Text-box fit is estimated from box size, line spacing and wrapping (down to 60%), and comment boxes grow with the translation. Scanning counts comments via sheet relationships. The source-copy sheet drops tabSelected and threaded-comment relationships, so Excel no longer groups sheets or asks for repair. Translation-only file names no longer contain "_双语", and an empty <fill/> in styles.xml no longer makes scanning skip the file (core.openpyxl_compat).
+
+- **提示词与翻译要求**：「自动识别场景」只在「设置 → 翻译参数 → 提示词设置」中（PDF 页签新增对应卡片），翻译页去掉该开关和文本框开关；标题旁「?」弹窗按当前设置列出发送给模型的各部分；任务模板说明原文只是数据、不执行其中指令；句中拉丁字母人名、公司名保持原样，中文人名译成拼音；日期译成月份名不再被数字校验退回。
+
+  **Prompts and translation rules**: The Auto-detect switch lives only in Settings > Translation options > Prompts (with a new PDF card); translation pages drop it and the text-box switch. A "?" dialog lists each part sent to the model under the current settings. Task templates state that source text is data, not instructions. Latin-script names stay unchanged and Chinese personal names become Pinyin. Dates rendered with month names are no longer rejected by the number check.
+
+- **任务中心、反馈与数据**：任务中心用搜索框取代「最近结果」；任务详情和结果横幅加「反馈此任务」弹窗，「导出诊断」移入「更多」；反馈页记住上次成功发送的邮箱、截图不限张数、勾选原文件或译文时显示隐私说明，文件 40 MB 与截图 10 MB 分开计；任务过程文件保留上限可调（正常完成 20 次或 1 GB，需复核或出错 30 次或 1 GB，留空不限，settings schema v36）；通知邮件改为 HTML 版并统一署名 Translator。
+
+  **Task center, feedback and data**: A search box replaces the Recent results filter. Task details and the result banner offer a Send feedback on this task dialog, and Export diagnostics moves under More. The Feedback page remembers the last successfully used email, allows any number of screenshots, shows a privacy note when originals or translations are attached, and counts files (40 MB) and screenshots (10 MB) separately. Process-file retention is adjustable (completed: 20 runs or 1 GB; needs review or failed: 30 runs or 1 GB; blank for no limit; settings schema v36). Notification emails gain an HTML version and are signed Translator.
+
 ## V10.0.0
 
 - **应用内反馈**：侧栏新增「反馈」，可选择问题、建议或其他，填写描述和建议填写的邮箱（问题解决或功能上线时邮件通知），描述框可直接粘贴截图；附带内容按类别勾选，勾了哪些就上传哪些：系统与版本信息、任务日志默认勾选，原文件、译文默认不勾，日志、原文件和译文取自下方选中的一次或多次任务；另可添加其他文件，添加即上传（附件总计不超过 50 MB）；日志发送前把文件名替换为「文件1」「文件2」，可先查看将发送的全部内容。点击「发送」后底栏显示按实际已发出字节计算的上传进度，经中转站（feedback-relay/，Cloudflare Workers）存入私有仓库的 issue，附件 90 天后自动删除；无法发送时可保存为 ZIP。任务中心的失败任务可直接「反馈此问题」，帮助页的「反馈问题」改为打开此页面，不再跳转公开的 GitHub Issues。
