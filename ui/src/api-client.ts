@@ -50,6 +50,12 @@ export type CadCapabilityStatus = {
   license_action?: string;
   version?: string;
   detail?: string;
+  converter_version?: string | null;
+  /** managed：一键安装的（可卸载）；external：用户自己装的（只连接）。 */
+  source?: "managed" | "external" | "";
+  managed_installed?: boolean;
+  one_click_supported?: boolean;
+  install?: ComponentInstallProgress;
 };
 
 /** 文字识别组件（Tesseract OCR）状态；后端未提供时前端按 unavailable 处理。 */
@@ -501,6 +507,22 @@ export class ApiClient {
 
   async connectCadOda(path: string): Promise<CadCapabilityStatus> {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async startCadConverterInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/cad/one-click-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async cadConverterInstallProgress(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/cad/install-progress");
+  }
+
+  async cancelCadConverterInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/cad/cancel-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async removeCadConverter(): Promise<CadCapabilityStatus> {
+    return this.request<CadCapabilityStatus>("/api/plugins/cad/remove-converter", { method: "POST", body: JSON.stringify({}) });
   }
 
   pdfRouteCapabilities(): Promise<PdfRouteCapabilities> {

@@ -11,10 +11,14 @@ from loguru import logger
 
 from api.cad_plugin import (
     OFFICIAL_DOWNLOAD_URL,
+    cancel_install,
     connect_oda,
     install_builtin,
     install_from_directory,
+    install_progress,
     probe_status,
+    remove_managed,
+    start_install,
     uninstall,
 )
 from core.cad_cache import default_cad_cache
@@ -69,6 +73,30 @@ def register(app: FastAPI) -> None:
     def uninstall_cad_plugin() -> dict[str, Any]:
         """Keep the legacy route without removing built-in support or ODA config."""
         return uninstall()
+
+    @app.post("/api/plugins/cad/one-click-install")
+    def one_click_install_cad_converter() -> dict[str, Any]:
+        """Download ODA File Converter from ODA's site after the user accepted its terms."""
+        try:
+            return start_install()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/plugins/cad/install-progress")
+    def cad_converter_install_progress() -> dict[str, Any]:
+        return install_progress()
+
+    @app.post("/api/plugins/cad/cancel-install")
+    def cancel_cad_converter_install() -> dict[str, Any]:
+        return cancel_install()
+
+    @app.post("/api/plugins/cad/remove-converter")
+    def remove_cad_converter() -> dict[str, Any]:
+        """Remove the one-click install only; a converter the user installed is never deleted."""
+        try:
+            return remove_managed()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/plugins/cad/oda")
     def connect_cad_oda(payload: dict[str, Any]) -> dict[str, Any]:

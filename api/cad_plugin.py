@@ -1,10 +1,12 @@
 """Built-in CAD adapter and external drawing-converter discovery.
 
 The CAD translation adapter ships with Translator.  The ODA converter remains
-a separately licensed, user-provided dependency selected through the connector
-endpoint.  The legacy install/uninstall functions are retained as no-op
-compatibility shims for older clients; they never install or remove the built-in
-adapter or the user's converter.
+a separately licensed dependency that is never bundled: the user either installs
+it and selects it through the connector endpoint, or confirms ODA's terms and
+lets ``core.oda_component_install`` download it from ODA's own site into the
+app data directory (「一键安装」).  The legacy install/uninstall functions are
+retained as no-op compatibility shims for older clients; they never install or
+remove the built-in adapter or the user's converter.
 """
 from __future__ import annotations
 
@@ -25,8 +27,10 @@ from typing import Any, Iterator
 
 from loguru import logger
 
+from api.component_install_job import InstallJob
 from app_meta import APP_VERSION
 from config import APP_DATA_DIR
+from core import oda_component_install as oda_installer
 
 PLUGIN_ID = "cad-support"
 PLUGIN_VERSION = "0.1.0"
@@ -392,21 +396,27 @@ def _configured_converter() -> Path | None:
     return resolved if resolved.name in _REQUIRED_CONVERTER_NAMES else None
 
 
-def _converter_candidate(info: dict[str, str]) -> tuple[Path | None, str | None, bool]:
+def _converter_candidate(info: dict[str, str]) -> tuple[Path | None, str | None, bool, str]:
+    """Return (converter, version, valid, source); source is "configured", "managed" or "discovered"."""
     configured = _configured_converter()
     if configured is not None:
         valid, version, detail = _validate_converter(configured, info)
         if valid:
-            return configured, version, True
+            return configured, version, True, "configured"
         # A previously saved path can become stale after an upgrade or uninstall.
         # Keep probing the known installation locations so the user does not have
         # to choose the same converter again manually.
+    managed = oda_installer.installed_executable()
+    if managed is not None:
+        valid, version, _ = _validate_converter(managed, info)
+        if valid:
+            return managed.resolve(), version or oda_installer.installed_info()["version"] or None, True, "managed"
     discovered = _find_converter(info=info)
     if discovered is not None:
         valid, version, _ = _validate_converter(discovered, info)
         if valid:
-            return discovered, version, True
-    return None, None, False
+            return discovered, version, True, "discovered"
+    return None, None, False, ""
 
 
 def _persist_discovered_converter(converter: Path | None) -> None:
@@ -475,8 +485,9 @@ def probe_status() -> dict[str, Any]:
         manifest = _manifest(root)
         info = _platform_info()
         supported = _platform_supported(info)
-        converter, converter_version, converter_valid = _converter_candidate(info)
-        _persist_discovered_converter(converter)
+        converter, converter_version, converter_valid, source = _converter_candidate(info)
+        if source == "discovered":
+            _persist_discovered_converter(converter)
         oda_invalid = converter is not None and not converter_valid
         # CAD translation support is part of Translator itself.  Older builds
         # wrote a manifest and an ``.enabled`` marker, but those files describe
@@ -518,6 +529,11 @@ def probe_status() -> dict[str, Any]:
             "official_download_url": OFFICIAL_DOWNLOAD_URL,
             "license_action": "user_provided_oda",
             "oda_bundled": False,
+            # managed = 一键安装的那一份（可卸载）；external = 用户自己装的（只连接，绝不删除）。
+            "source": ("managed" if source == "managed" else "external") if oda_state == "connected" else "",
+            "managed_installed": oda_installer.installed_executable() is not None,
+            "one_click_supported": supported and oda_installer.supported(),
+            "install": install_progress(),
             "message": message,
             "detail": detail,
         }
@@ -662,4 +678,40 @@ def connect_oda(path: str) -> dict[str, Any]:
 
 def uninstall() -> dict[str, Any]:
     """Legacy compatibility shim: never remove built-in support or ODA config."""
+    return probe_status()
+
+
+def _forget_configured_converter() -> None:
+    """一键装好就用装好的：之前连接（或自动找到并记下）的位置不再优先。"""
+    try:
+        _oda_config_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_JOB = InstallJob("图纸转换工具", lambda: oda_installer.install, lambda: oda_installer.ComponentInstallError,
+                  _forget_configured_converter)
+
+
+def install_progress() -> dict[str, Any]:
+    return _JOB.progress()
+
+
+def start_install() -> dict[str, Any]:
+    """后台开始一键安装（用户已在界面上确认 ODA 的使用条款）；进度用 install_progress() 查。"""
+    if not _platform_supported(_platform_info()) or not oda_installer.supported():
+        raise ValueError("当前系统不支持一键安装，可从 ODA 官网下载安装后选择它的安装位置。")
+    return _JOB.start(0)
+
+
+def cancel_install() -> dict[str, Any]:
+    return _JOB.cancel()
+
+
+def remove_managed() -> dict[str, Any]:
+    """卸载一键安装的转换工具；用户自己装的从不删除。"""
+    if _JOB.running():
+        raise ValueError("组件正在安装，请稍候。")
+    with _plugin_lock():
+        oda_installer.uninstall()
     return probe_status()
