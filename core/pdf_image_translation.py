@@ -3870,6 +3870,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     tesseract_languages=hooks.tesseract_languages,
                     source_lang=hooks.source_lang,
                     log=self._log,
+                    # 普通页是按「有可读文字层」选进来的，字都在文字层里，不用再 OCR。
+                    native_only=not is_oversized_for_threshold(
+                        getattr(self._settings.pdf, "oversized_page_threshold", "A3"),
+                        page.page_width_pt, page.page_height_pt,
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 - one page only costs that page
                 logger.debug(f"[PDF] 原位替换失败：{exc!r}")
