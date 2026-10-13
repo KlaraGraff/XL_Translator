@@ -916,11 +916,11 @@ def _with_stop(translate, should_stop):
     if translate is None:
         return None
 
-    def wrapped(texts, prompt):
+    def wrapped(texts, prompt, **extra):
         try:
-            return translate(texts, prompt, should_stop=should_stop)
+            return translate(texts, prompt, should_stop=should_stop, **extra)
         except TypeError:
-            return translate(texts, prompt)
+            return translate(texts, prompt, **extra)
 
     return wrapped
 
@@ -1245,6 +1245,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._settings = settings
         # 「原位替换文字（Beta）」用到的翻译回调、Tesseract 路径；不开这个功能时为 None。
         self._inplace_hooks = inplace_hooks
+        # 转 Word 翻译的各段正文的「记忆库」结果；收尾时和原位替换页的合并（_terms_result）。
+        self._word_terms: list[dict[str, Any]] = []
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
         # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
         self._profile_requester = profile_requester
@@ -2172,6 +2174,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "inplace_written": int(page.inplace_written) if page is not None else 0,
             "inplace_kept": int(page.inplace_kept) if page is not None else 0,
             "inplace_review": int(page.inplace_review) if page is not None else 0,
+            "inplace_term_review": int(page.inplace_term_review) if page is not None else 0,
             "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
             "inplace_message": page.inplace_message if page is not None else "",
             "kept_reason": page.kept_reason if page is not None else "",
@@ -3011,6 +3014,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         manifest_path=str(manifest_path),
                         files=file_results,
                         kpi=kpi,
+                        terms=self._terms_result(),
                     )
                 )
                 return
@@ -3023,6 +3027,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         manifest_path=str(manifest_path),
                         files=file_results,
                         kpi=kpi,
+                        terms=self._terms_result(),
                     )
                 )
                 return
@@ -3037,6 +3042,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     report_path=str(report_path),
                     manifest_path=str(manifest_path),
                     kpi=_done_kpi(summary),
+                    terms=self._terms_result(),
                     # 按了停止、但在飞的页刚好全部跑完：任务是正常完成的，可小结里得留下
                     # 这一下的痕迹，否则用户只看到「已完成 · 全部通过」，不知道自己按的那
                     # 一下有没有截断内容。
@@ -4019,6 +4025,34 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             blanks = []
         return [number for number in planned if number > 0]
 
+    def _terms_result(self) -> dict[str, Any]:
+        """任务详情里的「记忆库」一节：转 Word 的各段正文 + 原位替换的各页，合成一份。"""
+        from core.term_session import merge_term_results
+
+        parts: list[dict[str, Any]] = list(self._word_terms)
+        memory = getattr(self._inplace_hooks, "memory", None)
+        if memory is not None:
+            try:
+                parts.append(memory.finish())
+            except Exception as exc:  # noqa: BLE001 - statistics never fail a finished task
+                logger.warning(f"[PDF] 汇总记忆库结果失败：{exc!r}")
+        return merge_term_results(parts)
+
+    def _collect_word_terms(self, terms: dict[str, Any], where: str) -> None:
+        """一段转 Word 翻译的「记忆库」结果：位置前面补上文件名和页码。"""
+        if not terms:
+            return
+        terms = dict(terms)
+        not_applied = []
+        for item in terms.get("not_applied") or []:
+            if not isinstance(item, dict):
+                continue
+            locations = [str(value) for value in item.get("locations") or [] if value]
+            item = {**item, "locations": [f"{where} {value}" for value in locations] or [where]}
+            not_applied.append(item)
+        terms["not_applied"] = not_applied
+        self._word_terms.append(terms)
+
     def _run_word_segments(self, prepared_files: list[_PreparedPdfFile]) -> None:
         """自动组合（Beta）：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
         翻译，再转回 PDF。转好的段在装配时按原页序拼进来；转不成的页随后按保底方式
@@ -4079,7 +4113,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
                         should_stop=self._stop_event.is_set, log=self._log,
                         file_label=f"{record.name} {label}", key_overrides=self._key_overrides,
+                        term_file_paths=[Path(record.source_path)],
                     )
+                    self._collect_word_terms(result.terms, f"{record.name} {label}")
                     if not result.ok:
                         mark("stopped" if result.stopped else "failed",
                              "任务已停止" if result.stopped else "转成 Word 翻译失败")
@@ -4149,6 +4185,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     source_lang=hooks.source_lang,
                     log=self._log,
                     native_only=native_only,
+                    memory=getattr(hooks, "memory", None),
+                    memory_file=Path(record.source_path),
+                    memory_location=f"{record.name} 第 {page.page_number} 页",
                 )
             except Exception as exc:  # noqa: BLE001 - one page only costs that page
                 logger.debug(f"[PDF] 原位替换失败：{exc!r}")
@@ -4159,6 +4198,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page.inplace_written = result.written
             page.inplace_kept = result.kept
             page.inplace_review = result.review + result.not_written
+            page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
             page.inplace_review_items = result.review_items
             if result.ok and result.written > 0:
                 page.inplace_status = "done"
@@ -4168,6 +4208,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                     f"{page.inplace_review} 处认不准保留原文{note}"
                 )
+                if page.inplace_term_review:
+                    page.inplace_message += f"；{page.inplace_term_review} 处未采用记忆库中的设定译法，需复核"
                 self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
             else:
                 page.inplace_status = "kept_original"

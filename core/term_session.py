@@ -1,4 +1,4 @@
-"""一次 Excel / Word 任务里的记忆库词条：整段查找、批次包装、自动保存和收尾统计。
+"""一次翻译任务里的记忆库词条：整段查找、批次包装、自动保存和收尾统计。
 
 任务流程只和这里打交道：
 
@@ -9,12 +9,18 @@
 3. :meth:`TaskTermSession.auto_save_short_words` 在「自动识别场景」下把短词在新场景
    里的译法存成带备注的新词条；
 4. :meth:`TaskTermSession.finish` 记下词条使用次数，返回任务详情里「记忆库」一节。
+
+Excel、Word 的任务流程直接用 :class:`TaskTermSession`；CAD 图纸和 PDF 原位替换
+这类一份文件接一份处理的路径用 :class:`DocumentTermMemory`（每份文件一个会话，
+收尾合并）；PDF 转 Word 走 Word 流程，几段的结果用 :func:`merge_term_results` 合并。
+除图像翻译外，凡是调用文本翻译的路径都走这同一套规则。
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
@@ -43,6 +49,10 @@ _SCENE_NOTE_SYSTEM = (
     "（例如「防火门的耐火等级」「配电回路编号」），供以后翻译其他文档时判断是否沿用。"
     "只输出一个 JSON 对象，键是短词原文，值是说明，不要输出其他内容。"
 )
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff" for ch in str(text or ""))
 
 
 def _first_sentence(text: str) -> str:
@@ -400,5 +410,208 @@ class TaskTermSession:
             "manual_terms_total": self.index.manual_entry_count if self.index is not None else 0,
             # 本次涉及（整段或句中出现过）的手动维护词条数，任务详情「均已采用」那一行用。
             "manual_terms_hit": len(involved & manual_ids),
+            # 同一任务里几份结果合并时按 id 去重（merge_term_results）。
+            "manual_hit_ids": sorted(involved & manual_ids),
             "retry_attempts": int(getattr(self._tm, "term_retry_attempts", 2)),
         }
+
+    @property
+    def hits(self) -> dict[str, str]:
+        """整段直接套用的 {原文: 译文}（:meth:`resolve` 的返回值）。"""
+        return dict(self.whole.hits)
+
+
+# ── 合并与通用入口 ─────────────────────────────────────────────────────────
+
+
+def merge_term_results(results: Iterable[Mapping[str, object] | None]) -> dict[str, object]:
+    """把同一任务里几份「记忆库」结果（每张图纸、每段转 Word 的正文、每页原位替换）
+    合成任务详情里的一节；都为空时返回空字典（整节不显示）。"""
+    parts = [dict(item) for item in results if item]
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return parts[0]
+    hits = {"always": 0, "scene": 0, "segment": 0}
+    not_applied: list[object] = []
+    auto_saved: list[object] = []
+    scenes: dict[str, dict[str, object]] = {}
+    manual_ids: set[int] = set()
+    manual_hit_fallback = 0
+    applied_direct = applied_after_retry = manual_total = retry_attempts = 0
+    profile = ""
+    marked = {str(part.get("marked_in") or "") for part in parts if part.get("not_applied")}
+    for part in parts:
+        part_hits = part.get("hits") if isinstance(part.get("hits"), Mapping) else {}
+        for key in hits:
+            hits[key] += int(part_hits.get(key, 0) or 0)  # type: ignore[union-attr]
+        applied_direct += int(part.get("applied_direct", 0) or 0)
+        applied_after_retry += int(part.get("applied_after_retry", 0) or 0)
+        not_applied.extend(part.get("not_applied") or [])  # type: ignore[arg-type]
+        auto_saved.extend(part.get("auto_saved") or [])  # type: ignore[arg-type]
+        manual_total = max(manual_total, int(part.get("manual_terms_total", 0) or 0))
+        retry_attempts = max(retry_attempts, int(part.get("retry_attempts", 0) or 0))
+        ids = part.get("manual_hit_ids")
+        if isinstance(ids, list):
+            manual_ids.update(int(value) for value in ids)
+        else:
+            manual_hit_fallback = max(manual_hit_fallback, int(part.get("manual_terms_hit", 0) or 0))
+        if not profile:
+            profile = str(part.get("profile") or "")
+        for item in part.get("scene_choices") or []:  # type: ignore[union-attr]
+            if not isinstance(item, Mapping):
+                continue
+            term = str(item.get("term") or "")
+            merged = scenes.setdefault(
+                term,
+                {"term": term, "candidates": list(item.get("candidates") or []), "chosen": Counter(), "count": 0},
+            )
+            merged["count"] = int(merged["count"]) + int(item.get("count", 0) or 0)
+            for choice in item.get("chosen") or []:
+                if isinstance(choice, Mapping):
+                    merged["chosen"][str(choice.get("target") or "")] += int(choice.get("count", 0) or 0)  # type: ignore[index]
+    scene_choices = []
+    for item in scenes.values():
+        chosen: Counter[str] = item.pop("chosen")  # type: ignore[assignment]
+        item["chosen"] = [{"target": target, "count": count} for target, count in chosen.most_common()]
+        scene_choices.append(item)
+    return {
+        "profile": profile,
+        "hits": hits,
+        "applied_direct": applied_direct,
+        "applied_after_retry": applied_after_retry,
+        "not_applied": not_applied,
+        "auto_saved": auto_saved,
+        "scene_choices": scene_choices,
+        "manual_terms_total": manual_total,
+        "manual_terms_hit": max(len(manual_ids), manual_hit_fallback),
+        "manual_hit_ids": sorted(manual_ids),
+        "retry_attempts": retry_attempts,
+        # 几处标记的地方不同（PDF：转 Word 的段标在文件里，原位替换的页列在逐页结果）时笼统说「已标记」。
+        **({"marked_in": marked.pop() if len(marked) == 1 else "mixed"} if marked - {""} else {}),
+    }
+
+
+class DocumentTermMemory:
+    """不经 Excel / Word 流程的文字翻译路径（CAD 图纸、PDF 原位替换）共用的记忆库层。
+
+    规则与 Excel / Word 完全相同（同一个 :class:`TaskTermSession`）：
+
+    1. :meth:`open`：每份文件（或每页）的文字先整段查记忆库，手动维护的词条优先；
+    2. 返回的会话 ``wrap(engine)`` 后再翻译：本批出现的词条随批附上，翻完核对，
+       「始终采用」的未采用时重译，仍不符的由调用方标记需复核；
+    3. :meth:`close`：「自动识别场景」下把短词的本次译法存成带备注的新词条；
+    4. :meth:`finish`：任务结束时记下使用次数，合并成任务详情里的「记忆库」一节。
+
+    这几条路径一份文件接一份地处理，会话按顺序开、按顺序关。
+    """
+
+    def __init__(
+        self,
+        tm_settings,
+        *,
+        target_lang: str,
+        lang_pairs: Iterable[str],
+        smart_mode: bool,
+        engine_provider: Callable[[], TranslationEngine | None] | None = None,
+        log: Callable[[str, str], None] | None = None,
+        task_id: str = "",
+        marked_in: str = "",
+    ) -> None:
+        self._tm = tm_settings
+        # 未采用设定译法时标记需复核的地方（任务详情据此写说明）：cad_review 为 CAD 译文对照表，
+        # pdf_pages 为 PDF 逐页结果；Excel / Word 标在输出文件里，不带这个键。
+        self.marked_in = marked_in
+        self.target_lang = target_lang
+        self.lang_pairs = [pair for pair in dict.fromkeys(str(item) for item in lang_pairs) if pair]
+        self.smart_mode = bool(smart_mode)
+        self._engine_provider = engine_provider
+        self._log = log or (lambda _level, _message: None)
+        self._task_id = task_id
+        self._sessions: list[tuple[TaskTermSession, list[str], Callable[[str], str | None]]] = []
+        # 已收尾的会话结果：使用次数只记一次；收尾后又开的会话（PDF 单页重新生成）下次再记。
+        self._finished: list[dict[str, object]] = []
+        self._finished_count = 0
+        self._lock = threading.Lock()
+
+    def _pair_resolver(self, pairs: list[str]) -> Callable[[str], str | None]:
+        def pair_for_text(text: str) -> str | None:
+            if len(pairs) == 1:
+                return pairs[0]
+            # 自动识别源语言时几个语言对都查：含汉字的归中文那一对，其余判断不了就不自动保存。
+            if _has_cjk(text):
+                return next((pair for pair in pairs if pair.split("-", 1)[0] == "zh"), None)
+            return None
+
+        return pair_for_text
+
+    def open(
+        self,
+        texts: Iterable[str],
+        *,
+        profile: str = "",
+        file_path: object | None = None,
+        location: str = "",
+        lang_pairs: Iterable[str] | None = None,
+        log: Callable[[str, str], None] | None = None,
+    ) -> TaskTermSession:
+        """一份文件（或一页）开一个会话：整段查记忆库，``session.hits`` 是直接套用的译文。"""
+        pairs = [pair for pair in dict.fromkeys(str(item) for item in (lang_pairs or self.lang_pairs)) if pair]
+        session = TaskTermSession(
+            self._tm,
+            target_lang=self.target_lang,
+            smart_mode=self.smart_mode,
+            file_paths=[file_path] if file_path else (),
+            log=log or self._log,
+            task_id=self._task_id,
+        )
+        session.resolve({text: set(pairs) for text in dict.fromkeys(texts) if text}, profile=profile)
+        with self._lock:
+            self._sessions.append((session, [location] if location else [], self._pair_resolver(pairs)))
+        return session
+
+    def pair_for(self, session: TaskTermSession) -> Callable[[str], str | None]:
+        with self._lock:
+            for item, _locations, resolver in self._sessions:
+                if item is session:
+                    return resolver
+        return lambda _text: None
+
+    def close(
+        self,
+        session: TaskTermSession,
+        translations: Mapping[str, str],
+        *,
+        counts: Mapping[str, int] | None = None,
+    ) -> None:
+        """翻完一份文件：记一行未采用的日志，「自动识别场景」下自动保存短词。"""
+        session.log_not_applied()
+        if not session.will_auto_save():
+            return
+        engine = self._engine_provider() if self._engine_provider is not None else None
+        if engine is None:
+            return
+        try:
+            session.auto_save_short_words(
+                engine,
+                translations,
+                pair_for_text=self.pair_for(session),
+                counts=counts,
+                engine_name=str(getattr(engine, "engine_name", "") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - auto-saving never fails a translated file
+            logger.warning(f"自动保存短词失败（不影响本次翻译）：{exc!r}")
+
+    def finish(self) -> dict[str, object]:
+        """任务收尾（完成、停止、失败都会走到）：每个会话只收尾一次，返回合并后的结果。"""
+        with self._lock:
+            for session, locations, resolver in self._sessions[self._finished_count:]:
+                result = session.finish(
+                    pair_for_text=resolver,
+                    locations_for_text=(lambda _text, where=locations: list(where)) if locations else None,
+                )
+                if self.marked_in:
+                    result["marked_in"] = self.marked_in
+                self._finished.append(result)
+            self._finished_count = len(self._sessions)
+            return merge_term_results(self._finished)

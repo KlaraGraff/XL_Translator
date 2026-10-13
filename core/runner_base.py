@@ -108,8 +108,16 @@ class BaseTaskRunner:
         if cached is not None:
             return cached
         session = getattr(self, "_term_session", None)
+        memory = getattr(self, "_term_memory", None)
         result: dict[str, object] = {}
-        if session is not None:
+        if memory is not None:
+            # 一份文件一个会话的路径（CAD、PDF 原位替换）：见 core.term_session.DocumentTermMemory。
+            try:
+                result = memory.finish()
+            except Exception as exc:  # noqa: BLE001 - statistics never fail a finished task
+                logger.warning(f"汇总记忆库结果失败：{exc!r}")
+                result = {}
+        elif session is not None:
             pair_for_text = getattr(self, "_term_pair_for_text", None) or (lambda _text: None)
             result = session.finish(
                 pair_for_text=pair_for_text,

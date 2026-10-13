@@ -212,6 +212,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     from core.model_throughput import get_model_throughput
     from core.ocr_engine import resolve_tesseract, tesseract_languages
     from core.pdf_vector import InplaceHooks
+    from core.term_session import DocumentTermMemory
     from engines.base_engine import engine_supports_chat
 
     state: dict[str, Any] = {}
@@ -231,8 +232,10 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         logger.debug(f"[PDF] 原位替换：读取文档翻译模型批量设置失败：{exc!r}")
         batch_size, concurrency = 20, 4
 
-    def translate(texts: list[str], prompt: str, should_stop=None) -> dict:
-        return translate_texts(texts, engine(), "zh", prompt, batch_size=batch_size,
+    def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
+        # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
+        eng = term_session.wrap(engine()) if term_session is not None else engine()
+        return translate_texts(texts, eng, "zh", prompt, batch_size=batch_size,
                                concurrency=concurrency, source_lang="auto", should_stop=should_stop)
 
     profile = None
@@ -243,6 +246,16 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
                 return ""
             return request_document_profile(eng.chat, texts, target_language="简体中文")
 
+    # 记忆库与 Excel / Word 同一套规则（core.term_session）；语言对按每页识别的原文语种定。
+    memory = DocumentTermMemory(
+        settings.tm,
+        target_lang=str(settings.pdf.target_lang or settings.target_lang or "zh"),
+        lang_pairs=(),
+        smart_mode=bool(getattr(settings.pdf, "smart_context", False)),
+        engine_provider=engine,
+        marked_in="pdf_pages",
+    )
+
     exe = resolve_tesseract()
     return InplaceHooks(
         translate=translate,
@@ -251,6 +264,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         tesseract_languages=tesseract_languages(exe) if exe else None,
         source_lang="auto",
         ocr_wanted=True,
+        memory=memory,
     )
 
 
