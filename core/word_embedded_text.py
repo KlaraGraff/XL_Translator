@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 from docx.opc.part import XmlPart
 from docx.oxml import parse_xml
-from docx.oxml.ns import qn
+from docx.oxml.ns import nsdecls, qn
 from docx.text.paragraph import Paragraph
 from lxml import etree
 
@@ -426,16 +426,35 @@ def _int_attr(el, name: str, default: int) -> int:
 
 
 def _format_value(paragraph: Paragraph, attr: str):
-    """段落格式的某一项：段落自己没写就沿样式链往上找。"""
+    """段落格式的某一项：段落自己没写就沿样式链往上找，最后看文档默认段落格式。"""
     try:
         value = getattr(paragraph.paragraph_format, attr)
         style = paragraph.style
         while value is None and style is not None:
             value = getattr(style.paragraph_format, attr)
             style = style.base_style
+        if value is None:
+            value = _doc_default_format(paragraph, attr)
     except Exception:  # noqa: BLE001 - 估算用，读不到按没写
         return None
     return value
+
+
+def _doc_default_format(paragraph: Paragraph, attr: str):
+    """styles.xml 里 ``w:docDefaults/w:pPrDefault`` 的段落格式。
+
+    Word 默认模板的段后 10 磅、1.15 倍行距就写在这里，不在「正文」样式上；
+    漏掉它，框里每段少算十几磅，估出来放得下、Word 里却溢出（Mac 实测 6 段差约 60 磅）。
+    """
+    from docx.text.parfmt import ParagraphFormat
+
+    styles = paragraph.part.styles.element
+    ppr = styles.find(f"{qn('w:docDefaults')}/{qn('w:pPrDefault')}/{qn('w:pPr')}")
+    if ppr is None:
+        return None
+    holder = parse_xml(f'<w:p {nsdecls("w")}/>')  # 套一层段落，借 python-docx 解析行距和段距
+    holder.append(deepcopy(ppr))
+    return getattr(ParagraphFormat(holder), attr)
 
 
 def _paragraph_metrics(paragraph: Paragraph) -> ParagraphMetrics:

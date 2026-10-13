@@ -250,7 +250,11 @@ class WordStoryTests(unittest.TestCase):
 
     def test_line_spacing_counts_when_judging_room(self) -> None:
         sizes = {}
-        for name, ppr in (("single", ""), ("wide", '<w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr>')):
+        # 段距和行距都写在段落上，盖过默认模板 docDefaults 里的段后 10 磅、1.15 倍。
+        for name, ppr in (
+            ("single", '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'),
+            ("wide", '<w:pPr><w:spacing w:after="0" w:line="360" w:lineRule="auto"/></w:pPr>'),
+        ):
             source = self.root / f"{name}.docx"
             build_document(source, cx=180 * 12700, cy=100 * 12700, ppr=ppr)
             output = self._write(source, name=name)
@@ -258,6 +262,27 @@ class WordStoryTests(unittest.TestCase):
         # 同样大的框：单倍行距放得下，1.5 倍行距要缩字。
         self.assertEqual(sizes["single"], {"22"})
         self.assertTrue(all(int(size) < 22 for size in sizes["wide"]), sizes["wide"])
+
+    def test_document_default_spacing_counts_when_judging_room(self) -> None:
+        # Word 默认模板把段后 10 磅、1.15 倍行距写在 docDefaults 里，不在样式上：同样大的框，
+        # 没有默认段距时放得下，有了就得缩字。
+        sizes = {}
+        for name, spacing in (("plain", ""), ("word_default", '<w:spacing w:after="200" w:line="276" w:lineRule="auto"/>')):
+            source = self.root / f"{name}.docx"
+            build_document(source, cx=180 * 12700, cy=100 * 12700)
+            with zipfile.ZipFile(source) as archive:
+                items = {item: archive.read(item) for item in archive.namelist()}
+            styles = items["word/styles.xml"].decode()
+            styles = re.sub(r"<w:pPrDefault>.*?</w:pPrDefault>|<w:pPrDefault/>", "", styles, flags=re.S)
+            styles = styles.replace("</w:rPrDefault>", f"</w:rPrDefault><w:pPrDefault><w:pPr>{spacing}</w:pPr></w:pPrDefault>", 1)
+            items["word/styles.xml"] = styles.encode()
+            with zipfile.ZipFile(source, "w") as archive:
+                for item, data in items.items():
+                    archive.writestr(item, data)
+            output = self._write(source, name=name)
+            sizes[name] = set(re.findall(r'<w:sz w:val="(\d+)"/>', _xml(output, "word/document.xml")))
+        self.assertEqual(sizes["plain"], {"22"})
+        self.assertTrue(all(int(size) < 22 for size in sizes["word_default"]), sizes["word_default"])
 
     def test_exact_line_spacing_shrinks_with_the_font(self) -> None:
         source = self.root / "exact.docx"
