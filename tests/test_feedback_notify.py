@@ -114,3 +114,33 @@ def test_message_headers():
     page = message.get_body(("html",)).get_content()
     assert "<p style=\"margin:0 0 1em\">C&#x27;est corrigé dans la 10.0.1.</p>" in page
     assert 'text-align:right">—— Translator</p>' in page
+
+
+def test_update_hint_follows_the_ui_language():
+    github = FakeGitHub(
+        [
+            {"number": 1, "body": ISSUE_BODY},
+            {"number": 2, "body": ISSUE_BODY.replace("界面语言 fr", "界面语言 zh").replace("marie@example.fr", "li@example.cn")},
+            {"number": 3, "body": ISSUE_BODY.replace("界面语言 fr", "界面语言 en").replace("marie@example.fr", "sam@example.com")},
+        ],
+        {1: [NOTICE], 2: [NOTICE], 3: [NOTICE]},
+    )
+    sent: dict[str, str] = {}
+    notify.run(github, (10, 0, 1), send=lambda to, n: sent.__setitem__(to, n.body), dry_run=False)
+    assert sent["marie@example.fr"].endswith(notify.UPDATE_HINTS["fr"])
+    assert sent["li@example.cn"].endswith(notify.UPDATE_HINTS["zh"])
+    assert sent["sam@example.com"].endswith(notify.UPDATE_HINTS["en"])
+    assert notify.RELEASES_URL.endswith("/releases/latest")
+    assert notify.ui_language("**版本**：10.0.0") == "zh"
+
+
+def test_update_hint_is_not_added_twice():
+    notice = notify.Notice((10, 0, 1), "主题", f"已修复。下载：{notify.RELEASES_URL}")
+    assert notify.with_update_hint(notice, "zh") is notice
+
+
+def test_links_are_clickable_in_html():
+    notice = notify.with_update_hint(notify.Notice((10, 0, 1), "主题", "已修复 <b>。"), "zh")
+    page = notify.build_message("xltranslator.support@gmail.com", "li@example.cn", notice).get_body(("html",)).get_content()
+    assert f'<a href="{notify.RELEASES_URL}" style="color:#2f5bd3">{notify.RELEASES_URL}</a>' in page
+    assert "已修复 &lt;b&gt;。" in page
