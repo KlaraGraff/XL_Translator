@@ -195,6 +195,18 @@
     "en": "{0} {0|item|items} received no translation from the model; those places in the file contain the source text. The model service took too long to respond; later, run the output file again with “Only fill in untranslated content” turned on.",
     "fr": "Le modèle n'a renvoyé aucune traduction pour {0} {0|élément|éléments} ; à ces endroits, le fichier contient le texte source. Le service du modèle a mis trop de temps à répondre ; relancez plus tard le fichier de sortie avec « Compléter uniquement le contenu non traduit » activé."
   },
+  "仅输出译文：{0} 处已含两种语言的内容改为整体翻成目标语言。": {
+    "en": "Translation-only output: {0} {0|item that already contains|items that already contain} two languages will be translated entirely into the target language.",
+    "fr": "Sortie traduction seule : {0} {0|élément contenant|éléments contenant} déjà deux langues {0|sera traduit|seront traduits} entièrement dans la langue cible."
+  },
+  "已含两种语言的段落未能翻成目标语言": {
+    "en": "A paragraph containing two languages could not be translated into the target language",
+    "fr": "Un paragraphe contenant deux langues n'a pas pu être traduit dans la langue cible"
+  },
+  "已保留原文并标记需复核。": {
+    "en": "The source text was kept and marked for review.",
+    "fr": "Le texte source a été conservé et marqué pour vérification."
+  },
   "{0} 处模型返回的译文与原文相同，已标记需复核。": {
     "en": "For {0} {0|item|items}, the model returned the source text unchanged; marked for review.",
     "fr": "Pour {0} {0|élément|éléments}, le modèle a renvoyé le texte source inchangé ; marqué pour vérification."

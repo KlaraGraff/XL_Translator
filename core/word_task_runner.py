@@ -1331,6 +1331,60 @@ class WordTaskRunner(BaseTaskRunner):
                 _note_stop_without_discarding("任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。")
 
                 if mixed_texts:
+                    kept_bilingual = [
+                        source
+                        for source, result in mixed_results.items()
+                        if result.action == MIXED_ACTION_EXISTING_BILINGUAL
+                    ]
+                    if (
+                        kept_bilingual
+                        and settings.word_output.output_translation_only
+                        and not self._stop_event.is_set()
+                    ):
+                        # 仅输出译文时，「中文＋外文」的段落原样留着，用户看到的就是没翻；
+                        # 模型还会把中文＋英文误判成中译法的「已有双语」（反馈
+                        # FB-20261013-UVW95F）。整段当普通段落再翻一遍，不进「已保留原内容」
+                        # 那条报告。原文＋译文模式照旧保留原样。
+                        mixed_results = {
+                            source: result
+                            for source, result in mixed_results.items()
+                            if source not in kept_bilingual
+                        }
+                        self._log(
+                            "INFO",
+                            f"仅输出译文：{len(kept_bilingual)} 处已含两种语言的内容改为整体翻成目标语言。",
+                        )
+                        retranslated = translate_word_texts(
+                            kept_bilingual,
+                            term_engine,
+                            target_lang,
+                            word_prompt,
+                            settings.word_batch,
+                            concurrency,
+                            error_callback=lambda msg: self._log("INFO", msg),
+                            should_stop=self.stop_requested,
+                            source_lang=source_lang,
+                            stats=WordBatchRunStats(),
+                            api_scheduler=api_scheduler,
+                            request_category=API_REQUEST_CATEGORY_NORMAL,
+                        )
+                        not_translated = []
+                        for source in kept_bilingual:
+                            translation = str(retranslated.get(source) or "").strip()
+                            if translation and translation != source.strip():
+                                api_translations[source] = translation
+                            elif not self._stop_event.is_set():
+                                api_translations[source] = source
+                                _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+                                not_translated.append(source)
+                        _add_quality_issues(
+                            quality_issues,
+                            segment_locations,
+                            not_translated,
+                            problem="已含两种语言的段落未能翻成目标语言",
+                            status="已保留原文并标记需复核。",
+                            severity="needs_review",
+                        )
                     _apply_mixed_language_word_results(
                         mixed_results=mixed_results,
                         translations=api_translations,
