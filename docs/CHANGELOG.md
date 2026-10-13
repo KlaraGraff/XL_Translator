@@ -2,13 +2,13 @@
 
 ## V10.1.0
 
-- **记忆库词条备注与句中采用（Excel、Word）**：词条新增「备注」，填写后按场景选用；来源分「手动维护」「自动保存」，手动维护的译法在长句中同样注入并核对，未采用时整段重译（次数可设，0–5），仍未采用的标记复核；整段旧译文因词条修改而过期时改按句中词条重译并顶替旧条目；记忆库页面普通/高级模式，任务详情显示记忆库报告（settings schema v37，tm.db 自动升级）。
-
-  **Translation memory notes and in-sentence use (Excel, Word)**: Entries gain a note that limits them to the described scenario; sources are Manual and Auto-saved. Manual translations are injected and checked inside longer sentences too, with automatic re-translation (0–5 retries) and a review mark when still not followed. Whole-segment entries made stale by an edited term are re-translated by term and replaced. The library page has normal and advanced modes, and task details show a memory report (settings schema v37; tm.db upgrades automatically).
-
 - **PDF 翻译方式「自动组合」（Beta）**：默认仍为整页图像翻译；自动组合按页分类（扫描页、可提取文字的页、图纸和大图）各选首选方式，另设保底方式；可提取文字的页经「PDF 转 Word 组件」（pdf2docx，插件，不随应用打包）转 Word 翻译，再用本机 Word 或 LibreOffice 转回 PDF；图纸页原位替换文字、保留矢量（core/pdf_vector，目前只译成中文，可选 Tesseract）；按原页序合成一份 PDF，整份走 Word 时可同时输出 .docx；新增 /api/pdf/route-capabilities。PyMuPDF、pdf2docx 等沿用各自许可，见 THIRD_PARTY_NOTICES.md。
 
   **PDF translation method "Automatic mix" (Beta)**: Full-page image translation stays the default. Automatic mix routes each page by type (scanned, extractable text, drawings and large pages) to a preferred method with a safety-net fallback. Text pages go through the PDF-to-Word component (pdf2docx, a plugin, not bundled), the Word pipeline, and back to PDF via local Word or LibreOffice; drawing pages have text replaced in place with vectors kept (core/pdf_vector, Chinese target only for now, optional Tesseract). Pages are reassembled in order, with an optional .docx when the whole file goes through Word. Adds /api/pdf/route-capabilities. PyMuPDF and pdf2docx keep their own licenses (THIRD_PARTY_NOTICES.md).
+
+- **记忆库词条备注与句中采用（Excel、Word）**：词条新增「备注」，填写后按场景选用；来源分「手动维护」「自动保存」，手动维护的译法在长句中同样注入并核对，未采用时整段重译（次数可设，0–5），仍未采用的标记复核；整段旧译文因词条修改而过期时改按句中词条重译并顶替旧条目；记忆库页面普通/高级模式，任务详情显示记忆库报告（settings schema v37，tm.db 自动升级）。
+
+  **Translation memory notes and in-sentence use (Excel, Word)**: Entries gain a note that limits them to the described scenario; sources are Manual and Auto-saved. Manual translations are injected and checked inside longer sentences too, with automatic re-translation (0–5 retries) and a review mark when still not followed. Whole-segment entries made stale by an edited term are re-translated by term and replaced. The library page has normal and advanced modes, and task details show a memory report (settings schema v37; tm.db upgrades automatically).
 
 - **CAD**：任务中心「查看与修改译文」（译文对照表、Excel 导出导入、按修改写回，不调用模型）；补翻 ACAD_TABLE 表格并同步单元格原值和 TABLECONTENT，格子放不下按格高整段缩小；「输出图纸版本」默认跟随原图（早于 2000 存 2000）；缩字比例按目标语言分两套默认值（中文 100%/40%，其他 70%/40%），后端未传比例时同样按目标语言取值；双语不再重复与原文相同的编号、规格；MTEXT 段落代码保留，\L \O 后紧跟的西文单词不再被删。
 
