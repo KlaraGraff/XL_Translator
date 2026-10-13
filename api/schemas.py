@@ -133,8 +133,9 @@ class TaskStartRequest(BaseModel):
     cad_translate_output_filename: bool = False
     # 译文排版、显示模式、锁定名单、译文字体（对应设置里的 cad_output.*）。
     cad_fit_layout: bool = True
-    cad_fit_default_scale: float = 0.7
-    cad_fit_min_scale: float = 0.4
+    # 不传时按目标语言取默认（core.cad_layout.default_fit_settings：中文 1.0/0.4，其他 0.7/0.4）。
+    cad_fit_default_scale: float | None = None
+    cad_fit_min_scale: float | None = None
     cad_display_mode: str = "translation"
     cad_locked_blocks: str = ""
     cad_locked_layers: str = ""

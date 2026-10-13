@@ -65,11 +65,20 @@ _CAD_OPTION_FIELDS = (
 )
 
 
-def cad_layout_options(options: TaskOptions) -> dict[str, Any]:
-    """任务选项里排版、显示模式、锁定名单和译文字体对应的 ``CadPipelineOptions`` 参数。"""
-    from core.cad_layout import FitSettings
+def cad_fit_settings(options: TaskOptions, target_lang: str) -> Any:
+    """任务的字号比例：界面按目标语言传了就用传来的，没传的那项取目标语言对应的默认值。"""
+    from core.cad_layout import FitSettings, default_fit_settings
 
-    fit = FitSettings(options.cad_fit_default_scale, options.cad_fit_min_scale).normalized()
+    default = default_fit_settings(target_lang)
+    return FitSettings(
+        default.default_scale if options.cad_fit_default_scale is None else options.cad_fit_default_scale,
+        default.min_scale if options.cad_fit_min_scale is None else options.cad_fit_min_scale,
+    ).normalized()
+
+
+def cad_layout_options(options: TaskOptions, target_lang: str = "") -> dict[str, Any]:
+    """任务选项里排版、显示模式、锁定名单和译文字体对应的 ``CadPipelineOptions`` 参数。"""
+    fit = cad_fit_settings(options, target_lang)
     display_mode = options.cad_display_mode
     if display_mode not in {"translation", "source_first", "translation_first"}:
         display_mode = "translation"
@@ -244,6 +253,7 @@ class CadSurface(Surface):
                 glossary_signature = hashlib.sha256(glossary_path.read_bytes()).hexdigest()
             except OSError:
                 glossary_signature = "missing"
+        fit = cad_fit_settings(options, settings.target_lang)
         return {
             "selected_file_count": len(files),
             "cad_output_dir": options.cad_output_dir or "",
@@ -261,8 +271,8 @@ class CadSurface(Surface):
                 "glossary_path": options.cad_glossary_path or "",
                 "glossary_sha256": glossary_signature,
                 "fit_layout": options.cad_fit_layout,
-                "fit_default_scale": options.cad_fit_default_scale,
-                "fit_min_scale": options.cad_fit_min_scale,
+                "fit_default_scale": fit.default_scale,
+                "fit_min_scale": fit.min_scale,
                 "display_mode": options.cad_display_mode,
                 "locked_blocks": options.cad_locked_blocks,
                 "locked_layers": options.cad_locked_layers,
@@ -472,7 +482,7 @@ class CadSurface(Surface):
                 copy_related_files=options.cad_copy_related_files,
                 check_entity_counts=options.cad_check_entity_counts,
                 scan_residual=options.cad_scan_residual,
-                **cad_layout_options(options),
+                **cad_layout_options(options, settings.target_lang),
             ),
             # 扫描页逐张统计时转换好的 DWG 存在这里，任务直接复用，不再转一遍。
             dxf_cache=default_cad_cache(),
