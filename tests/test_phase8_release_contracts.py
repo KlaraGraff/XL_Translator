@@ -140,6 +140,8 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("Apple Events automation entitlement", signing_script)
         self.assertIn("find \"$SIDECAR_DIR\" -type f -print0", signing_script)
         self.assertIn("com.apple.security.cs.disable-library-validation", adhoc_entitlements)
+        # The PDF component (PyMuPDF) is loaded from the app data directory at run time.
+        self.assertIn("com.apple.security.cs.disable-library-validation", entitlements)
         self.assertIn("NSAppleEventsUsageDescription", info_plist)
 
     def test_readme_and_release_guide_cover_both_platforms(self) -> None:

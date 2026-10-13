@@ -40,6 +40,14 @@ from core import bilingual_writer
 from core.runner_base import BaseTaskRunner
 from core.output_name_translation import translate_output_stem
 from core.file_progress import FileProgressReporter
+from core.request_log import PDF_PAGE_WAIT_TEMPLATE, RequestWaitNotice
+from core.request_progress import (
+    BATCH_EVENT_DONE,
+    BATCH_EVENT_PLAN,
+    BATCH_EVENT_SENT,
+    BatchRequestEvent,
+    InFlightRequestTracker,
+)
 from core.api_concurrency_control import handle_api_concurrency_limit
 from core.concurrent_calls import wait_result
 from core.api_scheduler import (
@@ -470,7 +478,9 @@ def _page_has_text_layer(page, source_pdf: str = "", page_index: int = -1) -> bo
     if not source_pdf or page_index < 0:
         return True
     try:
-        import fitz
+        from core.pdf_component import require_fitz
+
+        fitz = require_fitz()
 
         with fitz.open(source_pdf) as doc:
             visible = sum(len(span.get("chars", ())) for span in doc[page_index].get_texttrace()
@@ -1245,6 +1255,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._settings = settings
         # 「原位替换文字（Beta）」用到的翻译回调、Tesseract 路径；不开这个功能时为 None。
         self._inplace_hooks = inplace_hooks
+        self._pdf_component_ok: bool | None = None
         # 转 Word 翻译的各段正文的「记忆库」结果；收尾时和原位替换页的合并（_terms_result）。
         self._word_terms: list[dict[str, Any]] = []
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
@@ -1287,6 +1298,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._latest_review_round = 0
         self._review_total = 0
         self._page_status_lock = threading.Lock()
+        # 每页从第一次真正发出请求算起的用时（写进这一页的结果日志），以及久等提示用的
+        # 在途记账。和 Excel、Word、CAD 的逐批日志同一套（core.request_log）。
+        self._page_requests = InFlightRequestTracker()
+        self._page_started: dict[str, tuple[int, float]] = {}
+        self._page_request_seq = 0
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
@@ -3491,6 +3507,18 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page_iter = self._iter_rendered_pages(prepared_files)
         # 起点不是 0：续译复用的页在进这里之前就已经记完成了，写 0 会让进度条先跳回去。
         self._push_translation_progress(total_pages)
+        # 有页在生成、却很久没有一页返回时，运行日志说一声在等几页（与逐批日志同一套）。
+        wait_notice = RequestWaitNotice(
+            self._log,
+            self._page_requests,
+            template=PDF_PAGE_WAIT_TEMPLATE,
+            thread_name="pdf-page-wait-log",
+        )
+        # 计划事件把「上次返回」的起点拨到现在：前面渲染、续译核对花的时间不算等待。
+        self._page_requests.on_event(
+            BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=total_pages, items=total_pages, concurrency=concurrency)
+        )
+        wait_notice.start()
 
         try:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -3700,6 +3728,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 会把一张连译文图都没有的页显示成「已跑完·未审核」，报告的「未开始页面」
             # 也漏计。所以不论从哪条路离开，都在这里统一撤干净。
             self._discard_stopped_pages(prepared_files)
+            wait_notice.stop()
 
     @staticmethod
     def _page_render_phase(record: PdfFileRecord) -> str:
@@ -4101,13 +4130,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 stem = Path(record.name).stem
                 seg_pdf = work / f"{stem}_p{first}-{last}.pdf"
                 try:
-                    import fitz
-
-                    with fitz.open(record.source_copy_path) as src:
-                        part = fitz.open()
-                        part.insert_pdf(src, from_page=first - 1, to_page=last - 1)
-                        part.save(seg_pdf)
-                        part.close()
+                    _extract_pdf_pages(Path(record.source_copy_path), seg_pdf, first, last)
                     result = translate_pdf_via_word(
                         seg_pdf, work, work / f"{stem}_p{first}-{last}_translated.docx", self._settings,
                         source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
@@ -4658,6 +4681,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if route == ROUTE_INPLACE:
             if self._inplace_hooks is None:
                 return "原位替换不可用"
+            if not self._pdf_component_ready():
+                return "未安装「PDF 处理组件」"
             if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
                 return "原位替换目前只支持译成中文"
         if route == ROUTE_WORD:
@@ -4666,6 +4691,16 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 return (entry or {}).get("message") or "转成 Word 不可用"
         return ""
 
+    def _pdf_component_ready(self) -> bool:
+        """原位替换要用的 PyMuPDF（「PDF 处理组件」）能不能用。只查一次。"""
+        if self._pdf_component_ok is None:
+            from core.pdf_component import is_available
+
+            self._pdf_component_ok = is_available(refresh=True)
+            if not self._pdf_component_ok:
+                self._log("WARN", "未安装「PDF 处理组件」：原位替换的页改用保底方式。可在插件页安装。")
+        return self._pdf_component_ok
+
     def _word_segments_possible(self) -> str:
         """可提取文字的页转 Word 要用的条件；全满足返回空串，否则返回原因。只查一次。"""
         if self._office_pdf_engine is None:
@@ -4673,7 +4708,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
             if not word_route_available():
                 self._office_pdf_engine = ""
-                self._office_pdf_message = "转成 Word 的组件不可用"
+                self._office_pdf_message = "未安装「PDF 处理组件」"
             else:
                 engine, message = office_pdf_engine()
                 self._office_pdf_engine = engine
@@ -4734,7 +4769,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
         return executor.submit(request)
 
-    def _generate_page_with_retries(
+    def _generate_page_attempts(
         self,
         page_record: PdfPageRecord,
         page_count: int,
@@ -4786,6 +4821,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
             except ApiSchedulerAcquireCancelled:
                 break
+            self._note_page_request_started(page_record)
             try:
                 if self._stop_event.is_set():
                     break
@@ -5117,7 +5153,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_record.output_height_px = height
             page_record.error = last_error
             self._record_page_recovered(page_record)
-            self._log("WARN", f"{self._page_log_prefix(page_record)}已自动修正页面比例")
+            self._log("WARN", f"{self._page_log_prefix(page_record)}已自动修正页面比例{self._page_elapsed_text(page_record)}")
             return page_record
 
         if self._stop_event.is_set():
@@ -5141,6 +5177,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_record.translated_image_path = ""
             page_record.error = last_error or "此页未能生成译图"
             self._record_page_failed(page_record)
+            self._log_page_not_generated(page_record)
             return page_record
 
         page_record.status = "placeholder_pending"
@@ -5153,7 +5190,44 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         page_record.error = last_error or "此页未能生成译图"
         self._record_page_placeholder(page_record)
+        self._log_page_not_generated(page_record)
         return page_record
+
+    def _log_page_not_generated(self, page_record: PdfPageRecord) -> None:
+        elapsed = self._page_elapsed_text(page_record)
+        if elapsed:
+            self._log("WARN", f"{self._page_log_prefix(page_record)}未能生成可用译图{elapsed}")
+
+    def _generate_page_with_retries(self, page_record: PdfPageRecord, *args: Any, **kwargs: Any) -> PdfPageRecord:
+        """Generate one page (``_generate_page_attempts``) and close its request bookkeeping."""
+        try:
+            return self._generate_page_attempts(page_record, *args, **kwargs)
+        finally:
+            with self._page_status_lock:
+                started = self._page_started.pop(self._page_status_key(page_record), None)
+            if started is not None:
+                self._page_requests.on_event(
+                    BatchRequestEvent(BATCH_EVENT_DONE, index=started[0], items=1, elapsed=time.monotonic() - started[1])
+                )
+
+    def _note_page_request_started(self, page_record: PdfPageRecord) -> None:
+        """The page got its first model slot: start its clock (later attempts keep it)."""
+        key = self._page_status_key(page_record)
+        with self._page_status_lock:
+            if key in self._page_started:
+                return
+            self._page_request_seq += 1
+            index = self._page_request_seq
+            self._page_started[key] = (index, time.monotonic())
+        self._page_requests.on_event(BatchRequestEvent(BATCH_EVENT_SENT, index=index, items=1))
+
+    def _page_elapsed_text(self, page_record: PdfPageRecord) -> str:
+        """「，用时 N 秒」since the page's first request; empty before any request."""
+        with self._page_status_lock:
+            started = self._page_started.get(self._page_status_key(page_record))
+        if started is None:
+            return ""
+        return f"，用时 {time.monotonic() - started[1]:.1f} 秒"
 
     def _apply_quality_flags(
         self,
@@ -5235,7 +5309,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         *,
         review_checked: bool,
     ) -> str:
-        suffix = "生成成功，审核通过" if review_checked else "生成成功"
+        suffix = ("生成成功，审核通过" if review_checked else "生成成功") + self._page_elapsed_text(page_record)
         if attempt <= 1:
             return f"{self._page_log_prefix(page_record)}{suffix}"
         return f"{self._page_log_prefix(page_record)}第 {attempt}/{max_attempts} 次{suffix}"
@@ -5847,6 +5921,19 @@ def _open_pdf_document(path: Path):
 # 「自动识别场景」概括文档时最多读这么多页的文字层；够判断文档类型，又不至于把
 # 几百页的册子整本读一遍。
 _PROFILE_TEXT_MAX_PAGES = 30
+
+
+def _extract_pdf_pages(source: Path, target: Path, first: int, last: int) -> None:
+    """把第 first–last 页（从 1 数）另存成一份 PDF，用随安装包分发的 pypdfium2。"""
+    pdfium = _load_pdfium()
+    src = pdfium.PdfDocument(str(source))
+    part = pdfium.PdfDocument.new()
+    try:
+        part.import_pages(src, pages=list(range(first - 1, last)))
+        part.save(str(target))
+    finally:
+        part.close()
+        src.close()
 
 
 def _pdf_text_lines(path: Path, *, max_pages: int = _PROFILE_TEXT_MAX_PAGES) -> list[str]:

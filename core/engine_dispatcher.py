@@ -20,6 +20,7 @@ from core.request_progress import (
     BATCH_EVENT_PLAN,
     BATCH_EVENT_SENT,
     BatchRequestEvent,
+    notify_batch_event,
 )
 from config import (
     CORE_TRANSLATION_PROMPT,
@@ -89,29 +90,20 @@ _SLOW_ANSWER_KINDS = frozenset({"read_timeout", "total_timeout"})
 _FAILED_ITEM_SAMPLE_LIMIT = 200
 
 
-def _notify_batch_event(callback, event: BatchRequestEvent) -> None:
-    if callback is None:
-        return
-    try:
-        callback(event)
-    except Exception as exc:  # noqa: BLE001 - a log hook must never break translation
-        logger.debug(f"批次请求事件回调出错：{exc!r}")
-
-
 def _run_batch_with_events(
     run, batch: list[str], *, index: int, batch_total: int, callback, stats: "TranslationBatchRunStats"
 ) -> dict[str, str]:
     """Wrap one top-level batch with ``sent`` / ``done`` events."""
     if callback is None:
         return run(batch)
-    _notify_batch_event(
+    notify_batch_event(
         callback, BatchRequestEvent(BATCH_EVENT_SENT, index=index, batch_total=batch_total, items=len(batch))
     )
     started = time.monotonic()
     partial = run(batch)
     stopped = sum(1 for text in batch if text in stats.stopped_sources)
     failed = sum(1 for text in batch if text in stats.untranslated_sources)
-    _notify_batch_event(
+    notify_batch_event(
         callback,
         BatchRequestEvent(
             BATCH_EVENT_DONE,
@@ -538,7 +530,7 @@ def translate_texts(
 
     # Ollama 走原有串行路径，不引入线程池（内部已有 asyncio 并发）
     if is_local:
-        _notify_batch_event(
+        notify_batch_event(
             request_callback,
             BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=len(batches), items=total, concurrency=1),
         )
@@ -608,7 +600,7 @@ def translate_texts(
             stats=run_stats,
         )
 
-    _notify_batch_event(
+    notify_batch_event(
         request_callback,
         BatchRequestEvent(
             BATCH_EVENT_PLAN,
@@ -690,12 +682,14 @@ def translate_texts_with_sources(
     stats: TranslationBatchRunStats | None = None,
     throughput_unlocked: bool = False,
     transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+    request_callback=None,
 ) -> dict[str, TranslationLanguageResult]:
     """Translate bounded batches while retaining model-reported source codes.
 
     This path is deliberately used only by automatic-language workflows.  It
     keeps the normal legacy string protocol intact and gives automatic TM
     insertion a real per-item language rather than an inferred ``auto-*``.
+    ``request_callback`` gets the same per-batch events as ``translate_texts``.
     """
     if not texts:
         return {}
@@ -714,18 +708,25 @@ def translate_texts_with_sources(
     results: dict[str, TranslationLanguageResult] = {}
     done = 0
 
-    def _run_batch(batch: list[str]) -> dict[str, TranslationLanguageResult]:
-        return _translate_batch_with_sources_fallback(
+    def _run_batch(batch_index: int, batch: list[str]) -> dict[str, TranslationLanguageResult]:
+        return _run_batch_with_events(
+            lambda current: _translate_batch_with_sources_fallback(
+                current,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                api_scheduler=scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=run_stats,
+                max_transient_retries=transient_retries,
+            ),
             batch,
-            engine=engine,
-            target_lang=target_lang,
-            system_prompt=system_prompt,
-            api_scheduler=scheduler,
-            request_category=request_category,
-            should_stop=should_stop,
-            error_callback=error_callback,
+            index=batch_index,
+            batch_total=len(batches),
+            callback=request_callback,
             stats=run_stats,
-            max_transient_retries=transient_retries,
         )
 
     def _record(batch: list[str], partial: dict[str, TranslationLanguageResult]) -> None:
@@ -736,12 +737,16 @@ def translate_texts_with_sources(
             progress_callback(min(done, len(texts)), len(texts))
 
     if is_local:
+        notify_batch_event(
+            request_callback,
+            BatchRequestEvent(BATCH_EVENT_PLAN, batch_total=len(batches), items=len(texts), concurrency=1),
+        )
         # 本地引擎同 translate_texts：串行提交，并发交给引擎自己。
-        for batch in batches:
+        for batch_index, batch in enumerate(batches, start=1):
             if should_stop and should_stop():
                 break
             try:
-                partial = _run_batch(batch)
+                partial = _run_batch(batch_index, batch)
             except ApiKeyTemporarilyUnavailableError as exc:
                 # 同 translate_texts：前面已付费的批次随异常带出去（审计 高-6）。
                 _attach_partial_results(exc, results)
@@ -753,19 +758,28 @@ def translate_texts_with_sources(
     # 源语言选「自动识别」（Excel 的默认）时，并发设置形同虚设，一份 30 批的
     # 表格要排队等 30 次请求，比指定源语言慢好几倍。
     max_workers = max(1, int(concurrency))
+    notify_batch_event(
+        request_callback,
+        BatchRequestEvent(
+            BATCH_EVENT_PLAN,
+            batch_total=len(batches),
+            items=len(texts),
+            concurrency=min(max_workers, len(batches)),
+        ),
+    )
     fatal: ApiKeyTemporarilyUnavailableError | None = None
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map: dict = {}
-        batch_iter = iter(batches)
+        batch_iter = iter(enumerate(batches, start=1))
 
         def _submit_next() -> bool:
             if should_stop and should_stop():
                 return False
             try:
-                batch = next(batch_iter)
+                batch_index, batch = next(batch_iter)
             except StopIteration:
                 return False
-            future_map[executor.submit(_run_batch, batch)] = batch
+            future_map[executor.submit(_run_batch, batch_index, batch)] = batch
             return True
 
         for _ in range(min(max_workers, len(batches))):

@@ -63,12 +63,8 @@ from core.cad_language import (
     classify_text_language,
     has_latin_words as _has_latin_words,
 )
-from core.request_progress import (
-    BATCH_EVENT_DONE,
-    BATCH_EVENT_PLAN,
-    BatchRequestEvent,
-    InFlightRequestTracker,
-)
+from core.request_log import TICK_SECONDS, WAIT_LOG_SECONDS, BatchRequestLog
+from core.request_progress import InFlightRequestTracker
 
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
 _UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成", "kept": "已是目标语言", "review": "需复核"}
@@ -105,8 +101,9 @@ def cad_stage_weights(path: str | Path) -> dict[str, int]:
     return CAD_DWG_STAGE_WEIGHTS if Path(path).suffix.lower() == ".dwg" else CAD_STAGE_WEIGHTS
 
 # AI 翻译阶段：多久没有请求返回就在运行日志里说一声（每隔 _TICK_SECONDS 看一次）。
-_TICK_SECONDS = 0.5
-_WAIT_LOG_SECONDS = 30.0
+# 取共用模块的默认值，留在这里是为了测试能临时调小。
+_TICK_SECONDS = TICK_SECONDS
+_WAIT_LOG_SECONDS = WAIT_LOG_SECONDS
 
 _TEXT_ENTITY_TYPES = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION", "MINSERT"})
 # MLEADER text lives in group 304 inside CONTEXT_DATA.  Group 302 and 303 are
@@ -1866,26 +1863,6 @@ class CadTranslationPipeline:
             # 已经发出去的几批照常收回来。这就是「文件内暂停」，不用丢弃任何已付费的结果。
             self._wait_if_paused()
 
-        def on_request(event: BatchRequestEvent) -> None:
-            tracker.on_event(event)
-            if event.kind == BATCH_EVENT_PLAN:
-                emit(
-                    f"开始翻译 {event.items} 条文字（相同内容只翻译一次）："
-                    f"分 {event.batch_total} 批发送，每次同时发送 {event.concurrency} 批"
-                )
-            elif event.kind == BATCH_EVENT_DONE and event.stopped < event.items:
-                seconds = f"{event.elapsed:.1f}"
-                if event.failed:
-                    emit(
-                        f"第 {event.index}/{event.batch_total} 批已返回：{event.items} 条中 "
-                        f"{event.failed} 条未获得译文，用时 {seconds} 秒",
-                        "WARN",
-                    )
-                else:
-                    emit(
-                        f"第 {event.index}/{event.batch_total} 批已返回：{event.items} 条，用时 {seconds} 秒"
-                    )
-
         def on_error(message: str) -> None:
             # 与 Excel 相同：整批放弃记 ERROR，拆小重试、限流降速等记 WARN。
             emit(message, "ERROR" if re.search(r"条内容未能翻译", message) else "WARN")
@@ -1908,34 +1885,29 @@ class CadTranslationPipeline:
         # 记忆库词条随批附上、翻完核对：翻译器用会话把引擎包一层（TaskTermSession.wrap）。
         if "term_session" in parameters and self._term_session is not None:
             kwargs["term_session"] = self._term_session
-        ticker_stop = threading.Event()
-        ticker: threading.Thread | None = None
+        # 逐批日志（分几批、每批返回几条和用时、久等提示）由 core.request_log 统一写，
+        # Excel 和 Word 用的是同一套。日志行随进度一起发出，进度仍按真实返回计。
+        request_log: BatchRequestLog | None = None
         if "request_callback" in parameters:
-            kwargs["request_callback"] = on_request
-
-            def tick() -> None:
-                next_wait_log = _WAIT_LOG_SECONDS
-                while not ticker_stop.wait(_TICK_SECONDS):
-                    waiting = tracker.in_flight_count()
-                    quiet = tracker.seconds_since_last_return()
-                    if not waiting or quiet < next_wait_log:
-                        if quiet < _WAIT_LOG_SECONDS:
-                            next_wait_log = _WAIT_LOG_SECONDS
-                        continue
-                    emit(f"正在等待 {waiting} 批请求返回，已等待 {int(quiet)} 秒")
-                    next_wait_log = quiet + _WAIT_LOG_SECONDS
-
-            ticker = threading.Thread(target=tick, name="cad-translate-wait-log", daemon=True)
+            request_log = BatchRequestLog(
+                lambda level, message: emit(message, level),
+                unit="条",
+                subject="文字",
+                tracker=tracker,
+                tick_seconds=_TICK_SECONDS,
+                wait_log_seconds=_WAIT_LOG_SECONDS,
+                thread_name="cad-translate-wait-log",
+            )
+            kwargs["request_callback"] = request_log.on_event
         emit()
         started = time.monotonic()
-        if ticker is not None:
-            ticker.start()
+        if request_log is not None:
+            request_log.start()
         try:
             return translator(remaining, glossary, **kwargs)
         finally:
-            ticker_stop.set()
-            if ticker is not None:
-                ticker.join(timeout=2)
+            if request_log is not None:
+                request_log.stop()
             self.last_translate_seconds = time.monotonic() - started
 
     def translate_file(

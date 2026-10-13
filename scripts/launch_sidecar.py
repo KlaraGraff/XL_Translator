@@ -12,6 +12,18 @@ if str(ROOT) not in sys.path:
 
 
 def _run() -> int:
+    if len(sys.argv) >= 3 and sys.argv[1] == "--probe-pdf-component":
+        # 检测「PDF 处理组件」时在子进程里试加载 PyMuPDF（见 core.pdf_component）。
+        from core.pdf_component import probe_main
+
+        return probe_main(sys.argv[2], convert="--convert" in sys.argv[3:])
+
+    if len(sys.argv) >= 5 and sys.argv[1] == "--pdf2docx-convert":
+        # 一键安装的组件把 PDF 转成 Word：NumPy、OpenCV 只进这个子进程。
+        from core.pdf_component import convert_main
+
+        return convert_main(sys.argv[2], sys.argv[3], sys.argv[4])
+
     if "--smoke-test" in sys.argv[1:]:
         from scripts.frozen_smoke import run_smoke_test
 

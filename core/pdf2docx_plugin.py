@@ -1,4 +1,4 @@
-"""PDF 转 Word 组件（开源 pdf2docx 命令行工具）的发现、配置和调用。
+"""PDF 处理组件（开源 pdf2docx 命令行工具，装它时会一并装上 PyMuPDF）的发现、配置和调用。
 
 Translator 不再自带 pdf2docx：用户自己装好（例如 ``pip install pdf2docx``），
 在「插件」页连接它，PDF「自动组合」里能提取文字的页才会先转成 Word 再翻译。
@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -53,11 +54,32 @@ def _find_in_folder(folder: Path) -> Path | None:
     return None
 
 
+# 同一个程序 30 秒内只真跑一次 --help：它要加载 PyMuPDF、OpenCV，一次一两秒，而设置页、
+# 插件页、任务开始时会接连问好几次。
+_PROBE_CACHE_SECONDS = 30.0
+_PROBE_CACHE: dict[tuple[str, float, int], tuple[float, bool]] = {}
+
+
 def probe_pdf2docx(path: Path) -> bool:
     """Run ``pdf2docx --help`` and check it lists the ``convert`` command; never raises.
 
     pdf2docx 的命令行基于 python-fire，帮助文字写在 stderr 上，两路输出都看。
     """
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime, stat.st_size)
+    except OSError:
+        return False
+    cached = _PROBE_CACHE.get(key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _PROBE_CACHE_SECONDS:
+        return cached[1]
+    ok = _run_probe(path)
+    _PROBE_CACHE[key] = (now, ok)
+    return ok
+
+
+def _run_probe(path: Path) -> bool:
     try:
         result = subprocess.run(
             [str(path), "--help"],
@@ -151,25 +173,25 @@ def pdf2docx_status(config_path: Path | None = None) -> dict[str, Any]:
         return {
             "state": "invalid",
             "path": str(raw),
-            "message": "之前连接的 PDF 转 Word 组件已不可用，请重新选择安装位置。",
+            "message": "之前连接的 PDF 处理组件已不可用，请重新选择安装位置。",
         }
     if _disconnected(config_path):
         return {
             "state": "missing",
             "path": "",
-            "message": "PDF 转 Word 组件已断开。",
+            "message": "PDF 处理组件已断开。",
         }
     candidate = resolve_pdf2docx(config_path)
     if candidate is None:
         return {
             "state": "missing",
             "path": "",
-            "message": "未检测到 PDF 转 Word 组件（pdf2docx）。",
+            "message": "未检测到 PDF 处理组件（pdf2docx）。",
         }
     return {
         "state": "connected",
         "path": str(candidate),
-        "message": "PDF 转 Word 组件已连接。",
+        "message": "PDF 处理组件已连接。",
     }
 
 
@@ -184,10 +206,24 @@ def save_pdf2docx_path(path: str, config_path: Path | None = None) -> dict[str, 
     except OSError as exc:
         raise ValueError("找不到所选的安装位置。") from exc
     if not _validate_pdf2docx(candidate):
-        raise ValueError("所选程序不是可用的 PDF 转 Word 组件（pdf2docx）。")
+        raise ValueError("所选程序不是可用的 PDF 处理组件（pdf2docx）。")
     cfg = config_path or default_pdf2docx_config_path()
-    _atomic_write(cfg, json.dumps({"path": str(candidate)}, ensure_ascii=False, indent=2))
+    # 用户亲手选的位置优先于一键安装的组件（见 core.pdf_component.active_converter）。
+    _atomic_write(cfg, json.dumps({"path": str(candidate), "source": "manual"}, ensure_ascii=False, indent=2))
     return pdf2docx_status(cfg)
+
+
+def preferred_source(config_path: Path | None = None) -> str:
+    """"manual"：用户选过安装位置；"managed"：之后又点了一键安装；空串：都没有。"""
+    return str(_read_config(config_path).get("source") or "")
+
+
+def prefer_managed(config_path: Path | None = None) -> None:
+    """一键安装成功后：先用装好的组件，之前选过的位置留着，卸载后还能接着用。"""
+    cfg = config_path or default_pdf2docx_config_path()
+    data = _read_config(cfg)
+    data["source"] = "managed"
+    _atomic_write(cfg, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def clear_pdf2docx_path(config_path: Path | None = None) -> None:
@@ -203,7 +239,12 @@ def _tail(text: str, limit: int = 600) -> str:
 
 
 def convert_with_plugin(exe: Path, pdf_path: Path, docx_path: Path, timeout: float) -> None:
-    """Run ``<exe> convert <pdf> --docx_file=<docx>``; raise Pdf2DocxPluginError on failure.
+    """Run ``<exe> convert <pdf> --docx_file=<docx>``; raise Pdf2DocxPluginError on failure."""
+    convert_with_command([str(exe), "convert", str(pdf_path), f"--docx_file={docx_path}"], docx_path, timeout)
+
+
+def convert_with_command(command: list[str], docx_path: Path, timeout: float) -> None:
+    """Run one conversion command; raise Pdf2DocxPluginError unless it wrote ``docx_path``.
 
     pdf2docx 每页在 stdout/stderr 打一行 INFO 进度，这些输出只在失败时摘一段写进
     错误信息。它在转换出错时可能照样以 0 退出，所以还要看输出文件是否真的写出来。
@@ -212,7 +253,7 @@ def convert_with_plugin(exe: Path, pdf_path: Path, docx_path: Path, timeout: flo
     docx_path.unlink(missing_ok=True)
     try:
         result = subprocess.run(
-            [str(exe), "convert", str(pdf_path), f"--docx_file={docx_path}"],
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",
