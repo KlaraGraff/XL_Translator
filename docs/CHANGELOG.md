@@ -50,9 +50,9 @@
 
   **Confirm before uninstalling a plugin**: Uninstalling a one-click component deletes its downloaded files, so Uninstall now asks first; Disconnect only forgets the chosen path and does not ask.
 
-- **安装包瘦身**：macOS DMG 约 31 MB（V10.0.0 约 50 MB），Windows 安装程序约 29 MB（V10.0.0 约 32 MB），功能不变。sidecar 打包后用 ditto 放回（Tauri 复制资源会展开符号链接），DMG 改 ULMO（LZMA）；Tauri 外壳 release 开启 lto、codegen-units=1、opt-level="s"、strip；PyInstaller spec 排除 pygments、pytest、Pythonwin，不再打包 assets。
+- **安装包瘦身**：macOS DMG 约 34 MB（V10.0.0 约 50 MB），Windows 安装程序约 31 MB（V10.0.0 约 32 MB），功能不变。sidecar 打包后用 ditto 放回（Tauri 复制资源会展开符号链接），DMG 改 ULMO（LZMA）；Tauri 外壳 release 开启 lto、codegen-units=1、opt-level="s"、strip；PyInstaller spec 排除 pygments、pytest、Pythonwin，不再打包 assets。
 
-  **Smaller installers**: The macOS DMG is about 31 MB (V10.0.0: about 50 MB) and the Windows installer about 29 MB (V10.0.0: about 32 MB), with no change in features. The sidecar is put back with ditto after bundling (Tauri's resource copy expands symlinks) and the DMG uses ULMO (LZMA); the Tauri shell release build uses lto, codegen-units=1, opt-level="s" and strip; the PyInstaller spec excludes pygments, pytest and Pythonwin and no longer bundles assets.
+  **Smaller installers**: The macOS DMG is about 34 MB (V10.0.0: about 50 MB) and the Windows installer about 31 MB (V10.0.0: about 32 MB), with no change in features. The sidecar is put back with ditto after bundling (Tauri's resource copy expands symlinks) and the DMG uses ULMO (LZMA); the Tauri shell release build uses lto, codegen-units=1, opt-level="s" and strip; the PyInstaller spec excludes pygments, pytest and Pythonwin and no longer bundles assets.
 
 ## V10.0.0
 
