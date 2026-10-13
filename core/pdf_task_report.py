@@ -93,7 +93,8 @@ def _completed_pdf_file_count(summary: PdfTaskSummary) -> int:
     return sum(
         1
         for record in summary.files
-        if record.source_type != SOURCE_TYPE_IMAGE and record.translated_pdf_path
+        if record.source_type != SOURCE_TYPE_IMAGE
+        and (record.translated_pdf_path or record.translated_docx_path)
     )
 
 
@@ -101,7 +102,8 @@ def _unfinished_pdf_file_count(summary: PdfTaskSummary) -> int:
     return sum(
         1
         for record in summary.files
-        if record.source_type != SOURCE_TYPE_IMAGE and not record.translated_pdf_path
+        if record.source_type != SOURCE_TYPE_IMAGE
+        and not (record.translated_pdf_path or record.translated_docx_path)
     )
 
 
@@ -189,6 +191,8 @@ def _pdf_file_status_label(record: PdfFileRecord) -> str:
         if record.status == PDF_OUTPUT_STATE_STOPPED:
             return "未完成图片，已保留页面素材"
         return "未完成图片"
+    if record.translated_docx_path:
+        return "已转成 Word 翻译（Beta）"
     if record.translated_pdf_path:
         return "已完成 PDF"
     if record.status == PDF_OUTPUT_STATE_FAILED:
@@ -235,8 +239,8 @@ def _record_has_usable_translated_pages(record: PdfFileRecord) -> bool:
         )
         # 跳过大幅面页的页面没有 translated_image_path（矢量直传，不走栅格化），
         # 但它本身就是一份有效产物；一份全是大幅面页的 PDF 不该被判定成「零
-        # 可用页面」而整份失败。
-        or page.skipped_oversize
+        # 可用页面」而整份失败。没有图像模型而保留原样的页不算：一页都没翻。
+        or (page.skipped_oversize and not getattr(page, "kept_reason", ""))
         for page in record.pages
     )
 
@@ -248,6 +252,8 @@ def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
         if page.placeholder or page.status in {"placeholder_pending", PDF_OUTPUT_STATE_FAILED}
     ]
     first_error = next((error for error in page_errors if error), "")
+    if record.pages and all(getattr(page, "kept_reason", "") for page in record.pages):
+        return "这份文件取不到文字，需要整页图像翻译，但还没有设置图像翻译模型，没有生成译文。"
     if record.source_type == SOURCE_TYPE_IMAGE:
         message = "图片翻译失败，未生成译图；已保留源图、页面素材和报告。"
     else:
@@ -354,13 +360,17 @@ def _real_generated_page_count(record: PdfFileRecord) -> int:
     「已生成页面 14/14」和「失败占位页 2」并排的自相矛盾。
     """
     finished = _finished_page_count(record)
+    # 原页照搬的页（按设定保留、没有图像模型、原位替换没成功）都不是译文
+    copied = sum(1 for page in record.pages if page.skipped_oversize and page.inplace_status != "done")
     not_translated = max(0, int(record.placeholder_page_count or 0)) + max(
-        0, int(record.skipped_oversize_page_count or 0)
+        copied, max(0, int(record.skipped_oversize_page_count or 0))
     )
     return max(0, finished - not_translated)
 
 
 def _generated_progress_label(record: PdfFileRecord) -> str:
+    if record.translation_route == "word":
+        return "整份转成 Word 翻译，不按页统计"
     page_count = max(0, int(record.page_count or 0))
     generated = _real_generated_page_count(record)
     return f"{generated}/{page_count}" if page_count else str(generated)
@@ -373,13 +383,15 @@ def _unstarted_page_count(record: PdfFileRecord) -> int:
     （历史清单、测试替身都是这样），那种情况下已生成页数才是真正处理过的页数。
     """
     page_count = max(0, int(record.page_count or 0))
-    if not page_count:
+    if not page_count or record.translation_route == "word":
         return 0
     touched = max(len(record.pages), _finished_page_count(record))
     return max(0, page_count - touched)
 
 
 def _last_finished_page_label(record: PdfFileRecord) -> str:
+    if record.translation_route == "word":
+        return "整份转成 Word 翻译，不按页统计"
     page_count = max(0, int(record.page_count or 0))
     last_page = _last_contiguous_finished_page(record)
     if not last_page:
@@ -647,6 +659,31 @@ def _done_kpi(summary: PdfTaskSummary) -> dict[str, Any]:
 def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for file_record in file_records:
+        if file_record.word_issue_count:
+            issues.append(
+                {
+                    "file": file_record.name,
+                    "location_label": "整份文件",
+                    "severity": "needs_review",
+                    "problem": f"转成 Word 翻译后有 {file_record.word_issue_count} 处需要复核（保留了原文或疑似漏译），详见 Word 的质量报告。",
+                    "status": "转成 Word 翻译（Beta）",
+                    "source_image_path": file_record.source_path,
+                    "translated_image_path": "",
+                }
+            )
+        for page in file_record.pages:
+            if page.kept_reason:
+                issues.append(
+                    {
+                        "file": file_record.name,
+                        "location_label": f"第 {page.page_number} 页",
+                        "severity": "needs_review",
+                        "problem": page.kept_reason,
+                        "status": "保留原样",
+                        "source_image_path": file_record.source_path,
+                        "translated_image_path": "",
+                    }
+                )
         if _record_is_fully_skipped_oversize(file_record):
             issues.append(
                 {

@@ -300,6 +300,8 @@ class PdfFileRecord:
     document_kind: str = ""
     translation_route: str = ""
     translated_docx_path: str = ""
+    # 转 Word 翻译时 Word 流程报出的待复核处数（保留原文、疑似漏译等）
+    word_issue_count: int = 0
     pages: list[PdfPageRecord] = field(default_factory=list)
 
 

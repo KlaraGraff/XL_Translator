@@ -157,3 +157,30 @@ class FontNormalizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WritebackGeometryTests(unittest.TestCase):
+    def test_white_text_on_a_dark_band_counts_as_ink(self) -> None:
+        from PIL import Image, ImageDraw
+
+        from core.pdf_vector.writeback import ink_count, is_light
+
+        im = Image.new("L", (100, 20), 30)            # dark title bar
+        ImageDraw.Draw(im).rectangle((10, 5, 40, 14), fill=255)  # white "text"
+        self.assertGreater(ink_count(im, (0, 0, 100, 20), light=True)[0], 200)
+        self.assertEqual(ink_count(Image.new("L", (100, 20), 30), (0, 0, 100, 20), light=True)[0], 0)
+        self.assertTrue(is_light((1.0, 1.0, 1.0)))
+        self.assertFalse(is_light((0.0, 0.2, 0.5)))
+
+    def test_content_box_is_the_outermost_ink(self) -> None:
+        from PIL import Image, ImageDraw
+
+        from core.pdf_vector.writeback import Layout, content_box
+
+        im = Image.new("L", (600, 800), 255)
+        ImageDraw.Draw(im).rectangle((80, 100, 520, 700), outline=0)
+        box = content_box(im)
+        self.assertEqual(box, (80, 100, 521, 701))
+        layout = Layout(Image.new("L", (600, 800), 255), 72, bounds=box)
+        self.assertTrue(layout.blank((100, 200, 300, 220)))
+        self.assertFalse(layout.blank((500, 200, 560, 220)))  # would run into the margin

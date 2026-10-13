@@ -57,6 +57,7 @@
   "转成 Word": {"en": "Convert to Word", "fr": "Conversion en Word"},
   "转成 Word 再翻译": {"en": "Convert to Word, then translate", "fr": "Convertir en Word puis traduire"},
   "转成 Word 翻译 · 处理中": {"en": "Translating via Word…", "fr": "Traduction via Word…"},
+  "转成 Word 翻译 · 已停止": {"en": "Translating via Word · stopped", "fr": "Traduction via Word · arrêtée"},
   "转成 Word 翻译失败": {"en": "Word conversion failed", "fr": "Échec de la conversion en Word"},
   "软件名称：Tesseract OCR（开源）。安装后选择它的安装位置；放在系统默认位置会自动找到。官方链接：{0}": {"en": "Software: Tesseract OCR (open source). After installing, select its install location; a default system install is found automatically. Official site: {0}", "fr": "Logiciel : Tesseract OCR (open source). Après l'installation, sélectionnez son emplacement ; une installation à l'emplacement par défaut est détectée automatiquement. Site officiel : {0}"},
   "连接翻译时用到的可选组件": {"en": "Connect optional components used for translation", "fr": "Connecter les composants optionnels utilisés pour la traduction"},

@@ -904,6 +904,8 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
                for page in record.pages)
         # 要整页图像翻译、但没有设置图像模型而保留原样的页
         or any(page.kept_reason for page in record.pages)
+        # 转 Word 翻译后 Word 流程报出的待复核处
+        or record.word_issue_count
     )
 
 
@@ -2902,6 +2904,20 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         continue
                 break
 
+            # 转 Word 的文件不逐页翻译，上面「还有没翻完的页」判断不到它们：在收尾时
+            # 被停下来的，任务同样算停止，不能报成已完成。
+            if (
+                not stopped
+                and not fatal_error
+                and self._stop_event.is_set()
+                and any(
+                    record.translation_route == ROUTE_WORD
+                    and record.status == PDF_OUTPUT_STATE_STOPPED
+                    for record in file_records
+                )
+            ):
+                stopped = True
+
             if stopped and not fatal_error:
                 self._log("WARN", "已停止：已全部翻译的文件均已生成，未翻译完成的文件保留已完成的页面和报告。")
         except ImageModelUnavailableError as exc:
@@ -3979,6 +3995,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 log=self._log,
                 progress=progress,
                 file_label=record.name,
+                key_overrides=self._key_overrides,
             )
         except Exception as exc:  # noqa: BLE001 - one file only costs that file
             logger.exception("[PDF] 转 Word 翻译失败")
@@ -3988,6 +4005,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             return
         if result.ok:
             record.translated_docx_path = result.output_path
+            record.word_issue_count = len(result.issues)
             record.status = PDF_OUTPUT_STATE_NEEDS_REVIEW if result.issues else PDF_OUTPUT_STATE_COMPLETED
             note = f"，{len(result.issues)} 处需要复核" if result.issues else ""
             self._log("OK", f"[{record.name}] 已转成 Word 翻译：{Path(result.output_path).name}{note}")
@@ -4027,6 +4045,15 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 continue
             self._log("INFO", f"[{record.name}] 第 {page.page_number} 页：原位替换文字（Beta）开始，大图约需 1–2 分钟。")
             work = work_root / f"page_{page.page_number:04d}"
+            # 判成普通文字页的，字都在文字层里，不用再跑文字识别（图纸页、大幅面页
+            # 常有画成线条的字，照常识别）。
+            native_only = self._page_kind(record.source_path, page.page_number - 1) == KIND_TEXT or (
+                not self._page_kind(record.source_path, page.page_number - 1)
+                and not is_oversized_for_threshold(
+                    getattr(self._settings.pdf, "oversized_page_threshold", "A3"),
+                    page.page_width_pt, page.page_height_pt,
+                )
+            )
             try:
                 result = translate_page_inplace(
                     Path(record.source_copy_path),
@@ -4038,11 +4065,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     tesseract_languages=hooks.tesseract_languages,
                     source_lang=hooks.source_lang,
                     log=self._log,
-                    # 普通页是按「有可读文字层」选进来的，字都在文字层里，不用再 OCR。
-                    native_only=not is_oversized_for_threshold(
-                        getattr(self._settings.pdf, "oversized_page_threshold", "A3"),
-                        page.page_width_pt, page.page_height_pt,
-                    ),
+                    native_only=native_only,
                 )
             except Exception as exc:  # noqa: BLE001 - one page only costs that page
                 logger.debug(f"[PDF] 原位替换失败：{exc!r}")
@@ -4057,7 +4080,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if result.ok and result.written > 0:
                 page.inplace_status = "done"
                 page.inplace_pdf_path = result.output_pdf
-                note = "" if result.ocr_used or not hooks.ocr_wanted else "（没有安装文字识别组件，画成线条的字未识别）"
+                note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
                 page.inplace_message = (
                     f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                     f"{page.inplace_review} 处认不准保留原文{note}"
@@ -4179,10 +4202,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
         threshold = getattr(self._settings.pdf, "oversized_page_threshold", "A3")
+        # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
+        # 模型而保留的页、普通页原位替换没成功的页另有说法，不算在这里。
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages
-            if page.skipped_oversize and page.inplace_status != "done"
-            and is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt)
+            if page.skipped_oversize and page.inplace_status != "done" and not page.kept_reason
+            and (not page.inplace_requested
+                 or is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt))
         )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)

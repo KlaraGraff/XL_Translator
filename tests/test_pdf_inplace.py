@@ -237,3 +237,82 @@ class ThresholdTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WordRouteTaskTests(unittest.TestCase):
+    """The whole task (``_run``) with a word-route file: stop and review status."""
+
+    def _run_task(self, fake_word, *, route="word", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None):
+        from core.pdf_routes import DocumentKind, PageKind
+        from core.task_runner import DoneMsg, ErrorMsg, StoppedMsg
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        src = root / "source.pdf"
+        _write_pdf(src, list(sizes), with_text=list(text))
+        settings = AppSettings(target_lang="zh")
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": route,
+                                                   "oversized_page_threshold": threshold})
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_model = "image-model"
+        settings.image_model_role.cloud_base_url = "https://images.example/v1"
+        client = _RecordingImageClient(_png_bytes(10, 10))
+        runner = PdfImageTranslationRunner(
+            [PdfFileItem(path=src, name="source", size_kb=1.0, page_count=len(sizes))], settings,
+            source_root=root, image_client=client, task_logger_enabled=False, inplace_hooks=_hooks())
+        kinds = kinds or DocumentKind("text", [PageKind(i + 1, "text", False) for i in range(len(sizes))])
+        with patch("core.pdf_word_route.translate_pdf_via_word", lambda *a, **k: fake_word(runner, *a, **k)), \
+                patch("core.pdf_image_translation.classify_document", return_value=kinds), \
+                patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_image_translation.record_image_model_availability", lambda *a, **k: None):
+            runner._run()
+        final = None
+        while True:
+            message = runner.get_message(timeout=0.01)
+            if message is None:
+                break
+            if isinstance(message, (DoneMsg, StoppedMsg, ErrorMsg)):
+                final = message
+        return runner, final, client
+
+    def test_stop_during_the_word_run_stops_the_task(self):
+        from core.pdf_word_route import WordRouteResult
+        from core.task_runner import StoppedMsg
+
+        def fake(runner, *_args, **_kwargs):
+            runner.stop()
+            return WordRouteResult(ok=False, stopped=True, error="任务已停止")
+
+        runner, final, _client = self._run_task(fake)
+        self.assertIsInstance(final, StoppedMsg)
+        self.assertEqual(runner._prepared_files[0].record.status, "stopped")
+
+    def test_word_issues_make_the_task_need_review(self):
+        from core.pdf_word_route import WordRouteResult
+        from core.task_runner import DoneMsg
+
+        def fake(_runner, _pdf, _work, final_path, _settings, **_kwargs):
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path), issues=[{"problem": "kept"}])
+
+        _runner, final, _client = self._run_task(fake)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertTrue(final.issues)
+        self.assertEqual(final.file_results[0]["status"], "needs_review")
+        self.assertEqual(final.file_results[0]["output_format"], "docx")
+
+    def test_skipped_large_pages_count_whatever_the_saved_threshold(self):
+        from core.task_runner import DoneMsg
+
+        def never(*_args, **_kwargs):
+            raise AssertionError("not a text document")
+
+        runner, final, client = self._run_task(never, route="image", sizes=(A3, A3), threshold="A1")
+        self.assertEqual(len(client.calls), 0)
+        record = runner._prepared_files[0].record
+        self.assertEqual(record.skipped_oversize_page_count, 2)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertFalse(final.file_results[0]["success"])   # nothing was translated

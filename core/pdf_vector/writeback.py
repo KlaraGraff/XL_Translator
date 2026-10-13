@@ -54,12 +54,20 @@ def clamp_box(box, im):
     return max(0, x0), max(0, y0), min(im.width, x1), min(im.height, y1)
 
 
-def ink_count(gray: Image.Image, box) -> tuple[int, int]:
+def ink_count(gray: Image.Image, box, light: bool = False) -> tuple[int, int]:
+    """Ink pixels in the box. light=True counts bright pixels instead: white text
+    on a dark band (table headers, title bars) is bright ink on dark ground."""
     b = clamp_box(box, gray)
     if b[2] <= b[0] or b[3] <= b[1]:
         return 0, 0
     hist = gray.crop(b).histogram()
-    return sum(hist[:INK_GRAY]), (b[2] - b[0]) * (b[3] - b[1])
+    ink = sum(hist[256 - (256 - INK_GRAY) // 2:]) if light else sum(hist[:INK_GRAY])
+    return ink, (b[2] - b[0]) * (b[3] - b[1])
+
+
+def is_light(color) -> bool:
+    r, g, b = (list(color or (0, 0, 0)) + [0, 0, 0])[:3]
+    return 0.299 * r + 0.587 * g + 0.114 * b > 0.7
 
 
 def sample_color(rgb: Image.Image, box) -> tuple[float, float, float]:
@@ -127,14 +135,30 @@ def em_from_box(src: str, thick_pt: float) -> float:
 
 # ----------------------------------------------------------------- layout
 
+def content_box(gray: Image.Image, pad_px: float = 0.0) -> tuple[float, float, float, float] | None:
+    """Outermost ink of the source page (px). Translations never grow past it:
+    a paragraph on a text page would otherwise run into the page margin."""
+    mask = gray.point(lambda v: 255 if v < 200 else 0)
+    box = mask.getbbox()
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    return (x0 - pad_px, y0 - pad_px, x1 + pad_px, y1 + pad_px)
+
+
 class Layout:
-    def __init__(self, gray_after: Image.Image, dpi: float):
+    def __init__(self, gray_after: Image.Image, dpi: float, bounds=None):
         self.gray = gray_after
         self.dpi = dpi
         self.k = dpi / 72.0
         self.occupied: list[tuple[float, float, float, float]] = []
+        self.bounds = bounds
 
     def blank(self, box) -> bool:
+        if self.bounds is not None:
+            bx0, by0, bx1, by1 = self.bounds
+            if box[0] < bx0 or box[1] < by0 or box[2] > bx1 or box[3] > by1:
+                return False
         ink, area = ink_count(self.gray, box)
         if area == 0:
             return False
@@ -605,8 +629,9 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
         trial_gray.save(trial_preview)
     ok = []
     for r in active:
-        si = sum(ink_count(src_gray, b)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
-        ti = sum(ink_count(trial_gray, b)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
+        light = is_light(r["_color"])
+        si = sum(ink_count(src_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
+        ti = sum(ink_count(trial_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
         r["_residual"] = (ti / si) if si else 0.0
         if si and ti / si > RESIDUAL_LIMIT:
             skipped[r["id"]] = "source_not_removable"
@@ -623,7 +648,7 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     replayed = replay_non_glyph(page, src_sigs, src_draw, ok, dpi)
     n_restored = len(replayed)
     after_gray = render(page, dpi).convert("L")
-    layout = Layout(after_gray, dpi)
+    layout = Layout(after_gray, dpi, bounds=content_box(src_gray, pad_px=2 * dpi / 72.0))
     smooth_em(ok, dpi)
     font = fitz.Font(fontfile=str(font_path))
     page.insert_font(fontname=FONT_NAME, fontfile=str(font_path))

@@ -398,7 +398,9 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
       ? t("转成 Word 翻译失败")
       : file.status === "completed" || file.status === "needs_review"
         ? t("已转成 Word 翻译 · {0} 页", file.page_count)
-        : t("转成 Word 翻译 · 处理中");
+        : file.status === "stopped"
+          ? t("转成 Word 翻译 · 已停止")
+          : t("转成 Word 翻译 · 处理中");
     return [span];
   }
   if (file.pages.length === 0) {

@@ -45,7 +45,7 @@ class WordRouteResult:
 
 def word_route_available() -> bool:
     try:
-        import pdf2docx  # noqa: F401
+        _quiet_import_pdf2docx()
     except Exception:  # noqa: BLE001 - missing or broken optional component
         return False
     return True
@@ -77,25 +77,31 @@ def normalize_docx_fonts(path: Path) -> None:
     tmp.replace(path)
 
 
-def convert_pdf_to_docx(pdf_path: Path, docx_path: Path, *, should_stop: Callable[[], bool] | None = None) -> None:
+def _quiet_import_pdf2docx():
+    """pdf2docx 导入时调 logging.basicConfig()：根 logging 没有处理器时会给它挂一个
+    输出到 stderr 的处理器、把级别调到 INFO，此后整个程序（httpx 等）的 INFO 日志都
+    会打到 stderr，它自己每页也打一行进度。先挂一个空处理器，basicConfig 就什么都
+    不做；只影响原本就没人接收的根日志。"""
     import logging
 
+    if not logging.root.handlers:
+        logging.root.addHandler(logging.NullHandler())
     from pdf2docx import Converter
 
+    return Converter
+
+
+def convert_pdf_to_docx(pdf_path: Path, docx_path: Path, *, should_stop: Callable[[], bool] | None = None) -> None:
+    Converter = _quiet_import_pdf2docx()
+
     docx_path.parent.mkdir(parents=True, exist_ok=True)
-    # pdf2docx 每页都往根 logging 打一行 INFO 进度；转换期间压掉，结束后恢复原状。
-    previous = logging.root.manager.disable
-    logging.disable(logging.INFO)
+    converter = Converter(str(pdf_path))
     try:
-        converter = Converter(str(pdf_path))
-        try:
-            if should_stop and should_stop():
-                raise WordRouteStopped()
-            converter.convert(str(docx_path), multi_processing=False)
-        finally:
-            converter.close()
+        if should_stop and should_stop():
+            raise WordRouteStopped()
+        converter.convert(str(docx_path), multi_processing=False)
     finally:
-        logging.disable(previous)
+        converter.close()
     normalize_docx_fonts(docx_path)
 
 
@@ -110,6 +116,7 @@ def translate_pdf_via_word(
     log: LogFn,
     progress: ProgressFn | None = None,
     file_label: str = "",
+    key_overrides: dict[str, str] | None = None,
 ) -> WordRouteResult:
     """Convert, translate with the Word pipeline, and place the .docx at final_path."""
     from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StoppedMsg
@@ -138,7 +145,9 @@ def translate_pdf_via_word(
     items = scan_word_path(docx)
     if not items:
         return WordRouteResult(ok=False, error="转出来的 Word 里没有可翻译的文字。")
-    runner = WordTaskRunner(items, word_settings, source_root=work_dir, source_lang=source_lang)
+    # 用 PDF 任务开始时拿到的密钥快照，和整个任务用同一套连接
+    runner = WordTaskRunner(items, word_settings, source_root=work_dir, source_lang=source_lang,
+                            key_overrides=key_overrides)
     runner.start()
     stop_sent = False
     done = None
