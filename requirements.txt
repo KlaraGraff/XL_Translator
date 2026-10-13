@@ -5,11 +5,10 @@ xlwings>=0.34.0
 python-docx>=1.1.0
 # PDF 翻译
 pypdfium2>=4.30,<5
-# PDF「原位替换」「转成 Word 再翻译」（Beta）读写 PDF：PyMuPDF 是 AGPL-3.0。
-# 本项目自己的代码仍是 MIT，第三方组件各自沿用原许可，见 THIRD_PARTY_NOTICES.md。
-# 把 PDF 转成 Word 的 pdf2docx 不随软件分发：它是用户在「插件」页自己连接的
-# 可选组件（开源命令行工具，用户自行 `pip install pdf2docx`），这里不再安装。
-PyMuPDF>=1.24,<2
+# PyMuPDF（AGPL-3.0，约 60MB）和 pdf2docx 都不随软件分发：两者合成「PDF 处理组件」，
+# 用户在「插件」页连接自己装好的 pdf2docx（`pip install pdf2docx` 会一并装上 PyMuPDF），
+# 原位替换从那个环境里加载 PyMuPDF（core/pdf_component.py）。开发和测试另装，见
+# requirements-test.txt；打包脚本把它排除在安装包外（packaging/sidecar/translator_sidecar.spec）。
 Pillow>=10.0.0
 # 云端翻译引擎 HTTP 客户端
 httpx>=0.27.0

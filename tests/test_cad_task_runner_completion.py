@@ -64,6 +64,11 @@ def test_cad_runner_uses_fresh_output_root_and_checkpoint_resume(tmp_path, monke
     assert not (first_root / "manifest.json").exists()
     assert Path(first_done.report_path).is_file()
     assert str(first_done.report_path).startswith(str(tmp_path / "app-data"))
+    # A run without CAD work files records an empty evidence path. Resuming must not read
+    # that as "." and copy the current directory (in the app that can be /).
+    evidence = second_done.file_results[0].get("work_evidence_dir") or ""
+    assert not evidence or Path(evidence).name.endswith(".cad-work") or ".cad-work_" in Path(evidence).name
+    assert not any(path.name == "tests" for path in (tmp_path / "app-data").rglob("tests"))
 
 
 def test_cad_runner_preserves_failed_process_evidence(tmp_path, monkeypatch):

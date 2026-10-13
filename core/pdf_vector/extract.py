@@ -23,10 +23,9 @@ import tempfile
 from difflib import SequenceMatcher
 from pathlib import Path
 
-import fitz
 from PIL import Image
 
-from .common import norm_text, sha256, write_json
+from .common import fitz, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
 TILE, STEP = 1800, 1560

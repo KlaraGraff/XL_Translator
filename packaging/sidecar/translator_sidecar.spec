@@ -58,6 +58,16 @@ hiddenimports += [
     "xlrd",
     "xlwings",
 ]
+# 「PDF 处理组件」的 PyMuPDF 不在安装包里，运行时才从用户的 pdf2docx 环境加载
+# （core/pdf_component.py）。它 import 的标准库模块得在包里：我们自己的代码没用到的那几个，
+# PyInstaller 不会自己收。构建工作流用真的 PyMuPDF 跑一遍 --probe-pdf-component 把关。
+hiddenimports += [
+    "array", "ast", "atexit", "base64", "binascii", "bisect", "calendar", "decimal", "dis",
+    "fractions", "glob", "html", "html.entities", "inspect", "multiprocessing", "pickle",
+    "statistics", "string", "sysconfig", "tarfile", "textwrap", "timeit", "tokenize",
+]
+if sys.platform != "win32":
+    hiddenimports += ["grp"]
 if sys.platform == "win32":
     hiddenimports += ["pythoncom", "pywintypes", "win32com", "win32com.client"]
 
@@ -105,6 +115,10 @@ a = Analysis(
         # sax/builder (grepped their installed sources directly) -- only lxml.etree and
         # its lxml._elementpath helper are actually used.
         "lxml.objectify", "lxml.html", "lxml.isoschematron", "lxml.sax", "lxml.builder",
+        # PyMuPDF（AGPL-3.0，约 60MB）不随安装包分发：它属于「PDF 处理组件」，运行时从用户
+        # 连接的 pdf2docx 环境里加载（core/pdf_component.py）。构建机为了跑测试装了它，
+        # 这里显式排除，scripts/build_tauri_package.py 打包后还会再查一遍。
+        "fitz", "pymupdf",
     ],
     noarchive=False,
     optimize=0,

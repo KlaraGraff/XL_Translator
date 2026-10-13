@@ -25,10 +25,10 @@ import re
 import statistics
 from pathlib import Path
 
-import fitz
 from PIL import Image
 
 from .common import (
+    fitz,
     adv_up, display_point_to_page, display_pt_to_page, insert_rotate,
     px_to_display_pt, read_json, sha256, write_json,
 )
