@@ -273,6 +273,14 @@ def _set_excel_review_mark(review_marks: dict[str, str], source: str, mark: str)
         review_marks[source_key] = mark
 
 
+def _all_timeouts(failed_items: list[dict[str, str]]) -> bool:
+    """Whether every sampled failure is the model answering too slowly."""
+    return bool(failed_items) and all(
+        any(marker in str(item.get("error") or "") for marker in ("timeout", "超时", "秒内未返回完整结果"))
+        for item in failed_items
+    )
+
+
 def _already_in_target_language(source: str, item, target_lang: str) -> bool:
     """模型报的实际语言就是目标语言，且译文与原文相同。"""
     translation = str(getattr(item, "translation", "") or "").strip()
@@ -1855,15 +1863,29 @@ class TaskRunner(BaseTaskRunner):
                     "INFO",
                     f"{len(already_target)} 处内容已是目标语言，保持原样，不标记复核。",
                 )
+            echoed = 0
             for source, translation in normal_api_translations.items():
                 if source in already_target:
                     continue
                 if str(source or "").strip().lower() == str(translation or "").strip().lower():
+                    # 接口失败、质量校验回退的原文各有各的计数和日志，这里只数
+                    # 模型真给了回答、而且原样照抄的。
+                    echoed += (
+                        source not in batch_stats.untranslated_sources
+                        and source not in batch_stats.quality_reset_items
+                    )
                     _set_excel_review_mark(
                         excel_review_marks,
                         source,
                         MIXED_MARK_UNRESOLVED,
                     )
+            if echoed:
+                # 这类格子和接口失败的格子一样标「需复核」，以前日志里一句不提，
+                # 复核数对不上失败数，用户无从知道多出来的是什么。
+                self._log(
+                    "WARN",
+                    f"{echoed} 处模型返回的译文与原文相同，已标记需复核。",
+                )
 
             if mixed_texts:
                 stopping = self._stop_event.is_set()
@@ -1960,7 +1982,13 @@ class TaskRunner(BaseTaskRunner):
                         "count": untranslated_count,
                         "message": (
                             f"有 {untranslated_count} 条内容未能从模型获得译文，文件中这些位置保留的是原文。"
-                            "请检查 API 密钥、Base URL、模型名称或服务状态，重新配置后重试。"
+                            + (
+                                # 全是超时时，密钥和模型都是好的（连接测试也能通过），
+                                # 让用户去查配置只会白忙（反馈 FB-20261013-UVW95F）。
+                                "原因是模型服务响应超时，可稍后对输出文件开启「仅补译未翻译内容」再翻译一次。"
+                                if _all_timeouts(batch_stats.failed_items)
+                                else "请检查 API 密钥、Base URL、模型名称或服务状态，重新配置后重试。"
+                            )
                         ),
                         "failed_sources": list(batch_stats.failed_items),
                     }

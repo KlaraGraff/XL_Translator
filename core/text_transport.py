@@ -28,6 +28,10 @@ MAX_SENDS = 6  # includes protocol negotiation and authorized connection failove
 # burst of parallel batches does not stampede a server that just failed.  A
 # deliberate resend has to wait past it or it only gets the cached error back.
 FAILED_REQUEST_CACHE_SECONDS = 2.0
+# Failures that belong to the leader's own request body, not to the server or
+# the route: a slow or cut-off answer to one batch says nothing about the
+# next batch.  Waiters do not inherit them; they elect a new leader instead.
+_OWN_REQUEST_FAILURES = frozenset({"read_timeout", "total_timeout", "incomplete"})
 
 
 class TextTransportError(ValueError):
@@ -55,13 +59,16 @@ class RequestBudget:
     deadline: float = field(default_factory=lambda: time.monotonic() + TOTAL_TIMEOUT)
     remaining: int = MAX_SENDS
     should_stop: Callable[[], bool] | None = None
+    seconds: float = TOTAL_TIMEOUT
 
     def check(self) -> float:
         if self.should_stop and self.should_stop():
             raise TextTransportError("请求已取消。", kind="cancelled")
         left = self.deadline - time.monotonic()
         if left <= 0:
-            raise TextTransportError("请求总时限已用尽；协议仍未确定。", kind="total_timeout")
+            raise TextTransportError(
+                f"模型服务在 {round(self.seconds)} 秒内未返回完整结果，服务端可能正在排队。", kind="total_timeout"
+            )
         return left
 
     def take(self) -> None:
@@ -72,6 +79,7 @@ class RequestBudget:
 
 
 _BUDGET: ContextVar[RequestBudget | None] = ContextVar("text_request_budget", default=None)
+_SHOULD_STOP: ContextVar[Callable[[], bool] | None] = ContextVar("text_request_should_stop", default=None)
 
 
 @contextmanager
@@ -80,7 +88,11 @@ def request_budget(*, seconds=TOTAL_TIMEOUT, should_stop=None):
     if existing is not None:
         yield existing
         return
-    budget = RequestBudget(deadline=time.monotonic() + seconds, should_stop=should_stop)
+    budget = RequestBudget(
+        deadline=time.monotonic() + seconds,
+        should_stop=should_stop or _SHOULD_STOP.get(),
+        seconds=seconds,
+    )
     token = _BUDGET.set(budget)
     try:
         yield budget
@@ -88,11 +100,22 @@ def request_budget(*, seconds=TOTAL_TIMEOUT, should_stop=None):
         _BUDGET.reset(token)
 
 
-def bounded_text_operation(fn):
+def cancellable_text_operation(fn):
+    """Let every request made inside ``fn`` honour its ``should_stop``.
+
+    Only the stop signal is shared.  Each request still gets its own time and
+    attempt budget: this used to wrap a whole batch, so a resend, a split half
+    or a backup connection inherited whatever the first slow attempt had left
+    (feedback FB-20261013-UVW95F: a 120 s read timeout left the resend 60 s,
+    then nothing, and the batch was kept as source text).
+    """
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        with request_budget(should_stop=kwargs.get("should_stop")):
+        token = _SHOULD_STOP.set(kwargs.get("should_stop") or _SHOULD_STOP.get())
+        try:
             return fn(*args, **kwargs)
+        finally:
+            _SHOULD_STOP.reset(token)
     return wrapped
 
 
@@ -171,6 +194,12 @@ def _sanitize_error(exc: Exception, api_key: str) -> Exception:
     if hasattr(exc, "status_code"):
         sanitized.status_code = exc.status_code
     return sanitized
+
+
+def _failure_kind(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return classify_http_error(exc)[0]
+    return getattr(exc, "kind", "")
 
 
 def clear_protocol_cache():
@@ -399,19 +428,31 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
     routes = candidate_routes(base_url, mode)
     identity = hashlib.sha256(json.dumps([connection_id, base_url, model, mode, hashlib.sha256(api_key.encode()).hexdigest()], ensure_ascii=False).encode()).hexdigest()
     with request_budget(seconds=total_seconds, should_stop=should_stop) as budget:
-        with _LOCK:
-            now = time.monotonic()
-            for key, entry in list(_CACHE.items()):
-                if entry.event.is_set() and entry.expires <= now:
-                    del _CACHE[key]
-            entry = _CACHE.get(identity)
-            leader = entry is None
+        while True:
+            with _LOCK:
+                now = time.monotonic()
+                for key, entry in list(_CACHE.items()):
+                    if entry.event.is_set() and entry.expires <= now:
+                        del _CACHE[key]
+                entry = _CACHE.get(identity)
+                leader = entry is None
+                if leader:
+                    entry = _Entry()
+                    _CACHE[identity] = entry
             if leader:
-                entry = _Entry()
-                _CACHE[identity] = entry
-        if not leader:
+                break
+            # Time spent waiting for the leader's answer is not this request's
+            # own: give it back, or a burst of parallel batches all start their
+            # real send with whatever the leader's slow batch left them.
+            wait_started = time.monotonic()
             while not entry.event.wait(min(0.05, budget.check())):
                 pass
+            budget.deadline += time.monotonic() - wait_started
+            if not entry.error or _failure_kind(entry.error) not in _OWN_REQUEST_FAILURES:
+                break
+            # The leader's own batch was too slow or cut off; that is no reason
+            # to fail this one.  Elect again: the leader dropped its entry.
+        if not leader:
             if entry.error:
                 error_kind = (
                     classify_http_error(entry.error)[0]
@@ -476,6 +517,10 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                 # Retain only sanitized failures; no request payloads or credentials.
                 entry.error = _sanitize_error(exc, api_key)
                 entry.expires = time.monotonic() + FAILED_REQUEST_CACHE_SECONDS
+                if _failure_kind(entry.error) in _OWN_REQUEST_FAILURES:
+                    with _LOCK:
+                        if _CACHE.get(identity) is entry:
+                            del _CACHE[identity]
             # A candidate promoted by this app can become unavailable
             # unavailable after startup.  Restore its predecessor only for a
             # definitive model error, then safely retry this same text request.
