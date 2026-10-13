@@ -307,7 +307,10 @@ def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
     for page in sorted(pages, key=lambda item: item.page_number):
         lines.append(f"  - 第 {page.page_number} 页：{page.inplace_message or page.inplace_status}")
         for item in page.inplace_review_items[:30]:
-            lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
+            if item.get("kind") == "term":
+                lines.append(f"    - 需复核「{item.get('text', '')}」：{item.get('detail') or item.get('reason', '')}")
+            else:
+                lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
     return lines
 
 

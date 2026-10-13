@@ -47,6 +47,8 @@ export interface TermsResult {
   sceneChoices: SceneChoice[];
   manualTermsHit: number;
   retryAttempts: number;
+  /** 需复核标在哪里：空为输出文件（Excel、Word）；cad_review 为 CAD 译文对照表；其余为任务里的复核清单。 */
+  markedIn: string;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -99,6 +101,7 @@ export function readTermsResult(task: TaskStatus): TermsResult | null {
     })),
     manualTermsHit: int(data.manual_terms_hit),
     retryAttempts: int(data.retry_attempts),
+    markedIn: str(data.marked_in),
   };
 }
 
@@ -295,9 +298,14 @@ export function renderTermsSection(
   }
 
   if (result.notApplied.length) {
+    const missed = summaryOfMissed(result.notApplied);
     const warn = line(
       "warn",
-      t("有 {0} 处未采用您设定的译法（{1}），已在输出文件中标记需复核的位置。", result.notApplied.length, summaryOfMissed(result.notApplied)),
+      result.markedIn === "cad_review"
+        ? t("有 {0} 处未采用您设定的译法（{1}），已在译文对照表中标记需复核。", result.notApplied.length, missed)
+        : result.markedIn
+          ? t("有 {0} 处未采用您设定的译法（{1}），已标记需复核。", result.notApplied.length, missed)
+          : t("有 {0} 处未采用您设定的译法（{1}），已在输出文件中标记需复核的位置。", result.notApplied.length, missed),
     );
     if (options.scrollToReview) {
       const link = document.createElement("span");

@@ -360,8 +360,11 @@ class WordTaskRunner(BaseTaskRunner):
         translate_headers_footers: bool = False,
         allow_doc_fallback: bool = False,
         resume_output_dir: str | None = None,
+        term_file_paths: list[Path] | None = None,
     ):
         self._files = file_items
+        # 记忆库词条「只在…中生效」按这些路径判断；PDF 转 Word 传原 PDF，不传时按要翻译的文件。
+        self._term_file_paths = list(term_file_paths) if term_file_paths else None
         self._settings = settings
         self._source_root = Path(source_root) if source_root else None
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
@@ -1043,7 +1046,7 @@ class WordTaskRunner(BaseTaskRunner):
                 settings.tm,
                 target_lang=target_lang,
                 smart_mode=smart_mode,
-                file_paths=[item.path for item in self._files],
+                file_paths=self._term_file_paths or [item.path for item in self._files],
                 log=self._log,
                 task_id=self.task_id,
             )

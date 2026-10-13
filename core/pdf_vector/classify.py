@@ -7,8 +7,14 @@ write           translated text will replace the source
 keep_source     source stays (numbers, codes, model returned it unchanged)
 review          source stays and a human should look (bad OCR, model issue)
 
-translation_source: model | glossary | retained_identifier | retained_numeric
+translation_source: model | memory | glossary | retained_identifier | retained_numeric
                     | retained_by_model | none
+
+With a ``memory`` (core.term_session.DocumentTermMemory) the page follows the
+same translation-memory rules as Excel / Word: whole labels found in the
+memory are reused, set translations are attached to each batch and checked,
+and rows whose translation still misses a set translation are written but
+listed for review (``term_review``).
 """
 from __future__ import annotations
 
@@ -215,26 +221,28 @@ ProfileFn = Callable[[list[str]], str]
 SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de": "德语", "it": "意大利语", "pt": "葡萄牙语"}
 
 
-def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str]) -> tuple[dict, int]:
+def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
+                          **extra) -> tuple[dict, int]:
     """A failed batch comes back as the source text.  Words that came back
     untouched get one more try before we believe the model meant to keep them
     (company names and addresses really do stay)."""
     try:
-        res = dict(translate(texts, prompt) or {})
+        res = dict(translate(texts, prompt, **extra) or {})
     except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
         errors.append(f"{type(exc).__name__}: {exc}")
         res = {}
     again = [t for t in texts if norm_text(res.get(t) or "") == norm_text(t) and WORD_RE.search(t)]
     if again:
         try:
-            res.update({k: v for k, v in (translate(again, prompt) or {}).items() if v})
+            res.update({k: v for k, v in (translate(again, prompt, **extra) or {}).items() if v})
         except Exception as exc:  # noqa: BLE001
             errors.append(f"retry {type(exc).__name__}: {exc}")
     return res, len(again)
 
 
 def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, profile: ProfileFn | None = None,
-                           source_lang: str = "fr", min_ocr: float = 0.45, glossary: dict | None = None) -> dict:
+                           source_lang: str = "fr", min_ocr: float = 0.45, glossary: dict | None = None,
+                           memory=None, memory_file=None, memory_location: str = "", log=None) -> dict:
     """Fill ``decision``, ``decision_reason``, ``translation`` and
     ``translation_source`` on every row; return a summary.
 
@@ -268,6 +276,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             r["same_label_as"] = c
     errors: list[str] = []
     scene, retried, res = "", 0, {}
+    session, from_memory = None, {}
     if to_model and translate is not None:
         prompt = PROMPT.format(src=SOURCE_LANG_NAMES.get(source_lang, "外文"))
         if profile is not None:
@@ -278,7 +287,21 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             if scene:
                 from core.document_profile import append_profile
                 prompt = append_profile(prompt, scene)
-        res, retried = _translate_with_retry(sorted({r["model_input"] for r in to_model}), prompt, translate, errors)
+        inputs = sorted({r["model_input"] for r in to_model})
+        if memory is not None:
+            try:
+                session = memory.open(inputs, profile=scene, file_path=memory_file, location=memory_location,
+                                      lang_pairs=[f"{source_lang}-{memory.target_lang}"], log=log)
+                from_memory = {k: v for k, v in session.hits.items() if v}
+            except Exception as exc:  # noqa: BLE001 - the memory is optional, the page still translates
+                errors.append(f"memory {type(exc).__name__}: {exc}")
+                session = None
+        ask = [text for text in inputs if text not in from_memory]
+        if ask:
+            extra = {"term_session": session} if session is not None else {}
+            res, retried = _translate_with_retry(ask, prompt, translate, errors, **extra)
+        res.update(from_memory)
+    not_applied = session.not_applied_texts() if session is not None else set()
     for r in to_model:
         dst = norm_text(res.get(r["model_input"]) or "")
         r["model_output"] = dst or None
@@ -291,7 +314,24 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
         elif sorted(re.findall(r"[<>≤≥=±]", r["source_text"])) != sorted(re.findall(r"[<>≤≥=±]", dst)):
             r.update(decision="review", decision_reason="operator_mismatch")
         else:
-            r.update(translation=dst, translation_source="model", decision="write", decision_reason="model_translation")
+            reused = r["model_input"] in from_memory
+            r.update(translation=dst, translation_source="memory" if reused else "model", decision="write",
+                     decision_reason="memory" if reused else "model_translation")
+            if r["model_input"] in not_applied:
+                # written as translated (like Excel / Word), listed for review
+                r["term_review"] = session.not_applied_detail(r["model_input"])
+    if session is not None:
+        # short words learned on this page: only text read from the PDF itself,
+        # an OCR misread must never become a memory entry
+        learned = {r["model_input"]: r["translation"] for r in to_model
+                   if r["decision"] == "write" and r["translation_source"] == "model" and r.get("origin") != "ocr"}
+        counts: dict[str, int] = {}
+        for r in to_model:
+            counts[r["model_input"]] = counts.get(r["model_input"], 0) + 1
+        try:
+            memory.close(session, learned, counts=counts)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"memory {type(exc).__name__}: {exc}")
 
     def count(key):
         c: dict = {}
@@ -303,4 +343,5 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             "translation_source": count("translation_source"), "candidate_rows": len(to_model),
             "unique_requests": len({r["model_input"] for r in to_model}),
             "merged_variants": sum(1 for r in to_model if r.get("same_label_as")),
-            "scene_profile": scene, "retried_unchanged": retried, "errors": errors[:5]}
+            "scene_profile": scene, "retried_unchanged": retried, "errors": errors[:5],
+            "memory_hits": len(from_memory), "term_review": sum(1 for r in rows if r.get("term_review"))}

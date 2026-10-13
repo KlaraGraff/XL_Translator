@@ -136,6 +136,7 @@ class CadTaskRunner(BaseTaskRunner):
         output_dir: Path,
         converter: Any = None,
         memory_lookup: Any = None,
+        term_memory: Any = None,
         translator: Any = None,
         language_translator: Any = None,
         profile_requester: Any = None,
@@ -178,6 +179,9 @@ class CadTaskRunner(BaseTaskRunner):
         self._publication_dir = self._output_dir
         self._converter = converter
         self._memory_lookup = memory_lookup
+        # 记忆库（core.term_session.DocumentTermMemory）：每张图纸一个会话，收尾合并成
+        # 任务详情里的「记忆库」一节。
+        self._term_memory = term_memory
         self._translator = translator
         self._language_translator = language_translator
         self._profile_requester = profile_requester
@@ -628,6 +632,7 @@ class CadTaskRunner(BaseTaskRunner):
                 pipeline = CadTranslationPipeline(
                     converter=self._converter,
                     memory_lookup=self._memory_lookup,
+                    term_memory=self._term_memory,
                     translator=self._translator,
                     language_translator=self._language_translator,
                     profile_requester=(
@@ -685,6 +690,7 @@ class CadTaskRunner(BaseTaskRunner):
                     "work_evidence_dir": str(getattr(result, "work_evidence_dir", "") or ""),
                     "status": "needs_review"
                     if result.unresolved
+                    or getattr(result, "term_review", None)
                     or stats.replacement_characters
                     or stats.residual_foreign_text_count
                     or stats.unsupported_entities
@@ -704,6 +710,7 @@ class CadTaskRunner(BaseTaskRunner):
                         "unknown_entity_count": stats.unknown_entity_count,
                         "layout_fitted": stats.layout_fitted,
                         "layout_unresolved": stats.layout_unresolved,
+                        "term_not_applied": getattr(stats, "term_not_applied", 0),
                     },
                     "unresolved": result.unresolved,
                 }
@@ -717,6 +724,14 @@ class CadTaskRunner(BaseTaskRunner):
                     )
                 if stats.replacement_characters:
                     issues.append({"file": source.name, "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
+                for entry in getattr(result, "term_review", None) or ():
+                    issues.append({
+                        "file": source.name,
+                        "source": entry.get("source", ""),
+                        "reason": "term_not_applied",
+                        "problem": "未采用设定译法",
+                        "status": entry.get("reason", ""),
+                    })
                 if stats.residual_foreign_text_count:
                     issues.append({"file": source.name, "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
                 if stats.layout_unresolved:
@@ -752,6 +767,7 @@ class CadTaskRunner(BaseTaskRunner):
                         **batch_paths,
                         files=results,
                         issues=issues,
+                        terms=self._finish_terms(),
                         # 与 Excel/Word 同一口径：还有几个文件没跑完，界面据此写「还有 N 个文件没跑到」。
                         kpi={"unstarted_file_count": sum(
                             1 for item in self._files
@@ -774,6 +790,7 @@ class CadTaskRunner(BaseTaskRunner):
                         api_call_count=api_calls,
                         issues=issues,
                         kpi={"translated_entities": translated_count, "file_count": len(results)},
+                        terms=self._finish_terms(),
                     )
                 )
         except Exception as exc:  # runner-level failures still become a task result
@@ -785,6 +802,7 @@ class CadTaskRunner(BaseTaskRunner):
                     message="CAD 翻译未能完成："
                     + _cad_failure_message(exc, fallback="出现了未预期的问题。"),
                     **batch_paths,
+                    terms=self._finish_terms(),
                 )
             )
         finally:

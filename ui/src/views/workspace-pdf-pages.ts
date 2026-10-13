@@ -868,9 +868,10 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
   // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
   if (page.inplace_status === "done") {
     const review = Number(page.inplace_review ?? 0);
-    return review > 0
-      ? createChip({ label: t("原位替换 · {0} 处保留原文", review), tone: "warn" })
-      : createChip({ label: t("原位替换"), tone: "ok" });
+    const termReview = Number(page.inplace_term_review ?? 0);
+    if (review > 0) return createChip({ label: t("原位替换 · {0} 处保留原文", review), tone: "warn" });
+    if (termReview > 0) return createChip({ label: t("原位替换 · {0} 处需复核", termReview), tone: "warn" });
+    return createChip({ label: t("原位替换"), tone: "ok" });
   }
   if (page.word_status === "done") return createChip({ label: t("转 Word"), tone: "ok" });
   if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("转 Word 未成功"), tone: "warn" });
@@ -927,12 +928,21 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
 /** 原位替换（Beta）页的说明：结果一句话 + 前几条保留原文的位置，用户能对着图找到。 */
 function inplaceNote(page: PdfPage): string {
   const head = page.inplace_message ? tx(page.inplace_message) : "";
-  const items = (page.inplace_review_items ?? []).slice(0, 5);
-  if (!items.length) return head;
-  const list = items.map((item) => t("「{0}」{1}", item.text, tx(item.reason))).join(t("；"));
-  const more = (page.inplace_review_items ?? []).length > items.length ? t("等") : "";
-  const kept = t("保留原文的地方：{0}{1}", list, more);
-  return head ? t("{0}。{1}", head, kept) : kept;
+  const all = page.inplace_review_items ?? [];
+  const parts: string[] = head ? [head] : [];
+  const keptItems = all.filter((item) => item.kind !== "term");
+  const termItems = all.filter((item) => item.kind === "term");
+  if (keptItems.length) {
+    const items = keptItems.slice(0, 5);
+    const list = items.map((item) => t("「{0}」{1}", item.text, tx(item.reason))).join(t("；"));
+    parts.push(t("保留原文的地方：{0}{1}", list, keptItems.length > items.length ? t("等") : ""));
+  }
+  if (termItems.length) {
+    const items = termItems.slice(0, 5);
+    const list = items.map((item) => t("「{0}」{1}", item.text, "").trim()).join(t("、"));
+    parts.push(t("未采用记忆库中设定译法的地方：{0}{1}", list, termItems.length > items.length ? t("等") : ""));
+  }
+  return parts.reduce((joined, part) => (joined ? t("{0}。{1}", joined, part) : part), "");
 }
 
 /** 首选方式在这一页用不了、改用了整页图像翻译：先说原因，再接这一页本身的结果。 */

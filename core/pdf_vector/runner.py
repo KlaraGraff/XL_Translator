@@ -66,6 +66,8 @@ class InplaceHooks:
     tesseract_languages: list[str] | None = None
     source_lang: str = "auto"
     ocr_wanted: bool = True
+    # 记忆库（core.term_session.DocumentTermMemory）：与 Excel / Word 同一套规则。
+    memory: object | None = None
 
 
 _STOPWORDS = {
@@ -93,6 +95,7 @@ class InplaceResult:
     written: int = 0            # lines replaced by the translation
     kept: int = 0               # numbers, codes, names: nothing to translate
     review: int = 0             # unsure: source kept, listed for the user
+    term_review: int = 0        # written, but a set translation from the memory was not used
     not_written: int = 0        # translated but could not be placed safely
     ocr_used: bool = False
     unrecognized_regions: int = 0
@@ -117,6 +120,7 @@ _REASON_TEXT = {
     "operator_mismatch": "译文里的比较符号和原文不一致",
     "source_not_removable": "原文删不干净（可能在图片里）",
     "no_fit": "空间不够，放不下译文",
+    "term_not_applied": "未采用记忆库中的设定译法",
 }
 
 
@@ -137,6 +141,9 @@ def translate_page_inplace(
     font_path: Path | None = None,
     log: LogFn | None = None,
     native_only: bool = False,
+    memory=None,
+    memory_file: Path | str | None = None,
+    memory_location: str = "",
 ) -> InplaceResult:
     """Translate one page in place; the result PDF holds that single page."""
     def say(level: str, message: str) -> None:
@@ -162,7 +169,12 @@ def translate_page_inplace(
     info = extract.run(page_pdf, work_dir / "extract", 200, langs or "eng", (0, 90, 270),
                        max(2, (os.cpu_count() or 4) - 2), exe)
     rows = info["rows"]
-    summary = classify_and_translate(rows, translate=translate, profile=profile, source_lang=source_lang)
+    prefix = f"{memory_location}：" if memory_location else ""
+    summary = classify_and_translate(
+        rows, translate=translate, profile=profile, source_lang=source_lang,
+        memory=memory, memory_file=memory_file or source_pdf, memory_location=memory_location,
+        log=lambda level, message: say(level, f"{prefix}{message}"),
+    )
     for err in summary.get("errors") or []:
         say("WARN", f"原位替换：{err}")
     manifest = work_dir / "manifest.json"
@@ -183,6 +195,13 @@ def translate_page_inplace(
         for r in rows
         if r["decision"] == "review" or (r["id"] in decided_write and r["id"] not in written_ids)
     ]
+    # 译文已写入、但没用上记忆库里设定的译法（重译后仍不符）：同样列给用户复核。
+    review_items += [
+        {"text": r["source_text"], "reason": reason_text("term_not_applied"), "detail": r["term_review"],
+         "kind": "term", "box_px": r["display_box"]}
+        for r in rows
+        if r.get("term_review") and r["id"] in written_ids
+    ]
     result = InplaceResult(
         ok=check.get("status") == "pass",
         output_pdf=str(out_pdf),
@@ -190,6 +209,7 @@ def translate_page_inplace(
         kept=sum(1 for r in rows if r["decision"] == "keep_source"),
         review=sum(1 for r in rows if r["decision"] == "review"),
         not_written=len(decided_write - written_ids),
+        term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe),
         unrecognized_regions=int((check.get("unrecognized_text") or {}).get("candidates") or 0),
         scene_profile=summary.get("scene_profile", ""),

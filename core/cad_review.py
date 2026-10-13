@@ -29,10 +29,11 @@ from core.cad_translation import (
 
 EDITS_FILENAME = "cad-review-edits.json"
 # 对照表里的状态：translated 已翻译、kept 已是目标语言保留原文、unresolved 没译出来。
-_STATUSES = frozenset({"translated", "kept", "unresolved"})
+# review：译文已写入，但未采用记忆库「始终采用」词条的设定译法，需复核。
+_STATUSES = frozenset({"translated", "kept", "unresolved", "review"})
 # Excel 里的列。第一列是图纸文件名，导回时按「图纸 + 原文」找到对应的那一行。
 EXPORT_HEADERS = ("图纸", "原文", "译文", "状态", "出现次数")
-_STATUS_LABELS = {"translated": "已翻译", "kept": "保留原文", "unresolved": "未译出", "edited": "已修改"}
+_STATUS_LABELS = {"translated": "已翻译", "kept": "保留原文", "unresolved": "未译出", "review": "需复核", "edited": "已修改"}
 
 
 class CadReviewError(Exception):
@@ -116,6 +117,7 @@ def _rows(file_manifest: Mapping[str, Any], edits: Mapping[str, str]) -> list[di
             "status": status if status in _STATUSES else "translated",
             "count": 1,
             "crowded": source in crowded,
+            "reason": str(unit.get("reason") or "") if status == "review" else "",
         }
     out = []
     for row in rows.values():
@@ -216,7 +218,7 @@ def export_workbook(review: Mapping[str, Any]) -> bytes:
         for row in file.get("rows") or []:
             status = "edited" if row.get("edited") else str(row.get("status") or "")
             sheet.append([file.get("name", ""), row["source"], row["translation"], _STATUS_LABELS.get(status, status), row["count"]])
-            if status == "unresolved" or row.get("crowded"):
+            if status in {"unresolved", "review"} or row.get("crowded"):
                 for cell in sheet[sheet.max_row]:
                     cell.fill = review_fill
     for column, width in zip("ABCDE", (28, 48, 48, 12, 10)):
@@ -401,6 +403,23 @@ def _rewrite_one(
         new_manifest["output"] = str(output)
         new_manifest["manifest"] = str(manifest_path)
         new_manifest["rewritten_from_review"] = True
+        # 未采用设定译法、这次也没改的文字仍是需复核（写回不经过记忆库核对）。
+        still_review = {
+            row["source"]: row
+            for row in rows
+            if row["status"] == "review" and not row["edited"]
+        }
+        if still_review:
+            reasons = {
+                str(unit.get("source") or ""): str(unit.get("reason") or "")
+                for unit in manifest.get("units") or []
+                if isinstance(unit, dict) and unit.get("status") == "review"
+            }
+            for unit in new_manifest.get("units") or []:
+                source_text = str(unit.get("source") or "") if isinstance(unit, dict) else ""
+                if source_text in still_review and unit.get("status") == "translated":
+                    unit["status"] = "review"
+                    unit["reason"] = reasons.get(source_text, "")
         manifest_path.write_text(json.dumps(new_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         stats = result.stats
         return {
