@@ -4,6 +4,7 @@
 // 都能调序，存在 settings.translation_types（v40）。内置默认显示，扩展类型默认不显示。不显示只是
 // 不放进侧栏：页面照常注册，任务中心「打开工作区」、翻译参数里它的页签都照旧。至少要留一种显示
 // 在侧栏，后端也拦。
+// 列表下面的「更多文件类型」（添加、制作、分享扩展）和「浏览扩展」在 extensions-install.ts。
 // 「插件」页（运行组件）是另一页，与这里无关。
 
 import { ApiClient } from "../api-client";
@@ -25,6 +26,7 @@ import {
   visibleTypeKeys,
   type TranslationTypesLayout,
 } from "../surface-descriptors";
+import { installSections, mountInstall, uninstallButton, unmountInstall } from "./extensions-install";
 import "./extensions-page.css";
 
 let mounted = false;
@@ -35,6 +37,7 @@ let busy = false;
 export function mount(container: HTMLElement, _params: ViewParams): void {
   mounted = true;
   rootEl = container;
+  mountInstall({ onChanged: refresh });
   render();
   void refresh();
 }
@@ -42,6 +45,7 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
 export function unmount(): void {
   mounted = false;
   rootEl = null;
+  unmountInstall();
 }
 
 async function refresh(): Promise<void> {
@@ -110,7 +114,8 @@ function typeName(key: string): { label: string; icon: IconName } {
 function typeSource(key: string): string {
   const adapter = surfaceDescriptor(key)?.adapter;
   if (!isExtSurface(key) || !adapter) return t("内置");
-  return t("随应用提供") + (adapter.version ? ` · ${adapter.version}` : "");
+  const origin = adapter.origin === "installed" ? t("已安装") : t("随应用提供");
+  return origin + (adapter.version ? ` · ${adapter.version}` : "");
 }
 
 function typeRow(key: string, index: number, count: number, visibleCount: number): HTMLDivElement {
@@ -138,6 +143,8 @@ function typeRow(key: string, index: number, count: number, visibleCount: number
   const source = document.createElement("div");
   source.className = "types-source";
   source.textContent = typeSource(key);
+  const uninstall = uninstallButton(key);
+  if (uninstall) source.append(uninstall);
 
   const hidden = !isTypeVisible(settings, key);
   const sidebar = createSwitch({
@@ -187,21 +194,6 @@ function render(): void {
   const visibleCount = visibleTypeKeys(settings).length;
   keys.forEach((key, index) => table.append(typeRow(key, index, keys.length, visibleCount)));
   card.append(table);
-  column.append(card, aboutCard());
+  column.append(card, ...installSections());
   rootEl.append(column);
-}
-
-/** 列表下方的说明：还能自己做扩展、分享、下载别人的（入口按钮由安装与浏览那部分接在后面）。 */
-function aboutCard(): HTMLElement {
-  const card = createCard([]);
-  card.classList.add("extensions-about");
-  const head = document.createElement("div");
-  head.className = "tc-head";
-  const title = document.createElement("b");
-  title.textContent = t("更多文件类型");
-  head.append(title);
-  const body = document.createElement("p");
-  body.textContent = t("可以自行制作扩展，让本软件支持更多文件类型；制作好的扩展可以上传，分享给其他人使用，也可以下载其他人分享的扩展。");
-  card.append(head, body);
-  return card;
 }

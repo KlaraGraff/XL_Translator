@@ -149,7 +149,74 @@ export type SurfaceDescriptor = {
   /** 运行设置里的开关；内置页面为空。 */
   options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
   /** 由格式适配器生成的类型才有（api/surfaces/adapter.py）：来自清单的 id、版本和来源。 */
-  adapter?: { id: string; version: string; origin: "bundled"; license: string; repo: string };
+  adapter?: { id: string; version: string; origin: "bundled" | "installed"; license: string; repo: string };
+};
+
+/** 「添加扩展…」检查一个文件夹或 zip 的结果（POST /api/extensions/preview），确认弹窗照它画。 */
+export type ExtensionPreview = {
+  id: string;
+  key: string;
+  version: string;
+  label: LocalizedText;
+  extensions: string[];
+  license: string;
+  repo: string;
+  source: string;
+  kind: "folder" | "zip";
+  file_count: number;
+  sample_count: number;
+  size: number;
+  sha256: string;
+  /** 后端原话（中文），显示前用 tx() 翻。 */
+  warnings: string[];
+  action: "install" | "upgrade" | "downgrade" | "reinstall";
+  installed_version: string;
+};
+
+/** 已装的扩展（GET /api/extensions/installed）；ok 为 false 时装坏了，原因在 problem。 */
+export type InstalledExtension = {
+  id: string;
+  key: string;
+  version: string;
+  label?: LocalizedText;
+  ok: boolean;
+  problem: string;
+  registered: boolean;
+};
+
+/** 扩展安装任务（POST install / registry/install 之后轮询 install-progress）。 */
+export type ExtensionInstallProgress = Omit<ComponentInstallProgress, "phase"> & {
+  phase: "" | "download" | "verify" | "install" | "done" | "failed";
+  label?: string;
+  result?: { id: string; version: string; label?: LocalizedText } | null;
+};
+
+/** 扩展列表里的一个条目（GET /api/extensions/registry），字段同扩展列表仓库的 schema。 */
+export type RegistryExtension = {
+  id: string;
+  name: LocalizedText;
+  summary: LocalizedText;
+  extensions: string[];
+  author: string;
+  repo: string;
+  license: string;
+  version: string;
+  size: number;
+  status: "official" | "reviewed";
+  state: "available" | "installed" | "update" | "incompatible" | "bundled";
+  installed_version: string;
+  /** 后端原话（中文）。 */
+  incompatible_reason: string;
+};
+
+export type ExtensionRegistry = {
+  entries: RegistryExtension[];
+  fetched_at: number;
+  /** 联网失败、用的是缓存（或什么都没有）。 */
+  stale: boolean;
+  error: string;
+  registry_home: string;
+  template_home: string;
 };
 
 export type SseEvent = {
@@ -540,6 +607,44 @@ export class ApiClient {
   async fetchSurfaces(): Promise<SurfaceDescriptor[]> {
     const payload = await this.request<{ surfaces?: SurfaceDescriptor[] }>("/api/surfaces");
     return Array.isArray(payload.surfaces) ? payload.surfaces : [];
+  }
+
+  async installedExtensions(): Promise<{ extensions: InstalledExtension[]; install: ExtensionInstallProgress }> {
+    return this.request("/api/extensions/installed");
+  }
+
+  /** 检查文件夹或 zip，不改动任何东西；检查不通过时抛 ApiError（rawMessage 里多条问题用「；」连接）。 */
+  async previewExtension(path: string): Promise<ExtensionPreview> {
+    return this.request<ExtensionPreview>("/api/extensions/preview", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  /** 用户在确认弹窗里点了「安装」之后调用；sha256 是 preview 给的，文件在两步之间变了就不装。 */
+  async installExtension(path: string, sha256: string): Promise<ExtensionInstallProgress> {
+    return this.request<ExtensionInstallProgress>("/api/extensions/install", {
+      method: "POST",
+      body: JSON.stringify({ path, sha256, confirmed: true }),
+    });
+  }
+
+  async installRegistryExtension(id: string): Promise<ExtensionInstallProgress> {
+    return this.request<ExtensionInstallProgress>("/api/extensions/registry/install", {
+      method: "POST",
+      body: JSON.stringify({ id, confirmed: true }),
+    });
+  }
+
+  async extensionInstallProgress(): Promise<ExtensionInstallProgress> {
+    return this.request<ExtensionInstallProgress>("/api/extensions/install-progress");
+  }
+
+  async uninstallExtension(id: string): Promise<void> {
+    await this.request(`/api/extensions/${encodeURIComponent(id)}/uninstall`, { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async extensionRegistry(force = false): Promise<ExtensionRegistry> {
+    return force
+      ? this.request<ExtensionRegistry>("/api/extensions/registry/refresh", { method: "POST", body: JSON.stringify({}) })
+      : this.request<ExtensionRegistry>("/api/extensions/registry");
   }
 
   async getCadCapability(): Promise<CadCapabilityStatus> {

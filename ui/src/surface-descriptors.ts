@@ -36,6 +36,12 @@ export function loadSurfaceDescriptors(): Promise<SurfaceDescriptor[]> {
   return pending;
 }
 
+/** 安装或卸载扩展之后重新拉一次（原来的缓存作废）。 */
+export function reloadSurfaceDescriptors(): Promise<SurfaceDescriptor[]> {
+  pending = null;
+  return loadSurfaceDescriptors();
+}
+
 /** 已拉到的全部描述符（还没拉到或拉取失败时为空）。 */
 export function surfaceDescriptors(): readonly SurfaceDescriptor[] {
   return descriptors;

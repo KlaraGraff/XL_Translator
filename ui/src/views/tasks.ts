@@ -24,14 +24,14 @@ import {
 } from "../components";
 import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
-import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, ApiError, type LocalizedText, type SseEvent, type TaskStatus } from "../api-client";
 import { openCadReview } from "./cad-review";
 import { refreshTermsAdvancedMode, renderTermsSection, resetTermsEntryCache } from "./task-terms";
 import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
-import { extSurfaceIcon, extSurfaceLabel, isExtSurface, surfaceDescriptor } from "../surface-descriptors";
+import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -202,8 +202,13 @@ function surfaceIcon(surface: TaskSurface): IconName {
   return SURFACE_ICON[surface] ?? "book";
 }
 
-function taskSurfaceLabel(surface: TaskSurface): string {
-  if (isExtSurface(surface)) return extSurfaceLabel(surface);
+/** 扩展卸载之后描述符里没有它了：名字取任务快照里记下的那份（api/surfaces/adapter.py snapshot）。 */
+function taskSurfaceLabel(surface: TaskSurface, snapshot?: unknown): string {
+  if (isExtSurface(surface)) {
+    if (surfaceDescriptor(surface) || !surfaceDescriptors().length) return extSurfaceLabel(surface);
+    const adapter = record(record(snapshot).adapter);
+    return t("{0}（扩展已卸载）", localizedText(adapter.label as LocalizedText | undefined, surface.slice("ext:".length)));
+  }
   return SURFACE_TASK_LABEL[surface] ?? t("记忆库清洗");
 }
 
@@ -1105,7 +1110,7 @@ function handleEvent(taskId: string, event: SseEvent): void {
     // 服务端亲口给的终态事件：这条流服务端已经关闭，任何后续快照都不该再让 watchTask 重连。
     streamClosedTaskIds.add(taskId);
     if (mounted) {
-      const label = taskSurfaceLabel(entry.task.surface);
+      const label = taskSurfaceLabel(entry.task.surface, entry.task.task_snapshot);
       showToast({
         message: event.type === "done" || event.type === "completed_with_issues" ? t("{0} 任务已完成。", label) : tx(text(data.message)) || t("任务未完成。"),
         error: event.type === "error" || event.type === "stopped" || event.type === "interrupted",
@@ -1395,7 +1400,7 @@ function matchesSearch(entry: TaskEntry): boolean {
   const haystack = normalizeSearch([
     cardTitle(entry.task),
     tx(text(entry.task.source_label)),
-    taskSurfaceLabel(entry.task.surface),
+    taskSurfaceLabel(entry.task.surface, entry.task.task_snapshot),
     cardChip(entry).label,
     // 运行中的徽章是百分比，状态词（翻译中、已暂停）只在副标题里；已结束的任务只认徽章上
     // 写的字，免得搜「有问题」搜出一排徽章写着「已完成」的卡片。
@@ -1506,14 +1511,14 @@ function splitSourceLabel(label: string): { name: string; fileCount: number | nu
 function cardTitle(task: TaskStatus): string {
   const fallback = t("任务 {0}", task.task_id.slice(0, 8));
   const label = text(task.source_label);
-  if (!isWorkspaceSurface(task.surface)) return `${taskSurfaceLabel(task.surface)} · ${tx(label) || fallback}`;
+  if (!isWorkspaceSurface(task.surface)) return `${taskSurfaceLabel(task.surface, task.task_snapshot)} · ${tx(label) || fallback}`;
   return splitSourceLabel(label).name || fallback;
 }
 
 function cardSubtitle(entry: TaskEntry): string {
   const meta = taskStateMeta(entry.task, entry.streamState);
   const isWorkspaceTask = isWorkspaceSurface(entry.task.surface);
-  const surfaceLabel = isWorkspaceTask ? taskSurfaceLabel(entry.task.surface) : "";
+  const surfaceLabel = isWorkspaceTask ? taskSurfaceLabel(entry.task.surface, entry.task.task_snapshot) : "";
   const labelCount = splitSourceLabel(text(entry.task.source_label)).fileCount;
   if (isTaskActive(entry.task)) {
     const phase = tx(entry.phaseName) || t("正在准备任务");
@@ -1666,7 +1671,7 @@ function renderDetail(): void {
   title.style.textOverflow = "ellipsis";
   title.style.whiteSpace = "nowrap";
   const fallbackTitle = t("任务 {0}", task.task_id.slice(0, 8));
-  const titleText = `${taskSurfaceLabel(task.surface)} · ${tx(text(task.source_label, fallbackTitle))}`;
+  const titleText = `${taskSurfaceLabel(task.surface, task.task_snapshot)} · ${tx(text(task.source_label, fallbackTitle))}`;
   title.textContent = titleText;
   title.title = titleText;
   header.append(title);
