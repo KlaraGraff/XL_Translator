@@ -217,56 +217,46 @@ def _validate_image_model(settings: AppSettings) -> None:
 def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     """「原位替换文字（Beta）」：文档翻译模型 + 可选的文字识别组件。
 
-    引擎在第一次用到时才建（在任务线程里，拿任务开始时的密钥快照）；批量和并发
-    沿用文档翻译模型的设置。
+    引擎在第一次用到时才建（在任务线程里，拿任务开始时的密钥快照）。引擎、分批请求
+    和记忆库的接线在 core/text_translation_service.py，与 CAD 共用。
     """
-    from core.document_profile import request_document_profile
-    from core.engine_dispatcher import build_role_engine, translate_texts
     from core.ocr_engine import resolve_tesseract, tesseract_languages
-    from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
     from core.pdf_vector import InplaceHooks
-    from core.term_session import DocumentTermMemory
+    from core.text_translation_service import TextTranslationService
     from engines.base_engine import engine_supports_chat
 
-    state: dict[str, Any] = {}
-    lock = threading.Lock()
-
-    # 速率与重试按「翻译参数 → PDF → 文字翻译」（core/surface_rate.py）。
-    rate = resolve_surface_rate(settings, "pdf_text")
-
-    def engine():
-        with lock:
-            if "engine" not in state:
-                state["engine"] = build_role_engine(
-                    engine_settings_for_rate(settings, rate), "translation", connection_ids=connection_ids
-                )
-            return state["engine"]
+    smart_mode = bool(getattr(settings.pdf, "smart_context", False))
+    service = TextTranslationService(
+        settings,
+        surface_key="pdf",
+        # 速率与重试按「翻译参数 → PDF → 文字翻译」（core/surface_rate.py）。
+        rate_surface="pdf_text",
+        # 原位替换把外文图纸标注译成中文（提示词见 core/pdf_vector/classify.py）。
+        target_lang="zh",
+        source_lang="auto",
+        connection_ids=connection_ids,
+        marked_in="pdf_pages",
+        smart_mode=smart_mode,
+    )
 
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
-        # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
-        eng = term_session.wrap(engine()) if term_session is not None else engine()
-        return translate_texts(texts, eng, "zh", prompt, batch_size=rate.batch_items,
-                               concurrency=rate.concurrency, source_lang="auto", should_stop=should_stop,
-                               throughput_unlocked=bool(settings.engine.concurrency_unlocked),
-                               transient_retries=rate.request_retry, max_chars=rate.batch_chars,
-                               item_retries=rate.item_retry)
+        # 页面自己拼提示词；接口放弃的条目按原文交回，页面把「原样返回」的再重试一次，
+        # 仍是原文就按保留原文处理（core/pdf_vector/classify.py _translate_with_retry）。
+        return service.translate(
+            texts, prompt=prompt, should_stop=should_stop, term_session=term_session, drop_failed=False
+        )
 
     profile = None
-    if getattr(settings.pdf, "smart_context", False):
+    if smart_mode:
         def profile(texts: list[str]) -> str:
-            eng = engine()
-            if not engine_supports_chat(eng):
+            if not engine_supports_chat(service.engine()):
                 return ""
-            return request_document_profile(eng.chat, texts, target_language="简体中文")
+            return service.document_profile(texts, target_language="简体中文")
 
     # 记忆库与 Excel / Word 同一套规则（core.term_session）；语言对按每页识别的原文语种定。
-    memory = DocumentTermMemory(
-        settings.tm,
+    memory = service.term_memory(
         target_lang=str(settings.pdf.target_lang or settings.target_lang or "zh"),
         lang_pairs=(),
-        smart_mode=bool(getattr(settings.pdf, "smart_context", False)),
-        engine_provider=engine,
-        marked_in="pdf_pages",
     )
 
     exe = resolve_tesseract()

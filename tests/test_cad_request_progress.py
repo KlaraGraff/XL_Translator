@@ -186,7 +186,7 @@ def test_cad_translator_does_not_count_failed_batches_as_translations(tmp_path, 
 
     with (
         patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
-        patch("api.surfaces.cad.build_role_engine", return_value=HalfBroken()),
+        patch("core.engine_dispatcher.build_role_engine", return_value=HalfBroken()),
         patch("core.engine_dispatcher.get_system_prompt", return_value="CAD prompt"),
         patch("core.engine_dispatcher._backoff_sleep", lambda *args, **kwargs: None),
     ):
