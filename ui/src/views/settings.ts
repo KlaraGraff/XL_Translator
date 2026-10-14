@@ -1563,7 +1563,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   // ① 自动识别场景：开关。翻译前先通读文档写一段文档说明，随每批内容一起发送。
   body.append(smartContextRow(
     current.smartContext,
-    t("开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型。"),
+    t("开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型；某批未采用统一译法时，再重新翻译一次。"),
     (checked) => enqueueSave(async () => {
       await putDomain({ ...basePayload(), smart_context: checked });
       Object.assign(current, domainSettingsFor(surface));

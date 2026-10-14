@@ -1323,9 +1323,9 @@
     "en": "No limit",
     "fr": "Illimité"
   },
-  "开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型。": {
-    "en": "When on, the document translation model reads each document before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is sent with every batch, so the same word can be translated differently in different documents. For longer files, a single translation is also set for recurring words and applied in every batch. Each file uses one or two extra model requests.",
-    "fr": "Une fois activée, le modèle de traduction de documents lit chaque document avant de le traduire et rédige un court résumé : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Ce résumé est envoyé avec chaque lot ; un même mot peut donc être traduit différemment d'un document à l'autre. Pour les fichiers plus longs, une traduction unique est aussi fixée pour les termes récurrents et appliquée dans chaque lot. Chaque fichier demande une ou deux requêtes supplémentaires au modèle."
+  "开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型；某批未采用统一译法时，再重新翻译一次。": {
+    "en": "When on, the document translation model reads each document before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is sent with every batch, so the same word can be translated differently in different documents. For longer files, a single translation is also set for recurring words and applied in every batch. Each file uses one or two extra model requests; a batch that does not use the harmonized translation is translated once more.",
+    "fr": "Une fois activée, le modèle de traduction de documents lit chaque document avant de le traduire et rédige un court résumé : type de document, domaine concerné et sens ici des mots courts isolés comme « 甲 » ou « FM ». Ce résumé est envoyé avec chaque lot ; un même mot peut donc être traduit différemment d'un document à l'autre. Pour les fichiers plus longs, une traduction unique est aussi fixée pour les termes récurrents et appliquée dans chaque lot. Chaque fichier demande une ou deux requêtes supplémentaires au modèle ; un lot qui n'utilise pas la traduction harmonisée est retraduit une fois."
   },
   "开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。": {
     "en": "When on, the document translation model reads the text of the PDF before translating and writes a short document summary: what kind of document it is, which field it belongs to, and what standalone short words such as “甲” or “FM” mean here. The summary is attached to every page. Each file uses one extra model request; scanned files with no readable text are skipped.",
@@ -1598,5 +1598,9 @@
   "开启「自动识别场景」且内容较多时，再找出文中反复出现的词，由记忆库清洗模型（未配置时由文档翻译模型）结合文档说明定下统一译法，每份文件一次。": {
     "en": "When “Auto-detect” is on and the file is long enough, recurring words are also identified, and the memory cleanup model (or the document translation model if none is configured) sets a single translation for each based on the document summary, once per file.",
     "fr": "Lorsque « Détection automatique » est activée et que le fichier est assez long, les termes récurrents sont aussi repérés ; le modèle de nettoyage de la mémoire (ou, à défaut, le modèle de traduction de documents) fixe pour chacun une traduction unique à partir du résumé du document, une fois par fichier."
+  },
+  "本文档统一用词同样核对：未采用时随第一次重新翻译一并改正，仍未采用的不再重译，也不标记。": {
+    "en": "Harmonized terms are checked too: where one is not used, it is corrected in the first retranslation; if it is still not used, there is no further retranslation and no mark.",
+    "fr": "Les termes harmonisés sont aussi vérifiés : s'ils ne sont pas utilisés, ils sont corrigés lors de la première retraduction ; s'ils ne le sont toujours pas, il n'y a ni nouvelle retraduction ni marquage."
   }
 }

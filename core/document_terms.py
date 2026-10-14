@@ -38,8 +38,9 @@ from engines.base_engine import engine_supports_chat, strip_markdown_json
 # 至少出现在几段不同的文字里才算「反复出现」。
 MIN_TEXTS = 3
 # 交给模型挑的候选上限，其中两个字的词最多占这么多（两个字的常用词很多，免得挤掉长词）。
-MAX_CANDIDATES = 120
-MAX_TWO_CHAR_CANDIDATES = 20
+# 复测时两字词 20 个名额被「施工」「开挖」这类泛称占满，「监理」没进候选。
+MAX_CANDIDATES = 150
+MAX_TWO_CHAR_CANDIDATES = 40
 # 模型最多定这么多个。复测时降到 30 个，名额被「电梯」「车间」这类本来就不会译乱的词占满，
 # 「技术交底」「分项工程」反而没选进去，前后不一的词从 3 个回升到 6 个。
 MAX_TERMS = 50

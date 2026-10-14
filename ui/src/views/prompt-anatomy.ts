@@ -93,6 +93,9 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
         ? t("译文返回后核对「始终采用」的词条；未采用时附上改正说明重新翻译，最多 {0} 次，仍未采用的位置标记为需复核。", retries)
         : t("译文返回后核对「始终采用」的词条；未采用的位置直接标记为需复核。"),
     );
+    if (retries > 0) {
+      steps.push(t("本文档统一用词同样核对：未采用时随第一次重新翻译一并改正，仍未采用的不再重译，也不标记。"));
+    }
   } else {
     steps.push(t("其余内容分批发送给文档翻译模型。"));
   }

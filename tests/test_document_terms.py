@@ -287,23 +287,27 @@ class IndexTests(unittest.TestCase):
 
 
 class _DocEngine(TranslationEngine):
-    """看到统一用词时照用；``ignore`` 里的段落不照用。"""
+    """看到统一用词时照用；``ignore`` 里的段落不照用，``first_ignore`` 里的段落头一次不照用、
+    重译时照用。"""
 
     engine_name = "test/mock"
 
-    def __init__(self, ignore: set[int] = frozenset()) -> None:
+    def __init__(self, ignore: set[int] = frozenset(), first_ignore: set[int] = frozenset()) -> None:
         self.ignore = ignore
+        self.first_ignore = first_ignore
         self.prompts: list[str] = []
         self.calls = 0
 
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
         self.prompts.append(system_prompt)
         self.calls += 1
+        retry = "全文统一用（该处含义确实不同时可不用）：基坑开挖 → excavation de la fouille" in system_prompt
         out = {}
         for text in texts:
             number = int(text.split("条", 1)[0].lstrip("第"))
             told = "基坑开挖 → excavation de la fouille" in system_prompt
-            word = "excavation de la fouille" if told and number not in self.ignore else "creusement du puits"
+            ignored = number in self.ignore or (number in self.first_ignore and not retry)
+            word = "excavation de la fouille" if told and not ignored else "creusement du puits"
             out[text] = f"Article {number} : {word}." if "基坑开挖" in text else f"Article {number}."
         return out
 
@@ -353,7 +357,7 @@ class SessionTests(unittest.TestCase):
         self.assertIsInstance(session.wrap(engine), TermAwareEngine)
         with_term = [prompt for prompt in engine.prompts if "基坑开挖 → excavation de la fouille" in prompt]
         self.assertEqual(len(with_term), 4)  # 12 段分在 4 批里，批批都带上
-        # 统一用词不核对重译：一次请求一批。
+        # 各批都照用了，不用重译：一次请求一批。
         self.assertEqual(engine.calls, 8)
         saved = [item for item in session.auto_saved if item.get("kind") == "document"]
         self.assertEqual(len(saved), 1)
@@ -370,11 +374,23 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result["scene_choices"], [])
         self.assertEqual(result["hits"]["scene"], 0)
 
+    def test_ignored_term_retried_once(self) -> None:
+        # 第 1、21 段头一次没照用：所在的两批各重译一次，之后全文一致，照常保存。
+        engine = _DocEngine(first_ignore={1, 21})
+        session, _added, _logs = self._run(engine)
+        self.assertEqual(engine.calls, 10)
+        self.assertEqual(session.not_applied_texts(), set())
+        saved = [item for item in session.auto_saved if item.get("kind") == "document"]
+        self.assertEqual(saved[0]["count"], 12)
+
     def test_not_saved_when_most_places_ignored_it(self) -> None:
         engine = _DocEngine(ignore={1, 2, 3, 11, 12, 13})
         session, added, _logs = self._run(engine)
         self.assertEqual(added, 1)
         self.assertEqual(session.auto_saved, [])
+        # 重译设为 2 次，统一用词也只重译一次（两批各一次），仍没用上就算了，不标需复核。
+        self.assertEqual(engine.calls, 10)
+        self.assertEqual(session.not_applied_texts(), set())
 
     def test_not_saved_when_auto_save_switched_off(self) -> None:
         tm = SimpleNamespace(**{**vars(TM_SETTINGS), "auto_save_short_scene": False})

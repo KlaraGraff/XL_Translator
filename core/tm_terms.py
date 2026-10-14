@@ -566,11 +566,21 @@ def build_prompt_block(hits_per_text: Sequence[Sequence[TermHit]], target_lang_n
 
 
 def build_correction_block(failures: Sequence[tuple[int, str, Sequence[TermHit]]]) -> str:
-    """重译时附上的改正说明：``failures`` 为 (条号, 上次译文, 未采用的词条)。"""
+    """重译时附上的改正说明：``failures`` 为 (条号, 上次译文, 未采用的词条)。
+
+    本文档统一用词另写一句「全文统一用」：该处含义确实不同时可以不用。"""
     lines = ["以下各条的上次译文未采用设定译法，请重新翻译并改正："]
     for index, previous, hits in failures:
-        wanted = "；".join(f"{hit.source} → {hit.expected}" for hit in hits)
-        lines.append(f"- [第 {index} 条] 上次译文：{previous}；须采用：{wanted}")
+        line = f"- [第 {index} 条] 上次译文：{previous}"
+        required = [hit for hit in hits if hit.usage != USAGE_DOCUMENT]
+        shared = [hit for hit in hits if hit.usage == USAGE_DOCUMENT]
+        if required:
+            line += "；须采用：" + "；".join(f"{hit.source} → {hit.expected}" for hit in required)
+        if shared:
+            line += "；全文统一用（该处含义确实不同时可不用）：" + "；".join(
+                f"{hit.source} → {hit.expected}" for hit in shared
+            )
+        lines.append(line)
     return "\n".join(lines)
 
 
