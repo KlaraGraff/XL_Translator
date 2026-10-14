@@ -128,7 +128,6 @@ class TextTranslationService:
         should_stop: Callable[[], bool] | None = None,
         error_callback: Callable[[str], None] | None = None,
         request_callback: Callable[[Any], None] | None = None,
-        drop_failed: bool = True,
     ) -> dict[str, str]:
         """分批翻译，返回 ``{原文: 译文}``。
 
@@ -136,7 +135,7 @@ class TextTranslationService:
         ``glossary`` 是必须遵守的固定术语，都接在提示词后面。
 
         接口放弃的批次、停止时没发出去的批次，``translate_texts`` 按原文占位交回。那不是
-        译文：``drop_failed`` 时把它们摘掉，调用方据此记为「未获得译文」、标需复核。
+        译文，这里把它们摘掉，调用方据此记为「未获得译文」、标需复核（CAD 与 PDF 原位替换）。
         """
         stats = engine_dispatcher.TranslationBatchRunStats()
         results = engine_dispatcher.translate_texts(
@@ -163,10 +162,9 @@ class TextTranslationService:
             max_chars=self.rate.batch_chars,
             item_retries=self.rate.item_retry,
         )
-        if drop_failed:
-            for text in stats.untranslated_sources | stats.stopped_sources:
-                if results.get(text) == text:
-                    results.pop(text, None)
+        for text in stats.untranslated_sources | stats.stopped_sources:
+            if results.get(text) == text:
+                results.pop(text, None)
         return results
 
     def translate_with_sources(

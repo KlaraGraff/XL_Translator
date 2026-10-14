@@ -240,11 +240,10 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     )
 
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
-        # 页面自己拼提示词；接口放弃的条目按原文交回，页面把「原样返回」的再重试一次，
-        # 仍是原文就按保留原文处理（core/pdf_vector/classify.py _translate_with_retry）。
-        return service.translate(
-            texts, prompt=prompt, should_stop=should_stop, term_session=term_session, drop_failed=False
-        )
+        # 页面自己拼提示词。接口放弃、停止时没发出去的条目不在结果里：页面再试一次，仍
+        # 没有就记为「未获得译文」、列进这一页的复核清单，与 CAD 一致；原样返回的才可能是
+        # 模型有意保留原文（core/pdf_vector/classify.py _translate_with_retry）。
+        return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session)
 
     profile = None
     if smart_mode:

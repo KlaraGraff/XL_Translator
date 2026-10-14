@@ -870,6 +870,8 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
   if (page.inplace_status === "done") {
     const review = Number(page.inplace_review ?? 0);
     const termReview = Number(page.inplace_term_review ?? 0);
+    const untranslated = Number(page.inplace_untranslated ?? 0);
+    if (untranslated > 0) return createChip({ label: t("原位替换 · {0} 处未获得译文", untranslated), tone: "warn" });
     if (review > 0) return createChip({ label: t("原位替换 · {0} 处保留原文", review), tone: "warn" });
     if (termReview > 0) return createChip({ label: t("原位替换 · {0} 处需复核", termReview), tone: "warn" });
     return createChip({ label: t("原位替换"), tone: "ok" });
@@ -931,8 +933,14 @@ function inplaceNote(page: PdfPage): string {
   const head = page.inplace_message ? tx(page.inplace_message) : "";
   const all = page.inplace_review_items ?? [];
   const parts: string[] = head ? [head] : [];
-  const keptItems = all.filter((item) => item.kind !== "term");
+  const keptItems = all.filter((item) => item.kind !== "term" && item.kind !== "untranslated");
   const termItems = all.filter((item) => item.kind === "term");
+  const missingItems = all.filter((item) => item.kind === "untranslated");
+  if (missingItems.length) {
+    const items = missingItems.slice(0, 5);
+    const list = items.map((item) => t("「{0}」{1}", item.text, "").trim()).join(t("、"));
+    parts.push(t("未获得译文的地方：{0}{1}", list, missingItems.length > items.length ? t("等") : ""));
+  }
   if (keptItems.length) {
     const items = keptItems.slice(0, 5);
     const list = items.map((item) => t("「{0}」{1}", item.text, tx(item.reason))).join(t("；"));

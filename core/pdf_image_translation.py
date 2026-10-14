@@ -937,6 +937,8 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         # 原位替换没成功（出错、自检不过、中途停止）的页，输出里是原页，要提醒复核。
         or any(page.inplace_requested and page.inplace_status in {"kept_original", "stopped"}
                for page in record.pages)
+        # 原位替换的页里有接口放弃、没拿到译文的文字（与 CAD「未获得译文」一样要复核）。
+        or any(page.inplace_untranslated for page in record.pages)
         # 要整页图像翻译、但没有设置图像模型而保留原样的页
         or any(page.kept_reason for page in record.pages)
         # 转 Word 翻译后 Word 流程报出的待复核处
@@ -2215,6 +2217,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "inplace_written": int(page.inplace_written) if page is not None else 0,
             "inplace_kept": int(page.inplace_kept) if page is not None else 0,
             "inplace_review": int(page.inplace_review) if page is not None else 0,
+            "inplace_untranslated": int(page.inplace_untranslated) if page is not None else 0,
             "inplace_term_review": int(page.inplace_term_review) if page is not None else 0,
             "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
             "inplace_message": page.inplace_message if page is not None else "",
@@ -4252,6 +4255,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page.inplace_written = result.written
             page.inplace_kept = result.kept
             page.inplace_review = result.review + result.not_written
+            page.inplace_untranslated = int(getattr(result, "untranslated", 0) or 0)
             page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
             page.inplace_review_items = result.review_items
             if result.ok and result.written > 0:
@@ -4262,6 +4266,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                     f"{page.inplace_review} 处认不准保留原文{note}"
                 )
+                if page.inplace_untranslated:
+                    page.inplace_message += f"；{page.inplace_untranslated} 处未获得译文，需复核"
                 if page.inplace_term_review:
                     page.inplace_message += f"；{page.inplace_term_review} 处未采用记忆库中的设定译法，需复核"
                 self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
