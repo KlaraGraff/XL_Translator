@@ -13,8 +13,8 @@ if str(ROOT) not in sys.path:
 
 def _run() -> int:
     if len(sys.argv) >= 2:
-        # 命令行入口（types / scan / translate / status / stop）：连上正在运行的应用，
-        # 或在后台起一个引擎（cli/）。不带子命令时照旧作为翻译引擎运行。
+        # 命令行入口（types / scan / translate / status / stop，以及给智能体用的 mcp）：
+        # 连上正在运行的应用，或在后台起一个引擎（cli/）。不带子命令时照旧作为翻译引擎运行。
         from cli.main import COMMANDS
 
         if sys.argv[1] in COMMANDS:
