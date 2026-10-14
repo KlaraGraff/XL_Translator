@@ -175,6 +175,34 @@ class Surface:
             "options": [option.describe() for option in self.options],
         }
 
+    def saved_request_defaults(self, settings: AppSettings, *, target_lang: str) -> dict[str, Any]:
+        """Start-request fields the page's workspace fills in on its own.
+
+        The window does not leave every ``TaskStartRequest`` field at its
+        schema default: some come from saved settings, some from switch
+        defaults that live only in the window (``buildPayload`` in
+        ui/src/views/workspace.ts).  A caller without that window – the
+        command line, an MCP client – sends ``apply_saved_defaults`` and gets
+        these values for every field it did not set, so the same file comes
+        out the way it would from the app.  ``target_lang`` is the task's
+        effective target language.
+
+        By default: the descriptor's switch defaults under ``options``, which
+        is what the window sends for a page registered at run time.
+        """
+        if not self.options:
+            return {}
+        return {"options": {option.key: option.default for option in self.options}}
+
+    def saved_scan_defaults(
+        self, settings: AppSettings, *, source_lang: str, target_lang: str
+    ) -> dict[str, Any]:
+        """``ScanRequest`` fields the workspace fills in on its own (``scanPayload``).
+
+        Same contract as ``saved_request_defaults``, for ``/api/sources/scan``.
+        """
+        return {}
+
     def scan(
         self,
         root: Path,

@@ -212,7 +212,12 @@ def create_app(
 
     @app.exception_handler(TaskInputError)
     async def task_input_error(_request, exc):
-        return _json_error(422, str(exc), reason=getattr(exc, "reason", "invalid_input"))
+        return _json_error(
+            422,
+            str(exc),
+            reason=getattr(exc, "reason", "invalid_input"),
+            accept=getattr(exc, "accept", None),
+        )
 
     @app.exception_handler(SettingsSchemaError)
     async def settings_schema_error(_request, exc):

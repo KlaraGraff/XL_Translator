@@ -16,7 +16,7 @@ from api.surfaces.base import (
     require_translation_model,
     suffixes,
 )
-from api.task_contracts import Runner, TaskInputError, TaskOptions
+from api.task_contracts import REASON_NEEDS_CONFIRMATION, Runner, TaskInputError, TaskOptions
 from core import bilingual_writer
 from core.file_scanner import SUPPORTED_EXCEL_SUFFIXES, scan_excel_sources, scan_path
 from core.task_runner import TaskRunner
@@ -84,7 +84,9 @@ class ExcelSurface(Surface):
         raise TaskInputError(
             f"检测到 {len(xls_files)} 个 .xls 文件，但无法使用本机 Excel 转换："
             f"{str(reason).rstrip('。')}。请取消任务，安装或授权 Microsoft Excel 后重试，"
-            f"或明确确认兼容转换{consequence}"
+            f"或明确确认兼容转换{consequence}",
+            reason=REASON_NEEDS_CONFIRMATION,
+            accept={"allow_xls_fallback": True},
         )
 
     def snapshot(

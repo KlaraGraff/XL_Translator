@@ -3512,6 +3512,8 @@ const scanTokens = new Map<Surface, number>();
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
 const scanBusy = new Set<Surface>();
 
+// 改这里填的字段时，同步改后端的 Surface.saved_scan_defaults（api/surfaces/*.py）：命令行和 MCP
+// 没有这个页面，靠它补出同样的值（tests/test_saved_request_defaults.py 钉着两边）。
 function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObject {
   const payload: JsonObject = {
     surface,
@@ -3669,6 +3671,9 @@ async function resumeAfterStop(surface: Surface, st: SurfaceState, outputDir: st
 // 启动任务（含 xls/doc 兼容确认、并行风险确认）
 // ---------------------------------------------------------------------------
 
+// 改这里按设置或开关默认值填的字段时，同步改后端的 Surface.saved_request_defaults
+// （api/surfaces/*.py）：命令行和 MCP 没有这个页面，靠它补出同样的值，同一份文件翻出来
+// 才和在应用里一样（tests/test_saved_request_defaults.py 钉着两边）。
 function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   const payload: JsonObject = {
     surface,

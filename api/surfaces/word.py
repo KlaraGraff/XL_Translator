@@ -16,7 +16,7 @@ from api.surfaces.base import (
     require_translation_model,
     suffixes,
 )
-from api.task_contracts import Runner, TaskInputError, TaskOptions
+from api.task_contracts import REASON_NEEDS_CONFIRMATION, Runner, TaskInputError, TaskOptions
 from core import bilingual_writer
 from core.word_converter import get_local_word_automation_availability
 from core.word_document import SUPPORTED_WORD_SUFFIXES, scan_word_path, scan_word_sources
@@ -86,7 +86,9 @@ class WordSurface(Surface):
         raise TaskInputError(
             f"检测到 {len(doc_files)} 个 .doc 文件，但无法使用本机 Word 转换：{str(reason).rstrip('。')}。"
             "请取消任务，安装或授权 Microsoft Word 后重试，"
-            "或明确确认兼容转换；兼容转换可能改变版式、域、图文和宏。"
+            "或明确确认兼容转换；兼容转换可能改变版式、域、图文和宏。",
+            reason=REASON_NEEDS_CONFIRMATION,
+            accept={"allow_doc_fallback": True},
         )
 
     def snapshot(
@@ -102,6 +104,10 @@ class WordSurface(Surface):
             "selected_file_count": len(files),
             "doc_file_count": sum(1 for item in files if file_format(item) == "doc"),
         }
+
+    def saved_request_defaults(self, settings: AppSettings, *, target_lang: str) -> dict[str, Any]:
+        # 「保护封面和目录」不存进设置，页面每次打开都是开着的（WORD_TOGGLES 的 default）。
+        return {"protect_front_matter": True}
 
     def build_runner(self, request: RunnerRequest) -> Runner:
         options = request.options

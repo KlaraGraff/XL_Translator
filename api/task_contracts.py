@@ -35,11 +35,28 @@ class TaskConflictError(RuntimeError):
 
 
 class TaskInputError(ValueError):
-    """Raised when a source path has no usable files for the selected surface."""
+    """Raised when a source path has no usable files for the selected surface.
 
-    def __init__(self, message: str, *, reason: str = "invalid_input") -> None:
+    ``accept`` marks a stop the user may step past (the window shows it with
+    「仍要继续」): the request fields that, sent again, say "yes, continue".
+    A caller without the window – the command line, MCP – reads them from the
+    error body instead of matching the sentence.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "invalid_input",
+        accept: Mapping[str, bool] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.accept = dict(accept) if accept else None
+
+
+#: ``reason`` of a stop the user may step past by confirming (see ``TaskInputError.accept``).
+REASON_NEEDS_CONFIRMATION = "needs_confirmation"
 
 
 # 模型还没配好时的拦截原因（随错误响应的 reason 一起给界面）。界面认出这几个就在
