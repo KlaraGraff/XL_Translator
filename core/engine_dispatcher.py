@@ -48,6 +48,7 @@ from core.api_concurrency_control import (
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
 from core.prompt_cache import carry_meter
+from core.surface_settings import is_extension_key, surface_setting
 from core.translation_protocol import should_apply_quality_filter
 from core.user_facing_errors import humanize_error
 from engines.base_engine import TranslationEngine
@@ -406,14 +407,16 @@ def get_system_prompt(
     core.document_profile.append_profile 接上，不在这里。
     """
     normalized_page = str(page_key or "").strip().lower()
-    prefix = f"{normalized_page}_" if normalized_page in {"excel", "word", "cad"} else ""
+    # 有自己提示词设置的页面：Excel、Word、CAD 和运行时注册的类型；其余用全局那份。
+    page = normalized_page if normalized_page in {"excel", "word", "cad"} or is_extension_key(normalized_page) else ""
     selected = str(
-        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        (surface_setting(settings, page, "domain_preset", settings.domain_preset) if page else settings.domain_preset)
         or NO_EXTRA_PROMPT
     ).strip()
-    extras = dict(getattr(settings, f"{prefix}domain_custom_prompts", None) or {})
-    if not prefix and not extras:
-        extras = dict(settings.domain_custom_prompts or {})
+    extras = dict(
+        (surface_setting(settings, page, "domain_custom_prompts", None) if page else settings.domain_custom_prompts)
+        or {}
+    )
     extra = ""
     entry = extras.get(selected) if selected != NO_EXTRA_PROMPT else None
     if isinstance(entry, dict):
@@ -428,7 +431,10 @@ def get_system_prompt(
         extra = entry.strip()
     elif selected == "自定义":
         # 没经过 v35 迁移的旧调用方（CLI 手工构造的设置）还可能用 V9 的单条自定义提示词。
-        extra = str(getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or "").strip()
+        extra = str(
+            (surface_setting(settings, page, "custom_prompt", settings.custom_prompt) if page else settings.custom_prompt)
+            or ""
+        ).strip()
     prompt = CORE_TRANSLATION_PROMPT
     if extra:
         prompt = f"{prompt}\n\n{EXTRA_PROMPT_HEADER}\n{extra}"
@@ -441,41 +447,40 @@ def get_system_prompt(
 def smart_context_enabled(settings: AppSettings, page_key: str) -> bool:
     """「自动识别场景」开关：这一页翻译前要不要先通读文档、写一段文档说明。"""
     normalized_page = str(page_key or "").strip().lower()
-    if normalized_page in {"excel", "word", "cad"}:
-        return bool(getattr(settings, f"{normalized_page}_smart_context", True))
+    if normalized_page in {"excel", "word", "cad"} or is_extension_key(normalized_page):
+        return bool(surface_setting(settings, normalized_page, "smart_context", True))
     return bool(getattr(settings, "domain_smart_context", True))
 
 
 def activate_translation_surface(settings: AppSettings, surface: str) -> AppSettings:
     """Select the page-owned domain/Prompt state for a frozen task copy."""
     normalized = str(surface or "").strip().lower()
-    if normalized not in {"excel", "word"}:
+    if normalized not in {"excel", "word"} and not is_extension_key(normalized):
         return settings
-    prefix = f"{normalized}_"
     settings.domain_preset = str(
-        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        surface_setting(settings, normalized, "domain_preset", settings.domain_preset)
         or NO_EXTRA_PROMPT
     ).strip()
     settings.domain_smart_context = bool(
-        getattr(settings, f"{prefix}smart_context", settings.domain_smart_context)
+        surface_setting(settings, normalized, "smart_context", settings.domain_smart_context)
     )
     settings.custom_prompt = str(
-        getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or ""
+        surface_setting(settings, normalized, "custom_prompt", settings.custom_prompt) or ""
     )
     settings.domain_name_overrides = dict(
-        getattr(settings, f"{prefix}domain_name_overrides", settings.domain_name_overrides)
+        surface_setting(settings, normalized, "domain_name_overrides", settings.domain_name_overrides)
         or {}
     )
     settings.domain_prompt_overrides = dict(
-        getattr(settings, f"{prefix}domain_prompt_overrides", settings.domain_prompt_overrides)
+        surface_setting(settings, normalized, "domain_prompt_overrides", settings.domain_prompt_overrides)
         or {}
     )
     settings.domain_custom_prompts = dict(
-        getattr(settings, f"{prefix}domain_custom_prompts", {})
+        surface_setting(settings, normalized, "domain_custom_prompts", {})
         or {}
     )
     settings.domain_disabled_presets = list(
-        getattr(settings, f"{prefix}domain_disabled_presets", []) or []
+        surface_setting(settings, normalized, "domain_disabled_presets", []) or []
     )
     return settings
 

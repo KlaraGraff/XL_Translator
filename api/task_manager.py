@@ -25,6 +25,7 @@ from core.pdf_image_translation import (
 )
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
+from core.surface_settings import surface_setting
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
 from core.task_history import MAX_TASK_LOG_LINES, TaskHistoryError, TaskHistoryStore
 from loguru import logger
@@ -366,10 +367,8 @@ class TranslationTaskManager:
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
             raise TaskInputError(f"找不到「{root.name or root}」，可能已被移动或删除。")
-        default_surface_source = getattr(
-            settings,
-            f"{normalized_surface}_source_lang",
-            settings.source_lang,
+        default_surface_source = surface_setting(
+            settings, normalized_surface, "source_lang", settings.source_lang
         )
         source_selection = normalize_source_selection(
             selected_options.source_lang
@@ -384,10 +383,8 @@ class TranslationTaskManager:
             else:
                 settings.target_lang = selected_options.target_lang
         elif spec.target_lang_setting == "per_surface":
-            settings.target_lang = getattr(
-                settings,
-                f"{normalized_surface}_target_lang",
-                settings.target_lang,
+            settings.target_lang = surface_setting(
+                settings, normalized_surface, "target_lang", settings.target_lang
             )
 
         selected = {
@@ -429,14 +426,10 @@ class TranslationTaskManager:
         prompt_source = "|".join(
             (
                 CORE_TRANSLATION_PROMPT,
-                str(getattr(settings, f"{normalized_surface}_smart_context", "")),
-                str(getattr(settings, f"{normalized_surface}_domain_preset", "") or ""),
+                str(surface_setting(settings, normalized_surface, "smart_context", "")),
+                str(surface_setting(settings, normalized_surface, "domain_preset", "") or ""),
                 str(
-                    getattr(
-                        settings,
-                        f"{normalized_surface}_domain_custom_prompts",
-                        {},
-                    )
+                    surface_setting(settings, normalized_surface, "domain_custom_prompts", {})
                     or {}
                 ),
             )
@@ -450,12 +443,12 @@ class TranslationTaskManager:
                 else settings.target_lang
             ),
             "domain_preset": (
-                getattr(settings, f"{normalized_surface}_domain_preset", "")
+                surface_setting(settings, normalized_surface, "domain_preset", "")
                 if spec.domain_preset_in_snapshot
                 else ""
             ),
             "smart_context": (
-                bool(getattr(settings, f"{normalized_surface}_smart_context", True))
+                bool(surface_setting(settings, normalized_surface, "smart_context", True))
                 if spec.domain_preset_in_snapshot
                 else None
             ),

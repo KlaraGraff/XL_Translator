@@ -1305,6 +1305,29 @@ class AppearanceSettings(BaseModel):
         return self
 
 
+class ExtensionSettings(BaseModel):
+    """一个运行时注册的翻译类型（键为 ``ext:<id>``）的设置，v39 起。
+
+    内置四个页面的设置是 ``AppSettings`` 上按页面名平铺的字段（``excel_target_lang``、
+    ``cad_domain_preset`` …）；运行时注册的类型没法往 ``AppSettings`` 上加字段，它的那份
+    放在 ``AppSettings.extensions[<id>]``。读写一律经 ``core.surface_settings`` 的
+    ``surface_setting`` / ``set_surface_setting``，调用方不必分辨是哪一种。
+    加法改动：旧文件没有 ``extensions`` 时为空字典，不需要迁移。
+    """
+
+    target_lang: str = Field(default_factory=get_default_target_lang)
+    source_lang: str = "auto"
+    # 与内置页面同样的两层提示词：「自动识别场景」开关 + 选中的「补充要求」。
+    domain_preset: str = "无"
+    smart_context: bool = True
+    domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    # 这个类型自己的开关（描述符里的 options），按开关的 key 存。
+    options: dict[str, bool | int | float | str] = Field(default_factory=dict)
+    # 是否显示在侧栏、在侧栏里的位置。
+    pinned: bool = True
+    order: int = 0
+
+
 class AppSettings(BaseModel):
     _runtime_model_role: str = PrivateAttr(default="translation")
     engine: EngineSettings = Field(default_factory=EngineSettings)
@@ -1447,6 +1470,8 @@ class AppSettings(BaseModel):
     cad_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     cad_domain_disabled_presets: list[str] = Field(default_factory=list)
     cad_output: CadOutputSettings = Field(default_factory=CadOutputSettings)
+    # 运行时注册的翻译类型各自的设置，按类型 id（不带 ``ext:``）存，见 ExtensionSettings。
+    extensions: dict[str, ExtensionSettings] = Field(default_factory=dict)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
