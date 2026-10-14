@@ -112,6 +112,52 @@ class CadSurface(Surface):
     pause_mode = "file_boundary"
     can_resume = True
 
+    def saved_request_defaults(self, settings: AppSettings, *, target_lang: str) -> dict[str, Any]:
+        # 与 workspace.ts buildPayload 的 CAD 分支逐项对应：右栏开关和排版选项都存在
+        # cad_output 下，字号比例按目标语言取两套中的一套，已是目标语言的文字一律不送翻译。
+        from core.cad_layout import default_fit_settings, is_chinese_target
+
+        cad = settings.cad_output
+        fallback = default_fit_settings(target_lang)
+        chinese = is_chinese_target(target_lang)
+        default_scale = cad.fit_default_scale_zh if chinese else cad.fit_default_scale
+        min_scale = cad.fit_min_scale_zh if chinese else cad.fit_min_scale
+        values: dict[str, Any] = {
+            "untranslated_only": True,
+            "cad_translate_output_filename": bool(cad.translate_output_filename),
+            "cad_include_block_text": bool(cad.include_block_text),
+            "cad_keep_work_dxf": bool(cad.keep_work_dxf),
+            "cad_copy_related_files": bool(cad.copy_related_files),
+            "cad_fit_layout": bool(cad.fit_layout),
+            "cad_fit_default_scale": default_scale if default_scale > 0 else fallback.default_scale,
+            "cad_fit_min_scale": min_scale if min_scale > 0 else fallback.min_scale,
+            "cad_display_mode": cad.display_mode
+            if cad.display_mode in {"translation", "source_first", "translation_first"}
+            else "translation",
+            "cad_translation_font": cad.translation_font
+            if cad.translation_font in {"compatible", "original"}
+            else "compatible",
+            "cad_output_version": cad.output_version if cad.output_version in CAD_OUTPUT_VERSIONS else "source",
+            "cad_locked_blocks": cad.locked_blocks,
+            "cad_locked_layers": cad.locked_layers,
+        }
+        if cad.use_custom_output_dir and cad.custom_output_dir.strip():
+            values["cad_output_dir"] = cad.custom_output_dir.strip()
+        return values
+
+    def saved_scan_defaults(
+        self, settings: AppSettings, *, source_lang: str, target_lang: str
+    ) -> dict[str, Any]:
+        # 与 scanPayload 的 CAD 分支对应：「待翻译」数按语言对和锁定名单算。
+        cad = settings.cad_output
+        return {
+            "source_language": source_lang,
+            "target_language": target_lang,
+            "include_block_text": bool(cad.include_block_text),
+            "locked_blocks": cad.locked_blocks,
+            "locked_layers": cad.locked_layers,
+        }
+
     def scan(
         self,
         root: Path,

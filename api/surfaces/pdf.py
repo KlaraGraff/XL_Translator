@@ -69,6 +69,15 @@ class PdfSurface(Surface):
     can_end_paused = True
     keeps_runner_after_finish = True
 
+    def saved_request_defaults(self, settings: AppSettings, *, target_lang: str) -> dict[str, Any]:
+        # 「也翻译图片文件」存在 pdf.include_images。
+        return {"include_images": bool(settings.pdf.include_images)}
+
+    def saved_scan_defaults(
+        self, settings: AppSettings, *, source_lang: str, target_lang: str
+    ) -> dict[str, Any]:
+        return {"include_images": bool(settings.pdf.include_images)}
+
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_pdf_path(root, include_images=options.include_images)
 
@@ -140,7 +149,10 @@ class PdfSurface(Surface):
             # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
                 "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。",
+                # 界面认这个 reason 开弹窗，所以不改成通用的 needs_confirmation；
+                # 命令行和 MCP 看 accept。
                 reason="pdf_review_model_unavailable",
+                accept={"allow_known_review_failure": True},
             )
 
     def snapshot(

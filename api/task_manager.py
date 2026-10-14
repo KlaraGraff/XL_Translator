@@ -259,6 +259,33 @@ class TranslationTaskManager:
             response["confirmation_token"] = token
         return response
 
+    def saved_request_defaults(self, surface: str, *, target_lang: str | None = None) -> dict[str, Any]:
+        """What the page's workspace would fill into a start request (``apply_saved_defaults``)."""
+        spec = get_surface(surface)
+        settings = self._settings_loader().model_copy(deep=True)
+        activate_translation_surface(settings, spec.key)
+        target = _apply_target_lang(settings, spec, target_lang)
+        return spec.saved_request_defaults(settings, target_lang=target)
+
+    def saved_scan_defaults(
+        self,
+        surface: str,
+        *,
+        source_lang: str | None = None,
+        target_lang: str | None = None,
+    ) -> dict[str, Any]:
+        """What the page's workspace would fill into a scan request (``apply_saved_defaults``)."""
+        spec = get_surface(surface)
+        settings = self._settings_loader().model_copy(deep=True)
+        activate_translation_surface(settings, spec.key)
+        target = _apply_target_lang(settings, spec, target_lang)
+        source = (
+            source_lang
+            if source_lang is not None
+            else str(surface_setting(settings, spec.key, "source_lang", settings.source_lang) or "auto")
+        )
+        return spec.saved_scan_defaults(settings, source_lang=source, target_lang=target)
+
     def start_task(
         self,
         *,
@@ -377,15 +404,7 @@ class TranslationTaskManager:
         )
         if source_selection is None:
             raise TaskInputError("源语言必须是内置语言或自动识别；自定义语言只能作为目标语言。")
-        if selected_options.target_lang:
-            if spec.target_lang_setting == "pdf":
-                settings.pdf.target_lang = selected_options.target_lang
-            else:
-                settings.target_lang = selected_options.target_lang
-        elif spec.target_lang_setting == "per_surface":
-            settings.target_lang = surface_setting(
-                settings, normalized_surface, "target_lang", settings.target_lang
-            )
+        _apply_target_lang(settings, spec, selected_options.target_lang)
 
         selected = {
             str(Path(path).expanduser().resolve())
@@ -2008,6 +2027,22 @@ class TranslationTaskManager:
         if task is None:
             raise TaskNotFoundError(task_id)
         return task
+
+
+def _apply_target_lang(settings: AppSettings, spec: Any, requested: str | None) -> str:
+    """Put the task's target language where the surface reads it; return it.
+
+    A requested language wins; otherwise a page with its own saved target
+    (``per_surface``) copies it into the shared field.
+    """
+    if requested:
+        if spec.target_lang_setting == "pdf":
+            settings.pdf.target_lang = requested
+        else:
+            settings.target_lang = requested
+    elif spec.target_lang_setting == "per_surface":
+        settings.target_lang = surface_setting(settings, spec.key, "target_lang", settings.target_lang)
+    return str(settings.pdf.target_lang if spec.target_lang_setting == "pdf" else settings.target_lang)
 
 
 def _scanned_file_name(item: Any) -> str:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,19 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/sources/scan")
     def scan_sources(request: ScanRequest) -> dict[str, Any]:
+        if request.apply_saved_defaults:
+            saved = app.state.task_manager.saved_scan_defaults(
+                request.surface,
+                source_lang=request.source_language,
+                target_lang=request.target_language,
+            )
+            unset = {
+                key: value
+                for key, value in saved.items()
+                if key in ScanRequest.model_fields and key not in request.model_fields_set
+            }
+            if unset:
+                request = request.model_copy(update=unset)
         roots = [Path(item).expanduser() for item in request.paths if str(item).strip()]
         if not roots:
             roots = [Path(request.path).expanduser()]
@@ -110,16 +123,27 @@ def register(app: FastAPI) -> None:
         # Every TaskOptions field has a same-named request field
         # (tests/test_surface_registry_contracts.py checks it), so a new
         # option is declared in those two places and nowhere else.
-        return TaskOptions(**{field.name: getattr(request, field.name) for field in fields(TaskOptions)})
+        values = {field.name: getattr(request, field.name) for field in fields(TaskOptions)}
+        if request.apply_saved_defaults:
+            saved = app.state.task_manager.saved_request_defaults(
+                request.surface, target_lang=request.target_lang
+            )
+            _fill_unset_fields(values, saved, explicit=request.model_fields_set)
+        return TaskOptions(**values)
 
     @app.post("/api/tasks/preflight")
     def preflight_task(request: TaskStartRequest) -> dict[str, Any]:
-        return app.state.task_manager.preflight_task(
+        options = _task_options(request)
+        response = app.state.task_manager.preflight_task(
             surface=request.surface,
             source_path=request.source_path,
             selected_paths=request.selected_paths,
-            options=_task_options(request),
+            options=options,
         )
+        if request.apply_saved_defaults:
+            # 命令行和 MCP 要能说出这次实际用了哪些选项（补过默认值之后的）。
+            response["options"] = _json_safe(asdict(options))
+        return response
 
     @app.post("/api/tasks", status_code=202)
     def start_task(request: TaskStartRequest) -> dict[str, Any]:
@@ -291,6 +315,21 @@ _PAGE_IMAGE_MEDIA_TYPES = {
 
 def _page_image_media_type(path: Path) -> str:
     return _PAGE_IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _fill_unset_fields(values: dict[str, Any], saved: dict[str, Any], *, explicit: set[str]) -> None:
+    """Take the saved value for every option the caller did not send.
+
+    ``options`` (the switches of a page registered at run time) merges key by
+    key: the switches the caller named win, the others keep their default.
+    """
+    for key, value in saved.items():
+        if key not in values:
+            continue
+        if key == "options" and isinstance(value, dict):
+            values[key] = {**value, **dict(values.get("options") or {})}
+        elif key not in explicit:
+            values[key] = value
 
 
 def _merge_scan_results(results: list[Any]) -> Any:
