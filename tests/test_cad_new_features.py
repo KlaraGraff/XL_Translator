@@ -435,9 +435,10 @@ def test_bilingual_line_in_a_tight_table_shrinks_into_the_gap_above_the_next_row
     result, output, messages = _translate(tmp_path, drawing, translations, display_mode="source_first")
     texts = {_field(body, 1): body for body in _entities(output, "TEXT")}
     wood = texts["Porte bois"]
-    # 原文底边 100，下一行顶边 98.5：译文行缩到 0.4 倍原文字高（1.0），放在 98.5–99.5。
+    # 原文底边 100，下一行顶边 98.5：译文行缩到 0.4 倍原文字高（1.0），离原文留 0.375 的空，
+    # 余下的 0.125 留在下面，不贴着下一行。
     assert float(_field(wood, 40)) == pytest.approx(1.0)
-    assert float(_field(wood, 20)) == pytest.approx(98.5)
+    assert float(_field(wood, 20)) == pytest.approx(98.625)
     # 「钢门」下一行顶边 95.7，只剩 0.3：缩到最小比例仍放不下，列入报告。
     assert result.stats.layout_unresolved == 1
     assert any("缩到最小比例仍会压到旁边的文字" in message for message in messages)
