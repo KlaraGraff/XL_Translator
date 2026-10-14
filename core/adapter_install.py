@@ -30,7 +30,8 @@ import threading
 import time
 import uuid
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -100,6 +101,9 @@ FORBIDDEN_BUILTINS = frozenset({"exec", "eval", "compile", "__import__"})
 #: 拦下的 ``os`` 函数（启动其他程序）；``exec*``、``spawn*`` 按前缀。
 FORBIDDEN_OS_FUNCTIONS = frozenset({"system", "popen", "startfile", "fork", "forkpty", "posix_spawn", "posix_spawnp"})
 _FORBIDDEN_OS_PREFIXES = ("exec", "spawn")
+
+#: 安装前请用户确认的那句话（「扩展」页的确认弹窗、``adapter install`` 的提示用同一句）。
+CONFIRM_NOTICE = "扩展由第三方作者编写，以你的用户权限运行，可以读写你的文件；只安装你信任的来源。"
 
 REGISTRY_FILE = "installed.json"
 REGISTRY_SCHEMA = 1
@@ -401,6 +405,16 @@ class _Source:
     def cleanup(self) -> None:
         if self.temporary is not None:
             shutil.rmtree(self.temporary, ignore_errors=True)
+
+
+@contextmanager
+def unpacked(source: str | Path) -> Iterator[Path]:
+    """文件夹或 zip 的包根目录（``adapter test`` 用）；zip 解在临时目录里，用完删掉。"""
+    prepared = _prepare(source)
+    try:
+        yield prepared.root
+    finally:
+        prepared.cleanup()
 
 
 def _package_root(base: Path) -> Path:

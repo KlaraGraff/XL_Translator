@@ -1,0 +1,7 @@
+# Sample in English
+app.name = Inventory
+app.welcome = Welcome back, {user}.
+items.count = You have {count} items in your cart.
+
+_internal.id = INV-2026
+button.checkout = Check out

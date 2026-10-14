@@ -207,6 +207,22 @@ class EngineClient:
     def stop(self, task_id: str) -> dict[str, Any]:
         return self._request("POST", f"/api/tasks/{_task_path(task_id)}/stop")
 
+    # ── extensions (``adapter install`` / ``uninstall``) ──────────────────
+
+    def extension_preview(self, path: str) -> dict[str, Any]:
+        return self._request("POST", "/api/extensions/preview", json_body={"path": path})
+
+    def extension_install(self, path: str, sha256: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/extensions/install", json_body={"path": path, "confirmed": True, "sha256": sha256}
+        )
+
+    def extension_install_progress(self) -> dict[str, Any]:
+        return self._request("GET", "/api/extensions/install-progress")
+
+    def extension_uninstall(self, adapter_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/api/extensions/{_task_path(adapter_id)}/uninstall")
+
     def events(self, task_id: str, *, after: int = 0) -> Iterator[TaskEvent]:
         """Yield the task's events from ``after`` on, until it has finished.
 

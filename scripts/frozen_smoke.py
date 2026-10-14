@@ -184,6 +184,24 @@ def _check_adapter_host() -> None:
             raise RuntimeError("adapter host write produced unexpected output")
 
 
+def _check_adapter_cli() -> None:
+    """``adapter new`` → ``adapter test`` → ``adapter pack`` on the template, as an author would.
+
+    The template is data in the package (cli/adapter_template, including scripts/pack.py), and
+    ``adapter test`` runs the samples in ``--adapter-host`` children."""
+    from cli.adapter_commands import check_adapter, new_adapter, pack_adapter
+
+    with tempfile.TemporaryDirectory(prefix="translator-smoke-template-") as folder:
+        target = Path(folder) / "smoke-template"
+        new_adapter("smoke-template", target)
+        report = check_adapter(target)
+        if not report.ok or not report.runs:
+            raise RuntimeError(f"adapter test failed on the template: {report.problems}")
+        result = pack_adapter(target, out=str(Path(folder) / "dist"))
+        if not Path(result["zip"]).is_file():
+            raise RuntimeError("adapter pack produced no zip")
+
+
 def run_smoke_test() -> int:
     """Validate bundled imports without creating a QApplication or reading settings."""
     try:
@@ -231,6 +249,8 @@ def run_smoke_test() -> int:
         _check_mcp_handshake()
         # 用户安装的扩展在 --adapter-host 子进程里跑；漏收标准库或分派出错在这里暴露。
         _check_adapter_host()
+        # 制作扩展的命令：模板是数据文件，漏收时 adapter new / pack 才会出错。
+        _check_adapter_cli()
     except Exception as exc:
         _emit(f"[ERROR] Frozen application smoke test failed: {exc}", error=True)
         return 1
