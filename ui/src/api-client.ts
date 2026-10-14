@@ -106,6 +106,33 @@ export type Pdf2DocxPluginStatus = {
 };
 
 
+/** 三种界面语言的同一段文字（描述符里的标签、文件名词等）。 */
+export type LocalizedText = Partial<Record<"zh" | "en" | "fr", string>>;
+
+/** 板块类型描述符（GET /api/surfaces），一个翻译页面一条。见 api/surfaces/base.py Surface.describe。 */
+export type SurfaceDescriptor = {
+  key: string;
+  /** 随应用发布的四个页面和记忆库清洗；界面仍用自己编译期的表画它们。 */
+  builtin: boolean;
+  label: LocalizedText;
+  file_noun: LocalizedText;
+  icon: string;
+  extensions: string[];
+  capabilities: {
+    requires_source: boolean;
+    can_pause: boolean;
+    pause_mode: "immediate" | "file_boundary";
+    can_resume: boolean;
+    can_end_paused: boolean;
+    bilingual: boolean;
+    translation_only: boolean;
+  };
+  /** 各阶段名，与进度权重一一对应；按整体百分比报进度的页面（CAD）为空。 */
+  phases: LocalizedText[];
+  /** 运行设置里的开关；内置页面为空。 */
+  options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
+};
+
 export type SseEvent = {
   id: number;
   type: string;
@@ -487,6 +514,11 @@ export class ApiClient {
 
   async listTasks(): Promise<TaskList> {
     return this.request<TaskList>("/api/tasks");
+  }
+
+  async fetchSurfaces(): Promise<SurfaceDescriptor[]> {
+    const payload = await this.request<{ surfaces?: SurfaceDescriptor[] }>("/api/surfaces");
+    return Array.isArray(payload.surfaces) ? payload.surfaces : [];
   }
 
   async getCadCapability(): Promise<CadCapabilityStatus> {

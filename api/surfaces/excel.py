@@ -6,15 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from api.surfaces.base import (
+    PHASE_READ,
+    PHASE_TRANSLATE,
+    PHASE_WRITE,
     RunnerRequest,
     Surface,
     file_format,
     require_target_lang,
     require_translation_model,
+    suffixes,
 )
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer
-from core.file_scanner import scan_excel_sources, scan_path
+from core.file_scanner import SUPPORTED_EXCEL_SUFFIXES, scan_excel_sources, scan_path
 from core.task_runner import TaskRunner
 from core.xls_converter import (
     describe_xls_compatibility_consequence,
@@ -31,10 +35,22 @@ class ExcelSurface(Surface):
     uses_translation_memory = True
     target_lang_setting = "per_surface"
     domain_preset_in_snapshot = True
+    display_label = {"zh": "Excel 表格", "en": "Excel files", "fr": "Fichiers Excel"}
+    file_noun = {"zh": "表格文件", "en": "Excel files", "fr": "fichiers Excel"}
+    icon = "excel"
+    file_extensions = suffixes(SUPPORTED_EXCEL_SUFFIXES)
+    output_bilingual = True
+    output_translation_only = True
     # 读取文件 / 翻译 / 生成文件 / 调整行高（没开时只有前三段）。时间几乎都花在等
     # 模型上，所以「翻译」占大头（它包含识别语言、补译、翻译工作表名称）；读取和
     # 生成是本机操作，很快；调整行高要启动 Excel，留得稍多一点。
     phase_weights = (5, 80, 5, 10)
+    phase_names = (
+        PHASE_READ,
+        PHASE_TRANSLATE,
+        PHASE_WRITE,
+        {"zh": "调整行高", "en": "Adjusting row heights", "fr": "Ajustement des hauteurs de ligne"},
+    )
 
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_path(root)
