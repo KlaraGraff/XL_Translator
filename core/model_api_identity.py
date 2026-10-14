@@ -17,6 +17,7 @@ from core.model_roles import (
     resolve_effective_model_config,
 )
 from core.surface_rate import task_role_rate
+from core.surface_settings import EXTENSION_PAGE_KEY
 from settings import AppSettings, api_key_scope, connection_key_scope
 
 
@@ -62,7 +63,8 @@ def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSig
 def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str, ...]:
     """Map one translation page to the model roles it will occupy."""
     normalized_page = str(page_key or "").strip()
-    if normalized_page in {"excel_translate", "word_translate", "cad_translate"}:
+    # 运行时注册的类型（EXTENSION_PAGE_KEY）只翻文字，与 Excel、Word、CAD 一样只用文档翻译模型。
+    if normalized_page in {"excel_translate", "word_translate", "cad_translate", EXTENSION_PAGE_KEY}:
         return (ROLE_TRANSLATION,)
     if normalized_page == "tm_clean":
         return (ROLE_CLEANER,)
