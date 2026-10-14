@@ -25,7 +25,12 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
-from core.engine_dispatcher import is_local_engine_name, user_facing_batch_reason
+from core.engine_dispatcher import (
+    _should_retry_transient,
+    _wait_before_transient_retry,
+    is_local_engine_name,
+    user_facing_batch_reason,
+)
 from core.language_preflight import TranslationLanguageResult
 from core.prompt_cache import carry_meter
 from core.request_progress import (
@@ -72,6 +77,8 @@ class WordBatchRunStats:
     batch_count: int = 0
     split_source_count: int = 0
     retry_count: int = 0
+    # 接口临时故障（5xx、超时、回答中断）后同一批原样重发的次数。
+    transient_retry_count: int = 0
     failed_unit_count: int = 0
     adaptive_concurrency_reductions: int = 0
     adaptive_lowest_concurrency: int = 0
@@ -80,6 +87,10 @@ class WordBatchRunStats:
     failed_unit_keys: set[tuple[str, int]] = dataclass_field(default_factory=set)
     _local_resource_notice_sent: bool = False
     _resource_lock: threading.Lock = dataclass_field(default_factory=threading.Lock, repr=False)
+
+    def record_transient_retry(self) -> None:
+        with self._resource_lock:
+            self.transient_retry_count += 1
 
     def record_local_resource_retry(self) -> bool:
         """Count local capacity retries; announce the episode only once."""
@@ -128,8 +139,12 @@ def translate_word_texts(
     source_result_callback: SourceResultCallback | None = None,
     drained_callback: DrainedCallback | None = None,
     request_callback: Callable[[BatchRequestEvent], None] | None = None,
+    transient_retries: int = 0,
 ) -> dict[str, str]:
     """Translate Word paragraphs using character-budgeted batches with fallback retries.
+
+    ``transient_retries`` resends the same batch after a 5xx, a timeout or an
+    answer cut off mid-stream (翻译参数 → 失败重试次数), before it is split.
 
     ``request_callback`` gets the same per-batch events as ``translate_texts``
     (plan / sent / done); entries are request units, so a long paragraph split
@@ -188,6 +203,7 @@ def translate_word_texts(
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
+            transient_retries=transient_retries,
         )
         if request_callback is not None:
             keys = [(unit.source, unit.part_index) for unit in batch]
@@ -363,6 +379,8 @@ def _translate_units_with_fallback(
     error_callback: ErrorCallback | None,
     stats: WordBatchRunStats,
     local_resource_retry_round: int = 0,
+    transient_retries: int = 0,
+    transient_round: int = 0,
 ) -> dict[tuple[str, int], str]:
     if not units:
         return {}
@@ -459,6 +477,8 @@ def _translate_units_with_fallback(
                 error_callback=error_callback,
                 stats=stats,
                 local_resource_retry_round=local_resource_retry_round + 1,
+                transient_retries=transient_retries,
+                transient_round=transient_round,
             )
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
@@ -487,7 +507,39 @@ def _translate_units_with_fallback(
                     error_callback=error_callback,
                     stats=stats,
                     local_resource_retry_round=local_resource_retry_round,
+                    transient_retries=transient_retries,
+                    transient_round=transient_round,
                 )
+
+        # 服务暂时不可用（5xx、超时、回答中断）：先整批原样重发，拆小批救不了宕机的服务。
+        if _should_retry_transient(exc, transient_round, transient_retries):
+            if not _wait_before_transient_retry(
+                exc,
+                transient_round,
+                transient_retries,
+                stats=stats,
+                error_callback=error_callback,
+                should_stop=should_stop,
+            ):
+                return {}
+            return _translate_units_with_fallback(
+                units,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                candidate_callback=candidate_callback,
+                report_source_languages=report_source_languages,
+                source_result_callback=source_result_callback,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+                local_resource_retry_round=local_resource_retry_round,
+                transient_retries=transient_retries,
+                transient_round=transient_round + 1,
+            )
 
         if len(units) > 1:
             stats.retry_count += 1
@@ -515,6 +567,7 @@ def _translate_units_with_fallback(
                 error_callback=error_callback,
                 stats=stats,
                 local_resource_retry_round=local_resource_retry_round,
+                transient_retries=transient_retries,
             )
             right = _translate_units_with_fallback(
                 units[midpoint:],
@@ -531,6 +584,7 @@ def _translate_units_with_fallback(
                 error_callback=error_callback,
                 stats=stats,
                 local_resource_retry_round=local_resource_retry_round,
+                transient_retries=transient_retries,
             )
             return {**left, **right}
 

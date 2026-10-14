@@ -97,8 +97,10 @@ def test_cad_auto_source_language_reaches_translation_engine(tmp_path, monkeypat
         runner._translator(["Door"], {})
 
     assert captured["source_lang"] == "auto"
-    # 翻译参数 → CAD → 失败重试次数（默认 2）跟着请求走。
-    assert captured["transient_retries"] == settings.request_retry.cad
+    # 翻译参数 → CAD 的速率与重试跟着请求走（默认：1000 字、失败重试 2、单段重试 3）。
+    assert captured["transient_retries"] == 2
+    assert captured["max_chars"] == 1000
+    assert captured["item_retries"] == 3
 
 
 def test_domain_prompt_optimize_accepts_saved_custom_prompt(tmp_path, monkeypatch):

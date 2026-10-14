@@ -313,7 +313,7 @@ class DocumentConfigExportVersionTests(unittest.TestCase):
     """导出文件结构变了，版本号必须跟着升，旧版应用才会报「请先升级应用」。"""
 
     def test_export_version_is_bumped(self) -> None:
-        self.assertEqual(DOCUMENT_CONFIG_EXPORT_VERSION, 4)
+        self.assertEqual(DOCUMENT_CONFIG_EXPORT_VERSION, 5)
 
     def test_v1_bundle_with_flat_overrides_still_imports(self) -> None:
         # 导入侧只拒绝比自己高的版本：老同事导出的 v1 扁平覆盖照常进来，

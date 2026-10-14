@@ -52,15 +52,14 @@ from config import (
     SETTINGS_SCHEMA_VERSION,
     SETTINGS_PATH,
     WORD_BATCH_CHARS_DEFAULT,
-    WORD_BATCH_CHARS_MAX,
-    WORD_BATCH_CHARS_MIN,
     WORD_BATCH_PARAGRAPHS_DEFAULT,
     WORD_BATCH_SPLIT_CHARS_DEFAULT,
     WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
-    REQUEST_RETRY_ATTEMPTS_DEFAULT,
+    RATE_ITEM_RETRY_MAX,
+    RATE_ITEM_RETRY_MIN,
     REQUEST_RETRY_ATTEMPTS_MAX,
     REQUEST_RETRY_ATTEMPTS_MIN,
     PROCESS_RETENTION_FAILED_RUNS_DEFAULT,
@@ -935,23 +934,66 @@ class WordBatchSettings(BaseModel):
         return self
 
 
-class RequestRetrySettings(BaseModel):
-    """接口临时故障时同一批的重发次数，Excel 和 CAD 各一项（v32 起）。
+# 速率与重试每一项的存储上下限。这里只挡住明显不合法的值（0 路并发、负数），
+# 按云端 / 本地模式收紧的可填范围在 core/surface_rate.py，运行时按那里收敛：
+# 换成本地模型后，云端那一档存下的 30 路不该让整份设置读不进来。
+_RATE_FIELD_LIMITS: dict[str, tuple[int, int]] = {
+    "concurrency": (1, 2**31 - 1),
+    "batch_items": (1, 2**31 - 1),
+    "batch_chars": (1, 2**31 - 1),
+    "request_retry": (REQUEST_RETRY_ATTEMPTS_MIN, REQUEST_RETRY_ATTEMPTS_MAX),
+    "item_retry": (RATE_ITEM_RETRY_MIN, RATE_ITEM_RETRY_MAX),
+}
 
-    旧设置文件没有这一节，读取时按默认值补齐（加法改动，无需迁移）。Word 有自己的
-    「单段最多重试次数」，PDF 有「单页重试次数」，不在这里。
+
+class SurfaceRateSettings(BaseModel):
+    """一种文件类型的速率与重试（v38 起，「翻译参数」各页签里的同一组设置）。
+
+    None 表示没改过：按文档翻译模型是云端还是本地取默认值（core/surface_rate.py），
+    换成本地模型时跟着换成本地那一档。填了数就固定用这个数。
     """
 
-    excel: int = Field(
-        default=REQUEST_RETRY_ATTEMPTS_DEFAULT,
-        ge=REQUEST_RETRY_ATTEMPTS_MIN,
-        le=REQUEST_RETRY_ATTEMPTS_MAX,
-    )
-    cad: int = Field(
-        default=REQUEST_RETRY_ATTEMPTS_DEFAULT,
-        ge=REQUEST_RETRY_ATTEMPTS_MIN,
-        le=REQUEST_RETRY_ATTEMPTS_MAX,
-    )
+    concurrency: int | None = None
+    batch_items: int | None = None
+    batch_chars: int | None = None
+    request_retry: int | None = None
+    item_retry: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_rate_values(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        for key, (minimum, maximum) in _RATE_FIELD_LIMITS.items():
+            raw = migrated.get(key)
+            if raw in ("", None) or isinstance(raw, bool):
+                migrated[key] = None
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                migrated[key] = None
+                continue
+            migrated[key] = max(minimum, min(maximum, value))
+        return migrated
+
+
+class RateSettings(BaseModel):
+    """各文件类型的速率与重试（v38 起）。
+
+    v37 及以前，同时请求数和每批条数按模型存在 model_throughput_profiles 里，Word 的
+    批次在 word_batch，Excel / CAD 的失败重试在 request_retry。升级时
+    _migrate_rate_settings 移除旧的两节，这里留空，一律按新默认值走（改过的值只留在
+    升级前的备份里）。PDF 整页图像翻译的三项（同时生成页数、单页重试次数、同时审核
+    页数）仍在 pdf 节。
+    """
+
+    excel: SurfaceRateSettings = Field(default_factory=SurfaceRateSettings)
+    word: SurfaceRateSettings = Field(default_factory=SurfaceRateSettings)
+    # PDF 的文字翻译：转 Word 翻译和原位替换（含文字识别）共用这一组。
+    pdf_text: SurfaceRateSettings = Field(default_factory=SurfaceRateSettings)
+    cad: SurfaceRateSettings = Field(default_factory=SurfaceRateSettings)
 
 
 class ProcessRetentionRule(BaseModel):
@@ -1107,6 +1149,12 @@ class PdfSettings(BaseModel):
         ge=1,
         le=2**31 - 1,
     )
+    # 开启逐页审核时同时审核的页数；None 表示默认值（v38 起，原来跟审核模型的速率）。
+    review_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**31 - 1,
+    )
     review_enabled: bool = False
     generate_compressed_pdf: bool = True
     # This controls independent image *inputs* only.  It never changes the
@@ -1144,9 +1192,9 @@ class PdfSettings(BaseModel):
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
-        raw = migrated.get("page_generation_concurrency")
-        if raw in ("", None):
-            migrated["page_generation_concurrency"] = None
+        for key in ("page_generation_concurrency", "review_concurrency"):
+            if migrated.get(key) in ("", None):
+                migrated[key] = None
         # 分支早先的单一路线换算成等价的自动组合
         route = migrated.get("translation_route")
         if route == "inplace":
@@ -1257,6 +1305,29 @@ class AppearanceSettings(BaseModel):
         return self
 
 
+class ExtensionSettings(BaseModel):
+    """一个运行时注册的翻译类型（键为 ``ext:<id>``）的设置，v39 起。
+
+    内置四个页面的设置是 ``AppSettings`` 上按页面名平铺的字段（``excel_target_lang``、
+    ``cad_domain_preset`` …）；运行时注册的类型没法往 ``AppSettings`` 上加字段，它的那份
+    放在 ``AppSettings.extensions[<id>]``。读写一律经 ``core.surface_settings`` 的
+    ``surface_setting`` / ``set_surface_setting``，调用方不必分辨是哪一种。
+    加法改动：旧文件没有 ``extensions`` 时为空字典，不需要迁移。
+    """
+
+    target_lang: str = Field(default_factory=get_default_target_lang)
+    source_lang: str = "auto"
+    # 与内置页面同样的两层提示词：「自动识别场景」开关 + 选中的「补充要求」。
+    domain_preset: str = "无"
+    smart_context: bool = True
+    domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    # 这个类型自己的开关（描述符里的 options），按开关的 key 存。
+    options: dict[str, bool | int | float | str] = Field(default_factory=dict)
+    # 是否显示在侧栏、在侧栏里的位置。
+    pinned: bool = True
+    order: int = 0
+
+
 class AppSettings(BaseModel):
     _runtime_model_role: str = PrivateAttr(default="translation")
     engine: EngineSettings = Field(default_factory=EngineSettings)
@@ -1266,8 +1337,7 @@ class AppSettings(BaseModel):
     word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
     pdf_output: PdfOutputSettings = Field(default_factory=PdfOutputSettings)
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
-    word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
-    request_retry: RequestRetrySettings = Field(default_factory=RequestRetrySettings)
+    rate: RateSettings = Field(default_factory=RateSettings)
     process_retention: ProcessRetentionSettings = Field(default_factory=ProcessRetentionSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
@@ -1400,6 +1470,8 @@ class AppSettings(BaseModel):
     cad_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     cad_domain_disabled_presets: list[str] = Field(default_factory=list)
     cad_output: CadOutputSettings = Field(default_factory=CadOutputSettings)
+    # 运行时注册的翻译类型各自的设置，按类型 id（不带 ``ext:``）存，见 ExtensionSettings。
+    extensions: dict[str, ExtensionSettings] = Field(default_factory=dict)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
@@ -1576,20 +1648,12 @@ class AppSettings(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_locked_pdf_concurrency(self):
-        value = self.pdf.page_generation_concurrency
-        if value is not None and not self.engine.concurrency_unlocked:
-            self.pdf.page_generation_concurrency = min(
-                PDF_PAGE_CONCURRENCY_SAFETY_CAP,
-                value,
-            )
         if not self.engine.concurrency_unlocked:
+            for key in ("page_generation_concurrency", "review_concurrency"):
+                value = getattr(self.pdf, key)
+                if value is not None:
+                    setattr(self.pdf, key, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
             self.engine.batch_size = max(5, min(30, self.engine.batch_size))
-            self.word_batch.max_chars_per_batch = max(
-                WORD_BATCH_CHARS_MIN,
-                min(WORD_BATCH_CHARS_MAX, self.word_batch.max_chars_per_batch),
-            )
-        self.word_batch.max_paragraphs_per_batch = min(8, self.word_batch.max_paragraphs_per_batch)
-        self.word_batch.split_paragraph_chars = self.word_batch.max_chars_per_batch
         return self
 
     @model_validator(mode="after")
@@ -2066,6 +2130,149 @@ def _migrate_prompt_layers(payload: dict, stored_version: int) -> dict:
     return migrate_prompt_layers(payload)
 
 
+# v37 及以前的默认值。只用来判断用户改没改过速率：改过的话升级前先备份旧文件，
+# 因为升级后这些值一律改用 v38 的新默认值（maple 2026-10-14 定）。默认值本身在
+# v38 变了（并发 20 → 30、Word 字符 800 → 1000 等），所以这里写死旧值，不引用
+# config 里的现行常量。
+_PRE_V38_TEXT_THROUGHPUT_DEFAULTS = {
+    "cloud": {"batch_size": 20, "concurrency": 20},
+    "local": {"batch_size": 12, "concurrency": 3},
+}
+_PRE_V38_PAGE_CONCURRENCY_DEFAULTS = {"cloud": 2, "local": 3}
+_PRE_V38_REVIEW_CONCURRENCY_DEFAULTS = {"cloud": 1, "local": 3}
+_PRE_V38_PAGE_RETRY_DEFAULT = 1
+_PRE_V38_REQUEST_RETRY_DEFAULT = 2
+_PRE_V38_WORD_BATCH_DEFAULTS = {
+    "max_chars_per_batch": ("batch_chars", 800),
+    "max_paragraphs_per_batch": ("batch_items", 8),
+    "strict_retry_attempts": ("item_retry", 3),
+}
+RATE_SURFACE_KEYS = ("excel", "word", "pdf_text", "cad")
+# PDF 整页图像翻译的三项，v38 起归「翻译参数 · 速率与重试」，升级时同样回到默认值。
+_PDF_RATE_KEYS = ("page_generation_concurrency", "page_retry_attempts", "review_concurrency")
+
+
+def _pre_v38_role_throughput(payload: dict) -> dict[str, tuple[str, object, object]]:
+    """The per-model rate each role's primary connection ran with before v38.
+
+    Returns ``role -> (mode, batch_size, concurrency)`` for roles that had a
+    saved profile.  The profile key depends on the resolved model (following
+    roles included), so this goes through the same resolver the runtime used.
+    Best effort: anything that fails just means "nothing was tuned".
+    """
+    profiles = payload.get("model_throughput_profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        return {}
+    try:
+        from core.model_roles import (
+            ROLE_IMAGE,
+            ROLE_PDF_REVIEW,
+            ROLE_TRANSLATION,
+            resolve_effective_model_config,
+        )
+        from core.model_throughput import model_throughput_key
+
+        settings = AppSettings.model_validate(payload)
+    except Exception as exc:  # noqa: BLE001 - a migration must never block loading
+        logger.debug(f"v38 速率迁移：读取旧速率失败，按没改过处理：{exc!r}")
+        return {}
+    found: dict[str, tuple[str, object, object]] = {}
+    for role in (ROLE_TRANSLATION, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        try:
+            config = resolve_effective_model_config(settings, role)
+        except Exception:  # noqa: BLE001 - an unusable role has nothing to carry
+            continue
+        profile = profiles.get(model_throughput_key(config))
+        if not isinstance(profile, dict):
+            continue
+        mode = "local" if config.mode == "local" else "cloud"
+        found[role] = (mode, profile.get("batch_size"), profile.get("concurrency"))
+    return found
+
+
+def _changed_int(value: object, old_default: int) -> int | None:
+    """The stored value if the user changed it, else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return None if value == old_default else value
+
+
+def _pre_v38_tuned_rate(payload: dict) -> list[str]:
+    """v37 及以前用户自己改过的速率与重试项（只用于决定升级前要不要备份）。
+
+    word_batch、request_retry 两节里不等于旧默认值的项，文档翻译、PDF 与图片翻译、
+    审核三个模型主用连接按模型存的速率里改过的项，以及 pdf 节里填过的同时生成页数 /
+    单页重试次数。返回的是「节.项」名，空表示全在旧默认值上。
+    """
+    tuned: list[str] = []
+    request_retry = payload.get("request_retry")
+    if isinstance(request_retry, dict):
+        for surface in ("excel", "cad"):
+            if _changed_int(request_retry.get(surface), _PRE_V38_REQUEST_RETRY_DEFAULT) is not None:
+                tuned.append(f"request_retry.{surface}")
+    word_batch = payload.get("word_batch")
+    if isinstance(word_batch, dict):
+        for old_key, (_field, old_default) in _PRE_V38_WORD_BATCH_DEFAULTS.items():
+            if _changed_int(word_batch.get(old_key), old_default) is not None:
+                tuned.append(f"word_batch.{old_key}")
+    for role, (mode, batch_size, concurrency) in _pre_v38_role_throughput(payload).items():
+        if role == "translation":
+            old = _PRE_V38_TEXT_THROUGHPUT_DEFAULTS[mode]
+            pairs = ((batch_size, old["batch_size"]), (concurrency, old["concurrency"]))
+        elif role == "image":
+            pairs = ((concurrency, _PRE_V38_PAGE_CONCURRENCY_DEFAULTS[mode]),)
+        else:
+            pairs = ((concurrency, _PRE_V38_REVIEW_CONCURRENCY_DEFAULTS[mode]),)
+        if any(_changed_int(value, old_default) is not None for value, old_default in pairs):
+            tuned.append(f"model_throughput_profiles.{role}")
+    pdf = payload.get("pdf")
+    if isinstance(pdf, dict):
+        if pdf.get("page_generation_concurrency") not in (None, ""):
+            tuned.append("pdf.page_generation_concurrency")
+        if _changed_int(pdf.get("page_retry_attempts"), _PRE_V38_PAGE_RETRY_DEFAULT) is not None:
+            tuned.append("pdf.page_retry_attempts")
+    return tuned
+
+
+def _migrate_rate_settings(payload: dict, stored_version: int) -> dict:
+    """v38: 速率与重试挪到「翻译参数」，按文件类型保存，升级时一律改用新默认值。
+
+    v37 的值是按旧默认值调的（同时请求数上限 20、Word 每批 800 字等），带到新位置
+    会让新默认值对调过的人不生效，所以不带（maple 2026-10-14 定）：
+
+    * word_batch、request_retry 两节移除，rate 节为空（各项按云端/本地取默认值）；
+    * pdf 节的同时生成页数、单页重试次数、同时审核页数回到默认值；
+    * 按模型存的 model_throughput_profiles 保留（清洗记忆库仍按它取速率），文档翻译、
+      PDF 与图片翻译、审核三个模型不再读它。
+
+    用户改过的值只留在备份里：第一次写回前 save_settings 按 _has_legacy_rate_data
+    先备份旧文件。
+    """
+    if stored_version >= 38:
+        return payload
+    migrated = dict(payload)
+    migrated.pop("request_retry", None)
+    migrated.pop("word_batch", None)
+    migrated["rate"] = {}
+    if isinstance(migrated.get("pdf"), dict):
+        migrated["pdf"] = {
+            key: value for key, value in migrated["pdf"].items() if key not in _PDF_RATE_KEYS
+        }
+    return migrated
+
+
+def _has_legacy_rate_data(stored_version: int) -> bool:
+    """Whether the v38 upgrade drops a rate value the user had changed.
+
+    A file still on the old defaults loses nothing when everything moves to the
+    new defaults, so like the v35 prompt migration it needs no backup.
+    """
+    if stored_version >= 38:
+        return False
+    raw = _raw_settings_payload()
+    return raw is not None and bool(_pre_v38_tuned_rate(raw))
+
+
 class SettingsSchemaError(ValueError):
     """The settings file could not be read *and* could not be backed up.
 
@@ -2229,9 +2436,12 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, _migrate_prompt_layers(
-            _migrate_smart_domain_default(
-                _migrate_theme_default(payload, stored_version), stored_version,
+        return "adopted", stored_version, _migrate_rate_settings(
+            _migrate_prompt_layers(
+                _migrate_smart_domain_default(
+                    _migrate_theme_default(payload, stored_version), stored_version,
+                ),
+                stored_version,
             ),
             stored_version,
         )
@@ -2545,8 +2755,11 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # saves see the current schema and do not create repeat backups.
             # v35 的提示词迁移会改写用户自己写的内容（场景改写转成补充要求、
             # 旧字段清空），第一次写回前同样留一份原文件。
+            # v38 的速率与重试一律改用新默认值，旧的 word_batch / request_retry
+            # 两节随之移除；用户改过速率的，同样先留一份。
             if (
-                AppSettings._migrate_legacy_image_model(_payload) != _payload
+                _has_legacy_rate_data(stored_version)
+                or AppSettings._migrate_legacy_image_model(_payload) != _payload
                 or (stored_version < 35 and _has_legacy_prompt_data(_raw_prompt_choices(stored_version)))
             ):
                 _backup_settings_file(f"settings_v{stored_version}_before_upgrade")
@@ -2580,9 +2793,9 @@ def update_settings_atomically(update: Callable[[AppSettings], bool]) -> bool:
         current = AppSettings.model_validate(payload) if payload is not None else AppSettings()
         if not update(current):
             return False
-        if state == "adopted" and stored_version < 27 and payload is not None:
-            if AppSettings._migrate_legacy_image_model(payload) != payload:
-                _backup_settings_file()
+        if state == "adopted" and payload is not None and _has_legacy_rate_data(stored_version):
+            # 后台写入也可能是升级后的第一次写：先留一份旧文件（见 save_settings）。
+            _backup_settings_file(f"settings_v{stored_version}_before_upgrade")
         current.settings_version = SETTINGS_SCHEMA_VERSION
         _write_text_atomic(SETTINGS_PATH, current.model_dump_json(indent=2))
         return True

@@ -16,7 +16,8 @@ from core.model_roles import (
     list_effective_role_connections,
     resolve_effective_model_config,
 )
-from core.model_throughput import get_model_throughput
+from core.surface_rate import task_role_rate
+from core.surface_settings import EXTENSION_PAGE_KEY
 from settings import AppSettings, api_key_scope, connection_key_scope
 
 
@@ -62,7 +63,8 @@ def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSig
 def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str, ...]:
     """Map one translation page to the model roles it will occupy."""
     normalized_page = str(page_key or "").strip()
-    if normalized_page in {"excel_translate", "word_translate", "cad_translate"}:
+    # 运行时注册的类型（EXTENSION_PAGE_KEY）只翻文字，与 Excel、Word、CAD 一样只用文档翻译模型。
+    if normalized_page in {"excel_translate", "word_translate", "cad_translate", EXTENSION_PAGE_KEY}:
         return (ROLE_TRANSLATION,)
     if normalized_page == "tm_clean":
         return (ROLE_CLEANER,)
@@ -147,11 +149,13 @@ def task_api_context_for_page(
     role_groups: dict[str, ApiGroupSignature] = {}
     group_concurrency: dict[ApiGroupSignature, int] = {}
     for config in configs:
-        throughput = get_model_throughput(settings, config)
+        # 同时请求数和每批条数按这一页的「翻译参数」取（core/surface_rate.py）；清洗记忆库
+        # 仍按模型速率。
+        concurrency, batch_size = task_role_rate(settings, page_key, config)
         group = api_group_signature_from_config(config)
         role_groups[config.role] = group
         group_concurrency[group] = (
-            group_concurrency.get(group, 0) + max(1, int(throughput.concurrency))
+            group_concurrency.get(group, 0) + max(1, int(concurrency))
         )
         if config.mode == "cloud":
             base_url = normalize_cloud_base_url(
@@ -190,9 +194,8 @@ def task_api_context_for_page(
                 role_connection_chains.get(config.role, ())
             ),
             "throughput": {
-                "profile_key": throughput.profile_key,
-                "batch_size": throughput.batch_size,
-                "concurrency": throughput.concurrency,
+                "batch_size": batch_size,
+                "concurrency": concurrency,
             },
         }
         if config.mode != "cloud":

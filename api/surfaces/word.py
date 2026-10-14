@@ -6,18 +6,30 @@ from pathlib import Path
 from typing import Any
 
 from api.surfaces.base import (
+    PHASE_READ,
+    PHASE_TRANSLATE,
+    PHASE_WRITE,
     RunnerRequest,
     Surface,
     file_format,
     require_target_lang,
     require_translation_model,
+    suffixes,
 )
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer
 from core.word_converter import get_local_word_automation_availability
-from core.word_document import scan_word_path, scan_word_sources
+from core.word_document import SUPPORTED_WORD_SUFFIXES, scan_word_path, scan_word_sources
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings
+
+
+def _word_rate_snapshot(settings: AppSettings) -> dict[str, object]:
+    """任务开始时 Word 实际用的速率与重试（翻译参数 → Word，默认值已代入）。"""
+    from core.surface_rate import RATE_FIELDS, resolve_surface_rate
+
+    rate = resolve_surface_rate(settings, "word")
+    return {field: getattr(rate, field) for field in RATE_FIELDS}
 
 
 class WordSurface(Surface):
@@ -27,10 +39,17 @@ class WordSurface(Surface):
     uses_translation_memory = True
     target_lang_setting = "per_surface"
     domain_preset_in_snapshot = True
+    display_label = {"zh": "Word 文档", "en": "Word documents", "fr": "Documents Word"}
+    file_noun = {"zh": "文档", "en": "documents", "fr": "documents"}
+    icon = "word"
+    file_extensions = suffixes(SUPPORTED_WORD_SUFFIXES)
+    output_bilingual = True
+    output_translation_only = True
     # 读取文件 / 翻译 / 生成文件。时间几乎都花在等模型上，所以「翻译」占大头（它
     # 包含识别语言、单段重试和复查、补译）；生成文件可能要调 Word / LibreOffice
     # 处理编号，比读取多留一些。
     phase_weights = (5, 80, 15)
+    phase_names = (PHASE_READ, PHASE_TRANSLATE, PHASE_WRITE)
 
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_word_path(root)
@@ -75,7 +94,7 @@ class WordSurface(Surface):
     ) -> dict[str, object]:
         return {
             "word_output": settings.word_output.model_dump(mode="json"),
-            "word_batch": settings.word_batch.model_dump(mode="json"),
+            "rate": _word_rate_snapshot(settings),
             "word_review": settings.word_review.model_dump(mode="json"),
             "word_conversion": settings.word_conversion.model_dump(mode="json"),
             "tm": {"max_len": settings.tm.max_len},

@@ -48,12 +48,15 @@ from core.api_concurrency_control import (
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
 from core.prompt_cache import carry_meter
+from core.surface_settings import is_extension_key, surface_setting
 from core.translation_protocol import should_apply_quality_filter
 from core.user_facing_errors import humanize_error
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, get_cloud_provider_config, get_key
 from core.translation_filter import is_translation_redundant  # 质量闭环拦截
 
+# 调用方没给每批字符上限时的兜底（v38 起 Excel、CAD、PDF 原位替换都按「翻译参数」
+# 传入，见 core/surface_rate.py）。
 _EXCEL_CLOUD_BATCH_CHAR_BUDGET = 3200
 _EXCEL_LOCAL_BATCH_CHAR_BUDGET = 2400
 _API_WEIGHT_CHARS_PER_SLOT = 4000
@@ -150,6 +153,8 @@ class TranslationBatchRunStats:
     retry_count: int = 0
     # Whole-batch resends after a 5xx / timeout; retry_count stays splits only.
     transient_retry_count: int = 0
+    # 拆到最小仍没译出来、逐条单独重发的请求数（翻译参数 → 单段重试次数）。
+    item_retry_count: int = 0
     failed_batch_count: int = 0
     untranslated_count: int = 0
     failed_items: list[dict[str, str]] = field(default_factory=list)
@@ -179,6 +184,10 @@ class TranslationBatchRunStats:
     def record_transient_retry(self) -> None:
         with self._lock:
             self.transient_retry_count += 1
+
+    def record_item_retry(self) -> None:
+        with self._lock:
+            self.item_retry_count += 1
 
     def record_failed_batch(self, source_text: str = "", error: str = "") -> None:
         with self._lock:
@@ -398,14 +407,16 @@ def get_system_prompt(
     core.document_profile.append_profile 接上，不在这里。
     """
     normalized_page = str(page_key or "").strip().lower()
-    prefix = f"{normalized_page}_" if normalized_page in {"excel", "word", "cad"} else ""
+    # 有自己提示词设置的页面：Excel、Word、CAD 和运行时注册的类型；其余用全局那份。
+    page = normalized_page if normalized_page in {"excel", "word", "cad"} or is_extension_key(normalized_page) else ""
     selected = str(
-        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        (surface_setting(settings, page, "domain_preset", settings.domain_preset) if page else settings.domain_preset)
         or NO_EXTRA_PROMPT
     ).strip()
-    extras = dict(getattr(settings, f"{prefix}domain_custom_prompts", None) or {})
-    if not prefix and not extras:
-        extras = dict(settings.domain_custom_prompts or {})
+    extras = dict(
+        (surface_setting(settings, page, "domain_custom_prompts", None) if page else settings.domain_custom_prompts)
+        or {}
+    )
     extra = ""
     entry = extras.get(selected) if selected != NO_EXTRA_PROMPT else None
     if isinstance(entry, dict):
@@ -420,7 +431,10 @@ def get_system_prompt(
         extra = entry.strip()
     elif selected == "自定义":
         # 没经过 v35 迁移的旧调用方（CLI 手工构造的设置）还可能用 V9 的单条自定义提示词。
-        extra = str(getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or "").strip()
+        extra = str(
+            (surface_setting(settings, page, "custom_prompt", settings.custom_prompt) if page else settings.custom_prompt)
+            or ""
+        ).strip()
     prompt = CORE_TRANSLATION_PROMPT
     if extra:
         prompt = f"{prompt}\n\n{EXTRA_PROMPT_HEADER}\n{extra}"
@@ -433,41 +447,40 @@ def get_system_prompt(
 def smart_context_enabled(settings: AppSettings, page_key: str) -> bool:
     """「自动识别场景」开关：这一页翻译前要不要先通读文档、写一段文档说明。"""
     normalized_page = str(page_key or "").strip().lower()
-    if normalized_page in {"excel", "word", "cad"}:
-        return bool(getattr(settings, f"{normalized_page}_smart_context", True))
+    if normalized_page in {"excel", "word", "cad"} or is_extension_key(normalized_page):
+        return bool(surface_setting(settings, normalized_page, "smart_context", True))
     return bool(getattr(settings, "domain_smart_context", True))
 
 
 def activate_translation_surface(settings: AppSettings, surface: str) -> AppSettings:
     """Select the page-owned domain/Prompt state for a frozen task copy."""
     normalized = str(surface or "").strip().lower()
-    if normalized not in {"excel", "word"}:
+    if normalized not in {"excel", "word"} and not is_extension_key(normalized):
         return settings
-    prefix = f"{normalized}_"
     settings.domain_preset = str(
-        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        surface_setting(settings, normalized, "domain_preset", settings.domain_preset)
         or NO_EXTRA_PROMPT
     ).strip()
     settings.domain_smart_context = bool(
-        getattr(settings, f"{prefix}smart_context", settings.domain_smart_context)
+        surface_setting(settings, normalized, "smart_context", settings.domain_smart_context)
     )
     settings.custom_prompt = str(
-        getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or ""
+        surface_setting(settings, normalized, "custom_prompt", settings.custom_prompt) or ""
     )
     settings.domain_name_overrides = dict(
-        getattr(settings, f"{prefix}domain_name_overrides", settings.domain_name_overrides)
+        surface_setting(settings, normalized, "domain_name_overrides", settings.domain_name_overrides)
         or {}
     )
     settings.domain_prompt_overrides = dict(
-        getattr(settings, f"{prefix}domain_prompt_overrides", settings.domain_prompt_overrides)
+        surface_setting(settings, normalized, "domain_prompt_overrides", settings.domain_prompt_overrides)
         or {}
     )
     settings.domain_custom_prompts = dict(
-        getattr(settings, f"{prefix}domain_custom_prompts", {})
+        surface_setting(settings, normalized, "domain_custom_prompts", {})
         or {}
     )
     settings.domain_disabled_presets = list(
-        getattr(settings, f"{prefix}domain_disabled_presets", []) or []
+        surface_setting(settings, normalized, "domain_disabled_presets", []) or []
     )
     return settings
 
@@ -494,9 +507,15 @@ def translate_texts(
     throughput_unlocked: bool = False,
     request_callback=None,
     transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+    max_chars: int | None = None,
+    item_retries: int = 0,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
+
+    - max_chars：每批原文字符数之和的上限（翻译参数 → 每批字符上限）；不给时按
+      云端 3200 / 本地 2400 兜底。
+    - item_retries：拆到最小仍没译出来的条目逐条单独重发的次数（单段重试次数）。
 
     - Ollama（mode=local）：engine.translate_batch 内部已有 asyncio 并发，
       此处保持串行逐批调用，避免与 asyncio.run() 冲突。
@@ -518,11 +537,7 @@ def translate_texts(
         maximum = 2**31 - 1 if throughput_unlocked else CHUNK_CLOUD_MAX
         chunk = max(1, min(maximum, int(batch_size)))
 
-    char_budget = (
-        _EXCEL_LOCAL_BATCH_CHAR_BUDGET
-        if is_local
-        else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
-    )
+    char_budget = _batch_char_budget(max_chars, is_local)
     batches = _build_text_batches(texts, max_items=chunk, max_chars=char_budget)
     total = len(texts)
     run_stats = stats or TranslationBatchRunStats()
@@ -554,6 +569,7 @@ def translate_texts(
                     error_callback=error_callback,
                     stats=run_stats,
                     max_transient_retries=transient_retries,
+                    item_retries=item_retries,
                 ),
                 batch,
                 index=batch_index,
@@ -593,6 +609,7 @@ def translate_texts(
                 error_callback=error_callback,
                 stats=run_stats,
                 max_transient_retries=transient_retries,
+                item_retries=item_retries,
             ),
             batch,
             index=batch_index,
@@ -684,6 +701,8 @@ def translate_texts_with_sources(
     throughput_unlocked: bool = False,
     transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
     request_callback=None,
+    max_chars: int | None = None,
+    item_retries: int = 0,
 ) -> dict[str, TranslationLanguageResult]:
     """Translate bounded batches while retaining model-reported source codes.
 
@@ -700,7 +719,7 @@ def translate_texts_with_sources(
         if is_local
         else max(1, min(2**31 - 1 if throughput_unlocked else CHUNK_CLOUD_MAX, batch_size))
     )
-    char_budget = _EXCEL_LOCAL_BATCH_CHAR_BUDGET if is_local else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
+    char_budget = _batch_char_budget(max_chars, is_local)
     batches = _build_text_batches(texts, max_items=item_limit, max_chars=char_budget)
     run_stats = stats or TranslationBatchRunStats()
     run_stats.original_count = len(texts)
@@ -722,6 +741,7 @@ def translate_texts_with_sources(
                 error_callback=error_callback,
                 stats=run_stats,
                 max_transient_retries=transient_retries,
+                item_retries=item_retries,
             ),
             batch,
             index=batch_index,
@@ -805,6 +825,15 @@ def translate_texts_with_sources(
     return results
 
 
+def _batch_char_budget(max_chars: int | None, is_local: bool) -> int:
+    if max_chars is not None:
+        try:
+            return max(1, int(max_chars))
+        except (TypeError, ValueError):
+            pass
+    return _EXCEL_LOCAL_BATCH_CHAR_BUDGET if is_local else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
+
+
 def _build_text_batches(
     texts: list[str],
     *,
@@ -860,6 +889,7 @@ def _translate_batch_with_fallback(
     concurrency_round: int = 0,
     transient_round: int = 0,
     max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+    item_retries: int = 0,
 ) -> dict[str, str]:
     if not batch:
         return {}
@@ -942,6 +972,7 @@ def _translate_batch_with_fallback(
                     concurrency_round=concurrency_round + 1,
                     transient_round=transient_round,
                     max_transient_retries=max_transient_retries,
+                    item_retries=item_retries,
                 )
         rejected = credential_rejection(exc)
         if rejected is not None:
@@ -969,6 +1000,7 @@ def _translate_batch_with_fallback(
                 concurrency_round=concurrency_round,
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
+                item_retries=item_retries,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 翻译请求不再重发，已停止拆分批次：{exc}")
@@ -1006,6 +1038,7 @@ def _translate_batch_with_fallback(
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
+                item_retries=item_retries,
             )
             right = _translate_batch_with_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1014,8 +1047,38 @@ def _translate_batch_with_fallback(
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
+                item_retries=item_retries,
             )
             return {**left, **right}
+        if item_retries > 0 and not _is_rate_limit_error(exc) and not (should_stop and should_stop()):
+            def _send_one(text: str) -> str:
+                partial = engine.translate_batch(
+                    [text], target_lang, system_prompt, source_lang=source_lang
+                )
+                _validate_batch_integrity([text], partial)
+                return partial[text]
+
+            recovered, failed, stopped, exc = _retry_items_individually(
+                batch,
+                exc,
+                attempts=item_retries,
+                send=_send_one,
+                system_prompt=system_prompt,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+            )
+            results: dict[str, str] = dict(recovered)
+            if stopped:
+                stats.record_stopped(stopped)
+                results.update({text: text for text in stopped})
+            if not failed:
+                return results
+            batch = failed
+        else:
+            results = {}
         stats.record_untranslated(batch, str(exc))
         head = str(batch[0] if batch else "")[:40]
         logger.error(
@@ -1028,7 +1091,94 @@ def _translate_batch_with_fallback(
         )
         if error_callback:
             error_callback(err_msg)
-        return {text: text for text in batch}
+        return {**results, **{text: text for text in batch}}
+
+
+def _retry_items_individually(
+    batch: list[str],
+    first_error: BaseException,
+    *,
+    attempts: int,
+    send,
+    system_prompt: str,
+    api_scheduler: WeightedApiScheduler | None,
+    request_category: str,
+    should_stop,
+    error_callback,
+    stats: TranslationBatchRunStats,
+):
+    """拆到最小仍没译出来的条目逐条单独重发（翻译参数 → 单段重试次数）。
+
+    走到这里的是内容出错（返回条数不对、缺译文、格式坏了）：限流和接口拒绝在上面
+    已经各有去处。一条单独发，模型更容易答对。重发中又遇到限流或接口拒绝，后面的
+    条目不再重发，免得把一个已经在拒绝的端点再撞几十次。
+
+    返回 (译好的, 仍失败的, 停止时没发的, 最后一个错误)。
+    """
+    recovered: dict = {}
+    failed: list[str] = []
+    stopped: list[str] = []
+    last_error = first_error
+    if error_callback:
+        error_callback(
+            f"有 {len(batch)} 条内容拆分后仍未译出，正在逐条重试（每条最多 {attempts} 次）："
+            f"{_batch_failure_reason(first_error)}"
+        )
+    abort = False
+    for index, text in enumerate(batch):
+        if abort:
+            failed.extend(batch[index:])
+            break
+        done = False
+        for attempt in range(attempts):
+            if should_stop and should_stop():
+                break
+            if attempt:
+                _backoff_sleep(
+                    attempt - 1,
+                    base=_SPLIT_RETRY_BASE_DELAY,
+                    cap=_SPLIT_RETRY_MAX_DELAY,
+                    should_stop=should_stop,
+                )
+                if should_stop and should_stop():
+                    break
+            stats.record_item_retry()
+            try:
+                if api_scheduler is None:
+                    recovered[text] = send(text)
+                else:
+                    with api_scheduler.slot(
+                        _estimate_api_request_weight([text], system_prompt),
+                        category=request_category,
+                        should_stop=should_stop,
+                    ):
+                        if should_stop and should_stop():
+                            break
+                        recovered[text] = send(text)
+                done = True
+                break
+            except ApiSchedulerAcquireCancelled:
+                break
+            except ApiKeyTemporarilyUnavailableError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the item keeps its source text
+                rejected = credential_rejection(exc)
+                if rejected is not None:
+                    raise rejected from exc
+                last_error = exc
+                logger.debug(f"逐条重试第 {attempt + 1}/{attempts} 次失败：{exc!r}")
+                if _is_rate_limit_error(exc) or (
+                    _is_permanent_request_error(exc) and not _is_transient_request_error(exc)
+                ):
+                    abort = True
+                    break
+        if done:
+            continue
+        if should_stop and should_stop():
+            stopped.append(text)
+        else:
+            failed.append(text)
+    return recovered, failed, stopped, last_error
 
 
 _REASON_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -1075,6 +1225,7 @@ def _translate_batch_with_sources_fallback(
     concurrency_round: int = 0,
     transient_round: int = 0,
     max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+    item_retries: int = 0,
 ) -> dict[str, TranslationLanguageResult]:
     if not batch:
         return {}
@@ -1162,6 +1313,7 @@ def _translate_batch_with_sources_fallback(
                     concurrency_round=concurrency_round + 1,
                     transient_round=transient_round,
                     max_transient_retries=max_transient_retries,
+                    item_retries=item_retries,
                 )
         # Splitting a batch cannot fix a rejected key or a missing model, and
         # the sources variant used to keep bisecting anyway — mirror the plain
@@ -1191,6 +1343,7 @@ def _translate_batch_with_sources_fallback(
                 concurrency_round=concurrency_round,
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
+                item_retries=item_retries,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 语言回报请求不再重发，已停止拆分批次：{exc}")
@@ -1221,6 +1374,7 @@ def _translate_batch_with_sources_fallback(
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
+                item_retries=item_retries,
             )
             right = _translate_batch_with_sources_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1229,8 +1383,38 @@ def _translate_batch_with_sources_fallback(
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
+                item_retries=item_retries,
             )
             return {**left, **right}
+        recovered_items: dict[str, TranslationLanguageResult] = {}
+        if item_retries > 0 and not _is_rate_limit_error(exc) and not (should_stop and should_stop()):
+            def _send_one(text: str) -> TranslationLanguageResult:
+                items = engine.translate_batch_with_sources(
+                    [text], target_lang, system_prompt, source_lang="auto"
+                )
+                if len(items) != 1:
+                    raise ValueError(f"返回条数不足：输入 1，返回 {len(items)}")
+                return items[0]
+
+            recovered, failed, stopped, exc = _retry_items_individually(
+                batch,
+                exc,
+                attempts=item_retries,
+                send=_send_one,
+                system_prompt=system_prompt,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+            )
+            recovered_items.update(recovered)
+            if stopped:
+                stats.record_stopped(stopped)
+                recovered_items.update(_untranslated_language_results(stopped, target_lang))
+            if not failed:
+                return recovered_items
+            batch = failed
         stats.record_untranslated(batch, str(exc))
         logger.error(f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}")
         err_msg = (
@@ -1239,7 +1423,7 @@ def _translate_batch_with_sources_fallback(
         )
         if error_callback:
             error_callback(err_msg)
-        return _untranslated_language_results(batch, target_lang)
+        return {**recovered_items, **_untranslated_language_results(batch, target_lang)}
 
 
 def _untranslated_language_results(

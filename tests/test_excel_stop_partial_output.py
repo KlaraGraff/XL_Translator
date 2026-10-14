@@ -21,10 +21,10 @@ from openpyxl import Workbook, load_workbook
 
 from core.api_config_check import ApiConfigCheckResult
 from core.file_scanner import FileItem
-from core.model_throughput import EffectiveModelThroughput
 from core.resume_detection import detect_previous_output
 from core.task_runner import StoppedMsg, TaskRunner
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 _SOURCES = [f"第{index}号施工段混凝土浇筑" for index in range(1, 31)]
 
@@ -129,8 +129,8 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
             stack.enter_context(patch("core.task_runner.resolve_effective_model_config", return_value=object()))
             stack.enter_context(
                 patch(
-                    "core.task_runner.get_model_throughput",
-                    return_value=EffectiveModelThroughput(profile_key="t", batch_size=10, concurrency=1),
+                    "core.task_runner.resolve_surface_rate",
+                    side_effect=pinned_surface_rate(batch_items=10, concurrency=1),
                 )
             )
             stack.enter_context(patch("core.task_runner.tm_manager.lookup_batch", return_value={}))

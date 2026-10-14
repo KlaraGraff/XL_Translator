@@ -38,7 +38,7 @@ def _round_trip(settings: AppSettings) -> AppSettings:
 class ModelConfigRoundTripTests(unittest.TestCase):
     def test_importing_throughput_above_locked_limit_preserves_the_unlock(self) -> None:
         payload = build_model_config_export_payload(AppSettings(), get_api_key=lambda *_: "")
-        payload["model_profiles"]["translation"]["throughput"]["concurrency"] = 21
+        payload["model_profiles"]["translation"]["throughput"]["concurrency"] = 51
 
         restored = apply_model_config_import(
             AppSettings(),
@@ -48,7 +48,7 @@ class ModelConfigRoundTripTests(unittest.TestCase):
 
         self.assertTrue(restored.engine.concurrency_unlocked)
         config = resolve_effective_model_config(restored, ROLE_TRANSLATION)
-        self.assertEqual(get_model_throughput(restored, config).concurrency, 21)
+        self.assertEqual(get_model_throughput(restored, config).concurrency, 51)
 
     def test_importing_throughput_inside_locked_limit_does_not_unlock(self) -> None:
         payload = build_model_config_export_payload(AppSettings(), get_api_key=lambda *_: "")

@@ -36,13 +36,13 @@ from unittest.mock import MagicMock, patch
 from docx import Document
 
 from core.api_config_check import ApiConfigCheckResult
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import StoppedMsg
 from core.word_document import WordFileItem, WordSegment
 from core.word_document import write_bilingual_docx as real_write_bilingual_docx
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.rate_pins import pinned_surface_rate
 
 
 def _prepared(path: Path) -> SimpleNamespace:
@@ -160,10 +160,8 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
         stack.enter_context(patch("core.word_task_runner.resolve_effective_model_config", return_value=object()))
         stack.enter_context(
             patch(
-                "core.word_task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="stop-audit", batch_size=10, concurrency=1
-                ),
+                "core.word_task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(concurrency=1),
             )
         )
         stack.enter_context(

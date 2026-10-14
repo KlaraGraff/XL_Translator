@@ -12,6 +12,7 @@ from core.model_roles import (
 )
 from core.engine_dispatcher import build_role_engine
 from core.language_registry import get_target_lang_display
+from core.surface_settings import set_surface_setting, surface_setting
 from config import (
     CORE_TRANSLATION_PROMPT,
     EXTRA_PROMPT_HEADER,
@@ -55,12 +56,11 @@ def register(app: FastAPI) -> None:
     def get_domain_settings(surface: str) -> dict[str, Any]:
         normalized = _surface_or_404(surface)
         settings = load_settings()
-        prefix = f"{normalized}_"
         return {
             "surface": normalized,
-            "smart_context": bool(getattr(settings, f"{prefix}smart_context")),
-            "preset": getattr(settings, f"{prefix}domain_preset"),
-            "custom_prompts": getattr(settings, f"{prefix}domain_custom_prompts", {}),
+            "smart_context": bool(surface_setting(settings, normalized, "smart_context")),
+            "preset": surface_setting(settings, normalized, "domain_preset"),
+            "custom_prompts": surface_setting(settings, normalized, "domain_custom_prompts", {}),
         }
 
     @app.post("/api/domains/{surface}/optimize")
@@ -80,13 +80,13 @@ def register(app: FastAPI) -> None:
         settings = load_settings()
         custom_names = {
             str(name).strip()
-            for name in getattr(settings, f"{normalized}_domain_custom_prompts", {})
+            for name in surface_setting(settings, normalized, "domain_custom_prompts", {})
             if str(name).strip()
         }
         if preset != _UNSAVED_PROMPT_MARKER and preset not in custom_names:
             raise HTTPException(422, "请选择一个有效的提示词后再整理。")
         target_code = str(payload.target_lang or "").strip() or str(
-            getattr(settings, f"{normalized}_target_lang", "")
+            surface_setting(settings, normalized, "target_lang", "")
             or settings.target_lang
             or ""
         ).strip()
@@ -144,9 +144,8 @@ def register(app: FastAPI) -> None:
         if preset != NO_EXTRA_PROMPT and preset not in normalized_custom:
             raise HTTPException(422, "找不到所选的补充要求，请刷新后重试。")
         settings = load_settings()
-        prefix = f"{normalized}_"
-        setattr(settings, f"{prefix}smart_context", bool(payload.smart_context))
-        setattr(settings, f"{prefix}domain_preset", preset)
-        setattr(settings, f"{prefix}domain_custom_prompts", normalized_custom)
+        set_surface_setting(settings, normalized, "smart_context", bool(payload.smart_context))
+        set_surface_setting(settings, normalized, "domain_preset", preset)
+        set_surface_setting(settings, normalized, "domain_custom_prompts", normalized_custom)
         save_settings(settings)
         return get_domain_settings(normalized)

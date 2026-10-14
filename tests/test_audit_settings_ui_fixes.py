@@ -33,10 +33,15 @@ SETTINGS_TS_PATH = Path(__file__).resolve().parents[1] / "ui" / "src" / "views" 
 
 
 def _read_settings_ts() -> str:
-    # 设置页拆成了 settings.ts + settings-models.ts（模型服务子页），按整页源码一起查。
+    # 设置页拆成了 settings.ts + settings-models.ts（模型服务子页）+ settings-rate.ts（速率
+    # 与重试、记忆库卡片），按整页源码一起查。
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (SETTINGS_TS_PATH, SETTINGS_TS_PATH.with_name("settings-models.ts"))
+        for path in (
+            SETTINGS_TS_PATH,
+            SETTINGS_TS_PATH.with_name("settings-models.ts"),
+            SETTINGS_TS_PATH.with_name("settings-rate.ts"),
+        )
     )
 
 
@@ -135,38 +140,50 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
         assert match, f"没找到 {setting_path} 的 numberField min/max 声明"
         return int(match.group(1)), int(match.group(2))
 
+    # v38 起速率与重试的数值框在 settings-rate.ts，范围由后端 GET /api/settings/rate 给出
+    # （core/surface_rate.py），界面不再写死边界，所以这里钉住后端范围与 config.py 一致、
+    # 界面确实按概览里的范围设 min/max。
+
     def test_word_batch_chars_bounds_match_config(self) -> None:
-        lo, hi = self._numberfield_bounds(_read_settings_ts(), "word_batch.max_chars_per_batch")
-        self.assertEqual((lo, hi), (config.WORD_BATCH_CHARS_MIN, config.WORD_BATCH_CHARS_MAX))
+        from core.surface_rate import rate_bounds
+
+        self.assertEqual(
+            rate_bounds("word", "cloud")["batch_chars"],
+            (config.WORD_BATCH_CHARS_MIN, config.WORD_BATCH_CHARS_MAX),
+        )
+        self.assertEqual(rate_bounds("word", "cloud", unlocked=True)["batch_chars"], (1, 2**31 - 1))
 
     def test_word_page_shows_only_character_budget_and_retry(self) -> None:
         source = _read_settings_ts()
-        self.assertNotIn('numberField(t("每批最大段落数")', source)
-        self.assertNotIn('numberField(t("长段拆分阈值")', source)
-        self.assertIn('numberField(t("每批字符上限")', source)
+        self.assertNotIn('t("每批最大段落数")', source)
+        self.assertNotIn('t("长段拆分阈值")', source)
+        self.assertIn('label: t("每批字符上限")', source)
 
     def test_pdf_page_retry_bounds_match_config(self) -> None:
-        source = _read_settings_ts()
-        match = re.search(
-            r'saveSettingPath\("pdf\.page_retry_attempts", v\).*?\{\s*min:\s*(\d+),\s*max:\s*(\d+)',
-            source,
+        from core.surface_rate import pdf_image_bounds
+
+        self.assertEqual(
+            pdf_image_bounds()["page_retry_attempts"],
+            (config.PDF_PAGE_RETRY_ATTEMPTS_MIN, config.PDF_PAGE_RETRY_ATTEMPTS_MAX),
         )
-        self.assertIsNotNone(match)
-        lo, hi = int(match.group(1)), int(match.group(2))
-        self.assertEqual((lo, hi), (config.PDF_PAGE_RETRY_ATTEMPTS_MIN, config.PDF_PAGE_RETRY_ATTEMPTS_MAX))
 
     def test_pdf_page_concurrency_bounds_match_config(self) -> None:
+        from core.surface_rate import pdf_image_bounds
+
+        # 未解锁时夹到安全上限；解锁后可使用更大的正整数。
+        self.assertEqual(
+            pdf_image_bounds()["page_generation_concurrency"],
+            (1, config.PDF_PAGE_CONCURRENCY_SAFETY_CAP),
+        )
+        self.assertEqual(pdf_image_bounds(unlocked=True)["page_generation_concurrency"], (1, 2**31 - 1))
+
+    def test_rate_fields_take_min_max_from_the_overview(self) -> None:
         source = _read_settings_ts()
-        self.assertIn('concurrencyInput.min = "1";', source)
-        self.assertIn(
-            f'if (!throughputUnlocked) concurrencyInput.max = "{config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}";',
-            source,
-        )
-        # 未解锁时继续夹到安全上限；解锁后可使用更大的正整数。
-        self.assertIn(
-            f"parsed = Math.min(throughputUnlocked ? 2**31 - 1 : {config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}, Math.max(1, parsed));",
-            source,
-        )
+        match = re.search(r"function rateGrid\(.*?\n\}", source, re.S)
+        self.assertIsNotNone(match, "找不到 rateGrid")
+        body = match.group(0)
+        self.assertIn("surfaceOverview(overviewKey)", body)
+        self.assertIn("{ min, max, integer: true, hint: def.hint }", body)
 
     def test_numberfield_clamps_before_committing(self) -> None:
         """光对齐 min/max 属性不够——HTML 的 min/max 拦不住手动输入的越界值，
@@ -281,10 +298,8 @@ class DomainPromptDraftNotWipedOnSaveErrorTests(unittest.TestCase):
         """数值框保存失败后仍要被拉回磁盘值。"""
         source = _read_settings_ts()
         for path in (
-            "word_batch.max_chars_per_batch",
-            "word_batch.strict_retry_attempts",
-            "pdf.page_retry_attempts",
-            "pdf.page_generation_concurrency",
+            "tm.term_retry_attempts",
+            "tm.term_batch_budget",
         ):
             call_match = re.search(
                 r'reRenderAfter\([^;]*?saveSettingPath\("' + re.escape(path) + r'"[^;]*?\);',
@@ -295,6 +310,11 @@ class DomainPromptDraftNotWipedOnSaveErrorTests(unittest.TestCase):
                 "rerenderOnError: true", call_match.group(0),
                 f"{path} 的保存调用必须显式传 rerenderOnError: true，否则失败后表单值和磁盘不一致（中-14）",
             )
+        # 速率与重试的数值框（含 PDF 整页图像三项）都走 rateGrid 里这一处保存。
+        self.assertIn(
+            "reRenderAfter(() => saveRateValue(pathOf(def.key), next), { rerenderOnError: true })",
+            source,
+        )
 
     def test_domain_prompt_save_does_not_opt_into_rerender_on_error(self) -> None:
         """回归钉子：领域 Prompt 的「保存」「恢复内置默认」两个按钮绝不能传

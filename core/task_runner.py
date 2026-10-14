@@ -81,7 +81,7 @@ from core.engine_dispatcher import (
     translate_texts_with_sources,
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
-from core.model_throughput import get_model_throughput
+from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
 from core.residual_classifier import (
     check_heading_consistency,
     is_section_heading_source,
@@ -329,6 +329,8 @@ class TaskRunner(BaseTaskRunner):
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
+        # 本次任务的速率与重试；_run 里按任务实际用的连接重新取一次。
+        self._rate = resolve_surface_rate(settings, "excel")
         self._queue: queue.Queue = queue.Queue()
         self._file_progress = FileProgressReporter(
             self._queue, self._files, self._source_root
@@ -423,17 +425,24 @@ class TaskRunner(BaseTaskRunner):
                 self._file_progress.emit_many("unstarted", "not_started")
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
+            # 速率与重试按「翻译参数 → Excel」（core/surface_rate.py），默认值按文档翻译模型
+            # 是云端还是本地分档。
+            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            self._rate = resolve_surface_rate(
+                settings, "excel", mode=getattr(model_config, "mode", None)
+            )
+            engine_settings = engine_settings_for_rate(settings, self._rate)
             # Only take the failover path when there is somewhere to fail over
             # to; a single-connection setup keeps exactly its previous engine.
             engine        = (
                 build_role_engine(
-                    settings,
+                    engine_settings,
                     ROLE_TRANSLATION,
                     connection_ids=self._connection_chain,
                     on_switch=self._report_connection_switch,
                 )
                 if len(self._connection_chain) > 1
-                else build_engine(settings)
+                else build_engine(engine_settings)
             )
             system_prompt = get_system_prompt(
                 settings,
@@ -441,10 +450,8 @@ class TaskRunner(BaseTaskRunner):
                 source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
                 page_key="excel",
             )
-            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
-            throughput = get_model_throughput(settings, model_config)
-            batch_size = throughput.batch_size or 1
-            concurrency = throughput.concurrency
+            batch_size = self._rate.batch_items
+            concurrency = self._rate.concurrency
             # 调度器提到阶段 1 之前建：补译复核在阶段 1 就要发请求，它和阶段 2 的
             # 正文翻译必须共用同一个限流器，否则两边各按满并发跑会撞上接口上限。
             shared_scheduler = (
@@ -1676,7 +1683,9 @@ class TaskRunner(BaseTaskRunner):
             api_scheduler=shared_scheduler,
             stats=stats,
             throughput_unlocked=self._settings.engine.concurrency_unlocked,
-            transient_retries=self._settings.request_retry.excel,
+            transient_retries=self._rate.request_retry,
+            max_chars=self._rate.batch_chars,
+            item_retries=self._rate.item_retry,
         )
         errors = {item["source"]: item.get("error", "") for item in stats.failed_items}
         for source in stats.untranslated_sources:
@@ -1840,7 +1849,9 @@ class TaskRunner(BaseTaskRunner):
                         api_scheduler=shared_scheduler,
                         stats=batch_stats,
                         throughput_unlocked=self._settings.engine.concurrency_unlocked,
-                        transient_retries=self._settings.request_retry.excel,
+                        transient_retries=self._rate.request_retry,
+                        max_chars=self._rate.batch_chars,
+                        item_retries=self._rate.item_retry,
                         request_callback=request_log.on_event,
                     )
                     normal_api_language_results.update(language_results)
@@ -1862,7 +1873,9 @@ class TaskRunner(BaseTaskRunner):
                     api_scheduler=shared_scheduler,
                     stats=batch_stats,
                     throughput_unlocked=self._settings.engine.concurrency_unlocked,
-                    transient_retries=self._settings.request_retry.excel,
+                    transient_retries=self._rate.request_retry,
+                    max_chars=self._rate.batch_chars,
+                    item_retries=self._rate.item_retry,
                     request_callback=request_log.on_event,
                 )
 
@@ -1894,8 +1907,8 @@ class TaskRunner(BaseTaskRunner):
                     source_lang=source_lang,
                     concurrency=concurrency,
                     max_items_per_batch=batch_size,
-                    max_chars_per_batch=DEFAULT_MIXED_MAX_BATCH_CHARS,
-                    retry_attempts=3,
+                    max_chars_per_batch=max(DEFAULT_MIXED_MAX_BATCH_CHARS, self._rate.batch_chars),
+                    retry_attempts=self._rate.item_retry,
                     progress_callback=mixed_progress_cb,
                     error_callback=api_error_cb,
                     should_stop=self.stop_requested,

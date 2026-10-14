@@ -31,6 +31,7 @@ from api.routes import (
     pdf2docx as pdf2docx_routes,
     pdf_routes as pdf_route_routes,
     settings as settings_routes,
+    surfaces as surfaces_routes,
     domains as domains_routes,
     keys as keys_routes,
     tasks as tasks_routes,
@@ -242,6 +243,7 @@ def create_app(
     domains_routes.register(app)
     keys_routes.register(app)
     tasks_routes.register(app)
+    surfaces_routes.register(app)
     tm_routes.register(app)
     models_routes.register(app)
     config_transfer_routes.register(app)

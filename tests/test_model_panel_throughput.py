@@ -129,19 +129,19 @@ class ModelPanelThroughputTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["concurrency"], 4)
-        self.assertEqual(response.json()["concurrency_bounds"], [1, 20])
+        self.assertEqual(response.json()["concurrency_bounds"], [1, 50])
 
         role = self._role()
         self.assertEqual(role["connections"][1]["throughput"]["concurrency"], 4)
         # The primary keeps the recommendation; it was never touched.
-        self.assertEqual(role["connections"][0]["throughput"]["concurrency"], 20)
+        self.assertEqual(role["connections"][0]["throughput"]["concurrency"], 30)
         self.assertEqual(
             self.client.get(f"/api/models/throughput/translation?connection_id={added}").json()["concurrency"],
             4,
         )
 
         reset = self.client.delete(f"/api/models/throughput/translation?connection_id={added}")
-        self.assertEqual(reset.json()["concurrency"], 20)
+        self.assertEqual(reset.json()["concurrency"], 30)
 
     def test_a_follower_keeps_its_tuning_when_the_source_changes_model(self) -> None:
         # The image-review role follows translation: its endpoint is the
