@@ -936,6 +936,11 @@ class TranslationTaskManager:
         with self._lock:
             return sum(1 for task in self._tasks.values() if not task.terminal or task.rerun_active)
 
+    def active_surfaces(self) -> frozenset[str]:
+        """Keys of the types with a task still running or paused (an extension cannot be replaced then)."""
+        with self._lock:
+            return frozenset(task.surface for task in self._tasks.values() if not task.terminal or task.rerun_active)
+
     def clear_history(self) -> int:
         """Clear persisted task summaries only after the caller enforces its guard."""
         try:

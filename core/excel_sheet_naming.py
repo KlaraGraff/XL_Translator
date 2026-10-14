@@ -38,10 +38,47 @@ class UnsafeSheetRename(ValueError):
     """A sheet reference cannot be changed with confidence."""
 
 
+_MAX_TITLE = 31  # Excel 工作表名长度上限
+# 截短后挂在名称末尾读不通的虚词（法、英、西、葡、意、德）。只在按词截断时去掉，
+# 名称本身就以它们结尾（极少见）时不动。
+_DANGLING_WORDS = frozenset(
+    "à au aux d de del della des di du e en et for in la le les of on par pour sur the to "
+    "und y da do dos das der die von zu".split()
+)
+
+
+def _fit_title(value: str, limit: int = _MAX_TITLE) -> str:
+    """把名称收进 ``limit`` 个字符；有空格分词的语言在词边界截断。
+
+    模型给的法文名常常比 31 个字符多一两个字母，硬截会截在单词中间
+    （「Plomberie et évacuation des eau」）。按词截断宁可少一个词，也不留半个词；
+    中文这类不用空格分词的名称没有词边界可找，仍按字符截。
+    """
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    head = value[:limit]
+    if value[limit].isspace() or not head[-1].isalnum():
+        cut = head
+    else:
+        space = head.rfind(" ")
+        # 一个词都留不下（整段没有空格，或第一个词就超长）时只能硬截。
+        cut = head[:space] if space > 0 else head
+    if " " in cut:
+        # 括号截了一半（「Bill of Quantities (Civil」）就整个括号都不要。
+        if cut.count("(") > cut.count(")"):
+            cut = cut[: cut.rfind("(")]
+        words = cut.split()
+        while len(words) > 1 and words[-1].casefold() in _DANGLING_WORDS:
+            words.pop()
+        cut = " ".join(words)
+    return cut.rstrip(" ,;-_&/.(") or head
+
+
 def _title(value: str) -> str:
     value = value.strip().strip("'")
     value = _INVALID_TITLE.sub("_", value).strip()
-    return value[:31]
+    return _fit_title(value)
 
 
 def _plans(names: list[str], requested: dict[str, str]) -> dict[str, str]:
@@ -61,7 +98,7 @@ def _plans(names: list[str], requested: dict[str, str]) -> dict[str, str]:
         suffix = 2
         while candidate.casefold() in fixed:
             ending = f"_{suffix}"
-            candidate = base[: 31 - len(ending)] + ending
+            candidate = _fit_title(base, _MAX_TITLE - len(ending)) + ending
             suffix += 1
         fixed.add(candidate.casefold())
         if candidate != old:

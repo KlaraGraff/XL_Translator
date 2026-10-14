@@ -59,11 +59,27 @@ class RepairOutcome:
     reject_reasons: tuple[str, ...] = ()
 
 
+def _with_document_note(system: str, document_note: str) -> str:
+    """把「自动识别场景」写的文档说明接在修补请求末尾（固定要求在前，缓存照样命中）。
+
+    补译只给模型一句源文和一个残留片段，离开了上下文：「FM甲1021」里的「甲」
+    在说明里写明是防火门等级，修补时看不到这句话，模型就按字面补成「Class」。
+    """
+    note = str(document_note or "").strip()
+    if not note:
+        return system
+    return (
+        f"{system}\n\n本文档说明（翻译前通读全文后概括，据此理解术语、单字和缩写的含义）：\n{note}"
+    )
+
+
 def build_surgical_repair_messages(
     source_text: str,
     target_text: str,
     span_texts,
     target_lang: str,
+    *,
+    document_note: str = "",
 ) -> tuple[str, str]:
     """构造外科修补请求。返回 (system, user)，回复协议为 JSON {"repaired": ...}。"""
     lang_name = get_target_lang_name(target_lang)
@@ -77,6 +93,7 @@ def build_surgical_repair_messages(
         "3. 修补后的译文不得再含有中文（数量单位「万/亿」除外）；\n"
         '4. 只返回 JSON：{"repaired": "<完整的修补后译文>"}，不要任何解释。'
     )
+    system = _with_document_note(system, document_note)
     user = json.dumps(
         {
             "source": str(source_text or ""),
@@ -104,6 +121,7 @@ def build_feedback_retry_messages(
     target_lang: str,
     *,
     base_prompt: str = "",
+    document_note: str = "",
 ) -> tuple[str, str]:
     """构造带反馈的整句重译请求（Excel 传输用）。回复协议同外科修补。"""
     lang_name = get_target_lang_name(target_lang)
@@ -116,7 +134,7 @@ def build_feedback_retry_messages(
         f"重要反馈：{feedback}\n"
         '只返回 JSON：{"repaired": "<译文>"}，不要任何解释。'
     )
-    system = "\n\n".join(parts)
+    system = _with_document_note("\n\n".join(parts), document_note)
     return system, str(source_text or "")
 
 
@@ -172,6 +190,7 @@ def repair_unit(
     target_lang: str,
     surgical_send=None,
     retranslate_send=None,
+    document_note: str = "",
 ) -> RepairOutcome:
     """
     对一个残留单元跑完整修复阶梯。
@@ -179,6 +198,7 @@ def repair_unit(
     surgical_send(system, user) -> 原始回复 | None
     retranslate_send(system, user) -> 原始回复 | None
     回调返回 None 表示传输失败（引擎不支持 chat / 请求异常），按拒收处理。
+    document_note 是「自动识别场景」写的文档说明，两种请求都带上（没有就不带）。
     """
     target = str(target_text or "")
     spans = classify_residual_spans(target, target_lang=target_lang)
@@ -206,7 +226,7 @@ def repair_unit(
 
     if categories == {CATEGORY_TERM_FRAGMENT} and surgical_send is not None:
         system, user = build_surgical_repair_messages(
-            source_text, target, span_texts, target_lang
+            source_text, target, span_texts, target_lang, document_note=document_note
         )
         raw = surgical_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
@@ -233,7 +253,7 @@ def repair_unit(
 
     if retranslate_send is not None:
         system, user = build_feedback_retry_messages(
-            source_text, span_texts, target_lang
+            source_text, span_texts, target_lang, document_note=document_note
         )
         raw = retranslate_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
@@ -292,6 +312,7 @@ def run_repair_ladder(
     target_lang: str,
     send,
     convention: str = "",
+    document_note: str = "",
     max_units: int = DEFAULT_REPAIR_MAX_UNITS,
     breaker_threshold: int = DEFAULT_REPAIR_BREAKER_THRESHOLD,
     should_stop=None,
@@ -317,6 +338,8 @@ def run_repair_ladder(
     convention 为主流程投出的文档级序号惯例：验收通过的重译稿如果把
     「（三）」写成了另一族序号（如「3.」而全篇是「(III)」），在这里按
     惯例做确定性对齐——数值对不上或惯例未知则原样保留，不猜。
+
+    document_note 为「自动识别场景」写的文档说明，每个修补请求都带上。
     """
     result = RepairLadderResult()
     queue = list(units)
@@ -364,6 +387,7 @@ def run_repair_ladder(
             target_lang=target_lang,
             surgical_send=guarded_send,
             retranslate_send=guarded_send,
+            document_note=document_note,
         )
         with lock:
             done += 1

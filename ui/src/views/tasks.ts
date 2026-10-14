@@ -662,7 +662,28 @@ function reviewRows(task: TaskStatus): ReviewRow[] {
     existing.action = mergeSentences(existing.action, row.action);
     existing.needsReview = existing.needsReview || row.needsReview;
   }
+  // 没给 severity、也没有 Excel 枚举的条目（CAD 那一路的旧任务就是这样）只能靠正则猜，
+  // 而「有 3 处译文缩到最小比例仍会压到旁边的文字」里没有一个词能被猜中——任务徽章于是
+  // 写着「已完成」，同一页的文件状态却是「已生成 · 需复核」。文件状态是后端明说的结论，
+  // 这个文件名下来路不明的条目一律跟着它算待办。
+  const reviewFiles = needsReviewFileNames(result);
+  for (const row of merged.values()) {
+    if (!row.severity && !row.actionCode && row.file && reviewFiles.has(row.file)) row.needsReview = true;
+  }
   return [...merged.values()].sort((a, b) => Number(b.needsReview) - Number(a.needsReview));
+}
+
+/** 文件状态为 needs_review 的文件名（名称与相对路径都收，复核项的 file 键两种写法都有）。 */
+function needsReviewFileNames(result: JsonObject): Set<string> {
+  const names = new Set<string>();
+  for (const entry of resultEntries(result, ["files", "file_results", "file_records"])) {
+    if (firstText(entry, ["status", "state", "terminal_state"]) !== "needs_review") continue;
+    for (const key of ["name", "relative_path", "file"]) {
+      const value = text(entry[key]);
+      if (value) names.add(value);
+    }
+  }
+  return names;
 }
 
 /** 合并同一位置的两句判定；重复、空值和占位「—」都不参与。 */

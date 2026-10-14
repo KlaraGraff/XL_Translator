@@ -253,7 +253,7 @@
   "译文对照表": {"en": "Translation table", "fr": "Table des traductions"},
   "读取译文对照表失败。": {"en": "Could not load the translation table.", "fr": "Impossible de charger la table des traductions."},
   "这次任务没有译好的图纸。": {"en": "This task has no translated drawings.", "fr": "Cette tâche n'a aucun plan traduit."},
-  "这段译文缩到最小比例仍会压到旁边的文字，可以改得更短。": {"en": "Even at the smallest scale this translation still overlaps nearby text. Try a shorter wording.", "fr": "Même à l'échelle minimale, cette traduction chevauche le texte voisin. Essayez une formulation plus courte."},
+  "这段译文缩到最小比例仍会压到旁边的文字或伸出图框，可以改得更短。": {"en": "Even at the smallest scale this translation still overlaps nearby text or runs past the frame. Try a shorter wording.", "fr": "Même à l'échelle minimale, cette traduction chevauche le texte voisin ou dépasse du cadre. Essayez une formulation plus courte."},
   "重新写回失败。": {"en": "Rewrite failed.", "fr": "Échec de la réécriture."},
   "已翻译": {"en": "Translated", "fr": "Traduit"},
   "搜索任务": {"en": "Search tasks", "fr": "Rechercher une tâche"},

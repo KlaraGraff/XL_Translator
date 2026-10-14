@@ -1079,6 +1079,7 @@ class TaskRunner(BaseTaskRunner):
                 excel_review_marks=excel_review_marks,
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
                 repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
+                document_note=document_profile,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -2908,6 +2909,7 @@ class TaskRunner(BaseTaskRunner):
         phase_total: int,
         excel_review_marks: dict[str, str],
         repair_concurrency: int = 1,
+        document_note: str = "",
     ) -> ResidualPassResult:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；改得了的直接改词典，改不了的标记复核。"""
         residual_result = run_residual_pass(
@@ -2967,6 +2969,7 @@ class TaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 send=engine.chat,
                 convention=residual_result.convention,
+                document_note=document_note,
                 max_units=_RESIDUAL_REPAIR_MAX_UNITS,
                 breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
                 should_stop=self._stop_event.is_set,
