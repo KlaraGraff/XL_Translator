@@ -36,6 +36,12 @@ export function registerView(id: ViewId, view: View): void {
   registry.set(id, view);
 }
 
+/** 移除一个运行时注册的视图（卸载扩展之后）；正显示着的不动，切走后才不再能打开。 */
+export function unregisterView(id: ViewId): void {
+  if (current?.id === id) return;
+  registry.delete(id);
+}
+
 /** 这个视图注册过没有。运行时注册的翻译类型在描述符到达之前、或已被移除时没有视图。 */
 export function hasView(id: string): id is ViewId {
   return registry.has(id as ViewId);
