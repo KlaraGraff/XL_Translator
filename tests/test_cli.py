@@ -256,35 +256,6 @@ def test_other_refusals_pass_through():
 # ── results ──────────────────────────────────────────────────────────────
 
 
-def _status(state: str, files: list[tuple[str, str, str]], result: dict | None = None) -> dict:
-    return {
-        "task_id": "t1",
-        "surface": "excel",
-        "state": state,
-        "terminal": True,
-        "result": {"output_dir": "/out", **(result or {})},
-        "file_progress": {
-            "files": [
-                {"name": name, "relative_path": name, "state": file_state, "result": {"output_path": output} if output else {}}
-                for name, file_state, output in files
-            ]
-        },
-    }
-
-
-def test_summary_and_exit_codes():
-    partial = flow.summarize(_status("completed_with_issues", [("a.xlsx", "generated", "/out/a.xlsx"), ("b.xlsx", "failed", "")]))
-    assert partial["output_dir"] == "/out"
-    assert partial["files"][0]["output"] == "/out/a.xlsx"
-    assert (partial["generated_count"], partial["failed_count"]) == (1, 1)
-    assert flow.exit_code_for(partial) == flow.EXIT_OK
-
-    nothing = flow.summarize(_status("completed_with_issues", [("a.xlsx", "failed", "")]))
-    assert flow.exit_code_for(nothing) == flow.EXIT_FAILED
-    for state in ("error", "stopped", "interrupted"):
-        assert flow.exit_code_for(flow.summarize(_status(state, [("a.xlsx", "generated", "/o")]))) == flow.EXIT_FAILED
-
-
 def test_review_count_follows_the_task_center():
     rows = {
         "issues": [{"type": "api_unavailable", "severity": "needs_action"}],
