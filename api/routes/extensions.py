@@ -1,6 +1,10 @@
 """Extension routes: add a format adapter from a folder or zip, list and remove installed ones.
 
-Installing always takes two calls: ``preview`` runs every check and returns
+A listed extension (``/api/extensions/registry``, see
+``core/adapter_registry.py``) installs with ``registry/install``: downloaded,
+checked against the list's SHA-256, then the same checks as a local package.
+
+Installing a local package always takes two calls: ``preview`` runs every check and returns
 what the confirmation dialog shows; ``install`` with ``confirmed: true`` (and
 the previewed ``sha256``) then installs in the background, polled through
 ``install-progress``.  See ``core/adapter_install.py`` and
@@ -16,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from api import extension_install_job as jobs
 from api.surfaces import all_surfaces
-from core import adapter_install
+from core import adapter_install, adapter_registry
 from core.adapter_install import AdapterInstallError
 
 
@@ -72,6 +76,32 @@ def register(app: FastAPI) -> None:
 
         try:
             return jobs.JOB.begin(work, label=path)
+        except AdapterInstallError as exc:
+            return _refused(exc, status_code=409, reason="extension_install_busy")
+
+    @app.get("/api/extensions/registry")
+    def extension_registry() -> dict[str, Any]:
+        """The reviewed extensions list (cached for a day; ``stale`` when only the cache could be read)."""
+        return adapter_registry.fetch_index()
+
+    @app.post("/api/extensions/registry/refresh")
+    def refresh_extension_registry() -> dict[str, Any]:
+        return adapter_registry.fetch_index(force=True)
+
+    @app.post("/api/extensions/registry/install", response_model=None)
+    def install_registry_extension(payload: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        """Download, check and install one listed extension in the background; poll install-progress."""
+        entry_id = str(payload.get("id") or "").strip().lower()
+        if payload.get("confirmed") is not True:
+            return _refused(AdapterInstallError("安装扩展前需要确认来源可信"), reason="extension_unconfirmed")
+
+        def work(*, progress, cancel) -> dict[str, Any]:
+            return jobs.install_from_registry(
+                entry_id, active_surfaces=active_surfaces, progress=progress, cancel=cancel
+            )
+
+        try:
+            return jobs.JOB.begin(work, label=entry_id)
         except AdapterInstallError as exc:
             return _refused(exc, status_code=409, reason="extension_install_busy")
 

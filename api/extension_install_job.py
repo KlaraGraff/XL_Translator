@@ -5,13 +5,17 @@
 - 注册 / 注销页面：装好后立即出现在 ``GET /api/surfaces``（侧栏、任务中心、命令行、MCP 都认），
   卸载后立即消失；应用启动时 ``register_installed_adapters()`` 把已装的逐个注册，坏的跳过并记日志。
 - 有任务的类型不能换：同一类型还有任务在跑或暂停时，拒绝更新和卸载（旧目录会被删掉）。
+- 新装的显示在侧栏：扩展类型默认不显示（``settings.translation_types``），用户主动装的除外；
+  用户在「扩展」页拨过它的开关时不动，更新也不动。
 
 安装走与插件页相同的后台任务样式（``InstallJob``：进度、取消、结果轮询），同一时间只装一个。
 """
 
 from __future__ import annotations
 
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,10 +25,12 @@ from loguru import logger
 from api.component_install_job import InstallJob
 from api.surfaces import all_surfaces, register_surface, unregister_surface
 from api.surfaces.adapter import AdapterSurface
-from core import adapter_install
+from core import adapter_install, adapter_registry
 from core.adapter_install import AdapterInstallError
+from core.adapter_registry import RegistryError
 from core.adapter_subprocess_host import SubprocessAdapterHost
 from core.format_adapter import AdapterHost, AdapterManifest
+from settings import update_settings_atomically
 
 #: ``AdapterSurface.origin`` of a type installed by the user.
 INSTALLED_ORIGIN = "installed"
@@ -107,6 +113,21 @@ def _reactivate(adapter_id: str) -> None:
             return
 
 
+def _show_in_sidebar(key: str) -> None:
+    """新装的扩展显示在侧栏；用户拨过这个类型的开关时不动。设置写不进去不影响安装。"""
+
+    def update(current: Any) -> bool:
+        if key in current.translation_types.visible:
+            return False
+        current.translation_types.visible[key] = True
+        return True
+
+    try:
+        update_settings_atomically(update)
+    except Exception as exc:  # noqa: BLE001 - the extension is installed either way
+        logger.warning(f"[扩展] 无法把 {key} 设为显示在侧栏：{exc}")
+
+
 def _busy_check(active_surfaces: Callable[[], frozenset[str]]) -> Callable[[AdapterManifest], None]:
     """换上新目录之前：先注销旧的（不再接新任务），再看还有没有任务在用它。"""
 
@@ -136,6 +157,7 @@ def install_and_activate(
     if progress:
         progress("install", 0, 1)
     adapter_id = ""
+    previously_installed = set(adapter_install.read_registry())
 
     def before_replace(manifest: AdapterManifest) -> None:
         nonlocal adapter_id
@@ -163,9 +185,58 @@ def install_and_activate(
                 raise AdapterInstallError(item.problem or "扩展已复制，但无法读取")
             activate(item.directory, item.manifest)
             break
+    if record["id"] not in previously_installed:
+        _show_in_sidebar(f"ext:{record['id']}")
     if progress:
         progress("done", 1, 1)
     return record
+
+
+def install_from_registry(
+    entry_id: str,
+    *,
+    active_surfaces: Callable[[], frozenset[str]],
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> dict[str, Any]:
+    """从扩展列表下载（核对大小和 SHA-256）、做与本地添加相同的检查、安装并注册。
+
+    确认在前端（与本地添加同一个弹窗，内容取自列表条目），这里不再询问。
+    """
+    try:
+        entry = adapter_registry.find_entry(entry_id)
+    except RegistryError as exc:
+        raise AdapterInstallError(str(exc)) from exc
+    reason = entry.incompatibility()
+    if reason:
+        raise AdapterInstallError(reason)
+    target = adapter_registry.download_dir() / uuid.uuid4().hex[:8]
+
+    def on_bytes(done: int, total: int) -> None:
+        if progress:
+            progress("download", done, total)
+
+    try:
+        try:
+            archive = adapter_registry.download_entry(entry, target, progress=on_bytes, cancel=cancel)
+        except RegistryError as exc:
+            raise AdapterInstallError(str(exc)) from exc
+        if progress:
+            progress("verify", 0, 1)
+        summary = adapter_install.preview(archive, reserved_ids=reserved_ids())
+        if summary["id"] != entry.id or summary["version"] != entry.version:
+            raise AdapterInstallError("下载的扩展与列表中的信息不一致，未安装")
+        return install_and_activate(
+            archive,
+            active_surfaces=active_surfaces,
+            expected_sha256=entry.sha256,
+            origin=adapter_install.ORIGIN_REGISTRY,
+            source_label=f"{entry.id}@{entry.version}",
+            progress=progress,
+            cancel=cancel,
+        )
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def uninstall_and_deactivate(adapter_id: str, *, active_surfaces: Callable[[], frozenset[str]]) -> dict[str, Any]:
@@ -226,6 +297,7 @@ __all__ = [
     "activate",
     "deactivate",
     "install_and_activate",
+    "install_from_registry",
     "make_host",
     "register_installed_adapters",
     "reserved_ids",
