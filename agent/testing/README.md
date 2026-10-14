@@ -10,6 +10,10 @@
   - 自动建立 `.runtime/self-tests/<task-slug>/artifacts`。
   - 自动把项目根目录注入 `PYTHONPATH`，让 `.runtime` 下的测试脚本也能直接导入项目模块。
 
+- `cad_layout_check.py`
+  - CAD 译图版面体检：对比原图和译图 DXF，报出译图里新出现的压字、穿过格线（表格、图签、图框、墙），可选 `--png` 画示意图（装了 Hershey-Fonts 时按 simplex 真实笔画画字）。
+  - 云端没有 AutoCAD，改了 `core/cad_layout.py` 或 CAD 写回之后，用回放跑出的译图过一遍：`./.venv/bin/python3 agent/testing/cad_layout_check.py 原图.dxf 译图.dxf --png 预览.png`。退出码 1 表示有新问题；缩到最小比例仍放不下、已列入报告请复核的，也会在这里报出来。
+
 ## 推荐用法
 
 1. 先在 `.runtime/self-tests/<task-slug>/` 下写一次性验证脚本。
