@@ -13,12 +13,11 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from config import CORE_TRANSLATION_PROMPT
 from core import diagnostics, tm_manager
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
-from core.engine_dispatcher import activate_translation_surface
+from core.engine_dispatcher import activate_translation_surface, core_prompt_for
 from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import (
     PdfPageActionError,
@@ -444,7 +443,7 @@ class TranslationTaskManager:
         )
         prompt_source = "|".join(
             (
-                CORE_TRANSLATION_PROMPT,
+                core_prompt_for(settings, normalized_surface, spec.default_prompt),
                 str(surface_setting(settings, normalized_surface, "smart_context", "")),
                 str(surface_setting(settings, normalized_surface, "domain_preset", "") or ""),
                 str(

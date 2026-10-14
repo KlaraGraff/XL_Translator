@@ -23,6 +23,7 @@ from api.surfaces import unregister_surface
 from api.surfaces.adapter import AdapterSurface
 from api.surfaces.base import RunnerRequest
 from api.task_contracts import TaskOptions
+from config import CORE_TRANSLATION_PROMPT
 from core import tm_manager
 from core.adapter_runner import REVIEW_LIST_NAME, mask_protected, unmask_protected
 from core.format_adapter import AdapterError, InProcessAdapterHost, load_manifest
@@ -151,6 +152,24 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         return next(message for message in reversed(messages) if isinstance(message, (DoneMsg, ErrorMsg, StoppedMsg)))
 
     # ── basics ───────────────────────────────────────────────────────────
+
+    def test_core_rules_come_from_the_settings_then_the_manifest_then_the_app(self) -> None:
+        path = self._file("a.txt", "Hello\n")
+        engine = FakeEngine()
+        self._run(engine, [path])
+        assert engine.prompts[0].startswith(CORE_TRANSLATION_PROMPT)
+
+        manifest = self.manifest.model_copy(update={"prompt": "逐行翻译回声文本。"})
+        self.surface = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest))
+        engine = FakeEngine()
+        self._run(engine, [path])
+        assert engine.prompts[0].startswith("逐行翻译回声文本。")
+        assert CORE_TRANSLATION_PROMPT not in engine.prompts[0]
+
+        engine = FakeEngine()
+        self._run(engine, [path], settings=self._settings(prompt="只译英文行。"))
+        assert engine.prompts[0].startswith("只译英文行。")
+        assert "逐行翻译回声文本。" not in engine.prompts[0]
 
     def test_translates_writes_and_counts(self) -> None:
         path = self._file("a.txt", "#! keep me\nHello\n\nWorld\nHello\n")

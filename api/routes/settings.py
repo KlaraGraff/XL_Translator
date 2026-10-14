@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Response
 from loguru import logger
 
+from api.surfaces import all_surfaces
+
 from core import process_artifacts, tm_manager
 from core.surface_rate import rate_overview
 from core.language_preflight import (
@@ -213,6 +215,8 @@ def register(app: FastAPI) -> None:
         except Exception as exc:
             logger.warning(f"[设置] 保存的设置未通过校验：{exc}")
             raise HTTPException(422, "设置中包含无效的值，未保存，请刷新页面后重试。") from exc
+        if "translation_types" in payload:
+            _reject_all_types_hidden(settings)
         # 校验器会在同一 provider 已经存过「服务商记忆」时，把这次刚合并进来的
         # cloud_model/cloud_base_url 悄悄换回记忆里的旧值——这是为切换 provider
         # 时找回上次用过的模型设计的，但代价是这个通用合并端点只改
@@ -252,6 +256,15 @@ def register(app: FastAPI) -> None:
             # 上限改小要立即生效，不等下一次任务结束才清理。
             process_artifacts.prune_now()
         return settings.model_dump(mode="json")
+
+
+def _reject_all_types_hidden(settings: AppSettings) -> None:
+    """「扩展」页至少要留一种翻译类型在侧栏；界面也拦，这里防直接调接口的。"""
+    table = settings.translation_types
+    # 侧栏「翻译」组里的类型：要选文件的那些（记忆库清洗不在侧栏）。
+    keys = [surface.key for surface in all_surfaces() if surface.requires_source and surface.file_extensions]
+    if keys and not any(table.shows(key) for key in keys):
+        raise HTTPException(422, "至少保留一种翻译类型显示在侧栏。")
 
 
 def _deep_merge(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:

@@ -18,10 +18,14 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.surfaces import SURFACE_KEYS, all_surfaces, get_surface, register_surface, unregister_surface
 from api.surfaces.excel import ExcelSurface
+from core.format_adapter import BUNDLED_ADAPTERS_DIR, discover_adapters
 from api.task_contracts import TaskInputError
 from core.surface_settings import set_surface_setting
 from tests.app_data_isolation import IsolatedAppDataTestCase
 from tests.fixtures.sample_surface import SAMPLE_KEY, SampleSurface, register_sample_surface
+
+
+BUNDLED_KEYS = tuple(manifest.key for _directory, manifest in discover_adapters(BUNDLED_ADAPTERS_DIR)[0])
 
 
 def _wait(client: TestClient, task_id: str, timeout: float = 20.0) -> dict:
@@ -48,8 +52,12 @@ class RuntimeSurfaceRouteTests(IsolatedAppDataTestCase):
     def test_descriptor_lists_the_page_after_the_built_in_ones(self) -> None:
         with TestClient(create_app()) as client:
             surfaces = client.get("/api/surfaces").json()["surfaces"]
-        assert [item["key"] for item in surfaces] == [*SURFACE_KEYS, SAMPLE_KEY]
-        sample = surfaces[-1]
+        keys = [item["key"] for item in surfaces]
+        # create_app also registers the types shipped in adapters/; whether they
+        # come before or after ext:sample depends on which test made an app first.
+        assert [key for key in keys if key not in BUNDLED_KEYS] == [*SURFACE_KEYS, SAMPLE_KEY]
+        assert set(BUNDLED_KEYS) <= set(keys)
+        sample = next(item for item in surfaces if item["key"] == SAMPLE_KEY)
         assert sample["builtin"] is False
         assert sample["extensions"] == ["txt"]
         assert sample["label"]["zh"] == "示例文本"
@@ -120,13 +128,57 @@ class RuntimeSurfaceRouteTests(IsolatedAppDataTestCase):
         assert status["state"] == "done", status
         assert len(status["result"]["file_results"]) == 2
 
+    def test_prompt_settings_route_reads_and_writes_the_types_own_settings(self) -> None:
+        with TestClient(create_app()) as client:
+            saved = client.put(
+                f"/api/domains/{SAMPLE_KEY}",
+                json={"smart_context": False, "preset": "说明书", "custom_prompts": {"说明书": {"_base": "用说明书语气。"}}},
+            )
+            assert saved.status_code == 200, saved.text
+            read = client.get(f"/api/domains/{SAMPLE_KEY}").json()
+            stored = client.get("/api/settings").json()["extensions"][SAMPLE_KEY.split(":", 1)[1]]
+            # Built-in pages keep their own flat fields.
+            excel = client.get("/api/domains/excel").json()
+        assert read["smart_context"] is False and read["preset"] == "说明书"
+        assert stored["domain_preset"] == "说明书"
+        assert stored["domain_custom_prompts"] == {"说明书": {"_base": "用说明书语气。"}}
+        assert excel["preset"] == "无"
+
+    def test_the_sidebar_keeps_at_least_one_translation_type(self) -> None:
+        with TestClient(create_app()) as client:
+            surfaces = client.get("/api/surfaces").json()["surfaces"]
+            keys = [
+                item["key"] for item in surfaces
+                if item["capabilities"].get("requires_source", True) and item["extensions"]
+            ]
+            assert "excel" in keys and SAMPLE_KEY in keys and "tm_clean" not in keys
+            # Extension types are off by default, so switching the four built-ins off leaves nothing.
+            refused = client.put(
+                "/api/settings", json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False}}}
+            )
+            shown = client.put("/api/settings", json={"translation_types": {"order": [SAMPLE_KEY], "visible": {SAMPLE_KEY: True}}})
+            kept = client.put(
+                "/api/settings", json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False}}}
+            )
+            stored = client.get("/api/settings").json()["translation_types"]
+        assert refused.status_code == 422
+        assert "至少保留一种翻译类型" in refused.json()["detail"]
+        assert shown.status_code == 200, shown.text
+        assert kept.status_code == 200, kept.text
+        assert stored == {
+            "order": [SAMPLE_KEY],
+            "visible": {SAMPLE_KEY: True, "excel": False, "word": False, "pdf": False, "cad": False},
+        }
+
     def test_an_unregistered_page_is_refused_like_an_unknown_one(self) -> None:
         unregister_surface(SAMPLE_KEY)
         with TestClient(create_app()) as client:
             scanned = client.post("/api/sources/scan", json={"surface": SAMPLE_KEY, "path": str(self.source)})
             started = client.post("/api/tasks", json={"surface": SAMPLE_KEY, "source_path": str(self.source)})
             listed = client.get("/api/surfaces").json()["surfaces"]
+            prompts = client.get(f"/api/domains/{SAMPLE_KEY}")
         assert scanned.status_code == 422
+        assert prompts.status_code == 404
         assert started.status_code == 422
         assert SAMPLE_KEY not in [item["key"] for item in listed]
 
@@ -156,7 +208,7 @@ def test_registration_never_replaces_or_imitates_a_built_in_page():
         unregister_surface(SAMPLE_KEY)
     with pytest.raises(TaskInputError):
         get_surface(SAMPLE_KEY)
-    assert tuple(surface.key for surface in all_surfaces()) == SURFACE_KEYS
+    assert tuple(surface.key for surface in all_surfaces() if surface.key not in BUNDLED_KEYS) == SURFACE_KEYS
 
 
 def test_request_surface_values_are_matched_exactly():

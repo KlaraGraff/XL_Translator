@@ -114,9 +114,21 @@ def test_the_echo_manifest_loads():
     assert [option.key for option in manifest.options] == ["upper"]
 
 
+def test_a_manifest_may_bring_its_own_core_rules():
+    assert parse_manifest(_manifest()).prompt == ""
+    manifest = parse_manifest(_manifest(prompt="  逐行翻译。\n保留行首的 #!。  "))
+    assert manifest.prompt == "逐行翻译。\n保留行首的 #!。"
+    descriptor = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest)).describe()
+    assert descriptor["prompt"] == manifest.prompt
+    # Without one the descriptor says nothing and the page shows the app's rules.
+    plain = parse_manifest(_manifest())
+    assert "prompt" not in AdapterSurface(plain, InProcessAdapterHost(ECHO_DIR, plain)).describe()
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
+        ({"prompt": "长" * 4001}, "prompt"),
         ({"extensions": None}, "extensions"),
         ({"extensions": []}, "extensions"),
         ({"label": {"zh": "回声", "en": "Echo"}}, "label"),
@@ -218,6 +230,19 @@ def test_the_host_accepts_plain_dicts_and_counts_without_scan(tmp_path):
     assert units[0] == TextUnit(id="a", text="one", protected=["one"])
     assert host.scan(Path("anything")).unit_count == 1
     assert host.write(Path("x"), [], "bilingual", Path("/tmp/o"), {}).path == "/tmp/o"
+
+
+def test_loading_an_adapter_never_writes_a_bytecode_cache(tmp_path):
+    # Bundled adapters live inside the signed app; a __pycache__ there would change it.
+    host = _write_adapter(
+        tmp_path / "probe",
+        "from dataclasses import dataclass\n"
+        "@dataclass\nclass Box:\n    text: str\n"
+        "def extract(path):\n    return [{'id': 'a', 'text': Box('one').text}]\n"
+        "def write(path, units, mode, out_path, options):\n    return None\n",
+    )
+    assert host.extract(Path("anything"))[0].text == "one"
+    assert sorted(item.name for item in (tmp_path / "probe").iterdir()) == ["adapter.json", "adapter.py"]
 
 
 @pytest.mark.parametrize(

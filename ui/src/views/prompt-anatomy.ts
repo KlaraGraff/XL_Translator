@@ -39,7 +39,8 @@ export interface PromptAnatomy {
 }
 
 export interface DocAnatomyInput {
-  surface: "excel" | "word" | "cad";
+  /** ext：运行时注册的类型，与 Excel 一样带记忆库词条。 */
+  surface: "excel" | "word" | "cad" | "ext";
   corePrompt: string;
   /** 当前选用的补充要求名称和正文；未选用时为空。 */
   extraName: string;

@@ -741,7 +741,7 @@ class CadTaskRunner(BaseTaskRunner):
                 if stats.residual_foreign_text_count:
                     issues.append({"file": source.name, "severity": "needs_review", "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
                 if stats.layout_unresolved:
-                    issues.append({"file": source.name, "severity": "needs_review", "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字或伸出图框"})
                 if stats.unsupported_entities or stats.unknown_entity_count:
                     issues.append({"file": source.name, "severity": "needs_review", "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)

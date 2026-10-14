@@ -12,7 +12,7 @@ from core.model_roles import (
 )
 from core.engine_dispatcher import build_role_engine
 from core.language_registry import get_target_lang_display
-from core.surface_settings import set_surface_setting, surface_setting
+from core.surface_settings import is_extension_key, set_surface_setting, surface_setting
 from config import (
     CORE_TRANSLATION_PROMPT,
     EXTRA_PROMPT_HEADER,
@@ -27,6 +27,7 @@ from api.schemas import (
     DomainSettingsPayload,
     DomainPromptOptimizePayload,
 )
+from api.surfaces import all_surfaces
 
 # 「整理」一条还没保存的新补充要求时，前端用这个名字占位。
 _UNSAVED_PROMPT_MARKER = "自定义提示词"
@@ -34,9 +35,12 @@ _UNSAVED_PROMPT_MARKER = "自定义提示词"
 
 def _surface_or_404(surface: str) -> str:
     normalized = str(surface or "").strip().lower()
-    if normalized not in {"excel", "word", "cad"}:
-        raise HTTPException(404, "找不到此翻译页面，请刷新后重试。")
-    return normalized
+    if normalized in {"excel", "word", "cad"}:
+        return normalized
+    # 运行时注册的类型（ext:<id>）只认已注册的：设置写在 extensions[<id>]，不能凭空建一份。
+    if is_extension_key(normalized) and any(item.key == normalized for item in all_surfaces()):
+        return normalized
+    raise HTTPException(404, "找不到此翻译页面，请刷新后重试。")
 
 
 def register(app: FastAPI) -> None:

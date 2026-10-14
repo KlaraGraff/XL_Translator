@@ -13,6 +13,10 @@
 系数取自真实图纸的实测）。估算宁可偏宽：多缩一点只是字窄一些，少缩了就还是叠在
 一起。
 
+图框也是边界：「说明」一类贴着图框右边摆的文字旁边往往没有别的文字，译文照样会
+从图框里伸出去。原文落在一个闭合矩形（图框内框、标题栏格子、表格外框，含插入的
+图块里画的）里时，译文同样不越过这个矩形的边。
+
 缩多少由用户设置决定（见 :class:`FitSettings`）：放不下时先缩到「默认比例」，同一张
 图里缩过的字大小一致；还放不下就每次再缩 0.1，直到放下或到「最小比例」。到了最小
 比例仍放不下的停在最小比例，并记进报告请人复核。
@@ -48,6 +52,10 @@ _PAD_EM = 0.3
 
 _SINGLE_LINE_TYPES = frozenset({"TEXT", "ATTRIB"})
 _NEIGHBOR_TYPES = frozenset({"TEXT", "ATTRIB", "MTEXT"})
+# 一个容器里最多认这么多个框（成千上万次插入同一个带框的图块时不至于拖慢）。
+_MAX_FRAMES = 20000
+# POLYLINE 的 70 组码：1 闭合；8/16/64 是三维多段线、网格，不是平面上的框。
+_POLYLINE_NOT_FLAT = 8 | 16 | 64
 # AutoCAD 的 %%c（直径）%%d（度）%%p（正负）各显示成一个字符，%%u/%%o 只是下划线/上划线开关。
 _PERCENT_SYMBOL_RE = re.compile(r"%%[cdpCDP]")
 _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
@@ -281,11 +289,177 @@ def _collect_entities(
     return entities
 
 
+def _to_local(x: float, y: float, rotation: float) -> tuple[float, float]:
+    """A point in a frame rotated by ``rotation`` degrees (that text's baseline runs along +x)."""
+    angle = math.radians(rotation)
+    cos, sin = math.cos(angle), math.sin(angle)
+    return x * cos + y * sin, -x * sin + y * cos
+
+
 def _local(entity: _TextEntity) -> tuple[float, float]:
     """Anchor in a frame rotated so the entity's baseline runs along +x."""
-    angle = math.radians(entity.rotation)
-    cos, sin = math.cos(angle), math.sin(angle)
-    return entity.anchor_x * cos + entity.anchor_y * sin, -entity.anchor_x * sin + entity.anchor_y * cos
+    return _to_local(entity.anchor_x, entity.anchor_y, entity.rotation)
+
+
+_Corners = tuple[tuple[float, float], ...]
+
+
+def _rectangle(points: list[tuple[float, float]], closed: bool) -> _Corners | None:
+    """四个角（首尾重合的五点也算）、闭合、四个直角的多段线才是框。"""
+    if len(points) == 5 and math.dist(points[0], points[-1]) <= 1e-9 * (1 + max(map(abs, points[0]))):
+        points, closed = points[:4], True
+    if not closed or len(points) != 4:
+        return None
+    (ax, ay), (bx, by), (cx, cy), (dx, dy) = points
+    diagonal = math.dist(points[0], points[2])
+    tolerance = 1e-6 * diagonal
+    # 两条对角线互相平分且等长 → 矩形。
+    if diagonal <= 0 or abs(diagonal - math.dist(points[1], points[3])) > tolerance:
+        return None
+    if math.dist((ax + cx, ay + cy), (bx + dx, by + dy)) > tolerance:
+        return None
+    if math.dist(points[0], points[1]) <= tolerance or math.dist(points[1], points[2]) <= tolerance:
+        return None
+    return tuple(points)
+
+
+def _frame_rectangles(records: Sequence[Any]) -> dict[tuple[str, str], list[_Corners]]:
+    """每个容器（模型空间、图纸空间、各个图块）里的闭合矩形，换算到该容器的坐标。
+
+    插入的图块里画的框（图框通常是一个图块）按插入点、比例、旋转换算出来，算进插入它的
+    容器；图块里再插图块的一层层往下找。
+    """
+    own: dict[tuple[str, str], list[_Corners]] = {}
+    inserts: dict[tuple[str, str], list[tuple[str, float, float, float, float, float]]] = {}
+    bases: dict[str, tuple[float, float]] = {}
+    block = ""
+    # 旧式 POLYLINE 的顶点是后面一串 VERTEX，到 SEQEND 为止。
+    polyline: tuple[tuple[str, str], bool, list[tuple[float, float]]] | None = None
+    polyline_curved = False
+    for start, end in _entity_ranges(records):
+        if start >= end:
+            continue
+        entity_type = records[start].value.strip().upper()
+        body = records[start + 1:end]
+        if polyline is not None and entity_type == "VERTEX":
+            fields = {record.code: record.value for record in reversed(body)}
+            polyline[2].append((_float(fields.get(10)), _float(fields.get(20))))
+            polyline_curved = polyline_curved or abs(_float(fields.get(42))) > 1e-9
+            continue
+        if polyline is not None:
+            container, closed, points = polyline
+            corners = None if polyline_curved else _rectangle(points, closed)
+            if corners:
+                own.setdefault(container, []).append(corners)
+            polyline, polyline_curved = None, False
+        if entity_type == "BLOCK":
+            fields = {record.code: record.value for record in reversed(body)}
+            block = str(fields.get(2, "")).strip().upper()
+            bases[block] = (_float(fields.get(10)), _float(fields.get(20)))
+            continue
+        if entity_type == "ENDBLK":
+            block = ""
+            continue
+        if entity_type not in {"LWPOLYLINE", "POLYLINE", "INSERT"}:
+            continue
+        fields = {}
+        points: list[tuple[float, float]] = []
+        curved = False
+        for record in body:
+            if entity_type == "LWPOLYLINE" and record.code == 10:
+                points.append((_float(record.value), 0.0))
+            elif entity_type == "LWPOLYLINE" and record.code == 20 and points:
+                points[-1] = (points[-1][0], _float(record.value))
+            elif entity_type == "LWPOLYLINE" and record.code == 42:
+                curved = curved or abs(_float(record.value)) > 1e-9
+            else:
+                fields.setdefault(record.code, record.value)
+        if block:
+            container = ("BLOCK", block)
+        else:
+            container = ("SPACE", "1" if str(fields.get(67, "0")).strip() == "1" else "0")
+        flags = _int(fields.get(70))
+        if entity_type == "LWPOLYLINE":
+            corners = None if curved else _rectangle(points, bool(flags & 1))
+            if corners:
+                own.setdefault(container, []).append(corners)
+        elif entity_type == "POLYLINE":
+            if not flags & _POLYLINE_NOT_FLAT:
+                polyline = (container, bool(flags & 1), [])
+        else:
+            name = str(fields.get(2, "")).strip().upper()
+            if name:
+                inserts.setdefault(container, []).append((
+                    name,
+                    _float(fields.get(10)), _float(fields.get(20)),
+                    _float(fields.get(41), 1.0) or 1.0, _float(fields.get(42), 1.0) or 1.0,
+                    _float(fields.get(50)),
+                ))
+
+    resolved: dict[tuple[str, str], list[_Corners]] = {}
+    in_progress: set[tuple[str, str]] = set()
+
+    def resolve(container: tuple[str, str]) -> list[_Corners]:
+        if container in resolved:
+            return resolved[container]
+        if container in in_progress:
+            # 图块互相插入：不再往下找。
+            return []
+        in_progress.add(container)
+        result = list(own.get(container, []))
+        for name, x, y, scale_x, scale_y, rotation in inserts.get(container, []):
+            if len(result) >= _MAX_FRAMES:
+                break
+            base_x, base_y = bases.get(name, (0.0, 0.0))
+            angle = math.radians(rotation)
+            cos, sin = math.cos(angle), math.sin(angle)
+            for corners in resolve(("BLOCK", name))[:_MAX_FRAMES - len(result)]:
+                moved = []
+                for px, py in corners:
+                    sx, sy = (px - base_x) * scale_x, (py - base_y) * scale_y
+                    moved.append((x + sx * cos - sy * sin, y + sx * sin + sy * cos))
+                result.append(tuple(moved))
+        in_progress.discard(container)
+        resolved[container] = result
+        return result
+
+    return {container: rects for container in set(own) | set(inserts) if (rects := resolve(container))}
+
+
+class _FrameIndex:
+    """一个容器、一个文字方向上的框（在文字自己的坐标系里，四边与基线平行或垂直）。
+
+    按纵向分条存，查一段文字只看和它同一条的框。
+    """
+
+    def __init__(self, rects: Sequence[_Corners], rotation: float, y_range: tuple[float, float]) -> None:
+        self.frames: list[_TextBox] = []
+        for corners in rects:
+            local = [_to_local(x, y, rotation) for x, y in corners]
+            xs = sorted(point[0] for point in local)
+            ys = sorted(point[1] for point in local)
+            tolerance = 1e-6 * max(xs[-1] - xs[0], ys[-1] - ys[0])
+            # 斜着放的框（和这段文字不平行）不管。
+            if xs[1] - xs[0] > tolerance or xs[3] - xs[2] > tolerance:
+                continue
+            if ys[1] - ys[0] > tolerance or ys[3] - ys[2] > tolerance:
+                continue
+            self.frames.append(_TextBox(-1, xs[0], xs[3], ys[0], ys[3]))
+        low, high = y_range
+        self.low = low
+        self.cell = max((high - low) / 1024, 1e-9)
+        self.buckets: dict[int, list[_TextBox]] = {}
+        for frame in self.frames:
+            first = max(self._bucket(frame.bottom), self._bucket(low))
+            last = min(self._bucket(frame.top), self._bucket(high))
+            for bucket in range(first, last + 1):
+                self.buckets.setdefault(bucket, []).append(frame)
+
+    def _bucket(self, y: float) -> int:
+        return math.floor((y - self.low) / self.cell)
+
+    def around(self, y: float) -> list[_TextBox]:
+        return self.buckets.get(self._bucket(y), [])
 
 
 def _horizontal_span(halign: int, x: float, width: float) -> tuple[float, float]:
@@ -351,12 +525,13 @@ def fit_translated_texts(
     settings: FitSettings | None = None,
     unresolved: list[dict[str, str]] | None = None,
 ) -> int:
-    """Shrink translated TEXT/ATTRIB entities that would overlap a neighbour.
+    """Shrink translated TEXT/ATTRIB entities that would overlap a neighbour or leave their frame.
 
     ``originals`` maps the ordinal of each translated entity (its position
     among ``0`` records, stable across MTEXT write-back) to its source text.
     Edits ``records`` in place and returns how many entities were shrunk.
-    Entities that still overlap at the minimum scale are appended to
+    A frame is a closed rectangle around the source text (see
+    :func:`_frame_rectangles`). Entities that still overlap at the minimum scale are appended to
     ``unresolved`` as ``{"source", "translation"}``.
     """
     if not originals:
@@ -371,6 +546,8 @@ def fit_translated_texts(
         boxes.sort(key=lambda box: box.bottom)
         tallest = max(box.top - box.bottom for box in boxes)
         indexes[key] = ([box.bottom for box in boxes], boxes, tallest)
+    rectangles = _frame_rectangles(records)
+    frame_indexes: dict[tuple[tuple[str, str], float], _FrameIndex] = {}
 
     edits: list[tuple[_TextEntity, float, float]] = []
     for entity in entities:
@@ -403,6 +580,26 @@ def fit_translated_texts(
                 right_limit = min(right_limit, box.left)
             elif box.right <= (old_left + old_right) / 2 and box.right < x and box.right > new_left:
                 left_limit = max(left_limit, box.right)
+        group = (entity.container, round(entity.rotation, 1))
+        if group not in frame_indexes:
+            frame_indexes[group] = _FrameIndex(
+                rectangles.get(entity.container, ()), entity.rotation, (bottoms[0], max(box.top for box in boxes)),
+            )
+        # 原文在框里的（图框内框、标题栏格子），译文也不越过框的边。
+        tolerance = 0.05 * height
+        old_center = (old_left + old_right) / 2
+        for frame in frame_indexes[group].around((bottom + top) / 2):
+            if frame.bottom - tolerance > bottom or top > frame.top + tolerance:
+                continue
+            if not (frame.left < x < frame.right or (entity.halign == 0 and abs(x - frame.left) <= tolerance)
+                    or (entity.halign == 2 and abs(x - frame.right) <= tolerance)):
+                continue
+            if not frame.left < old_center < frame.right:
+                continue
+            if new_right > frame.right:
+                right_limit = min(right_limit, frame.right)
+            if new_left < frame.left:
+                left_limit = max(left_limit, frame.left)
         if entity.halign in {1, 4}:
             half = min(right_limit - x, x - left_limit)
             allowed = 2 * half
