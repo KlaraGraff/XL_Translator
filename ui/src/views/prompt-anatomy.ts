@@ -87,6 +87,7 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
   ];
   if (withTerms) {
     steps.push(
+      t("开启「自动识别场景」且内容较多时，再找出文中反复出现的词，由记忆库清洗模型（未配置时由文档翻译模型）结合文档说明定下统一译法，每份文件一次。"),
       t("其余内容分批发送。每批发送前，查找本批实际出现的记忆库词条，随本批一起发送。"),
       retries > 0
         ? t("译文返回后核对「始终采用」的词条；未采用时附上改正说明重新翻译，最多 {0} 次，仍未采用的位置标记为需复核。", retries)
@@ -123,7 +124,7 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
         state: t("仅含本批出现的词条，没有时不发送"),
         sent: true,
         mono: true,
-        content: t("必须采用：\n- [第 1、17 条] 甲级防火门 → porte coupe-feu de classe A\n按场景选用：\n- [第 12 条] 甲：a. A（配电回路编号）；b. 原样保留（属于编号的一部分）"),
+        content: t("必须采用：\n- [第 1、17 条] 甲级防火门 → porte coupe-feu de classe A\n按场景选用：\n- [第 12 条] 甲：a. A（配电回路编号）；b. 原样保留（属于编号的一部分）\n本文档统一用词：\n- [第 5、9 条] 防火分区 → compartiment coupe-feu"),
       },
       {
         title: t("改正说明"),

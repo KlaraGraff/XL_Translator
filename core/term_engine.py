@@ -7,7 +7,8 @@
    system prompt 末尾。涉及的词条超过上限时把这批拆小，词条一条不丢。
 2. 收到译文后核对「始终采用」的词条；没采用的那几条带上改正说明重译，最多
    ``retry_attempts`` 次。仍未采用的保留模型译文，记进 :class:`TermRunStats`，
-   由任务流程在输出文件里标记需复核、不存进记忆库。
+   由任务流程在输出文件里标记需复核、不存进记忆库。本文档统一用词只作参考：
+   不重译，只记下各处采用了没有（:meth:`TermRunStats.document_usage`）。
 
 调度、拆批、限流和失败重发仍由 ``engine_dispatcher`` / ``word_batching`` 负责：
 包装器只是它们眼里的一个普通引擎。
@@ -27,6 +28,7 @@ from core.prompt_cache import append_batch_block
 from core.tm_terms import (
     DEFAULT_BATCH_BUDGET,
     USAGE_ALWAYS,
+    USAGE_DOCUMENT,
     USAGE_SCENE,
     TermHit,
     TermIndex,
@@ -66,6 +68,18 @@ class TextTermOutcome:
 
 
 @dataclass
+class DocumentTermUsage:
+    """一个本文档统一用词在各段译文里的采用情况（同一段只算一次）。"""
+
+    source: str
+    target: str
+    note: str = ""
+    texts: int = 0
+    applied: int = 0
+    example_text: str = ""
+
+
+@dataclass
 class TermRunStats:
     """一次任务里词条的采用情况，线程安全。"""
 
@@ -93,6 +107,8 @@ class TermRunStats:
         for outcome in self.outcomes():
             missed = {hit.key for hit in outcome.missed}
             for hit in outcome.hits:
+                if hit.usage == USAGE_DOCUMENT:
+                    continue
                 if hit.usage == USAGE_ALWAYS:
                     if hit.key not in missed:
                         for entry_id in hit.candidates[0].entry_ids if hit.candidates else ():
@@ -104,6 +120,35 @@ class TermRunStats:
                         uses[entry_id] += 1
         return uses
 
+    def document_usage(self) -> dict[str, DocumentTermUsage]:
+        """本文档统一用词各在几段出现、几段采用了（核对不了的那段不算）。"""
+        usage: dict[str, DocumentTermUsage] = {}
+        for outcome in self.outcomes():
+            for hit in outcome.hits:
+                if hit.usage != USAGE_DOCUMENT:
+                    continue
+                verdict = term_applied(
+                    outcome.translation,
+                    hit.expected,
+                    source=hit.source,
+                    target_lang=self.target_lang,
+                )
+                if verdict is None:
+                    continue
+                item = usage.get(hit.key)
+                if item is None:
+                    candidate = hit.candidates[0] if hit.candidates else None
+                    item = usage[hit.key] = DocumentTermUsage(
+                        source=hit.source,
+                        target=hit.expected,
+                        note=candidate.note if candidate is not None else "",
+                        example_text=outcome.text,
+                    )
+                item.texts += 1
+                if verdict:
+                    item.applied += 1
+        return usage
+
     def summary(self) -> dict[str, object]:
         outcomes = self.outcomes()
         always_hits = scene_hits = applied_first = applied_retry = 0
@@ -112,6 +157,8 @@ class TermRunStats:
             applied_first += len(outcome.applied_first)
             applied_retry += len(outcome.applied_after_retry)
             for hit in outcome.hits:
+                if hit.usage == USAGE_DOCUMENT:
+                    continue
                 if hit.usage == USAGE_ALWAYS:
                     always_hits += 1
                     continue

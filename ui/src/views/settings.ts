@@ -1473,10 +1473,10 @@ function renderTmTermsCard(): HTMLElement {
     ));
     body.append(grid);
     body.append(switchField(
-      t("自动保存短词的场景译法"),
+      t("自动保存场景译法"),
       tm.auto_save_short_scene !== false,
       "tm.auto_save_short_scene",
-      t("开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。"),
+      t("开启后，「甲」这类短词出现在新场景中时，以及文中反复出现、已统一译法的词，将自动保存为新词条，并附上标明适用场景的备注；关闭时不自动保存。"),
     ));
     body.append(switchField(
       t("本地模型也按场景选用"),
@@ -1678,7 +1678,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   // ① 自动识别场景：开关。翻译前先通读文档写一段文档说明，随每批内容一起发送。
   body.append(smartContextRow(
     current.smartContext,
-    t("开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。每份文件多调用一次模型。"),
+    t("开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型。"),
     (checked) => enqueueSave(async () => {
       await putDomain({ ...basePayload(), smart_context: checked });
       Object.assign(current, domainSettingsFor(surface));

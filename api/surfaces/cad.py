@@ -21,6 +21,7 @@ from api.surfaces.base import (
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
 from core.cad_task_runner import CadTaskRunner
+from core.document_terms import make_term_picker
 from core.term_session import DocumentTermMemory
 from core.document_profile import (
     append_profile,
@@ -470,6 +471,12 @@ class CadSurface(Surface):
                 smart_mode=smart_mode,
                 engine_provider=lambda: engine,
                 marked_in="cad_review",
+                # 「自动识别场景」：每张图纸里反复出现的词先定下统一译法（core.document_terms）。
+                term_picker=(
+                    make_term_picker(settings, engine, target_lang=settings.target_lang)
+                    if smart_mode
+                    else None
+                ),
             )
             if options.cad_use_memory
             else None

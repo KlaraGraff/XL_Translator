@@ -8,6 +8,9 @@
   词条，原文不超过 30 个字符。单字（一个汉字，或不超过两个字母）只在两侧都是边界
   （串首尾、空白、标点）时算出现，「甲级」里的「甲」不算。完全包含的只留最长的一条；
   部分重叠的两条都降为「按场景选用」。
+- **本文档统一用词**（:meth:`TermIndex.add_document_terms`）：翻译前请模型为文中
+  反复出现的词定下的译法（:mod:`core.document_terms`），句中扫描时一并找出，作为
+  参考随批附上；只在本次任务里用，与记忆库词条重叠时让给记忆库词条。
 - **提示词**（:func:`build_prompt_block`）：只列本批文字里出现的词条和所在条号，
   不把整个记忆库塞给模型。
 - **核对**（:func:`term_applied`）：「始终采用」的词条翻完核对译文里有没有设定译法，
@@ -30,7 +33,10 @@ from core.tm_text import normalize_tm_text_for_compare
 USAGE_ALWAYS = "always"
 USAGE_SCENE = "scene"
 USAGE_SEGMENT = "segment"
+# 本文档统一用词：只在本次任务里用的参考译法，不核对、不重译。
+USAGE_DOCUMENT = "document"
 ORIGIN_MANUAL = "manual"
+ORIGIN_DOCUMENT = "document"
 
 # 句中采用的词条原文上限：再长就是一句话，整段复用已经覆盖。
 MAX_IN_SENTENCE_SOURCE_CHARS = 30
@@ -170,6 +176,8 @@ def _distinct_targets(rows: Iterable[TermEntry]) -> set[str]:
 
 def _group_usage(rows: Sequence[TermEntry]) -> str:
     """几条同原文词条合起来怎么用：都「始终采用」且译法唯一才算始终采用。"""
+    if rows and all(row.origin == ORIGIN_DOCUMENT for row in rows):
+        return USAGE_DOCUMENT
     if rows and all(row.usage == USAGE_ALWAYS for row in rows) and len(_distinct_targets(rows)) == 1:
         return USAGE_ALWAYS
     return USAGE_SCENE
@@ -234,7 +242,12 @@ class TermIndex:
         for entry in entries:
             if self._eligible_in_sentence(entry):
                 self._by_scan_key[scan_key(entry.source)].append(entry)
+        self._document_keys: set[str] = set()
         self._by_first: dict[str, list[str]] = defaultdict(list)
+        self._index_first_chars()
+
+    def _index_first_chars(self) -> None:
+        self._by_first = defaultdict(list)
         for key in self._by_scan_key:
             self._by_first[key[0]].append(key)
         for keys in self._by_first.values():
@@ -280,7 +293,51 @@ class TermIndex:
 
     @property
     def in_sentence_term_count(self) -> int:
-        return len(self._by_scan_key)
+        return len(self._by_scan_key) - len(self._document_keys)
+
+    def has_sentence_term(self, text: str) -> bool:
+        """这段文字里有没有能在句中采用的记忆库词条（本文档统一用词不算）。"""
+        if not self.apply_in_sentences:
+            return False
+        haystack = scan_key(text)
+        return any(key not in self._document_keys for _start, _end, key in self._spans(haystack))
+
+    def add_document_terms(self, terms: Iterable[object]) -> list[TermEntry]:
+        """加入本文档统一用词（``source`` / ``target`` / ``note``），返回实际加入的。
+
+        已能在句中采用的记忆库词条优先，同一个词不再加入；不进整段查找。
+        """
+        added: list[TermEntry] = []
+        next_id = -1 - len(self._document_keys)
+        for term in terms:
+            source = str(getattr(term, "source", "") or "").strip()
+            target = str(getattr(term, "target", "") or "").strip()
+            key = scan_key(source)
+            if not source or not target or not key or len(key) > MAX_IN_SENTENCE_SOURCE_CHARS:
+                continue
+            if key in self._by_scan_key:
+                continue
+            entry = TermEntry(
+                id=next_id,
+                source=source,
+                target=target,
+                lang_pair="",
+                note=str(getattr(term, "note", "") or ""),
+                usage=USAGE_DOCUMENT,
+                origin=ORIGIN_DOCUMENT,
+            )
+            next_id -= 1
+            self._by_scan_key[key].append(entry)
+            self._document_keys.add(key)
+            self.entries.append(entry)
+            added.append(entry)
+        if added:
+            self._index_first_chars()
+        return added
+
+    @property
+    def document_term_count(self) -> int:
+        return len(self._document_keys)
 
     @property
     def manual_entry_count(self) -> int:
@@ -353,12 +410,16 @@ class TermIndex:
             return [TermHit(source=rows[0].source, usage=usage, candidates=_candidates(rows), whole=True)]
         if not self.apply_in_sentences or not self._by_first:
             return []
-        haystack = scan_key(text)
-        spans: list[tuple[int, int, str]] = []
-        for start, ch in enumerate(haystack):
-            for key in self._by_first.get(ch, ()):
-                if haystack.startswith(key, start) and _boundary_ok(haystack, start, start + len(key), key):
-                    spans.append((start, start + len(key), key))
+        spans = self._spans(scan_key(text))
+        if self._document_keys:
+            # 本文档统一用词只是参考：和记忆库词条有重叠（包括包含）的让给记忆库词条。
+            stored = [span for span in spans if span[2] not in self._document_keys]
+            spans = stored + [
+                span
+                for span in spans
+                if span[2] in self._document_keys
+                and not any(other[0] < span[1] and span[0] < other[1] for other in stored)
+            ]
         if not spans:
             return []
         # 完全包含的只留最长；部分重叠的两条都只作参考（按场景选用）。
@@ -376,6 +437,8 @@ class TermIndex:
         overlapped: set[str] = set()
         for index, left in enumerate(kept):
             for right in kept[index + 1:]:
+                if left[2] in self._document_keys or right[2] in self._document_keys:
+                    continue
                 if left[2] != right[2] and left[0] < right[1] and right[0] < left[1]:
                     overlapped.add(left[2])
                     overlapped.add(right[2])
@@ -397,6 +460,14 @@ class TermIndex:
                 )
             )
         return hits
+
+    def _spans(self, haystack: str) -> list[tuple[int, int, str]]:
+        spans: list[tuple[int, int, str]] = []
+        for start, ch in enumerate(haystack):
+            for key in self._by_first.get(ch, ()):
+                if haystack.startswith(key, start) and _boundary_ok(haystack, start, start + len(key), key):
+                    spans.append((start, start + len(key), key))
+        return spans
 
 
 _SCENE_LATIN_WORD_RE = re.compile(r"[a-z]{4,}")
@@ -445,7 +516,8 @@ def _candidate_label(candidate: TermCandidate, source: str) -> str:
 
 
 def build_prompt_block(hits_per_text: Sequence[Sequence[TermHit]], target_lang_name: str) -> str:
-    """本批文字里出现的词条，按「必须采用」「按场景选用」分两组，标上条号（从 1 起）。"""
+    """本批文字里出现的词条，按「必须采用」「按场景选用」分两组，标上条号（从 1 起）；
+    本文档统一用词另列一组。"""
     groups: dict[tuple[str, str], tuple[TermHit, list[int]]] = {}
     for index, hits in enumerate(hits_per_text, start=1):
         for hit in hits:
@@ -459,9 +531,12 @@ def build_prompt_block(hits_per_text: Sequence[Sequence[TermHit]], target_lang_n
         return ""
     always_lines: list[str] = []
     scene_lines: list[str] = []
+    document_lines: list[str] = []
     for (usage, _key), (hit, positions) in groups.items():
         where = _format_positions(positions)
-        if usage == USAGE_ALWAYS:
+        if usage == USAGE_DOCUMENT:
+            document_lines.append(f"- [{where}] {hit.source} → {hit.expected}")
+        elif usage == USAGE_ALWAYS:
             expected = hit.expected
             shown = "原样保留" if whole_key(expected) == whole_key(hit.source) else expected
             always_lines.append(f"- [{where}] {hit.source} → {shown}")
@@ -471,13 +546,22 @@ def build_prompt_block(hits_per_text: Sequence[Sequence[TermHit]], target_lang_n
                 for offset, candidate in enumerate(hit.candidates)
             )
             scene_lines.append(f"- [{where}] {hit.source}：{options}")
-    lines = ["本批文字中出现的记忆库词条："]
+    lang_name = target_lang_name or "目标语言"
+    lines: list[str] = []
+    if always_lines or scene_lines:
+        lines.append("本批文字中出现的记忆库词条：")
     if always_lines:
-        lines.append(f"必须采用（可按{target_lang_name or '目标语言'}语法调整词形）：")
+        lines.append(f"必须采用（可按{lang_name}语法调整词形）：")
         lines.extend(always_lines)
     if scene_lines:
         lines.append("按场景选用（结合该条含义和文档说明选用其一；均不适用时按常规翻译）：")
         lines.extend(scene_lines)
+    if document_lines:
+        lines.append(
+            f"本文档统一用词（全文各批采用同一译法，可按{lang_name}语法调整词形；"
+            "该条中含义明显不同时按常规翻译）："
+        )
+        lines.extend(document_lines)
     return "\n".join(lines)
 
 
@@ -491,7 +575,8 @@ def build_correction_block(failures: Sequence[tuple[int, str, Sequence[TermHit]]
 
 
 def term_keys_of(hits: Iterable[TermHit]) -> set[tuple[str, str]]:
-    return {(hit.usage, hit.key) for hit in hits}
+    """拆批时数的词条；本文档统一用词每条只占一行，不为它拆批。"""
+    return {(hit.usage, hit.key) for hit in hits if hit.usage != USAGE_DOCUMENT}
 
 
 def split_by_budget(

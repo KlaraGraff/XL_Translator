@@ -98,5 +98,29 @@
   "记忆库：{0} 处整段旧译文未采用当前的设定译法，本次重新翻译": {
     "en": "Translation memory: {0} saved whole-text {0|translation does|translations do} not use the current set translation and will be retranslated",
     "fr": "Mémoire de traduction : {0} {0|traduction enregistrée n'utilise|traductions enregistrées n'utilisent} pas la traduction définie actuelle et {0|sera retraduite|seront retraduites}"
+  },
+  "状态：[阶段 2/{0}] 正在为反复出现的词确定统一译法…": {
+    "en": "Status: [Step 2/{0}] Setting one translation for recurring words…",
+    "fr": "État : [Étape 2/{0}] Harmonisation de la traduction des termes récurrents…"
+  },
+  "统一用词：记忆库清洗模型为文中反复出现的 {0} 个词确定了统一译法，将随批附上": {
+    "en": "Harmonized terms: the memory cleanup model set one translation for {0} recurring {0|word|words}; {0|it|they} will be sent with the batches",
+    "fr": "Termes harmonisés : le modèle de nettoyage de la mémoire a fixé une traduction unique pour {0} {0|terme récurrent|termes récurrents}, {0|envoyée|envoyées} avec les lots"
+  },
+  "统一用词：文档翻译模型为文中反复出现的 {0} 个词确定了统一译法，将随批附上": {
+    "en": "Harmonized terms: the document translation model set one translation for {0} recurring {0|word|words}; {0|it|they} will be sent with the batches",
+    "fr": "Termes harmonisés : le modèle de traduction de documents a fixé une traduction unique pour {0} {0|terme récurrent|termes récurrents}, {0|envoyée|envoyées} avec les lots"
+  },
+  "统一用词：记忆库清洗模型未能确定译法，改用文档翻译模型": {
+    "en": "Harmonized terms: the memory cleanup model could not set the translations; using the document translation model instead",
+    "fr": "Termes harmonisés : le modèle de nettoyage de la mémoire n'a pas pu fixer les traductions ; le modèle de traduction de documents prend le relais"
+  },
+  "统一用词：未能确定译法，按常规方式继续翻译": {
+    "en": "Harmonized terms: no translations could be set; translation continues as usual",
+    "fr": "Termes harmonisés : aucune traduction n'a pu être fixée ; la traduction se poursuit normalement"
+  },
+  "记忆库：已自动保存 {0} 个统一用词的译法，并附上适用场景备注": {
+    "en": "Translation memory: saved the translations of {0} harmonized {0|term|terms} automatically, with notes describing the context",
+    "fr": "Mémoire de traduction : les traductions de {0} {0|terme harmonisé|termes harmonisés} ont été enregistrées automatiquement, avec des notes décrivant le contexte"
   }
 }
