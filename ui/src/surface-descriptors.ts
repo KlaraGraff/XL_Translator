@@ -66,17 +66,30 @@ export function extSurfaceIcon(key: string): IconName {
 /** 内置四种翻译类型的键，按默认顺序。 */
 export const BUILTIN_TYPE_KEYS = ["excel", "word", "pdf", "cad"] as const;
 
-/** settings.translation_types（v40）：全部翻译类型的顺序与隐藏，「扩展」页里改。 */
+/** settings.translation_types（v40）：全部翻译类型的顺序与「显示在侧栏」，「扩展」页里改。 */
 export interface TranslationTypesLayout {
   order: string[];
-  hidden: string[];
+  /** 拨过开关的类型；没拨过的见 isTypeVisible。 */
+  visible: Record<string, boolean>;
 }
 
 export function translationTypesLayout(settings: Record<string, unknown> | null | undefined): TranslationTypesLayout {
   const raw = settings?.translation_types;
   const table = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const keys = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
-  return { order: keys(table.order), hidden: keys(table.hidden) };
+  const order = Array.isArray(table.order) ? table.order.filter((item): item is string => typeof item === "string") : [];
+  const visible: Record<string, boolean> = {};
+  if (table.visible && typeof table.visible === "object") {
+    for (const [key, flag] of Object.entries(table.visible as Record<string, unknown>)) {
+      if (typeof flag === "boolean") visible[key] = flag;
+    }
+  }
+  return { order, visible };
+}
+
+/** 是否显示在侧栏：拨过的按拨的；没拨过的内置四种显示、扩展类型不显示（与后端 shows 一致）。 */
+export function isTypeVisible(settings: Record<string, unknown> | null | undefined, key: string): boolean {
+  const flag = translationTypesLayout(settings).visible[key];
+  return typeof flag === "boolean" ? flag : !isExtSurface(key);
 }
 
 /**
@@ -94,8 +107,7 @@ export function orderedTypeKeys(settings: Record<string, unknown> | null | undef
 
 /** 显示在侧栏的翻译类型，顺序同上。 */
 export function visibleTypeKeys(settings: Record<string, unknown> | null | undefined): string[] {
-  const hidden = new Set(translationTypesLayout(settings).hidden);
-  return orderedTypeKeys(settings).filter((key) => !hidden.has(key));
+  return orderedTypeKeys(settings).filter((key) => isTypeVisible(settings, key));
 }
 
 /** 按设置重画侧栏「翻译」组；启动时和「扩展」页改了显示、顺序之后调用。 */

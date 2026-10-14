@@ -7,5 +7,7 @@
   "随应用提供": {"en": "Bundled with the app", "fr": "Fourni avec l'application"},
   "上移": {"en": "Move up", "fr": "Monter"},
   "下移": {"en": "Move down", "fr": "Descendre"},
-  "关闭后不在侧栏显示，已有任务仍可在任务中心打开，翻译参数照常保留。": {"en": "When off, the type is not shown in the sidebar. Its tasks can still be opened from the Task center, and its translation settings are kept.", "fr": "Désactivé, le type n'apparaît plus dans la barre latérale. Ses tâches restent accessibles depuis le Centre des tâches et ses paramètres de traduction sont conservés."}
+  "内置类型默认显示，扩展类型默认不显示。关闭后不在侧栏显示，已有任务仍可在任务中心打开，翻译参数照常保留。": {"en": "Built-in types are shown by default; extension types are not. When off, the type is not shown in the sidebar. Its tasks can still be opened from the Task center, and its translation settings are kept.", "fr": "Les types intégrés sont affichés par défaut, les types d'extension ne le sont pas. Désactivé, le type n'apparaît plus dans la barre latérale. Ses tâches restent accessibles depuis le Centre des tâches et ses paramètres de traduction sont conservés."},
+  "更多文件类型": {"en": "More file types", "fr": "Autres types de fichiers"},
+  "可以自行制作扩展，让本软件支持更多文件类型；制作好的扩展可以上传，分享给其他人使用，也可以下载其他人分享的扩展。": {"en": "You can build your own extensions to add support for more file types, upload the ones you build to share them with others, and download extensions that others have shared.", "fr": "Vous pouvez créer vos propres extensions pour prendre en charge d'autres types de fichiers, téléverser celles que vous créez pour les partager avec d'autres, et télécharger les extensions partagées par d'autres."}
 }

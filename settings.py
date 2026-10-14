@@ -1323,8 +1323,8 @@ class ExtensionSettings(BaseModel):
     domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     # 这个类型自己的开关（描述符里的 options），按开关的 key 存。
     options: dict[str, bool | int | float | str] = Field(default_factory=dict)
-    # v39 的「显示在侧栏」和位置。v40 起并入 ``AppSettings.translation_types``（升级时读一次），
-    # 界面不再写这两项；留着是为了旧文件照样能读。
+    # v39 的「显示在侧栏」和位置。v40 起由 ``AppSettings.translation_types`` 管（order 升级时
+    # 读一次），界面不再写这两项；留着是为了旧文件照样能读。
     pinned: bool = True
     order: int = 0
     # 内置规则：空表示用默认的那份（清单 adapter.json 的 ``prompt``，没有则是
@@ -1333,18 +1333,19 @@ class ExtensionSettings(BaseModel):
 
 
 class TranslationTypesSettings(BaseModel):
-    """侧栏「翻译」组：全部翻译类型（内置四种与 ``ext:<id>``）的顺序和隐藏，v40 起。
+    """侧栏「翻译」组：全部翻译类型（内置四种与 ``ext:<id>``）的顺序和是否显示，v40 起。
 
-    「扩展」页里改。隐藏只是不放进侧栏：页面照常注册，任务中心「打开工作区」、命令行
-    和 MCP 照常能用。至少要留一种可见，由 PUT /api/settings 和界面两头拦。
+    「扩展」页里改。内置四种默认显示；扩展类型（随应用提供的「文本」也一样）默认不显示，
+    在「扩展」页打开。不显示只是不放进侧栏：页面照常注册，任务中心「打开工作区」、命令行
+    和 MCP 照常能用。至少要留一种显示，由 PUT /api/settings 和界面两头拦。
     """
 
     #: 类型键的顺序；没列到的（新装的类型等）按 GET /api/surfaces 的顺序排在后面。空表示默认顺序。
     order: list[str] = Field(default_factory=list)
-    #: 不显示在侧栏的类型键。
-    hidden: list[str] = Field(default_factory=list)
+    #: 「显示在侧栏」拨过的类型；没拨过的按默认（见 ``shows``）。
+    visible: dict[str, bool] = Field(default_factory=dict)
 
-    @field_validator("order", "hidden", mode="before")
+    @field_validator("order", mode="before")
     @classmethod
     def _keys(cls, value: Any) -> list[str]:
         keys: list[str] = []
@@ -1353,6 +1354,21 @@ class TranslationTypesSettings(BaseModel):
             if key and key not in keys:
                 keys.append(key)
         return keys
+
+    @field_validator("visible", mode="before")
+    @classmethod
+    def _switches(cls, value: Any) -> dict[str, bool]:
+        switches: dict[str, bool] = {}
+        for item, flag in value.items() if isinstance(value, dict) else ():
+            key = item.strip().lower() if isinstance(item, str) else ""
+            if key and isinstance(flag, bool):
+                switches[key] = flag
+        return switches
+
+    def shows(self, key: str) -> bool:
+        """``key`` 是否显示在侧栏：拨过的按拨的；没拨过的内置显示、扩展类型不显示。"""
+        normalized = str(key or "").strip().lower()
+        return self.visible.get(normalized, not normalized.startswith("ext:"))
 
 
 class AppSettings(BaseModel):
@@ -2291,11 +2307,12 @@ def _migrate_rate_settings(payload: dict, stored_version: int) -> dict:
 
 
 def _migrate_translation_types(payload: dict, stored_version: int) -> dict:
-    """v40: 侧栏里各翻译类型的顺序和隐藏改记在 ``translation_types`` 一处（内置四种也能改）。
+    """v40: 侧栏里各翻译类型的顺序和显示改记在 ``translation_types`` 一处（内置四种也能改）。
 
-    v39 只有运行时注册的类型有 ``extensions.<id>.pinned`` / ``order``：取消了「显示在侧栏」
-    的并入 ``hidden``；调过顺序（有非 0 的 order）的，按内置四种在前、扩展类型按 order
-    排在后面写成 ``order``，与 v39 侧栏里看到的顺序一致。旧字段原样留着，不再写。
+    v39 只有运行时注册的类型有 ``extensions.<id>.pinned`` / ``order``。调过顺序（有非 0 的
+    order）的，按内置四种在前、扩展类型按 order 排在后面写成 ``order``，与 v39 侧栏里看到的
+    顺序一致。``pinned`` 不再沿用：v40 起扩展类型默认不显示，要用的在「扩展」页打开
+    （v39 没有发布过，「默认显示」只在开发版里出现过）。旧字段原样留着，不再写。
     """
     if stored_version >= 40 or "translation_types" in payload:
         return payload
@@ -2304,7 +2321,6 @@ def _migrate_translation_types(payload: dict, stored_version: int) -> dict:
         (ext_id, entry) for ext_id, entry in (extensions.items() if isinstance(extensions, dict) else ())
         if isinstance(entry, dict)
     ]
-    hidden = [f"ext:{ext_id}" for ext_id, entry in entries if entry.get("pinned") is False]
 
     def position(entry: dict) -> int:
         value = entry.get("order")
@@ -2315,7 +2331,7 @@ def _migrate_translation_types(payload: dict, stored_version: int) -> dict:
         ranked = sorted(enumerate(entries), key=lambda item: (position(item[1][1]), item[0]))
         order = ["excel", "word", "pdf", "cad", *(f"ext:{ext_id}" for _index, (ext_id, _entry) in ranked)]
     migrated = dict(payload)
-    migrated["translation_types"] = {"order": order, "hidden": hidden}
+    migrated["translation_types"] = {"order": order, "visible": {}}
     return migrated
 
 

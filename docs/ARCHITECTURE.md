@@ -106,13 +106,14 @@
 - **设置**：每个运行时类型一份 `settings.extensions[<id>]`（`ExtensionSettings`，schema v39）：
   `target_lang`、`source_lang`、`domain_preset`、`smart_context`、`domain_custom_prompts`、
   `options`、`prompt`（v40：用户改过的内置规则，空表示用默认）；`pinned`、`order` 是 v39 的侧栏设置，v40 起
-  并入 `translation_types`，只在升级时读。按页面取设置一律经 `core/surface_settings.py` 的
+  由 `translation_types` 管（`order` 只在升级时读一次）。按页面取设置一律经 `core/surface_settings.py` 的
   `surface_setting` / `set_surface_setting`，内置页面读平铺字段（`excel_target_lang` …），调用方不用分辨。
-- **侧栏顺序与隐藏**：`settings.translation_types`（`TranslationTypesSettings`，v40）一张表管全部翻译类型
-  （内置四种与 `ext:`）：`order` 是类型键的顺序（没列到的按描述符顺序排在后面，空即默认顺序），`hidden` 是不
-  放进侧栏的类型键。v39 升级时 `pinned: false` 的并入 `hidden`，调过的 `order` 换成整张表的顺序。隐藏只影响
-  侧栏：视图照常注册，任务中心「打开工作区」、命令行和 MCP 照常可用。`PUT /api/settings` 拒绝把全部类型都
-  隐藏（422），界面同样拦。
+- **侧栏顺序与显示**：`settings.translation_types`（`TranslationTypesSettings`，v40）一张表管全部翻译类型
+  （内置四种与 `ext:`）：`order` 是类型键的顺序（没列到的按描述符顺序排在后面，空即默认顺序，所以新类型排在
+  最后），`visible` 是拨过「显示在侧栏」的类型；没拨过的按 `shows()` 的默认：内置四种显示，扩展类型（随应用
+  提供的「文本」也一样）不显示，在「扩展」页打开。v39 升级时调过的 `order` 换成整张表的顺序，`pinned` 不沿用。
+  不显示只影响侧栏：视图照常注册，任务中心「打开工作区」、命令行和 MCP 照常可用。`PUT /api/settings` 拒绝
+  让全部类型都不显示（422），界面同样拦。
 - **模型与速率**：`page_key = "adapter"` 的任务只占文档翻译模型（`task_model_roles_for_page`）；
   速率与重试没有单独一组时按模型吞吐量取（`core/surface_rate.py`）。
 - **文本翻译**：`TextTranslationService` 把「按翻译参数取速率与重试、建文档翻译引擎、拼提示词
@@ -120,9 +121,9 @@
   翻译 → 写回」的格式，执行器用它即可，不必再抄一遍 CAD 的接线。
 - **开关值**：开始任务时放在请求的 `options` 字典里（`TaskStartRequest.options` →
   `TaskOptions.options`），执行器从 `RunnerRequest.options.options` 读。
-- **界面**：`app.ts` 拿到描述符后为每个 `ext:` 类型注册一个视图（`views/extension.ts`，隐藏的也注册），
-  再按 `translation_types` 重排侧栏「翻译」组（`refreshTranslateSideItems`）；启动时打开的 Excel 被隐藏了
-  就换到侧栏第一项。工作区模板里
+- **界面**：`app.ts` 拿到描述符后为每个 `ext:` 类型注册一个视图（`views/extension.ts`，不显示的也注册），
+  再按 `translation_types` 重排侧栏「翻译」组（`refreshTranslateSideItems`，显示与否看 `isTypeVisible`，与
+  后端 `shows()` 同一规则）；启动时打开的 Excel 不显示了就换到侧栏第一项。工作区模板里
   `` Surface = BuiltinSurface | `ext:${string}` ``：名称、图标、文件名词、空状态和开关经访问函数
   （`surfaceLabel`、`surfaceToggles` 等）从描述符取；统计格（文件数、总大小、跳过项）和文件表列
   （文件、格式、大小、状态）是通用的一套；运行设置显示语言和描述符里的开关（清单有 `description` 时
@@ -130,7 +131,8 @@
   名称、可暂停和「打开工作区」也按描述符。
 - **「扩展」页与翻译参数**：侧栏「资源」组的「扩展」页（路由 `extensions`，`views/extensions-page.ts`）
   一张表列出全部翻译类型（内置四种与 `ext:`），每行「显示在侧栏」开关和上移、下移，写
-  `translation_types`，改完即时重排侧栏；「插件」页（运行组件）是另一页。「设置 → 翻译参数」的页签是
+  `translation_types`，改完即时重排侧栏；表下一张「更多文件类型」说明卡（可自制、上传分享、下载他人的扩展；
+  入口按钮与安装、浏览由阶段 E/F 接在后面）。「插件」页（运行组件）是另一页。「设置 → 翻译参数」的页签是
   内置四种加每个 `ext:` 类型各一个（标签用类型名，顺序同「扩展」页，隐藏的也保留）：目标语言、源语言写
   `extensions.<id>`；提示词卡片走 `/api/domains/ext:<id>`（只认已注册的类型），其中「内置规则」可以改
   （存 `extensions.<id>.prompt`，与默认相同或清空存成空），「恢复默认」回到清单的 `prompt`，没有则是

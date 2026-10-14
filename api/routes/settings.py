@@ -260,10 +260,10 @@ def register(app: FastAPI) -> None:
 
 def _reject_all_types_hidden(settings: AppSettings) -> None:
     """「扩展」页至少要留一种翻译类型在侧栏；界面也拦，这里防直接调接口的。"""
-    hidden = set(settings.translation_types.hidden)
+    table = settings.translation_types
     # 侧栏「翻译」组里的类型：要选文件的那些（记忆库清洗不在侧栏）。
     keys = [surface.key for surface in all_surfaces() if surface.requires_source and surface.file_extensions]
-    if keys and all(key in hidden for key in keys):
+    if keys and not any(table.shows(key) for key in keys):
         raise HTTPException(422, "至少保留一种翻译类型显示在侧栏。")
 
 

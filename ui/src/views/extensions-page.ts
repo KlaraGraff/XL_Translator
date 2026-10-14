@@ -1,8 +1,9 @@
 // 「扩展」页：侧栏「翻译」组里有哪些翻译类型、按什么顺序。
 //
-// 内置四种和运行时注册的类型（格式适配器，键为 `ext:<id>`）在同一张表里，都能隐藏、都能调序，
-// 存在 settings.translation_types（v40）。隐藏只是不放进侧栏：页面照常注册，任务中心「打开
-// 工作区」、翻译参数里它的页签都照旧。至少要留一种显示在侧栏，后端也拦。
+// 内置四种和运行时注册的类型（格式适配器，键为 `ext:<id>`）在同一张表里，都能关掉「显示在侧栏」、
+// 都能调序，存在 settings.translation_types（v40）。内置默认显示，扩展类型默认不显示。不显示只是
+// 不放进侧栏：页面照常注册，任务中心「打开工作区」、翻译参数里它的页签都照旧。至少要留一种显示
+// 在侧栏，后端也拦。
 // 「插件」页（运行组件）是另一页，与这里无关。
 
 import { ApiClient } from "../api-client";
@@ -15,6 +16,7 @@ import {
   extSurfaceIcon,
   extSurfaceLabel,
   isExtSurface,
+  isTypeVisible,
   loadSurfaceDescriptors,
   orderedTypeKeys,
   refreshTranslateSideItems,
@@ -57,8 +59,8 @@ async function refresh(): Promise<void> {
   if (mounted) render();
 }
 
-/** 写 settings.translation_types；成功后按新设置重排侧栏。 */
-async function saveLayout(layout: TranslationTypesLayout): Promise<void> {
+/** 写 settings.translation_types（服务端按项合并）；成功后按新设置重排侧栏。 */
+async function saveLayout(layout: Partial<TranslationTypesLayout>): Promise<void> {
   busy = true;
   render();
   try {
@@ -79,15 +81,12 @@ async function saveLayout(layout: TranslationTypesLayout): Promise<void> {
 
 function setVisible(key: string, visible: boolean): void {
   if (busy) return;
-  const layout = translationTypesLayout(settings);
   if (!visible && visibleTypeKeys(settings).every((item) => item === key)) {
     showToast({ message: t("至少保留一种翻译类型显示在侧栏。"), error: true });
     render();
     return;
   }
-  const hidden = layout.hidden.filter((item) => item !== key);
-  if (!visible) hidden.push(key);
-  void saveLayout({ order: layout.order, hidden });
+  void saveLayout({ visible: { [key]: visible } });
 }
 
 /** 上移 / 下移一位：整张表按新顺序写回；表里没有的旧键（已卸载的类型）留在末尾。 */
@@ -98,8 +97,8 @@ function move(key: string, step: -1 | 1): void {
   const to = from + step;
   if (from < 0 || to < 0 || to >= keys.length) return;
   [keys[from], keys[to]] = [keys[to], keys[from]];
-  const layout = translationTypesLayout(settings);
-  void saveLayout({ order: [...keys, ...layout.order.filter((item) => !keys.includes(item))], hidden: layout.hidden });
+  const saved = translationTypesLayout(settings).order;
+  void saveLayout({ order: [...keys, ...saved.filter((item) => !keys.includes(item))] });
 }
 
 function typeName(key: string): { label: string; icon: IconName } {
@@ -140,7 +139,7 @@ function typeRow(key: string, index: number, count: number, visibleCount: number
   source.className = "types-source";
   source.textContent = typeSource(key);
 
-  const hidden = translationTypesLayout(settings).hidden.includes(key);
+  const hidden = !isTypeVisible(settings, key);
   const sidebar = createSwitch({
     checked: !hidden,
     // 最后一个显示着的不能关：开关照常可点，点了提示原因（比灰掉更说得清）。
@@ -181,13 +180,28 @@ function render(): void {
     cell.textContent = text;
     header.append(cell);
   }
-  header.children[3]?.append(createHintBadge(t("关闭后不在侧栏显示，已有任务仍可在任务中心打开，翻译参数照常保留。")));
+  header.children[3]?.append(createHintBadge(t("内置类型默认显示，扩展类型默认不显示。关闭后不在侧栏显示，已有任务仍可在任务中心打开，翻译参数照常保留。")));
   table.append(header);
 
   const keys = orderedTypeKeys(settings);
   const visibleCount = visibleTypeKeys(settings).length;
   keys.forEach((key, index) => table.append(typeRow(key, index, keys.length, visibleCount)));
   card.append(table);
-  column.append(card);
+  column.append(card, aboutCard());
   rootEl.append(column);
+}
+
+/** 列表下方的说明：还能自己做扩展、分享、下载别人的（入口按钮由安装与浏览那部分接在后面）。 */
+function aboutCard(): HTMLElement {
+  const card = createCard([]);
+  card.classList.add("extensions-about");
+  const head = document.createElement("div");
+  head.className = "tc-head";
+  const title = document.createElement("b");
+  title.textContent = t("更多文件类型");
+  head.append(title);
+  const body = document.createElement("p");
+  body.textContent = t("可以自行制作扩展，让本软件支持更多文件类型；制作好的扩展可以上传，分享给其他人使用，也可以下载其他人分享的扩展。");
+  card.append(head, body);
+  return card;
 }

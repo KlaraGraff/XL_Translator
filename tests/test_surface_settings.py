@@ -156,10 +156,23 @@ def test_extension_pages_can_replace_the_core_rules_and_built_in_pages_cannot():
 
 def test_translation_types_keys_are_normalized():
     table = AppSettings.model_validate(
-        {"translation_types": {"order": [" Excel", "ext:md", "excel", "", 3], "hidden": ["ext:MD", None]}}
+        {"translation_types": {
+            "order": [" Excel", "ext:md", "excel", "", 3],
+            "visible": {"ext:MD ": True, "word": False, "pdf": "yes", "": True},
+        }}
     ).translation_types
     assert table.order == ["excel", "ext:md"]
-    assert table.hidden == ["ext:md"]
+    assert table.visible == {"ext:md": True, "word": False}
+
+
+def test_built_ins_show_by_default_and_extension_types_do_not():
+    table = AppSettings().translation_types
+    assert [table.shows(key) for key in ("excel", "word", "pdf", "cad")] == [True] * 4
+    assert table.shows("ext:text") is False
+    table = AppSettings.model_validate(
+        {"translation_types": {"visible": {"excel": False, "ext:text": True}}}
+    ).translation_types
+    assert table.shows("excel") is False and table.shows("EXT:text") is True and table.shows("ext:srt") is False
 
 
 def test_extension_pages_occupy_only_the_translation_model():
@@ -187,7 +200,7 @@ class SettingsUpgradeTests(IsolatedAppDataTestCase):
         self.assertEqual(stored["settings_version"], SETTINGS_SCHEMA_VERSION)
         self.assertEqual(SETTINGS_SCHEMA_VERSION, 40)
         self.assertEqual(stored.pop("extensions"), {})
-        self.assertEqual(stored.pop("translation_types"), {"order": [], "hidden": []})
+        self.assertEqual(stored.pop("translation_types"), {"order": [], "visible": {}})
         stored.pop("settings_version")
         payload.pop("settings_version")
         self.assertEqual(stored, payload)
@@ -203,15 +216,19 @@ class SettingsUpgradeTests(IsolatedAppDataTestCase):
         self.app_data_dir.mkdir(parents=True, exist_ok=True)
         (self.app_data_dir / "settings.json").write_text(json.dumps(payload), encoding="utf-8")
 
-    def test_a_v39_file_moves_hidden_and_ordered_types_into_one_table(self) -> None:
+    def test_a_v39_file_moves_the_order_into_one_table_and_extension_types_start_hidden(self) -> None:
         self._write_v39({
             "srt": {"domain_preset": "字幕", "pinned": False, "order": 1},
-            "md": {"order": 0},
+            "md": {"pinned": True, "order": 0},
             "csv": {"order": 2},
         })
         self.assertEqual(settings_module.get_settings_schema_status()["state"], "adopted")
         loaded = settings_module.load_settings()
-        self.assertEqual(loaded.translation_types.hidden, ["ext:srt"])
+        self.assertEqual(loaded.translation_types.visible, {})
+        self.assertEqual(
+            [loaded.translation_types.shows(key) for key in ("excel", "ext:srt", "ext:md", "ext:csv")],
+            [True, False, False, False],
+        )
         self.assertEqual(
             loaded.translation_types.order,
             ["excel", "word", "pdf", "cad", "ext:md", "ext:srt", "ext:csv"],
@@ -223,18 +240,18 @@ class SettingsUpgradeTests(IsolatedAppDataTestCase):
         settings_module.save_settings(loaded)
         stored = json.loads((self.app_data_dir / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["settings_version"], SETTINGS_SCHEMA_VERSION)
-        self.assertEqual(stored["translation_types"]["hidden"], ["ext:srt"])
+        self.assertEqual(stored["translation_types"]["order"][-3:], ["ext:md", "ext:srt", "ext:csv"])
         self.assertIs(stored["extensions"]["srt"]["pinned"], False)
         self.assertFalse((self.app_data_dir / "backups").exists())
         reloaded = settings_module.load_settings()
-        self.assertEqual(reloaded.translation_types.hidden, ["ext:srt"])
+        self.assertEqual(reloaded.translation_types.order, loaded.translation_types.order)
         self.assertEqual(settings_module.get_settings_schema_status()["state"], "current")
 
     def test_a_v39_file_with_default_positions_keeps_the_default_order(self) -> None:
         self._write_v39({"srt": {"order": 0}, "md": {}})
         loaded = settings_module.load_settings()
         self.assertEqual(loaded.translation_types.order, [])
-        self.assertEqual(loaded.translation_types.hidden, [])
+        self.assertEqual(loaded.translation_types.visible, {})
 
     def test_extension_entries_survive_a_round_trip(self) -> None:
         settings = settings_module.load_settings()
