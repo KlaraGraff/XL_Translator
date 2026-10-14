@@ -174,6 +174,8 @@ export type PdfPage = {
   inplace_written?: number;
   inplace_kept?: number;
   inplace_review?: number;
+  /** 接口放弃、没拿到译文而保留原文的处数（也在 inplace_review_items 里，kind 为 untranslated）。 */
+  inplace_untranslated?: number;
   /** 译文已写入、但未采用记忆库中设定的译法的处数（也在 inplace_review_items 里，kind 为 term）。 */
   inplace_term_review?: number;
   inplace_review_items?: { text: string; reason: string; detail?: string; kind?: string; box_px?: number[] }[];

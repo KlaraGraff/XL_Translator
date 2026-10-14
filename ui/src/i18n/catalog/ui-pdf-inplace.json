@@ -76,5 +76,7 @@
   "选择安装位置": {"en": "Select install location", "fr": "Sélectionner l'emplacement d'installation"},
   "选择的位置不是可用的 PDF 转 Word 组件。": {"en": "The selected location is not a usable PDF-to-Word component.", "fr": "L'emplacement sélectionné n'est pas un composant PDF vers Word utilisable."},
   "选择的位置不是可用的文字识别组件。": {"en": "The selected location is not a usable text recognition component.", "fr": "L'emplacement sélectionné n'est pas un composant de reconnaissance de texte utilisable."},
-  "重新检测": {"en": "Detect again", "fr": "Relancer la détection"}
+  "重新检测": {"en": "Detect again", "fr": "Relancer la détection"},
+  "原位替换 · {0} 处未获得译文": {"en": "Replaced in place · {0} {0|label|labels} not translated", "fr": "Remplacé sur place · {0} {0|étiquette non traduite|étiquettes non traduites}"},
+  "未获得译文的地方：{0}{1}": {"en": "No translation received at: {0}{1}", "fr": "Aucune traduction reçue : {0}{1}"}
 }

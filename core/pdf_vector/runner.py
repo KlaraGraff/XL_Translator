@@ -93,6 +93,7 @@ class InplaceResult:
     written: int = 0            # lines replaced by the translation
     kept: int = 0               # numbers, codes, names: nothing to translate
     review: int = 0             # unsure: source kept, listed for the user
+    untranslated: int = 0       # the service gave up on it: source kept, listed for review
     term_review: int = 0        # written, but a set translation from the memory was not used
     not_written: int = 0        # translated but could not be placed safely
     ocr_used: bool = False
@@ -113,7 +114,7 @@ _REASON_TEXT = {
     "ocr_rotated_unverified": "旋转的文字未能确认",
     "ocr_code_uncertain": "编号或数字可能认错",
     "ocr_operator_uncertain": "比较符号（≤ ≥ < >）可能认错",
-    "model_missing": "翻译没有返回结果",
+    "model_missing": "未获得译文",
     "numeric_mismatch": "译文里的数字和原文不一致",
     "operator_mismatch": "译文里的比较符号和原文不一致",
     "source_not_removable": "原文删不干净（可能在图片里）",
@@ -186,10 +187,11 @@ def translate_page_inplace(
     decided_write = {r["id"] for r in rows if r["decision"] == "write"}
     written_ids = {w["id"] for w in rep["written"]}
     skipped = {s["id"]: s["reason"] for s in rep["skipped"]}
+    missing = {r["id"] for r in rows if r["decision"] == "review" and r["decision_reason"] == "model_missing"}
     review_items = [
         {"text": r["source_text"], "reason": reason_text(r["decision_reason"] if r["decision"] == "review"
                                                          else skipped.get(r["id"], "")),
-         "box_px": r["display_box"]}
+         "box_px": r["display_box"], **({"kind": "untranslated"} if r["id"] in missing else {})}
         for r in rows
         if r["decision"] == "review" or (r["id"] in decided_write and r["id"] not in written_ids)
     ]
@@ -205,7 +207,9 @@ def translate_page_inplace(
         output_pdf=str(out_pdf),
         written=len(written_ids),
         kept=sum(1 for r in rows if r["decision"] == "keep_source"),
-        review=sum(1 for r in rows if r["decision"] == "review"),
+        # 接口放弃、没拿到译文的（与 CAD 的「未获得译文」同一类）单独计数，不算「认不准」。
+        review=sum(1 for r in rows if r["decision"] == "review") - len(missing),
+        untranslated=len(missing),
         not_written=len(decided_write - written_ids),
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe),

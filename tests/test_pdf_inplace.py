@@ -536,3 +536,87 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertEqual(record.skipped_oversize_page_count, 2)
         self.assertIsInstance(final, DoneMsg)
         self.assertFalse(final.file_results[0]["success"])   # nothing was translated
+
+
+@unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
+class InplaceApiGaveUpTests(unittest.TestCase):
+    """接口反复失败、放弃的文字：按 CAD 的口径记「未获得译文」并标需复核，
+    不能被当成「模型有意保留原文」（数字和编号那一类）而没人复核。"""
+
+    _run = InplaceTaskTests._run
+
+    def _service_hooks(self, fail: set[str]):
+        from api.surfaces.pdf import _inplace_hooks
+        from core import tm_manager
+
+        calls: list[list[str]] = []
+
+        class Engine:
+            engine_name = "openai/fake"
+
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                calls.append(list(texts))
+                if fail & set(texts):
+                    raise ValueError("503 Service Unavailable")
+                return {text: LABELS.get(text, text) for text in texts}
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = AppSettings(target_lang="zh")
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh"})
+        settings.rate.pdf_text.batch_items = 10
+        settings.rate.pdf_text.concurrency = 1
+        for patcher in (
+            patch("core.engine_dispatcher.build_role_engine", return_value=Engine()),
+            patch("core.engine_dispatcher._backoff_sleep", lambda *args, **kwargs: None),
+            patch("core.ocr_engine.resolve_tesseract", return_value=None),
+            patch.object(tm_manager, "DB_PATH", Path(tmp.name) / "tm.db"),
+            patch.object(tm_manager, "BACKUPS_DIR", Path(tmp.name) / "backups"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        hooks = _inplace_hooks(settings, ())
+        hooks.source_lang = "fr"
+        return hooks, calls
+
+    def test_labels_the_api_gave_up_on_are_untranslated_and_need_review(self):
+        from core.pdf_task_report import _inplace_report_lines, _summary_issues
+
+        hooks, calls = self._service_hooks({"Mur coupe feu 1 heure"})
+        runner, record, _client = self._run(hooks=hooks, sizes=(A3,), text=(True,))
+        page = record.pages[0]
+
+        self.assertEqual(page.inplace_status, "done")
+        self.assertEqual(page.inplace_written, 2)
+        self.assertEqual(page.inplace_untranslated, 1)
+        # 不算「认不准」，也不算「数字和编号等不需要翻译」
+        self.assertEqual(page.inplace_review, 0)
+        self.assertEqual(page.inplace_kept, 0)
+        self.assertIn("1 处未获得译文，需复核", page.inplace_message)
+        self.assertIn({"text": "Mur coupe feu 1 heure", "reason": "未获得译文", "kind": "untranslated"},
+                      [{k: item[k] for k in ("text", "reason", "kind") if k in item} for item in page.inplace_review_items])
+        # 页面层面再试过一次，仍没有译文才这样记
+        self.assertGreaterEqual(sum(texts.count("Mur coupe feu 1 heure") for texts in calls), 2)
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+        snap = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+        self.assertEqual(snap["inplace_untranslated"], 1)
+        issues = _summary_issues([record])
+        self.assertIn(("第 1 页", "1 处未获得译文，已保留原文，需复核"),
+                      [(issue["location_label"], issue["problem"]) for issue in issues])
+        report = "\n".join(_inplace_report_lines(record))
+        self.assertIn("未获得译文 1 处（需复核）", report)
+        self.assertIn("未获得译文「Mur coupe feu 1 heure」", report)
+        with fitz.open(record.translated_pdf_path) as out:
+            text = out[0].get_text()
+            self.assertIn("屋面平面图", text)
+            self.assertIn("Mur coupe feu 1 heure", text)  # 原文留在图上
+
+    def test_api_giving_up_on_every_label_keeps_the_page_and_says_why(self):
+        hooks, _calls = self._service_hooks(set(LABELS))
+        _runner, record, _client = self._run(hooks=hooks, sizes=(A3,), text=(True,))
+        page = record.pages[0]
+
+        self.assertEqual(page.inplace_status, "kept_original")
+        self.assertEqual(page.inplace_untranslated, 3)
+        self.assertEqual(page.inplace_message, "识别到 3 处文字，均未替换（未获得译文），这一页保留原样")
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)

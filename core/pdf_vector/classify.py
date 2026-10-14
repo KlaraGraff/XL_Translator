@@ -223,15 +223,18 @@ SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de":
 
 def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
                           **extra) -> tuple[dict, int]:
-    """A failed batch comes back as the source text.  Words that came back
-    untouched get one more try before we believe the model meant to keep them
-    (company names and addresses really do stay)."""
+    """Texts the service gave up on are left out of the result (the app's
+    translate hook drops them, see core/text_translation_service.py); words that
+    came back untouched may be a model keeping a name.  Both get one more try
+    before we believe it: still missing means "no translation" (review), still
+    untouched means the model meant to keep it (company names and addresses
+    really do stay)."""
     try:
         res = dict(translate(texts, prompt, **extra) or {})
     except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
         errors.append(f"{type(exc).__name__}: {exc}")
-        res = {}
-    again = [t for t in texts if norm_text(res.get(t) or "") == norm_text(t) and WORD_RE.search(t)]
+        return {}, 0
+    again = [t for t in texts if WORD_RE.search(t) and (not res.get(t) or norm_text(res[t]) == norm_text(t))]
     if again:
         try:
             res.update({k: v for k, v in (translate(again, prompt, **extra) or {}).items() if v})

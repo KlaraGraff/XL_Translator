@@ -229,6 +229,9 @@ class PdfPageRecord:
     inplace_written: int = 0
     inplace_kept: int = 0
     inplace_review: int = 0
+    # 接口放弃、没拿到译文而保留原文的处数（与 CAD「未获得译文」同类，也列在 inplace_review_items，
+    # kind 为 untranslated）；有就要复核。
+    inplace_untranslated: int = 0
     # 译文已写入、但未采用记忆库「始终采用」词条设定译法的处数（也列在 inplace_review_items）。
     inplace_term_review: int = 0
     inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
