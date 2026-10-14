@@ -9,10 +9,11 @@
 
 1. :func:`find_recurring_terms` 在本机统计：出现在至少 3 段不同文字里的词（中文取
    2–10 个字的重复片段，只留最长的；其他文字取两到四个词的词组和句中大写的专名），
-   附上一处原文。不调模型。
+   附上一两处用法不同的原文。不调模型。
 2. :class:`TermPicker` 把候选词连同文档说明交给模型，请它挑出需要全文统一的专业
-   术语和专名，各给一个译法和一句适用场景说明。优先用「记忆库清洗模型」（一般配得
-   比翻译模型好）；没配、不可用或请求失败时改用文档翻译模型；都不行就跳过，照常翻译。
+   术语和专名，各给一个译法和一句适用场景说明；定错一个就全文一起错，所以请它拿不准
+   的不选。优先用「记忆库清洗模型」（一般配得比翻译模型好）；没配、不可用或请求失败
+   时改用文档翻译模型；都不行就跳过，照常翻译，运行日志写明原因。
 3. 定下的词由 :class:`core.tm_terms.TermIndex` 随批附上（只附本批出现的），翻完核对
    哪些位置采用了；在大多数位置被采用的，按「自动保存」存进记忆库，备注为适用场景
    （:mod:`core.term_session`）。
@@ -39,8 +40,8 @@ MIN_TEXTS = 3
 # 交给模型挑的候选上限，其中两个字的词最多占这么多（两个字的常用词很多，免得挤掉长词）。
 MAX_CANDIDATES = 120
 MAX_TWO_CHAR_CANDIDATES = 20
-# 模型最多定这么多个。
-MAX_TERMS = 50
+# 模型最多定这么多个（定错一个就全文一起错，宁少勿多；也让慢模型来得及答完）。
+MAX_TERMS = 30
 # 送去模型的文字总量少于这么多字时不做：两三批就翻完，批与批之间的出入很少。
 MIN_DOCUMENT_CHARS = 3000
 # 中文候选的长度范围（字）。
@@ -302,24 +303,38 @@ def _weight(term: str, count: int, *, is_cjk: bool) -> float:
     return count * factor
 
 
-def _example(term: str, texts: Sequence[str], *, fold: bool) -> str:
-    """一处原文：挑够长的最短一段，截取词前后各二十来个字。"""
-    best = ""
-    for text in texts:
-        haystack = text.lower() if fold else text
-        if term not in haystack or len(text) < len(term) + 4:
-            continue
-        if not best or len(text) < len(best):
-            best = text
-    if not best:
-        best = next((text for text in texts if term in (text.lower() if fold else text)), "")
-    if not best:
-        return ""
-    position = (best.lower() if fold else best).find(term)
+def _snippet(text: str, position: int, size: int) -> str:
     start = max(0, position - _EXAMPLE_RADIUS)
-    end = min(len(best), position + len(term) + _EXAMPLE_RADIUS)
-    snippet = best[start:end]
-    return ("…" if start else "") + snippet + ("…" if end < len(best) else "")
+    end = min(len(text), position + size + _EXAMPLE_RADIUS)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def _examples(term: str, texts: Sequence[str], *, fold: bool) -> str:
+    """一两处原文，截取词前后各十几个字。先挑够长的最短一段；再找一段词两头接的字
+    不同的，让模型看到这个词在文中的另一种用法（「曳引钢丝绳」「限速器钢丝绳」）。
+    ``fold`` 为真时不分大小写地找，截出来的仍是原写法。"""
+    needle = term.lower() if fold else term
+    found: list[tuple[bool, str, int]] = []
+    for text in texts:
+        position = (text.lower() if fold else text).find(needle)
+        if position >= 0:
+            found.append((len(text) < len(term) + 4, text, position))
+    if not found:
+        return ""
+    found.sort(key=lambda item: (item[0], len(item[1])))
+    size = len(term)
+
+    def edges(text: str, position: int) -> tuple[str, str]:
+        return text[position - 1:position], text[position + size:position + size + 1]
+
+    _short, first, first_at = found[0]
+    picked = [_snippet(first, first_at, size)]
+    first_edges = edges(first, first_at)
+    for _short, text, position in found[1:]:
+        if edges(text, position) != first_edges:
+            picked.append(_snippet(text, position, size))
+            break
+    return " ／ ".join(picked)
 
 
 def _surface(term: str, texts: Sequence[str]) -> str:
@@ -357,7 +372,6 @@ def find_recurring_terms(
         + [(term, count, False) for term, count in latin.items()],
         key=lambda item: (-_weight(item[0], item[1], is_cjk=item[2]), -len(item[0]), item[0]),
     )
-    lowered = [text.lower() for text in distinct]
     picked: list[TermCandidate] = []
     two_char = 0
     for term, count, is_cjk in ranked:
@@ -370,10 +384,7 @@ def find_recurring_terms(
             if two_char >= MAX_TWO_CHAR_CANDIDATES:
                 continue
             two_char += 1
-        example = _example(term, distinct if is_cjk else lowered, fold=not is_cjk)
-        if not is_cjk:
-            # 例句从原文里取，保留大小写。
-            example = _example(surface, distinct, fold=False) or example
+        example = _examples(term, distinct, fold=not is_cjk)
         picked.append(
             TermCandidate(
                 source=surface,
@@ -389,15 +400,18 @@ def find_recurring_terms(
 
 _PICK_SYSTEM = (
     "你是翻译前的统一用词审定助手。用户会给出一份待翻译文档的说明，以及文档中在多处反复出现的词"
-    "（每个附一处原文）。这份文档会分成许多批分别翻译，请为需要全文统一说法的词各定一个{target}译法，"
-    "供每一批翻译时参照。要求：\n"
+    "（每个附一两处原文）。这份文档会分成许多批分别翻译，请为需要全文统一说法的词各定一个{target}译法，"
+    "供每一批翻译时参照。定下的译法全文照用，定错了就全文一起错，所以宁缺毋滥。要求：\n"
     "1. 只选专业术语和专有名词：设备、材料、构件、工序、机构、职务、项目名、公司名、地名等，"
-    "在{target}里有不止一种说法、需要统一的词。普通词语、不成词的片段、数字和代号不选。\n"
-    "2. 译法用{target}中最规范、最常用的专业说法；名词用原形，不加冠词、不用复数；专有名词按通行写法。"
-    "附有「记忆库已有译法」的，没有明显错误就沿用。\n"
-    "3. 每个词附一句不超过 15 个字的适用场景说明（例如「建筑基坑土方施工」「电梯安装工程」），"
-    "说明这个译法在什么场景下成立。\n"
-    "4. 最多 {limit} 个。只输出一个 JSON 对象：键是候选词原文（与列表中一字不差），"
+    "在{target}里有不止一种说法、需要统一的词。以下不选：普通词语；「施工」「安装」「开挖」「检查」"
+    "这类单独的动作或泛称（译法随上下文变）；不成词的片段；数字和代号。\n"
+    "2. 译法用{target}该行业里规范、通行的说法，不要逐字拼出一个行业里没有的说法；名词用原形，"
+    "不加冠词、不用复数；专有名词按通行写法。附有「记忆库已有译法」的，没有明显错误就沿用。\n"
+    "3. 一个词在文中指几种不同的东西时（看所附原文），译法要对每一种都成立，做不到的不选。\n"
+    "4. 拿不准的不选：不选的词由各批照常翻译。\n"
+    "5. 每个词附一句不超过 15 个字的适用场景，写这个译法成立的行业或领域（例如「建筑施工」"
+    "「电梯工程」），不写本文档的具体内容；在这个范围里，这个译法都要成立。\n"
+    "6. 最多 {limit} 个，没有合适的就返回空对象。只输出一个 JSON 对象：键是候选词原文（与列表中一字不差），"
     '值是 {{"译法": "…", "场景": "…"}}。不要输出其他内容。'
 )
 
@@ -410,7 +424,7 @@ def build_pick_request(
     limit: int = MAX_TERMS,
 ) -> tuple[str, str]:
     system = _PICK_SYSTEM.format(target=target_language or "目标语言", limit=limit)
-    lines = [f"文档说明：{_clean(profile) or '（无）'}", "", "候选词（原文 ｜ 出现段数 ｜ 一处原文）："]
+    lines = [f"文档说明：{_clean(profile) or '（无）'}", "", "候选词（原文 ｜ 出现段数 ｜ 一两处原文）："]
     for number, item in enumerate(candidates, start=1):
         line = f"{number}. {item.source} ｜ {item.texts} 段 ｜ {item.example}"
         if item.known:
@@ -461,6 +475,16 @@ def parse_pick_response(
         if len(terms) >= limit:
             break
     return terms
+
+
+_BAD_REPLY = "模型的回复格式不正确。"
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """写进运行日志的失败原因：一句用户看得懂的话（地址或模型名不对、超时……）。"""
+    from core.task_runner import user_facing_reason
+
+    return user_facing_reason(exc, fallback="请求没有成功。")
 
 
 class TermPicker:
@@ -521,29 +545,35 @@ class TermPicker:
             attempts.append(("cleaner", primary))
         if self._fallback is not None:
             attempts.append(("translation", self._fallback))
+        reason = ""
         for index, (role, engine) in enumerate(attempts):
             try:
-                terms = parse_pick_response(
-                    engine.chat(system, user), candidates, target_is_cjk=self._target_is_cjk
-                )
+                raw = engine.chat(system, user)
             except Exception as exc:  # noqa: BLE001 - optional step, translation goes on
                 logger.info(f"统一用词请求失败（{role}）：{exc!r}")
-                if role == "cleaner" and index + 1 < len(attempts):
-                    log("INFO", "统一用词：记忆库清洗模型未能确定译法，改用文档翻译模型")
-                continue
-            self.engine_name = str(getattr(engine, "engine_name", "") or "")
-            if terms:
-                log(
-                    "INFO",
-                    (
-                        f"统一用词：记忆库清洗模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
-                        if role == "cleaner"
-                        else f"统一用词：文档翻译模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
-                    ),
-                )
-            return terms
+                reason = _failure_reason(exc)
+            else:
+                try:
+                    terms = parse_pick_response(raw, candidates, target_is_cjk=self._target_is_cjk)
+                except Exception as exc:  # noqa: BLE001 - optional step, translation goes on
+                    logger.info(f"统一用词返回无法解析（{role}）：{exc!r}")
+                    reason = _BAD_REPLY
+                else:
+                    self.engine_name = str(getattr(engine, "engine_name", "") or "")
+                    if terms:
+                        log(
+                            "INFO",
+                            (
+                                f"统一用词：记忆库清洗模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
+                                if role == "cleaner"
+                                else f"统一用词：文档翻译模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
+                            ),
+                        )
+                    return terms
+            if role == "cleaner" and index + 1 < len(attempts):
+                log("INFO", f"统一用词：记忆库清洗模型未能确定译法，改用文档翻译模型。原因：{reason}")
         if attempts:
-            log("WARN", "统一用词：未能确定译法，按常规方式继续翻译")
+            log("WARN", f"统一用词：未能确定译法，按常规方式继续翻译。原因：{reason}")
         return []
 
 

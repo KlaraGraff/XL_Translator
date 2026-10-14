@@ -91,6 +91,16 @@ class MiningTests(unittest.TestCase):
         self.assertEqual(by_source["基坑开挖"].texts, 12)
         self.assertIn("基坑开挖", by_source["基坑开挖"].example)
 
+    def test_second_example_shows_another_use(self) -> None:
+        texts = [
+            "限速器钢丝绳张紧后复测",
+            "限速器钢丝绳张紧后再复测",  # 两头接的字和上一段一样，不当第二处
+            "曳引钢丝绳安装前检查外观",
+            "钢丝绳端部用绳头组合固定牢靠",
+        ]
+        example = {item.source: item for item in find_recurring_terms(texts)}["钢丝绳"].example
+        self.assertEqual(example, "限速器钢丝绳张紧后复测 ／ 曳引钢丝绳安装前检查外观")
+
     def test_terms_below_three_texts_are_ignored(self) -> None:
         texts = ["盛泰公司负责供货", "盛泰公司负责安装", "其余由总包负责"]
         self.assertNotIn("盛泰公司", [item.source for item in find_recurring_terms(texts)])
@@ -206,6 +216,22 @@ class PickerTests(unittest.TestCase):
         self.assertEqual([term.target for term in picker(self.CANDIDATES, profile="")], ["fouille"])
         self.assertEqual(picker.engine_name, "translation/model")
         self.assertTrue(any("改用文档翻译模型" in message for _level, message in logs))
+
+    def test_logs_why_the_request_failed(self) -> None:
+        import httpx
+
+        from core.text_transport import TextTransportError, TextTransportHTTPError
+
+        request = httpx.Request("POST", "https://proxy.example/v1/chat/completions")
+        not_found = TextTransportHTTPError(
+            "HTTP 404", request=request, response=httpx.Response(404, request=request), kind="http"
+        )
+        timeout = TextTransportError("read_timeout：请求超时，未确定服务是否已执行；不自动切换协议。", kind="read_timeout")
+        picker, logs = self._picker(_ChatEngine("c", not_found), _ChatEngine("t", timeout))
+        self.assertEqual(picker(self.CANDIDATES, profile=""), [])
+        self.assertIn("改用文档翻译模型。原因：接口上找不到此模型", logs[0][1])
+        self.assertEqual(logs[-1][0], "WARN")
+        self.assertIn("按常规方式继续翻译。原因：模型服务响应超时", logs[-1][1])
 
     def test_unconfigured_cleaner_uses_translation_model(self) -> None:
         translator = _ChatEngine("translation/model", self.GOOD)
