@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch
 
 from core.api_config_check import ApiConfigCheckResult
 from core.file_scanner import FileItem
-from core.model_throughput import EffectiveModelThroughput
 from core.mixed_language import MIXED_ACTION_TRANSLATE, MixedLanguageResult
 from core.task_runner import DoneMsg, TaskRunner
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 
 class FakeExcelSchedulingEngine(TranslationEngine):
@@ -99,12 +99,8 @@ class ExcelApiSchedulingTests(unittest.TestCase):
                 return_value=object(),
             ),
             patch(
-                "core.task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="test",
-                    batch_size=20,
-                    concurrency=2,
-                ),
+                "core.task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(batch_items=20, concurrency=2),
             ),
             patch.object(
                 TaskRunner,
@@ -180,12 +176,8 @@ class ExcelApiSchedulingTests(unittest.TestCase):
             patch("core.task_runner.get_system_prompt", return_value="system"),
             patch("core.task_runner.resolve_effective_model_config", return_value=object()),
             patch(
-                "core.task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="test",
-                    batch_size=20,
-                    concurrency=1,
-                ),
+                "core.task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(batch_items=20, concurrency=1),
             ),
             patch.object(TaskRunner, "_collect_texts", side_effect=collect),
             patch("core.task_runner.tm_manager.lookup_batch", return_value={"施工内容": None}),

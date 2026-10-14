@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Response
 from loguru import logger
 
 from core import process_artifacts, tm_manager
+from core.surface_rate import rate_overview
 from core.language_preflight import (
     build_language_preflight_prompt,
     extract_language_probe_texts,
@@ -179,6 +180,15 @@ def register(app: FastAPI) -> None:
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return load_settings().model_dump(mode="json")
+
+    @app.get("/api/settings/rate")
+    def get_rate_settings() -> dict[str, Any]:
+        """「翻译参数」各页签的速率与重试：已存值、默认值、可填范围和当前实际用的值。
+
+        保存走 PUT /api/settings（rate.<类型>.<项>，null 表示恢复默认值）。默认值和
+        范围按文档翻译模型是云端还是本地分档，界面据此显示占位和上限。
+        """
+        return rate_overview(load_settings())
 
     @app.put("/api/settings")
     def put_settings(payload: dict[str, Any]) -> dict[str, Any]:

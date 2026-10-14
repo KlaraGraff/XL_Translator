@@ -22,13 +22,14 @@ from __future__ import annotations
 from typing import Any
 
 from app_meta import APP_NAME, APP_VERSION
-from settings import AppSettings, migrate_prompt_layers
+from settings import AppSettings, migrate_prompt_layers, migrate_legacy_rate_sections
 
 DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
 # v2：领域 Prompt 覆盖曾升级为按目标语言分层；v3 收敛为每个预设一份 `_base`
 # 主 Prompt。v4：提示词拆成内置规则 + 「自动识别场景」开关 + 补充要求（设置 v35），
-# v3 及以前的包导入时按 settings.migrate_prompt_layers 转换。
-DOCUMENT_CONFIG_EXPORT_VERSION = 4
+# v3 及以前的包导入时按 settings.migrate_prompt_layers 转换。v5：速率与重试按文件类型
+# 放在 rate 节（设置 v38），取代 word_batch / request_retry；v4 及以前的包导入时换算。
+DOCUMENT_CONFIG_EXPORT_VERSION = 5
 # 包里出现这些字段之一，就说明带了那个页面的提示词设置。
 _PROMPT_PAGE_FIELDS = (
     "domain_preset",
@@ -43,9 +44,8 @@ _PROMPT_PAGE_FIELDS = (
 DOCUMENT_CONFIG_SECTIONS = (
     "excel_review",
     "word_review",
-    "word_batch",
     "word_conversion",
-    "request_retry",
+    "rate",
     "pdf",
     "tm",
     "output",
@@ -57,7 +57,8 @@ DOCUMENT_CONFIG_SECTIONS = (
 DOCUMENT_CONFIG_LOCAL_PATH_FIELDS = frozenset(
     {"use_custom_output_dir", "custom_output_dir"}
 )
-_WORD_LEGACY_FIELDS = frozenset({"max_paragraphs_per_batch", "split_paragraph_chars"})
+# v4 及以前的包里的速率与重试，导入时换算成 rate 节。
+_LEGACY_RATE_SECTIONS = ("word_batch", "request_retry")
 # Top-level fields, kept flat because that is how they live in the settings
 # model.  Languages and domain prompts are the part users actually want to hand
 # to a colleague.
@@ -102,9 +103,8 @@ DOCUMENT_CONFIG_FIELDS = (
 DOCUMENT_CONFIG_LABELS = {
     "excel_review": "Excel 复核标记",
     "word_review": "Word 复核标记",
-    "word_batch": "Word 批次与重试",
     "word_conversion": "Word 预处理",
-    "request_retry": "失败重试次数",
+    "rate": "速率与重试",
     "pdf": "PDF 参数",
     "tm": "翻译记忆库参数",
     "output": "输出选项",
@@ -181,7 +181,6 @@ def build_document_config_export_payload(settings: AppSettings) -> dict[str, Any
             key: value
             for key, value in values.items()
             if key not in DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
-            and (section != "word_batch" or key not in _WORD_LEGACY_FIELDS)
         }
     for field in DOCUMENT_CONFIG_FIELDS:
         if field in payload:
@@ -231,10 +230,23 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
             key: value
             for key, value in values.items()
             if key not in DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
-            and (section != "word_batch" or key not in _WORD_LEGACY_FIELDS)
         }
         if kept:
             parsed[section] = kept
+    if version < 5 and "rate" not in parsed:
+        legacy = {
+            section: document[section]
+            for section in _LEGACY_RATE_SECTIONS
+            if isinstance(document.get(section), dict)
+        }
+        # 和设置文件升级同一套换算：等于旧默认值的项不带过来，按本机的新默认值走。
+        rate = {
+            surface: values
+            for surface, values in migrate_legacy_rate_sections(legacy).items()
+            if values
+        }
+        if rate:
+            parsed["rate"] = rate
     for field in DOCUMENT_CONFIG_FIELDS:
         if field in document:
             parsed[field] = document[field]
@@ -268,6 +280,14 @@ def apply_document_config_import(
     """
     payload = settings.model_dump(mode="json")
     for key, value in imported.items():
+        if key == "rate" and isinstance(value, dict):
+            # 按文件类型逐项合并：包里没带的文件类型、没带的项，保持本机原样。
+            current = dict(payload.get(key) or {})
+            for surface, values in value.items():
+                if isinstance(values, dict):
+                    current[surface] = {**dict(current.get(surface) or {}), **values}
+            payload[key] = current
+            continue
         if key in DOCUMENT_CONFIG_SECTIONS and isinstance(value, dict):
             current = dict(payload.get(key) or {})
             current.update(value)

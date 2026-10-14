@@ -296,7 +296,7 @@ class PdfWordRouteScopeTests(unittest.TestCase):
             pdf=SimpleNamespace(target_lang="fr"), target_lang="fr",
             model_copy=lambda deep=True: SimpleNamespace(
                 pdf=SimpleNamespace(target_lang="fr"), target_lang="fr",
-                word_output=SimpleNamespace(),
+                word_output=SimpleNamespace(), rate=SimpleNamespace(),
             ),
         )
         with tempfile.TemporaryDirectory() as temporary:

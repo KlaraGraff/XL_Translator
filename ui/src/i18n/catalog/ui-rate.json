@@ -1,0 +1,158 @@
+{
+  "{0} 个用途": {
+    "en": "{0} model {0|use|uses}",
+    "fr": "{0} {0|usage|usages}"
+  },
+  "每批条数": {
+    "en": "Items per batch",
+    "fr": "Éléments par lot"
+  },
+  "单段重试次数": {
+    "en": "Retries per item",
+    "fr": "Tentatives par élément"
+  },
+  "同时生成页数": {
+    "en": "Pages in parallel",
+    "fr": "Pages en parallèle"
+  },
+  "同时审核页数": {
+    "en": "Pages reviewed in parallel",
+    "fr": "Pages contrôlées en parallèle"
+  },
+  "恢复默认值": {
+    "en": "Restore defaults",
+    "fr": "Rétablir les valeurs par défaut"
+  },
+  "文字翻译": {
+    "en": "Text translation",
+    "fr": "Traduction du texte"
+  },
+  "速率与重试": {
+    "en": "Speed and retries",
+    "fr": "Débit et nouvelles tentatives"
+  },
+  "前往": {
+    "en": "Go",
+    "fr": "Ouvrir"
+  },
+  "记忆库设置": {
+    "en": "Translation memory settings",
+    "fr": "Paramètres de la mémoire de traduction"
+  },
+  "读取设置失败：{0}": {
+    "en": "Could not read the settings: {0}",
+    "fr": "Impossible de lire les paramètres : {0}"
+  },
+  "适用于 Excel、Word、PDF、CAD": {
+    "en": "Applies to Excel, Word, PDF and CAD",
+    "fr": "S'applique à Excel, Word, PDF et CAO"
+  },
+  "更改即时保存，不影响运行中的任务。": {
+    "en": "Changes are saved immediately and do not affect running tasks.",
+    "fr": "Les modifications sont enregistrées immédiatement et n'affectent pas les tâches en cours."
+  },
+  "速率与重试在「翻译参数」中按文件类型设置。": {
+    "en": "Speed and retries are set per file type in “Translation options”.",
+    "fr": "Le débit et les nouvelles tentatives se règlent par type de fichier dans « Options de traduction »."
+  },
+  "翻译方式为「整页图像翻译」时仅使用第一组设置；为「自动组合」时，各页按其处理方式使用对应的一组。": {
+    "en": "With “Full-page image translation”, only the first group is used. With “Automatic mix”, each page uses the group that matches how it is processed.",
+    "fr": "Avec « Traduction d'image pleine page », seul le premier groupe est utilisé. Avec « Combinaison automatique », chaque page utilise le groupe correspondant à son traitement."
+  },
+  "翻译方式为「整页图像翻译」，或自动组合中按整页图像处理的页面": {
+    "en": "“Full-page image translation”, or pages processed as full-page images in “Automatic mix”",
+    "fr": "« Traduction d'image pleine page », ou pages traitées comme images pleine page en « Combinaison automatique »"
+  },
+  "自动组合中按「转 Word」或「原位替换」（含文字识别）处理的页面": {
+    "en": "Pages processed “Via Word” or replaced in place (including text recognition) in “Automatic mix”",
+    "fr": "Pages traitées « Via Word » ou remplacées sur place (reconnaissance de texte comprise) en « Combinaison automatique »"
+  },
+  "同时向模型服务发送的请求数。数值越大速度越快，但更容易被服务商限速，限速时将自动降低。默认：云端模型 30，本地模型 3。范围：云端 1–50，本地 1–5。": {
+    "en": "Number of requests sent to the model service at the same time. Higher values are faster, but the provider is more likely to throttle requests; when that happens, the rate is lowered automatically. Default: 30 for cloud models, 3 for local models. Range: 1–50 cloud, 1–5 local.",
+    "fr": "Nombre de requêtes envoyées simultanément au service du modèle. Une valeur plus élevée accélère le traitement, mais le fournisseur risque davantage de limiter les requêtes ; le débit est alors réduit automatiquement. Par défaut : 30 pour les modèles cloud, 3 pour les modèles locaux. Plage : 1–50 en cloud, 1–5 en local."
+  },
+  "一批内容的原文总字数上限（不含提示词），达到上限即另起一批；单条超过上限时单独成一批。默认：云端模型 1000，本地模型 800。范围 800–12000。": {
+    "en": "Maximum total number of source characters in one batch (instructions not included). A new batch starts when the limit is reached; an item longer than the limit forms a batch of its own. Default: 1000 for cloud models, 800 for local models. Range 800–12000.",
+    "fr": "Nombre total maximal de caractères source dans un lot (instructions non comprises). Un nouveau lot commence lorsque la limite est atteinte ; un élément plus long que la limite forme un lot à lui seul. Par défaut : 1000 pour les modèles cloud, 800 pour les modèles locaux. Plage 800–12000."
+  },
+  "一批内容的原文总字数上限（不含提示词）；超出部分自动分批，过长的段落自动拆分。默认：云端模型 1000，本地模型 800。范围 800–12000。": {
+    "en": "Maximum total number of source characters in one batch (instructions not included). Content beyond the limit goes into further batches, and paragraphs that are too long are split. Default: 1000 for cloud models, 800 for local models. Range 800–12000.",
+    "fr": "Nombre total maximal de caractères source dans un lot (instructions non comprises). Le contenu au-delà de la limite passe dans d'autres lots, et les paragraphes trop longs sont découpés. Par défaut : 1000 pour les modèles cloud, 800 pour les modèles locaux. Plage 800–12000."
+  },
+  "一批内容的原文总字数上限（不含提示词），达到上限即另起一批；转 Word 处理时过长的段落自动拆分。默认：云端模型 1000，本地模型 800。范围 800–12000。": {
+    "en": "Maximum total number of source characters in one batch (instructions not included). A new batch starts when the limit is reached; pages processed via Word also have paragraphs that are too long split. Default: 1000 for cloud models, 800 for local models. Range 800–12000.",
+    "fr": "Nombre total maximal de caractères source dans un lot (instructions non comprises). Un nouveau lot commence lorsque la limite est atteinte ; pour les pages traitées via Word, les paragraphes trop longs sont aussi découpés. Par défaut : 1000 pour les modèles cloud, 800 pour les modèles locaux. Plage 800–12000."
+  },
+  "模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数。默认 2，范围 0–5。仍失败的内容保留原文，并在结果中标记。": {
+    "en": "How many times a batch is sent again automatically when the model service is temporarily unavailable, a request times out or a reply is cut off. Default 2, range 0–5. Content that still fails keeps the source text and is flagged in the result.",
+    "fr": "Nombre de renvois automatiques d'un même lot lorsque le service du modèle est momentanément indisponible, qu'une requête expire ou qu'une réponse est interrompue. Par défaut 2, plage 0–5. Le contenu toujours en échec conserve le texte source et est signalé dans le résultat."
+  },
+  "模型返回的译文缺失或不完整、拆分为更小的批次后仍未获得译文时，该条内容单独重新翻译的最多次数。默认 3，范围 0–8；设为 0 时不单独重试，直接保留原文并标记需复核。": {
+    "en": "When the model's translation is missing or incomplete and splitting into smaller batches still returns none, the maximum number of times the item is retranslated on its own. Default 3, range 0–8. With 0, the item is not retried; it keeps the source text and is marked for review.",
+    "fr": "Lorsque la traduction du modèle manque ou est incomplète et qu'un découpage en lots plus petits n'en donne toujours pas, nombre maximal de nouvelles traductions de l'élément seul. Par défaut 3, plage 0–8. Avec 0, l'élément n'est pas retenté : il conserve le texte source et est marqué à vérifier."
+  },
+  "模型返回的译文缺失或不完整、拆分为更小的批次后仍未获得译文时，该条内容单独重新翻译的最多次数。默认 3，范围 0–8；设为 0 时不单独重试，直接保留原文并标记需复核。转 Word 处理的页面至少重新翻译 1 次。": {
+    "en": "When the model's translation is missing or incomplete and splitting into smaller batches still returns none, the maximum number of times the item is retranslated on its own. Default 3, range 0–8. With 0, the item is not retried; it keeps the source text and is marked for review. Pages processed via Word are retranslated at least once.",
+    "fr": "Lorsque la traduction du modèle manque ou est incomplète et qu'un découpage en lots plus petits n'en donne toujours pas, nombre maximal de nouvelles traductions de l'élément seul. Par défaut 3, plage 0–8. Avec 0, l'élément n'est pas retenté : il conserve le texte source et est marqué à vérifier. Les pages traitées via Word sont retraduites au moins une fois."
+  },
+  "译文为空、明显不完整或未通过质量检查时，段落自动重新翻译的最多次数。默认 3，范围 1–8。": {
+    "en": "Maximum number of automatic retranslations for a paragraph whose result is empty, clearly incomplete or fails the quality check. Default 3, range 1–8.",
+    "fr": "Nombre maximal de nouvelles traductions automatiques d'un paragraphe dont le résultat est vide, manifestement incomplet ou refusé par le contrôle qualité. Par défaut 3, plage 1–8."
+  },
+  "每次请求最多包含的单元格数。默认：云端模型 20，本地模型 10。范围：云端 10–30，本地 5–20。": {
+    "en": "Maximum number of cells in one request. Default: 20 for cloud models, 10 for local models. Range: 10–30 cloud, 5–20 local.",
+    "fr": "Nombre maximal de cellules par requête. Par défaut : 20 pour les modèles cloud, 10 pour les modèles locaux. Plage : 10–30 en cloud, 5–20 en local."
+  },
+  "每次请求最多包含的段落数。默认 8，范围 1–8。": {
+    "en": "Maximum number of paragraphs in one request. Default 8, range 1–8.",
+    "fr": "Nombre maximal de paragraphes par requête. Par défaut 8, plage 1–8."
+  },
+  "每次请求最多包含的文字条数。默认：云端模型 20，本地模型 10；转 Word 处理的页面每批最多 8 段。范围：云端 10–30，本地 5–20。": {
+    "en": "Maximum number of text items in one request. Default: 20 for cloud models, 10 for local models; pages processed via Word use at most 8 paragraphs per batch. Range: 10–30 cloud, 5–20 local.",
+    "fr": "Nombre maximal d'éléments de texte par requête. Par défaut : 20 pour les modèles cloud, 10 pour les modèles locaux ; les pages traitées via Word utilisent au plus 8 paragraphes par lot. Plage : 10–30 en cloud, 5–20 en local."
+  },
+  "每次请求最多包含的文字条目数。默认：云端模型 20，本地模型 10。范围：云端 10–30，本地 5–20。": {
+    "en": "Maximum number of text entries in one request. Default: 20 for cloud models, 10 for local models. Range: 10–30 cloud, 5–20 local.",
+    "fr": "Nombre maximal d'entrées de texte par requête. Par défaut : 20 pour les modèles cloud, 10 pour les modèles locaux. Plage : 10–30 en cloud, 5–20 en local."
+  },
+  "同时翻译的页数。默认：云端模型 10，本地模型 3。范围 1–20。": {
+    "en": "Number of pages translated at the same time. Default: 10 for cloud models, 3 for local models. Range 1–20.",
+    "fr": "Nombre de pages traduites en même temps. Par défaut : 10 pour les modèles cloud, 3 pour les modèles locaux. Plage 1–20."
+  },
+  "单页翻译失败后的最多重试次数。默认 1，范围 0–8。": {
+    "en": "Maximum number of retries after a page fails to translate. Default 1, range 0–8.",
+    "fr": "Nombre maximal de nouvelles tentatives après l'échec de la traduction d'une page. Par défaut 1, plage 0–8."
+  },
+  "开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。默认开启。": {
+    "en": "When on, short words such as “甲” that appear in a new context are saved as new entries, with a note taken from the document description. When off, nothing is saved automatically. On by default.",
+    "fr": "Si cette option est activée, les mots courts tels que « 甲 » qui apparaissent dans un nouveau contexte sont enregistrés comme nouvelles entrées, avec une note issue de la description du document. Si elle est désactivée, rien n'est enregistré automatiquement. Activée par défaut."
+  },
+  "开启后，采用方式为「始终采用」的词条在句中出现时同样采用其译法；关闭时仅在整段文字完全相同时采用。默认开启。": {
+    "en": "When on, “Always apply” entries are also applied when they appear inside sentences; when off, they are applied only when the whole text matches exactly. On by default.",
+    "fr": "Si cette option est activée, les entrées « Toujours appliquer » sont aussi appliquées lorsqu'elles apparaissent dans des phrases ; sinon, elles ne le sont que lorsque le texte entier correspond exactement. Activée par défaut."
+  },
+  "开启后，记忆库页面、记忆条目编辑窗口和任务详情中将显示采用方式、生效范围、使用次数等信息，并可在此调整记忆库选项。默认关闭。": {
+    "en": "When on, the translation memory page, the entry editor and task details show how each entry is applied, where it applies, how often it is used and more, and the translation memory options can be adjusted here. Off by default.",
+    "fr": "Si cette option est activée, la page de la mémoire de traduction, la fenêtre de modification des entrées et le détail des tâches affichent le mode d'application, la portée, le nombre d'utilisations, etc., et les options de la mémoire de traduction peuvent être réglées ici. Désactivée par défaut."
+  },
+  "译文未采用设定译法时，段落自动重新翻译的最多次数。默认 2，范围 0–5；仍未采用的位置将在输出文件中标记需复核，设为 0 时不重新翻译，直接标记。": {
+    "en": "Maximum number of times a text is retranslated when the translation does not use a set translation. Default 2, range 0–5. Places that still do not use it are marked for review in the output file; with 0, they are marked without retranslating.",
+    "fr": "Nombre maximal de nouvelles traductions d'un texte lorsque la traduction n'utilise pas une traduction définie. Par défaut 2, plage 0–5. Les endroits qui ne l'utilisent toujours pas sont marqués à vérifier dans le fichier de sortie ; avec 0, ils sont marqués sans nouvelle traduction."
+  },
+  "单批内容涉及的词条超过此数时，将自动拆分为更小的批次，确保相关词条均随内容发送。默认 20，范围 5–100。": {
+    "en": "When a batch involves more entries than this, it is split into smaller batches so that every relevant entry is sent with the text. Default 20, range 5–100.",
+    "fr": "Lorsqu'un lot concerne plus d'entrées que ce nombre, il est divisé en lots plus petits afin que chaque entrée concernée soit envoyée avec le texte. Par défaut 20, plage 5–100."
+  },
+  "重试次数和每批词条上限在「翻译参数」中设置。": {
+    "en": "Retries and entries per batch are set in “Translation options”.",
+    "fr": "Les nouvelles tentatives et le nombre d'entrées par lot se règlent dans « Options de traduction »."
+  },
+  "连接和模型名称仍可正常导入，导入后需手动填写各连接的密钥。如需密钥，请让发送方重新导出。": {
+    "en": "Connections and model names can still be imported; each connection's key must then be entered manually. To obtain the keys, ask the sender to export a new file.",
+    "fr": "Les connexions et noms de modèles restent importables ; la clé de chaque connexion devra ensuite être saisie manuellement. Pour obtenir les clés, demandez à l'expéditeur un nouvel export."
+  },
+  "开启「逐页审核」时同时审核的页数。默认：云端模型 10，本地模型 3。范围 1–20。未开启逐页审核时不使用。": {
+    "en": "Number of pages reviewed at the same time when “Page review” is on. Default: 10 for cloud models, 3 for local models. Range 1–20. Not used when page review is off.",
+    "fr": "Nombre de pages contrôlées en même temps lorsque « Contrôle des pages » est activé. Par défaut : 10 pour les modèles cloud, 3 pour les modèles locaux. Plage 1–20. Non utilisé lorsque le contrôle des pages est désactivé."
+  }
+}

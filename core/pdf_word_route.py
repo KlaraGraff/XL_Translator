@@ -422,6 +422,7 @@ def translate_pdf_via_word(
     from core.word_document import scan_word_path
     from core.word_task_runner import WordTaskRunner
     from core.request_log import is_request_log_line
+    from core.surface_rate import pdf_text_as_word
 
     prefix = f"[{file_label}] " if file_label else ""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -438,6 +439,9 @@ def translate_pdf_via_word(
 
     word_settings = settings.model_copy(deep=True)
     word_settings.target_lang = settings.pdf.target_lang or settings.target_lang
+    # 速率与重试用「翻译参数 → PDF → 文字翻译」那一组，不是 Word 页签的（每批条数按
+    # Word 的上限 8 段收敛）。
+    word_settings.rate.word = pdf_text_as_word(settings)
     word_settings.word_output.use_custom_output_dir = True
     word_settings.word_output.custom_output_dir = str(work_dir / "out")
     word_settings.word_output.output_translation_only = True

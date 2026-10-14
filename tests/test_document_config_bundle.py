@@ -28,7 +28,7 @@ from tests.app_data_isolation import IsolatedAppDataTestCase
 
 def _configured_settings() -> AppSettings:
     app = AppSettings()
-    app.word_batch.max_chars_per_batch = 1200
+    app.rate.word.batch_chars = 1200
     app.excel_review.existing_fill_policy = "overwrite"
     app.pdf.page_retry_attempts = 5
     app.excel_domain_preset = "无"
@@ -44,9 +44,7 @@ class DocumentConfigExportTests(unittest.TestCase):
         document = payload["document"]
 
         self.assertEqual(payload["type"], DOCUMENT_CONFIG_EXPORT_TYPE)
-        self.assertEqual(document["word_batch"]["max_chars_per_batch"], 1200)
-        self.assertNotIn("max_paragraphs_per_batch", document["word_batch"])
-        self.assertNotIn("split_paragraph_chars", document["word_batch"])
+        self.assertEqual(document["rate"]["word"]["batch_chars"], 1200)
         self.assertEqual(document["excel_review"]["existing_fill_policy"], "overwrite")
         self.assertEqual(document["pdf"]["page_retry_attempts"], 5)
         self.assertEqual(document["excel_domain_preset"], "无")
@@ -79,7 +77,7 @@ class DocumentConfigImportTests(unittest.TestCase):
             AppSettings(), parse_document_config_import(exported)
         )
 
-        self.assertEqual(restored.word_batch.max_chars_per_batch, 1200)
+        self.assertEqual(restored.rate.word.batch_chars, 1200)
         self.assertEqual(restored.excel_review.existing_fill_policy, "overwrite")
         self.assertEqual(restored.pdf.page_retry_attempts, 5)
         self.assertEqual(restored.excel_domain_preset, "无")
@@ -98,7 +96,7 @@ class DocumentConfigImportTests(unittest.TestCase):
         )
 
         self.assertEqual(merged.pdf.page_retry_attempts, 1)
-        self.assertEqual(merged.word_batch.max_chars_per_batch, 1200)
+        self.assertEqual(merged.rate.word.batch_chars, 1200)
         self.assertEqual(merged.excel_domain_preset, "无")
 
     def test_import_keeps_the_importing_machines_output_directory(self) -> None:
@@ -197,22 +195,22 @@ class DocumentConfigRouteTests(IsolatedAppDataTestCase):
     def test_export_then_import_round_trips_through_the_api(self) -> None:
         self.client.put(
             "/api/settings",
-            json={"word_batch": {"max_chars_per_batch": 1200}},
+            json={"rate": {"word": {"batch_chars": 1200}}},
         )
         exported = self.client.get("/api/document-config/export").json()
 
         self.client.put(
             "/api/settings",
-            json={"word_batch": {"max_chars_per_batch": 800}},
+            json={"rate": {"word": {"batch_chars": 800}}},
         )
         preview = self.client.post("/api/document-config/import/preview", json=exported)
         applied = self.client.post("/api/document-config/import", json=exported)
 
         self.assertEqual(preview.status_code, 200)
-        self.assertIn("Word 批次与重试", preview.json()["areas"])
+        self.assertIn("速率与重试", preview.json()["areas"])
         self.assertEqual(applied.status_code, 200)
         self.assertEqual(
-            applied.json()["settings"]["word_batch"]["max_chars_per_batch"], 1200
+            applied.json()["settings"]["rate"]["word"]["batch_chars"], 1200
         )
 
     def test_a_wrong_file_gets_a_422_and_changes_nothing(self) -> None:

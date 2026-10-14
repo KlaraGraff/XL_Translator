@@ -26,7 +26,6 @@ from core.cad_task_runner import CadTaskRunner
 from core.cad_translation import CadPipelineOptions
 from core.concurrent_calls import map_concurrently
 from core.file_scanner import FileItem
-from core.model_throughput import EffectiveModelThroughput
 from core.pdf_image_translation import PdfFileItem, PdfImageTranslationRunner
 from core.residual_repair import run_repair_ladder
 from core.task_runner import StatusMsg, TaskRunner
@@ -37,12 +36,9 @@ from tests import test_excel_resume as excel_helpers
 from tests import test_pdf_image_translation as pdf_helpers
 from tests import test_word_resume as word_helpers
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.rate_pins import pinned_surface_rate
 
 _WAIT = 5.0
-
-
-def _throughput(concurrency: int) -> EffectiveModelThroughput:
-    return EffectiveModelThroughput(profile_key="test", batch_size=20, concurrency=concurrency)
 
 
 class MapConcurrentlyTests(unittest.TestCase):
@@ -116,7 +112,7 @@ class ExcelWordLanguageCheckTests(IsolatedAppDataTestCase):
             with excel_helpers._pipeline_patches(
                 translate_side_effect=excel_helpers._fake_translate([]),
                 translate_with_sources_side_effect=excel_helpers._fake_translate_with_sources([]),
-            ), patch("core.task_runner.get_model_throughput", return_value=_throughput(4)), patch(
+            ), patch("core.task_runner.resolve_surface_rate", side_effect=pinned_surface_rate(concurrency=4)), patch(
                 "core.task_runner.preflight_files", side_effect=preflight
             ), patch("core.task_runner.request_document_profile", side_effect=profile), patch(
                 "core.task_runner.engine_supports_chat", return_value=True
@@ -150,7 +146,7 @@ class ExcelWordLanguageCheckTests(IsolatedAppDataTestCase):
             runner = WordTaskRunner(items, AppSettings(source_lang="auto", target_lang="en"), source_root=root)
             with ExitStack() as stack:
                 word_helpers.WordResumeTests._runner_patches(self, stack, root=root)
-                stack.enter_context(patch("core.word_task_runner.get_model_throughput", return_value=_throughput(4)))
+                stack.enter_context(patch("core.word_task_runner.resolve_surface_rate", side_effect=pinned_surface_rate(concurrency=4)))
                 stack.enter_context(patch("core.word_task_runner.preflight_files", side_effect=preflight))
                 stack.enter_context(patch("core.word_task_runner.request_document_profile", side_effect=profile))
                 stack.enter_context(patch("core.word_task_runner.engine_supports_chat", return_value=True))

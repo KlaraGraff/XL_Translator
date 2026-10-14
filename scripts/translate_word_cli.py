@@ -152,30 +152,35 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
         )
     if args.ollama_model:
         settings.engine.ollama_model = args.ollama_model.strip()
+    # v38 起 Word 的速率与重试在 settings.rate.word（翻译参数 → Word）。
+    word_rate = settings.rate.word
     if args.concurrency is not None:
         settings.engine.concurrency = args.concurrency
+        word_rate.concurrency = max(1, int(args.concurrency))
     if args.ollama_concurrency is not None:
         settings.engine.ollama_concurrency = args.ollama_concurrency
+        if settings.engine.mode == "local":
+            word_rate.concurrency = max(1, int(args.ollama_concurrency))
     if args.batch_size is not None:
-        settings.word_batch.max_paragraphs_per_batch = _clamp(
+        word_rate.batch_items = _clamp(
             args.batch_size,
             WORD_BATCH_PARAGRAPHS_MIN,
             WORD_BATCH_PARAGRAPHS_MAX,
         )
     if args.word_batch_paragraphs is not None:
-        settings.word_batch.max_paragraphs_per_batch = _clamp(
+        word_rate.batch_items = _clamp(
             args.word_batch_paragraphs,
             WORD_BATCH_PARAGRAPHS_MIN,
             WORD_BATCH_PARAGRAPHS_MAX,
         )
     if args.word_batch_chars is not None:
-        settings.word_batch.max_chars_per_batch = _clamp(
+        word_rate.batch_chars = _clamp(
             args.word_batch_chars,
             WORD_BATCH_CHARS_MIN,
             WORD_BATCH_CHARS_MAX,
         )
     if args.word_retry_attempts is not None:
-        settings.word_batch.strict_retry_attempts = _clamp(
+        word_rate.item_retry = _clamp(
             args.word_retry_attempts,
             WORD_STRICT_RETRY_ATTEMPTS_MIN,
             WORD_STRICT_RETRY_ATTEMPTS_MAX,
@@ -194,8 +199,6 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
     if args.custom_prompt:
         settings.domain_preset = "自定义"
         settings.custom_prompt = args.custom_prompt
-    settings.word_batch.max_paragraphs_per_batch = min(8, settings.word_batch.max_paragraphs_per_batch)
-    settings.word_batch.split_paragraph_chars = settings.word_batch.max_chars_per_batch
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:

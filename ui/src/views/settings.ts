@@ -64,6 +64,7 @@ import {
   pickJsonFile,
   renderModelsPage,
 } from "./settings-models";
+import { refreshRateOverview, renderRateSection, renderTmParamsCard } from "./settings-rate";
 import "./settings.css";
 import { docPromptAnatomy, openPromptAnatomy, pdfPromptAnatomy, promptAnatomyButton, type PromptAnatomy } from "./prompt-anatomy";
 import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLocale, t, tx, type Locale, localized } from "../i18n";
@@ -73,9 +74,9 @@ import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLo
 // ---------------------------------------------------------------------------
 
 export type JsonObject = Record<string, unknown>;
-type SettingsPage = "models" | "params" | "appearance" | "data" | "about";
+export type SettingsPage = "models" | "params" | "appearance" | "data" | "about";
 type TranslationSurface = "excel" | "word" | "cad";
-type ParamsSurface = "excel" | "word" | "pdf" | "cad";
+export type ParamsSurface = "excel" | "word" | "pdf" | "cad";
 
 export type PoolConnection = {
   id: string;
@@ -491,6 +492,15 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   void bootstrap(token);
 }
 
+/** 在设置页内跳到另一个子页（模型服务页的「前往翻译参数」用）。 */
+export function openSettingsPage(page: SettingsPage, surface?: ParamsSurface): void {
+  if (surface) paramsTab = surface;
+  currentPage = page;
+  setModelPillSettingsRole(currentPage === "models" ? modelRole : null);
+  highlightNav();
+  void loadAndRenderPage(mountToken);
+}
+
 /** 原地重画时回到当前子页（切换界面语言后仍停在「外观与语言」）。 */
 export function remountParams(): ViewParams {
   return { page: currentPage, role: modelRole, paramsSurface: paramsTab };
@@ -666,6 +676,10 @@ function renderDataHealthBanner(): void {
 
 async function loadAndRenderPage(token: number): Promise<void> {
   try {
+    // 速率的默认值和上限跟着文档翻译模型是云端还是本地走，每次进这一页都重新取。
+    if (currentPage === "params") {
+      await refreshRateOverview();
+    }
     if (currentPage === "data" && !maintenanceLoaded) {
       await refreshMaintenance();
     }
@@ -978,7 +992,7 @@ export async function persistSettings(patch: JsonObject): Promise<void> {
   });
 }
 
-async function saveSettingPath(path: string, value: string | number | boolean | null): Promise<void> {
+export async function saveSettingPath(path: string, value: string | number | boolean | null): Promise<void> {
   await persistSettings(nestedPatch(path, value));
 }
 
@@ -1184,21 +1198,6 @@ export function statusChip(label: string, tone: "done" | "error" | ""): HTMLSpan
 function excelReviewSettings(): JsonObject {
   return record(settings?.excel_review);
 }
-function wordBatchSettings(): JsonObject {
-  return record(settings?.word_batch);
-}
-/** 「失败重试次数」：接口临时故障时同一批重发几次。上下限对齐 config.py 的 REQUEST_RETRY_ATTEMPTS_*。 */
-function requestRetryField(surface: "excel" | "cad"): HTMLDivElement {
-  const grid = document.createElement("div");
-  grid.className = "grid2";
-  grid.append(numberField(
-    t("失败重试次数"),
-    num(record(settings?.request_retry)[surface], 2),
-    (v) => void reRenderAfter(() => saveSettingPath(`request_retry.${surface}`, v), { rerenderOnError: true }),
-    { min: 0, max: 5, integer: true, hint: t("模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数，范围 0 到 5。仍失败的内容保留原文，并在结果中标记。") },
-  ));
-  return grid;
-}
 function wordReviewSettings(): JsonObject {
   return record(settings?.word_review);
 }
@@ -1331,10 +1330,9 @@ function renderParamsPage(host: HTMLElement): void {
       const colors = record(excelReviewSettings().mark_colors);
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
-    body.append(requestRetryField("excel"));
+    body.append(...renderRateSection("excel"));
   } else if (paramsTab === "word") {
     const review = wordReviewSettings();
-    const batch = wordBatchSettings();
     body.append(selectField(
       t("已有高亮处理"), [
         { value: "skip", label: t("不覆盖已有高亮") },
@@ -1349,55 +1347,18 @@ function renderParamsPage(host: HTMLElement): void {
       const colors = record(wordReviewSettings().mark_colors);
       await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
-    body.append(sectionLabel(t("批次与重试")));
-    const grid = document.createElement("div");
-    grid.className = "grid2";
-    const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
-    // 批次字符数同时决定自动分批和长段拆分；段落数在后台最多限制为 8。
-    grid.append(numberField(t("每批字符上限"), num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? t("单次发送给模型的最大字符数；超出部分将自动分批，过长的段落将自动拆分。") : t("单次发送给模型的最大字符数；超出部分将自动分批，过长的段落将自动拆分。范围 800–12000。") }));
-    grid.append(numberField(t("单段最多重试次数"), num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: t("译文为空、明显不完整或未通过质量检查时，段落自动重新翻译的最多次数。") }));
-    body.append(grid);
+    body.append(...renderRateSection("word"));
   } else if (paramsTab === "pdf") {
-    const pdf = pdfParamsSettings();
-    const grid = document.createElement("div");
-    grid.className = "grid2";
-    // 上下限对齐 config.py：PDF_PAGE_RETRY_ATTEMPTS_MIN/MAX(0–8)、
-    // PDF_PAGE_CONCURRENCY_SAFETY_CAP(1–20)。max: 10 曾经比后端的 8 宽，落进
-    // 那道夹缝的值只会在保存时被后端 422 打回（中-14）。
-    grid.append(numberField(t("单页重试次数"), num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: t("单页翻译失败后的最多重试次数，范围 0 到 8。") }));
-    const concurrencyValue = pdf.page_generation_concurrency === null || pdf.page_generation_concurrency === undefined
-      ? "" : String(pdf.page_generation_concurrency);
-    const concurrencyInput = document.createElement("input");
-    concurrencyInput.type = "number";
-    concurrencyInput.min = "1";
-    const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
-    if (!throughputUnlocked) concurrencyInput.max = "20";
-    concurrencyInput.value = concurrencyValue;
-    concurrencyInput.placeholder = t("留空自动");
-    concurrencyInput.addEventListener("change", () => {
-      const raw = concurrencyInput.value.trim();
-      let parsed: number | null = raw ? Number(raw) : null;
-      // 留空＝自动；普通状态按页图并发范围收敛，解锁后保留正整数校验。
-      if (parsed !== null && !Number.isNaN(parsed)) {
-        if (!Number.isInteger(parsed)) return;
-        parsed = Math.min(throughputUnlocked ? 2**31 - 1 : 20, Math.max(1, parsed));
-        concurrencyInput.value = String(parsed);
-      }
-      void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
-    });
-    grid.append(fieldWithHint(t("同时生成页数（留空自动）"), concurrencyInput, throughputUnlocked
-      ? t("同时翻译的页数；留空则根据图像模型的速率设置自动确定。")
-      : t("同时翻译的页数，范围 1 到 20；留空则根据图像模型的速率设置自动确定。")));
-    body.append(grid);
+    body.append(...renderRateSection("pdf"));
   } else if (paramsTab === "cad") {
-    // CAD 在这一页只有失败重试次数，其余选项在 CAD 页右栏。
+    // CAD 在这一页只有速率与重试，其余选项在 CAD 页右栏。
     const note = document.createElement("p");
     note.className = "note";
     note.style.margin = "0";
     note.style.fontSize = "12.5px";
     note.style.color = "var(--ink-3)";
     note.textContent = t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；提示词可以在下方设置。");
-    body.append(requestRetryField("cad"), note);
+    body.append(...renderRateSection("cad"), note);
   }
 
   card.append(body);
@@ -1409,84 +1370,8 @@ function renderParamsPage(host: HTMLElement): void {
     host.append(renderPdfPromptCard());
   }
 
-  // 记忆库对 Excel、Word 都生效，不跟着上面的页签切换。
-  host.append(renderTmTermsCard());
-}
-
-/** 设置 · 记忆库：高级模式开关；其余选项只在高级模式下显示。 */
-function renderTmTermsCard(): HTMLElement {
-  const tm = record(settings?.tm);
-  const advanced = tm.advanced_mode === true;
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  body.style.gap = "12px";
-  body.append(sectionLabel(t("记忆库")));
-
-  const switchField = (label: string, checked: boolean, path: string, note: string): HTMLDivElement => {
-    const field = document.createElement("div");
-    field.className = "field";
-    const row = document.createElement("div");
-    row.className = "swrow";
-    row.append(document.createTextNode(label));
-    row.append(createSwitch({ checked, onChange: (next) => void reRenderAfter(() => saveSettingPath(path, next), { rerenderOnError: true }) }));
-    const hint = document.createElement("p");
-    hint.className = "prompt-note";
-    hint.textContent = note;
-    field.append(row, hint);
-    return field;
-  };
-
-  body.append(switchField(
-    t("高级模式"),
-    advanced,
-    "tm.advanced_mode",
-    t("开启后，记忆库页面、记忆条目编辑窗口和任务详情中将显示采用方式、生效范围、使用次数等信息。默认关闭，也可在记忆库页面右上角切换。"),
-  ));
-  if (advanced) {
-    const lead = document.createElement("p");
-    lead.className = "prompt-note";
-    lead.style.margin = "0";
-    lead.textContent = t("以下选项仅在高级模式下显示。");
-    body.append(lead);
-    body.append(switchField(
-      t("在句中采用设定译法"),
-      tm.apply_in_sentences !== false,
-      "tm.apply_in_sentences",
-      t("开启后，采用方式为「始终采用」的词条在句中出现时同样采用其译法；关闭时仅在整段文字完全相同时采用。"),
-    ));
-    const grid = document.createElement("div");
-    grid.className = "grid2";
-    grid.append(numberField(
-      t("未采用设定译法时重试次数"),
-      num(tm.term_retry_attempts, 2),
-      (v) => void reRenderAfter(() => saveSettingPath("tm.term_retry_attempts", v), { rerenderOnError: true }),
-      { min: 0, max: 5, integer: true, hint: t("译文未采用设定译法时，段落自动重新翻译的最多次数，范围 0 到 5。仍未采用的位置将在输出文件中标记需复核；设为 0 时不重新翻译，直接标记。") },
-    ));
-    grid.append(numberField(
-      t("每批词条上限"),
-      num(tm.term_batch_budget, 20),
-      (v) => void reRenderAfter(() => saveSettingPath("tm.term_batch_budget", v), { rerenderOnError: true }),
-      { min: 5, max: 100, integer: true, hint: t("单批内容涉及的词条超过此数时，将自动拆分为更小的批次，确保相关词条均随内容发送。") },
-    ));
-    body.append(grid);
-    body.append(switchField(
-      t("自动保存短词的场景译法"),
-      tm.auto_save_short_scene !== false,
-      "tm.auto_save_short_scene",
-      t("开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。"),
-    ));
-    body.append(switchField(
-      t("本地模型也按场景选用"),
-      tm.local_scene_candidates === true,
-      "tm.local_scene_candidates",
-      t("开启后，本地模型同样会收到「按场景选用」的候选译法；关闭时仅发送「始终采用」的词条。本地模型较易受候选译法干扰，默认关闭。"),
-    ));
-  }
-  card.append(body);
-  return card;
+  // 记忆库对每种文件类型都生效，不跟着上面的页签切换。
+  host.append(renderTmParamsCard());
 }
 
 function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color: string) => void): HTMLDivElement {

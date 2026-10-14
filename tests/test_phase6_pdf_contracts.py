@@ -358,6 +358,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
         _write_three_page_pdf(source)
         settings = _pdf_settings(root)
         settings.pdf.page_retry_attempts = 0
+        settings.pdf.page_generation_concurrency = 1
         client = _FirstPageBlockingImageClient()
         runner = PdfImageTranslationRunner(
             [PdfFileItem(source, "source", 1.0, page_count=3)],
@@ -366,10 +367,8 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
             image_client=client,
             task_logger_enabled=False,
         )
-        throughput = SimpleNamespace(concurrency=1)
         patches = (
             patch("core.model_roles.get_key", return_value="pdf-route-secret"),
-            patch("core.pdf_image_translation.get_model_throughput", return_value=throughput),
             patch("core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT", 0),
         )
         return runner, client, patches
@@ -377,7 +376,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
     def test_real_runner_pause_stops_new_page_submission_then_resume_finishes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runner, client, patches = self._start_real_paused_runner(Path(temporary))
-            with patches[0], patches[1], patches[2]:
+            with patches[0], patches[1]:
                 runner.start()
                 self.assertTrue(client.first_call_started.wait(3))
                 runner.pause()
@@ -397,7 +396,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
     def test_real_runner_end_while_paused_writes_stopped_manifest_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runner, client, patches = self._start_real_paused_runner(Path(temporary))
-            with patches[0], patches[1], patches[2]:
+            with patches[0], patches[1]:
                 runner.start()
                 self.assertTrue(client.first_call_started.wait(3))
                 runner.pause()
@@ -430,6 +429,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
             _write_single_page_pdf(source)
             settings = _pdf_settings(root)
             settings.pdf.page_retry_attempts = 0
+            settings.pdf.page_generation_concurrency = 1
             client = _FirstPageBlockingImageClient()
             runner = PdfImageTranslationRunner(
                 [PdfFileItem(source, "source", 1.0, page_count=1)],
@@ -438,10 +438,8 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 image_client=client,
                 task_logger_enabled=False,
             )
-            throughput = SimpleNamespace(concurrency=1)
             with (
                 patch("core.model_roles.get_key", return_value="pdf-route-secret"),
-                patch("core.pdf_image_translation.get_model_throughput", return_value=throughput),
                 patch("core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT", 0),
             ):
                 runner.start()

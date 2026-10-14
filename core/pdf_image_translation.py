@@ -75,7 +75,7 @@ from core.model_roles import (
     record_pdf_review_model_availability,
     resolve_effective_model_config,
 )
-from core.model_throughput import get_model_throughput
+from core.surface_rate import resolve_pdf_page_concurrency, resolve_pdf_review_concurrency
 from core.pdf_review import (
     OpenAICompatiblePdfReviewClient,
     PdfPageReviewClient,
@@ -1736,10 +1736,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     self._settings,
                     ROLE_PDF_REVIEW,
                 )
-                review_concurrency = get_model_throughput(
+                review_concurrency = resolve_pdf_review_concurrency(
                     self._settings,
-                    review_model_config,
-                ).concurrency
+                    mode=getattr(review_model_config, "mode", None),
+                )
             except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
                 logger.debug(f"[PDF] 单页重生成解析审核模型配置失败原始错误：{exc!r}")
                 raise PdfPageActionError(
@@ -2640,7 +2640,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         image_concurrency = 1
         try:
             model_config = resolve_effective_model_config(self._settings, ROLE_IMAGE)
-            image_concurrency = get_model_throughput(self._settings, model_config).concurrency
+            image_concurrency = resolve_pdf_page_concurrency(
+                self._settings, mode=getattr(model_config, "mode", None)
+            )
             model_signature = image_model_signature(self._settings)
             if not provider_supports_capability(model_config.provider, "image"):
                 raise ImageModelUnavailableError(
@@ -2691,10 +2693,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     self._settings,
                     ROLE_PDF_REVIEW,
                 )
-                review_concurrency = get_model_throughput(
+                review_concurrency = resolve_pdf_review_concurrency(
                     self._settings,
-                    review_model_config,
-                ).concurrency
+                    mode=getattr(review_model_config, "mode", None),
+                )
                 review_model_signature = pdf_review_model_signature(self._settings)
                 if not provider_supports_capability(review_model_config.provider, "vision_text"):
                     raise PdfReviewModelUnavailableError(
@@ -5645,12 +5647,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         os.replace(temp_pdf, output_pdf)
 
     def _resolve_pdf_concurrency(self, auto_concurrency: int | None = None) -> int:
-        """Runtime page concurrency: the explicit setting wins, blank means auto.
+        """Runtime page concurrency: the explicit setting wins, blank means default.
 
-        「页图并发（留空自动）」and `--pdf-page-concurrency` both write
+        「同时生成页数」and `--pdf-page-concurrency` both write
         `pdf.page_generation_concurrency`.  When it is set, it is the user
-        saying a number out loud and it has to be the number we run; only a
-        blank value falls back to the per-model throughput recommendation.
+        saying a number out loud and it has to be the number we run; a blank
+        value takes the default from core.surface_rate (cloud 10, local 3).
         """
         raw = self._settings.pdf.page_generation_concurrency
         if raw is None:

@@ -22,6 +22,7 @@ from core.xlsx_embedded_text import (
     collect_embedded_units,
 )
 from core.xlsx_patcher import write_bilingual_workbook
+from tests.rate_pins import pinned_surface_rate
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -613,7 +614,6 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
 
         from core.api_config_check import ApiConfigCheckResult
         from core.file_scanner import FileItem
-        from core.model_throughput import EffectiveModelThroughput
         from core.task_runner import DoneMsg, TaskRunner
         from settings import AppSettings, EngineSettings
 
@@ -655,8 +655,8 @@ class RunnerTranslatesEmbeddedTextTests(unittest.TestCase):
             stack.enter_context(patch("core.task_runner.resolve_effective_model_config", return_value=object()))
             stack.enter_context(
                 patch(
-                    "core.task_runner.get_model_throughput",
-                    return_value=EffectiveModelThroughput(profile_key="t", batch_size=20, concurrency=1),
+                    "core.task_runner.resolve_surface_rate",
+                    side_effect=pinned_surface_rate(batch_items=20, concurrency=1),
                 )
             )
             stack.enter_context(patch("core.task_runner.tm_manager.lookup_batch", return_value={}))

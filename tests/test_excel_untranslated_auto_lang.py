@@ -19,10 +19,10 @@ from openpyxl import Workbook
 from core.api_config_check import ApiConfigCheckResult
 from core.file_scanner import FileItem
 from core.language_preflight import LanguagePreflightResult
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import TaskRunner
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 
 class _FakeEngine(TranslationEngine):
@@ -90,12 +90,8 @@ class ExcelUntranslatedAutoLangTests(unittest.TestCase):
                     return_value=object(),
                 ),
                 patch(
-                    "core.task_runner.get_model_throughput",
-                    return_value=EffectiveModelThroughput(
-                        profile_key="test",
-                        batch_size=20,
-                        concurrency=1,
-                    ),
+                    "core.task_runner.resolve_surface_rate",
+                    side_effect=pinned_surface_rate(batch_items=20, concurrency=1),
                 ),
                 # 语言预检的样本来自阶段 1 的全量提取，这里直接给出「识别为法语」。
                 patch(
@@ -197,10 +193,8 @@ class ExcelUntranslatedAutoLangTests(unittest.TestCase):
                 patch("core.task_runner.get_system_prompt", return_value="system"),
                 patch("core.task_runner.resolve_effective_model_config", return_value=object()),
                 patch(
-                    "core.task_runner.get_model_throughput",
-                    return_value=EffectiveModelThroughput(
-                        profile_key="test", batch_size=20, concurrency=1
-                    ),
+                    "core.task_runner.resolve_surface_rate",
+                    side_effect=pinned_surface_rate(batch_items=20, concurrency=1),
                 ),
                 patch(
                     "core.task_runner.preflight_files",

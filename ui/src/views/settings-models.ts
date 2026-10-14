@@ -55,8 +55,7 @@ import {
   modelRole,
   modelRoles,
   mountToken,
-  num,
-  numberField,
+  openSettingsPage,
   persistSettings,
   type PoolConnection,
   providerBaseUrlDefaults,
@@ -448,117 +447,20 @@ export function renderModelsPage(host: HTMLElement): void {
     detailBody.append(keyField);
   }
 
-  // 速率设置。读写的是**当前选中那条连接**自己的速率（后端按连接 + 模型分档记忆）。
-  // 以前这里读的是角色级 throughput，也就是主用连接那一份：选中第二条连接改并发，
-  // 改的其实是主用连接，第二条连接自己的速率在界面上根本看不到。
-  const connectionThroughput = (connection: PoolConnection | null) => ({
-    values: record(connection?.throughput ?? rolePayload.throughput),
-    bounds: record(connection?.throughput_bounds ?? rolePayload.throughput_bounds),
-  });
-  const initialThroughput = connectionThroughput(selected);
-  const throughput = initialThroughput.values;
-  const bounds = initialThroughput.bounds;
-  const batchBounds = Array.isArray(bounds.batch_size) ? (bounds.batch_size as unknown[]) : [];
-  const concurrencyBounds = Array.isArray(bounds.concurrency) ? (bounds.concurrency as unknown[]) : [];
-  const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
-  const throughputGrid = document.createElement("div");
-  throughputGrid.className = "grid2";
-  let batchInput: HTMLInputElement | null = null;
-  const needsBatch = role === "translation" || role === "cleaner";
-  if (needsBatch) {
-    const batchField = numberField(t("每批段数"), num(throughput.batch_size, 8), () => undefined, {
-      hint: t("每次发送给模型的文本段数。数值越大速度越快，但单批出错时需重试的内容也越多。"),
-      min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128), integer: true,
-    });
-    batchInput = batchField.querySelector("input");
-    throughputGrid.append(batchField);
+  // 速率与重试不再按模型设置（v38 起在「翻译参数」里按文件类型设置），这里只留一行说明
+  // 指过去。清洗记忆库没有对应的设置项，不显示。
+  if (role !== "cleaner") {
+    const rateNote = document.createElement("p");
+    rateNote.className = "note rate-pointer";
+    rateNote.append(document.createTextNode(t("速率与重试在「翻译参数」中按文件类型设置。")));
+    const goto = document.createElement("button");
+    goto.type = "button";
+    goto.className = "resume-link";
+    goto.textContent = t("前往");
+    goto.addEventListener("click", () => openSettingsPage("params", role === "translation" ? "excel" : "pdf"));
+    rateNote.append(goto);
+    detailBody.append(rateNote);
   }
-  const concurrencyField = numberField(t("同时请求数"), num(throughput.concurrency, 1), () => undefined, {
-    hint: t("同时向模型发送的请求数。数值越大速度越快，但更容易被服务商限速。"),
-    min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32), type: "text", integer: true,
-  });
-  const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;
-  if (role === "translation" && !throughputUnlocked) {
-    concurrencyInput.addEventListener("input", () => {
-      const nextType = /^\d*$/.test(concurrencyInput.value) ? "text" : "password";
-      if (concurrencyInput.type !== nextType) concurrencyInput.type = nextType;
-    });
-    concurrencyInput.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || concurrencyInput.value.trim().toUpperCase() !== "OA") return;
-      event.preventDefault();
-      concurrencyInput.value = String(throughput.concurrency || 1);
-      concurrencyInput.type = "text";
-      void (async () => {
-        try {
-          // 解锁前先把排队中的失焦保存跑完：解锁后的重画读的是服务端状态，
-          // 还在飞的那笔保存落盘晚于重画，界面就会停在旧值上。
-          await queueModelFormSave(async () => {
-            await client.request("/api/models/throughput/unlock", {
-              method: "POST", body: JSON.stringify({ code: "OA" }),
-            });
-          });
-          await refreshSettings();
-          renderBody();
-        } catch {
-          // Hidden code entry has no separate feedback surface.
-        }
-      })();
-    });
-  }
-  throughputGrid.append(concurrencyField);
-  detailBody.append(sectionLabel(t("速率设置")));
-  // 速率原来有自己的「保存速率」按钮，是这张卡上唯一还要手动点一下才生效的一块。
-  // 速率本来就属于模型配置的一部分，现在和同卡其余字段一样失焦即保存（见下面的
-  // autoSaveThroughput）。按钮消失后，原来那句 toast 里的「运行中的任务不受影响」
-  // 没地方说了，改挂成这行常驻说明——它回答的是用户改速率时最担心的那件事。
-  const throughputNote = document.createElement("p");
-  throughputNote.className = "note";
-  throughputNote.style.margin = "0";
-  throughputNote.style.fontSize = "12px";
-  throughputNote.style.color = "var(--ink-3)";
-  // 摆在两个输入框**下面**，和「并发提醒」里 spreadNote 相对开关的位置是同一套：
-  // 夹在小标题和输入框中间会把这一组撑开，看着像是两块无关的东西。
-  detailBody.append(throughputGrid);
-  detailBody.append(throughputNote);
-  const resetThroughputButton = createButton({ label: t("恢复推荐值"), size: "mini", onClick: () => void reRenderAfter(async () => {
-    await client.request<JsonObject>(
-      `/api/models/throughput/${encodeURIComponent(role)}${connectionQuery(activeConnection(role))}`,
-      { method: "DELETE" },
-    );
-    await refreshModelRoles();
-    showToast({ message: t("已恢复推荐速率。运行中的任务不受影响。") });
-  }) });
-  detailBody.append(fieldRow([
-    // 「恢复推荐值」留着：它是重置动作（DELETE 路由），失焦语义表达不了「把我存的那份
-    // 丢掉、退回推荐值」。它照旧走 reRenderAfter 重画——重置本来就要把两个框的值整个换掉。
-    resetThroughputButton,
-  ]));
-  // 速率的上限、说明和可编辑状态都跟着「这条连接现在存的是什么」走。保存了别的字段
-  // （换模型、切本地）之后要重算一次，见下面的 syncAfterSave。
-  const paintThroughput = (connection: PoolConnection | null) => {
-    const { values, bounds: nextBounds } = connectionThroughput(connection);
-    const concurrencyMax = Array.isArray(nextBounds.concurrency) ? num((nextBounds.concurrency as unknown[])[1], 0) : 0;
-    const batchMax = Array.isArray(nextBounds.batch_size) ? num((nextBounds.batch_size as unknown[])[1], 0) : 0;
-    const pending = accessDirty();
-    for (const [input, value, max] of [
-      [concurrencyInput, values.concurrency, concurrencyMax],
-      [batchInput, values.batch_size, batchMax],
-    ] as [HTMLInputElement | null, unknown, number][]) {
-      if (!input) continue;
-      if (throughputUnlocked || !max) input.removeAttribute("max");
-      else input.max = String(max);
-      // 速率属于已保存的那种连接方式：切到本地但还没保存时改并发，会存进云端那一档，
-      // 范围也是云端的。先锁住，保存连接方式后再放开。
-      input.disabled = pending;
-      if (document.activeElement !== input && typeof value === "number") input.value = String(value);
-    }
-    resetThroughputButton.disabled = pending;
-    const range = throughputUnlocked || !concurrencyMax ? "" : t("并发上限 {0}。", concurrencyMax);
-    throughputNote.textContent = pending
-      ? t("连接方式尚未保存。请先点击「保存配置」，再调整此连接的速率。")
-      : t("按模型分别保存；切换到未调整过的模型时沿用当前数值。{0}更改即时保存，不影响运行中的任务。", range);
-  };
-  paintThroughput(selected);
 
   // 状态胶囊。取的是**当前选中那条连接**的测试结果，不是角色级的那份——角色级状态
   // 是主用连接的镜像（core/model_roles.py 里照抄 primary 的三个字段），拿它当详情卡的
@@ -674,7 +576,6 @@ export function renderModelsPage(host: HTMLElement): void {
       accessDirtyChip.remove();
     }
     paintStatus(fresh);
-    paintThroughput(fresh);
     if (apiKeyField) {
       // 密钥已经存进本机密钥存储，框里不该继续留着明文；之后每次失焦保存也不会再
       // 把同一把密钥重复提交、把测试结论一次次打回「未测试」。
@@ -699,59 +600,6 @@ export function renderModelsPage(host: HTMLElement): void {
   };
   for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField, apiModeSelect]) {
     field?.addEventListener("change", autoSaveOnBlur);
-  }
-
-  // 速率两个框也失焦即保存。写在这里而不是上面那一段，只是因为 autoSaveNote 要到这一行
-  // 才存在——两处共用同一行「已自动保存 · HH:MM」，用户不必分辨「哪个字段属于哪个提示」。
-  //
-  // 三件事是刻意的：
-  // 1) 和上面共用 queueModelFormSave 这一条队列，不另起一条。「点『测试连接』会先触发
-  //    blur 再触发 click」那条时序（见 ensureFormSavedBeforeCatalog）靠的就是所有提交
-  //    排在同一条链上；吞吐另开一条队列，两个 PUT 就会并行发出去，抢的还是同一份 settings。
-  // 2) 吞吐走的是独立路由 PUT /api/models/throughput/{role}，不能塞进 saveModel 的 payload
-  //    ——后端是分开的两条路由（api/app.py::put_throughput 与 put_role）。
-  // 3) 不重画。理由和上面那段一样：重画会把焦点从用户正要去的下一个字段上抢走
-  //    （典型路径就是「改完批次大小按 Tab 去改并发数」）。
-  const writeBackThroughput = (input: HTMLInputElement, submitted: number, value: unknown) => {
-    // 回填后端返回的值。number input 的 min/max 只是浏览器给的提示，用户手打 999 照样提交
-    // 得出去，后端 core/model_throughput.py::set_model_throughput 会按 bounds 夹紧（clamp）
-    // 到 32 再存。不写回来，界面就停在 999、实际存的是 32——正是「界面报告没发生的事」
-    // （提交 cd97a4f 修的那一类）。
-    if (typeof value !== "number" || Number.isNaN(value)) return;
-    // 焦点还在这个框里、而且值已经和这次提交出去的不一样了 → 用户在等响应的这段时间里
-    // 又改了，写回去等于抢他正在敲的输入，不动。
-    // 焦点在但值没动（典型：在框里直接按回车触发 change，焦点根本没离开）仍然要回填，
-    // 否则最需要看到夹紧结果的那条路径反而看不到。
-    if (document.activeElement === input && Number(input.value) !== submitted) return;
-    input.value = String(value);
-  };
-  const autoSaveThroughput = (event: Event) => {
-    const field = event.currentTarget as HTMLInputElement;
-    if (field.disabled) return;
-    const rawConcurrency = concurrencyInput.value.trim();
-    const rawBatch = batchInput?.value.trim() ?? "";
-    if (!/^\d+$/.test(rawConcurrency) || (needsBatch && !/^\d+$/.test(rawBatch))) return;
-    void queueModelFormSave(async () => {
-      try {
-        const sentConcurrency = Number(concurrencyInput.value || "1");
-        const sentBatch = Number(batchInput?.value || "8");
-        const payload: JsonObject = { concurrency: sentConcurrency };
-        if (needsBatch && batchInput) payload.batch_size = sentBatch;
-        const saved = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}${connectionQuery(selected)}`, {
-          method: "PUT", body: JSON.stringify(payload),
-        });
-        storeConnectionThroughput(role, selected?.id ?? "", saved);
-        writeBackThroughput(concurrencyInput, sentConcurrency, saved.concurrency);
-        if (needsBatch && batchInput) writeBackThroughput(batchInput, sentBatch, saved.batch_size);
-        autoSaveNote.textContent = t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" }));
-      } catch (error) {
-        autoSaveNote.textContent = "";
-        showToast({ message: t("自动保存失败：{0}", errorMessage(error)), error: true });
-      }
-    });
-  };
-  for (const field of [batchInput, concurrencyInput]) {
-    field?.addEventListener("change", autoSaveThroughput);
   }
 
   const doSaveModel = () => {
@@ -800,22 +648,6 @@ function apiKeyPlaceholder(connection: PoolConnection | null, following: boolean
   return connection?.connection_mode === "cloud" && connection.has_api_key
     ? t("{0}（已保存 · 留空则不改）", preview || "••••••")
     : t("粘贴该连接的 API 密钥");
-}
-
-// 速率路由不带 connection_id 时一律落到主用连接。
-function connectionQuery(connection: PoolConnection | null): string {
-  return connection?.id ? `?connection_id=${encodeURIComponent(connection.id)}` : "";
-}
-
-// PUT 速率不回整份角色数据；把结果写回那条连接，下一次重画才不会显示保存前的旧值。
-function storeConnectionThroughput(role: string, connectionId: string, saved: JsonObject): void {
-  const connection = roleConnections(role).find((item) => item.id === connectionId);
-  if (!connection) return;
-  connection.throughput = {
-    profile_key: text(saved.profile_key),
-    batch_size: typeof saved.batch_size === "number" ? saved.batch_size : null,
-    concurrency: num(saved.concurrency, 1),
-  };
 }
 
 // 选中另一条连接（点行、点行内「测试」、新增、删除、设为主用、导入）时调用。
@@ -1444,7 +1276,7 @@ function openImportNormalModal(preview: ModelImportPreview): void {
   const showPlaintextWarning = preview.legacy_plaintext && preview.sealed_key_count > 0;
   const kvRows: [string, string | HTMLElement][] = [
     [t("文件"), monoText(preview.fileName)],
-    [t("包含"), t("{0} 个用途 · {1} 项速率设置", preview.roles.length, preview.throughput_profile_count)],
+    [t("包含"), t("{0} 个用途", preview.roles.length)],
   ];
   if (preview.sealed_key_count > 0) {
     kvRows.push([t("密钥"), textAndChip(
@@ -1502,10 +1334,10 @@ function openImportExpiredModal(preview: ModelImportPreview): void {
     body: [
       t("文件有效期至 {0}（{1}），其中的密钥已无法解开。", preview.expires_at ? formatReleaseDate(preview.expires_at) : t("未知"), elapsedDays > 0 ? t("已过去 {0} 天", elapsedDays) : t("刚刚过期")),
       buildKvList([
-        [t("包含"), t("{0} 个用途 · {1} 项速率设置", preview.roles.length, preview.throughput_profile_count)],
+        [t("包含"), t("{0} 个用途", preview.roles.length)],
         [t("密钥"), textAndChip(t("{0} 个密钥 ", preview.sealed_key_count), createChip({ label: t("已失效，无法解开"), tone: "warn" }))],
       ]),
-      buildInlineBanner("tint", t("连接、模型名称和速率设置仍可正常导入，导入后需手动填写各连接的密钥。如需密钥，请让发送方重新导出。")),
+      buildInlineBanner("tint", t("连接和模型名称仍可正常导入，导入后需手动填写各连接的密钥。如需密钥，请让发送方重新导出。")),
       // 「仅导入配置」提交的 payload 和正常导入的完全一样，连接列表照样整份替换。
       // 不写这一句，「仅」字会让人以为影响有限，而本机自己加的连接和它们的 Key
       // 已经没了，用户只能在事后的 toast 里第一次看到这件事。

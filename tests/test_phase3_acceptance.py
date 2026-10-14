@@ -36,7 +36,6 @@ from core.model_roles import (
     model_config_signature,
     resolve_effective_model_config,
 )
-from core.model_throughput import set_model_throughput
 from core.pdf_review import (
     PdfPageReviewResult,
     check_pdf_review_connectivity,
@@ -431,8 +430,8 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
                 cloud_model="snapshot-model-v1",
                 cloud_base_url="https://snapshot.example/v1",
             )
-            config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
-            set_model_throughput(settings, config, batch_size=12, concurrency=2)
+            settings.rate.excel.batch_items = 12
+            settings.rate.excel.concurrency = 2
 
             captured: dict[str, object] = {}
             manager = TranslationTaskManager(settings_loader=lambda: settings)
@@ -455,7 +454,8 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
             settings.engine.cloud_model = "future-model-v2"
             settings.excel_domain_preset = "行政要求"
             settings.excel_target_lang = "en"
-            settings.model_throughput_profiles.clear()
+            settings.rate.excel.batch_items = None
+            settings.rate.excel.concurrency = None
 
             self.assertEqual(frozen_settings.engine.cloud_model, "snapshot-model-v1")
             self.assertEqual(frozen_settings.excel_domain_preset, "资料员要求")
