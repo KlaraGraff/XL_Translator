@@ -88,14 +88,15 @@ class DocumentConfigImportTests(unittest.TestCase):
         sparse = {
             "type": DOCUMENT_CONFIG_EXPORT_TYPE,
             "version": 1,
-            "document": {"pdf": {"page_retry_attempts": 1}},
+            "document": {"pdf": {"review_enabled": True}},
         }
 
         merged = apply_document_config_import(
             current, parse_document_config_import(sparse)
         )
 
-        self.assertEqual(merged.pdf.page_retry_attempts, 1)
+        self.assertTrue(merged.pdf.review_enabled)
+        self.assertEqual(merged.pdf.page_retry_attempts, 5)
         self.assertEqual(merged.rate.word.batch_chars, 1200)
         self.assertEqual(merged.excel_domain_preset, "无")
 
@@ -178,7 +179,7 @@ class DocumentConfigImportTests(unittest.TestCase):
             {
                 "type": DOCUMENT_CONFIG_EXPORT_TYPE,
                 "version": 1,
-                "document": {"pdf": {"page_retry_attempts": 1}, "word_custom_prompt": "x"},
+                "document": {"pdf": {"review_enabled": True}, "word_custom_prompt": "x"},
             }
         )
 

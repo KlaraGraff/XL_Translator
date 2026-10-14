@@ -983,9 +983,10 @@ class RateSettings(BaseModel):
     """各文件类型的速率与重试（v38 起）。
 
     v37 及以前，同时请求数和每批条数按模型存在 model_throughput_profiles 里，Word 的
-    批次在 word_batch，Excel / CAD 的失败重试在 request_retry。升级时由
-    _migrate_rate_settings 把改过的值带到这里，旧的两节随之移除。PDF 整页图像翻译
-    的三项（同时生成页数、单页重试次数、同时审核页数）仍在 pdf 节。
+    批次在 word_batch，Excel / CAD 的失败重试在 request_retry。升级时
+    _migrate_rate_settings 移除旧的两节，这里留空，一律按新默认值走（改过的值只留在
+    升级前的备份里）。PDF 整页图像翻译的三项（同时生成页数、单页重试次数、同时审核
+    页数）仍在 pdf 节。
     """
 
     excel: SurfaceRateSettings = Field(default_factory=SurfaceRateSettings)
@@ -2104,15 +2105,17 @@ def _migrate_prompt_layers(payload: dict, stored_version: int) -> dict:
     return migrate_prompt_layers(payload)
 
 
-# v37 及以前的默认值。升级时与这些值相同的项视为没改过，按 v38 的新默认值走；
-# 不同的才带到「翻译参数」。默认值本身在 v38 变了（并发 20 → 30、Word 字符 800 →
-# 1000 等），所以这里写死旧值，不引用 config 里的现行常量。
+# v37 及以前的默认值。只用来判断用户改没改过速率：改过的话升级前先备份旧文件，
+# 因为升级后这些值一律改用 v38 的新默认值（maple 2026-10-14 定）。默认值本身在
+# v38 变了（并发 20 → 30、Word 字符 800 → 1000 等），所以这里写死旧值，不引用
+# config 里的现行常量。
 _PRE_V38_TEXT_THROUGHPUT_DEFAULTS = {
     "cloud": {"batch_size": 20, "concurrency": 20},
     "local": {"batch_size": 12, "concurrency": 3},
 }
 _PRE_V38_PAGE_CONCURRENCY_DEFAULTS = {"cloud": 2, "local": 3}
 _PRE_V38_REVIEW_CONCURRENCY_DEFAULTS = {"cloud": 1, "local": 3}
+_PRE_V38_PAGE_RETRY_DEFAULT = 1
 _PRE_V38_REQUEST_RETRY_DEFAULT = 2
 _PRE_V38_WORD_BATCH_DEFAULTS = {
     "max_chars_per_batch": ("batch_chars", 800),
@@ -2120,6 +2123,8 @@ _PRE_V38_WORD_BATCH_DEFAULTS = {
     "strict_retry_attempts": ("item_retry", 3),
 }
 RATE_SURFACE_KEYS = ("excel", "word", "pdf_text", "cad")
+# PDF 整页图像翻译的三项，v38 起归「翻译参数 · 速率与重试」，升级时同样回到默认值。
+_PDF_RATE_KEYS = ("page_generation_concurrency", "page_retry_attempts", "review_concurrency")
 
 
 def _pre_v38_role_throughput(payload: dict) -> dict[str, tuple[str, object, object]]:
@@ -2128,7 +2133,7 @@ def _pre_v38_role_throughput(payload: dict) -> dict[str, tuple[str, object, obje
     Returns ``role -> (mode, batch_size, concurrency)`` for roles that had a
     saved profile.  The profile key depends on the resolved model (following
     roles included), so this goes through the same resolver the runtime used.
-    Best effort: anything that fails just means "nothing to carry over".
+    Best effort: anything that fails just means "nothing was tuned".
     """
     profiles = payload.get("model_throughput_profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -2144,7 +2149,7 @@ def _pre_v38_role_throughput(payload: dict) -> dict[str, tuple[str, object, obje
 
         settings = AppSettings.model_validate(payload)
     except Exception as exc:  # noqa: BLE001 - a migration must never block loading
-        logger.debug(f"v38 速率迁移：读取旧速率失败，按默认值处理：{exc!r}")
+        logger.debug(f"v38 速率迁移：读取旧速率失败，按没改过处理：{exc!r}")
         return {}
     found: dict[str, tuple[str, object, object]] = {}
     for role in (ROLE_TRANSLATION, ROLE_IMAGE, ROLE_PDF_REVIEW):
@@ -2161,121 +2166,86 @@ def _pre_v38_role_throughput(payload: dict) -> dict[str, tuple[str, object, obje
 
 
 def _changed_int(value: object, old_default: int) -> int | None:
-    """The stored value if the user changed it, else None (= take the new default)."""
+    """The stored value if the user changed it, else None."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return None if value == old_default else value
 
 
-def migrate_legacy_rate_sections(sections: dict) -> dict[str, dict]:
-    """把 v37 及以前的 word_batch / request_retry 换算成 rate 节（只含改过的项）。
+def _pre_v38_tuned_rate(payload: dict) -> list[str]:
+    """v37 及以前用户自己改过的速率与重试项（只用于决定升级前要不要备份）。
 
-    设置文件升级和导入旧的翻译参数配置包共用这一套：等于旧默认值的项视为没改过，
-    留空按新默认值走。
+    word_batch、request_retry 两节里不等于旧默认值的项，文档翻译、PDF 与图片翻译、
+    审核三个模型主用连接按模型存的速率里改过的项，以及 pdf 节里填过的同时生成页数 /
+    单页重试次数。返回的是「节.项」名，空表示全在旧默认值上。
     """
-    rate: dict[str, dict] = {surface: {} for surface in RATE_SURFACE_KEYS}
-    request_retry = sections.get("request_retry")
+    tuned: list[str] = []
+    request_retry = payload.get("request_retry")
     if isinstance(request_retry, dict):
         for surface in ("excel", "cad"):
-            changed = _changed_int(request_retry.get(surface), _PRE_V38_REQUEST_RETRY_DEFAULT)
-            if changed is not None:
-                rate[surface]["request_retry"] = changed
-    word_batch = sections.get("word_batch")
+            if _changed_int(request_retry.get(surface), _PRE_V38_REQUEST_RETRY_DEFAULT) is not None:
+                tuned.append(f"request_retry.{surface}")
+    word_batch = payload.get("word_batch")
     if isinstance(word_batch, dict):
-        for old_key, (field, old_default) in _PRE_V38_WORD_BATCH_DEFAULTS.items():
-            changed = _changed_int(word_batch.get(old_key), old_default)
-            if changed is not None:
-                rate["word"][field] = changed
-    return rate
+        for old_key, (_field, old_default) in _PRE_V38_WORD_BATCH_DEFAULTS.items():
+            if _changed_int(word_batch.get(old_key), old_default) is not None:
+                tuned.append(f"word_batch.{old_key}")
+    for role, (mode, batch_size, concurrency) in _pre_v38_role_throughput(payload).items():
+        if role == "translation":
+            old = _PRE_V38_TEXT_THROUGHPUT_DEFAULTS[mode]
+            pairs = ((batch_size, old["batch_size"]), (concurrency, old["concurrency"]))
+        elif role == "image":
+            pairs = ((concurrency, _PRE_V38_PAGE_CONCURRENCY_DEFAULTS[mode]),)
+        else:
+            pairs = ((concurrency, _PRE_V38_REVIEW_CONCURRENCY_DEFAULTS[mode]),)
+        if any(_changed_int(value, old_default) is not None for value, old_default in pairs):
+            tuned.append(f"model_throughput_profiles.{role}")
+    pdf = payload.get("pdf")
+    if isinstance(pdf, dict):
+        if pdf.get("page_generation_concurrency") not in (None, ""):
+            tuned.append("pdf.page_generation_concurrency")
+        if _changed_int(pdf.get("page_retry_attempts"), _PRE_V38_PAGE_RETRY_DEFAULT) is not None:
+            tuned.append("pdf.page_retry_attempts")
+    return tuned
 
 
 def _migrate_rate_settings(payload: dict, stored_version: int) -> dict:
-    """v38: 速率与重试挪到「翻译参数」，按文件类型保存。
+    """v38: 速率与重试挪到「翻译参数」，按文件类型保存，升级时一律改用新默认值。
 
-    改过的值带过去，没改过的（等于 v37 默认值）留空，按新默认值走：
+    v37 的值是按旧默认值调的（同时请求数上限 20、Word 每批 800 字等），带到新位置
+    会让新默认值对调过的人不生效，所以不带（maple 2026-10-14 定）：
 
-    * 文档翻译模型主用连接的同时请求数 → 四种文件类型；每批段数 → Excel、PDF 文字
-      （原位替换原来就用它；CAD 原来固定 20 条，Word 固定 8 段，都不受它影响）；
-    * Word 的每批字符上限、每批段数、单段最多重试次数 → Word；
-    * Excel / CAD 的失败重试次数 → 各自；
-    * 「PDF 与图片翻译模型」的同时请求数 → 同时生成页数（原来就是它的「留空自动」值）；
-      审核模型的同时请求数 → 同时审核页数。
+    * word_batch、request_retry 两节移除，rate 节为空（各项按云端/本地取默认值）；
+    * pdf 节的同时生成页数、单页重试次数、同时审核页数回到默认值；
+    * 按模型存的 model_throughput_profiles 保留（清洗记忆库仍按它取速率），文档翻译、
+      PDF 与图片翻译、审核三个模型不再读它。
 
-    word_batch、request_retry 两节随之移除；按模型存的 model_throughput_profiles 保留
-    （清洗记忆库仍按它取速率）。会改写文件内容，第一次写回前 save_settings 先备份。
+    用户改过的值只留在备份里：第一次写回前 save_settings 按 _has_legacy_rate_data
+    先备份旧文件。
     """
     if stored_version >= 38:
         return payload
     migrated = dict(payload)
-    existing = migrated.get("rate") if isinstance(migrated.get("rate"), dict) else {}
-    rate: dict[str, dict] = {
-        surface: dict(existing.get(surface)) if isinstance(existing.get(surface), dict) else {}
-        for surface in RATE_SURFACE_KEYS
-    }
-
-    def carry(surface: str, field: str, value: object, old_default: int) -> None:
-        if rate[surface].get(field) not in (None, ""):
-            return
-        changed = _changed_int(value, old_default)
-        if changed is not None:
-            rate[surface][field] = changed
-
-    legacy = {
-        section: migrated.pop(section, None)
-        for section in ("request_retry", "word_batch")
-    }
-    for surface, values in migrate_legacy_rate_sections(legacy).items():
-        for field, value in values.items():
-            rate[surface].setdefault(field, value)
-
-    roles = _pre_v38_role_throughput(payload)
-    translation = roles.get("translation")
-    if translation is not None:
-        mode, batch_size, concurrency = translation
-        old = _PRE_V38_TEXT_THROUGHPUT_DEFAULTS[mode]
-        for surface in RATE_SURFACE_KEYS:
-            carry(surface, "concurrency", concurrency, old["concurrency"])
-        for surface in ("excel", "pdf_text"):
-            carry(surface, "batch_items", batch_size, old["batch_size"])
-
-    pdf = dict(migrated.get("pdf")) if isinstance(migrated.get("pdf"), dict) else {}
-    for role, key, old_defaults in (
-        ("image", "page_generation_concurrency", _PRE_V38_PAGE_CONCURRENCY_DEFAULTS),
-        ("pdf_review", "review_concurrency", _PRE_V38_REVIEW_CONCURRENCY_DEFAULTS),
-    ):
-        found = roles.get(role)
-        if found is None or pdf.get(key) not in (None, ""):
-            continue
-        mode, _batch_size, concurrency = found
-        changed = _changed_int(concurrency, old_defaults[mode])
-        if changed is not None:
-            pdf[key] = changed
-    if pdf:
-        migrated["pdf"] = pdf
-    migrated["rate"] = rate
+    migrated.pop("request_retry", None)
+    migrated.pop("word_batch", None)
+    migrated["rate"] = {}
+    if isinstance(migrated.get("pdf"), dict):
+        migrated["pdf"] = {
+            key: value for key, value in migrated["pdf"].items() if key not in _PDF_RATE_KEYS
+        }
     return migrated
 
 
 def _has_legacy_rate_data(stored_version: int) -> bool:
-    """Whether the v38 rate migration carries a value the user changed.
+    """Whether the v38 upgrade drops a rate value the user had changed.
 
-    A file still on the old defaults loses nothing when word_batch and
-    request_retry go away, so like the v35 prompt migration it needs no backup.
+    A file still on the old defaults loses nothing when everything moves to the
+    new defaults, so like the v35 prompt migration it needs no backup.
     """
     if stored_version >= 38:
         return False
     raw = _raw_settings_payload()
-    if raw is None:
-        return False
-    migrated = _migrate_rate_settings(raw, stored_version)
-    if any(values for values in migrated.get("rate", {}).values()):
-        return True
-    before = raw.get("pdf") if isinstance(raw.get("pdf"), dict) else {}
-    after = migrated.get("pdf") if isinstance(migrated.get("pdf"), dict) else {}
-    return any(
-        after.get(key) != before.get(key)
-        for key in ("page_generation_concurrency", "review_concurrency")
-    )
+    return raw is not None and bool(_pre_v38_tuned_rate(raw))
 
 
 class SettingsSchemaError(ValueError):
@@ -2760,8 +2730,8 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # saves see the current schema and do not create repeat backups.
             # v35 的提示词迁移会改写用户自己写的内容（场景改写转成补充要求、
             # 旧字段清空），第一次写回前同样留一份原文件。
-            # v38 把速率与重试从 word_batch / request_retry / 按模型的速率里搬到
-            # rate 节，旧的两节随之移除；带了改过的值就同样先留一份。
+            # v38 的速率与重试一律改用新默认值，旧的 word_batch / request_retry
+            # 两节随之移除；用户改过速率的，同样先留一份。
             if (
                 _has_legacy_rate_data(stored_version)
                 or AppSettings._migrate_legacy_image_model(_payload) != _payload
