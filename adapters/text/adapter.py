@@ -14,9 +14,11 @@ character around it (markers, indentation, trailing spaces, line endings,
 the byte-order mark).  A file written back with every translation equal to
 its source is therefore byte-for-byte the original.
 
-In bilingual mode a paragraph, list item or quote is followed by its
-translation as a paragraph of its own; a heading or table cell, which must
-stay on one line, reads ``source / translation``.
+In bilingual mode a paragraph or quote is followed by its translation as a
+paragraph of its own.  A list item or footnote keeps its translation on the
+next line of the same item (a hard line break, no blank line), so a tight list
+stays tight.  A heading or table cell, which must stay on one line, reads
+``source / translation``.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 MAX_UNIT_CHARS = 1500
 #: Between source and translation on one line (headings, table cells) in bilingual mode.
 INLINE_SEPARATOR = " / "
+#: Units whose translation follows on the next line of the same block in bilingual mode:
+#: a blank line inside a list item would turn a tight list into a loose one.
+_SAME_BLOCK_KINDS = frozenset({"list_item", "footnote"})
 
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 
@@ -206,6 +211,12 @@ class _Slot:
         rest = self.render(translation, newline)
         if self.trails[-1]:
             rest = rest[: -len(self.trails[-1])]
+        if self.unit.kind in _SAME_BLOCK_KINDS:
+            source = self.render_source().rstrip(" \t")
+            # The hard break is a trailing backslash, or two spaces when the source itself
+            # ends with a backslash (a second one would only escape it).
+            hard_break = "  " if source.endswith("\\") else "\\"
+            return source + hard_break + newline + self.continuation + rest
         blank = self.continuation.rstrip()
         return self.render_source() + newline + blank + newline + self.continuation + rest
 
