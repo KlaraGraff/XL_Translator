@@ -51,6 +51,7 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     resolve_effective_model_config,
 )
+from core.surface_settings import is_extension_key
 from settings import RATE_SURFACE_KEYS, AppSettings, SurfaceRateSettings, WordBatchSettings
 
 RATE_SURFACES: tuple[str, ...] = RATE_SURFACE_KEYS
@@ -157,7 +158,10 @@ def resolve_surface_rate(
     """这种文件类型这一次用的五项数值。
 
     ``mode`` 是任务实际用的文档翻译模型连接的模式；不给就按当前设置的主用连接取。
+    运行时注册的类型（``ext:<id>``）在「翻译参数」里没有自己的一组，见 ``extension_rate``。
     """
+    if is_extension_key(surface):
+        return extension_rate(settings, surface, mode=mode)
     resolved_mode = _mode(mode) if mode else role_mode(settings, ROLE_TRANSLATION)
     stored = _stored_rate(settings, surface)
     unlocked = bool(getattr(settings.engine, "concurrency_unlocked", False))
@@ -168,6 +172,39 @@ def resolve_surface_rate(
         raw = getattr(stored, field)
         values[field] = defaults[field] if raw is None else _clamp(raw, bounds[field])
     return SurfaceRate(surface=surface, mode=resolved_mode, **values)
+
+
+def extension_rate(settings: AppSettings, surface: str, *, mode: str | None = None) -> SurfaceRate:
+    """运行时注册的类型（格式适配器）用的速率与重试。
+
+    同时请求数和每批条数按文档翻译模型的吞吐量取（core/model_throughput.py），与任务
+    开始时调度器为 ``page_key = "adapter"`` 预留的并发一致（``task_role_rate``）；每批
+    字符上限和两项重试次数取云端 / 本地的默认值。
+    """
+    from core.model_throughput import get_model_throughput
+
+    try:
+        config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+    except Exception:  # noqa: BLE001 - a half-configured role still gets the defaults
+        config = None
+    resolved_mode = _mode(mode) if mode else _mode(getattr(config, "mode", None) or role_mode(settings))
+    defaults = rate_defaults(surface, resolved_mode)
+    concurrency = defaults["concurrency"]
+    batch_items = defaults["batch_items"]
+    if config is not None:
+        throughput = get_model_throughput(settings, config)
+        concurrency = max(1, int(throughput.concurrency))
+        if throughput.batch_size:
+            batch_items = max(1, int(throughput.batch_size))
+    return SurfaceRate(
+        surface=surface,
+        mode=resolved_mode,
+        concurrency=concurrency,
+        batch_items=batch_items,
+        batch_chars=defaults["batch_chars"],
+        request_retry=defaults["request_retry"],
+        item_retry=defaults["item_retry"],
+    )
 
 
 def pdf_text_as_word(settings: AppSettings) -> SurfaceRateSettings:
@@ -321,6 +358,7 @@ __all__ = [
     "RATE_SURFACES",
     "SurfaceRate",
     "engine_settings_for_rate",
+    "extension_rate",
     "pdf_image_bounds",
     "pdf_image_defaults",
     "pdf_text_as_word",
