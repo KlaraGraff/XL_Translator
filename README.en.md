@@ -178,12 +178,14 @@ Security note: any user with the application installed can decrypt an `.xltcfg` 
 
 Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor. An agent can list the supported file types, scan files, start a translation, check its progress and retrieve the paths of the output files. The same program can also be used from a terminal. While Translator is open, tasks appear in the Task center; otherwise the translation engine runs in the background and exits when done. Models, languages and translation options follow the application settings, so a model service must be configured in the application first. Translations are written to a new folder next to the source files, and the source files are never modified.
 
+The simplest way to connect: open the MCP page from the sidebar, click Copy setup instructions, and paste them into a message to the agent, which completes the setup itself. Restart the agent if prompted, and it is ready to use. Manual setup is described below.
+
 Location of the translation engine:
 
 - macOS: `/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
 - Windows: `C:\Users\<user name>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
 
-Help → Connect an AI agent in the application shows the actual path on the computer, with the configuration and command ready to copy. The examples below use the macOS path. When a Windows path is written in JSON, each `\` must be written as `\\`. If the configuration file already lists other servers, add the `translator` entry to the existing `mcpServers`.
+The Advanced section of the MCP page shows the actual path on the computer, with the configuration and command ready to copy. The examples below use the macOS path. When a Windows path is written in JSON, each `\` must be written as `\\`. If the configuration file already lists other servers, add the `translator` entry to the existing `mcpServers`.
 
 **Claude Desktop**: open `claude_desktop_config.json` from Settings → Developer → Edit Config (located in `~/Library/Application Support/Claude/` on macOS and `%APPDATA%\Claude\` on Windows), add the following and restart Claude Desktop.
 

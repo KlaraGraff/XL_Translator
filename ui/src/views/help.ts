@@ -1,4 +1,4 @@
-// 帮助视图 —— 端口自 main.ts 的 renderHelpView()（英雄区 + 6 张说明卡），末尾加一张通栏的「接入智能体」。
+// 帮助视图 —— 端口自 main.ts 的 renderHelpView()（英雄区 + 6 张说明卡）。
 // 样张没有单独画这一页，版式按 V9 组件与设计令牌自建（见 ./help.css），
 // 卡片划分沿用旧版，文案已改成面向普通用户的说法并补上 CAD 图纸；卡片上的入口按钮改为 router.navigate 深链到
 // 对应新视图 / 设置子页，而不是复刻旧版的模态/onboarding 流程。
@@ -6,21 +6,13 @@
 import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
-import { createCard, createButton, showToast } from "../components";
+import { createCard, createButton } from "../components";
 import { icon, type IconName } from "../icons";
 import { showQuickStart } from "../quickstart";
 import { t, localized } from "../i18n";
-import { sidecarExecutable } from "../api-client";
 import "./help.css";
 
 const IS_MAC = /Mac/i.test(navigator.userAgent);
-const IS_WINDOWS = /Windows/i.test(navigator.userAgent);
-
-// 「接入智能体」卡在拿不到本机路径时（开发构建）显示的默认安装位置，与
-// tauri.conf.json 的 resources（resources/sidecar → sidecar）一致。
-const DEFAULT_EXECUTABLE = IS_WINDOWS
-  ? "%LOCALAPPDATA%\\Translator\\sidecar\\translator-sidecar\\translator-sidecar.exe"
-  : "/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar";
 
 interface HelpCardSpec {
   iconName: IconName;
@@ -120,76 +112,6 @@ const CARDS: HelpCardSpec[] = localized(() => ([
   },
 ]));
 
-function mcpConfig(executable: string): string {
-  return JSON.stringify({ mcpServers: { translator: { command: executable, args: ["mcp"] } } }, null, 2);
-}
-
-function cliExample(executable: string): string {
-  // PowerShell 要用 & 才能运行带引号的路径；macOS 的终端直接写。
-  const source = t("文件或文件夹路径");
-  return `${IS_WINDOWS ? "& " : ""}"${executable}" translate "${source}" --to en --wait`;
-}
-
-async function copyText(text: string): Promise<void> {
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error(t("当前环境不支持写入剪贴板"));
-    await navigator.clipboard.writeText(text);
-    showToast({ message: t("已复制。") });
-  } catch {
-    showToast({ message: t("复制失败，请手动复制：{0}", text), error: true });
-  }
-}
-
-function codeBlock(label: string): { root: HTMLElement; code: HTMLElement } {
-  const root = document.createElement("div");
-  root.className = "help-code";
-  const head = document.createElement("div");
-  head.className = "help-code-head";
-  const title = document.createElement("span");
-  title.textContent = label;
-  const code = document.createElement("code");
-  head.append(title, createButton({ label: t("复制"), size: "mini", onClick: () => void copyText(code.textContent ?? "") }));
-  const pre = document.createElement("pre");
-  pre.className = "help-code-body";
-  pre.append(code);
-  root.append(head, pre);
-  return { root, code };
-}
-
-// 「接入智能体」：MCP 配置和一行命令行示例，路径取本机引擎的实际位置（sidecar_info 的
-// executable，不含令牌）。说明见 README「接入智能体」和 docs/ARCHITECTURE.md「命令行与 MCP 入口」。
-function buildAgentCard(): HTMLElement {
-  const card = buildCard({
-    iconName: "spark",
-    title: t("接入智能体"),
-    body: t("Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用，也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型与翻译参数沿用应用中的设置。"),
-  });
-  card.classList.add("help-card-wide");
-
-  const blocks = document.createElement("div");
-  blocks.className = "help-code-grid";
-  const config = codeBlock(t("MCP 配置（加入智能体的 MCP 配置文件）"));
-  const command = codeBlock(t("命令行示例"));
-  blocks.append(config.root, command.root);
-  card.append(blocks);
-
-  const note = document.createElement("p");
-  note.className = "help-code-note";
-  const fill = (executable: string) => {
-    const path = executable || DEFAULT_EXECUTABLE;
-    config.code.textContent = mcpConfig(path);
-    command.code.textContent = cliExample(path);
-    note.textContent = executable ? "" : t("未获取到本机路径，以上为默认安装位置。");
-    note.hidden = !note.textContent;
-  };
-  fill("");
-  card.append(note);
-  void sidecarExecutable().then((executable) => {
-    if (executable) fill(executable);
-  });
-  return card;
-}
-
 function buildHero(container: HTMLElement): void {
   const hero = document.createElement("div");
   hero.className = "card help-hero";
@@ -262,7 +184,6 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   const grid = document.createElement("div");
   grid.className = "help-grid";
   for (const spec of CARDS) grid.append(buildCard(spec));
-  grid.append(buildAgentCard());
   container.append(grid);
 }
 

@@ -178,12 +178,14 @@ Windows 的数据目录为 `%LOCALAPPDATA%\Translator`。
 
 Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用：智能体可查询支持的文件类型、扫描文件、发起翻译、查看进度并取得结果文件的路径。同一程序也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型、语言和翻译参数沿用应用中的设置，使用前需先在应用中完成模型配置。译文写入原文件旁的新文件夹，原文件不会被修改。
 
+最简单的接入方式：打开应用侧栏的「MCP」页面，点击「复制接入说明」，粘贴并发送给智能体，由它完成配置；按提示重新启动智能体后即可使用。以下为手动配置方法。
+
 翻译引擎的位置：
 
 - macOS：`/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
 - Windows：`C:\Users\<用户名>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
 
-应用内「帮助 → 接入智能体」显示本机的实际路径，配置和命令可直接复制。以下示例使用 macOS 路径；Windows 路径写入 JSON 时，需将每个 `\` 写作 `\\`。配置文件中已有其他服务时，将 `translator` 一项加入现有的 `mcpServers` 即可。
+「MCP」页面的「高级」中显示本机的实际路径，配置和命令可直接复制。以下示例使用 macOS 路径；Windows 路径写入 JSON 时，需将每个 `\` 写作 `\\`。配置文件中已有其他服务时，将 `translator` 一项加入现有的 `mcpServers` 即可。
 
 **Claude Desktop**：在「Settings → Developer → Edit Config」中打开 `claude_desktop_config.json`（macOS 位于 `~/Library/Application Support/Claude/`，Windows 位于 `%APPDATA%\Claude\`），加入以下内容后重新启动 Claude Desktop。
 
