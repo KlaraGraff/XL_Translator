@@ -442,9 +442,10 @@ def test_bilingual_line_in_a_tight_table_shrinks_into_the_gap_above_the_next_row
     # 「钢门」下一行顶边 95.7，只剩 0.3：缩到最小比例仍放不下，列入报告。
     assert result.stats.layout_unresolved == 1
     assert any("缩到最小比例仍会压到旁边的文字" in message for message in messages)
-    # 最后一行下面没有别的文字，保持 0.8 倍、原来的位置。
+    # 最后一行下面没有别的文字，留在原来的位置；三行译文左端对齐、上下相邻，是同一列，
+    # 字高跟着统一成最小的 1.0。
     window = texts["Fenetre"]
-    assert float(_field(window, 40)) == pytest.approx(2.0)
+    assert float(_field(window, 40)) == pytest.approx(1.0)
     assert float(_field(window, 20)) == pytest.approx(93.2 - 1.0 - 2.0)
 
 

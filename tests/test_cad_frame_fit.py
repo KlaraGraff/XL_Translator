@@ -325,3 +325,38 @@ def test_bilingual_note_lines_leave_room_for_descenders_above_the_next_note(tmp_
     # 从上到下：原文、译文、原文、译文……任何两行（译文连下伸笔画）都不重叠。
     for (bottom, _top, upper), (_bottom, top, lower) in zip(boxes, boxes[1:], strict=False):
         assert bottom >= top, (upper, lower)
+
+
+# ── 同一列说明统一字高 ──────────────────────────────────────────
+
+
+def test_notes_in_one_column_share_the_smallest_size_and_the_heading_is_left_alone(tmp_path):
+    # 「说明：」下面三条左端对齐：第 2 条贴着图框缩小了，第 1、3 条短、本来不用缩。
+    notes = {"说明：": "Notes :", "单位为毫米": "Unites en mm",
+             "未注明的墙体均为加气混凝土砌块墙": "Sauf indication contraire, tous les murs sont en blocs de beton cellulaire",
+             "施工前复核尺寸": "Verifier sur site"}
+    drawing = _drawing(*_insert(), *(
+        part for number, source in enumerate(notes)
+        for part in _text(str(20 + number), source, x=40, y=40 - 6 * number)
+    ), blocks=_frame_block())
+    result, output, messages = _translate(tmp_path, drawing, notes)
+    sizes = {_field(body, 1): (float(_field(body, 40)), float(_field(body, 41, 1.0))) for body in _entities(output, "TEXT")}
+    assert sizes["Notes :"] == (2.5, 1.0)
+    numbered = [sizes[value] for source, value in notes.items() if not source.endswith("：")]
+    assert len(set(numbered)) == 1 and numbered[0][0] < 2.5
+    assert any("统一为相同字高" in message for message in messages)
+    assert result.stats.layout_unresolved == 0
+
+
+def test_texts_far_apart_are_not_a_column(tmp_path):
+    long = "Sauf indication contraire, tous les murs sont en blocs de beton cellulaire"
+    drawing = _drawing(
+        *_insert(),
+        *_text("20", "单位为毫米", x=40, y=40),
+        # 隔得远（超过 4 倍字高）：不是同一列。
+        *_text("21", "墙体", x=40, y=20),
+        blocks=_frame_block(),
+    )
+    _result, output, _messages = _translate(tmp_path, drawing, {"单位为毫米": "Unites en mm", "墙体": long})
+    sizes = {_field(body, 1): float(_field(body, 40)) for body in _entities(output, "TEXT")}
+    assert sizes["Unites en mm"] == 2.5 and sizes[long] < 2.5

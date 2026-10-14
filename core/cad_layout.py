@@ -1342,6 +1342,62 @@ def _cell_content_height(
     return lines[0] + _MTEXT_LINE_SPACING * sum(lines[1:])
 
 
+def text_heights(records: Sequence[Any], plain_text: Callable[[str], str]) -> dict[int, float]:
+    """每段单行文字（TEXT/ATTRIB）的字高，按实体序号：缩字前记下来，给 :func:`unify_column_heights` 用。"""
+    return {entity.entity_no: entity.height for entity in _collect_entities(records, plain_text)
+            if entity.entity_type in _SINGLE_LINE_TYPES}
+
+
+# 同一列：上下相邻两行的插入点相距不超过原字高的这么多倍（双语时中间隔着一行原文）。
+_COLUMN_SPACING = 4.0
+
+
+def unify_column_heights(
+    records: list[Any],
+    translated: Mapping[int, tuple[str, float]],
+    plain_text: Callable[[str], str],
+) -> int:
+    """同一列译文统一字高：左端对齐、上下相邻、原字高相同的一列单行译文（逐条说明、备注），
+    有的缩小了、有的没缩时，整列都改成其中最小的字高和最小的宽度比例。
+
+    ``translated`` 是实体序号 → ``(原文, 缩字前的字高)``，只看这些译文。原文以冒号结尾的
+    （「说明：」「注：」这类标题）不算进列。只会让字变小，不会压到别处。返回改过的条数。
+    """
+    if not translated:
+        return 0
+    columns: dict[tuple[Any, ...], list[tuple[float, _TextEntity]]] = {}
+    for entity in _collect_entities(records, plain_text):
+        item = translated.get(entity.entity_no)
+        if item is None or entity.entity_type != "TEXT" or entity.halign != 0:
+            continue
+        source, height = item
+        if height <= 0 or plain_text(source).rstrip().endswith((":", "：")):
+            continue
+        x, y = _local(entity)
+        # 插入点横坐标、原字高按原字高的一成取整，差一点的也算同一列。
+        key = (entity.container, round(entity.rotation, 1), entity.font_class,
+               round(x / (0.1 * height)), round(height, 3))
+        columns.setdefault(key, []).append((y, entity))
+    edits: list[tuple[_TextEntity, float, float]] = []
+    for key, members in columns.items():
+        height = key[-1]
+        members.sort(key=lambda item: -item[0])
+        run: list[_TextEntity] = []
+        for index, (y, entity) in enumerate(members):
+            run.append(entity)
+            last = index == len(members) - 1
+            if last or y - members[index + 1][0] > _COLUMN_SPACING * height:
+                if len(run) > 1:
+                    target_height = min(member.height for member in run)
+                    target_width = min(member.width_factor for member in run)
+                    edits.extend((member, target_height, target_width) for member in run
+                                 if (member.height, member.width_factor) != (target_height, target_width))
+                run = []
+    for entity, new_height, new_width_factor in sorted(edits, key=lambda item: item[0].start, reverse=True):
+        _write_size(records, entity.start, entity.end, new_height, new_width_factor)
+    return len(edits)
+
+
 def fit_table_cells(
     records: list[Any],
     originals: Mapping[int, str],
