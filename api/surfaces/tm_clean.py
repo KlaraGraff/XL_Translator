@@ -15,3 +15,6 @@ class TmCleanSurface(Surface):
     label = "TM cleaning"
     page_key = "tm_clean"
     requires_source = False
+    display_label = {"zh": "记忆库清洗", "en": "Memory cleanup", "fr": "Nettoyage de la mémoire"}
+    # 图标集里没有专属图标，与任务中心一样用记忆库图标。
+    icon = "book"

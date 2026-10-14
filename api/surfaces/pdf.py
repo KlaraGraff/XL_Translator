@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from api.surfaces.base import RunnerRequest, Surface
+from api.surfaces.base import PHASE_READ, PHASE_TRANSLATE, PHASE_WRITE, RunnerRequest, Surface, suffixes
 from api.task_contracts import (
     REASON_IMAGE_MODEL_MISSING,
     REASON_PDF_REVIEW_MODEL_MISSING,
@@ -32,6 +32,7 @@ from core.pdf_image_translation import (
     scan_pdf_path,
     scan_pdf_sources,
 )
+from core.pdf_models import SUPPORTED_IMAGE_SUFFIXES, SUPPORTED_PDF_SUFFIXES
 from settings import AppSettings
 
 
@@ -48,8 +49,20 @@ class PdfSurface(Surface):
     label = "PDF translation"
     page_key = "pdf_translate"
     target_lang_setting = "pdf"
+    display_label = {"zh": "PDF 与图片", "en": "PDF & images", "fr": "PDF et images"}
+    file_noun = {"zh": "PDF / 图片文件", "en": "PDF / image files", "fr": "fichiers PDF / images"}
+    icon = "pdf"
+    # 图片要在页面上勾选「包含图片」才扫描。
+    file_extensions = suffixes((*SUPPORTED_PDF_SUFFIXES, *SUPPORTED_IMAGE_SUFFIXES))
+    output_translation_only = True
     # 读取文件 / 翻译 / 生成文件 / 写入报告
     phase_weights = (5, 85, 8, 2)
+    phase_names = (
+        PHASE_READ,
+        PHASE_TRANSLATE,
+        PHASE_WRITE,
+        {"zh": "写入报告", "en": "Writing report", "fr": "Écriture du rapport"},
+    )
     can_pause = True
     pause_mode = "immediate"
     can_resume = True

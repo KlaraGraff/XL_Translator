@@ -15,6 +15,7 @@ import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
+import { loadSurfaceDescriptors } from "./surface-descriptors";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
@@ -170,6 +171,10 @@ function main(): void {
   navigate("excel");
 
   void syncAppearanceFromBackend().catch(() => undefined);
+
+  // 板块类型描述符：拉一次放进内存，运行时注册的页面（以后的格式扩展）靠它取名称和开关。
+  // 内置四个页面不依赖它，拉取失败也不影响启动。
+  void loadSurfaceDescriptors().catch(() => undefined);
 
   // 顶栏「当前模型」药丸：先按已保存的配置点亮一次，之后由设置页每次保存/测试后刷新。
   void refreshModelPill();

@@ -17,6 +17,7 @@ from api.surfaces.base import (
     Surface,
     require_target_lang,
     require_translation_model,
+    suffixes,
 )
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
@@ -29,6 +30,7 @@ from core.document_profile import (
 )
 from core.cad_translation import (
     CAD_OUTPUT_VERSIONS,
+    CAD_SUPPORTED_EXTENSIONS,
     CadPipelineError,
     CadPipelineOptions,
     SubprocessCadConverter,
@@ -101,6 +103,14 @@ class CadSurface(Surface):
     page_key = "cad_translate"
     uses_translation_memory = True
     scan_honours_selection = True
+    display_label = {"zh": "CAD 图纸", "en": "CAD drawings", "fr": "Plans CAO"}
+    file_noun = {"zh": "DWG / DXF 图纸", "en": "DWG / DXF drawings", "fr": "plans DWG / DXF"}
+    icon = "cad"
+    file_extensions = suffixes(CAD_SUPPORTED_EXTENSIONS)
+    # 显示模式：仅译文 / 原文在上 / 译文在上。CAD 的进度按整体百分比给（没有 phase_weights），
+    # 所以也不列阶段名。
+    output_bilingual = True
+    output_translation_only = True
     # CAD pauses between drawings, or inside one drawing between two batches
     # of translation requests: the task shows 正在暂停 until the runner
     # acknowledges that it has stopped sending new requests.

@@ -13,6 +13,7 @@ The three methods without a usable default are ``scan``,
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -25,6 +26,47 @@ from api.task_contracts import (
 )
 from core.api_config_check import check_translation_api_config
 from settings import AppSettings
+
+
+#: Text in the three interface languages, ``{"zh": …, "en": …, "fr": …}``.
+#: Descriptors carry text this way because a page registered at run time has
+#: no entry in the front end's translation catalog.
+LocalizedText = Mapping[str, str]
+
+PHASE_READ: LocalizedText = {"zh": "读取文件", "en": "Reading files", "fr": "Lecture des fichiers"}
+PHASE_TRANSLATE: LocalizedText = {"zh": "翻译", "en": "Translation", "fr": "Traduction"}
+PHASE_WRITE: LocalizedText = {"zh": "生成文件", "en": "Generating files", "fr": "Génération des fichiers"}
+
+
+@dataclass(frozen=True)
+class OptionDef:
+    """One switch a page shows under 运行设置, declared instead of hand-built.
+
+    The four built-in pages still draw their switches from the front end's own
+    tables and declare none; a page registered at run time has no such table,
+    so the front end draws whatever its descriptor lists.
+    """
+
+    key: str
+    label: LocalizedText
+    default: bool = False
+    help: LocalizedText = field(default_factory=dict)
+    #: Only ``"toggle"`` for now.
+    kind: Literal["toggle"] = "toggle"
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "kind": self.kind,
+            "label": dict(self.label),
+            "help": dict(self.help),
+            "default": self.default,
+        }
+
+
+def suffixes(values: Iterable[str]) -> tuple[str, ...]:
+    """File suffixes as descriptors list them: lower case, no dot, sorted."""
+    return tuple(sorted({str(value).lower().lstrip(".") for value in values if str(value).strip(".")}))
 
 
 @dataclass(frozen=True)
@@ -52,6 +94,26 @@ class Surface:
     #: Model page key passed to ``task_api_context_for_page``; it decides
     #: which model roles (translation / image / pdf_review / cleaner) the task uses.
     page_key: ClassVar[str]
+    #: Shipped with the app.  The front end draws built-in pages from its own
+    #: compiled tables and uses the descriptor only for the others.
+    builtin: ClassVar[bool] = True
+
+    # ── descriptor (``GET /api/surfaces``) ───────────────────────────────
+    #: Name in the sidebar and the task center.
+    display_label: ClassVar[LocalizedText] = {}
+    #: What the page calls its files (「表格文件」, "documents").
+    file_noun: ClassVar[LocalizedText] = {}
+    #: Icon name from ``ui/src/icons.ts``.
+    icon: ClassVar[str] = ""
+    #: File suffixes the page translates (see ``suffixes``).
+    file_extensions: ClassVar[tuple[str, ...]] = ()
+    #: The page can write 原文 + 译文 / only 译文.
+    output_bilingual: ClassVar[bool] = False
+    output_translation_only: ClassVar[bool] = False
+    #: Name of each runner phase, in the order and number of ``phase_weights``.
+    phase_names: ClassVar[tuple[LocalizedText, ...]] = ()
+    #: Switches under 运行设置 the front end draws from the descriptor.
+    options: ClassVar[tuple[OptionDef, ...]] = ()
 
     # ── task start ───────────────────────────────────────────────────────
     #: False only for TM cleaning, which runs on a language pair, not on files.
@@ -89,6 +151,29 @@ class Surface:
     keeps_runner_after_finish: ClassVar[bool] = False
 
     # ── hooks ────────────────────────────────────────────────────────────
+
+    def describe(self) -> dict[str, Any]:
+        """The type descriptor: what a front end, CLI or agent needs to show
+        and start this page without knowing it at build time."""
+        return {
+            "key": self.key,
+            "builtin": self.builtin,
+            "label": dict(self.display_label),
+            "file_noun": dict(self.file_noun),
+            "icon": self.icon,
+            "extensions": list(self.file_extensions),
+            "capabilities": {
+                "requires_source": self.requires_source,
+                "can_pause": self.can_pause,
+                "pause_mode": self.pause_mode,
+                "can_resume": self.can_resume,
+                "can_end_paused": self.can_end_paused,
+                "bilingual": self.output_bilingual,
+                "translation_only": self.output_translation_only,
+            },
+            "phases": [dict(name) for name in self.phase_names],
+            "options": [option.describe() for option in self.options],
+        }
 
     def scan(
         self,
