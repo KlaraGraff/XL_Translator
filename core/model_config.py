@@ -230,10 +230,13 @@ def apply_model_config_import(
         payload["model_throughput_profiles"] = profiles
 
     updated = AppSettings.model_validate(payload)
-    # A shared connection can make an untouched follower invalid.  Verify the
-    # complete effective graph before writing any imported secret, then reset
-    # all role test states because no imported result is trustworthy.
-    validate_all_model_roles(updated)
+    # Verify the complete follow graph before writing any imported secret, then
+    # reset all role test states because no imported result is trustworthy.
+    # A follower whose source cannot serve it (review following a text-only
+    # translation provider) is imported as is and shown as unavailable, the
+    # same as when the user switches that provider in the panel.
+    # A role's own endpoint that cannot serve it is still rejected.
+    validate_all_model_roles(updated, strict_independent=True)
     reset_all_model_role_availability(updated)
     def _commit_keys() -> None:
         # 这里写的每一把 Key 都来自别人的配置文件，必须标成 imported：本机之后再
@@ -411,7 +414,7 @@ def _model_profiles_for_export(
     # exporting.  Resolve primaries first so the exported rows mirror them.
     for role in MODEL_ROLES:
         try:
-            resolve_effective_model_config(settings, role)
+            resolve_effective_model_config(settings, role, check_capability=False)
         except Exception:
             pass
     payload = settings.model_dump(mode="json")
@@ -749,7 +752,7 @@ def _local_profile_for_export(engine: dict[str, Any]) -> dict[str, str]:
 
 def _throughput_profile_for_export(settings: AppSettings, role: str) -> dict[str, Any]:
     try:
-        config = resolve_effective_model_config(settings, role)
+        config = resolve_effective_model_config(settings, role, check_capability=False)
         throughput = get_model_throughput(settings, config)
     except Exception:
         return {}
@@ -772,7 +775,7 @@ def _effective_profile_for_export(
     would be plaintext that no round-trip ever reads back.
     """
     try:
-        config = resolve_effective_model_config(settings, role)
+        config = resolve_effective_model_config(settings, role, check_capability=False)
     except Exception:
         return {}
     return {

@@ -204,7 +204,7 @@ def register(app: FastAPI) -> None:
         for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
             try:
                 before_signatures[role] = model_config_signature(
-                    resolve_effective_model_config(before_settings, role)
+                    resolve_effective_model_config(before_settings, role, check_capability=False)
                 )
             except Exception:
                 continue
@@ -228,15 +228,19 @@ def register(app: FastAPI) -> None:
         # load-time snapshot, which would make the save a full overwrite for
         # the one endpoint the UI hits on every switch flip.
         carry_settings_baseline(before_settings, settings)
+        # 只拦结构上解析不了的配置（跟随链、循环）。某个用途因为别处的改动而能力不符
+        # （例如审核模型跟随的文档翻译换成了不能看图的服务商）不拦：这是一个通用保存
+        # 端点，拦下来的话连改主题、改目标语言都会一起存不进去。那个用途在模型服务页
+        # 上显示为「不可用」，用到它的任务开始前会说明原因。
         for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
             try:
-                resolve_effective_model_config(settings, role)
+                resolve_effective_model_config(settings, role, check_capability=False)
             except Exception as exc:
                 raise HTTPException(422, str(exc)) from exc
         for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
             try:
                 changed = before_signatures.get(role) != model_config_signature(
-                    resolve_effective_model_config(settings, role)
+                    resolve_effective_model_config(settings, role, check_capability=False)
                 )
             except Exception:
                 changed = True
