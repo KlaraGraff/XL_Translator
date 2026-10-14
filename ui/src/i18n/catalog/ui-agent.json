@@ -1,0 +1,13 @@
+{
+  "接入智能体": {"en": "Connect an AI agent", "fr": "Connecter un agent IA"},
+  "Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用，也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型与翻译参数沿用应用中的设置。": {
+    "en": "Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor, and can also be used from a terminal. While Translator is open, tasks appear in the Task center; otherwise the translation engine runs in the background and exits when done. Models and translation options follow the app's settings.",
+    "fr": "Translator peut servir de serveur MCP aux agents comme Claude Desktop, Claude Code ou Cursor, et s'utiliser aussi en ligne de commande. Lorsque Translator est ouvert, les tâches s'affichent dans le Centre des tâches ; sinon, le moteur de traduction s'exécute en arrière-plan et s'arrête une fois terminé. Les modèles et les options de traduction suivent les réglages de l'application."
+  },
+  "MCP 配置（加入智能体的 MCP 配置文件）": {"en": "MCP configuration (add to the agent's MCP configuration file)", "fr": "Configuration MCP (à ajouter au fichier de configuration MCP de l'agent)"},
+  "命令行示例": {"en": "Command-line example", "fr": "Exemple en ligne de commande"},
+  "文件或文件夹路径": {"en": "path to file or folder", "fr": "chemin du fichier ou du dossier"},
+  "复制": {"en": "Copy", "fr": "Copier"},
+  "已复制。": {"en": "Copied.", "fr": "Copié."},
+  "未获取到本机路径，以上为默认安装位置。": {"en": "The local path could not be read; the default install location is shown above.", "fr": "Le chemin local n'a pas pu être lu ; l'emplacement d'installation par défaut est indiqué ci-dessus."}
+}

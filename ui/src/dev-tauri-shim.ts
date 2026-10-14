@@ -10,7 +10,8 @@
  * TRANSLATOR_DEV_ORIGIN=http://127.0.0.1:1420 放行 CORS）。
  *
  * 命令覆盖范围只到「视觉与流程走查」够用为止：
- *   - sidecar_info      → 返回上面两个环境变量
+ *   - sidecar_info      → 返回上面两个环境变量；另设 VITE_DEV_SIDECAR_EXECUTABLE 时一并返回
+ *                         （帮助页「接入智能体」显示的引擎路径）
  *   - plugin:dialog|open / |save → window.prompt 手输本机路径（取消返回 null）
  *   - open_external_url / open_local_path → window.open / console 提示
  *   - save_text_file / save_binary_file → 显式 reject（浏览器里没有写盘能力）
@@ -29,8 +30,10 @@ function installDevShim(): void {
 
   const invoke = async (cmd: string, args?: InvokeArgs): Promise<unknown> => {
     switch (cmd) {
-      case "sidecar_info":
-        return { port, token };
+      case "sidecar_info": {
+        const executable = String(import.meta.env.VITE_DEV_SIDECAR_EXECUTABLE ?? "");
+        return executable ? { port, token, executable } : { port, token };
+      }
       case "plugin:dialog|open": {
         const options = (args?.options ?? {}) as { directory?: boolean; multiple?: boolean };
         const input = window.prompt(

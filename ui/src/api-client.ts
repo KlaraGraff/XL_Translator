@@ -6,7 +6,19 @@ import { tx } from "./i18n";
 export type SidecarInfo = {
   port: number;
   token: string;
+  // 打包应用里引擎可执行文件的路径（帮助页「接入智能体」用）；开发构建没有。
+  executable?: string;
 };
+
+/** 引擎可执行文件的路径，供帮助页拼 MCP 配置和命令行示例；只取路径，不取令牌。 */
+export async function sidecarExecutable(): Promise<string> {
+  try {
+    const info = await invoke<SidecarInfo>("sidecar_info");
+    return String(info.executable ?? "");
+  } catch {
+    return "";
+  }
+}
 
 export type TaskStatus = {
   task_id: string;

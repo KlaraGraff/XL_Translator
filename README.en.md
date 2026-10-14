@@ -174,6 +174,46 @@ The complete model configuration can be exported under Settings → Models for u
 
 Security note: any user with the application installed can decrypt an `.xltcfg` file. The encryption only protects the file from unrelated parties during transfer, not from users who have the application. Do not share configuration files containing keys in public groups or cloud folders. Exports include only keys entered manually on the local computer; keys imported from another configuration are never exported again.
 
+## Connecting AI agents
+
+Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor. An agent can list the supported file types, scan files, start a translation, check its progress and retrieve the paths of the output files. The same program can also be used from a terminal. While Translator is open, tasks appear in the Task center; otherwise the translation engine runs in the background and exits when done. Models, languages and translation options follow the application settings, so a model service must be configured in the application first. Translations are written to a new folder next to the source files, and the source files are never modified.
+
+Location of the translation engine:
+
+- macOS: `/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
+- Windows: `C:\Users\<user name>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
+
+Help → Connect an AI agent in the application shows the actual path on the computer, with the configuration and command ready to copy. The examples below use the macOS path. When a Windows path is written in JSON, each `\` must be written as `\\`. If the configuration file already lists other servers, add the `translator` entry to the existing `mcpServers`.
+
+**Claude Desktop**: open `claude_desktop_config.json` from Settings → Developer → Edit Config (located in `~/Library/Application Support/Claude/` on macOS and `%APPDATA%\Claude\` on Windows), add the following and restart Claude Desktop.
+
+```json
+{
+  "mcpServers": {
+    "translator": {
+      "command": "/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Claude Code**: run the following command in a terminal to make Translator available in all projects. To use it in a single project only, save the JSON above as `.mcp.json` in the project root.
+
+```bash
+claude mcp add --scope user translator -- /Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar mcp
+```
+
+**Cursor**: save the JSON above as `~/.cursor/mcp.json` (all projects; `%USERPROFILE%\.cursor\mcp.json` on Windows) or as `.cursor/mcp.json` in a project.
+
+**Command line**: run the same program with a subcommand. For example, to translate a file into French and wait for it to finish:
+
+```bash
+"/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar" translate ~/Documents/checklist.xlsx --to fr --wait
+```
+
+`--help` lists all subcommands (`types`, `scan`, `translate`, `status`, `stop`, `mcp`). `translate --dry-run` only lists the files that would be translated and any confirmations required, without starting a translation. In Windows PowerShell, prefix a quoted path with `&`.
+
 ## Updates
 
 The application checks for updates once in the background after startup and displays an indicator on Settings in the sidebar when a new version is available. Updates can be installed directly under Settings → Updates & about: the application downloads the official package, verifies its signature and replaces itself in place, and rejects any package whose signature does not match. On macOS, the user chooses when to restart; on Windows, the installer completes the update after confirming whether running jobs may be interrupted. Background update reminders can be paused, and specific versions can be skipped.
