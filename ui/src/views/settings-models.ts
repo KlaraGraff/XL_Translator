@@ -484,11 +484,16 @@ export function renderModelsPage(host: HTMLElement): void {
   detailBody.append(statusRow, statusReasonNote);
   const paintStatus = (connection: PoolConnection | null) => {
     const availabilitySource: JsonObject = connection
-      ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at }
+      ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at, config_problem: connection.config_problem ?? "" }
       : rolePayload;
+    // 配置本身用不了（多半是跟随的来源换了服务商）和「测过、没通过」是两回事：前者不用
+    // 去点「测试连接」，要改的是连接方式或服务商，所以胶囊写「不可用」而不是「测试失败」。
+    const configProblem = text(availabilitySource.config_problem);
     const availability = text(availabilitySource.availability_status, "unknown");
     const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
-    const availabilityLabel = availability === "available" ? t("测试通过") : availability === "unavailable" ? t("测试失败") : t("未测试");
+    const availabilityLabel = configProblem
+      ? t("不可用")
+      : availability === "available" ? t("测试通过") : availability === "unavailable" ? t("测试失败") : t("未测试");
     const checkedAt = formatCheckedAt(text(availabilitySource.availability_checked_at));
     const matches = catalogStillMatches();
     const list = currentCatalog();
@@ -586,6 +591,12 @@ export function renderModelsPage(host: HTMLElement): void {
   const autoSaveOnBlur = (event: Event) => {
     const field = event.currentTarget as HTMLInputElement | HTMLSelectElement;
     if (field.disabled) return;
+    // 服务商下拉先派发 change，随后才回调 onProviderChange 重填 Base URL 和推荐模型名。
+    // 在这里同步读表单会读到换服务商之前的模型名：换成 DeepSeek 后存下的是空模型名，
+    // 刷新后卡片显示「缺少模型名称」。推迟到当前事件处理完再读。
+    queueMicrotask(() => saveFormNow());
+  };
+  const saveFormNow = () => {
     const form = readModelForm();
     void queueModelFormSave(async () => {
       try {
@@ -672,6 +683,7 @@ function buildRoleSeg(): HTMLElement {
     // 窄窗口下四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
     b.title = b.textContent;
     const primary = roleConnections(role)[0];
+    const problem = text(primary?.config_problem ?? payload.config_problem);
     const primarySource = primary?.source_role || text(payload.source_role, "independent");
     const following = primary?.connection_mode === "follow";
     const modelName = primary ? primary.model : text(payload.model);
@@ -685,12 +697,20 @@ function buildRoleSeg(): HTMLElement {
     span.append(summary);
     // 有连接但模型名还空着：跟随行尤其容易漏——卡片写着「跟随…」看起来已经配好，
     // 真用到这个用途时才报错。在卡片上直接标出来；摘要太长时省略的是摘要，不是这个标记。
-    if (primary && !modelName) {
+    if (problem) {
+      // 别的用途改了连接，这个用途跟着用不了：卡片上直接标出来，原因放在悬停提示里。
+      const unusable = document.createElement("em");
+      unusable.textContent = t("不可用");
+      span.append(unusable);
+    } else if (primary && !modelName) {
       const missing = document.createElement("em");
       missing.textContent = t("缺少模型名称");
       span.append(missing);
     }
-    span.title = [summary.textContent, primary && !modelName ? t("缺少模型名称") : ""].filter(Boolean).join(" · ");
+    span.title = [
+      summary.textContent,
+      problem ? tx(problem) : primary && !modelName ? t("缺少模型名称") : "",
+    ].filter(Boolean).join(" · ");
     segc.append(b, span);
     segc.addEventListener("click", () => {
       if (modelRole === role) return;
@@ -807,6 +827,18 @@ async function ensureFormSavedBeforeCatalog(): Promise<void> {
   await refreshModelRoles();
 }
 
+// 除 role 以外各用途主用连接眼下用不了的原因（没有问题的用途不列）。
+function otherRoleProblems(role: string): Record<string, string> {
+  const problems: Record<string, string> = {};
+  for (const other of MODEL_ROLE_ORDER) {
+    if (other === role) continue;
+    const primary = roleConnections(other)[0];
+    const problem = text(primary?.config_problem ?? record(modelRoles[other]).config_problem);
+    if (problem) problems[other] = problem;
+  }
+  return problems;
+}
+
 async function saveModel(
   form: ModelFormSubmission,
   opts: { silent?: boolean } = {},
@@ -829,10 +861,19 @@ async function saveModel(
     body.api_mode = form.apiMode;
     if (form.apiKey && connectionMode === "cloud") body.api_key = form.apiKey;
   }
+  const problemsBefore = otherRoleProblems(role);
   modelRoles[role] = await client.request<JsonObject>(
     `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.selectedId)}`,
     { method: "PUT", body: JSON.stringify(body) },
   );
+  // 这一行可能是别的用途跟随的来源：换了服务商或改成本地模型后，跟随它的用途也许就用
+  // 不了了（例如 DeepSeek 不能看图，审核模型跟着失效）。这次保存照常生效，但必须当场
+  // 告诉用户哪个用途受了影响，不能等他跑任务时才发现。
+  await refreshModelRoles();
+  for (const [otherRole, problem] of Object.entries(otherRoleProblems(role))) {
+    if (problemsBefore[otherRole] === problem) continue;
+    showToast({ message: t("已保存。{0}", tx(problem)), duration: 8000 });
+  }
   // 只丢掉「这次交上去的那份」连接方式草稿。失焦保存是排队执行的：用户点「本地模型」
   // 单选框时，先触发的是上一个输入框的失焦保存（带着旧的连接方式），它落盘时用户已经
   // 选好了新方式——以前这里不分青红皂白地删草稿，界面上的「本地」就被悄悄撤回成云端。

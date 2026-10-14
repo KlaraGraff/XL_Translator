@@ -154,7 +154,7 @@ def _reset_roles_with_changed_effective_signature(
     for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
         try:
             after_signature = model_config_signature(
-                resolve_effective_model_config(settings, role)
+                resolve_effective_model_config(settings, role, check_capability=False)
             )
         except Exception:
             after_signature = ""

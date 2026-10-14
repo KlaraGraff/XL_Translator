@@ -17,6 +17,7 @@ from core.model_roles import (
     ModelRoleConfigError,
     add_role_connection,
     allowed_source_roles,
+    list_role_connections,
     model_config_signature,
     model_role_owner,
     remove_role_connection,
@@ -144,9 +145,13 @@ def register(app: FastAPI) -> None:
             raise HTTPException(422, str(exc)) from exc
         changed = primary.model_dump() != before_primary
         try:
-            # A changed translation connection can make a following image or
-            # review role illegal.  Do not persist an invalid shared graph.
-            after_configs = validate_all_model_roles(settings)
+            # A changed translation connection can leave a following review role
+            # unable to do its job.  That no longer blocks this save: only the
+            # connection being edited must suit its own role; the follower is
+            # shown as unavailable on the panel (see model_role_config_problem).
+            after_configs = validate_all_model_roles(
+                settings, strict_connection=(role, primary.id)
+            )
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
         if changed:
@@ -172,7 +177,7 @@ def register(app: FastAPI) -> None:
             if connection.source_role not in allowed_source_roles(role, settings):
                 raise HTTPException(422, "跟随来源的主用连接也在跟随其他模型，请直接选择最终来源。")
         try:
-            validate_all_model_roles(settings)
+            validate_all_model_roles(settings, strict_connection=(role, connection.id))
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -263,6 +268,8 @@ def register(app: FastAPI) -> None:
         before_throughput_keys = throughput_profile_keys(settings)
         try:
             remove_role_connection(settings, role, connection_id)
+            # 删除只查结构（跟随链、循环），不查能力：删掉一条连接永远应该能做到，
+            # 顶上来的那条用不了的话，面板会把它标成「不可用」。
             validate_all_model_roles(settings)
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -283,7 +290,11 @@ def register(app: FastAPI) -> None:
         before_throughput_keys = throughput_profile_keys(settings)
         try:
             reorder_role_connections(settings, role, list(payload.ordered_ids))
-            validate_all_model_roles(settings)
+            # 设为主用是用户对这一条连接的明确选择，按它自己的能力把关。
+            validate_all_model_roles(
+                settings,
+                strict_connection=(role, list_role_connections(settings, role)[0].id),
+            )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
         carry_over_throughput_profiles(settings, before_throughput_keys)
@@ -402,7 +413,7 @@ def register(app: FastAPI) -> None:
     @app.get("/api/models/throughput/{role}")
     def get_throughput(role: str, connection_id: str = "") -> dict[str, Any]:
         settings = load_settings()
-        config = _model_config_or_422(settings, role, connection_id)
+        config = _model_config_or_422(settings, role, connection_id, check_capability=False)
         throughput = get_model_throughput(settings, config)
         return {
             "profile_key": throughput.profile_key,
@@ -425,7 +436,7 @@ def register(app: FastAPI) -> None:
     @app.put("/api/models/throughput/{role}")
     def put_throughput(role: str, payload: ThroughputPayload, connection_id: str = "") -> dict[str, Any]:
         settings = load_settings()
-        config = _model_config_or_422(settings, role, connection_id)
+        config = _model_config_or_422(settings, role, connection_id, check_capability=False)
         try:
             throughput = set_model_throughput(settings, config, batch_size=payload.batch_size, concurrency=payload.concurrency)
         except ValueError as exc:
@@ -443,7 +454,7 @@ def register(app: FastAPI) -> None:
     def reset_throughput(role: str, connection_id: str = "") -> dict[str, Any]:
         """Restore one role/model's recommended throughput profile."""
         settings = load_settings()
-        config = _model_config_or_422(settings, role, connection_id)
+        config = _model_config_or_422(settings, role, connection_id, check_capability=False)
         throughput = reset_model_throughput(settings, config)
         save_settings(settings)
         return {

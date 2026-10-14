@@ -17,6 +17,7 @@ from core.model_roles import (
     allowed_source_roles,
     list_role_connections,
     model_config_signature,
+    model_role_config_problem,
     normalize_source_role,
     resolve_effective_model_config,
 )
@@ -45,6 +46,7 @@ def _connection_payload(
     # 回落，于是任何靠 provider 作用域拿密钥的第二条连接（带 Key 导入进来的、老配置
     # 升上来的）都被标成「无密钥」，密钥框也不显示已保存掩码——它其实翻译得好好的。
     api_key = config.api_key
+    problem = model_role_config_problem(settings, role, connection.id)
     return {
         "id": connection.id,
         "label": connection.label,
@@ -67,9 +69,12 @@ def _connection_payload(
         "own_cloud_api_mode": connection.cloud_api_mode,
         "own_local_provider": connection.local_provider,
         "own_local_base_url": connection.local_base_url,
-        "availability_status": config.availability_status,
-        "availability_message": config.availability_message,
-        "availability_checked_at": connection.availability_checked_at,
+        # 这条连接眼下用不了（服务商不支持本用途所需的能力，或跟随了本地模型）。
+        # 多半是别的用途改了连接造成的：那次保存照常落盘，问题记在这里，面板标「不可用」。
+        "config_problem": problem,
+        "availability_status": "unavailable" if problem else config.availability_status,
+        "availability_message": problem or config.availability_message,
+        "availability_checked_at": "" if problem else connection.availability_checked_at,
         "has_api_key": bool(api_key),
         "api_key_preview": mask_api_key(api_key),
         "primary": index == 0,
@@ -96,7 +101,8 @@ def _throughput_payload(settings: AppSettings, config: EffectiveModelConfig) -> 
 
 
 def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
-    config = _model_config_or_422(settings, role)
+    config = _model_config_or_422(settings, role, check_capability=False)
+    problem = model_role_config_problem(settings, role)
     throughput = get_model_throughput(settings, config)
     owner = settings.engine if role == ROLE_TRANSLATION else {
         ROLE_CLEANER: settings.cleaner_model_role,
@@ -117,7 +123,8 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "connections": [
             _connection_payload(
                 connection, index,
-                _model_config_or_422(settings, role, connection.id), role, settings,
+                _model_config_or_422(settings, role, connection.id, check_capability=False),
+                role, settings,
             )
             for index, connection in enumerate(
                 list_role_connections(settings, role)
@@ -131,9 +138,10 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "source_role_options": allowed_source_roles(role, settings),
         "supports_local": config.capability in LOCAL_CAPABLE_CAPABILITIES,
         "follows": config.follows,
-        "availability_status": config.availability_status,
-        "availability_message": config.availability_message,
-        "availability_checked_at": getattr(owner, "availability_checked_at", ""),
+        "config_problem": problem,
+        "availability_status": "unavailable" if problem else config.availability_status,
+        "availability_message": problem or config.availability_message,
+        "availability_checked_at": "" if problem else getattr(owner, "availability_checked_at", ""),
         "availability_signature": config.availability_signature,
         "has_api_key": bool(config.api_key),
         "api_key_preview": mask_api_key(config.api_key),
@@ -183,11 +191,19 @@ def _reject_illegal_follow_payload(payload: dict[str, Any]) -> None:
         _reject_illegal_follow_choice(role, str(block.get("source_role") or ""))
 
 
-def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = ""):
+def _model_config_or_422(
+    settings: AppSettings,
+    role: str,
+    connection_id: str = "",
+    *,
+    check_capability: bool = True,
+):
     if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
         raise HTTPException(404, "未找到该模型用途，请刷新页面后重试。")
     try:
-        return resolve_effective_model_config(settings, role, connection_id=connection_id)
+        return resolve_effective_model_config(
+            settings, role, connection_id=connection_id, check_capability=check_capability
+        )
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -198,7 +214,7 @@ def _effective_role_signatures(settings: AppSettings) -> dict[str, str]:
     for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
         try:
             signatures[role] = model_config_signature(
-                resolve_effective_model_config(settings, role)
+                resolve_effective_model_config(settings, role, check_capability=False)
             )
         except Exception:
             # The following validation will return the useful configuration
