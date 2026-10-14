@@ -39,7 +39,7 @@
 | `api/schemas.py` | 所有请求体的 Pydantic 模型 |
 | `api/surfaces/` | **板块注册表**：每个翻译页面一个 `Surface` 子类（excel、word、pdf、cad，外加 TM 清洗）；运行时注册的类型（`ext:<id>`）也登记在这里，见下文「类型描述符与通用路径」 |
 | `api/routes/surfaces.py` | `GET /api/surfaces`：每个已注册页面的类型描述符 |
-| `cli/` | 命令行（`types`、`scan`、`translate`、`status`、`stop`），见下文「命令行与 MCP 入口」 |
+| `cli/` | 命令行（`types`、`scan`、`translate`、`status`、`stop`）和 MCP 服务器（`mcp`），见下文「命令行与 MCP 入口」 |
 | `core/engine_client.py`、`core/engine_file.py` | 连上正在运行的引擎或自己拉起一个；引擎写的连接文件 `run/engine.json` |
 | `api/task_manager.py` | 任务生命周期：准备、互斥与资源占用、启动执行器、把执行器消息转成任务事件、历史落盘、暂停/继续/停止 |
 | `api/task_contracts.py` | 执行器协议 `Runner`、`TaskOptions`、任务异常 |
@@ -131,7 +131,7 @@
 - **测试**：`tests/fixtures/sample_surface.py` 注册仅测试用的 `ext:sample`（扫描 `.txt`，原样写出，
   开关「转为大写」，可暂停），`tests/test_runtime_surface.py` 用真实路由走通整条路径。它不随应用发布。
 
-还没有的（后续阶段）：从外部安装格式适配器（「扩展」页的「添加扩展…」）、MCP 入口。
+还没有的（后续阶段）：从外部安装格式适配器（「扩展」页的「添加扩展…」）。
 
 ### 格式适配器
 
@@ -233,9 +233,19 @@ status | stop`（源码里 `./.venv/bin/python3 -m cli …`）。`scripts/launch
 - **退出码**：0 任务完成（部分文件失败也算），1 什么都没生成（全部失败、出错或被停止），2 参数或
   输入被拒，3 连不上也起不来引擎，4 需要确认。结果写 stdout，诊断写 stderr；`--json` 输出一个对象，
   `--json-lines` 每个事件一行。
+- **MCP**（`cli/mcp_server.py`，官方 `mcp` SDK 的 `MCPServer`，只有 stdio）：`translator-sidecar mcp`
+  把命令行的动作做成七个工具：`list_types`、`scan_sources`、`start_translation`、`get_task`、
+  `wait_task`（最多等 `timeout_seconds`，默认 50 秒，没结束就再调用）、`stop_task`、
+  `get_task_result`（输出文件、复核数和前 50 处复核位置）。全部经 `cli/flow.py` 和
+  `EngineClient`，不另写逻辑。引擎在第一次需要时才连接或拉起（列工具不起引擎），父进程是 MCP 进程，
+  会话结束引擎随之退出；连着的应用关掉后，只读工具重连一次，开始任务不重发。`start_translation`
+  遇到需要确认的拦截不自动接受：返回 `needs_confirmation`、`message` 和 `accept`，智能体问过用户后带上
+  `accept` 再调一次，或在用户事先同意时传 `accept_all`。服务期间 SDK 把文件描述符 1 指到 stderr，
+  stdout 只走协议。
 - **测试**：`tests/fixtures/cli_engine.py` 是注册了 `ext:sample`、用回声引擎代替模型的真实
-  `api.launcher`，`tests/test_cli.py` 用它充当已打开的应用走通各子命令；冻结冒烟
-  （`scripts/frozen_smoke.py`）在冻结包里跑一次 `types`，确认四个内置类型都在。跑批测试用
+  `api.launcher`，`tests/test_cli.py` 和 `tests/test_mcp_server.py` 用它充当已打开的应用走通各子命令和
+  七个工具；冻结冒烟（`scripts/frozen_smoke.py`）在冻结包里跑一次 `types`，再用 SDK 客户端拉起
+  `mcp`、列出七个工具并调一次 `list_types`。跑批测试用
   `agent/testing/seed_test_model.py` 在隔离数据目录里指定测试模型，命令行没有换模型的参数。
 
 ## 执行器内部的阶段

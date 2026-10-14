@@ -1,4 +1,4 @@
-"""``translator-sidecar types | scan | translate | status | stop``.
+"""``translator-sidecar types | scan | translate | status | stop | mcp``.
 
 Exit codes: 0 finished (some files may have failed), 1 nothing came out
 (all files failed, or the task stopped or errored), 2 bad arguments or input
@@ -21,7 +21,7 @@ from cli.flow import CliError, NeedsConfirmation
 from core.engine_client import EngineClient, EngineError, EngineUnavailable, connect
 
 #: Subcommands; ``scripts/launch_sidecar.py`` hands these to ``main``.
-COMMANDS = ("types", "scan", "translate", "status", "stop")
+COMMANDS = ("types", "scan", "translate", "status", "stop", "mcp")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,7 +109,7 @@ def _json(payload: Any) -> str:
 def _types(args: argparse.Namespace, out: Output) -> int:
     with _connect() as client:
         types = flow.file_types(client.surfaces())
-    out.result({"types": [_type_payload(item) for item in types]})
+    out.result({"types": [flow.type_payload(item) for item in types]})
     for item in types:
         extra = "" if item.get("builtin", True) else "（扩展）"
         extensions = " ".join(f".{suffix}" for suffix in item.get("extensions") or ())
@@ -117,16 +117,6 @@ def _types(args: argparse.Namespace, out: Output) -> int:
         for option in item.get("options") or ():
             out.line(f"{'':<16}--option {option.get('key')}=…  {flow.label_of({'label': option.get('label')})}")
     return flow.EXIT_OK
-
-
-def _type_payload(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "key": item.get("key"),
-        "label": item.get("label"),
-        "builtin": item.get("builtin", True),
-        "extensions": item.get("extensions") or [],
-        "options": item.get("options") or [],
-    }
 
 
 def _scan(args: argparse.Namespace, out: Output) -> int:
@@ -266,11 +256,9 @@ def _print_summary(out: Output, summary: dict[str, Any]) -> None:
 def _status(args: argparse.Namespace, out: Output) -> int:
     with _connect() as client:
         if args.task_id:
-            status = client.task(args.task_id)
-            summary = flow.summarize(status)
-            progress = status.get("progress") or {}
-            logs = [entry.get("message") for entry in (status.get("logs") or [])[-max(1, args.logs):] if isinstance(entry, dict)]
-            out.result({**summary, "progress": progress, "logs": logs})
+            summary = flow.task_status(client.task(args.task_id), logs=args.logs)
+            progress, logs = summary["progress"], summary["logs"]
+            out.result(summary)
             percent = progress.get("overall_percent")
             phase = progress.get("phase_name") or ""
             out.line(
@@ -325,6 +313,12 @@ def _stop(args: argparse.Namespace, out: Output) -> int:
     return flow.EXIT_OK
 
 
+def _mcp(args: argparse.Namespace, out: Output) -> int:
+    from cli.mcp_server import serve
+
+    return serve()
+
+
 def _connect(*, spawn: bool = True) -> EngineClient:
     return connect(spawn_if_needed=spawn)
 
@@ -376,6 +370,9 @@ def _parser() -> argparse.ArgumentParser:
 
     stop = command("stop", _stop, "停止一个正在进行的任务")
     stop.add_argument("task_id", metavar="任务号")
+
+    mcp_help = "作为 MCP 服务器运行（stdio），供智能体调用；工具与以上命令一一对应"
+    sub.add_parser("mcp", help=mcp_help, description=mcp_help).set_defaults(handler=_mcp, json=False)
     return parser
 
 

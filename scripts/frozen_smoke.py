@@ -90,6 +90,36 @@ def _check_cli_types() -> None:
         raise RuntimeError(f"command line `types` is missing built-in types: {', '.join(missing)}")
 
 
+def _check_mcp_handshake() -> None:
+    """Start ``mcp`` as an MCP client would (stdio, SDK client): initialize,
+    list the tools, and call ``list_types`` once."""
+    import anyio
+    from mcp import Client, StdioServerParameters
+
+    from cli.mcp_server import TOOL_NAMES
+
+    async def talk(data_dir: str) -> None:
+        command, cwd = _cli_command("mcp")
+        env = {**os.environ, "TRANSLATOR_APP_DATA_DIR": data_dir}
+        env.pop("TRANSLATOR_SIDECAR_PARENT_PID", None)
+        params = StdioServerParameters(command=command[0], args=command[1:], cwd=cwd, env=env)
+        with anyio.fail_after(_TYPES_TIMEOUT_SECONDS):
+            async with Client(params) as client:
+                names = tuple(tool.name for tool in (await client.list_tools()).tools)
+                if sorted(names) != sorted(TOOL_NAMES):
+                    raise RuntimeError(f"MCP tools differ: {', '.join(names)}")
+                result = await client.call_tool("list_types", {})
+                if result.is_error:
+                    raise RuntimeError(f"MCP list_types failed: {result.content}")
+                keys = {str(item.get("key")) for item in (result.structured_content or {}).get("types") or ()}
+                missing = [key for key in _BUILTIN_TYPES if key not in keys]
+                if missing:
+                    raise RuntimeError(f"MCP list_types is missing built-in types: {', '.join(missing)}")
+
+    with tempfile.TemporaryDirectory(prefix="translator-smoke-") as data_dir:
+        anyio.run(talk, data_dir)
+
+
 def run_smoke_test() -> int:
     """Validate bundled imports without creating a QApplication or reading settings."""
     try:
@@ -133,6 +163,8 @@ def run_smoke_test() -> int:
 
         # 命令行入口：冻结包里起引擎、列出类型，漏收 cli 包或分派出错在这里就暴露。
         _check_cli_types()
+        # MCP 入口：握手、列出七个工具、调一次 list_types（打包时漏收 mcp 的依赖在这里暴露）。
+        _check_mcp_handshake()
     except Exception as exc:
         _emit(f"[ERROR] Frozen application smoke test failed: {exc}", error=True)
         return 1

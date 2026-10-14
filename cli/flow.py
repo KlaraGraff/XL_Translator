@@ -94,6 +94,17 @@ def label_of(descriptor: dict[str, Any], language: str = "zh") -> str:
     return str(labels.get(language) or labels.get("en") or descriptor.get("key") or "")
 
 
+def type_payload(descriptor: dict[str, Any]) -> dict[str, Any]:
+    """A type as ``types`` / ``list_types`` report it."""
+    return {
+        "key": descriptor.get("key"),
+        "label": descriptor.get("label"),
+        "builtin": descriptor.get("builtin", True),
+        "extensions": descriptor.get("extensions") or [],
+        "options": descriptor.get("options") or [],
+    }
+
+
 def find_type(descriptors: list[dict[str, Any]], key: str) -> dict[str, Any]:
     wanted = str(key or "").strip().lower()
     types = file_types(descriptors)
@@ -322,6 +333,24 @@ def build_request(
     return request
 
 
+def apply_accept(request: dict[str, Any], accept: dict[str, Any] | None) -> dict[str, Any]:
+    """Add the fields a ``NeedsConfirmation`` named, as a caller hands them back.
+
+    Only fields that step past a stop are taken: ``confirmation_token`` and
+    the request's ``allow_*`` switches.
+    """
+    if not accept:
+        return request
+    from api.schemas import TaskStartRequest
+
+    allowed = {name for name in TaskStartRequest.model_fields if name.startswith("allow_")} | {"confirmation_token"}
+    for key, value in accept.items():
+        if key not in allowed:
+            raise InputError(f"「{key}」不是可确认的项目。可确认的项目：{', '.join(sorted(allowed))}。")
+        request[key] = str(value) if key == "confirmation_token" else bool(value)
+    return request
+
+
 def scan_request(detection: Detection) -> tuple[str, list[str]]:
     paths = list(detection.selected_paths) or [detection.source_path]
     return detection.key, paths
@@ -508,6 +537,17 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def task_status(status: dict[str, Any], *, logs: int = 5) -> dict[str, Any]:
+    """``summarize`` plus where a running task is and its last log lines."""
+    progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
+    entries = status.get("logs") if isinstance(status.get("logs"), list) else []
+    return {
+        **summarize(status),
+        "progress": progress,
+        "logs": [str(entry.get("message") or "") for entry in entries[-max(1, logs):] if isinstance(entry, dict)],
+    }
+
+
 def exit_code_for(summary: dict[str, Any]) -> int:
     """0 when the task finished (some files may have failed), 1 when nothing came out."""
     if summary["state"] in {"done", "completed_with_issues"} and (
@@ -517,21 +557,30 @@ def exit_code_for(summary: dict[str, Any]) -> int:
     return EXIT_FAILED
 
 
+_REVIEW_ROW_KEYS = ("review_items", "review_locations", "review_details", "issues")
+_REVIEW_FILE_KEYS = ("file", "source_relative_path", "relative_path", "path")
+_REVIEW_SECTION_KEYS = ("worksheet", "sheet", "sheet_name", "section", "chapter", "section_path", "heading")
+_REVIEW_LOCATION_KEYS = (
+    "cell", "cell_reference", "location_label", "location", "paragraph", "paragraph_index", "table_cell"
+)
+_REVIEW_TEXT_KEYS = ("excerpt", "snippet", "source_excerpt", "text", "source_text")
+
+
 def review_count(result: dict[str, Any]) -> int | None:
     """Places still to check, counted the way the task center counts them
     (``reviewCount`` in ui/src/views/tasks.ts): review rows when the result
     lists them, else the totals the runner reported."""
-    rows = _first_entries(result, ("review_items", "review_locations", "review_details", "issues"))
+    rows = _first_entries(result, _REVIEW_ROW_KEYS)
     review = result.get("review") if isinstance(result.get("review"), dict) else {}
     rows += _first_entries(review, ("items", "locations", "details", "issues"))
     if rows:
         merged: dict[tuple[str, ...], bool] = {}
         for row in rows:
             key = (
-                _first_text(row, ("file", "source_relative_path", "relative_path", "path")),
-                _first_text(row, ("worksheet", "sheet", "sheet_name", "section", "chapter", "section_path", "heading")),
-                _first_text(row, ("cell", "cell_reference", "location_label", "location", "paragraph", "paragraph_index", "table_cell")),
-                _first_text(row, ("excerpt", "snippet", "source_excerpt", "text", "source_text")),
+                _first_text(row, _REVIEW_FILE_KEYS),
+                _first_text(row, _REVIEW_SECTION_KEYS),
+                _first_text(row, _REVIEW_LOCATION_KEYS),
+                _first_text(row, _REVIEW_TEXT_KEYS),
                 _first_text(row, ("severity",)),
             )
             severity = key[-1]
@@ -550,6 +599,26 @@ def review_count(result: dict[str, Any]) -> int | None:
             if value is not None:
                 return value
     return None
+
+
+def review_rows(result: dict[str, Any], *, limit: int = 50) -> list[dict[str, str]]:
+    """The places to check, one row each (the rows ``review_count`` counts)."""
+    rows = _first_entries(result, _REVIEW_ROW_KEYS)
+    review = result.get("review") if isinstance(result.get("review"), dict) else {}
+    rows += _first_entries(review, ("items", "locations", "details", "issues"))
+    found: dict[tuple[str, ...], dict[str, str]] = {}
+    for row in rows:
+        if _first_text(row, ("severity",)) in {"resolved", "info"}:
+            continue
+        item = {
+            "file": _first_text(row, _REVIEW_FILE_KEYS),
+            "section": _first_text(row, _REVIEW_SECTION_KEYS),
+            "location": _first_text(row, _REVIEW_LOCATION_KEYS),
+            "text": _first_text(row, _REVIEW_TEXT_KEYS),
+            "reason": _first_text(row, ("message", "reason", "category", "type")),
+        }
+        found.setdefault((item["file"], item["section"], item["location"], item["text"]), item)
+    return [{key: value for key, value in item.items() if value} for item in found.values()][:limit]
 
 
 def _first_entries(source: dict[str, Any], keys: tuple[str, ...]) -> list[dict[str, Any]]:
