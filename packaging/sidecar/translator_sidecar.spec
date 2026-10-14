@@ -47,6 +47,14 @@ for package_name in metadata_packages:
 for adapter_file in sorted((ROOT / "adapters").glob("*/adapter.*")):
     datas.append((str(adapter_file), f"adapters/{adapter_file.parent.name}"))
 
+# `adapter new` 生成扩展用的模板（与模板仓库 XL_Translator-extension-template 相同的全部文件，
+# 含 .github/ 和 .gitignore），`adapter pack` 用其中的 scripts/pack.py。冻结冒烟会生成、自测并打包一次。
+_ADAPTER_TEMPLATE = ROOT / "cli" / "adapter_template"
+for template_file in sorted(_ADAPTER_TEMPLATE.rglob("*")):
+    if template_file.is_file() and "__pycache__" not in template_file.parts:
+        relative_dir = template_file.parent.relative_to(_ADAPTER_TEMPLATE).as_posix()
+        datas.append((str(template_file), "cli/adapter_template" + ("" if relative_dir == "." else f"/{relative_dir}")))
+
 hiddenimports = []
 hiddenimports += collect_submodules("api")
 hiddenimports += collect_submodules("core")

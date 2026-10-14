@@ -1,0 +1,9 @@
+# 示例：每行「键 = 值」，只翻译等号右边的值
+title = 欢迎使用
+greeting = 你好，{name}！
+farewell = 再见，期待下次见面。
+
+# 键以下划线开头的条目不翻译
+_version = 1.0.0
+menu.open = 打开文件
+menu.save = 保存

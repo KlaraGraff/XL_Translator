@@ -1,0 +1,20 @@
+{
+  "id": "my-format",
+  "version": "0.1.0",
+  "adapter_api_version": 1,
+  "label": {"zh": "我的格式", "en": "My format", "fr": "Mon format"},
+  "file_noun": {"zh": "我的格式文件", "en": "my format files", "fr": "fichiers de mon format"},
+  "description": {
+    "zh": "翻译「键 = 值」形式的文本文件（.myfmt），只翻译等号右边的值，键、注释和 {name} 这类占位符保持不变。",
+    "en": "Translates \"key = value\" text files (.myfmt). Only the values are translated; keys, comments and placeholders such as {name} stay as they are.",
+    "fr": "Traduit les fichiers texte « clé = valeur » (.myfmt). Seules les valeurs sont traduites ; les clés, les commentaires et les espaces réservés comme {name} restent inchangés."
+  },
+  "prompt": "你是一名专业的软件界面翻译助手。\n每段原文是界面上的一条文字（按钮、菜单、提示），译文要简短、自然，符合目标语言软件界面的习惯。\n花括号里的占位符（如 {name}、{count}）必须原样保留，可以按目标语言的语序调整位置。\n原文中的编号、版本号、快捷键与符号必须原样保留。",
+  "icon": "doc-file",
+  "extensions": ["myfmt"],
+  "capabilities": {"bilingual": true, "translation_only": true},
+  "options": [],
+  "license": "MIT",
+  "repo": "",
+  "min_app_version": ""
+}

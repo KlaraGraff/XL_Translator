@@ -1,0 +1,37 @@
+# 推送 v* 标签（例如 v0.1.0，须与 adapter.json 的 version 一致）时：
+# 打出 dist/<id>-<version>.zip、.sha256 和扩展列表的条目，附到这个标签的 GitHub Release；
+# 条目也打印在下面「Registry entry」这一步的日志里，复制后向
+# https://github.com/KlaraGraff/XL_Translator-extensions 提一个 PR（extensions/<id>.json）。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Pack
+        run: python scripts/pack.py . --tag "$GITHUB_REF_NAME"
+      - name: Registry entry
+        run: cat dist/*.entry.json
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 dist/*.entry.json --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 dist/*.entry.json \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

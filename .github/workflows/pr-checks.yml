@@ -27,6 +27,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6.0.3
+      # 扩展模板仓库须与 cli/adapter_template/ 逐字节相同（tests/test_cli_adapter.py 比对）：
+      # 改模板时两边一起改，先推模板仓库。
+      - uses: actions/checkout@v6.0.3
+        with:
+          repository: KlaraGraff/XL_Translator-extension-template
+          path: .runtime/extension-template
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
@@ -40,6 +46,8 @@ jobs:
       - name: Ruff (same targets as quality_gate.ps1)
         run: python -m ruff check config.py settings.py api cli core engines translator_adapter adapters scripts tests
       - name: Pytest
+        env:
+          TRANSLATOR_TEMPLATE_REPO: .runtime/extension-template
         run: python -m pytest -q -p no:cacheprovider tests
 
   ui:
