@@ -23,6 +23,9 @@ _CRITICAL_IMPORTS = (
     "core.task_runner",
     "core.word_task_runner",
     "core.pdf_image_translation",
+    # 格式适配器的协议包：适配器按文件加载，冻结时漏掉它只会在打开对应页面时才暴露。
+    "translator_adapter",
+    "core.format_adapter",
     # 一键安装「文字识别组件」靠它解压；它是原生扩展，冻结时漏掉只会在用户点安装时才暴露。
     "zstandard",
 )

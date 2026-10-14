@@ -46,6 +46,8 @@ hiddenimports = []
 hiddenimports += collect_submodules("api")
 hiddenimports += collect_submodules("core")
 hiddenimports += collect_submodules("engines")
+# 格式适配器要 import 的协议包（随应用提供的适配器从 adapters/ 按文件加载，见 core/format_adapter.py）。
+hiddenimports += collect_submodules("translator_adapter")
 hiddenimports += [
     "docx",
     "httpx",

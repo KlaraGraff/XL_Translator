@@ -19,6 +19,7 @@ $targets = @(
     "api",
     "core",
     "engines",
+    "translator_adapter",
     "scripts",
     "tests"
 )

@@ -1,0 +1,20 @@
+{
+  "id": "echo",
+  "version": "1.0.0",
+  "adapter_api_version": 1,
+  "label": {"zh": "回声文本", "en": "Echo text", "fr": "Texte écho"},
+  "file_noun": {"zh": "文本文件", "en": "text files", "fr": "fichiers texte"},
+  "icon": "doc-file",
+  "extensions": ["txt"],
+  "capabilities": {"bilingual": true, "translation_only": true},
+  "options": [
+    {
+      "key": "upper",
+      "label": {"zh": "转为大写", "en": "Upper case", "fr": "Majuscules"},
+      "help": {"zh": "写出时把译文转为大写（测试用）。", "en": "Write translations in upper case (tests only).", "fr": "Écrire les traductions en majuscules (tests)."},
+      "default": false
+    }
+  ],
+  "license": "MIT",
+  "repo": ""
+}
