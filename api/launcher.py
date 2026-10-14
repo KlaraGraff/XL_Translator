@@ -10,8 +10,10 @@ import time
 
 import psutil
 import uvicorn
+from loguru import logger
 
 from api.app import create_app
+from core import engine_file
 
 # How long uvicorn waits for open connections (mainly SSE streams) before it
 # closes them itself and runs the app's shutdown hook.
@@ -106,11 +108,28 @@ def _start_parent_watchdog(server: uvicorn.Server, on_exit) -> None:
     threading.Thread(target=watch, daemon=True, name="translator-parent-watchdog").start()
 
 
+def _publish_engine_file(port: int, token: str) -> None:
+    """Leave this engine's address for the command line and MCP clients.
+
+    The desktop shell reads the handshake line instead, so a data directory
+    that cannot be written to only costs those clients their attach, never
+    the app its engine.
+    """
+    try:
+        engine_file.write_engine_file(port=port, token=token)
+    except OSError as exc:
+        logger.warning(f"无法写入引擎连接信息（命令行将改为自行启动引擎）：{exc}")
+
+
 def main() -> None:
     token = secrets.token_urlsafe(32)
     app = create_app(auth_token=token)
 
     def begin_shutdown() -> None:
+        # Stop advertising first, so a command line reading engine.json from
+        # now on starts its own engine instead of attaching to one on its way
+        # out.  Only a small read and an unlink: this runs in a signal handler.
+        engine_file.remove_engine_file()
         manager = getattr(app.state, "task_manager", None)
         if manager is not None:
             manager.begin_shutdown()
@@ -121,6 +140,7 @@ def main() -> None:
         sock.listen(128)
         port = sock.getsockname()[1]
         print(f"PORT={port} TOKEN={token}", flush=True)
+        _publish_engine_file(port, token)
         config = uvicorn.Config(
             app,
             log_level="warning",
@@ -130,7 +150,10 @@ def main() -> None:
         server = GracefulSidecarServer(config, on_exit=begin_shutdown)
         app.state.request_shutdown = _shutdown_requester(server, begin_shutdown)
         _start_parent_watchdog(server, begin_shutdown)
-        server.run(sockets=[sock])
+        try:
+            server.run(sockets=[sock])
+        finally:
+            engine_file.remove_engine_file()
 
 
 if __name__ == "__main__":
