@@ -101,6 +101,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 struct SidecarInfo {
     port: u16,
     token: String,
+    /// 打包应用里引擎可执行文件的路径：帮助页「接入智能体」用它拼 MCP 配置和命令行示例
+    /// （`translator-sidecar mcp` 等）。开发构建跑的是 Python，没有这一项。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable: Option<String>,
 }
 
 struct RunningSidecar {
@@ -610,7 +614,22 @@ fn dev_server_origin(app: &tauri::AppHandle) -> String {
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
-    let mut command = if cfg!(debug_assertions) {
+    let bundled = if cfg!(debug_assertions) {
+        None
+    } else {
+        Some(bundled_sidecar_path(app)?)
+    };
+    let mut command = if let Some(executable) = &bundled {
+        let working_directory = executable.parent().ok_or_else(|| {
+            format!(
+                "Bundled Translator engine has no parent directory: {}",
+                executable.display()
+            )
+        })?;
+        let mut command = Command::new(executable);
+        command.current_dir(working_directory);
+        command
+    } else {
         let root = project_root();
         let python = python_command(&root);
         let mut command = Command::new(python);
@@ -621,17 +640,6 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         // the sidecar is cross-origin and the production allowlist rejects it.
         // Only debug builds pass this through; release builds never set it.
         command.env("TRANSLATOR_DEV_ORIGIN", dev_server_origin(app));
-        command
-    } else {
-        let executable = bundled_sidecar_path(app)?;
-        let working_directory = executable.parent().ok_or_else(|| {
-            format!(
-                "Bundled Translator engine has no parent directory: {}",
-                executable.display()
-            )
-        })?;
-        let mut command = Command::new(&executable);
-        command.current_dir(working_directory);
         command
     };
     #[cfg(windows)]
@@ -673,7 +681,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
     let handshake = receiver
         .recv_timeout(SIDECAR_START_TIMEOUT)
         .unwrap_or_else(|_| Err("Translator engine startup timed out.".to_string()));
-    let info = match handshake {
+    let mut info = match handshake {
         Ok(info) => info,
         Err(error) => {
             stop_child(&mut child, None, SIDECAR_ABORT_TIMEOUT);
@@ -684,6 +692,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         stop_child(&mut child, Some(&info), SIDECAR_ABORT_TIMEOUT);
         return Err(error);
     }
+    info.executable = bundled.map(|path| path.display().to_string());
     Ok(RunningSidecar { child, info })
 }
 
@@ -699,7 +708,11 @@ fn parse_handshake(line: &str) -> Result<SidecarInfo, String> {
         }
     }
     match (port, token) {
-        (Some(port), Some(token)) if !token.is_empty() => Ok(SidecarInfo { port, token }),
+        (Some(port), Some(token)) if !token.is_empty() => Ok(SidecarInfo {
+            port,
+            token,
+            executable: None,
+        }),
         _ => Err("Translator engine returned an invalid handshake.".to_string()),
     }
 }
@@ -1033,6 +1046,7 @@ mod tests {
             info: SidecarInfo {
                 port: 43123,
                 token: "test-token".to_string(),
+                executable: None,
             },
         })));
 

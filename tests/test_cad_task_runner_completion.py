@@ -227,3 +227,37 @@ def test_cad_stop_while_paused_inside_a_drawing_sends_no_new_requests(tmp_path, 
     assert sent == ["batch-1"]
     stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
     assert all(item.get("status") == "stopped" for item in stopped.files)
+
+
+def test_cad_issues_say_needs_review_like_the_file_status(tmp_path, monkeypatch):
+    """每条 CAD 问题都让图纸状态变成 needs_review；问题本身也得明说 severity。
+
+    任务中心只认 severity 判断待办。宣传视频回放里，排版放不下的 3 处没带它，
+    任务徽章写「已完成」，同一页的文件状态却是「已生成 · 需复核」。
+    """
+    import core.cad_task_runner as cad_task_runner
+
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    original = cad_task_runner.CadTranslationPipeline.translate_file
+
+    def crowded(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        result.stats.layout_unresolved = 3
+        return result
+
+    monkeypatch.setattr(cad_task_runner.CadTranslationPipeline, "translate_file", crowded)
+    source = tmp_path / "drawing.dxf"
+    source.write_text("0\nTEXT\n1\nDoor\n", encoding="utf-8")
+    runner = CadTaskRunner(
+        files=[SimpleNamespace(path=source, name=source.name, format="dxf")],
+        source_root=tmp_path,
+        output_dir=tmp_path / "results",
+        converter=_Converter(),
+        translator=lambda texts, glossary: {"Door": "门"},
+        options=CadPipelineOptions(),
+    )
+    done = next(message for message in _run(runner) if hasattr(message, "file_results"))
+
+    assert done.file_results[0]["status"] == "needs_review"
+    overflow = [issue for issue in done.issues if issue.get("reason") == "layout_overflow"]
+    assert overflow and all(issue["severity"] == "needs_review" for issue in done.issues)

@@ -6,8 +6,8 @@ counted by the adapter's ``scan``, and its tasks run on the shared executor
 (``core/adapter_runner.py``).  Nothing here knows any particular format.
 
 ``register_bundled_adapters()`` registers the adapters shipped with the app
-(``adapters/<id>/``) when the API starts; adapters installed from outside
-come in a later phase with a child-process host.
+(``adapters/<id>/``) when the API starts; the ones the user installed are
+registered right after (``api/extension_install_job.py``).
 """
 
 from __future__ import annotations
@@ -49,8 +49,9 @@ from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
 from settings import AppSettings
 
-#: Where an adapter came from, shown on the 扩展 page.
-AdapterOrigin = Literal["bundled"]
+#: Where an adapter came from, shown on the 扩展 page: shipped with the app, or
+#: installed by the user (``api/extension_install_job.py``).
+AdapterOrigin = Literal["bundled", "installed"]
 
 #: Added by the app to every type that writes both outputs, so the switch reads
 #: the same on every page; ``core/adapter_runner.py`` maps it to the write mode.
@@ -258,7 +259,13 @@ class AdapterSurface(Surface):
     def snapshot(self, *, settings: AppSettings, files: list[Any], options: TaskOptions) -> dict[str, object]:
         return {
             "selected_file_count": len(files),
-            "adapter": {"id": self.manifest.id, "version": self.manifest.version, "origin": self.origin},
+            # The label stays readable in the task center after the type is uninstalled.
+            "adapter": {
+                "id": self.manifest.id,
+                "version": self.manifest.version,
+                "origin": self.origin,
+                "label": dict(self.manifest.label),
+            },
             "options": self.resolve_options(settings, options),
             "target_lang_display": get_target_lang_display(settings.target_lang),
         }

@@ -720,27 +720,30 @@ class CadTaskRunner(BaseTaskRunner):
                 results.append(file_result)
                 checkpoint_files[source_key] = {"source_sha256": source_hash, "output_path": str(result.output), "manifest_path": str(result.manifest), "report_path": str(result.report), "summary_path": str(result.summary) if result.summary else "", "work_dxf": str(result.work_dxf), "work_evidence_dir": str(getattr(result, "work_evidence_dir", "") or ""), "result": file_result}
                 self._write_checkpoint(checkpoint_files)
+                # 每一条都让这张图纸的状态变成 needs_review，severity 跟着明说：界面只认
+                # severity 判断是不是待办，不带它时徽章会退回「已完成」，和文件状态对不上。
                 if result.unresolved:
                     issues.extend(
-                        {"file": source.name, **entry, "problem": f"未能翻译：{entry.get('reason') or '未获得译文'}"}
+                        {"file": source.name, **entry, "severity": "needs_review", "problem": f"未能翻译：{entry.get('reason') or '未获得译文'}"}
                         for entry in result.unresolved
                     )
                 if stats.replacement_characters:
-                    issues.append({"file": source.name, "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
                 for entry in getattr(result, "term_review", None) or ():
                     issues.append({
                         "file": source.name,
                         "source": entry.get("source", ""),
                         "reason": "term_not_applied",
+                        "severity": "needs_review",
                         "problem": "未采用设定译法",
                         "status": entry.get("reason", ""),
                     })
                 if stats.residual_foreign_text_count:
-                    issues.append({"file": source.name, "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
                 if stats.layout_unresolved:
-                    issues.append({"file": source.name, "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字或伸出图框"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字或伸出图框"})
                 if stats.unsupported_entities or stats.unknown_entity_count:
-                    issues.append({"file": source.name, "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                 self._log("INFO", f"{source.name}：已生成翻译图纸")
             elapsed = round(time.monotonic() - started, 3)
