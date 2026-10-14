@@ -6,8 +6,20 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
-from api.surfaces import DOCUMENT_SURFACE_KEYS, SURFACE_KEYS
+from api.surfaces import all_surfaces
 from core.path_utils import normalize_user_path, normalize_user_paths
+
+
+def _registered_surface(value: Any, *, file_based: bool) -> str:
+    """A ``surface`` value must name a registered page exactly.
+
+    The registry grows at run time (``register_surface``), so the accepted
+    values are looked up per request instead of frozen into a ``Literal``.
+    """
+    keys = [surface.key for surface in all_surfaces() if surface.requires_source or not file_based]
+    if not isinstance(value, str) or value not in keys:
+        raise ValueError(f"surface must be one of {keys}")
+    return value
 
 
 class ApiKeyPayload(BaseModel):
@@ -18,7 +30,7 @@ class ApiKeyPayload(BaseModel):
 class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
     # The file-based pages registered in api/surfaces/.
-    surface: Literal[DOCUMENT_SURFACE_KEYS]  # type: ignore[valid-type]
+    surface: str
     include_images: bool = False
     # 「浏览 → 选择文件」允许一次挑多个文件（只限类型，不限数量）。给了 paths 就按这
     # 几个路径各扫一次再合并；不给就还是按 path 扫一个文件或一整个文件夹。
@@ -39,6 +51,11 @@ class ScanRequest(BaseModel):
     @classmethod
     def _normalize_path(cls, value: Any) -> Any:
         return normalize_user_path(value)
+
+    @field_validator("surface", mode="before")
+    @classmethod
+    def _known_surface(cls, value: Any) -> str:
+        return _registered_surface(value, file_based=True)
 
     @field_validator("paths", mode="before")
     @classmethod
@@ -103,7 +120,7 @@ class PdfPageActionRequest(BaseModel):
 class TaskStartRequest(BaseModel):
     source_path: str = ""
     # Every surface registered in api/surfaces/.
-    surface: Literal[SURFACE_KEYS]  # type: ignore[valid-type]
+    surface: str
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_front_matter: bool = False
@@ -142,6 +159,14 @@ class TaskStartRequest(BaseModel):
     cad_translation_font: str = "compatible"
     # DWG 译文图纸的版本：source 跟随原图，或 2018/2013/2010/2007/2004/2000。
     cad_output_version: str = "source"
+    # 运行时注册的类型（ext:<id>）在「运行设置」里的开关，键见它的描述符 options。
+    # 内置四个页面的开关仍是上面这些具名字段，不走这里。
+    options: dict[str, bool | int | float | str] | None = None
+
+    @field_validator("surface", mode="before")
+    @classmethod
+    def _known_surface(cls, value: Any) -> str:
+        return _registered_surface(value, file_based=False)
 
     @field_validator(
         "source_path",

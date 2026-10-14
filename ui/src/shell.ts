@@ -4,7 +4,7 @@
 
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
-import { navigate, onNavigate, type ViewId } from "./router";
+import { currentView, navigate, onNavigate, type ViewId } from "./router";
 import { t, localized } from "./i18n";
 
 interface SideItemDef {
@@ -86,6 +86,17 @@ const sideLabelNodes: { key: string; el: HTMLDivElement }[] = [];
 const sideItemTextNodes = new Map<ViewId, Text>();
 let lastTaskPill: TaskPillConfig = { count: 0 };
 
+/** 运行时注册的翻译类型在侧栏「翻译」组里的项：插在「资源」分组标题之前。 */
+export interface ExtensionSideItem {
+  id: ViewId;
+  /** 每次换界面语言都重新取一次（名字来自描述符的三语标签）。 */
+  label: () => string;
+  icon: IconName;
+}
+
+let resourceLabelEl: HTMLDivElement | null = null;
+let extensionItems: { def: ExtensionSideItem; el: HTMLDivElement }[] = [];
+
 function buildSideItem(def: SideItemDef): HTMLDivElement {
   const item = document.createElement("div");
   item.className = "side-item";
@@ -112,7 +123,29 @@ export function relocalizeShell(): void {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label;
   }
+  for (const { def } of extensionItems) {
+    const node = sideItemTextNodes.get(def.id);
+    if (node) node.data = def.label();
+  }
   setTaskPill(lastTaskPill);
+}
+
+/** 把运行时注册的翻译类型放进侧栏「翻译」组，排在内置四项之后；再次调用时整组替换。 */
+export function setExtensionSideItems(items: ExtensionSideItem[]): void {
+  if (!sideItemEls || !resourceLabelEl?.parentElement) return;
+  for (const { def, el } of extensionItems) {
+    el.remove();
+    sideItemEls.delete(def.id);
+    sideItemTextNodes.delete(def.id);
+  }
+  extensionItems = items.map((def) => {
+    const el = buildSideItem({ id: def.id, label: def.label(), icon: def.icon });
+    resourceLabelEl!.before(el);
+    sideItemEls!.set(def.id, el);
+    return { def, el };
+  });
+  const current = currentView();
+  if (current) highlightSideItem(current.id);
 }
 
 /** 构建并挂载整个应用外壳到 root（通常是 #app）。只应调用一次。 */
@@ -139,7 +172,8 @@ export function mountShell(root: HTMLElement): ShellHandle {
     side.append(itemEl);
   }
 
-  side.append(buildSideLabel("资源")); // i18n-ignore 词条 key，显示时由 t() 翻译
+  resourceLabelEl = buildSideLabel("资源"); // i18n-ignore 词条 key，显示时由 t() 翻译
+  side.append(resourceLabelEl);
   for (const def of RESOURCE_ITEMS) {
     const itemEl = buildSideItem(def);
     itemMap.set(def.id, itemEl);

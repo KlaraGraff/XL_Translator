@@ -1,9 +1,14 @@
 """The backend surface registry and the front end must name the same pages.
 
-A new translation page touches both sides (docs/ADDING_A_TRANSLATION_PAGE.md).
+A new built-in page touches both sides (docs/ADDING_A_TRANSLATION_PAGE.md).
 These checks fail with the missing key named, so a half-registered page is
 caught by `pytest` instead of by a user clicking 暂停 on a page the backend
 does not know can pause.
+
+Only built-in pages are matched 1:1.  A page registered at run time (key
+``ext:<id>``, ``builtin = False``) has no compiled table on the front end:
+it is drawn from its descriptor (``GET /api/surfaces``), so its key never
+appears in the TypeScript unions below.
 """
 
 from __future__ import annotations
@@ -26,9 +31,17 @@ def _string_union(source: str, declaration: str) -> set[str]:
     return set(re.findall(r'"([a-z_]+)"', source[start:end]))
 
 
+def _builtin_surfaces() -> tuple[Surface, ...]:
+    return tuple(surface for surface in all_surfaces() if surface.builtin)
+
+
 def test_workspace_pages_match_the_file_based_surfaces():
     source = (UI_SRC / "views" / "workspace.ts").read_text(encoding="utf-8")
-    assert _string_union(source, "export type Surface =") == set(DOCUMENT_SURFACE_KEYS)
+    assert _string_union(source, "export type BuiltinSurface =") == set(DOCUMENT_SURFACE_KEYS)
+    # Every other key is a run-time page and goes through the descriptor path.
+    assert "export type Surface = BuiltinSurface | ExtSurface;" in source
+    descriptors = (UI_SRC / "surface-descriptors.ts").read_text(encoding="utf-8")
+    assert "export type ExtSurface = `ext:${string}`;" in descriptors
 
 
 def test_api_client_task_surface_covers_every_registered_surface():
@@ -36,6 +49,14 @@ def test_api_client_task_surface_covers_every_registered_surface():
     ui_keys = _string_union(source, "surface:")
     missing = set(SURFACE_KEYS) - ui_keys
     assert not missing, f"ui/src/api-client.ts task surface lacks {sorted(missing)}"
+    assert not {key for key in ui_keys if key.startswith("ext")}
+    start = source.index("surface:")
+    assert "`ext:${string}`" in source[start:source.index(";", start)]
+
+
+def test_built_in_keys_are_exactly_the_registered_built_in_surfaces():
+    assert SURFACE_KEYS == tuple(surface.key for surface in _builtin_surfaces())
+    assert all(":" not in key for key in SURFACE_KEYS)
 
 
 def test_task_center_pause_list_matches_backend_capabilities():
@@ -43,7 +64,7 @@ def test_task_center_pause_list_matches_backend_capabilities():
     match = re.search(r"PAUSABLE_SURFACES = new Set<TaskSurface>\(\[([^\]]*)\]\)", source)
     assert match, "PAUSABLE_SURFACES not found in ui/src/views/tasks.ts"
     ui_pausable = set(re.findall(r'"([a-z_]+)"', match.group(1)))
-    backend_pausable = {surface.key for surface in all_surfaces() if surface.can_pause}
+    backend_pausable = {surface.key for surface in _builtin_surfaces() if surface.can_pause}
     assert ui_pausable == backend_pausable
 
 

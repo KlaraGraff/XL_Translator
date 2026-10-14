@@ -10,7 +10,8 @@ export type SidecarInfo = {
 
 export type TaskStatus = {
   task_id: string;
-  surface: "excel" | "word" | "pdf" | "cad" | "cleaner" | "tm_clean";
+  // `ext:<id>`：运行时注册的翻译类型，名称和图标按描述符取（见 surface-descriptors.ts）。
+  surface: "excel" | "word" | "pdf" | "cad" | "cleaner" | "tm_clean" | `ext:${string}`;
   source_label?: string;
   state: "preflight" | "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
   terminal: boolean;

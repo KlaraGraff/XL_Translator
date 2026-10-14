@@ -49,7 +49,10 @@ def register(app: FastAPI) -> None:
             "summary": result.summary,
             "risk": result.risk,
         }
-        payload["previous_output"] = _detect_previous_output_safe(request, result, roots)
+        # 续译检测只认内置页面的产物命名；运行时注册的类型没有续译。
+        payload["previous_output"] = (
+            _detect_previous_output_safe(request, result, roots) if surface.builtin else None
+        )
         # ``result`` is a stable grouped alias for callers that consume
         # one typed scan object; top-level fields keep the Phase 1 route
         # backward compatible.
