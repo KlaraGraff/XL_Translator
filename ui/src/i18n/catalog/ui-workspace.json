@@ -571,9 +571,9 @@
     "en": "DWG files need the converter to be read and written; DXF files are not affected and can be translated directly. Once it is connected, return here and scan again.",
     "fr": "Les fichiers DWG ont besoin du convertisseur pour être lus et écrits ; les fichiers DXF ne sont pas concernés et peuvent être traduits directement. Une fois connecté, revenez ici et relancez l'analyse."
   },
-  "打开扩展": {
-    "en": "Open Extensions",
-    "fr": "Ouvrir les extensions"
+  "打开插件": {
+    "en": "Open Plugins",
+    "fr": "Ouvrir les plugins"
   },
   "将从上次停止的位置继续": {
     "en": "Will continue from where the last run stopped",
@@ -1231,9 +1231,9 @@
     "en": "The selection includes {0} DWG {0|drawing|drawings}. DWG files must be converted to DXF with the converter before they can be translated and written back.",
     "fr": "La sélection contient {0} {0|plan|plans} DWG. Les fichiers DWG doivent être convertis en DXF par le convertisseur avant de pouvoir être traduits et réécrits."
   },
-  "可在「扩展」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。": {
-    "en": "Connect the drawing converter in “Extensions” and scan again, or deselect these DWG files and translate only the DXF files.",
-    "fr": "Connectez le convertisseur de plans dans « Extensions » puis relancez l'analyse, ou décochez ces DWG pour ne traduire que les DXF."
+  "可在「插件」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。": {
+    "en": "Connect the drawing converter in “Plugins” and scan again, or deselect these DWG files and translate only the DXF files.",
+    "fr": "Connectez le convertisseur de plans dans « Plugins » puis relancez l'analyse, ou décochez ces DWG pour ne traduire que les DXF."
   },
   "取消": {
     "en": "Cancel",

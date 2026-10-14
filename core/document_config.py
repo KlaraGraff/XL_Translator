@@ -131,6 +131,10 @@ _LANGUAGE_FIELDS = frozenset(
     }
 )
 
+# 侧栏里显示哪些类型、按什么顺序是这台电脑上的界面布局，不是翻译参数：导出不带，导入不动。
+# 内置四种的这两项（excel_pinned …）本来就不在任何一节里。
+_EXTENSION_LAYOUT_FIELDS = frozenset({"pinned", "order"})
+
 _PROMPT_MAP_FIELDS = frozenset(
     {
         "domain_prompt_overrides",
@@ -181,6 +185,13 @@ def build_document_config_export_payload(settings: AppSettings) -> dict[str, Any
     for section in DOCUMENT_CONFIG_SECTIONS:
         values = payload.get(section)
         if not isinstance(values, dict):
+            continue
+        if section == "extensions":
+            document[section] = {
+                ext_id: {key: value for key, value in entry.items() if key not in _EXTENSION_LAYOUT_FIELDS}
+                for ext_id, entry in values.items()
+                if isinstance(entry, dict)
+            }
             continue
         document[section] = {
             key: value
@@ -278,8 +289,10 @@ def apply_document_config_import(
             current = dict(payload.get(key) or {})
             for surface, values in value.items():
                 if isinstance(values, dict):
-                    if key == "extensions" and "domain_custom_prompts" in values:
-                        values = {**values, "domain_custom_prompts": _canonicalize_prompt_map(values["domain_custom_prompts"])}
+                    if key == "extensions":
+                        values = {name: item for name, item in values.items() if name not in _EXTENSION_LAYOUT_FIELDS}
+                        if "domain_custom_prompts" in values:
+                            values = {**values, "domain_custom_prompts": _canonicalize_prompt_map(values["domain_custom_prompts"])}
                     current[surface] = {**dict(current.get(surface) or {}), **values}
             payload[key] = current
             continue

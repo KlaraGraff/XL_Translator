@@ -1,7 +1,4 @@
-// 「扩展」页（路由 id 仍是 plugins）分两段：
-// 上段「翻译类型」：内置四种 + 运行时注册的类型（格式适配器），后者可以设置是否显示在侧栏
-//   与顺序，存在 settings.extensions.<id>.pinned / order；
-// 下段「运行组件」：三种可选组件的安装、检测与连接：
+// 插件管理视图 —— 管理三种可选插件的安装、检测与连接：
 // 1. 图纸转换工具（ODA File Converter，翻译 DWG 需要）：一键安装从 ODA 官网下载（先确认 ODA 的
 //    使用条款，核对 ODA 的数字签名）；
 // 2. 文字识别组件（Tesseract OCR，PDF「原位替换文字」需要）：一键安装取 conda-forge 的固定版本；
@@ -13,18 +10,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus, type SurfaceDescriptor } from "../api-client";
-import { createButton, createCard, createHintBadge, createProgressBar, createStatus, createSwitch, openModal, showToast } from "../components";
-import { icon, type IconName } from "../icons";
-import {
-  extSettingsEntry,
-  extSurfaceIcon,
-  loadSurfaceDescriptors,
-  localizedText,
-  orderedExtDescriptors,
-  refreshExtensionSideItems,
-  surfaceDescriptor,
-} from "../surface-descriptors";
+import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
+import { createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
+import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
 
@@ -46,10 +34,6 @@ let ocrBusy = false;
 let wordCapability: Pdf2DocxPluginStatus | null = null;
 let wordErrorText = "";
 let wordBusy = false;
-
-/** settings.extensions：运行时注册的类型的设置，键是不带 `ext:` 的 id。 */
-let extensionSettings: Record<string, unknown> = {};
-let typesBusy = false;
 const DEFAULT_OFFICIAL_CAD_URL = currentLocale() === "zh"
   ? "https://www.opendesign.com/cn/guestfiles/oda_file_converter"
   : "https://www.opendesign.com/guestfiles/oda_file_converter";
@@ -92,7 +76,6 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   mounted = true;
   rootEl = container;
   render();
-  void refreshTypes();
   void refresh();
   void refreshOcr();
   void refreshWord();
@@ -176,7 +159,7 @@ async function refresh(): Promise<void> {
     errorText = "";
     if (cadInstalling()) pollCadInstall();
   } catch (error) {
-    errorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+    errorText = error instanceof Error ? error.message : t("插件状态读取失败。");
   }
   if (mounted) render();
 }
@@ -230,7 +213,7 @@ function pollCadInstall(): void {
         showToast({ message: tx(progress.error), error: !progress.cancelled });
       }
     } catch (error) {
-      errorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+      errorText = error instanceof Error ? error.message : t("插件状态读取失败。");
     }
     if (mounted) render();
   }, 600);
@@ -257,7 +240,7 @@ function confirmOdaTerms(): Promise<boolean> {
     const modal = openModal({
       tone: "tint",
       icon: "down",
-      sourceLabel: t("扩展 · 图纸转换工具"),
+      sourceLabel: t("插件 · 图纸转换工具"),
       title: t("安装图纸转换工具"),
       body: [
         t("图纸转换工具（ODA File Converter）由 Open Design Alliance 免费提供，不是开源软件，使用需遵守 ODA 的条款。ODA 官网说明：非 ODA 会员仅可用于非商业用途。"),
@@ -382,7 +365,7 @@ function pollOcrInstall(): void {
         showToast({ message: tx(progress.error), error: !progress.cancelled });
       }
     } catch (error) {
-      ocrErrorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+      ocrErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
     }
     if (mounted) render();
   }, 600);
@@ -396,7 +379,7 @@ async function refreshOcr(): Promise<void> {
     ocrErrorText = "";
     if (ocrInstalling()) pollOcrInstall();
   } catch (error) {
-    ocrErrorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+    ocrErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
   }
   if (mounted) render();
 }
@@ -644,7 +627,7 @@ function pollWordInstall(): void {
         showToast({ message: tx(progress.error), error: !progress.cancelled });
       }
     } catch (error) {
-      wordErrorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+      wordErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
     }
     if (mounted) render();
   }, 600);
@@ -658,7 +641,7 @@ async function refreshWord(): Promise<void> {
     wordErrorText = "";
     if (wordInstalling()) pollWordInstall();
   } catch (error) {
-    wordErrorText = error instanceof Error ? error.message : t("组件状态读取失败。");
+    wordErrorText = error instanceof Error ? error.message : t("插件状态读取失败。");
   }
   if (mounted) render();
 }
@@ -931,187 +914,14 @@ function actionButtons(): HTMLElement {
   return actions;
 }
 
-// ---------------------------------------------------------------------------
-// 翻译类型
-// ---------------------------------------------------------------------------
-
-/** 内置四种：固定显示在侧栏、顺序不变。名称与侧栏一致。 */
-function builtinTypes(): { key: string; label: string; icon: IconName }[] {
-  return [
-    { key: "excel", label: t("Excel 表格"), icon: "excel" },
-    { key: "word", label: t("Word 文档"), icon: "word" },
-    { key: "pdf", label: t("PDF 与图片"), icon: "pdf" },
-    { key: "cad", label: t("CAD 图纸"), icon: "cad" },
-  ];
-}
-
-async function refreshTypes(): Promise<void> {
-  try {
-    const client = new ApiClient();
-    await client.connect();
-    const [, settings] = await Promise.all([
-      loadSurfaceDescriptors(),
-      client.request<{ extensions?: Record<string, unknown> }>("/api/settings"),
-    ]);
-    extensionSettings = settings.extensions ?? {};
-  } catch {
-    // 拿不到时这一段只画内置四行；侧栏照旧，不打扰用户。
-  }
-  if (mounted) render();
-}
-
-/** 写 settings.extensions 的一部分；成功后按新设置重排侧栏。 */
-async function saveExtensionSettings(patch: Record<string, Record<string, unknown>>): Promise<boolean> {
-  typesBusy = true;
-  try {
-    const client = new ApiClient();
-    await client.connect();
-    const saved = await client.request<{ extensions?: Record<string, unknown> }>("/api/settings", {
-      method: "PUT",
-      body: JSON.stringify({ extensions: patch }),
-    });
-    extensionSettings = saved.extensions ?? {};
-    refreshExtensionSideItems(extensionSettings);
-    return true;
-  } catch (error) {
-    showToast({ message: error instanceof Error ? t("保存失败：{0}", error.message) : t("保存失败。"), error: true });
-    return false;
-  } finally {
-    typesBusy = false;
-    if (mounted) render();
-  }
-}
-
-/** 上移 / 下移一位：整组按新顺序重新编号写回，旧数据里重复或缺失的 order 一并理顺。 */
-function moveExtension(key: string, step: -1 | 1): void {
-  const keys = orderedExtDescriptors(extensionSettings).map((item) => item.key);
-  const from = keys.indexOf(key);
-  const to = from + step;
-  if (from < 0 || to < 0 || to >= keys.length || typesBusy) return;
-  [keys[from], keys[to]] = [keys[to], keys[from]];
-  void saveExtensionSettings(Object.fromEntries(keys.map((item, index) => [item.slice("ext:".length), { order: index }])));
-}
-
-function extensionsText(key: string): string {
-  return (surfaceDescriptor(key)?.extensions ?? []).map((ext) => `.${ext}`).join(" ");
-}
-
-function typeRow(options: {
-  icon: IconName;
-  label: string;
-  extensions: string;
-  source: string;
-  sidebar: HTMLElement;
-  order?: HTMLElement[];
-  key: string;
-}): HTMLDivElement {
-  const row = document.createElement("div");
-  row.className = "types-row";
-  row.dataset.surface = options.key;
-  const iconBox = document.createElement("div");
-  iconBox.className = "types-icon";
-  iconBox.append(icon(options.icon));
-  const name = document.createElement("div");
-  name.className = "types-name";
-  const title = document.createElement("b");
-  title.textContent = options.label;
-  name.append(title);
-  if (options.extensions) {
-    const exts = document.createElement("small");
-    exts.textContent = options.extensions;
-    name.append(exts);
-  }
-  const source = document.createElement("div");
-  source.className = "types-source";
-  source.textContent = options.source;
-  const order = document.createElement("div");
-  order.className = "types-order";
-  if (options.order) order.append(...options.order);
-  row.append(iconBox, name, source, options.sidebar, order);
-  return row;
-}
-
-function orderButtons(item: SurfaceDescriptor, index: number, count: number): HTMLElement[] {
-  const up = createButton({ icon: "chev", size: "mini", title: t("上移"), disabled: typesBusy || index === 0, onClick: () => moveExtension(item.key, -1) });
-  up.classList.add("up");
-  up.setAttribute("aria-label", t("上移"));
-  const down = createButton({ icon: "chev", size: "mini", title: t("下移"), disabled: typesBusy || index === count - 1, onClick: () => moveExtension(item.key, 1) });
-  down.setAttribute("aria-label", t("下移"));
-  return [up, down];
-}
-
-function renderTypesSection(): HTMLElement[] {
-  const head = sectionHead(t("翻译类型"), t("设置哪些翻译类型显示在侧栏，以及它们的顺序。"));
-  const card = createCard([]);
-  const table = document.createElement("div");
-  table.className = "types-table";
-  const header = document.createElement("div");
-  header.className = "types-row head";
-  for (const text of ["", t("类型"), t("来源"), t("显示在侧栏"), t("顺序")]) {
-    const cell = document.createElement("div");
-    cell.textContent = text;
-    header.append(cell);
-  }
-  table.append(header);
-  for (const item of builtinTypes()) {
-    table.append(typeRow({
-      key: item.key,
-      icon: item.icon,
-      label: item.label,
-      extensions: extensionsText(item.key),
-      source: t("内置"),
-      sidebar: createSwitch({ checked: true, disabled: true }),
-    }));
-  }
-  const extensions = orderedExtDescriptors(extensionSettings);
-  extensions.forEach((item, index) => {
-    const version = item.adapter?.version ? ` · ${item.adapter.version}` : "";
-    const sidebar = createSwitch({
-      checked: extSettingsEntry(extensionSettings, item.key).pinned !== false,
-      disabled: typesBusy,
-      onChange: (checked) => void saveExtensionSettings({ [item.key.slice("ext:".length)]: { pinned: checked } }),
-    });
-    sidebar.setAttribute("aria-label", t("显示在侧栏"));
-    table.append(typeRow({
-      key: item.key,
-      icon: extSurfaceIcon(item.key),
-      label: localizedText(item.label, item.key.slice("ext:".length)),
-      extensions: extensionsText(item.key),
-      source: t("随应用提供") + version,
-      sidebar,
-      order: orderButtons(item, index, extensions.length),
-    }));
-  });
-  card.append(table);
-  return [head, card];
-}
-
-function sectionHead(title: string, note: string): HTMLDivElement {
-  const head = document.createElement("div");
-  head.className = "plugins-section-head";
-  const h = document.createElement("h2");
-  h.textContent = title;
-  const small = document.createElement("span");
-  small.textContent = note;
-  head.append(h, small);
-  return head;
-}
-
-// ---------------------------------------------------------------------------
-// 页面
-// ---------------------------------------------------------------------------
-
 function render(): void {
   if (!mounted || !rootEl) return;
-  // 顶栏不再挂图纸转换工具的状态：这一页不只有它，三个组件的状态各在自己的卡片上。
-  setTopbar({ title: t("扩展"), subtitle: t("管理翻译类型与运行组件") });
+  setTopbar({ title: t("插件"), status: { label: statusLabel(), tone: statusTone() }, subtitle: t("连接翻译时用到的可选组件") });
   rootEl.className = "content plugins-content";
   rootEl.replaceChildren();
 
   const column = document.createElement("div");
   column.className = "plugins-column";
-  column.append(...renderTypesSection());
-  column.append(sectionHead(t("运行组件"), t("连接翻译时用到的可选组件")));
 
   const card = createCard([]);
   const body = document.createElement("div");

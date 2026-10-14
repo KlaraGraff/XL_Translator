@@ -102,5 +102,9 @@
   "扩展类型参数": {
     "en": "Extension type settings",
     "fr": "Paramètres des types d'extension"
+  },
+  "至少保留一种翻译类型显示在侧栏。": {
+    "en": "Keep at least one translation type in the sidebar.",
+    "fr": "Gardez au moins un type de traduction dans la barre latérale."
   }
 }

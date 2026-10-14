@@ -105,8 +105,14 @@
   `label`、`help`、`default`）。
 - **设置**：每个运行时类型一份 `settings.extensions[<id>]`（`ExtensionSettings`，schema v39）：
   `target_lang`、`source_lang`、`domain_preset`、`smart_context`、`domain_custom_prompts`、
-  `options`、`pinned`、`order`。按页面取设置一律经 `core/surface_settings.py` 的
+  `options`、`prompt`（v40：用户改过的内置规则，空表示用默认）；`pinned`、`order` 是 v39 的侧栏设置，v40 起
+  并入 `translation_types`，只在升级时读。按页面取设置一律经 `core/surface_settings.py` 的
   `surface_setting` / `set_surface_setting`，内置页面读平铺字段（`excel_target_lang` …），调用方不用分辨。
+- **侧栏顺序与隐藏**：`settings.translation_types`（`TranslationTypesSettings`，v40）一张表管全部翻译类型
+  （内置四种与 `ext:`）：`order` 是类型键的顺序（没列到的按描述符顺序排在后面，空即默认顺序），`hidden` 是不
+  放进侧栏的类型键。v39 升级时 `pinned: false` 的并入 `hidden`，调过的 `order` 换成整张表的顺序。隐藏只影响
+  侧栏：视图照常注册，任务中心「打开工作区」、命令行和 MCP 照常可用。`PUT /api/settings` 拒绝把全部类型都
+  隐藏（422），界面同样拦。
 - **模型与速率**：`page_key = "adapter"` 的任务只占文档翻译模型（`task_model_roles_for_page`）；
   速率与重试没有单独一组时按模型吞吐量取（`core/surface_rate.py`）。
 - **文本翻译**：`TextTranslationService` 把「按翻译参数取速率与重试、建文档翻译引擎、拼提示词
@@ -114,19 +120,23 @@
   翻译 → 写回」的格式，执行器用它即可，不必再抄一遍 CAD 的接线。
 - **开关值**：开始任务时放在请求的 `options` 字典里（`TaskStartRequest.options` →
   `TaskOptions.options`），执行器从 `RunnerRequest.options.options` 读。
-- **界面**：`app.ts` 拿到描述符后为每个 `ext:` 类型注册一个视图（`views/extension.ts`），设置里
-  `pinned` 的按 `order` 放进侧栏「翻译」组，排在内置四项之后。工作区模板里
+- **界面**：`app.ts` 拿到描述符后为每个 `ext:` 类型注册一个视图（`views/extension.ts`，隐藏的也注册），
+  再按 `translation_types` 重排侧栏「翻译」组（`refreshTranslateSideItems`）；启动时打开的 Excel 被隐藏了
+  就换到侧栏第一项。工作区模板里
   `` Surface = BuiltinSurface | `ext:${string}` ``：名称、图标、文件名词、空状态和开关经访问函数
   （`surfaceLabel`、`surfaceToggles` 等）从描述符取；统计格（文件数、总大小、跳过项）和文件表列
   （文件、格式、大小、状态）是通用的一套；运行设置显示语言和描述符里的开关（清单有 `description` 时
   「选项」标题旁加「?」），「更多设置」（补充要求、输出位置）不显示，按默认输出位置写。任务中心的图标、
   名称、可暂停和「打开工作区」也按描述符。
-- **「扩展」页与翻译参数**：侧栏「扩展」页（路由 id 仍是 `plugins`，`views/plugins.ts`）上段「翻译类型」
-  列出内置四项（固定）和全部 `ext:` 类型，「显示在侧栏」开关写 `extensions.<id>.pinned`，上下移动把
-  整组按新顺序重新编号写进 `extensions.<id>.order`，改完即时重排侧栏（`refreshExtensionSideItems`）；
-  下段「运行组件」是三个可选组件。「设置 → 翻译参数」有 `ext:` 类型时多一个「扩展」页签：下拉选类型，
-  目标语言、源语言写 `extensions.<id>`，提示词卡片走 `/api/domains/ext:<id>`（只认已注册的类型），
-  速率与重试只有一句说明。翻译参数配置包带整个 `extensions` 节，导入时按类型逐项合并；单独导出的
+- **「扩展」页与翻译参数**：侧栏「资源」组的「扩展」页（路由 `extensions`，`views/extensions-page.ts`）
+  一张表列出全部翻译类型（内置四种与 `ext:`），每行「显示在侧栏」开关和上移、下移，写
+  `translation_types`，改完即时重排侧栏；「插件」页（运行组件）是另一页。「设置 → 翻译参数」的页签是
+  内置四种加每个 `ext:` 类型各一个（标签用类型名，顺序同「扩展」页，隐藏的也保留）：目标语言、源语言写
+  `extensions.<id>`；提示词卡片走 `/api/domains/ext:<id>`（只认已注册的类型），其中「内置规则」可以改
+  （存 `extensions.<id>.prompt`，与默认相同或清空存成空），「恢复默认」回到清单的 `prompt`，没有则是
+  `CORE_TRANSLATION_PROMPT`；速率与重试只有一句说明。发给模型的基础段由 `engine_dispatcher.core_prompt_for`
+  依次取：用户改过的 → 清单 → 通用的那份，再接补充要求、文档说明和固定术语；内置四种始终是通用的那份。
+  翻译参数配置包带 `extensions` 节（不含侧栏的 `pinned` / `order`），导入时按类型逐项合并；单独导出的
   提示词文件只带各类型的语言和提示词。
 - **测试**：`tests/fixtures/sample_surface.py` 注册仅测试用的 `ext:sample`（扫描 `.txt`，原样写出，
   开关「转为大写」，可暂停），`tests/test_runtime_surface.py` 用真实路由走通整条路径。它不随应用发布。
@@ -157,7 +167,8 @@ adapters/<id>/
 - **清单**（`core/format_adapter.py` 的 `AdapterManifest`，未知字段一律拒绝）：`id`（小写字母、数字、`_`、`-`，
   页面键为 `ext:<id>`，设置在 `settings.extensions[<id>]`）、`version`、`adapter_api_version`（须在
   `SUPPORTED_ADAPTER_API_VERSIONS` 内）、`label` 与 `file_noun`（中英法三语必填）、`description`（三语，可省，
-  页面「?」里的说明）、`icon`（`ui/src/icons.ts` 的图标名）、`extensions`、`capabilities`（`bilingual`、
+  页面「?」里的说明）、`prompt`（这种文件的内置规则，可省，最长 4000 字，省略时用通用的那份；描述符带出，
+  用户可在翻译参数里改写）、`icon`（`ui/src/icons.ts` 的图标名）、`extensions`、`capabilities`（`bilingual`、
   `translation_only`，至少一个）、`options`（开关；`bilingual` 留给应用）、`license`、`repo`、`min_app_version`。
   两种输出都支持时，应用给页面加「双语对照」开关（默认关），执行器据此选 `mode`。
 - **加载**：`create_app` 调 `register_bundled_adapters()`（`api/surfaces/adapter.py`），把 `adapters/` 下每个合格

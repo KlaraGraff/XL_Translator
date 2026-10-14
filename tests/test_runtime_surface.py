@@ -144,6 +144,22 @@ class RuntimeSurfaceRouteTests(IsolatedAppDataTestCase):
         assert stored["domain_custom_prompts"] == {"说明书": {"_base": "用说明书语气。"}}
         assert excel["preset"] == "无"
 
+    def test_the_sidebar_keeps_at_least_one_translation_type(self) -> None:
+        with TestClient(create_app()) as client:
+            surfaces = client.get("/api/surfaces").json()["surfaces"]
+            keys = [
+                item["key"] for item in surfaces
+                if item["capabilities"].get("requires_source", True) and item["extensions"]
+            ]
+            assert "excel" in keys and SAMPLE_KEY in keys and "tm_clean" not in keys
+            refused = client.put("/api/settings", json={"translation_types": {"order": [], "hidden": keys}})
+            kept = client.put("/api/settings", json={"translation_types": {"order": [SAMPLE_KEY], "hidden": keys[1:]}})
+            stored = client.get("/api/settings").json()["translation_types"]
+        assert refused.status_code == 422
+        assert "至少保留一种翻译类型" in refused.json()["detail"]
+        assert kept.status_code == 200, kept.text
+        assert stored == {"order": [SAMPLE_KEY], "hidden": keys[1:]}
+
     def test_an_unregistered_page_is_refused_like_an_unknown_one(self) -> None:
         unregister_surface(SAMPLE_KEY)
         with TestClient(create_app()) as client:

@@ -1,0 +1,11 @@
+{
+  "设置侧栏里显示哪些翻译类型，以及它们的顺序": {"en": "Choose which translation types appear in the sidebar, and in what order", "fr": "Choisissez les types de traduction affichés dans la barre latérale et leur ordre"},
+  "翻译类型": {"en": "Translation type", "fr": "Type de traduction"},
+  "显示在侧栏": {"en": "Show in sidebar", "fr": "Barre latérale"},
+  "顺序": {"en": "Order", "fr": "Ordre"},
+  "内置": {"en": "Built-in", "fr": "Intégré"},
+  "随应用提供": {"en": "Bundled with the app", "fr": "Fourni avec l'application"},
+  "上移": {"en": "Move up", "fr": "Monter"},
+  "下移": {"en": "Move down", "fr": "Descendre"},
+  "关闭后不在侧栏显示，已有任务仍可在任务中心打开，翻译参数照常保留。": {"en": "When off, the type is not shown in the sidebar. Its tasks can still be opened from the Task center, and its translation settings are kept.", "fr": "Désactivé, le type n'apparaît plus dans la barre latérale. Ses tâches restent accessibles depuis le Centre des tâches et ses paramètres de traduction sont conservés."}
+}

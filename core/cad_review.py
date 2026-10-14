@@ -365,7 +365,7 @@ def _rewrite_one(
     if expected and _sha256(source) != expected:
         raise CadReviewError("原图纸在翻译之后改过，对照表已经对不上，请重新翻译这张图纸。")
     if source.suffix.lower() == ".dwg" and converter is None:
-        raise CadReviewError("重新写回 DWG 图纸前，请先在「扩展」中连接图纸转换工具。")
+        raise CadReviewError("重新写回 DWG 图纸前，请先在「插件」中连接图纸转换工具。")
     rows = _rows(manifest, edits)
     mapping = {row["source"]: row["translation"] for row in rows if row["translation"]}
     kept = {row["source"] for row in rows if row["status"] == "kept" and not row["edited"]}

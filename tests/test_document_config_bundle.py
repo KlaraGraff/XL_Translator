@@ -177,13 +177,18 @@ class DocumentConfigImportTests(unittest.TestCase):
     def test_extension_types_are_exported_and_merged_type_by_type(self) -> None:
         app = AppSettings.model_validate({
             "extensions": {
-                "text": {"target_lang": "fr", "domain_preset": "说明书",
-                         "domain_custom_prompts": {"说明书": {"_base": "用说明书语气。"}}},
+                "text": {"target_lang": "fr", "domain_preset": "说明书", "prompt": "只译正文。",
+                         "domain_custom_prompts": {"说明书": {"_base": "用说明书语气。"}},
+                         "pinned": False, "order": 2},
             },
         })
         document = build_document_config_export_payload(app)["document"]
         self.assertEqual(document["extensions"]["text"]["target_lang"], "fr")
+        self.assertEqual(document["extensions"]["text"]["prompt"], "只译正文。")
         self.assertEqual(document["extensions"]["text"]["domain_custom_prompts"], {"说明书": {"_base": "用说明书语气。"}})
+        # Sidebar layout belongs to this machine, not to the translation parameters.
+        self.assertNotIn("pinned", document["extensions"]["text"])
+        self.assertNotIn("order", document["extensions"]["text"])
 
         # The importing machine hid 文本 from the sidebar and has a second type; a file that only
         # names 文本's language changes that and nothing else.
@@ -193,7 +198,8 @@ class DocumentConfigImportTests(unittest.TestCase):
         imported = parse_document_config_import({
             "type": DOCUMENT_CONFIG_EXPORT_TYPE,
             "version": 5,
-            "document": {"extensions": {"text": {"target_lang": "es", "domain_custom_prompts": {"旧": {"fr": "旧版"}}}}},
+            "document": {"extensions": {"text": {"target_lang": "es", "pinned": True, "order": 0,
+                                                 "domain_custom_prompts": {"旧": {"fr": "旧版"}}}}},
         })
         merged = apply_document_config_import(here, imported)
 

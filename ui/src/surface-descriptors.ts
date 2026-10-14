@@ -7,7 +7,8 @@
 import { ApiClient, type LocalizedText, type SurfaceDescriptor } from "./api-client";
 import { currentLocale } from "./i18n";
 import { ICON_NAMES, type IconName } from "./icons";
-import { setExtensionSideItems } from "./shell";
+import type { ViewId } from "./router";
+import { builtinTranslateSideItem, setTranslateSideItems } from "./shell";
 
 /** 运行时注册的翻译类型的键。内置页面的键里没有冒号，两者不会撞。 */
 export type ExtSurface = `ext:${string}`;
@@ -62,35 +63,46 @@ export function extSurfaceIcon(key: string): IconName {
   return (ICON_NAMES as readonly string[]).includes(name) ? (name as IconName) : "book";
 }
 
-/** 设置里某个运行时注册类型的那一份（`extensions` 的键是不带 `ext:` 的 id）；没存过时为空对象。 */
-export function extSettingsEntry(extensions: Record<string, unknown>, key: string): { pinned?: unknown; order?: unknown } {
-  const raw = extensions[key.slice("ext:".length)];
-  return raw && typeof raw === "object" ? (raw as { pinned?: unknown; order?: unknown }) : {};
+/** 内置四种翻译类型的键，按默认顺序。 */
+export const BUILTIN_TYPE_KEYS = ["excel", "word", "pdf", "cad"] as const;
+
+/** settings.translation_types（v40）：全部翻译类型的顺序与隐藏，「扩展」页里改。 */
+export interface TranslationTypesLayout {
+  order: string[];
+  hidden: string[];
 }
 
-/** 全部运行时注册的类型，按设置里的 order 排，同序按描述符顺序。「扩展」页和侧栏都按这个顺序。 */
-export function orderedExtDescriptors(extensions: Record<string, unknown>): SurfaceDescriptor[] {
-  const order = (item: SurfaceDescriptor) => {
-    const value = extSettingsEntry(extensions, item.key).order;
-    return typeof value === "number" && Number.isFinite(value) ? value : 0;
-  };
-  return descriptors
-    .filter((item) => !item.builtin && isExtSurface(item.key))
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => order(a.item) - order(b.item) || a.index - b.index)
-    .map(({ item }) => item);
+export function translationTypesLayout(settings: Record<string, unknown> | null | undefined): TranslationTypesLayout {
+  const raw = settings?.translation_types;
+  const table = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const keys = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+  return { order: keys(table.order), hidden: keys(table.hidden) };
 }
 
-/** 显示在侧栏「翻译」组里的运行时注册类型：设置里没取消「显示在侧栏」的，顺序同上。 */
-export function pinnedExtDescriptors(extensions: Record<string, unknown>): SurfaceDescriptor[] {
-  return orderedExtDescriptors(extensions).filter((item) => extSettingsEntry(extensions, item.key).pinned !== false);
+/**
+ * 全部翻译类型（内置四种 + 已拉到描述符的运行时注册类型），按「扩展」页排的顺序；
+ * 没排到的（新装的类型）按描述符顺序接在后面。「扩展」页、侧栏和翻译参数的页签都按这个顺序。
+ */
+export function orderedTypeKeys(settings: Record<string, unknown> | null | undefined): string[] {
+  const known: string[] = [
+    ...BUILTIN_TYPE_KEYS,
+    ...descriptors.filter((item) => !item.builtin && isExtSurface(item.key)).map((item) => item.key),
+  ];
+  const ranked = translationTypesLayout(settings).order.filter((key) => known.includes(key));
+  return [...ranked, ...known.filter((key) => !ranked.includes(key))];
 }
 
-/** 按设置重排侧栏「翻译」组里的运行时注册类型；启动时和「扩展」页改了开关、顺序之后调用。 */
-export function refreshExtensionSideItems(extensions: Record<string, unknown>): void {
-  setExtensionSideItems(pinnedExtDescriptors(extensions).flatMap((item) => (
-    isExtSurface(item.key)
-      ? [{ id: item.key, label: () => extSurfaceLabel(item.key), icon: extSurfaceIcon(item.key) }]
-      : []
-  )));
+/** 显示在侧栏的翻译类型，顺序同上。 */
+export function visibleTypeKeys(settings: Record<string, unknown> | null | undefined): string[] {
+  const hidden = new Set(translationTypesLayout(settings).hidden);
+  return orderedTypeKeys(settings).filter((key) => !hidden.has(key));
+}
+
+/** 按设置重画侧栏「翻译」组；启动时和「扩展」页改了显示、顺序之后调用。 */
+export function refreshTranslateSideItems(settings: Record<string, unknown> | null | undefined): void {
+  setTranslateSideItems(visibleTypeKeys(settings).flatMap((key) => {
+    if (isExtSurface(key)) return [{ id: key, label: () => extSurfaceLabel(key), icon: extSurfaceIcon(key) }];
+    const item = builtinTranslateSideItem(key as ViewId);
+    return item ? [item] : [];
+  }));
 }

@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from api.surfaces import get_surface
+from config import CORE_TRANSLATION_PROMPT
 from api.surfaces.adapter import AdapterSurface, register_bundled_adapters
 from api.surfaces.base import RunnerRequest
 from api.task_contracts import TaskOptions
@@ -309,6 +310,7 @@ class _AsciiEngine(FakeEngine):
 
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
         self.calls.append(list(texts))
+        self.prompts.append(system_prompt)
         return {text: "\n".join("FR " + _NON_ASCII.sub("x", line) for line in text.split("\n")) for text in texts}
 
 
@@ -322,9 +324,9 @@ class TextTypeRunTests(IsolatedAppDataTestCase):
             (self.source / sample.name).write_bytes(sample.read_bytes())
         self.surface = AdapterSurface(load_manifest(TEXT_DIR), HOST)
 
-    def _run(self, options: dict[str, bool]) -> tuple[DoneMsg, _AsciiEngine]:
+    def _run(self, options: dict[str, bool], *, prompt: str = "") -> tuple[DoneMsg, _AsciiEngine]:
         settings = AppSettings(target_lang="fr")
-        settings.extensions["text"] = ExtensionSettings(smart_context=False)
+        settings.extensions["text"] = ExtensionSettings(smart_context=False, prompt=prompt)
         engine = _AsciiEngine()
         with patch("core.engine_dispatcher.build_role_engine", return_value=engine):
             runner = self.surface.build_runner(
@@ -382,3 +384,13 @@ class TextTypeRunTests(IsolatedAppDataTestCase):
         output = Path(next(r["output_path"] for r in done.file_results if r["name"] == "技术说明.md")).read_text(encoding="utf-8")
         assert "## 一、准备工作 / FR xxxxxx\n" in output
         assert "本文说明如何在一台新的服务器上部署设备监控服务，\n并完成首次配置。" in output
+
+    def test_edited_core_rules_lead_every_request(self) -> None:
+        _done, engine = self._run({})
+        assert engine.prompts and all(prompt.startswith(CORE_TRANSLATION_PROMPT) for prompt in engine.prompts)
+
+        _done, engine = self._run({}, prompt="只译正文，保留 Markdown 标记。")
+        assert engine.prompts
+        for prompt in engine.prompts:
+            assert prompt.startswith("只译正文，保留 Markdown 标记。")
+            assert CORE_TRANSLATION_PROMPT not in prompt

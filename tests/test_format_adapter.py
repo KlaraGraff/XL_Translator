@@ -114,9 +114,21 @@ def test_the_echo_manifest_loads():
     assert [option.key for option in manifest.options] == ["upper"]
 
 
+def test_a_manifest_may_bring_its_own_core_rules():
+    assert parse_manifest(_manifest()).prompt == ""
+    manifest = parse_manifest(_manifest(prompt="  逐行翻译。\n保留行首的 #!。  "))
+    assert manifest.prompt == "逐行翻译。\n保留行首的 #!。"
+    descriptor = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest)).describe()
+    assert descriptor["prompt"] == manifest.prompt
+    # Without one the descriptor says nothing and the page shows the app's rules.
+    plain = parse_manifest(_manifest())
+    assert "prompt" not in AdapterSurface(plain, InProcessAdapterHost(ECHO_DIR, plain)).describe()
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
+        ({"prompt": "长" * 4001}, "prompt"),
         ({"extensions": None}, "extensions"),
         ({"extensions": []}, "extensions"),
         ({"label": {"zh": "回声", "en": "Echo"}}, "label"),

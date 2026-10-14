@@ -1267,9 +1267,9 @@
     "en": "Select at least one DWG or DXF file.",
     "fr": "Sélectionnez au moins un fichier DWG ou DXF."
   },
-  "翻译 DWG 图纸前，请先在「扩展」中连接图纸转换工具。": {
-    "en": "To translate DWG drawings, connect a drawing converter in “Extensions” first.",
-    "fr": "Pour traduire des plans DWG, connectez d'abord un convertisseur de plans dans « Extensions »."
+  "翻译 DWG 图纸前，请先在「插件」中连接图纸转换工具。": {
+    "en": "To translate DWG drawings, connect a drawing converter in “Plugins” first.",
+    "fr": "Pour traduire des plans DWG, connectez d'abord un convertisseur de plans dans « Plugins »."
   },
   "无法读取 CAD 术语库文件「{0}」，请检查格式（每行「原文,译文」或 JSON 对象）。": {
     "en": "CAD glossary file “{0}” could not be read. Check its format (one “source,translation” pair per line, or a JSON object).",
@@ -1279,9 +1279,9 @@
     "en": "[CAD] Drawing scan failed: {0}",
     "fr": "[CAO] Échec de l'analyse du plan : {0}"
   },
-  "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「扩展」中连接转换工具。": {
-    "en": "No drawing converter connected: DXF files can be translated directly, but DWG files need a converter connected in “Extensions” first.",
-    "fr": "Aucun convertisseur de plans connecté : les fichiers DXF peuvent être traduits directement, mais les fichiers DWG nécessitent d'abord de connecter un convertisseur dans « Extensions »."
+  "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「插件」中连接转换工具。": {
+    "en": "No drawing converter connected: DXF files can be translated directly, but DWG files need a converter connected in “Plugins” first.",
+    "fr": "Aucun convertisseur de plans connecté : les fichiers DXF peuvent être traduits directement, mais les fichiers DWG nécessitent d'abord de connecter un convertisseur dans « Plugins »."
   },
   "JSON 术语库必须是原文到译文的对象。": {
     "en": "A JSON glossary must be an object mapping source text to translations.",

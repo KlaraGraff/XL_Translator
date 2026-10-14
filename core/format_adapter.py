@@ -56,6 +56,8 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
+#: 清单里内置规则的长度上限：比应用通用的那份长得多就该拆成补充要求了。
+_PROMPT_MAX_CHARS = 4000
 
 
 class AdapterManifestError(ValueError):
@@ -143,6 +145,9 @@ class AdapterManifest(BaseModel):
     file_noun: dict[str, str]
     #: 页面「?」里的一两句说明（处理什么、哪些内容不翻译）；可省略。
     description: dict[str, str] = Field(default_factory=dict)
+    #: 这种文件的内置规则（发给模型的基础要求，补充要求接在后面）；可省略，省略时用应用
+    #: 通用的那份。用户可在「翻译参数」里这个类型的页签改写或恢复默认。
+    prompt: str = ""
     #: ``ui/src/icons.ts`` 里的图标名；界面不认识时用默认图标。
     icon: str = ""
     extensions: list[str]
@@ -185,6 +190,14 @@ class AdapterManifest(BaseModel):
     @classmethod
     def _description(cls, value: Any) -> dict[str, str]:
         return _three_languages(value or {}, "description", required=False)
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > _PROMPT_MAX_CHARS:
+            raise ValueError(f"prompt 最长 {_PROMPT_MAX_CHARS} 个字符")
+        return value
 
     @field_validator("icon")
     @classmethod

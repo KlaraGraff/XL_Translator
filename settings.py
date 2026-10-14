@@ -15,10 +15,10 @@ from contextlib import contextmanager
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from loguru import logger
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from config import (
     APP_DATA_DIR,
@@ -1323,9 +1323,36 @@ class ExtensionSettings(BaseModel):
     domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     # 这个类型自己的开关（描述符里的 options），按开关的 key 存。
     options: dict[str, bool | int | float | str] = Field(default_factory=dict)
-    # 是否显示在侧栏、在侧栏里的位置。
+    # v39 的「显示在侧栏」和位置。v40 起并入 ``AppSettings.translation_types``（升级时读一次），
+    # 界面不再写这两项；留着是为了旧文件照样能读。
     pinned: bool = True
     order: int = 0
+    # 内置规则：空表示用默认的那份（清单 adapter.json 的 ``prompt``，没有则是
+    # ``config.CORE_TRANSLATION_PROMPT``）；用户在「翻译参数」里改过才有值（v40 起）。
+    prompt: str = ""
+
+
+class TranslationTypesSettings(BaseModel):
+    """侧栏「翻译」组：全部翻译类型（内置四种与 ``ext:<id>``）的顺序和隐藏，v40 起。
+
+    「扩展」页里改。隐藏只是不放进侧栏：页面照常注册，任务中心「打开工作区」、命令行
+    和 MCP 照常能用。至少要留一种可见，由 PUT /api/settings 和界面两头拦。
+    """
+
+    #: 类型键的顺序；没列到的（新装的类型等）按 GET /api/surfaces 的顺序排在后面。空表示默认顺序。
+    order: list[str] = Field(default_factory=list)
+    #: 不显示在侧栏的类型键。
+    hidden: list[str] = Field(default_factory=list)
+
+    @field_validator("order", "hidden", mode="before")
+    @classmethod
+    def _keys(cls, value: Any) -> list[str]:
+        keys: list[str] = []
+        for item in value if isinstance(value, list) else []:
+            key = item.strip().lower() if isinstance(item, str) else ""
+            if key and key not in keys:
+                keys.append(key)
+        return keys
 
 
 class AppSettings(BaseModel):
@@ -1472,6 +1499,8 @@ class AppSettings(BaseModel):
     cad_output: CadOutputSettings = Field(default_factory=CadOutputSettings)
     # 运行时注册的翻译类型各自的设置，按类型 id（不带 ``ext:``）存，见 ExtensionSettings。
     extensions: dict[str, ExtensionSettings] = Field(default_factory=dict)
+    # 侧栏「翻译」组里全部翻译类型的顺序与隐藏（「扩展」页，v40 起）。
+    translation_types: TranslationTypesSettings = Field(default_factory=TranslationTypesSettings)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
@@ -2261,6 +2290,35 @@ def _migrate_rate_settings(payload: dict, stored_version: int) -> dict:
     return migrated
 
 
+def _migrate_translation_types(payload: dict, stored_version: int) -> dict:
+    """v40: 侧栏里各翻译类型的顺序和隐藏改记在 ``translation_types`` 一处（内置四种也能改）。
+
+    v39 只有运行时注册的类型有 ``extensions.<id>.pinned`` / ``order``：取消了「显示在侧栏」
+    的并入 ``hidden``；调过顺序（有非 0 的 order）的，按内置四种在前、扩展类型按 order
+    排在后面写成 ``order``，与 v39 侧栏里看到的顺序一致。旧字段原样留着，不再写。
+    """
+    if stored_version >= 40 or "translation_types" in payload:
+        return payload
+    extensions = payload.get("extensions")
+    entries = [
+        (ext_id, entry) for ext_id, entry in (extensions.items() if isinstance(extensions, dict) else ())
+        if isinstance(entry, dict)
+    ]
+    hidden = [f"ext:{ext_id}" for ext_id, entry in entries if entry.get("pinned") is False]
+
+    def position(entry: dict) -> int:
+        value = entry.get("order")
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    order: list[str] = []
+    if any(position(entry) for _ext_id, entry in entries):
+        ranked = sorted(enumerate(entries), key=lambda item: (position(item[1][1]), item[0]))
+        order = ["excel", "word", "pdf", "cad", *(f"ext:{ext_id}" for _index, (ext_id, _entry) in ranked)]
+    migrated = dict(payload)
+    migrated["translation_types"] = {"order": order, "hidden": hidden}
+    return migrated
+
+
 def _has_legacy_rate_data(stored_version: int) -> bool:
     """Whether the v38 upgrade drops a rate value the user had changed.
 
@@ -2436,7 +2494,7 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, _migrate_rate_settings(
+        return "adopted", stored_version, _migrate_translation_types(_migrate_rate_settings(
             _migrate_prompt_layers(
                 _migrate_smart_domain_default(
                     _migrate_theme_default(payload, stored_version), stored_version,
@@ -2444,7 +2502,7 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
                 stored_version,
             ),
             stored_version,
-        )
+        ), stored_version)
     return "current", stored_version, payload
 
 

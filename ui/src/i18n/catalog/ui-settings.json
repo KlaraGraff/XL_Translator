@@ -1607,6 +1607,30 @@
     "en": "Same setting as the source language on the right of the {0} page; change it in either place. Default: Auto-detect.",
     "fr": "Même réglage que la langue source à droite de la page {0} ; modifiable à l'un ou l'autre endroit. Par défaut : détection automatique."
   },
+  "每次翻译都会发送这些规则，补充要求接在它们后面。这种文件类型的内置规则可以修改；清空或点「恢复默认」即改回默认规则。返回格式（只回译文、条数与原文一致）另由程序固定附上。": {
+    "en": "These rules are sent with every translation, and additional instructions follow them. The built-in rules of this file type can be edited; clear the box or click “Restore default” to go back to the default rules. The reply format (translations only, same count as the source) is always added by the app.",
+    "fr": "Ces règles sont envoyées à chaque traduction, suivies des consignes supplémentaires. Les règles intégrées de ce type de fichier sont modifiables ; videz le champ ou cliquez sur « Rétablir par défaut » pour revenir aux règles par défaut. Le format de réponse (traductions seules, autant que de segments source) est toujours ajouté par l'application."
+  },
+  "已修改，与默认规则不同。": {
+    "en": "Edited; differs from the default rules.",
+    "fr": "Modifiées ; différentes des règles par défaut."
+  },
+  "当前使用默认规则。": {
+    "en": "Using the default rules.",
+    "fr": "Règles par défaut utilisées."
+  },
+  "恢复默认": {
+    "en": "Restore default",
+    "fr": "Rétablir par défaut"
+  },
+  "已保存内置规则。": {
+    "en": "Built-in rules saved.",
+    "fr": "Règles intégrées enregistrées."
+  },
+  "已恢复默认内置规则。": {
+    "en": "Default built-in rules restored.",
+    "fr": "Règles intégrées par défaut rétablies."
+  },
   "速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。": {
     "en": "Speed and retries: extension types have no separate settings and use the defaults for the document translation model (cloud or local).",
     "fr": "Débit et nouvelles tentatives : les types d'extension n'ont pas de réglage propre et utilisent les valeurs par défaut du modèle de traduction de documents (cloud ou local)."

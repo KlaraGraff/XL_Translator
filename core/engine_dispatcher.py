@@ -394,16 +394,31 @@ def build_role_engine(
     )
 
 
+def core_prompt_for(settings: AppSettings, page_key: str = "", default: str = "") -> str:
+    """这一页发给模型的内置规则。
+
+    内置页面一律是 ``CORE_TRANSLATION_PROMPT``，用户改不了。运行时注册的类型依次取：
+    用户在「翻译参数」里改过的（``extensions.<id>.prompt``，非空）→ ``default``（清单
+    adapter.json 的 ``prompt``）→ ``CORE_TRANSLATION_PROMPT``。清空即回到默认。
+    """
+    if is_extension_key(page_key):
+        custom = str(surface_setting(settings, page_key, "prompt", "") or "").strip()
+        return custom or str(default or "").strip() or CORE_TRANSLATION_PROMPT
+    return CORE_TRANSLATION_PROMPT
+
+
 def get_system_prompt(
     settings: AppSettings,
     target_lang: str = "",
     source_lang: str = "zh",
     page_key: str = "",
+    default_core_prompt: str = "",
 ) -> str:
     """拼出发给文档翻译模型的 System Prompt（不含返回格式，那段由引擎追加）。
 
-    内置规则（CORE_TRANSLATION_PROMPT）始终在最前面、用户改不了；用户选了「补充要求」
-    时接在后面，只追加、不替换。「自动识别场景」的文档说明由各任务在拿到之后用
+    内置规则（``core_prompt_for``：内置页面是 CORE_TRANSLATION_PROMPT、用户改不了；运行时
+    注册的类型用户可以改，没改过时用 ``default_core_prompt``，即清单里的 ``prompt``）始终
+    在最前面；用户选了「补充要求」时接在后面，只追加、不替换。「自动识别场景」的文档说明由各任务在拿到之后用
     core.document_profile.append_profile 接上，不在这里。
     """
     normalized_page = str(page_key or "").strip().lower()
@@ -435,7 +450,7 @@ def get_system_prompt(
             (surface_setting(settings, page, "custom_prompt", settings.custom_prompt) if page else settings.custom_prompt)
             or ""
         ).strip()
-    prompt = CORE_TRANSLATION_PROMPT
+    prompt = core_prompt_for(settings, page, default_core_prompt)
     if extra:
         prompt = f"{prompt}\n\n{EXTRA_PROMPT_HEADER}\n{extra}"
     return append_prompt_block(
