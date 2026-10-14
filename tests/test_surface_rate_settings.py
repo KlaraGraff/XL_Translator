@@ -59,7 +59,8 @@ class SurfaceRateDefaultsTests(unittest.TestCase):
         settings = AppSettings()
         self.assertEqual(resolve_pdf_page_concurrency(settings, mode="cloud"), 10)
         self.assertEqual(resolve_pdf_page_concurrency(settings, mode="local"), 3)
-        self.assertEqual(resolve_pdf_review_concurrency(settings, mode="cloud"), 1)
+        self.assertEqual(resolve_pdf_review_concurrency(settings, mode="cloud"), 10)
+        self.assertEqual(resolve_pdf_review_concurrency(settings, mode="local"), 3)
         self.assertEqual(settings.pdf.page_retry_attempts, 1)
 
     def test_stored_values_win_and_are_clamped_to_the_locked_range(self) -> None:

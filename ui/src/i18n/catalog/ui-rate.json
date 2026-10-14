@@ -123,10 +123,6 @@
     "en": "Maximum number of retries after a page fails to translate. Default 1, range 0–8.",
     "fr": "Nombre maximal de nouvelles tentatives après l'échec de la traduction d'une page. Par défaut 1, plage 0–8."
   },
-  "开启「逐页审核」时同时审核的页数。默认 1，范围 1–20。未开启逐页审核时不使用。": {
-    "en": "Number of pages reviewed at the same time when “Page review” is on. Default 1, range 1–20. Not used when page review is off.",
-    "fr": "Nombre de pages contrôlées en même temps lorsque « Contrôle des pages » est activé. Par défaut 1, plage 1–20. Non utilisé lorsque le contrôle des pages est désactivé."
-  },
   "开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。默认开启。": {
     "en": "When on, short words such as “甲” that appear in a new context are saved as new entries, with a note taken from the document description. When off, nothing is saved automatically. On by default.",
     "fr": "Si cette option est activée, les mots courts tels que « 甲 » qui apparaissent dans un nouveau contexte sont enregistrés comme nouvelles entrées, avec une note issue de la description du document. Si elle est désactivée, rien n'est enregistré automatiquement. Activée par défaut."
@@ -154,5 +150,9 @@
   "连接和模型名称仍可正常导入，导入后需手动填写各连接的密钥。如需密钥，请让发送方重新导出。": {
     "en": "Connections and model names can still be imported; each connection's key must then be entered manually. To obtain the keys, ask the sender to export a new file.",
     "fr": "Les connexions et noms de modèles restent importables ; la clé de chaque connexion devra ensuite être saisie manuellement. Pour obtenir les clés, demandez à l'expéditeur un nouvel export."
+  },
+  "开启「逐页审核」时同时审核的页数。默认：云端模型 10，本地模型 3。范围 1–20。未开启逐页审核时不使用。": {
+    "en": "Number of pages reviewed at the same time when “Page review” is on. Default: 10 for cloud models, 3 for local models. Range 1–20. Not used when page review is off.",
+    "fr": "Nombre de pages contrôlées en même temps lorsque « Contrôle des pages » est activé. Par défaut : 10 pour les modèles cloud, 3 pour les modèles locaux. Plage 1–20. Non utilisé lorsque le contrôle des pages est désactivé."
   }
 }

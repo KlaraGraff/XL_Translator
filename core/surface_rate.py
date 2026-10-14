@@ -189,7 +189,7 @@ def pdf_image_defaults(mode: str) -> dict[str, int]:
     return {
         "page_generation_concurrency": CONCURRENCY_LOCAL_DEFAULT if local else PDF_PAGE_CONCURRENCY_DEFAULT,
         "page_retry_attempts": PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
-        "review_concurrency": PDF_REVIEW_CONCURRENCY_DEFAULT,
+        "review_concurrency": CONCURRENCY_LOCAL_DEFAULT if local else PDF_REVIEW_CONCURRENCY_DEFAULT,
     }
 
 

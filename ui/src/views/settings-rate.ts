@@ -78,7 +78,7 @@ function pdfImageFields(): FieldDef[] {
   return [
     { key: "page_generation_concurrency", label: t("同时生成页数"), hint: t("同时翻译的页数。默认：云端模型 10，本地模型 3。范围 1–20。") },
     { key: "page_retry_attempts", label: t("单页重试次数"), hint: t("单页翻译失败后的最多重试次数。默认 1，范围 0–8。") },
-    { key: "review_concurrency", label: t("同时审核页数"), hint: t("开启「逐页审核」时同时审核的页数。默认 1，范围 1–20。未开启逐页审核时不使用。") },
+    { key: "review_concurrency", label: t("同时审核页数"), hint: t("开启「逐页审核」时同时审核的页数。默认：云端模型 10，本地模型 3。范围 1–20。未开启逐页审核时不使用。") },
   ];
 }
 
@@ -87,7 +87,7 @@ const FALLBACK_TEXT: Record<RateFieldKey, number> = {
   concurrency: 30, batch_items: 20, batch_chars: 1000, request_retry: 2, item_retry: 3,
 };
 const FALLBACK_PDF: Record<string, number> = {
-  page_generation_concurrency: 10, page_retry_attempts: 1, review_concurrency: 1,
+  page_generation_concurrency: 10, page_retry_attempts: 1, review_concurrency: 10,
 };
 const UNLIMITED = 2 ** 31 - 1;
 
