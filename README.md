@@ -101,6 +101,10 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 
 ![提示词设置：内置规则、自动识别场景与补充要求](docs/images/readme/app-prompts.png)
 
+### 扩展
+
+除 Excel、Word、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md），在「扩展」页打开后即出现在侧栏。在「扩展」页可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
+
 ## 模型服务
 
 在「设置 → 模型服务」中填写服务商、模型名称和 API 密钥，测试连接成功后即可使用。文档翻译、PDF 与图片翻译、记忆库清洗可分别配置不同的模型。

@@ -101,6 +101,10 @@ Prompts consist of fixed built-in rules and optional extra instructions. The bui
 
 ![Prompt settings: built-in rules, Auto-detect and extra instructions](docs/images/readme/app-prompts.png)
 
+### Extensions
+
+Besides Excel, Word, PDF and CAD, other file types can be translated through extensions, such as the bundled Text type (.txt, .md), which appears in the sidebar once switched on in the Extensions page. The Extensions page lets you browse and install reviewed extensions from the extension list, or add an extension package someone sent you; extensions are written by third-party authors and run with your user permissions, so only install them from sources you trust. To build your own, start from the [extension template](https://github.com/KlaraGraff/XL_Translator-extension-template) and submit it to the [extension list](https://github.com/KlaraGraff/XL_Translator-extensions) to share it; the steps are in [docs/EXTENSIONS.md](docs/EXTENSIONS.md) (Chinese).
+
 ## Model services
 
 Configure the provider, model name and API key under Settings → Models and test the connection before use. Document translation, PDF and image translation, and memory cleanup can each use a different model.

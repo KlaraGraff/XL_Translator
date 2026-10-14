@@ -115,6 +115,8 @@ export type PoolConnection = {
   availability_status: string;
   availability_message: string;
   availability_checked_at: string;
+  // 这条连接眼下用不了的原因（服务商不支持本用途所需能力，或跟随了本地模型），没有问题时为空。
+  config_problem?: string;
   has_api_key: boolean;
   api_key_preview: string;
   primary: boolean;

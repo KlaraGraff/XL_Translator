@@ -630,23 +630,65 @@ def _availability_record_target(settings: AppSettings, role: str, connection_id:
 
 def validate_all_model_roles(
     settings: AppSettings,
+    *,
+    strict_connection: tuple[str, str] | None = None,
+    strict_independent: bool = False,
 ) -> dict[str, EffectiveModelConfig]:
     """Resolve all roles before saving a shared configuration edit.
 
-    A translation connection can be reused by cleaner/image/review roles.
-    Therefore changing one role may invalidate another role even when its own
-    settings block was untouched.  Saving only after this full validation
-    keeps an impossible reuse graph out of persistent settings.
+    Structural errors (a follow chain or cycle) anywhere still reject the save:
+    such a graph cannot be resolved at all.  A capability mismatch is different.
+    A translation connection can be followed by the review role, so switching
+    translation to a provider that cannot read images makes the *review* role
+    unusable without the user touching it.  Rejecting the translation save for
+    that left the user unable to change the one thing they asked to change, so
+    only the connection named by ``strict_connection`` — the one the user is
+    editing right now — is held to its capability.  Every other role keeps
+    whatever problem it has; ``model_role_config_problem`` reports it and the
+    panel shows that role as unavailable.
+
+    ``strict_independent`` holds every connection with its own endpoint (not a
+    follower) to its capability, for an import that sets all roles at once:
+    what the file configures for a role directly must suit that role.
     """
     primary: dict[str, EffectiveModelConfig] = {}
     for role in MODEL_ROLES:
         for index, connection in enumerate(list_role_connections(settings, role)):
             config = resolve_effective_model_config(
-                settings, role, connection_id=connection.id
+                settings,
+                role,
+                connection_id=connection.id,
+                check_capability=strict_independent and not _connection_follows(connection),
             )
             if index == 0:
                 primary[role] = config
+    if strict_connection is not None:
+        strict_role, strict_id = strict_connection
+        resolve_effective_model_config(settings, strict_role, connection_id=strict_id)
     return primary
+
+
+def _connection_follows(connection: ModelConnection) -> bool:
+    return str(connection.connection_mode or "") == "follow"
+
+
+def model_role_config_problem(
+    settings: AppSettings,
+    role: str,
+    connection_id: str = "",
+) -> str:
+    """Why one connection cannot serve its role right now, or ``""``.
+
+    Only capability problems are reported here (the provider cannot do what the
+    role needs, or a cloud-only role follows a local model).  They can arise
+    from another role's edit, so they are persisted and shown rather than
+    blocking that edit.  Structural errors still raise.
+    """
+    try:
+        resolve_effective_model_config(settings, role, connection_id=connection_id)
+    except (ModelCapabilityError, LocalModelFollowNotAllowedError) as exc:
+        return str(exc).strip()
+    return ""
 
 
 def role_source_role(settings: AppSettings, role: str) -> str:
@@ -894,6 +936,7 @@ def resolve_effective_model_config(
     role: str,
     *,
     connection_id: str = "",
+    check_capability: bool = True,
     _seen: tuple[str, ...] = (),
 ) -> EffectiveModelConfig:
     """Resolve one role's effective connection.
@@ -901,6 +944,12 @@ def resolve_effective_model_config(
     ``connection_id`` selects a pool entry; omitting it resolves the primary,
     which is mirrored onto the legacy fields and therefore behaves exactly as
     it did before pools existed.
+
+    ``check_capability=False`` skips the capability guard (provider cannot do
+    what the role needs, cloud-only role following a local model) and returns
+    the configuration as stored.  Save paths and the settings panel use it so
+    a role made unusable by another role's edit can still be described;
+    anything that is about to dial must keep the default.
     """
     normalized_role = role if role in MODEL_ROLE_LABELS else ROLE_TRANSLATION
     if normalized_role in _seen:
@@ -936,10 +985,14 @@ def resolve_effective_model_config(
         # against the source's pool; an id this role no longer matches degrades
         # to the source's primary, which is what following has always meant.
         source_config = resolve_effective_model_config(
-            settings, source, _seen=(*_seen, normalized_role)
+            settings,
+            source,
+            check_capability=check_capability,
+            _seen=(*_seen, normalized_role),
         )
         if (
-            source_config.mode == "local"
+            check_capability
+            and source_config.mode == "local"
             and capability not in LOCAL_CAPABLE_CAPABILITIES
         ):
             raise LocalModelFollowNotAllowedError(
@@ -971,7 +1024,8 @@ def resolve_effective_model_config(
             availability_message=availability_source.availability_message,
             availability_signature=availability_source.availability_signature,
         )
-        validate_model_capability(config)
+        if check_capability:
+            validate_model_capability(config)
         return _availability_for_config(config, availability_source)
 
     if mode == "local":
@@ -992,7 +1046,8 @@ def resolve_effective_model_config(
             availability_message=availability_source.availability_message,
             availability_signature=availability_source.availability_signature,
         )
-        validate_model_capability(config)
+        if check_capability:
+            validate_model_capability(config)
         return _availability_for_config(config, availability_source)
 
     # 主连接的测试结果镜像在 owner 上（校验器双向同步），其余连接各记各的：
@@ -1025,7 +1080,8 @@ def resolve_effective_model_config(
         availability_message=availability_source.availability_message,
         availability_signature=availability_source.availability_signature,
     )
-    validate_model_capability(config)
+    if check_capability:
+        validate_model_capability(config)
     return _availability_for_config(config, availability_source)
 
 

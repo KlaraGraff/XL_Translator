@@ -47,6 +47,9 @@
 | `translator_adapter/` | 格式适配器要 import 的协议类型（只依赖标准库），见下文「格式适配器」 |
 | `adapters/` | 随应用提供的格式适配器，一个类型一个目录；目前有 `text`（纯文本与 Markdown） |
 | `core/format_adapter.py`、`core/adapter_runner.py`、`api/surfaces/adapter.py` | 适配器清单与加载、通用执行器、按清单生成的页面 |
+| `core/adapter_install.py`、`core/adapter_subprocess_host.py`、`api/extension_install_job.py`、`api/routes/extensions.py` | 用户添加的扩展：安装前检查、安装登记、子进程宿主、后台安装任务和路由，见下文「安装与子进程宿主」 |
+| `core/adapter_registry.py` | 扩展列表（注册中心）的客户端，见下文「扩展列表」 |
+| `cli/adapter_commands.py`、`cli/adapter_template/` | `adapter new / test / install / uninstall / pack` 和扩展模板（与模板仓库逐字节一致） |
 | `core/text_translation_service.py` | 共享的文本翻译接线 `TextTranslationService`（速率与重试、引擎、提示词、分批请求、记忆库），CAD、PDF 原位替换和格式适配器在用 |
 | `core/surface_settings.py` | 按页面取设置：内置页面读平铺字段，运行时注册的类型读 `settings.extensions` |
 | `core/task_runner_messages.py` | 执行器发给任务管理器的消息类型（进度、状态、日志、完成、出错、已停止……） |
@@ -177,7 +180,7 @@ adapters/<id>/
   目录注册成一个 `AdapterSurface`；清单不合格或缺 `adapter.py` 的写日志跳过，不影响启动。`InProcessAdapterHost`
   第一次用到时从源码加载 `adapter.py`，不读也不写 `__pycache__`（安装包签过名，不能往里写文件）；适配器抛出
   的异常一律换成 `AdapterError`，返回值按协议类型核对（`id` 非空且不重复，`protected` 只留原文里确有的片段）。
-  打包时 spec 只收每个目录的 `adapter.json` 与 `adapter.py`。从外部安装适配器（子进程执行）是下一阶段。
+  打包时 spec 只收每个目录的 `adapter.json` 与 `adapter.py`。用户装进来的适配器走子进程，见下文「安装与子进程宿主」。
 - **执行器**（`core/adapter_runner.py` 的 `AdapterTaskRunner`，不认识任何具体格式）对每个文件：
   1. `extract` 取单元；锁定的和不含文字的不送模型。
   2. 原文语言为「自动」时识别这个文件的原文语言（用于记忆库语言对和日志，提示词仍按「自动」）。
@@ -209,6 +212,65 @@ adapters/<id>/
   UTF-8（带不带 BOM）、UTF-16 和 GB18030，写回保持原换行符与 BOM（GB18030 写成 UTF-8 带 BOM）。
   双语对照把译文放在原文下一行：段落和引用另起一段；列表项和脚注紧挨原文、用行末「\」硬换行，不空行，紧凑列表保持紧凑（原文本身以「\」结尾时改用两个空格）；表格单元格和标题内用「原文 / 译文」。`tests/test_text_adapter.py`
   对 `samples/` 做往返测试，并用假引擎经执行器跑通。
+
+### 安装与子进程宿主
+
+用户也可以自己添加格式适配器（界面上叫「扩展」）：在「扩展」页选一个 zip 或文件夹，或从扩展列表安装，
+或用命令行 `adapter install`。作者说明见 [EXTENSIONS.md](EXTENSIONS.md)。
+
+- **安装前检查**（`core/adapter_install.py` 的 `inspect_package` / `preview`，什么都不改）：zip 先解到临时目录
+  （拒绝穿越路径和符号链接，zip 上限 32 MB）；读清单；`id` 不得与随应用提供的类型相同；只允许 `.py`、`.json`、
+  `.md`、`.txt` 和 `LICENSE`（`samples/` 下不限），拒绝原生库和可执行文件；合计 ≤ 2 MB、≤ 200 个文件；静态扫描
+  全部 `.py` 的 import 和调用，联网、启动其他程序、加载原生代码、动态执行代码的写法一律拒绝（`FORBIDDEN_MODULES`、
+  `FORBIDDEN_BUILTINS`、`os.system` 等）；`adapter_api_version` 和 `min_app_version` 须兼容。没写许可证、没有样例只是告警。
+  `preview` 返回确认框要显示的内容和 `sha256`（zip 是文件哈希，文件夹是按文件名和内容算的树哈希）。
+  这些检查只拦明显越界的写法，**不是沙箱**。
+- **安装**（`install(confirmed=True, expected_sha256=…)`）：须先确认；文件在 `preview` 之后变了就拒绝。复制到
+  `<应用数据>/plugins/adapters/<id>/<版本>-<随机串>/`（先复制到同一目录下的临时文件夹、核对哈希再改名换上，
+  登记成功后删掉旧版本的目录；`samples/` 不复制），登记在 `plugins/adapters/installed.json`
+  （id、版本、三语名称、目录、来源、`origin`（local / registry）、哈希、大小、安装时间）。同一 id 再装一次就是
+  更新或重装；类型还有任务在进行或已暂停时拒绝更新和卸载（`api/extension_install_job.py` 的 `_busy_check`）。
+  卸载删目录和登记项，保留 `settings.extensions[<id>]`，重装后恢复。
+- **注册**：`api/extension_install_job.py` 的 `activate` 把装好的扩展注册成 `AdapterSurface(origin="installed")`，
+  立即出现在 `GET /api/surfaces`；应用启动时 `register_installed_adapters()` 逐个注册，坏的跳过并写日志，
+  `GET /api/extensions/installed` 带 `ok: false` 和原因列出来。第一次装上的类型写
+  `translation_types.visible["ext:<id>"] = true`，用户拨过它的开关时不动。
+- **子进程宿主**（`core/adapter_subprocess_host.py` 的 `SubprocessAdapterHost`，与 `InProcessAdapterHost` 同一个接口，
+  只有 `make_host` 一处决定用它）：每次 `scan` / `extract` / `write` 起一个
+  `translator-sidecar --adapter-host <目录> <动作>`（源码运行时是 `scripts/launch_sidecar.py`），请求 JSON 走 stdin，
+  结果是 stdout 上带 `RESULT_PREFIX` 的一行 JSON；适配器自己 `print` 的内容转到 stderr，写进日志（「[扩展 名称]」）。
+  时限：`scan` 30 秒，`extract`、`write` 每个文件 120 秒，超时杀进程。异常、非零退出、超时都只让这个文件失败，
+  原因写进任务结果（如「扩展进程异常退出（代码 7）」）。子进程的环境变量只留 `PATH`、语言和 Windows 系统变量，
+  没有应用数据目录和任何密钥；工作目录和 `TMPDIR` 是用完即删的临时目录；Windows 上不弹控制台窗口。
+  这是崩溃隔离：子进程仍以用户身份运行，能读写用户的文件。翻译引擎的安装包收了几乎全部标准库
+  （`packaging/sidecar/translator_sidecar.spec`），扩展能 import 常见的标准库模块；`scripts/frozen_smoke.py`
+  在打包产物上跑一遍子进程宿主和 `adapter new / test / pack`。
+- **接口**（`api/routes/extensions.py`）：`GET installed`、`POST preview {path}`、`POST install {path, sha256, confirmed}`、
+  `GET install-progress`、`POST cancel-install`、`POST {id}/uninstall`，以及下文扩展列表的三个。安装在后台
+  （`ExtensionInstallJob`，同一时间只装一个），界面和命令行轮询 `install-progress`，`result` 是登记项。
+
+### 扩展列表
+
+审核过的扩展列在 [XL_Translator-extensions](https://github.com/KlaraGraff/XL_Translator-extensions)：每个扩展一个
+`extensions/<id>.json`（字段见那里的 `schema/entry.schema.json`），合并到 main 后工作流重建 `index.json`。
+扩展包（zip）放在作者自己仓库的 Release 里；随应用提供的「文本」作为写法示例也列在里面（`packages/` 下）。
+
+- **客户端**（`core/adapter_registry.py`）：`fetch_index` 先取
+  `https://cdn.jsdelivr.net/gh/KlaraGraff/XL_Translator-extensions@main/index.json`，失败再取
+  raw.githubusercontent.com 上的同一文件，只走 HTTPS。结果缓存在 `<应用数据>/cache/extensions-index.json`，
+  24 小时内不联网（「刷新」强制联网）；联网失败而有缓存时返回缓存并带 `stale: true`；都没有时返回空列表和
+  一句原因，不抛错。不合规的条目跳过，只列 `status` 为 `official` / `reviewed` 的。每个条目另带 `state`：
+  `available`、`installed`、`update`、`incompatible`（原因在 `incompatible_reason`）、`bundled`（随应用提供，
+  不能再装一份）。
+- **从列表安装**（`install_from_registry`）：按条目的 `download` 地址依次下载到
+  `<应用数据>/cache/extension-downloads/`（`core/component_download.py`，大小和 SHA-256 必须与条目一致），
+  再走与本地添加相同的 `preview`（id、版本须与条目一致）和安装。确认在前端，与本地添加是同一个确认框。
+- **接口**：`GET /api/extensions/registry`、`POST /api/extensions/registry/refresh`、
+  `POST /api/extensions/registry/install {id, confirmed}`（与本地安装共用 `install-progress`）。
+- **扩展列表这一侧**：PR 上的检查（`scripts/check_entries.py`）下载每个地址、核对大小和 SHA-256，用 Translator
+  main 的 `python -m cli adapter test <zip> --json` 做与安装相同的检查并在样例上试运行，再核对 id、版本、扩展名；
+  维护者阅读源码后合并并填写审核信息。作者那边的 `scripts/pack.py`（模板仓库，与 `cli/adapter_template/` 逐字节一致，
+  由 `tests/test_cli_adapter.py` 钉住）打出 zip、`.sha256` 和条目。
 
 ## 命令行与 MCP 入口
 
