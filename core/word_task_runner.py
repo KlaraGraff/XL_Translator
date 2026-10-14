@@ -52,6 +52,7 @@ from core.document_profile import (
     is_context_sensitive,
     request_document_profile,
 )
+from core.document_terms import make_term_picker
 from core.term_session import TaskTermSession
 from core.language_registry import (
     build_lang_pair,
@@ -1092,6 +1093,19 @@ class WordTaskRunner(BaseTaskRunner):
             self._translate_progress.report(
                 "batches", 0 if api_call_count else 1, max(api_call_count, 1)
             )
+
+            # 「自动识别场景」：文中反复出现的词先请模型定下统一译法，随批附上，
+            # 免得同一个词在并发的各批里译成几种说法（core/document_terms.py）。
+            # 中途停止时不再请求，后面照旧按停止收尾。
+            if smart_mode and misses and not self._stop_event.is_set():
+                term_session.add_document_terms(
+                    misses,
+                    make_term_picker(settings, engine, target_lang=target_lang),
+                    should_stop=self.stop_requested,
+                    on_request=lambda: self._queue.put(
+                        StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在为反复出现的词确定统一译法…")
+                    ),
+                )
 
             api_translations: dict[str, str] = {}
             if (misses or mixed_texts) and not self._stop_event.is_set():

@@ -4,11 +4,13 @@
 
 1. :meth:`TaskTermSession.resolve` 代替以前的「整段查记忆库 + 短词只认用户定的」，
    返回可以直接套用的整段译文；
-2. :meth:`TaskTermSession.wrap` 把翻译引擎包一层，批次里附上本批出现的词条，
+2. :meth:`TaskTermSession.add_document_terms`（「自动识别场景」下）请模型为文中反复
+   出现的词定下统一译法（:mod:`core.document_terms`），随批附上；
+3. :meth:`TaskTermSession.wrap` 把翻译引擎包一层，批次里附上本批出现的词条，
    翻完核对（见 :mod:`core.term_engine`）；
-3. :meth:`TaskTermSession.auto_save_short_words` 在「自动识别场景」下把短词在新场景
-   里的译法存成带备注的新词条；
-4. :meth:`TaskTermSession.finish` 记下词条使用次数，返回任务详情里「记忆库」一节。
+4. :meth:`TaskTermSession.auto_save_short_words` 在「自动识别场景」下把短词在新场景
+   里的译法存成带备注的新词条，并把大多数位置都采用了的统一用词按「自动保存」存下；
+5. :meth:`TaskTermSession.finish` 记下词条使用次数，返回任务详情里「记忆库」一节。
 
 Excel、Word 的任务流程直接用 :class:`TaskTermSession`；CAD 图纸和 PDF 原位替换
 这类一份文件接一份处理的路径用 :class:`DocumentTermMemory`（每份文件一个会话，
@@ -26,10 +28,18 @@ from collections.abc import Callable, Iterable, Mapping
 
 from loguru import logger
 
+from core.concurrent_calls import run_in_background, wait_result
 from core.document_profile import is_context_sensitive
+from core.document_terms import (
+    MIN_DOCUMENT_CHARS,
+    TermPicker,
+    document_char_count,
+    find_recurring_terms,
+)
 from core.term_engine import TermAwareEngine, TermRunStats
 from core.tm_terms import (
     USAGE_ALWAYS,
+    USAGE_DOCUMENT,
     USAGE_SCENE,
     USAGE_SEGMENT,
     TermIndex,
@@ -41,6 +51,10 @@ from core.tm_terms import (
 from engines.base_engine import TranslationEngine, engine_supports_chat, strip_markdown_json
 
 MAX_AUTO_SAVED_PER_TASK = 20
+# 本文档统一用词：在至少这么多段、且不少于这个比例的位置被采用，才存进记忆库。
+MAX_DOCUMENT_TERMS_SAVED = 20
+DOCUMENT_TERM_MIN_APPLIED = 2
+DOCUMENT_TERM_MIN_RATIO = 0.6
 _NOTE_MAX_CHARS = 40
 
 _SCENE_NOTE_SYSTEM = (
@@ -86,6 +100,9 @@ class TaskTermSession:
         self.stats = TermRunStats(target_lang=target_lang)
         self.profile = ""
         self.auto_saved: list[dict[str, object]] = []
+        self.document_terms = 0
+        self._document_engine_name = ""
+        self._document_saved = False
         self._text_pairs: dict[str, set[str]] = {}
         # 过期的整段自动词条 {id: 旧译文}：重译结果入库前删掉（retire_stale_entries）。
         self._stale_entries: dict[int, str] = {}
@@ -203,6 +220,117 @@ class TaskTermSession:
         except sqlite3.Error as exc:
             logger.warning(f"删除过期的整段词条失败（不影响本次翻译）：{exc!r}")
 
+    # ── 本文档统一用词 ────────────────────────────────────────────────────
+
+    def add_document_terms(
+        self,
+        texts: Iterable[str],
+        picker: TermPicker | None,
+        *,
+        should_stop: Callable[[], bool] = lambda: False,
+        on_request: Callable[[], None] | None = None,
+    ) -> int:
+        """「自动识别场景」下，为要送模型翻译的文字里反复出现的词定下统一译法。
+
+        文字太少、没有反复出现的词、或模型没给出可用的译法时什么都不加，照常翻译。
+        返回加入的词数。``on_request`` 在真要请求模型前调用（任务流程借它更新状态行）。
+        """
+        index = self.index
+        if not self.smart_mode or picker is None or index is None or not index.apply_in_sentences:
+            return 0
+        try:
+            return self._add_document_terms(index, texts, picker, should_stop=should_stop, on_request=on_request)
+        except Exception as exc:  # noqa: BLE001 - optional step, translation goes on
+            logger.warning(f"统一用词失败（不影响本次翻译）：{exc!r}")
+            return 0
+
+    def _add_document_terms(
+        self,
+        index: TermIndex,
+        texts: Iterable[str],
+        picker: TermPicker,
+        *,
+        should_stop: Callable[[], bool],
+        on_request: Callable[[], None] | None,
+    ) -> int:
+        distinct = [text for text in dict.fromkeys(texts) if text]
+        if document_char_count(distinct) < MIN_DOCUMENT_CHARS:
+            return 0
+
+        def known(term: str) -> str:
+            targets = {whole_key(row.target): row.target for row in index.whole_rows(term)}
+            return next(iter(targets.values())) if len(targets) == 1 else ""
+
+        candidates = find_recurring_terms(distinct, exclude=index.has_sentence_term, known=known)
+        if not candidates:
+            return 0
+        if on_request is not None:
+            on_request()
+        future = run_in_background(
+            lambda: picker(candidates, profile=self.profile, log=self._log), name="document-terms"
+        )
+        terms = wait_result(future, should_stop=should_stop, default=None)
+        if not terms:
+            return 0
+        added = index.add_document_terms(terms)
+        self.document_terms = len(added)
+        self._document_engine_name = picker.engine_name
+        return len(added)
+
+    def save_document_terms(self, *, pair_for_text: Callable[[str], str | None]) -> None:
+        """大多数位置都采用了的统一用词，按「自动保存」存进记忆库，备注为适用场景（只做一次）。
+
+        与短词自动保存同一个开关；每个任务最多存 20 个，同一原文已有相同译法的不重复存。
+        """
+        if self._document_saved or not self.document_terms:
+            return
+        self._document_saved = True
+        if not self.smart_mode or not getattr(self._tm, "auto_save_short_scene", True):
+            return
+        adopted = [
+            item
+            for item in self.stats.document_usage().values()
+            if item.applied >= DOCUMENT_TERM_MIN_APPLIED
+            and item.applied >= item.texts * DOCUMENT_TERM_MIN_RATIO
+        ]
+        if not adopted:
+            return
+        adopted.sort(key=lambda item: -item.applied)
+        fallback = _first_sentence(self.profile)
+        from core import tm_manager
+
+        saved = 0
+        for item in adopted:
+            if saved >= MAX_DOCUMENT_TERMS_SAVED:
+                break
+            note = item.note or fallback
+            pair = pair_for_text(item.example_text)
+            if not note or not pair:
+                continue
+            entry_id = tm_manager.insert_scene_entry(
+                item.source,
+                item.target,
+                pair,
+                note,
+                engine_name=self._document_engine_name,
+                task_id=self._task_id,
+            )
+            if entry_id:
+                saved += 1
+                self.auto_saved.append(
+                    {
+                        "id": entry_id,
+                        "term": item.source,
+                        "target": item.target,
+                        "note": note,
+                        "lang_pair": pair,
+                        "count": item.applied,
+                        "kind": "document",
+                    }
+                )
+        if saved:
+            self._log("INFO", f"记忆库：已自动保存 {saved} 个统一用词的译法，并附上适用场景备注")
+
     # ── 批次 ──────────────────────────────────────────────────────────────
 
     def wrap(self, engine: TranslationEngine) -> TranslationEngine:
@@ -264,7 +392,14 @@ class TaskTermSession:
         counts: Mapping[str, int] | None = None,
         engine_name: str = "",
     ) -> None:
-        """「自动识别场景」下：短词在新场景里的译法存为带备注的新词条（每任务最多 20 条）。"""
+        """「自动识别场景」下：短词在新场景里的译法存为带备注的新词条（每任务最多 20 条）。
+
+        本文档统一用词也在这时存（:meth:`save_document_terms`）。
+        """
+        try:
+            self.save_document_terms(pair_for_text=pair_for_text)
+        except Exception as exc:  # noqa: BLE001 - auto-saving never fails a translated file
+            logger.warning(f"自动保存统一用词失败（不影响本次翻译）：{exc!r}")
         if not self.will_auto_save():
             return
         assert self.index is not None
@@ -315,10 +450,11 @@ class TaskTermSession:
                         "count": int(counts.get(text, 0) or 0),
                     }
                 )
-        if self.auto_saved:
+        short_saved = sum(1 for item in self.auto_saved if item.get("kind") != "document")
+        if short_saved:
             self._log(
                 "INFO",
-                f"记忆库：已自动保存 {len(self.auto_saved)} 个短词在本文档场景中的译法，备注取自文档说明",
+                f"记忆库：已自动保存 {short_saved} 个短词在本文档场景中的译法，备注取自文档说明",
             )
 
     def _scene_notes(self, engine: TranslationEngine, items: list[tuple[str, str]]) -> dict[str, str]:
@@ -379,6 +515,8 @@ class TaskTermSession:
         }
         for outcome in self.stats.outcomes():
             for hit in outcome.hits:
+                if hit.usage == USAGE_DOCUMENT:
+                    continue
                 if hit.usage == USAGE_ALWAYS:
                     involved.update(hit.entry_ids)
                     continue
@@ -498,6 +636,8 @@ class DocumentTermMemory:
     规则与 Excel / Word 完全相同（同一个 :class:`TaskTermSession`）：
 
     1. :meth:`open`：每份文件（或每页）的文字先整段查记忆库，手动维护的词条优先；
+       给了 ``term_picker`` 时再为文中反复出现的词定下统一译法（CAD 图纸用，PDF 原位
+       替换逐页处理、不做）；
     2. 返回的会话 ``wrap(engine)`` 后再翻译：本批出现的词条随批附上，翻完核对，
        「始终采用」的未采用时重译，仍不符的由调用方标记需复核；
     3. :meth:`close`：「自动识别场景」下把短词的本次译法存成带备注的新词条；
@@ -517,8 +657,10 @@ class DocumentTermMemory:
         log: Callable[[str, str], None] | None = None,
         task_id: str = "",
         marked_in: str = "",
+        term_picker: TermPicker | None = None,
     ) -> None:
         self._tm = tm_settings
+        self._term_picker = term_picker
         # 未采用设定译法时标记需复核的地方（任务详情据此写说明）：cad_review 为 CAD 译文对照表，
         # pdf_pages 为 PDF 逐页结果；Excel / Word 标在输出文件里，不带这个键。
         self.marked_in = marked_in
@@ -554,6 +696,7 @@ class DocumentTermMemory:
         location: str = "",
         lang_pairs: Iterable[str] | None = None,
         log: Callable[[str, str], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> TaskTermSession:
         """一份文件（或一页）开一个会话：整段查记忆库，``session.hits`` 是直接套用的译文。"""
         pairs = [pair for pair in dict.fromkeys(str(item) for item in (lang_pairs or self.lang_pairs)) if pair]
@@ -565,7 +708,16 @@ class DocumentTermMemory:
             log=log or self._log,
             task_id=self._task_id,
         )
-        session.resolve({text: set(pairs) for text in dict.fromkeys(texts) if text}, profile=profile)
+        hits = session.resolve({text: set(pairs) for text in dict.fromkeys(texts) if text}, profile=profile)
+        if self._term_picker is not None:
+            try:
+                session.add_document_terms(
+                    [text for text in dict.fromkeys(texts) if text and text not in hits],
+                    self._term_picker,
+                    should_stop=should_stop or (lambda: False),
+                )
+            except Exception as exc:  # noqa: BLE001 - optional step, translation goes on
+                logger.warning(f"统一用词失败（不影响本次翻译）：{exc!r}")
         with self._lock:
             self._sessions.append((session, [location] if location else [], self._pair_resolver(pairs)))
         return session
@@ -584,8 +736,12 @@ class DocumentTermMemory:
         *,
         counts: Mapping[str, int] | None = None,
     ) -> None:
-        """翻完一份文件：记一行未采用的日志，「自动识别场景」下自动保存短词。"""
+        """翻完一份文件：记一行未采用的日志，「自动识别场景」下自动保存短词和统一用词。"""
         session.log_not_applied()
+        try:
+            session.save_document_terms(pair_for_text=self.pair_for(session))
+        except Exception as exc:  # noqa: BLE001 - auto-saving never fails a translated file
+            logger.warning(f"自动保存统一用词失败（不影响本次翻译）：{exc!r}")
         if not session.will_auto_save():
             return
         engine = self._engine_provider() if self._engine_provider is not None else None

@@ -7,7 +7,9 @@
    system prompt 末尾。涉及的词条超过上限时把这批拆小，词条一条不丢。
 2. 收到译文后核对「始终采用」的词条；没采用的那几条带上改正说明重译，最多
    ``retry_attempts`` 次。仍未采用的保留模型译文，记进 :class:`TermRunStats`，
-   由任务流程在输出文件里标记需复核、不存进记忆库。
+   由任务流程在输出文件里标记需复核、不存进记忆库。本文档统一用词没用上的随第一轮
+   重译一次（该处含义确实不同时可不用），仍没用上就算了：不再重译、不标需复核，只记下
+   各处采用了没有（:meth:`TermRunStats.document_usage`）。
 
 调度、拆批、限流和失败重发仍由 ``engine_dispatcher`` / ``word_batching`` 负责：
 包装器只是它们眼里的一个普通引擎。
@@ -27,6 +29,7 @@ from core.prompt_cache import append_batch_block
 from core.tm_terms import (
     DEFAULT_BATCH_BUDGET,
     USAGE_ALWAYS,
+    USAGE_DOCUMENT,
     USAGE_SCENE,
     TermHit,
     TermIndex,
@@ -66,6 +69,18 @@ class TextTermOutcome:
 
 
 @dataclass
+class DocumentTermUsage:
+    """一个本文档统一用词在各段译文里的采用情况（同一段只算一次）。"""
+
+    source: str
+    target: str
+    note: str = ""
+    texts: int = 0
+    applied: int = 0
+    example_text: str = ""
+
+
+@dataclass
 class TermRunStats:
     """一次任务里词条的采用情况，线程安全。"""
 
@@ -93,6 +108,8 @@ class TermRunStats:
         for outcome in self.outcomes():
             missed = {hit.key for hit in outcome.missed}
             for hit in outcome.hits:
+                if hit.usage == USAGE_DOCUMENT:
+                    continue
                 if hit.usage == USAGE_ALWAYS:
                     if hit.key not in missed:
                         for entry_id in hit.candidates[0].entry_ids if hit.candidates else ():
@@ -104,6 +121,35 @@ class TermRunStats:
                         uses[entry_id] += 1
         return uses
 
+    def document_usage(self) -> dict[str, DocumentTermUsage]:
+        """本文档统一用词各在几段出现、几段采用了（核对不了的那段不算）。"""
+        usage: dict[str, DocumentTermUsage] = {}
+        for outcome in self.outcomes():
+            for hit in outcome.hits:
+                if hit.usage != USAGE_DOCUMENT:
+                    continue
+                verdict = term_applied(
+                    outcome.translation,
+                    hit.expected,
+                    source=hit.source,
+                    target_lang=self.target_lang,
+                )
+                if verdict is None:
+                    continue
+                item = usage.get(hit.key)
+                if item is None:
+                    candidate = hit.candidates[0] if hit.candidates else None
+                    item = usage[hit.key] = DocumentTermUsage(
+                        source=hit.source,
+                        target=hit.expected,
+                        note=candidate.note if candidate is not None else "",
+                        example_text=outcome.text,
+                    )
+                item.texts += 1
+                if verdict:
+                    item.applied += 1
+        return usage
+
     def summary(self) -> dict[str, object]:
         outcomes = self.outcomes()
         always_hits = scene_hits = applied_first = applied_retry = 0
@@ -112,6 +158,8 @@ class TermRunStats:
             applied_first += len(outcome.applied_first)
             applied_retry += len(outcome.applied_after_retry)
             for hit in outcome.hits:
+                if hit.usage == USAGE_DOCUMENT:
+                    continue
                 if hit.usage == USAGE_ALWAYS:
                     always_hits += 1
                     continue
@@ -301,13 +349,17 @@ class TermAwareEngine(TranslationEngine):
     def _block(self, hits_per_text: Sequence[Sequence[TermHit]]) -> str:
         return build_prompt_block(hits_per_text, self._target_name)
 
-    def _missed(self, hits: Sequence[TermHit], translation: str | None) -> list[TermHit]:
+    def _missed(
+        self, hits: Sequence[TermHit], translation: str | None, *, document: bool = False
+    ) -> list[TermHit]:
+        """没采用的「始终采用」词条；``document`` 为真时连本文档统一用词一起查。"""
         if not translation:
             return []
+        usages = (USAGE_ALWAYS, USAGE_DOCUMENT) if document else (USAGE_ALWAYS,)
         return [
             hit
             for hit in hits
-            if hit.usage == USAGE_ALWAYS
+            if hit.usage in usages
             and term_applied(
                 translation,
                 hit.expected,
@@ -332,14 +384,25 @@ class TermAwareEngine(TranslationEngine):
         ]
         pending: dict[int, list[TermHit]] = {}
         for index, text_hits in enumerate(hits):
-            missed = self._missed(text_hits, final[index])
+            missed = self._missed(text_hits, final[index], document=True)
             if missed:
                 pending[index] = missed
-        first_missed = {index: {hit.key for hit in missed} for index, missed in pending.items()}
+        first_missed = {
+            index: {hit.key for hit in missed if hit.usage == USAGE_ALWAYS} for index, missed in pending.items()
+        }
         retries: dict[int, int] = {}
         attempt = 0
         while pending and attempt < self._retry_attempts:
             attempt += 1
+            if attempt > 1:
+                # 本文档统一用词只随第一轮重译一次；之后只追「始终采用」的。
+                pending = {
+                    index: always
+                    for index, missed in pending.items()
+                    if (always := [hit for hit in missed if hit.usage == USAGE_ALWAYS])
+                }
+                if not pending:
+                    break
             order = sorted(pending)
             retry_batch = [batch[i] for i in order]
             block = self._block([hits[i] for i in order])
@@ -357,14 +420,21 @@ class TermAwareEngine(TranslationEngine):
                 candidate = values[n] if n < len(values) else None
                 if not isinstance(candidate, str) or not candidate.strip():
                     continue
-                missed = self._missed(hits[index], candidate)
+                missed = self._missed(hits[index], candidate, document=attempt == 1)
                 if not missed:
                     final[index] = candidate
+                    del pending[index]
+                elif all(hit.usage == USAGE_DOCUMENT for hit in missed):
+                    # 设定译法都用上了，只差统一用词：不再为它重译。新译文用上的统一用词
+                    # 不比上次少（或上次连设定译法都没用上）时换成新译文。
+                    before = pending[index]
+                    if len(missed) <= len(before) or any(hit.usage == USAGE_ALWAYS for hit in before):
+                        final[index] = candidate
                     del pending[index]
         for index, text in enumerate(batch):
             if not hits[index] or final[index] is None:
                 continue
-            missed_now = pending.get(index, [])
+            missed_now = [hit for hit in pending.get(index, []) if hit.usage == USAGE_ALWAYS]
             missed_keys = {hit.key for hit in missed_now}
             retried_keys = first_missed.get(index, set()) - missed_keys
             first_keys = [key for key in always_keys[index] if key not in first_missed.get(index, set())]

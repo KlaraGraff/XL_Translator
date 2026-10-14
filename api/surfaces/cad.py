@@ -33,6 +33,7 @@ from core.cad_translation import (
     scan_cad_paths,
 )
 from core.cad_cache import default_cad_cache
+from core.document_terms import make_term_picker
 from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
 from core.file_progress import file_progress_id
@@ -447,7 +448,18 @@ class CadSurface(Surface):
 
         # 记忆库与 Excel / Word 同一套规则：整段复用（手动维护的优先）、句中采用设定译法、
         # 按备注场景选用、核对后重译、自动保存短词（core.term_session）。
-        term_memory = service.term_memory() if options.cad_use_memory else None
+        term_memory = (
+            service.term_memory(
+                # 「自动识别场景」：每张图纸里反复出现的词先定下统一译法（core.document_terms）。
+                term_picker=(
+                    make_term_picker(settings, engine, target_lang=service.target_lang)
+                    if smart_mode
+                    else None
+                ),
+            )
+            if options.cad_use_memory
+            else None
+        )
 
         return CadTaskRunner(
             files,
