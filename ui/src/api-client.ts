@@ -132,6 +132,8 @@ export type SurfaceDescriptor = {
   phases: LocalizedText[];
   /** 运行设置里的开关；内置页面为空。 */
   options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
+  /** 由格式适配器生成的类型才有（api/surfaces/adapter.py）：来自清单的 id、版本和来源。 */
+  adapter?: { id: string; version: string; origin: "bundled"; license: string; repo: string };
 };
 
 export type SseEvent = {
