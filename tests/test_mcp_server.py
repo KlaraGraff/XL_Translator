@@ -19,9 +19,10 @@ import pytest
 from mcp import Client, StdioServerParameters
 from openpyxl import Workbook
 
+from cli import flow
 from cli.mcp_server import TOOL_NAMES, EngineSession, build_server
 from core import engine_file
-from core.engine_client import EngineUnavailable
+from core.engine_client import EngineError, EngineUnavailable
 from tests.fixtures.cli_engine import ROOT, AppEngine
 
 
@@ -100,6 +101,12 @@ def test_list_types_and_scan(tools, tmp_path: Path):
     # Types shipped in adapters/ (「文本」) are registered at startup too.
     assert keys[:4] == ["excel", "word", "pdf", "cad"]
     assert "ext:sample" in keys and "ext:text" in keys
+
+    # A fresh data directory has no model set up; the agent learns it before any start.
+    setup = body["model_setup"]
+    assert setup["ready"] is False
+    assert [item["role"] for item in setup["models"]] == ["translation", "image"]
+    assert "Settings → Models" in setup["message"]
 
     failed, body = tools("scan_sources", paths=[str(_notes(tmp_path))])
     assert not failed
@@ -194,6 +201,49 @@ def test_refusals_come_back_as_tool_errors(tools, tmp_path: Path, arguments: dic
 def test_unknown_tasks_are_tool_errors(tools):
     failed, text = tools("get_task", task_id="no-such-task")
     assert failed and text
+
+
+def test_model_setup_needs_a_model_and_a_key_for_a_cloud_service():
+    roles = {
+        "translation": {"model": "gpt-x", "mode": "cloud", "has_api_key": True, "availability_status": "available"},
+        "image": {"model": "gpt-image", "mode": "cloud", "has_api_key": False},
+    }
+    setup = flow.model_setup(roles)
+    assert setup["ready"] is False
+    assert [item["configured"] for item in setup["models"]] == [True, False]
+    assert setup["models"][0]["connection_test"] == "passed"
+    assert "PDF and image files" in setup["message"] and "Excel" not in setup["message"]
+
+    roles["image"] = {"model": "qwen-vl", "mode": "local", "has_api_key": False, "availability_status": "unavailable"}
+    setup = flow.model_setup(roles)
+    assert setup["ready"] is True
+    assert setup["models"][1]["connection_test"] == "failed"
+    assert "connection test failed" in setup["message"]
+
+    assert flow.model_setup({})["ready"] is False
+
+
+class _Refusing:
+    started_here = False
+
+    def surfaces(self) -> list:
+        raise EngineError(400, "当前云端 API 尚未填写 API 密钥。", reason="translation_model_missing")
+
+    def close(self, timeout: float = 0) -> None:
+        pass
+
+
+def test_a_missing_model_refusal_tells_the_agent_what_to_do():
+    async def go() -> str:
+        async with Client(build_server(EngineSession(connector=lambda **_: _Refusing()))) as client:
+            result = await client.call_tool("list_types", {})
+            assert result.is_error
+            return result.content[0].text
+
+    text = anyio.run(go)
+
+    assert "当前云端 API 尚未填写 API 密钥。 Translation runs on the model configured in the Translator app" in text
+    assert "Settings → Models" in text and "Do not translate the files another way" in text
 
 
 class _Client:

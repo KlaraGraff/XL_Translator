@@ -35,6 +35,7 @@ export const ICON_NAMES = [
   "message",
   "lock",
   "blocks",
+  "link",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -180,6 +181,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 三块加一个加号：侧栏「扩展」（翻译类型）。与「插件」的 spark 区分开。
     body: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/><path d="M16.75 4v6.5M13.5 7.25H20"/>',
+  },
+  link: {
+    viewBox: "0 0 24 24",
+    // 两个环扣在一起：侧栏「MCP」（让智能体接入）。
+    body: '<path d="M10 13.5a4 4 0 0 0 6 .4l2.6-2.6a4 4 0 0 0-5.7-5.7l-1.4 1.4"/><path d="M14 10.5a4 4 0 0 0-6-.4l-2.6 2.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/>',
   },
 };
 

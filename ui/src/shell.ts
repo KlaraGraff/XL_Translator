@@ -25,6 +25,7 @@ const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
   { id: "library", label: t("记忆库"), icon: "book" },
   { id: "plugins", label: t("插件"), icon: "spark" },
   { id: "extensions", label: t("扩展"), icon: "blocks" },
+  { id: "mcp", label: "MCP", icon: "link" }, // i18n-ignore 协议名，三种语言都写 MCP
 ]));
 
 const SYSTEM_ITEMS: SideItemDef[] = localized(() => ([

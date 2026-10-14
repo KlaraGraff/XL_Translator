@@ -28,6 +28,7 @@ import * as tasksView from "./views/tasks";
 import * as libraryView from "./views/library";
 import * as pluginsView from "./views/plugins";
 import * as extensionsPageView from "./views/extensions-page";
+import * as mcpView from "./views/mcp";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
 import * as feedbackView from "./views/feedback";
@@ -191,6 +192,7 @@ function main(): void {
   registerView("library", libraryView);
   registerView("plugins", pluginsView);
   registerView("extensions", extensionsPageView);
+  registerView("mcp", mcpView);
   registerView("settings", settingsView);
   registerView("help", helpView);
   registerView("feedback", feedbackView);

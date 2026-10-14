@@ -230,6 +230,79 @@ def _suffixes_under(root: Path) -> list[str]:
     return found
 
 
+# ── models ───────────────────────────────────────────────────────────────
+
+#: The models a translation runs on, as the app's 「设置 → 模型服务」 page names
+#: them.  Translation always uses these, never a model of the caller's own.
+MODEL_ROLES = (
+    ("translation", "Excel, Word and CAD files"),
+    ("image", "PDF and image files"),
+)
+#: Refusals that mean "a model is not set up in Translator".
+MODEL_MISSING_REASONS = frozenset(
+    {"translation_model_missing", "image_model_missing", "pdf_review_model_missing"}
+)
+MODEL_SETUP_HELP = (
+    "Translation runs on the model configured in the Translator app, not on yours. Ask the user to "
+    "open Translator, go to Settings → Models (设置 → 模型服务 in Chinese), fill in the model and API "
+    "key, and click Test connection (测试连接); then try again. Do not translate the files another way."
+)
+_TEST_STATES = {"available": "passed", "unavailable": "failed"}
+
+
+def model_setup(roles: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Whether the models Translator translates with are filled in.
+
+    The same test the engine makes before a start (a model name, plus an API
+    key for a cloud service); nothing is sent to the model.  ``connection_test``
+    is the result of the last 测试连接 in the app.
+    """
+    models = []
+    for key, used_for in MODEL_ROLES:
+        role = roles.get(key) or {}
+        name = str(role.get("model") or "").strip()
+        local = role.get("mode") == "local"
+        models.append(
+            {
+                "role": key,
+                "used_for": used_for,
+                "configured": bool(name) and (local or bool(role.get("has_api_key"))),
+                "model": name,
+                "connection_test": _TEST_STATES.get(str(role.get("availability_status") or ""), "not_run"),
+            }
+        )
+    missing = [item["used_for"] for item in models if not item["configured"]]
+    failed = [item["used_for"] for item in models if item["configured"] and item["connection_test"] == "failed"]
+    if missing:
+        message = f"No model is set up in Translator for: {'; '.join(missing)}. {MODEL_SETUP_HELP}"
+    elif failed:
+        message = (
+            f"The last connection test failed in Translator for: {'; '.join(failed)}. Tasks may fail; "
+            "ask the user to check the model settings in Translator and test the connection again."
+        )
+    else:
+        message = "The translation models are set up in Translator."
+    return {"ready": not missing, "models": models, "message": message}
+
+
+def read_model_setup(client: EngineClient) -> dict[str, Any]:
+    try:
+        return model_setup(client.model_roles())
+    except EngineError as exc:
+        return {
+            "ready": False,
+            "models": [],
+            "message": f"Translator could not read its model settings ({exc.detail}). {MODEL_SETUP_HELP}",
+        }
+
+
+def refusal_message(exc: EngineError) -> str:
+    """The engine's sentence, plus what to do when a model is not set up."""
+    if exc.reason in MODEL_MISSING_REASONS:
+        return f"{exc.detail} {MODEL_SETUP_HELP}"
+    return exc.detail
+
+
 # ── options ──────────────────────────────────────────────────────────────
 
 

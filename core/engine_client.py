@@ -173,6 +173,11 @@ class EngineClient:
         """Type descriptors, in sidebar order (``GET /api/surfaces``)."""
         return list((self._request("GET", "/api/surfaces") or {}).get("surfaces") or [])
 
+    def model_roles(self) -> dict[str, dict[str, Any]]:
+        """Each model role's effective setup, by role (``GET /api/models/roles``)."""
+        roles = (self._request("GET", "/api/models/roles") or {}).get("roles") or {}
+        return {str(key): value for key, value in roles.items() if isinstance(value, dict)}
+
     def scan(self, surface: str, paths: list[str], **fields: Any) -> dict[str, Any]:
         """What a type would translate under ``paths`` (``POST /api/sources/scan``)."""
         clean = [str(path) for path in paths if str(path).strip()]

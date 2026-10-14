@@ -1,0 +1,30 @@
+.mcp-content { display: flex; overflow: auto; }
+.mcp-column { width: 100%; max-width: 920px; display: flex; flex-direction: column; gap: 14px; }
+.mcp-card-body { padding: 18px 20px 20px; }
+.mcp-title-row { display: flex; align-items: center; gap: 14px; }
+.mcp-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--tint); color: var(--tint-ink); display: grid; place-items: center; font-size: 23px; flex: none; }
+.mcp-copy { flex: 1; min-width: 0; }
+.mcp-copy h2 { margin: 0; font-size: 16px; }
+.mcp-copy p { margin: 5px 0 0; color: var(--ink-3); font-size: 12.5px; }
+.mcp-steps { margin: 16px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+.mcp-actions { margin-top: 16px; display: flex; gap: 8px; }
+.mcp-note { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
+.mcp-details { margin-top: 14px; }
+.mcp-details summary { cursor: pointer; font-size: 12.5px; color: var(--tint-ink); user-select: none; }
+.mcp-details[open] summary { margin-bottom: 10px; }
+.mcp-manual { margin: 0; padding: 14px 20px; }
+.mcp-manual[open] { padding-bottom: 18px; }
+.mcp-models { padding: 16px 20px; }
+.mcp-models-head { display: flex; align-items: center; gap: 14px; }
+.mcp-model-list { margin: 12px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; align-items: center; font-size: 13px; }
+.mcp-model-list dt { color: var(--ink-2); }
+.mcp-model-list dd { margin: 0; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mcp-model-name { color: var(--ink); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-models .mcp-note { margin-top: 12px; }
+.mcp-info { padding: 14px 16px; color: var(--ink-2); font-size: 12.5px; line-height: 1.6; }
+.mcp-manual > .mcp-code { margin-bottom: 12px; }
+.mcp-code-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
+@media (max-width: 1100px) { .mcp-code-grid { grid-template-columns: 1fr; } }
+.mcp-code { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mcp-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.mcp-code-body { margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); font-family: var(--mono); font-size: 11.5px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; word-break: break-all; user-select: text; max-height: 360px; overflow: auto; }
