@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -114,6 +115,34 @@ def test_the_second_address_is_used_when_the_first_fails(serve) -> None:
     assert view["registry_home"].endswith("/XL_Translator-extensions")
     assert view["template_home"].endswith("/XL_Translator-extension-template")
     assert server.requests == [PRIMARY, FALLBACK]
+
+
+def test_a_primary_that_hangs_does_not_hold_up_the_list(serve) -> None:
+    # jsDelivr sometimes takes many seconds before answering 503; the second
+    # address starts after FALLBACK_DELAY_SECONDS and the first answer wins.
+    server = serve({FALLBACK: index(entry())})
+    release = threading.Event()
+    answer = server.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == PRIMARY:
+            server.requests.append(PRIMARY)
+            release.wait(10)
+            return httpx.Response(503)
+        return answer(request)
+
+    server.handler = handler
+    try:
+        with patch.object(adapter_registry, "FALLBACK_DELAY_SECONDS", 0.05):
+            started = time.monotonic()
+            view = adapter_registry.fetch_index()
+            elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert view["source"] == FALLBACK and view["stale"] is False
+    assert [item["id"] for item in view["entries"]] == ["linetext"]
+    assert server.requests == [PRIMARY, FALLBACK]
+    assert elapsed < 2
 
 
 def test_a_fresh_cache_is_used_without_the_network(serve) -> None:
