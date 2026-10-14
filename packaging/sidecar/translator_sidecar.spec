@@ -89,6 +89,27 @@ hiddenimports += [
     "fractions", "glob", "html", "html.entities", "inspect", "multiprocessing", "pickle",
     "statistics", "string", "sysconfig", "tarfile", "textwrap", "timeit", "tokenize",
 ]
+# 用户安装的扩展（纯 Python 的格式适配器）在子进程里用本包的 Python 运行
+# （core/adapter_subprocess_host.py），可能 import 任何标准库模块；PyInstaller 默认只收我们自己
+# 用到的，所以把标准库整个收进来。去掉的是图形界面、交互终端、开发与打包工具、测试，以及链接
+# GPL 库的 readline / gdbm。冻结冒烟用一个导入常用标准库的适配器在子进程里跑一遍（frozen_smoke.py）。
+_STDLIB_EXCLUDED = {
+    "tkinter", "_tkinter", "idlelib", "turtle", "turtledemo", "lib2to3", "test", "ensurepip", "venv",
+    "distutils", "antigravity", "this", "pydoc", "pydoc_data", "readline", "rlcompleter", "curses",
+    "_curses", "_curses_panel", "_gdbm", "dbm", "nis", "ossaudiodev", "spwd", "crypt", "msilib", "winsound",
+}
+_STDLIB_TEST_PARTS = {"test", "tests", "idle_test"}
+
+
+def _stdlib_module_wanted(name):
+    return not (_STDLIB_TEST_PARTS & set(name.split(".")))
+
+
+for _name in sorted(sys.stdlib_module_names):
+    if _name in _STDLIB_EXCLUDED or _name.startswith(("_test", "__phello__")):
+        continue
+    hiddenimports.append(_name)
+    hiddenimports += collect_submodules(_name, filter=_stdlib_module_wanted, on_error="ignore")
 if sys.platform != "win32":
     hiddenimports += ["grp"]
 if sys.platform == "win32":

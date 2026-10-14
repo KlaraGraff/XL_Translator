@@ -120,6 +120,70 @@ def _check_mcp_handshake() -> None:
         anyio.run(talk, data_dir)
 
 
+#: Standard-library modules a third-party format adapter is likely to use.  The
+#: spec collects the whole standard library for them; the check below imports
+#: these inside an ``--adapter-host`` child, as an installed adapter would.
+_ADAPTER_STDLIB = (
+    "csv", "codecs", "configparser", "datetime", "difflib", "email.parser", "gzip", "html.parser",
+    "io", "json", "plistlib", "re", "string", "struct", "textwrap", "tomllib", "unicodedata",
+    "xml.dom.minidom", "xml.etree.ElementTree", "xml.sax", "zipfile",
+)
+
+_SMOKE_ADAPTER = """\
+import csv
+{imports}
+from translator_adapter import OutputFile, TextUnit
+
+
+def extract(path):
+    with open(path, encoding="utf-8", newline="") as handle:
+        return [TextUnit(id=f"r{{index}}", text=row[0]) for index, row in enumerate(csv.reader(handle)) if row]
+
+
+def write(path, units, mode, out_path, options):
+    with open(out_path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        for unit in units:
+            writer.writerow([unit.translation])
+    return OutputFile(path=out_path)
+"""
+
+
+def _check_adapter_host() -> None:
+    """Run an installed-style adapter in a ``--adapter-host`` child (the sidecar
+    again, frozen): extract and write one CSV, importing common standard-library
+    modules the way a third-party adapter would."""
+    from core.adapter_subprocess_host import SubprocessAdapterHost
+    from translator_adapter import MODE_TRANSLATION_ONLY, TranslatedUnit
+
+    with tempfile.TemporaryDirectory(prefix="translator-smoke-adapter-") as folder:
+        root = Path(folder)
+        adapter = root / "adapter"
+        adapter.mkdir()
+        manifest = {
+            "id": "smoke",
+            "version": "1.0.0",
+            "adapter_api_version": 1,
+            "label": {"zh": "冒烟", "en": "Smoke", "fr": "Fumée"},
+            "file_noun": {"zh": "表格", "en": "tables", "fr": "tableaux"},
+            "extensions": ["csv"],
+        }
+        (adapter / "adapter.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        imports = "\n".join(f"import {name}" for name in _ADAPTER_STDLIB)
+        (adapter / "adapter.py").write_text(_SMOKE_ADAPTER.format(imports=imports), encoding="utf-8")
+        source = root / "table.csv"
+        source.write_text("Hello\nWorld\n", encoding="utf-8")
+        host = SubprocessAdapterHost(adapter)
+        units = host.extract(source)
+        if [unit.text for unit in units] != ["Hello", "World"]:
+            raise RuntimeError(f"adapter host extract returned {units!r}")
+        translated = [TranslatedUnit(id=unit.id, text=unit.text, translation=f"[fr] {unit.text}") for unit in units]
+        output = root / "table_fr.csv"
+        host.write(source, translated, MODE_TRANSLATION_ONLY, output, {})
+        if output.read_text(encoding="utf-8").splitlines() != ["[fr] Hello", "[fr] World"]:
+            raise RuntimeError("adapter host write produced unexpected output")
+
+
 def run_smoke_test() -> int:
     """Validate bundled imports without creating a QApplication or reading settings."""
     try:
@@ -165,6 +229,8 @@ def run_smoke_test() -> int:
         _check_cli_types()
         # MCP 入口：握手、列出七个工具、调一次 list_types（打包时漏收 mcp 的依赖在这里暴露）。
         _check_mcp_handshake()
+        # 用户安装的扩展在 --adapter-host 子进程里跑；漏收标准库或分派出错在这里暴露。
+        _check_adapter_host()
     except Exception as exc:
         _emit(f"[ERROR] Frozen application smoke test failed: {exc}", error=True)
         return 1

@@ -23,7 +23,8 @@ from api.surfaces import all_surfaces, register_surface, unregister_surface
 from api.surfaces.adapter import AdapterSurface
 from core import adapter_install
 from core.adapter_install import AdapterInstallError
-from core.format_adapter import AdapterHost, AdapterManifest, InProcessAdapterHost
+from core.adapter_subprocess_host import SubprocessAdapterHost
+from core.format_adapter import AdapterHost, AdapterManifest
 
 #: ``AdapterSurface.origin`` of a type installed by the user.
 INSTALLED_ORIGIN = "installed"
@@ -32,8 +33,8 @@ ProgressFn = Callable[[str, int, int], None]
 
 
 def make_host(directory: Path, manifest: AdapterManifest) -> AdapterHost:
-    """装进来的扩展用哪种宿主（只在这一处决定）。"""
-    return InProcessAdapterHost(directory, manifest)
+    """装进来的扩展用哪种宿主（只在这一处决定）：第三方代码一律在子进程里跑。"""
+    return SubprocessAdapterHost(directory, manifest)
 
 
 def _registered() -> dict[str, Any]:

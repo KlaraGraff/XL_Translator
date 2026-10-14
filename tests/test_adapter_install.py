@@ -26,6 +26,7 @@ from api.surfaces import all_surfaces, unregister_surface
 from api.surfaces.adapter import AdapterSurface
 from core import adapter_install
 from core.adapter_install import AdapterInstallError, inspect_package
+from core.adapter_subprocess_host import SubprocessAdapterHost
 from tests.test_format_adapter import ECHO_DIR
 
 KEY = "ext:linetext"
@@ -420,6 +421,9 @@ def test_an_installed_type_translates_a_file(tmp_path: Path) -> None:
         TestClient(create_app()) as client,
     ):
         _install(client, zip_package(make_package(tmp_path / "linetext"), tmp_path / "linetext.zip"))
+        # Third-party code runs in a child process, never in the engine.
+        surface = next(item for item in all_surfaces() if item.key == KEY)
+        assert isinstance(surface.host, SubprocessAdapterHost)
         started = client.post(
             "/api/tasks",
             json={"surface": KEY, "source_path": str(source), "target_lang": "fr", "source_lang": "en"},
