@@ -514,3 +514,17 @@ def test_the_sidecar_entry_hands_subcommands_to_the_cli(tmp_path: Path):
     assert completed.returncode == flow.EXIT_INPUT
     assert "找不到" in completed.stderr
     assert completed.stdout == ""
+
+
+def test_the_frozen_smoke_runs_types():
+    from scripts import frozen_smoke
+
+    frozen_smoke._check_cli_types()  # from source: python -m cli, with its own engine
+
+    three = json.dumps({"types": [{"key": key} for key in ("excel", "word", "pdf")]})
+    with patch.object(frozen_smoke, "_cli_command", return_value=([sys.executable, "-c", f"print({three!r})"], None)):
+        with pytest.raises(RuntimeError, match="cad"):
+            frozen_smoke._check_cli_types()
+    with patch.object(frozen_smoke, "_cli_command", return_value=([sys.executable, "-c", "raise SystemExit(3)"], None)):
+        with pytest.raises(RuntimeError, match="exited 3"):
+            frozen_smoke._check_cli_types()
