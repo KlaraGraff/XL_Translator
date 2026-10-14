@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,8 +23,9 @@ from loguru import logger
 from api.component_install_job import InstallJob
 from api.surfaces import all_surfaces, register_surface, unregister_surface
 from api.surfaces.adapter import AdapterSurface
-from core import adapter_install
+from core import adapter_install, adapter_registry
 from core.adapter_install import AdapterInstallError
+from core.adapter_registry import RegistryError
 from core.adapter_subprocess_host import SubprocessAdapterHost
 from core.format_adapter import AdapterHost, AdapterManifest
 
@@ -168,6 +171,53 @@ def install_and_activate(
     return record
 
 
+def install_from_registry(
+    entry_id: str,
+    *,
+    active_surfaces: Callable[[], frozenset[str]],
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> dict[str, Any]:
+    """从扩展列表下载（核对大小和 SHA-256）、做与本地添加相同的检查、安装并注册。
+
+    确认在前端（与本地添加同一个弹窗，内容取自列表条目），这里不再询问。
+    """
+    try:
+        entry = adapter_registry.find_entry(entry_id)
+    except RegistryError as exc:
+        raise AdapterInstallError(str(exc)) from exc
+    reason = entry.incompatibility()
+    if reason:
+        raise AdapterInstallError(reason)
+    target = adapter_registry.download_dir() / uuid.uuid4().hex[:8]
+
+    def on_bytes(done: int, total: int) -> None:
+        if progress:
+            progress("download", done, total)
+
+    try:
+        try:
+            archive = adapter_registry.download_entry(entry, target, progress=on_bytes, cancel=cancel)
+        except RegistryError as exc:
+            raise AdapterInstallError(str(exc)) from exc
+        if progress:
+            progress("verify", 0, 1)
+        summary = adapter_install.preview(archive, reserved_ids=reserved_ids())
+        if summary["id"] != entry.id or summary["version"] != entry.version:
+            raise AdapterInstallError("下载的扩展与列表中的信息不一致，未安装")
+        return install_and_activate(
+            archive,
+            active_surfaces=active_surfaces,
+            expected_sha256=entry.sha256,
+            origin=adapter_install.ORIGIN_REGISTRY,
+            source_label=f"{entry.id}@{entry.version}",
+            progress=progress,
+            cancel=cancel,
+        )
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+
+
 def uninstall_and_deactivate(adapter_id: str, *, active_surfaces: Callable[[], frozenset[str]]) -> dict[str, Any]:
     """注销并删掉我们的拷贝；类型还有任务时拒绝。没装过时抛 ``AdapterInstallError``。"""
     adapter_id = str(adapter_id or "").strip().lower()
@@ -226,6 +276,7 @@ __all__ = [
     "activate",
     "deactivate",
     "install_and_activate",
+    "install_from_registry",
     "make_host",
     "register_installed_adapters",
     "reserved_ids",
