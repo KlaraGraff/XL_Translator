@@ -43,6 +43,7 @@
 | `api/task_contracts.py` | 执行器协议 `Runner`、`TaskOptions`、任务异常 |
 | `core/runner_base.py` | 所有执行器共用的「后台线程 + 消息队列」外壳 `BaseTaskRunner` |
 | `translator_adapter/` | 格式适配器要 import 的协议类型（只依赖标准库），见下文「格式适配器」 |
+| `adapters/` | 随应用提供的格式适配器，一个类型一个目录；目前有 `text`（纯文本与 Markdown） |
 | `core/format_adapter.py`、`core/adapter_runner.py`、`api/surfaces/adapter.py` | 适配器清单与加载、通用执行器、按清单生成的页面 |
 | `core/text_translation_service.py` | 共享的文本翻译接线 `TextTranslationService`（速率与重试、引擎、提示词、分批请求、记忆库），CAD、PDF 原位替换和格式适配器在用 |
 | `core/surface_settings.py` | 按页面取设置：内置页面读平铺字段，运行时注册的类型读 `settings.extensions` |
@@ -115,13 +116,20 @@
   `pinned` 的按 `order` 放进侧栏「翻译」组，排在内置四项之后。工作区模板里
   `` Surface = BuiltinSurface | `ext:${string}` ``：名称、图标、文件名词、空状态和开关经访问函数
   （`surfaceLabel`、`surfaceToggles` 等）从描述符取；统计格（文件数、总大小、跳过项）和文件表列
-  （文件、格式、大小、状态）是通用的一套；运行设置显示语言和描述符里的开关，「更多设置」（补充要求、
-  输出位置）暂不显示，按默认输出位置写。任务中心的图标、名称、可暂停和「打开工作区」也按描述符。
+  （文件、格式、大小、状态）是通用的一套；运行设置显示语言和描述符里的开关（清单有 `description` 时
+  「选项」标题旁加「?」），「更多设置」（补充要求、输出位置）不显示，按默认输出位置写。任务中心的图标、
+  名称、可暂停和「打开工作区」也按描述符。
+- **「扩展」页与翻译参数**：侧栏「扩展」页（路由 id 仍是 `plugins`，`views/plugins.ts`）上段「翻译类型」
+  列出内置四项（固定）和全部 `ext:` 类型，「显示在侧栏」开关写 `extensions.<id>.pinned`，上下移动把
+  整组按新顺序重新编号写进 `extensions.<id>.order`，改完即时重排侧栏（`refreshExtensionSideItems`）；
+  下段「运行组件」是三个可选组件。「设置 → 翻译参数」有 `ext:` 类型时多一个「扩展」页签：下拉选类型，
+  目标语言、源语言写 `extensions.<id>`，提示词卡片走 `/api/domains/ext:<id>`（只认已注册的类型），
+  速率与重试只有一句说明。翻译参数配置包带整个 `extensions` 节，导入时按类型逐项合并；单独导出的
+  提示词文件只带各类型的语言和提示词。
 - **测试**：`tests/fixtures/sample_surface.py` 注册仅测试用的 `ext:sample`（扫描 `.txt`，原样写出，
   开关「转为大写」，可暂停），`tests/test_runtime_surface.py` 用真实路由走通整条路径。它不随应用发布。
 
-还没有的（后续阶段）：从外部安装格式适配器、插件页卡片、「翻译参数」里给扩展类型的页签、
-命令行与 MCP 入口。
+还没有的（后续阶段）：从外部安装格式适配器（「扩展」页的「添加扩展…」）、命令行与 MCP 入口。
 
 ### 格式适配器
 
@@ -180,6 +188,12 @@ adapters/<id>/
 - **测试**：`tests/fixtures/adapters/echo`（每行一个单元，`#!` 行锁定，`{{name}}` 受保护，仅测试用）；
   `tests/test_format_adapter.py` 测清单、宿主和描述符，`tests/test_adapter_runner.py` 用假引擎测执行器，
   末尾一项经真实路由跑到结束。
+- **随应用提供的「文本」**（`adapters/text/`，只用标准库）：`.txt` 按空行分段（超过 1500 字的段按行分成几个单元）；
+  `.md` 的 YAML 头、代码块（围栏和缩进）、HTML 块、表格分隔行、链接定义锁定，标题、列表项、表格单元格、
+  脚注各成一个单元（单元里不含 `#`、列表符号），行内代码、链接地址、网址、邮箱受保护。读入时识别
+  UTF-8（带不带 BOM）、UTF-16 和 GB18030，写回保持原换行符与 BOM（GB18030 写成 UTF-8 带 BOM）。
+  双语对照把译文放在原文下一行（表格单元格和标题内用「原文 / 译文」）。`tests/test_text_adapter.py`
+  对 `samples/` 做往返测试，并用假引擎经执行器跑通。
 
 ## 执行器内部的阶段
 

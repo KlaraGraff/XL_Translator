@@ -118,6 +118,8 @@ export type SurfaceDescriptor = {
   label: LocalizedText;
   file_noun: LocalizedText;
   icon: string;
+  /** 一两句话说明这个类型翻什么、哪些内容不翻；格式适配器的清单里有才有，页面「选项」标题旁的「?」显示它。 */
+  description?: LocalizedText;
   extensions: string[];
   capabilities: {
     requires_source: boolean;

@@ -192,7 +192,7 @@
   "不同类型的任务可同时进行。两个任务使用同一条模型连接时，将先提示可能出现变慢、排队或超时，且两项任务均会计费；确认后才会开始第二个任务。": {"en": "Different kinds of tasks can run at the same time. If two tasks would use the same model connection, a warning first explains that processing may slow down, queue or time out and that both tasks will be billed; the second task starts only after you confirm.", "fr": "Des tâches de types différents peuvent s'exécuter en même temps. Si deux tâches doivent utiliser la même connexion au modèle, un avertissement indique d'abord que cela peut ralentir, mettre en file d'attente ou expirer, et que les deux seront facturées ; la seconde ne démarre qu'après votre confirmation."},
   "打开任务中心": {"en": "Open Task center", "fr": "Ouvrir le Centre des tâches"},
   "输出与兼容格式": {"en": "Output and compatible formats", "fr": "Sortie et formats compatibles"},
-  "标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「插件」中连接图纸转换工具。": {"en": "Standard .xlsx, .docx, PDF, images and DXF drawings do not require Office. Older .xls / .doc files can be converted in high quality with Office on this computer; if it is not installed or not authorized, you will be asked whether to use compatibility conversion instead. DWG drawings require connecting the drawing converter in “Plugins” first.", "fr": "Les fichiers .xlsx et .docx standard, les PDF, les images et les plans DXF ne nécessitent pas Office. Les anciens fichiers .xls / .doc peuvent être convertis en haute qualité avec l'Office installé sur cet ordinateur ; s'il est absent ou non autorisé, il vous sera demandé si vous souhaitez utiliser la conversion compatible à la place. Les plans DWG nécessitent d'abord de connecter le convertisseur de plans dans « Plugins »."},
+  "标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「扩展」中连接图纸转换工具。": {"en": "Standard .xlsx, .docx, PDF, images and DXF drawings do not require Office. Older .xls / .doc files can be converted in high quality with Office on this computer; if it is not installed or not authorized, you will be asked whether to use compatibility conversion instead. DWG drawings require connecting the drawing converter in “Extensions” first.", "fr": "Les fichiers .xlsx et .docx standard, les PDF, les images et les plans DXF ne nécessitent pas Office. Les anciens fichiers .xls / .doc peuvent être convertis en haute qualité avec l'Office installé sur cet ordinateur ; s'il est absent ou non autorisé, il vous sera demandé si vous souhaitez utiliser la conversion compatible à la place. Les plans DWG nécessitent d'abord de connecter le convertisseur de plans dans « Extensions »."},
   "转换旧版文件时提示没有权限？": {"en": "Permission error when converting older files?", "fr": "Erreur d'autorisation lors de la conversion d'anciens fichiers ?"},
   "用本机 Office 转换旧版 .xls / .doc 时，macOS 会询问是否允许 Translator 控制 Excel 或 Word。如果当时选了「不允许」，转换会失败。可在「系统设置 → 隐私与安全性 → 自动化」（macOS 12 为「系统偏好设置 → 安全性与隐私 → 隐私 → 自动化」）中为 Translator 勾选 Microsoft Excel 或 Word，然后重试。": {"en": "When older .xls / .doc files are converted with Office on this Mac, macOS asks whether Translator may control Excel or Word. If you chose “Don’t Allow”, the conversion fails. Go to System Settings → Privacy & Security → Automation (on macOS 12: System Preferences → Security & Privacy → Privacy → Automation), turn on Microsoft Excel or Word for Translator, then try again.", "fr": "Lorsque d'anciens fichiers .xls / .doc sont convertis avec Office sur ce Mac, macOS demande si Translator peut contrôler Excel ou Word. Si vous avez choisi « Refuser », la conversion échoue. Ouvrez Réglages Système → Confidentialité et sécurité → Automatisation (sous macOS 12 : Préférences Système → Sécurité et confidentialité → Confidentialité → Automatisation), activez Microsoft Excel ou Word pour Translator, puis réessayez."},
   "更新、支持与隐私": {"en": "Updates, support and privacy", "fr": "Mises à jour, assistance et confidentialité"},
@@ -205,5 +205,16 @@
   "重新查看快速开始": {"en": "View Quick start again", "fr": "Revoir le Démarrage rapide"},
   "检查更新": {"en": "Check for updates", "fr": "Rechercher des mises à jour"},
   "帮助": {"en": "Help", "fr": "Aide"},
-  "快速开始清单与常见问题": {"en": "Quick start checklist and FAQ", "fr": "Liste de démarrage rapide et questions fréquentes"}
+  "快速开始清单与常见问题": {"en": "Quick start checklist and FAQ", "fr": "Liste de démarrage rapide et questions fréquentes"},
+  "组件状态读取失败。": {"en": "Could not read the component status.", "fr": "Impossible de lire l'état du composant."},
+  "管理翻译类型与运行组件": {"en": "Manage translation types and runtime components", "fr": "Gérer les types de traduction et les composants d'exécution"},
+  "翻译类型": {"en": "Translation types", "fr": "Types de traduction"},
+  "设置哪些翻译类型显示在侧栏，以及它们的顺序。": {"en": "Choose which translation types appear in the sidebar, and in what order.", "fr": "Choisissez les types de traduction affichés dans la barre latérale et leur ordre."},
+  "运行组件": {"en": "Runtime components", "fr": "Composants d'exécution"},
+  "顺序": {"en": "Order", "fr": "Ordre"},
+  "内置": {"en": "Built-in", "fr": "Intégré"},
+  "随应用提供": {"en": "Bundled with the app", "fr": "Fourni avec l'application"},
+  "显示在侧栏": {"en": "Show in sidebar", "fr": "Afficher dans la barre latérale"},
+  "上移": {"en": "Move up", "fr": "Monter"},
+  "下移": {"en": "Move down", "fr": "Descendre"}
 }

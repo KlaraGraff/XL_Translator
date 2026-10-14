@@ -1594,5 +1594,21 @@
   "按「Word」页签的提示词设置": {
     "en": "Follows the Word tab's prompt settings",
     "fr": "Selon les paramètres de prompt de l'onglet Word"
+  },
+  "一键备份或导入 Excel、Word、PDF、CAD 和扩展类型的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。": {
+    "en": "Back up or import translation options, language settings and domain prompts for Excel, Word, PDF, CAD and extension types in one click. Models, keys and local output folders are not included.",
+    "fr": "Sauvegardez ou importez en un clic les options de traduction, les langues et les prompts de domaine pour Excel, Word, PDF, CAO et les types d'extension. Les modèles, les clés et les dossiers de sortie locaux ne sont pas inclus."
+  },
+  "与「{0}」页右侧的目标语言是同一项设置，在任一处修改均可。默认：英文。": {
+    "en": "Same setting as the target language on the right of the {0} page; change it in either place. Default: English.",
+    "fr": "Même réglage que la langue cible à droite de la page {0} ; modifiable à l'un ou l'autre endroit. Par défaut : anglais."
+  },
+  "与「{0}」页右侧的源语言是同一项设置，在任一处修改均可。默认：自动识别。": {
+    "en": "Same setting as the source language on the right of the {0} page; change it in either place. Default: Auto-detect.",
+    "fr": "Même réglage que la langue source à droite de la page {0} ; modifiable à l'un ou l'autre endroit. Par défaut : détection automatique."
+  },
+  "速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。": {
+    "en": "Speed and retries: extension types have no separate settings and use the defaults for the document translation model (cloud or local).",
+    "fr": "Débit et nouvelles tentatives : les types d'extension n'ont pas de réglage propre et utilisent les valeurs par défaut du modèle de traduction de documents (cloud ou local)."
   }
 }

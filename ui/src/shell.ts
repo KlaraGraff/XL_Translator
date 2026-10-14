@@ -23,7 +23,7 @@ const TRANSLATE_ITEMS: SideItemDef[] = localized(() => ([
 const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
   { id: "tasks", label: t("任务中心"), icon: "tasks" },
   { id: "library", label: t("记忆库"), icon: "book" },
-  { id: "plugins", label: t("插件"), icon: "spark" },
+  { id: "plugins", label: t("扩展"), icon: "spark" },
 ]));
 
 const SYSTEM_ITEMS: SideItemDef[] = localized(() => ([

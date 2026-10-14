@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import json
 import re
@@ -19,7 +20,7 @@ import sys
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -140,6 +141,8 @@ class AdapterManifest(BaseModel):
     adapter_api_version: int
     label: dict[str, str]
     file_noun: dict[str, str]
+    #: 页面「?」里的一两句说明（处理什么、哪些内容不翻译）；可省略。
+    description: dict[str, str] = Field(default_factory=dict)
     #: ``ui/src/icons.ts`` 里的图标名；界面不认识时用默认图标。
     icon: str = ""
     extensions: list[str]
@@ -177,6 +180,11 @@ class AdapterManifest(BaseModel):
     @classmethod
     def _localized(cls, value: Any, info: Any) -> dict[str, str]:
         return _three_languages(value, info.field_name)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _description(cls, value: Any) -> dict[str, str]:
+        return _three_languages(value or {}, "description", required=False)
 
     @field_validator("icon")
     @classmethod
@@ -343,6 +351,16 @@ def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUni
     return units
 
 
+class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
+    """每次从源码编译 ``adapter.py``，不读也不写 ``__pycache__``。
+
+    随应用发布的适配器在签过名的安装包里，往里面写缓存文件会改动安装包。
+    """
+
+    def get_code(self, fullname: str) -> CodeType:
+        return compile(self.get_data(self.path), self.path, "exec", dont_inherit=True)
+
+
 class InProcessAdapterHost:
     """在应用进程里加载并调用一个适配器（只给随应用发布的适配器用）。
 
@@ -365,7 +383,9 @@ class InProcessAdapterHost:
             if self._module is not None:
                 return self._module
             path = self.directory / ADAPTER_MODULE_FILE
-            spec = importlib.util.spec_from_file_location(self.module_name, path)
+            spec = importlib.util.spec_from_file_location(
+                self.module_name, path, loader=_SourceOnlyLoader(self.module_name, str(path))
+            )
             if spec is None or spec.loader is None:
                 raise AdapterError(f"无法加载 {self.manifest.id}/{ADAPTER_MODULE_FILE}")
             module = importlib.util.module_from_spec(spec)
@@ -382,6 +402,10 @@ class InProcessAdapterHost:
                     raise AdapterError(f"{self.manifest.id}/{ADAPTER_MODULE_FILE} 缺少函数 {name}()")
             self._module = module
             return module
+
+    def load(self) -> None:
+        """现在就加载 ``adapter.py``（冻结包冒烟检查用）；失败抛 ``AdapterError``。"""
+        self._load()
 
     def _call(self, name: str, *args: Any) -> Any:
         function: Callable[..., Any] = getattr(self._load(), name)

@@ -71,9 +71,9 @@
     "en": "Could not open the web page.",
     "fr": "Impossible d'ouvrir la page web."
   },
-  "插件 · 图纸转换工具": {
-    "en": "Plugins · Drawing converter",
-    "fr": "Plugins · Convertisseur de plans"
+  "扩展 · 图纸转换工具": {
+    "en": "Extensions · Drawing converter",
+    "fr": "Extensions · Convertisseur de plans"
   },
   "安装图纸转换工具": {
     "en": "Install the drawing converter",

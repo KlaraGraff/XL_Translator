@@ -154,5 +154,9 @@
   "开启「逐页审核」时同时审核的页数。默认：云端模型 10，本地模型 3。范围 1–20。未开启逐页审核时不使用。": {
     "en": "Number of pages reviewed at the same time when “Page review” is on. Default: 10 for cloud models, 3 for local models. Range 1–20. Not used when page review is off.",
     "fr": "Nombre de pages contrôlées en même temps lorsque « Contrôle des pages » est activé. Par défaut : 10 pour les modèles cloud, 3 pour les modèles locaux. Plage 1–20. Non utilisé lorsque le contrôle des pages est désactivé."
+  },
+  "适用于 Excel、Word、PDF、CAD 和扩展类型": {
+    "en": "Applies to Excel, Word, PDF, CAD and extension types",
+    "fr": "S'applique à Excel, Word, PDF, CAO et aux types d'extension"
   }
 }

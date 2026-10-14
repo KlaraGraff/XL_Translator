@@ -68,7 +68,7 @@ const CARDS: HelpCardSpec[] = localized(() => ([
   {
     iconName: "folder",
     title: t("输出与兼容格式"),
-    body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「插件」中连接图纸转换工具。"),
+    body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「扩展」中连接图纸转换工具。"),
     // 用本机 Office 转旧版文件时，macOS 会弹窗问是否允许 Translator 控制 Excel / Word；
     // 当时点了「不允许」，之后转换就一直失败。这里写的是事后怎么改回来。
     // 标题直接写用户碰到的现象，不写「自动化权限」这种系统术语；Windows 没有这项设置，不显示。

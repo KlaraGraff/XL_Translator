@@ -379,7 +379,9 @@ def test_types_lists_built_in_and_run_time_types(app, run):
 
     assert code == 0
     keys = [item["key"] for item in json.loads(out)["types"]]
-    assert keys == ["excel", "word", "pdf", "cad", "ext:sample"]
+    # Types shipped in adapters/ (「文本」) are registered at startup too.
+    assert keys[:4] == ["excel", "word", "pdf", "cad"]
+    assert "ext:sample" in keys and "ext:text" in keys
     code, out, _err = run("types")
     assert "示例文本（扩展）" in out and "--option uppercase" in out
 

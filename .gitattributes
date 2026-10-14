@@ -1,0 +1,2 @@
+# Keep the format-adapter samples byte-exact (CRLF line endings, BOM) on every checkout.
+adapters/text/samples/** -text

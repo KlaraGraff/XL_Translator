@@ -98,5 +98,9 @@
   "记忆库：{0} 处整段旧译文未采用当前的设定译法，本次重新翻译": {
     "en": "Translation memory: {0} saved whole-text {0|translation does|translations do} not use the current set translation and will be retranslated",
     "fr": "Mémoire de traduction : {0} {0|traduction enregistrée n'utilise|traductions enregistrées n'utilisent} pas la traduction définie actuelle et {0|sera retraduite|seront retraduites}"
+  },
+  "扩展类型参数": {
+    "en": "Extension type settings",
+    "fr": "Paramètres des types d'extension"
   }
 }

@@ -272,7 +272,7 @@ class CadSurface(Surface):
             },
             "risk": {
                 "capability": status,
-                "message": "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「插件」中连接转换工具。"
+                "message": "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「扩展」中连接转换工具。"
                 if not converter_path
                 else "",
             },
@@ -288,7 +288,7 @@ class CadSurface(Surface):
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not bool(status.get("enabled")):
             raise TaskInputError(
-                "翻译 DWG 图纸前，请先在「插件」中连接图纸转换工具。",
+                "翻译 DWG 图纸前，请先在「扩展」中连接图纸转换工具。",
                 reason="cad_capability_missing",
             )
         require_target_lang(getattr(settings, "target_lang", ""), "CAD")
@@ -365,7 +365,7 @@ class CadSurface(Surface):
         converter_path = str(status.get("converter") or "").strip()
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not converter_path:
-            raise TaskInputError("翻译 DWG 图纸前，请先在「插件」中连接图纸转换工具。", reason="cad_converter_missing")
+            raise TaskInputError("翻译 DWG 图纸前，请先在「扩展」中连接图纸转换工具。", reason="cad_converter_missing")
         # All document surfaces publish into one unique, timestamped
         # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
         # with nested translated/review/run directories, which made a

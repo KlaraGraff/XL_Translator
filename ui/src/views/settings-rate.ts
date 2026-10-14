@@ -7,6 +7,7 @@
 
 import { createButton, createCard, createHintBadge, createSwitch } from "../components";
 import { t } from "../i18n";
+import { isExtSurface, surfaceDescriptors } from "../surface-descriptors";
 import { tmSwitchDefs } from "./tm-switches";
 import {
   client,
@@ -249,7 +250,9 @@ export function renderTmParamsCard(): HTMLElement {
   const head = sectionLabel(t("记忆库"));
   const scope = document.createElement("small");
   scope.className = "rate-sub";
-  scope.textContent = t("适用于 Excel、Word、PDF、CAD");
+  scope.textContent = surfaceDescriptors().some((item) => isExtSurface(item.key))
+    ? t("适用于 Excel、Word、PDF、CAD 和扩展类型")
+    : t("适用于 Excel、Word、PDF、CAD");
   head.append(scope);
   body.append(head);
 

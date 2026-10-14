@@ -178,6 +178,7 @@ class AdapterSurface(Surface):
 
     def describe(self) -> dict[str, Any]:
         descriptor = super().describe()
+        descriptor["description"] = dict(self.manifest.description)
         descriptor["adapter"] = {
             "id": self.manifest.id,
             "version": self.manifest.version,

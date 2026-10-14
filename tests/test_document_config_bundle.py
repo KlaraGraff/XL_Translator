@@ -174,6 +174,36 @@ class DocumentConfigImportTests(unittest.TestCase):
         # 本机那条的语言代码必须原样保留，否则库里的词条对不上任何语言对。
         self.assertEqual(merged.custom_target_langs[0].code, local_code)
 
+    def test_extension_types_are_exported_and_merged_type_by_type(self) -> None:
+        app = AppSettings.model_validate({
+            "extensions": {
+                "text": {"target_lang": "fr", "domain_preset": "说明书",
+                         "domain_custom_prompts": {"说明书": {"_base": "用说明书语气。"}}},
+            },
+        })
+        document = build_document_config_export_payload(app)["document"]
+        self.assertEqual(document["extensions"]["text"]["target_lang"], "fr")
+        self.assertEqual(document["extensions"]["text"]["domain_custom_prompts"], {"说明书": {"_base": "用说明书语气。"}})
+
+        # The importing machine hid 文本 from the sidebar and has a second type; a file that only
+        # names 文本's language changes that and nothing else.
+        here = AppSettings.model_validate({
+            "extensions": {"text": {"pinned": False, "order": 3}, "srt": {"target_lang": "de"}},
+        })
+        imported = parse_document_config_import({
+            "type": DOCUMENT_CONFIG_EXPORT_TYPE,
+            "version": 5,
+            "document": {"extensions": {"text": {"target_lang": "es", "domain_custom_prompts": {"旧": {"fr": "旧版"}}}}},
+        })
+        merged = apply_document_config_import(here, imported)
+
+        self.assertEqual(merged.extensions["text"].target_lang, "es")
+        self.assertFalse(merged.extensions["text"].pinned)
+        self.assertEqual(merged.extensions["text"].order, 3)
+        self.assertEqual(merged.extensions["text"].domain_custom_prompts, {"旧": {"_base": "旧版"}})
+        self.assertEqual(merged.extensions["srt"].target_lang, "de")
+        self.assertEqual(summarize_document_config_import(imported), ["扩展类型参数"])
+
     def test_summary_names_the_areas_a_file_would_change(self) -> None:
         imported = parse_document_config_import(
             {

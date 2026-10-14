@@ -72,7 +72,7 @@ import {
   schedulePdfSnapshotRefresh,
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
-import { el, formatSizeKb, formatTime, hasOwn, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
+import { el, formatSizeKb, formatTime, hasOwn, localizedLanguageOptions, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
 import { currentLocale, fmtNum, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
@@ -784,6 +784,19 @@ function applyExtSettings(surface: ExtSurface, st: SurfaceState): void {
   st.domainPreset = text(saved.domain_preset, NO_EXTRA_PROMPT);
 }
 
+/** 运行时注册的类型的目标语言、源语言和补充要求也能在「设置 · 翻译参数 · 扩展」里改，
+ *  所以这类页面每次挂载都按磁盘上的设置重新取一次；任务进行中不动，免得右栏和正在跑的任务对不上。 */
+async function reloadExtSettings(surface: ExtSurface, st: SurfaceState): Promise<void> {
+  try {
+    const c = await getClient();
+    settings = await c.request<JsonObject>("/api/settings");
+  } catch {
+    return;
+  }
+  if (st.task && !st.task.task.terminal) return;
+  applyExtSettings(surface, st);
+}
+
 /** 记住上次用的来源目录（内置四页各有一个 last_<页面>_source_folder）。运行时注册的类型没有这一项。 */
 async function persistLastSourceFolder(surface: Surface, path: string): Promise<void> {
   if (isExtSurface(surface)) return;
@@ -864,6 +877,10 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
     })
     .then(() => {
+      if (!isCurrent() || !isExtSurface(surface)) return;
+      return reloadExtSettings(surface, st);
+    })
+    .then(() => {
       if (!isCurrent()) return;
       // 「停」配对的「起」：unmountWorkspace 会停掉 PDF 逐页重跑的轮询计时器（高-10），
       // 但 adoptExistingTask 只在首次发现任务时拉一次快照——st.task 已经存在的情形（切走
@@ -872,7 +889,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       // PDF 且已经有任务，每次挂载都重新拉一次快照；fetchPdfPagesSnapshot 内部看到
       // rerun.active 会自己把计时器重新起起来，跟 adoptExistingTask 里的调用是同一套逻辑。
       if (surface === "pdf" && st.task) void fetchPdfPagesSnapshot(surface, st.task.task.task_id);
-      // 用户可能刚在插件页连好转换工具再切回来，所以每次挂载都重新查一次。
+      // 用户可能刚在「扩展」页连好转换工具再切回来，所以每次挂载都重新查一次。
       if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
     })
@@ -1205,20 +1222,6 @@ function sourceLabel(st: SurfaceState): string {
 }
 function targetLabel(st: SurfaceState): string {
   return tx(languageOptions.target.find((o) => o.code === st.targetLang)?.display_name ?? st.targetLang);
-}
-
-/** 语言名是后端给的中文显示名：显示时换成当前界面语言，中文原名补进搜索别名，照样能用中文搜到。 */
-function localizedLanguageOptions(options: LanguageOption[]): LanguageOption[] {
-  return options.map((option) => {
-    const display = tx(option.display_name);
-    if (display === option.display_name && !option.description) return option;
-    return {
-      ...option,
-      display_name: display,
-      aliases: display === option.display_name ? option.aliases : [...(option.aliases ?? []), option.display_name],
-      description: option.description ? tx(option.description) : option.description,
-    };
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,7 +1751,7 @@ function buildCadConverterBanner(st: SurfaceState): HTMLElement | null {
     : t("DWG 需要转换工具才能读写；DXF 不受影响，可直接翻译。连接后请返回此处重新扫描。");
   tx.append(title, body);
   banner.append(tx);
-  banner.append(createButton({ label: t("打开插件"), onClick: () => navigate("plugins") }));
+  banner.append(createButton({ label: t("打开扩展"), onClick: () => navigate("plugins") }));
   return banner;
 }
 
@@ -2556,9 +2559,13 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     scroll.append(sourceField.root);
   }
 
-  if (surfaceToggles(surface).length) {
+  const typeHelp = isExtSurface(surface) ? localizedText(surfaceDescriptor(surface)?.description) : "";
+  if (surfaceToggles(surface).length || typeHelp) {
     const typeSec = el("div", "rp-sec");
-    typeSec.textContent = t("{0} 选项", surfaceLabel(surface));
+    const label = surfaceLabel(surface);
+    // 「Excel 选项」中间有空格；名字是汉字时（「文本选项」）不加。
+    typeSec.textContent = /[A-Za-z0-9]$/.test(label) ? t("{0} 选项", label) : t("{0}选项", label);
+    if (typeHelp) typeSec.append(createHintBadge(typeHelp));
     scroll.append(typeSec);
   }
 
@@ -2592,8 +2599,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   if (surface === "pdf") scroll.append(buildPdfRouteSection(st, active));
   if (surface === "cad") scroll.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
 
-  // 运行时注册的类型暂不显示「更多设置」：补充要求的编辑入口在「翻译参数」里，输出位置也是
-  // 内置四页各自的设置项，这两处还没有给它们的位置。它们按默认输出位置写，补充要求按
+  // 运行时注册的类型不显示「更多设置」：补充要求在「设置 · 翻译参数 · 扩展」里选，输出位置
+  // 是内置四页各自的设置项，还没有给它们的位置。它们按默认输出位置写，补充要求按
   // settings.extensions 里存的那一项发。
   if (!active && !isExtSurface(surface)) {
     const foldContent = buildTaskFold(surface, st);
@@ -2904,7 +2911,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("可提取文字的页"),
-    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。转成 Word 和原位替换都需要在插件页安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
+    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。转成 Word 和原位替换都需要在「扩展」页安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
       { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变，中文字号略小；只能译成中文") },
@@ -2917,7 +2924,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在插件页安装「PDF 处理组件」。"),
+    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在「扩展」页安装「PDF 处理组件」。"),
     options: [
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
       { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
@@ -2986,10 +2993,10 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
   const usesWord = st.pdfAutoTextRoute === "word";
   if (caps && (usesWord || usesInplace) && !caps.word_component) {
-    wrap.append(note(t("还没有安装「PDF 处理组件」：原位替换和转成 Word 的页改用保底方式，大幅面图纸保留原样。可在插件页一键安装。"), true));
+    wrap.append(note(t("还没有安装「PDF 处理组件」：原位替换和转成 Word 的页改用保底方式，大幅面图纸保留原样。可在「扩展」页一键安装。"), true));
   } else {
     if (caps && usesInplace && caps.inplace_component === false) {
-      wrap.append(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：原位替换的页改用保底方式，大幅面图纸保留原样。可在插件页重新安装。"), true));
+      wrap.append(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：原位替换的页改用保底方式，大幅面图纸保留原样。可在「扩展」页重新安装。"), true));
     }
     if (caps && usesWord && !caps.office_engine) {
       wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
@@ -3748,9 +3755,9 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
         title: t("需要先连接图纸转换工具"),
         body: [
           t("所选文件中有 {0} 个 DWG 图纸。DWG 需先通过转换工具转换为 DXF，才能翻译和写回。", blocked),
-          t("可在「插件」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。"),
+          t("可在「扩展」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。"),
         ],
-        actions: [{ label: t("取消") }, { label: t("打开插件"), variant: "primary", onClick: () => navigate("plugins") }],
+        actions: [{ label: t("取消") }, { label: t("打开扩展"), variant: "primary", onClick: () => navigate("plugins") }],
       });
       return;
     }

@@ -895,9 +895,9 @@
     "en": "The drawing converter timed out while starting.",
     "fr": "Le démarrage de l'outil de conversion des plans a expiré."
   },
-  "图纸转换工具未能启动，请在「插件」中重新连接后重试。": {
-    "en": "The drawing converter could not start. Reconnect it in “Plugins” and try again.",
-    "fr": "L'outil de conversion des plans n'a pas pu démarrer. Reconnectez-le dans « Plugins », puis réessayez."
+  "图纸转换工具未能启动，请在「扩展」中重新连接后重试。": {
+    "en": "The drawing converter could not start. Reconnect it in “Extensions” and try again.",
+    "fr": "L'outil de conversion des plans n'a pas pu démarrer. Reconnectez-le dans « Extensions », puis réessayez."
   },
   "翻译 DWG 需要先连接图纸转换工具。": {
     "en": "To translate DWG files, connect the drawing converter first.",
@@ -1618,7 +1618,7 @@
   "这批图纸是旧版本翻译的，不能直接重新写回；重新翻译一次后即可使用。": {"en": "These drawings were translated by an older version and cannot be rewritten. Translate them again to enable rewriting.", "fr": "Ces plans ont été traduits par une version antérieure et ne peuvent pas être réécrits. Traduisez-les à nouveau pour activer la réécriture."},
   "原图纸已被移动或删除，无法重新写回。": {"en": "The source drawing was moved or deleted, so it cannot be rewritten.", "fr": "Le plan d'origine a été déplacé ou supprimé ; impossible de le réécrire."},
   "原图纸在翻译之后改过，对照表已经对不上，请重新翻译这张图纸。": {"en": "The source drawing changed after translation, so the table no longer matches. Translate this drawing again.", "fr": "Le plan d'origine a changé après la traduction ; la table ne correspond plus. Traduisez ce plan à nouveau."},
-  "重新写回 DWG 图纸前，请先在「插件」中连接图纸转换工具。": {"en": "Connect the drawing converter in Plugins before rewriting DWG drawings.", "fr": "Connectez le convertisseur de plans dans Plugins avant de réécrire des plans DWG."},
+  "重新写回 DWG 图纸前，请先在「扩展」中连接图纸转换工具。": {"en": "Connect the drawing converter in Extensions before rewriting DWG drawings.", "fr": "Connectez le convertisseur de plans dans Extensions avant de réécrire des plans DWG."},
   "这次任务的译文记录已被清理或损坏，无法查看。请重新翻译这批图纸。": {"en": "This task's translation record was cleaned up or is damaged and cannot be shown. Translate these drawings again.", "fr": "Le relevé de traduction de cette tâche a été supprimé ou est endommagé. Traduisez ces plans à nouveau."},
   "读不出这个文件，请选择从这里导出、改好后保存的 Excel 文件（.xlsx）。": {"en": "This file cannot be read. Choose the Excel file (.xlsx) exported from here and saved after editing.", "fr": "Impossible de lire ce fichier. Choisissez le fichier Excel (.xlsx) exporté depuis cette fenêtre puis enregistré après modification."},
   "文本框 {0}": {

@@ -30,6 +30,9 @@ _CRITICAL_IMPORTS = (
     "zstandard",
 )
 
+#: Translation types shipped in adapters/ that GET /api/surfaces must list.
+_BUNDLED_SURFACES = ("ext:text",)
+
 _CRITICAL_DISTRIBUTIONS = (
     "Pillow",
     "fastapi",
@@ -73,6 +76,18 @@ def run_smoke_test() -> int:
         for lang in ("fr", "en"):
             if not lexicon(lang):
                 raise RuntimeError(f"in-place word list is missing: {lang}")
+
+        # 随应用提供的翻译类型是数据文件（adapters/<id>/adapter.json + adapter.py），漏收时
+        # 应用照常启动，只是 GET /api/surfaces 里少了它们、侧栏少了对应页面。
+        from api.surfaces import all_surfaces
+        from api.surfaces.adapter import register_bundled_adapters
+
+        register_bundled_adapters()
+        registered = {surface.key: surface for surface in all_surfaces()}
+        for key in _BUNDLED_SURFACES:
+            if key not in registered:
+                raise RuntimeError(f"bundled translation type is missing: {key}")
+            registered[key].host.load()
     except Exception as exc:
         _emit(f"[ERROR] Frozen application smoke test failed: {exc}", error=True)
         return 1

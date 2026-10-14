@@ -1,7 +1,8 @@
 // 翻译工作区（workspace.ts 及其拆出去的子模块）共用的小工具：建 DOM 节点、从后端
 // 的松散 JSON 里安全取值、脱敏、格式化。全是无状态的纯函数，任何子模块都可以放心引用。
 
-import { localeTag } from "../i18n";
+import type { LanguageOption } from "../components";
+import { localeTag, tx } from "../i18n";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -62,4 +63,18 @@ export function formatSizeKb(kb: unknown): string {
   const value = num(kb, 0);
   if (value >= 1024) return `${(value / 1024).toFixed(1)} MB`;
   return `${Math.round(value)} KB`;
+}
+
+/** 语言名是后端给的中文显示名：显示时换成当前界面语言，中文原名补进搜索别名，照样能用中文搜到。 */
+export function localizedLanguageOptions(options: LanguageOption[]): LanguageOption[] {
+  return options.map((option) => {
+    const display = tx(option.display_name);
+    if (display === option.display_name && !option.description) return option;
+    return {
+      ...option,
+      display_name: display,
+      aliases: display === option.display_name ? option.aliases : [...(option.aliases ?? []), option.display_name],
+      description: option.description ? tx(option.description) : option.description,
+    };
+  });
 }

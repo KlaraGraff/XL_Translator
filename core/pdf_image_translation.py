@@ -4740,7 +4740,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
             self._pdf_component_ok = is_available(refresh=True)
             if not self._pdf_component_ok:
-                self._log("WARN", "未安装「PDF 处理组件」：原位替换的页改用保底方式。可在插件页安装。")
+                self._log("WARN", "未安装「PDF 处理组件」：原位替换的页改用保底方式。可在「扩展」页安装。")
         return self._pdf_component_ok
 
     def _word_segments_possible(self) -> str:

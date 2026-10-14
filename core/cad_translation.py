@@ -2582,7 +2582,7 @@ class SubprocessCadConverter:
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
             logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
-            raise CadPipelineError("图纸转换工具未能启动，请在「插件」中重新连接后重试。") from exc
+            raise CadPipelineError("图纸转换工具未能启动，请在「扩展」中重新连接后重试。") from exc
 
         # 进程已经退出，文件就是最终结果；再核对一次：没有文件是没转出来，DXF
         # 缺结尾的 EOF 记录是 ODA 中途崩了，都不能当成图纸本身损坏去解析。

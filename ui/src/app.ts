@@ -8,14 +8,14 @@ import "./styles/palettes.css";
 import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
-import { mountShell, relocalizeShell, setExtensionSideItems } from "./shell";
+import { mountShell, relocalizeShell } from "./shell";
 import { mountRouter, navigate, registerView, remountCurrentView } from "./router";
 import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
-import { extSurfaceIcon, extSurfaceLabel, isExtSurface, loadSurfaceDescriptors, pinnedExtDescriptors } from "./surface-descriptors";
+import { isExtSurface, loadSurfaceDescriptors, refreshExtensionSideItems } from "./surface-descriptors";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
@@ -105,11 +105,7 @@ async function mountExtensionPages(): Promise<void> {
   const client = new ApiClient();
   await client.connect();
   const settings = await client.request<{ extensions?: Record<string, unknown> }>("/api/settings");
-  setExtensionSideItems(pinnedExtDescriptors(settings.extensions ?? {}).flatMap((item) => (
-    isExtSurface(item.key)
-      ? [{ id: item.key, label: () => extSurfaceLabel(item.key), icon: extSurfaceIcon(item.key) }]
-      : []
-  )));
+  refreshExtensionSideItems(settings.extensions ?? {});
 }
 
 /**

@@ -220,6 +220,19 @@ def test_the_host_accepts_plain_dicts_and_counts_without_scan(tmp_path):
     assert host.write(Path("x"), [], "bilingual", Path("/tmp/o"), {}).path == "/tmp/o"
 
 
+def test_loading_an_adapter_never_writes_a_bytecode_cache(tmp_path):
+    # Bundled adapters live inside the signed app; a __pycache__ there would change it.
+    host = _write_adapter(
+        tmp_path / "probe",
+        "from dataclasses import dataclass\n"
+        "@dataclass\nclass Box:\n    text: str\n"
+        "def extract(path):\n    return [{'id': 'a', 'text': Box('one').text}]\n"
+        "def write(path, units, mode, out_path, options):\n    return None\n",
+    )
+    assert host.extract(Path("anything"))[0].text == "one"
+    assert sorted(item.name for item in (tmp_path / "probe").iterdir()) == ["adapter.json", "adapter.py"]
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [

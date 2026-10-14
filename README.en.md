@@ -50,7 +50,7 @@ Each page is redrawn in the target language by an image model, preserving the or
 
 ### CAD drawings
 
-DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
+DXF files are translated directly. DWG files require ODA File Converter, configured on the Extensions page; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
 
 How translations are written back is set under Writing translations on the right of the page:
 

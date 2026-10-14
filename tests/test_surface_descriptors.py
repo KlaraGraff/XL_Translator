@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.surfaces import SURFACE_KEYS, Surface, all_surfaces
+from core.format_adapter import BUNDLED_ADAPTERS_DIR, discover_adapters
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +56,10 @@ class SurfaceRouteTests(IsolatedAppDataTestCase):
             response = client.get("/api/surfaces")
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
-        self.assertEqual([item["key"] for item in payload["surfaces"]], list(SURFACE_KEYS))
+        # The built-in pages, then the types shipped in adapters/ (create_app registers them).
+        bundled = [manifest.key for _directory, manifest in discover_adapters(BUNDLED_ADAPTERS_DIR)[0]]
+        self.assertIn("ext:text", bundled)
+        self.assertEqual([item["key"] for item in payload["surfaces"]], [*SURFACE_KEYS, *bundled])
         self.assertEqual(payload["surfaces"], [surface.describe() for surface in all_surfaces()])
 
 
