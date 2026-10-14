@@ -22,13 +22,15 @@ from __future__ import annotations
 from typing import Any
 
 from app_meta import APP_NAME, APP_VERSION
-from settings import AppSettings, migrate_prompt_layers, migrate_legacy_rate_sections
+from settings import AppSettings, migrate_prompt_layers
 
 DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
 # v2：领域 Prompt 覆盖曾升级为按目标语言分层；v3 收敛为每个预设一份 `_base`
 # 主 Prompt。v4：提示词拆成内置规则 + 「自动识别场景」开关 + 补充要求（设置 v35），
 # v3 及以前的包导入时按 settings.migrate_prompt_layers 转换。v5：速率与重试按文件类型
-# 放在 rate 节（设置 v38），取代 word_batch / request_retry；v4 及以前的包导入时换算。
+# 放在 rate 节（设置 v38），取代 word_batch / request_retry；和设置文件升级一样，v4 及
+# 以前的包里的速率与重试（含 pdf 节的同时生成页数、单页重试次数）导入时不用，导入方
+# 保留自己的速率设置。
 DOCUMENT_CONFIG_EXPORT_VERSION = 5
 # 包里出现这些字段之一，就说明带了那个页面的提示词设置。
 _PROMPT_PAGE_FIELDS = (
@@ -57,8 +59,8 @@ DOCUMENT_CONFIG_SECTIONS = (
 DOCUMENT_CONFIG_LOCAL_PATH_FIELDS = frozenset(
     {"use_custom_output_dir", "custom_output_dir"}
 )
-# v4 及以前的包里的速率与重试，导入时换算成 rate 节。
-_LEGACY_RATE_SECTIONS = ("word_batch", "request_retry")
+# v4 及以前的包里 pdf 节的速率项，导入时丢掉（见上面 v5 的说明）。
+_PRE_V5_PDF_RATE_KEYS = ("page_generation_concurrency", "page_retry_attempts")
 # Top-level fields, kept flat because that is how they live in the settings
 # model.  Languages and domain prompts are the part users actually want to hand
 # to a colleague.
@@ -231,22 +233,10 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
             for key, value in values.items()
             if key not in DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
         }
+        if version < 5 and section == "pdf":
+            kept = {key: value for key, value in kept.items() if key not in _PRE_V5_PDF_RATE_KEYS}
         if kept:
             parsed[section] = kept
-    if version < 5 and "rate" not in parsed:
-        legacy = {
-            section: document[section]
-            for section in _LEGACY_RATE_SECTIONS
-            if isinstance(document.get(section), dict)
-        }
-        # 和设置文件升级同一套换算：等于旧默认值的项不带过来，按本机的新默认值走。
-        rate = {
-            surface: values
-            for surface, values in migrate_legacy_rate_sections(legacy).items()
-            if values
-        }
-        if rate:
-            parsed["rate"] = rate
     for field in DOCUMENT_CONFIG_FIELDS:
         if field in document:
             parsed[field] = document[field]

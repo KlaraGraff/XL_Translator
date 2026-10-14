@@ -2,7 +2,7 @@
 
 Excel、Word、PDF 文字、CAD 各存一组五项，None 表示按云端/本地取默认值；PDF 整页
 图像翻译另有三项存在 settings.pdf。v37 及以前分散在 word_batch、request_retry 和
-按模型的速率里，升级时改过的值带过来，没改过的按新默认值走。
+按模型的速率里，升级时一律改用新默认值，改过的值只留在升级前的备份里。
 """
 
 from __future__ import annotations
@@ -114,21 +114,28 @@ class DocumentBundleTests(unittest.TestCase):
         self.assertEqual(merged.rate.excel.request_retry, 4)
         self.assertEqual(merged.rate.cad.batch_items, 15)
 
-    def test_a_v4_bundle_converts_word_batch_and_request_retry(self) -> None:
+    def test_a_v4_bundle_leaves_the_importers_rate_alone(self) -> None:
         bundle = {
             "type": DOCUMENT_CONFIG_EXPORT_TYPE,
             "version": 4,
             "document": {
                 "word_batch": {"max_chars_per_batch": 1200, "strict_retry_attempts": 3},
                 "request_retry": {"excel": 4, "cad": 2},
+                "pdf": {"page_generation_concurrency": 6, "page_retry_attempts": 3, "review_enabled": True},
             },
         }
-        merged = apply_document_config_import(AppSettings(), parse_document_config_import(bundle))
-        self.assertEqual(merged.rate.word.batch_chars, 1200)
-        # 等于旧默认值的项不带过来，按新默认值走。
-        self.assertIsNone(merged.rate.word.item_retry)
-        self.assertEqual(merged.rate.excel.request_retry, 4)
-        self.assertIsNone(merged.rate.cad.request_retry)
+        local = AppSettings.model_validate({
+            "rate": {"word": {"batch_chars": 1500}},
+            "pdf": {"page_retry_attempts": 2},
+        })
+        merged = apply_document_config_import(local, parse_document_config_import(bundle))
+        # 和设置文件升级一样，旧包里的速率与重试不用，导入方保留自己的。
+        self.assertEqual(merged.rate.word.batch_chars, 1500)
+        self.assertIsNone(merged.rate.excel.request_retry)
+        self.assertIsNone(merged.pdf.page_generation_concurrency)
+        self.assertEqual(merged.pdf.page_retry_attempts, 2)
+        # 同一节里的其他设置照常导入。
+        self.assertTrue(merged.pdf.review_enabled)
 
 
 def _v37_payload(**extra: object) -> dict:
@@ -160,48 +167,66 @@ class SettingsFileUpgradeTests(IsolatedAppDataTestCase):
         root = self.app_data_dir / "backups" / "settings"
         return sorted(root.glob("settings_v37_before_upgrade_*.json")) if root.exists() else []
 
-    def test_changed_values_are_carried_and_the_old_file_is_backed_up(self) -> None:
+    def _assert_all_rate_on_new_defaults(self, loaded: AppSettings) -> None:
+        for surface in ("excel", "word", "pdf_text", "cad"):
+            stored = getattr(loaded.rate, surface)
+            self.assertEqual(stored.model_dump(), dict.fromkeys(stored.model_dump()), surface)
+        self.assertIsNone(loaded.pdf.page_generation_concurrency)
+        self.assertIsNone(loaded.pdf.review_concurrency)
+        self.assertEqual(loaded.pdf.page_retry_attempts, 1)
+
+    def test_tuned_values_take_the_new_defaults_and_the_old_file_is_backed_up(self) -> None:
         payload = _v37_payload(request_retry={"excel": 4, "cad": 2})
-        payload["word_batch"]["max_chars_per_batch"] = 1200
+        payload["word_batch"]["max_chars_per_batch"] = 500
+        payload["word_batch"]["max_paragraphs_per_batch"] = 5
+        payload["pdf"]["page_generation_concurrency"] = 6
+        payload["pdf"]["page_retry_attempts"] = 3
         source = AppSettings.model_validate({k: v for k, v in payload.items() if k not in {"word_batch", "request_retry"}})
         translation = resolve_effective_model_config(source, ROLE_TRANSLATION)
-        image = resolve_effective_model_config(source, ROLE_IMAGE)
         set_model_throughput(source, translation, batch_size=15, concurrency=8)
-        set_model_throughput(source, image, concurrency=4)
         payload["model_throughput_profiles"] = json.loads(source.model_dump_json())["model_throughput_profiles"]
         self._write(payload)
 
         loaded = settings_module.load_settings()
-        self.assertEqual(loaded.rate.excel.request_retry, 4)
-        self.assertIsNone(loaded.rate.cad.request_retry)
-        self.assertEqual(loaded.rate.word.batch_chars, 1200)
-        for surface in ("excel", "word", "pdf_text", "cad"):
-            self.assertEqual(getattr(loaded.rate, surface).concurrency, 8)
-        self.assertEqual(loaded.rate.excel.batch_items, 15)
-        self.assertEqual(loaded.rate.pdf_text.batch_items, 15)
-        # CAD 和 Word 原来不受「每批段数」影响，不带。
-        self.assertIsNone(loaded.rate.cad.batch_items)
-        self.assertIsNone(loaded.rate.word.batch_items)
-        self.assertEqual(loaded.pdf.page_generation_concurrency, 4)
+        self._assert_all_rate_on_new_defaults(loaded)
+        self.assertEqual(resolve_surface_rate(loaded, "excel").concurrency, 30)
+        self.assertEqual(resolve_surface_rate(loaded, "word").batch_chars, 1000)
+        self.assertEqual(resolve_surface_rate(loaded, "word").batch_items, 8)
 
         settings_module.save_settings(loaded)
         backups = self._backups()
         self.assertEqual(len(backups), 1)
-        self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8"))["request_retry"]["excel"], 4)
+        backup = json.loads(backups[0].read_text(encoding="utf-8"))
+        self.assertEqual(backup["request_retry"]["excel"], 4)
+        self.assertEqual(backup["word_batch"]["max_chars_per_batch"], 500)
+        self.assertEqual(backup["pdf"]["page_generation_concurrency"], 6)
         stored = json.loads((self.app_data_dir / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["settings_version"], SETTINGS_SCHEMA_VERSION)
         self.assertNotIn("word_batch", stored)
         self.assertNotIn("request_retry", stored)
-        self.assertEqual(stored["rate"]["excel"]["request_retry"], 4)
+        self.assertEqual(stored["rate"]["excel"]["request_retry"], None)
+        # 按模型的速率留着：清洗记忆库仍按它取。
+        self.assertEqual(stored["model_throughput_profiles"], payload["model_throughput_profiles"])
+
+    def test_a_tuned_model_speed_alone_is_reset_and_backed_up(self) -> None:
+        payload = _v37_payload()
+        source = AppSettings.model_validate({k: v for k, v in payload.items() if k not in {"word_batch", "request_retry"}})
+        set_model_throughput(source, resolve_effective_model_config(source, ROLE_IMAGE), concurrency=4)
+        payload["model_throughput_profiles"] = json.loads(source.model_dump_json())["model_throughput_profiles"]
+        self._write(payload)
+
+        loaded = settings_module.load_settings()
+        self._assert_all_rate_on_new_defaults(loaded)
+        self.assertEqual(resolve_pdf_page_concurrency(loaded, mode="cloud"), 10)
+
+        settings_module.save_settings(loaded)
+        self.assertEqual(len(self._backups()), 1)
 
     def test_a_file_on_the_old_defaults_takes_the_new_defaults_without_a_backup(self) -> None:
         self._write(_v37_payload())
 
         loaded = settings_module.load_settings()
-        for surface in ("excel", "word", "pdf_text", "cad"):
-            stored = getattr(loaded.rate, surface)
-            self.assertEqual(stored.model_dump(), dict.fromkeys(stored.model_dump()))
-        self.assertIsNone(loaded.pdf.page_generation_concurrency)
+        self._assert_all_rate_on_new_defaults(loaded)
         self.assertEqual(resolve_surface_rate(loaded, "excel").concurrency, 30)
 
         settings_module.save_settings(loaded)
