@@ -1503,6 +1503,10 @@
     "en": "{0} {0|translation|translations} still did not fit on one line at the minimum size and {0|was|were} split into two lines in place",
     "fr": "{0} {0|traduction ne tenait|traductions ne tenaient} toujours pas sur une ligne à la taille minimale ; {0|elle a été coupée|elles ont été coupées} en deux lignes sur place"
   },
+  "{0} 处译文与同一列的其他译文统一为相同字高": {
+    "en": "{0} {0|translation was|translations were} set to the same text size as the rest of {0|its|their} column",
+    "fr": "{0} {0|traduction a été mise|traductions ont été mises} à la même hauteur de texte que le reste de la colonne"
+  },
   "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译": {
     "en": "Auto-detect: the document translation model is unavailable, so no document summary was written; the PDF is translated as usual",
     "fr": "Détection automatique : le modèle de traduction de documents est indisponible, aucun résumé du document n'a été rédigé ; le PDF est traduit normalement"

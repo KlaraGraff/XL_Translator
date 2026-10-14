@@ -30,7 +30,15 @@ from typing import Any, Protocol
 from loguru import logger
 
 from core.cad_cache import CadDxfCache
-from core.cad_layout import FitSettings, fit_added_lines, fit_table_cells, fit_translated_texts, short_text_rows
+from core.cad_layout import (
+    FitSettings,
+    fit_added_lines,
+    fit_table_cells,
+    fit_translated_texts,
+    short_text_rows,
+    text_heights,
+    unify_column_heights,
+)
 from core.cad_writeback import (
     MARK_ADDED,
     MARK_COMBINED,
@@ -2275,6 +2283,9 @@ class CadTranslationPipeline:
                 # 实体按 0 记录对象认：双语新增的文字会让后面实体的序号整体后移。
                 ordinals = {id(record): number for number, record in enumerate(r for r in records if r.code == 0)}
                 below = options.display_mode == "source_first"
+                # 缩字前的字高（按对象认）：最后同一列译文统一字高时，按原字高判断是不是一列。
+                heights = text_heights(records, _plain_text)
+                heights_before = {key: heights[number] for key, number in ordinals.items() if number in heights}
                 # 表格、逐行说明里行距紧：新增的译文行先收进原文和下一行之间。
                 stats.layout_fitted = fit_added_lines(
                     records,
@@ -2298,6 +2309,8 @@ class CadTranslationPipeline:
                     wrapped=layout_wrapped,
                 )
                 stats.layout_wrapped = len(layout_wrapped)
+                # 折成两行会多出文字实体，后面的序号要重新数。
+                ordinals = {id(record): number for number, record in enumerate(r for r in records if r.code == 0)}
                 handles.finish()
                 # 表格格子不会跟着译文变高：双语多出的一行、折成几行的英文按格子高度整段缩小。
                 stats.layout_fitted += fit_table_cells(
@@ -2307,6 +2320,15 @@ class CadTranslationPipeline:
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,
                 )
+                # 同一列说明有的缩了、有的没缩：整列按最小的那条统一，字高一致。
+                unified = unify_column_heights(
+                    records,
+                    {
+                        ordinals[key]: (text, heights_before[key])
+                        for key, text in fit_sources.items() if key in ordinals and key in heights_before
+                    },
+                    _plain_text,
+                )
                 stats.layout_unresolved = len(layout_unresolved)
                 if stats.layout_fitted:
                     self._emit(
@@ -2315,6 +2337,8 @@ class CadTranslationPipeline:
                     )
                 if layout_wrapped:
                     self._emit("write", 0, 1, f"{len(layout_wrapped)} 处译文缩到最小比例一行仍放不下，已在原处折成两行")
+                if unified:
+                    self._emit("write", 0, 1, f"{unified} 处译文与同一列的其他译文统一为相同字高")
                 if layout_unresolved:
                     self._emit(
                         "write", 0, 1,
