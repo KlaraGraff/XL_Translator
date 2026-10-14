@@ -17,6 +17,7 @@ $targets = @(
     "config.py",
     "settings.py",
     "api",
+    "cli",
     "core",
     "engines",
     "translator_adapter",
