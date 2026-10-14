@@ -20,8 +20,8 @@ export function tmSwitchDefs(): TmSwitchDef[] {
     },
     {
       key: "auto_save_short_scene",
-      label: t("自动保存短词的场景译法"),
-      hint: t("开启后，「甲」这类短词出现在新场景中时，将自动保存为新词条，并附上取自文档说明的备注；关闭时不自动保存。默认开启。"),
+      label: t("自动保存场景译法"),
+      hint: t("开启后，「甲」这类短词出现在新场景中时，以及文中反复出现、已统一译法的词，将自动保存为新词条，并附上标明适用场景的备注；关闭时不自动保存。默认开启。"),
       fallback: true,
     },
     {

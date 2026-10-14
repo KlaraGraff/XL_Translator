@@ -28,6 +28,8 @@ interface AutoSavedItem {
   note: string;
   lang_pair: string;
   count: number;
+  /** document：本文档统一用词；其余为短词的场景译法。 */
+  kind: string;
 }
 
 interface SceneChoice {
@@ -92,6 +94,7 @@ export function readTermsResult(task: TaskStatus): TermsResult | null {
       note: str(item.note),
       lang_pair: str(item.lang_pair),
       count: int(item.count),
+      kind: str(item.kind),
     })),
     sceneChoices: list(data.scene_choices).map((item) => ({
       term: str(item.term),
@@ -320,11 +323,21 @@ export function renderTermsSection(
   }
 
   const pending = result.autoSaved.filter((item) => !undoneEntries.has(item.id));
-  if (!advanced && pending.length) {
+  const pendingShort = pending.filter((item) => item.kind !== "document");
+  const pendingDocument = pending.filter((item) => item.kind === "document");
+  if (!advanced && pendingShort.length) {
     section.append(
       line(
         "note",
-        t("「{0}」这类短词的本次译法将自动保存到记忆库，并附上标明适用场景的备注。之后遇到其他场景时，由模型对照备注选用，无需手动操作。", pending[0].term),
+        t("「{0}」这类短词的本次译法将自动保存到记忆库，并附上标明适用场景的备注。之后遇到其他场景时，由模型对照备注选用，无需手动操作。", pendingShort[0].term),
+      ),
+    );
+  }
+  if (!advanced && pendingDocument.length) {
+    section.append(
+      line(
+        "note",
+        t("文中反复出现的 {0} 个词（如「{1}」）已统一译法，并自动保存到记忆库，附有标明适用场景的备注。之后翻译同类文档时，由模型对照备注选用，无需手动操作。", pendingDocument.length, pendingDocument[0].term),
       ),
     );
   }
@@ -374,7 +387,7 @@ function renderAdvanced(
 
   if (result.autoSaved.length) {
     section.append(sectionTitle(t("本次自动保存的词条"), t("如译法有误，请点击「撤销」；无误则无需处理。")));
-    const el = table([t("原文"), t("译文"), t("备注（取自文档说明）"), t("出现次数"), t("操作")], ["14%", "20%", "36%", "12%", "18%"]);
+    const el = table([t("原文"), t("译文"), t("备注（适用场景）"), t("出现次数"), t("操作")], ["14%", "20%", "36%", "12%", "18%"]);
     ensureCurrentEntries(options.taskId, result.autoSaved.map((item) => item.id), options.client, options.rerender);
     for (const item of result.autoSaved) {
       const tr = document.createElement("tr");

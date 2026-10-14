@@ -2070,6 +2070,7 @@ class CadTranslationPipeline:
                     file_path=source,
                     location=source.name,
                     log=self._term_log,
+                    should_stop=self.stop_requested,
                 )
                 memory_hits = {key: value for key, value in self._term_session.hits.items() if value}
             elif self.memory_lookup and texts:
