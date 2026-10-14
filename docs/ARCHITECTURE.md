@@ -39,6 +39,8 @@
 | `api/schemas.py` | 所有请求体的 Pydantic 模型 |
 | `api/surfaces/` | **板块注册表**：每个翻译页面一个 `Surface` 子类（excel、word、pdf、cad，外加 TM 清洗）；运行时注册的类型（`ext:<id>`）也登记在这里，见下文「类型描述符与通用路径」 |
 | `api/routes/surfaces.py` | `GET /api/surfaces`：每个已注册页面的类型描述符 |
+| `cli/` | 命令行（`types`、`scan`、`translate`、`status`、`stop`），见下文「命令行与 MCP 入口」 |
+| `core/engine_client.py`、`core/engine_file.py` | 连上正在运行的引擎或自己拉起一个；引擎写的连接文件 `run/engine.json` |
 | `api/task_manager.py` | 任务生命周期：准备、互斥与资源占用、启动执行器、把执行器消息转成任务事件、历史落盘、暂停/继续/停止 |
 | `api/task_contracts.py` | 执行器协议 `Runner`、`TaskOptions`、任务异常 |
 | `core/runner_base.py` | 所有执行器共用的「后台线程 + 消息队列」外壳 `BaseTaskRunner` |
@@ -129,7 +131,7 @@
 - **测试**：`tests/fixtures/sample_surface.py` 注册仅测试用的 `ext:sample`（扫描 `.txt`，原样写出，
   开关「转为大写」，可暂停），`tests/test_runtime_surface.py` 用真实路由走通整条路径。它不随应用发布。
 
-还没有的（后续阶段）：从外部安装格式适配器（「扩展」页的「添加扩展…」）、命令行与 MCP 入口。
+还没有的（后续阶段）：从外部安装格式适配器（「扩展」页的「添加扩展…」）、MCP 入口。
 
 ### 格式适配器
 
@@ -194,6 +196,47 @@ adapters/<id>/
   UTF-8（带不带 BOM）、UTF-16 和 GB18030，写回保持原换行符与 BOM（GB18030 写成 UTF-8 带 BOM）。
   双语对照把译文放在原文下一行（表格单元格和标题内用「原文 / 译文」）。`tests/test_text_adapter.py`
   对 `samples/` 做往返测试，并用假引擎经执行器跑通。
+
+## 命令行与 MCP 入口
+
+窗口之外，同一个侧车可执行文件带子命令时是命令行：`translator-sidecar types | scan | translate |
+status | stop`（源码里 `./.venv/bin/python3 -m cli …`）。`scripts/launch_sidecar.py` 看到
+`cli.main.COMMANDS` 里的子命令就交给 `cli/main.py`，否则照旧作为翻译引擎运行。命令行自己不翻译，
+和界面一样只调侧车的 HTTP 接口，所以任务进任务中心，互斥、记忆库、历史都与窗口里发起的相同。
+
+- **连接文件**：引擎打出 `PORT=… TOKEN=…` 握手后写 `APP_DATA_DIR/run/engine.json`：`port`、`token`、
+  `pid`、`version`、`started_at`（`core/engine_file.py`；目录 0700、文件 0600，先写临时文件再替换）。
+  `begin_shutdown` 和 `server.run` 返回后删除，只删 `pid` 是自己的那份。写不进去只记一条警告，
+  命令行改为自己起引擎。
+- **连上或拉起**（`core/engine_client.py` 的 `connect`）：读连接文件 → 进程还在 → 带令牌
+  `GET /health` 通过，就连上正在运行的应用；否则起一个引擎子进程（冻结时是侧车自身，源码时
+  `python -m api.launcher`），解析同一行握手（规则与 `main.rs` 一致，测试钉住），并把
+  `TRANSLATOR_SIDECAR_PARENT_PID` 设为命令行自己，命令结束引擎随之退出；这时 `translate` 不带
+  `--wait` 也会等任务结束。自起引擎的 stderr 在 `run/cli-engine.log`。`EngineClient` 封装
+  `surfaces`、`scan`、`preflight`、`start`、`tasks`、`task`、`results`、`events`（SSE，断线按
+  `Last-Event-ID` 续）、`stop`。
+- **类型与选项**（`cli/flow.py`，MCP 共用）：全部来自 `GET /api/surfaces`。单个文件按扩展名取第一个
+  声明它的类型，文件夹或多个文件取文件最多的类型，`--type` 指定；`--option 名称=值` 对内置类型按
+  `TaskStartRequest` 的字段类型转换，对 `ext:` 类型按描述符里开关的类型放进 `options`。运行时注册的
+  类型不需要为命令行写任何代码。
+- **已保存的默认值**：命令行的请求总带 `apply_saved_defaults: true`，引擎把没给的字段补成界面会发的值：
+  各页面的 `Surface.saved_request_defaults` / `saved_scan_defaults`（Word 保护封面目录、PDF 是否含图片、
+  CAD 整组输出设置；`ext:` 类型取描述符开关的默认值），只补请求里没有的字段，`options` 逐键合并，
+  预检响应里的 `options` 是实际要用的值。界面不带这个字段，行为不变；
+  `tests/test_saved_request_defaults.py` 把各页面的钩子钉在 `workspace.ts` 的 `buildPayload` /
+  `scanPayload` 上，改一边要改另一边。
+- **需要确认的拦截**：窗口里能点「继续」的三种预检拦截（无 Excel 的 .xls、无 Word 的 .doc、PDF 复核
+  模型不可用）在 422 里带 `accept`，即再发一次时加上就能继续的字段；前两种 `reason` 为
+  `needs_confirmation`，PDF 那条保留界面在用的 `pdf_review_model_unavailable`。与正在运行的任务共用
+  模型连接走预检的 `requires_confirmation` + `confirmation_token`。命令行默认停下（退出码 4），
+  `--yes` 逐个接受，最多四种；`translate --dry-run` 只扫描和预检，输出 JSON。
+- **退出码**：0 任务完成（部分文件失败也算），1 什么都没生成（全部失败、出错或被停止），2 参数或
+  输入被拒，3 连不上也起不来引擎，4 需要确认。结果写 stdout，诊断写 stderr；`--json` 输出一个对象，
+  `--json-lines` 每个事件一行。
+- **测试**：`tests/fixtures/cli_engine.py` 是注册了 `ext:sample`、用回声引擎代替模型的真实
+  `api.launcher`，`tests/test_cli.py` 用它充当已打开的应用走通各子命令；冻结冒烟
+  （`scripts/frozen_smoke.py`）在冻结包里跑一次 `types`，确认四个内置类型都在。跑批测试用
+  `agent/testing/seed_test_model.py` 在隔离数据目录里指定测试模型，命令行没有换模型的参数。
 
 ## 执行器内部的阶段
 
