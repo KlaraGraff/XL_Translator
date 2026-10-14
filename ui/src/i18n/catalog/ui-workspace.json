@@ -1838,5 +1838,29 @@
   "{0} 个 .xls 文件的图片、文本框和批注未能统计，其中图片里的文字同样未翻译。": {
     "en": " Images, text boxes and comments in {0} .xls {0|file|files} could not be counted; text in their images was not translated either.",
     "fr": " Les images, zones de texte et commentaires de {0} {0|fichier|fichiers} .xls n'ont pas pu être comptés ; le texte de leurs images n'a pas été traduit non plus."
+  },
+  "{0} 个{1}": {
+    "en": "{0} {1}",
+    "fr": "{0} {1}"
+  },
+  "已扫描到 {0}。": {
+    "en": "Found {0}.",
+    "fr": "Analyse terminée : {0}."
+  },
+  "已扫描到 {0}，跳过 {1} 个。": {
+    "en": "Found {0}; {1} skipped.",
+    "fr": "Analyse terminée : {0} ; {1} {1|ignoré|ignorés}."
+  },
+  "总大小": {
+    "en": "Total size",
+    "fr": "Taille totale"
+  },
+  "选择文件或文件夹，扫描后勾选要翻译的{0}": {
+    "en": "Choose files or a folder, then select the {0} to translate",
+    "fr": "Choisissez des fichiers ou un dossier, puis cochez les {0} à traduire"
+  },
+  "通过「浏览」选择文件或文件夹后将自动扫描，找到的{0}将列于此处，可逐个勾选。": {
+    "en": "Select files or a folder with “Browse” to scan them automatically. The {0} found are listed here and can be selected individually.",
+    "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les {0} trouvés s'affichent ici et peuvent être cochés un par un."
   }
 }

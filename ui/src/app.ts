@@ -8,14 +8,14 @@ import "./styles/palettes.css";
 import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
-import { mountShell, relocalizeShell } from "./shell";
+import { mountShell, relocalizeShell, setExtensionSideItems } from "./shell";
 import { mountRouter, navigate, registerView, remountCurrentView } from "./router";
 import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
-import { loadSurfaceDescriptors } from "./surface-descriptors";
+import { extSurfaceIcon, extSurfaceLabel, isExtSurface, loadSurfaceDescriptors, pinnedExtDescriptors } from "./surface-descriptors";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
@@ -29,6 +29,7 @@ import * as pluginsView from "./views/plugins";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
 import * as feedbackView from "./views/feedback";
+import { extensionView } from "./views/extension";
 
 const THEME_STORAGE_KEY = "translator.theme";
 type ThemePreference = "light" | "dark" | "system";
@@ -88,6 +89,27 @@ async function syncAppearanceFromBackend(): Promise<void> {
     storeLocale(language);
     setLocale(language);
   }
+}
+
+/**
+ * 运行时注册的翻译类型（以后的格式扩展，键为 `ext:<id>`）：描述符到了之后给每个类型注册
+ * 一个工作区视图（任务中心「打开工作区」也靠它），设置里没取消固定的放进侧栏「翻译」组。
+ * 没有这类类型时什么都不做，也不多发请求。
+ */
+async function mountExtensionPages(): Promise<void> {
+  const extensions = (await loadSurfaceDescriptors()).filter((item) => !item.builtin && isExtSurface(item.key));
+  if (!extensions.length) return;
+  for (const item of extensions) {
+    if (isExtSurface(item.key)) registerView(item.key, extensionView(item.key));
+  }
+  const client = new ApiClient();
+  await client.connect();
+  const settings = await client.request<{ extensions?: Record<string, unknown> }>("/api/settings");
+  setExtensionSideItems(pinnedExtDescriptors(settings.extensions ?? {}).flatMap((item) => (
+    isExtSurface(item.key)
+      ? [{ id: item.key, label: () => extSurfaceLabel(item.key), icon: extSurfaceIcon(item.key) }]
+      : []
+  )));
 }
 
 /**
@@ -172,9 +194,9 @@ function main(): void {
 
   void syncAppearanceFromBackend().catch(() => undefined);
 
-  // 板块类型描述符：拉一次放进内存，运行时注册的页面（以后的格式扩展）靠它取名称和开关。
-  // 内置四个页面不依赖它，拉取失败也不影响启动。
-  void loadSurfaceDescriptors().catch(() => undefined);
+  // 板块类型描述符：拉一次放进内存，运行时注册的页面（以后的格式扩展）靠它取名称和开关，
+  // 并据此注册视图、放进侧栏。内置四个页面不依赖它，拉取失败也不影响启动。
+  void mountExtensionPages().catch(() => undefined);
 
   // 顶栏「当前模型」药丸：先按已保存的配置点亮一次，之后由设置页每次保存/测试后刷新。
   void refreshModelPill();

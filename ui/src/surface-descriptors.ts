@@ -1,10 +1,19 @@
 // 板块类型描述符（GET /api/surfaces）的内存缓存：启动时拉一次，之后同步读取。
 //
 // 四个内置页面仍按 workspace.ts / shell.ts / tasks.ts 里编译期的表来画；描述符给的是
-// 运行时才注册的页面（以后的格式扩展）用的名称、文件名词、开关。拉取失败不影响启动，
-// 只是那些页面暂时不显示。
+// 运行时才注册的页面（以后的格式扩展，键为 `ext:<id>`）用的名称、图标、文件名词、开关。
+// 拉取失败不影响启动，只是那些页面暂时不显示。
 
-import { ApiClient, type SurfaceDescriptor } from "./api-client";
+import { ApiClient, type LocalizedText, type SurfaceDescriptor } from "./api-client";
+import { currentLocale } from "./i18n";
+import { ICON_NAMES, type IconName } from "./icons";
+
+/** 运行时注册的翻译类型的键。内置页面的键里没有冒号，两者不会撞。 */
+export type ExtSurface = `ext:${string}`;
+
+export function isExtSurface(key: string): key is ExtSurface {
+  return key.startsWith("ext:");
+}
 
 let descriptors: SurfaceDescriptor[] = [];
 let pending: Promise<SurfaceDescriptor[]> | null = null;
@@ -33,4 +42,39 @@ export function surfaceDescriptors(): readonly SurfaceDescriptor[] {
 /** 某个板块的描述符；没有时为 undefined。 */
 export function surfaceDescriptor(key: string): SurfaceDescriptor | undefined {
   return descriptors.find((item) => item.key === key);
+}
+
+/** 描述符里同一段文字的三种语言，按当前界面语言取；缺这一种时依次退到中文、英文、法文。 */
+export function localizedText(value: LocalizedText | undefined, fallback = ""): string {
+  if (!value) return fallback;
+  return value[currentLocale()] || value.zh || value.en || value.fr || fallback;
+}
+
+/** 运行时注册的类型在界面上的名字；描述符还没到时用键里的 id 顶上。 */
+export function extSurfaceLabel(key: string): string {
+  return localizedText(surfaceDescriptor(key)?.label, key.slice("ext:".length));
+}
+
+/** 描述符给的图标名不在图标集里时用记忆库图标（与任务中心对未知类型的写法一致）。 */
+export function extSurfaceIcon(key: string): IconName {
+  const name = surfaceDescriptor(key)?.icon ?? "";
+  return (ICON_NAMES as readonly string[]).includes(name) ? (name as IconName) : "book";
+}
+
+/** 显示在侧栏「翻译」组里的运行时注册类型：设置里没取消固定的，按设置里的 order 排，同序按描述符顺序。
+ *  `extensions` 是设置里的 `extensions`（键是不带 `ext:` 的 id）。 */
+export function pinnedExtDescriptors(extensions: Record<string, unknown>): SurfaceDescriptor[] {
+  const entry = (item: SurfaceDescriptor) => {
+    const raw = extensions[item.key.slice("ext:".length)];
+    return raw && typeof raw === "object" ? (raw as { pinned?: unknown; order?: unknown }) : {};
+  };
+  const order = (item: SurfaceDescriptor) => {
+    const value = entry(item).order;
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  };
+  return descriptors
+    .filter((item) => !item.builtin && isExtSurface(item.key) && entry(item).pinned !== false)
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => order(a.item) - order(b.item) || a.index - b.index)
+    .map(({ item }) => item);
 }

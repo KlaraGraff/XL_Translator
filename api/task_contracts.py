@@ -7,6 +7,7 @@ options, so they live here; ``api.task_manager`` re-exports all of them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -88,6 +89,8 @@ class TaskOptions:
     cad_translation_font: str = "compatible"
     # DWG 译文图纸的版本：source 跟随原图，或 2018/2013/2010/2007/2004/2000。
     cad_output_version: str = "source"
+    # 运行时注册的类型（ext:<id>）自己的开关，键见它的描述符 options；内置页面不用。
+    options: Mapping[str, bool | int | float | str] | None = None
 
     @property
     def xls_conversion_mode(self) -> str:

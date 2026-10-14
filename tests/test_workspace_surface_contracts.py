@@ -5,6 +5,10 @@ flow) because each was written by hand. The rule now is: every page listed
 under 「翻译」in the sidebar is a thin wrapper over ``workspace.ts`` and
 differs only through the per-surface tables there. See
 docs/ADDING_A_TRANSLATION_PAGE.md.
+
+These checks cover the four built-in pages.  Pages registered at run time
+(``ext:<id>``) join the sidebar after the descriptors load and are drawn by
+the same template from their descriptor.
 """
 
 import re
@@ -25,7 +29,7 @@ def test_every_translation_page_is_a_workspace_surface():
     items = _translate_items()
     assert items, "sidebar translation items not found"
     source = WORKSPACE.read_text(encoding="utf-8")
-    declared = re.search(r"export type Surface = ([^;]+);", source)
+    declared = re.search(r"export type BuiltinSurface = ([^;]+);", source)
     assert declared, "Surface type not found"
     surfaces = re.findall(r'"(\w+)"', declared.group(1))
     assert sorted(items) == sorted(surfaces), (
@@ -48,15 +52,38 @@ def test_translation_views_are_thin_wrappers():
 
 
 def test_per_surface_tables_cover_every_surface():
-    """Record<Surface, …> makes TypeScript list every table a new surface must fill.
+    """Record<BuiltinSurface, …> makes TypeScript list every table a new built-in page must fill.
 
-    A Partial<Record<Surface, …>> or a plain object keyed by surface names
-    would let a new page silently fall back to another page's copy.
+    A Partial<Record<…>> or a plain object keyed by surface names would let a
+    new page silently fall back to another page's copy.  Run-time pages have
+    no entry in these tables: each table is read through one accessor that
+    asks the descriptor for an ``ext:`` key, never indexed directly.
     """
     source = WORKSPACE.read_text(encoding="utf-8")
-    assert "Partial<Record<Surface" not in source
-    tables = re.findall(r"^const (\w+): Record<Surface, ", source, flags=re.M)
-    assert len(tables) >= 10, tables
+    assert "Partial<Record<Surface" not in source and "Partial<Record<BuiltinSurface" not in source
+    assert "Record<Surface," not in source, "运行时注册的类型进不了编译期的表，按 surface 存的运行时状态用 Map"
+    tables = re.findall(r"^const (\w+): Record<BuiltinSurface, ", source, flags=re.M)
+    assert len(tables) >= 9, tables
+    for table in tables:
+        reads = re.findall(rf"\b{table}\[", source)
+        assert len(reads) == 1, f"{table} 只能经它的访问函数读取，找到 {len(reads)} 处直接下标"
+
+
+def test_per_surface_runtime_state_is_created_on_demand():
+    source = WORKSPACE.read_text(encoding="utf-8")
+    assert "const states = new Map<Surface, SurfaceState>();" in source
+    assert "export function stateOf(surface: Surface): SurfaceState" in source
+    assert not re.search(r"\bstates\[", source)
+    pdf_pages = (VIEWS / "workspace-pdf-pages.ts").read_text(encoding="utf-8")
+    assert not re.search(r"\bstates\[", pdf_pages)
+
+
+def test_extension_pages_reuse_the_workspace_template():
+    view = (VIEWS / "extension.ts").read_text(encoding="utf-8")
+    assert "mountWorkspace(container, params, surface)" in view
+    assert "unmountWorkspace(surface)" in view
+    app = (UI / "app.ts").read_text(encoding="utf-8")
+    assert "registerView(item.key, extensionView(item.key))" in app
 
 
 def test_task_center_knows_every_translation_page():

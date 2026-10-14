@@ -27,7 +27,7 @@ def test_cad_view_is_a_thin_wrapper_over_the_shared_workspace():
 
 def test_cad_is_a_workspace_surface():
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
-    assert 'export type Surface = "excel" | "word" | "pdf" | "cad";' in source
+    assert 'export type BuiltinSurface = "excel" | "word" | "pdf" | "cad";' in source
     assert 'cad: t("CAD 图纸翻译")' in source
 
 
@@ -57,18 +57,19 @@ def test_document_workspaces_show_scan_state_in_topbar_and_task_list():
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
     # Choosing a source from the picker scans straight away, on every surface.
     assert "await runScan(surface);" in source
-    assert "scanBusy[surface] = true;" in source
+    assert "scanBusy.add(surface);" in source
     assert '扫描中…' in source
     update_topbar = source[source.index('function updateTopbar'):source.index('function runningStatusMeta')]
-    assert 'scanBusy[surface]' in update_topbar
+    assert 'scanBusy.has(surface)' in update_topbar
     table_card = source[source.index('function buildTableCard'):source.index('function buildSkipNoticeRow')]
-    assert 'scanBusy[surface]' in table_card
+    assert 'scanBusy.has(surface)' in table_card
 
 
 def test_only_pausable_surfaces_get_a_pause_button():
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
     foot = source[source.index("function buildRightFoot"):source.index("// 续译（接着上次继续）")]
-    assert 'const pausable = surface === "pdf" || surface === "cad";' in foot
+    # 内置页面里只有 PDF 和 CAD；运行时注册的类型看描述符的 can_pause。
+    assert 'const pausable = surface === "pdf" || surface === "cad" || (isExtSurface(surface) && Boolean(surfaceDescriptor(surface)?.capabilities.can_pause));' in foot
     assert "onPause: pausable ?" in foot
 
 
