@@ -440,7 +440,7 @@ export function openCadReview(client: ApiClient, taskId: string, title: string):
     input.placeholder = row.status === "kept" ? t("保留原文") : t("填写译文");
     input.disabled = !editable();
     const status = el("td", "cr-st");
-    const crowdedHint = row.crowded ? t("这段译文缩到最小比例仍会压到旁边的文字，可以改得更短。") : "";
+    const crowdedHint = row.crowded ? t("这段译文缩到最小比例仍会压到旁边的文字或伸出图框，可以改得更短。") : "";
     const paintStatus = () => {
       status.innerHTML = "";
       status.append(statusChip(row, dirty.get(file.key)?.get(row.source)));

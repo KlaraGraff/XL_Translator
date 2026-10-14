@@ -2268,7 +2268,7 @@ class CadTranslationPipeline:
             layout_unresolved: list[dict[str, str]] = []
             if options.fit_layout:
                 # 单行文字的译文伸出去会压到同一行紧挨着的另一段文字（「设备基坑：」后面的
-                # 「2830X1700mm」）：这些译文按能用的空间缩小字宽/字高。
+                # 「2830X1700mm」），或伸出图框：这些译文按能用的空间缩小字宽/字高。
                 # 实体按 0 记录对象认：双语新增的文字会让后面实体的序号整体后移。
                 ordinals = {id(record): number for number, record in enumerate(r for r in records if r.code == 0)}
                 below = options.display_mode == "source_first"
@@ -2303,12 +2303,12 @@ class CadTranslationPipeline:
                 if stats.layout_fitted:
                     self._emit(
                         "write", 0, 1,
-                        f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字，已缩小字宽或字高",
+                        f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字或伸出图框，已缩小字宽或字高",
                     )
                 if layout_unresolved:
                     self._emit(
                         "write", 0, 1,
-                        f"{len(layout_unresolved)} 处译文缩到最小比例仍会压到旁边的文字，已列入报告，请复核",
+                        f"{len(layout_unresolved)} 处译文缩到最小比例仍会压到旁边的文字或伸出图框，已列入报告，请复核",
                         level="WARN",
                     )
             write_started = time.perf_counter()
@@ -2461,7 +2461,7 @@ class CadTranslationPipeline:
                 f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
                 f"- 未完成：{len(unresolved)} 处", f"- 未采用记忆库设定译法：{len(term_review)} 处",
                 f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
-                f"- 缩到最小比例仍会压到旁边文字：{stats.layout_unresolved} 处", "",
+                f"- 缩到最小比例仍会压到旁边文字或伸出图框：{stats.layout_unresolved} 处", "",
                 "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
             for item in unit_reports:
