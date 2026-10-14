@@ -2,13 +2,15 @@
 // 主操作只有一个：复制一段「接入说明」发给智能体，由它自己完成配置（说明里带本机引擎路径、
 // 各客户端的配置写法和自检步骤）。程序位置、MCP 配置 JSON 与命令行示例收在「高级」里，默认折叠。
 // 路径取自 sidecar_info 的 executable（打包版本才有，不含令牌）；服务端见 cli/mcp_server.py。
+// 智能体发起的翻译只用应用里配置的模型，所以页面同时显示文档翻译、PDF 与图片翻译两个模型
+// 是否已配置（判断与引擎开始任务前的检查一致：有模型名，云端服务还要有密钥），没配时给入口。
 
-import { clearElement, type ViewParams } from "../router";
+import { clearElement, navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { createButton, createCard, showToast } from "../components";
+import { createButton, createCard, createStatus, showToast } from "../components";
 import { icon } from "../icons";
 import { t } from "../i18n";
-import { sidecarExecutable } from "../api-client";
+import { ApiClient, sidecarExecutable } from "../api-client";
 import "./mcp.css";
 
 const IS_WINDOWS = /Windows/i.test(navigator.userAgent);
@@ -24,7 +26,12 @@ const CLAUDE_DESKTOP_CONFIG = IS_WINDOWS
   : "~/Library/Application Support/Claude/claude_desktop_config.json";
 const CURSOR_CONFIG = IS_WINDOWS ? "%USERPROFILE%\\.cursor\\mcp.json" : "~/.cursor/mcp.json";
 
+type RolePayload = { model?: unknown; mode?: unknown; has_api_key?: unknown; availability_status?: unknown };
+/** undefined：还在读取；null：没读到。 */
+type Roles = Record<string, RolePayload> | null | undefined;
+
 let mounted = false;
+let state: { executable: string; roles: Roles } = { executable: "", roles: undefined };
 
 export function mcpConfig(executable: string): string {
   return JSON.stringify({ mcpServers: { translator: { command: executable, args: ["mcp"] } } }, null, 2);
@@ -59,8 +66,9 @@ export function agentPrompt(executable: string): string {
     "",
     mcpConfig(executable),
     "",
-    t("配置文件中已有其他服务器时，只加入 translator 一项，不要改动其他内容。如果你无法修改本机文件或运行命令，请逐步告诉我如何手动添加；需要重新启动才能生效时，请提醒我。接好后，请调用 list_types 工具，确认能看到 Excel、Word、PDF、CAD 等文件类型。"),
+    t("配置文件中已有其他服务器时，只加入 translator 一项，不要改动其他内容。如果你无法修改本机文件或运行命令，请逐步告诉我如何手动添加；需要重新启动才能生效时，请提醒我。接好后，请调用 list_types 工具，确认能看到 Excel、Word、PDF、CAD 等文件类型，并查看结果中的 model_setup：如果显示模型未配置，请告诉我。"),
     t("之后我让你翻译文件时，请使用文件的完整路径。"),
+    t("翻译使用的是 Translator 中配置的模型，不是你自己的模型。如果 Translator 提示模型或 API 密钥未配置，请提醒我在 Translator 的「设置 → 模型服务」中配置并测试连接，不要改用其他方式翻译这些文件。"),
   ].join("\n");
 }
 
@@ -136,12 +144,7 @@ function connectCard(executable: string, fallback: boolean): HTMLElement {
   );
   body.append(actions);
 
-  if (fallback) {
-    const note = document.createElement("p");
-    note.className = "mcp-note";
-    note.textContent = t("未获取到本机路径，接入说明中为默认安装位置。");
-    body.append(note);
-  }
+  if (fallback) body.append(note(t("未获取到本机路径，接入说明中为默认安装位置。")));
 
   const preview = document.createElement("details");
   preview.className = "mcp-details";
@@ -155,6 +158,84 @@ function connectCard(executable: string, fallback: boolean): HTMLElement {
 
   card.append(body);
   return card;
+}
+
+const MODEL_ROLES: { key: string; label: () => string }[] = [
+  { key: "translation", label: () => t("文档翻译（Excel / Word / CAD）") },
+  { key: "image", label: () => t("PDF 与图片翻译") },
+];
+
+function roleConfigured(role: RolePayload | undefined): boolean {
+  const model = String(role?.model ?? "").trim();
+  return Boolean(model) && (role?.mode === "local" || role?.has_api_key === true);
+}
+
+function modelCard(roles: Roles): HTMLElement {
+  const card = createCard([], "mcp-models");
+  const head = document.createElement("div");
+  head.className = "mcp-models-head";
+  const copy = document.createElement("div");
+  copy.className = "mcp-copy";
+  const title = document.createElement("h2");
+  title.textContent = t("翻译模型");
+  const desc = document.createElement("p");
+  desc.textContent = t("智能体发起的翻译使用 Translator 中配置的模型，不使用智能体自己的模型。");
+  copy.append(title, desc);
+  head.append(copy);
+  card.append(head);
+  if (roles === undefined) return card;
+
+  const missing = roles === null || MODEL_ROLES.some(({ key }) => !roleConfigured(roles[key]));
+  head.append(
+    createButton({
+      label: missing ? t("去配置模型") : t("模型设置"),
+      variant: missing ? "primary" : undefined,
+      size: missing ? undefined : "mini",
+      onClick: () => navigate("settings", { page: "models" }),
+    }),
+  );
+  if (roles === null) {
+    card.append(note(t("未能读取模型配置。")));
+    return card;
+  }
+
+  const list = document.createElement("dl");
+  list.className = "mcp-model-list";
+  for (const { key, label } of MODEL_ROLES) {
+    const role = roles[key];
+    const configured = roleConfigured(role);
+    const model = String(role?.model ?? "").trim();
+    const status = String(role?.availability_status ?? "");
+    const name = document.createElement("dt");
+    name.textContent = label();
+    const value = document.createElement("dd");
+    if (configured) {
+      const text = document.createElement("span");
+      text.className = "mcp-model-name";
+      text.textContent = role?.mode === "local" ? t("本地 · {0}", model) : model;
+      value.append(text);
+    }
+    value.append(
+      !configured
+        ? createStatus({ label: t("未配置"), tone: "warn" })
+        : status === "available"
+          ? createStatus({ label: t("测试通过"), tone: "ok" })
+          : status === "unavailable"
+            ? createStatus({ label: t("测试失败"), tone: "warn" })
+            : createStatus({ label: t("未测试"), tone: "idle" }),
+    );
+    list.append(name, value);
+  }
+  card.append(list);
+  if (missing) card.append(note(t("未配置模型时，对应文件的翻译会被拒绝，智能体会提醒你先完成配置。")));
+  return card;
+}
+
+function note(text: string): HTMLElement {
+  const element = document.createElement("p");
+  element.className = "mcp-note";
+  element.textContent = text;
+  return element;
 }
 
 function manualCard(executable: string): HTMLElement {
@@ -174,17 +255,18 @@ function manualCard(executable: string): HTMLElement {
   return card;
 }
 
-function render(container: HTMLElement, executable: string): void {
+function render(container: HTMLElement): void {
+  const { executable, roles } = state;
   const path = executable || DEFAULT_EXECUTABLE;
   clearElement(container);
   const column = document.createElement("div");
   column.className = "mcp-column";
 
-  const note = document.createElement("div");
-  note.className = "card mcp-info";
-  note.textContent = t("Translator 打开时，智能体发起的任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型与翻译参数沿用应用中的设置，原文件不会被修改。");
+  const info = document.createElement("div");
+  info.className = "card mcp-info";
+  info.textContent = t("Translator 打开时，智能体发起的任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型与翻译参数沿用应用中的设置，原文件不会被修改。");
 
-  column.append(connectCard(path, !executable), note, manualCard(path));
+  column.append(connectCard(path, !executable), modelCard(roles), info, manualCard(path));
   container.append(column);
 }
 
@@ -192,10 +274,29 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   mounted = true;
   setTopbar({ title: "MCP", subtitle: t("让智能体调用 Translator 翻译文件") });
   container.className = "content mcp-content";
-  render(container, "");
+  state = { executable: "", roles: undefined };
+  render(container);
   void sidecarExecutable().then((executable) => {
-    if (mounted && executable) render(container, executable);
+    if (!mounted || !executable) return;
+    state.executable = executable;
+    render(container);
   });
+  void loadRoles().then((roles) => {
+    if (!mounted) return;
+    state.roles = roles;
+    render(container);
+  });
+}
+
+async function loadRoles(): Promise<Roles> {
+  try {
+    const client = new ApiClient();
+    await client.connect();
+    const payload = await client.request<{ roles?: Record<string, RolePayload> }>("/api/models/roles");
+    return payload.roles ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function unmount(): void {

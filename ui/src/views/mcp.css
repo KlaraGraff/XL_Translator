@@ -14,6 +14,13 @@
 .mcp-details[open] summary { margin-bottom: 10px; }
 .mcp-manual { margin: 0; padding: 14px 20px; }
 .mcp-manual[open] { padding-bottom: 18px; }
+.mcp-models { padding: 16px 20px; }
+.mcp-models-head { display: flex; align-items: center; gap: 14px; }
+.mcp-model-list { margin: 12px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; align-items: center; font-size: 13px; }
+.mcp-model-list dt { color: var(--ink-2); }
+.mcp-model-list dd { margin: 0; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mcp-model-name { color: var(--ink); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-models .mcp-note { margin-top: 12px; }
 .mcp-info { padding: 14px 16px; color: var(--ink-2); font-size: 12.5px; line-height: 1.6; }
 .mcp-manual > .mcp-code { margin-bottom: 12px; }
 .mcp-code-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
