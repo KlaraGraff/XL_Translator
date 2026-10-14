@@ -42,6 +42,11 @@ metadata_packages = [
 for package_name in metadata_packages:
     datas += copy_metadata(package_name)
 
+# 随应用提供的翻译类型（core/format_adapter.py BUNDLED_ADAPTERS_DIR）：每个类型只收
+# adapter.json 与 adapter.py，samples/ 只给测试用。漏收时应用照常启动，只是侧栏少了这些类型。
+for adapter_file in sorted((ROOT / "adapters").glob("*/adapter.*")):
+    datas.append((str(adapter_file), f"adapters/{adapter_file.parent.name}"))
+
 hiddenimports = []
 hiddenimports += collect_submodules("api")
 hiddenimports += collect_submodules("core")

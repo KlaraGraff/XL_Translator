@@ -34,6 +34,7 @@ export const ICON_NAMES = [
   "close",
   "message",
   "lock",
+  "blocks",
   "link",
 ] as const;
 
@@ -175,6 +176,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 反馈页勾选原文件、译文时的隐私说明。
     body: '<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
+  },
+  blocks: {
+    viewBox: "0 0 24 24",
+    // 三块加一个加号：侧栏「扩展」（翻译类型）。与「插件」的 spark 区分开。
+    body: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/><path d="M16.75 4v6.5M13.5 7.25H20"/>',
   },
   link: {
     viewBox: "0 0 24 24",

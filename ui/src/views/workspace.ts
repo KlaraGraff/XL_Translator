@@ -72,7 +72,7 @@ import {
   schedulePdfSnapshotRefresh,
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
-import { el, formatSizeKb, formatTime, hasOwn, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
+import { el, formatSizeKb, formatTime, hasOwn, localizedLanguageOptions, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
 import { currentLocale, fmtNum, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
@@ -784,6 +784,19 @@ function applyExtSettings(surface: ExtSurface, st: SurfaceState): void {
   st.domainPreset = text(saved.domain_preset, NO_EXTRA_PROMPT);
 }
 
+/** 运行时注册的类型的目标语言、源语言和补充要求也能在「设置 · 翻译参数」里该类型的页签改，
+ *  所以这类页面每次挂载都按磁盘上的设置重新取一次；任务进行中不动，免得右栏和正在跑的任务对不上。 */
+async function reloadExtSettings(surface: ExtSurface, st: SurfaceState): Promise<void> {
+  try {
+    const c = await getClient();
+    settings = await c.request<JsonObject>("/api/settings");
+  } catch {
+    return;
+  }
+  if (st.task && !st.task.task.terminal) return;
+  applyExtSettings(surface, st);
+}
+
 /** 记住上次用的来源目录（内置四页各有一个 last_<页面>_source_folder）。运行时注册的类型没有这一项。 */
 async function persistLastSourceFolder(surface: Surface, path: string): Promise<void> {
   if (isExtSurface(surface)) return;
@@ -862,6 +875,10 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
     .then(() => {
       if (!isCurrent()) return;
       return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
+    })
+    .then(() => {
+      if (!isCurrent() || !isExtSurface(surface)) return;
+      return reloadExtSettings(surface, st);
     })
     .then(() => {
       if (!isCurrent()) return;
@@ -1205,20 +1222,6 @@ function sourceLabel(st: SurfaceState): string {
 }
 function targetLabel(st: SurfaceState): string {
   return tx(languageOptions.target.find((o) => o.code === st.targetLang)?.display_name ?? st.targetLang);
-}
-
-/** 语言名是后端给的中文显示名：显示时换成当前界面语言，中文原名补进搜索别名，照样能用中文搜到。 */
-function localizedLanguageOptions(options: LanguageOption[]): LanguageOption[] {
-  return options.map((option) => {
-    const display = tx(option.display_name);
-    if (display === option.display_name && !option.description) return option;
-    return {
-      ...option,
-      display_name: display,
-      aliases: display === option.display_name ? option.aliases : [...(option.aliases ?? []), option.display_name],
-      description: option.description ? tx(option.description) : option.description,
-    };
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2556,9 +2559,13 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     scroll.append(sourceField.root);
   }
 
-  if (surfaceToggles(surface).length) {
+  const typeHelp = isExtSurface(surface) ? localizedText(surfaceDescriptor(surface)?.description) : "";
+  if (surfaceToggles(surface).length || typeHelp) {
     const typeSec = el("div", "rp-sec");
-    typeSec.textContent = t("{0} 选项", surfaceLabel(surface));
+    const label = surfaceLabel(surface);
+    // 「Excel 选项」中间有空格；名字是汉字时（「文本选项」）不加。
+    typeSec.textContent = /[A-Za-z0-9]$/.test(label) ? t("{0} 选项", label) : t("{0}选项", label);
+    if (typeHelp) typeSec.append(createHintBadge(typeHelp));
     scroll.append(typeSec);
   }
 
@@ -2592,8 +2599,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   if (surface === "pdf") scroll.append(buildPdfRouteSection(st, active));
   if (surface === "cad") scroll.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
 
-  // 运行时注册的类型暂不显示「更多设置」：补充要求的编辑入口在「翻译参数」里，输出位置也是
-  // 内置四页各自的设置项，这两处还没有给它们的位置。它们按默认输出位置写，补充要求按
+  // 运行时注册的类型不显示「更多设置」：补充要求在「设置 · 翻译参数」里该类型的页签选，输出位置
+  // 是内置四页各自的设置项，还没有给它们的位置。它们按默认输出位置写，补充要求按
   // settings.extensions 里存的那一项发。
   if (!active && !isExtSurface(surface)) {
     const foldContent = buildTaskFold(surface, st);

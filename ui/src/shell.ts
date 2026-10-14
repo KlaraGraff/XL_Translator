@@ -24,6 +24,7 @@ const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
   { id: "tasks", label: t("任务中心"), icon: "tasks" },
   { id: "library", label: t("记忆库"), icon: "book" },
   { id: "plugins", label: t("插件"), icon: "spark" },
+  { id: "extensions", label: t("扩展"), icon: "blocks" },
   { id: "mcp", label: "MCP", icon: "link" }, // i18n-ignore 协议名，三种语言都写 MCP
 ]));
 
@@ -87,16 +88,23 @@ const sideLabelNodes: { key: string; el: HTMLDivElement }[] = [];
 const sideItemTextNodes = new Map<ViewId, Text>();
 let lastTaskPill: TaskPillConfig = { count: 0 };
 
-/** 运行时注册的翻译类型在侧栏「翻译」组里的项：插在「资源」分组标题之前。 */
-export interface ExtensionSideItem {
+/** 侧栏「翻译」组里的一项：内置四种和运行时注册的类型都用它，整组按「扩展」页的设置排。 */
+export interface TranslateSideItem {
   id: ViewId;
-  /** 每次换界面语言都重新取一次（名字来自描述符的三语标签）。 */
+  /** 每次换界面语言都重新取一次（运行时注册的类型名字来自描述符的三语标签）。 */
   label: () => string;
   icon: IconName;
 }
 
 let resourceLabelEl: HTMLDivElement | null = null;
-let extensionItems: { def: ExtensionSideItem; el: HTMLDivElement }[] = [];
+let translateItems: { def: TranslateSideItem; el: HTMLDivElement }[] = [];
+
+/** 内置四种之一在侧栏里的那一项，与启动时画的相同；不是内置类型时为 undefined。 */
+export function builtinTranslateSideItem(id: ViewId): TranslateSideItem | undefined {
+  const def = TRANSLATE_ITEMS.find((item) => item.id === id);
+  if (!def) return undefined;
+  return { id, label: () => TRANSLATE_ITEMS.find((item) => item.id === id)?.label ?? def.label, icon: def.icon };
+}
 
 function buildSideItem(def: SideItemDef): HTMLDivElement {
   const item = document.createElement("div");
@@ -120,26 +128,26 @@ function buildSideLabel(key: string): HTMLDivElement {
 /** 界面语言换了以后，原地换掉外壳上的文字（侧栏、任务药丸）。模型药丸由调用方刷新。 */
 export function relocalizeShell(): void {
   for (const { key, el } of sideLabelNodes) el.textContent = t(key);
-  for (const def of [...TRANSLATE_ITEMS, ...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
+  for (const def of [...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label;
   }
-  for (const { def } of extensionItems) {
+  for (const { def } of translateItems) {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label();
   }
   setTaskPill(lastTaskPill);
 }
 
-/** 把运行时注册的翻译类型放进侧栏「翻译」组，排在内置四项之后；再次调用时整组替换。 */
-export function setExtensionSideItems(items: ExtensionSideItem[]): void {
+/** 按给定顺序重画侧栏「翻译」组（内置四种与运行时注册的类型，没列出的不显示）；再次调用时整组替换。 */
+export function setTranslateSideItems(items: TranslateSideItem[]): void {
   if (!sideItemEls || !resourceLabelEl?.parentElement) return;
-  for (const { def, el } of extensionItems) {
+  for (const { def, el } of translateItems) {
     el.remove();
     sideItemEls.delete(def.id);
     sideItemTextNodes.delete(def.id);
   }
-  extensionItems = items.map((def) => {
+  translateItems = items.map((def) => {
     const el = buildSideItem({ id: def.id, label: def.label(), icon: def.icon });
     resourceLabelEl!.before(el);
     sideItemEls!.set(def.id, el);
@@ -167,10 +175,14 @@ export function mountShell(root: HTMLElement): ShellHandle {
 
   side.append(buildSideLabel("翻译")); // i18n-ignore 词条 key，显示时由 t() 翻译
   const itemMap = new Map<ViewId, HTMLDivElement>();
+  // 先按默认顺序画内置四种；读到设置后由 setTranslateSideItems 按「扩展」页的设置重排。
+  translateItems = [];
   for (const def of TRANSLATE_ITEMS) {
+    const item = builtinTranslateSideItem(def.id)!;
     const itemEl = buildSideItem(def);
     itemMap.set(def.id, itemEl);
     side.append(itemEl);
+    translateItems.push({ def: item, el: itemEl });
   }
 
   resourceLabelEl = buildSideLabel("资源"); // i18n-ignore 词条 key，显示时由 t() 翻译

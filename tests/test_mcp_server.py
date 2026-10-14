@@ -97,7 +97,10 @@ def test_the_seven_tools_are_listed_with_descriptions():
 def test_list_types_and_scan(tools, tmp_path: Path):
     failed, body = tools("list_types")
     assert not failed
-    assert [item["key"] for item in body["types"]] == ["excel", "word", "pdf", "cad", "ext:sample"]
+    keys = [item["key"] for item in body["types"]]
+    # Types shipped in adapters/ (「文本」) are registered at startup too.
+    assert keys[:4] == ["excel", "word", "pdf", "cad"]
+    assert "ext:sample" in keys and "ext:text" in keys
 
     # A fresh data directory has no model set up; the agent learns it before any start.
     setup = body["model_setup"]

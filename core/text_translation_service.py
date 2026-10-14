@@ -54,6 +54,7 @@ class TextTranslationService:
         api_scheduler: Any = None,
         marked_in: str = "",
         smart_mode: bool | None = None,
+        default_prompt: str = "",
     ) -> None:
         self.settings = settings
         self.surface_key = surface_key
@@ -63,6 +64,9 @@ class TextTranslationService:
         self.api_scheduler = api_scheduler
         #: 未采用设定译法时复核标记记在哪里（见 ``DocumentTermMemory.marked_in``）。
         self.marked_in = marked_in
+        #: 运行时注册的类型的内置规则默认值（清单的 ``prompt``）；用户改过的优先，见
+        #: ``engine_dispatcher.core_prompt_for``。
+        self.default_prompt = default_prompt
         #: 「自动识别场景」：短词只认用户定下的记忆，翻译前可先写一段文档说明。
         self.smart_mode = (
             engine_dispatcher.smart_context_enabled(settings, surface_key)
@@ -101,6 +105,7 @@ class TextTranslationService:
                 target_lang=self.target_lang,
                 source_lang=self.source_lang,
                 page_key=self.surface_key,
+                default_core_prompt=self.default_prompt,
             )
         return self._system_prompt
 

@@ -891,6 +891,10 @@
     "en": "{0} options",
     "fr": "Options {0}"
   },
+  "{0}选项": {
+    "en": "{0} options",
+    "fr": "Options {0}"
+  },
   "{0}选择「继续上次翻译」时自动开启；如需全部重译，请点击文件列表上方横幅中的「改为全部重译」。": {
     "en": "{0} Turned on automatically when “Resume previous translation” is selected. To retranslate everything, click “Retranslate everything” in the banner above the file list.",
     "fr": "{0} Activé automatiquement lorsque « Reprendre la traduction précédente » est choisi. Pour tout retraduire, cliquez sur « Tout retraduire » dans le bandeau au-dessus de la liste."

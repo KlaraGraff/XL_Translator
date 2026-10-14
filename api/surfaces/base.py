@@ -120,6 +120,10 @@ class Surface:
     requires_source: ClassVar[bool] = True
     #: Open the TM database before the task starts.
     uses_translation_memory: ClassVar[bool] = False
+    #: Default core rules for a run-time type (the manifest's ``prompt``); empty
+    #: means the shared ``CORE_TRANSLATION_PROMPT``.  Built-in pages cannot
+    #: change their core rules and keep this empty.
+    default_prompt: ClassVar[str] = ""
     #: Where the target language lives in settings: ``"shared"`` (the global
     #: ``target_lang``), ``"per_surface"`` (``<key>_target_lang`` is copied
     #: into ``target_lang`` when the request names none) or ``"pdf"``

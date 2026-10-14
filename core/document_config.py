@@ -30,7 +30,8 @@ DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
 # v3 及以前的包导入时按 settings.migrate_prompt_layers 转换。v5：速率与重试按文件类型
 # 放在 rate 节（设置 v38），取代 word_batch / request_retry；和设置文件升级一样，v4 及
 # 以前的包里的速率与重试（含 pdf 节的同时生成页数、单页重试次数）导入时不用，导入方
-# 保留自己的速率设置。
+# 保留自己的速率设置。extensions 节（运行时注册的类型的设置，设置 v39）是加法：旧版本
+# 读到它当作不认识的节丢掉，所以不升版本号。
 DOCUMENT_CONFIG_EXPORT_VERSION = 5
 # 包里出现这些字段之一，就说明带了那个页面的提示词设置。
 _PROMPT_PAGE_FIELDS = (
@@ -54,6 +55,7 @@ DOCUMENT_CONFIG_SECTIONS = (
     "excel_output",
     "word_output",
     "pdf_output",
+    "extensions",
 )
 # Dropped from every exported section: a path from another machine.
 DOCUMENT_CONFIG_LOCAL_PATH_FIELDS = frozenset(
@@ -113,6 +115,7 @@ DOCUMENT_CONFIG_LABELS = {
     "excel_output": "Excel 输出选项",
     "word_output": "Word 输出选项",
     "pdf_output": "PDF 输出选项",
+    "extensions": "扩展类型参数",
     "languages": "语言设置",
     "domain": "领域与提示词",
 }
@@ -127,6 +130,10 @@ _LANGUAGE_FIELDS = frozenset(
         "custom_target_langs",
     }
 )
+
+# 侧栏里显示哪些类型、按什么顺序是这台电脑上的界面布局，不是翻译参数：导出不带，导入不动。
+# 内置四种的这两项（excel_pinned …）本来就不在任何一节里。
+_EXTENSION_LAYOUT_FIELDS = frozenset({"pinned", "order"})
 
 _PROMPT_MAP_FIELDS = frozenset(
     {
@@ -178,6 +185,13 @@ def build_document_config_export_payload(settings: AppSettings) -> dict[str, Any
     for section in DOCUMENT_CONFIG_SECTIONS:
         values = payload.get(section)
         if not isinstance(values, dict):
+            continue
+        if section == "extensions":
+            document[section] = {
+                ext_id: {key: value for key, value in entry.items() if key not in _EXTENSION_LAYOUT_FIELDS}
+                for ext_id, entry in values.items()
+                if isinstance(entry, dict)
+            }
             continue
         document[section] = {
             key: value
@@ -270,11 +284,15 @@ def apply_document_config_import(
     """
     payload = settings.model_dump(mode="json")
     for key, value in imported.items():
-        if key == "rate" and isinstance(value, dict):
+        if key in ("rate", "extensions") and isinstance(value, dict):
             # 按文件类型逐项合并：包里没带的文件类型、没带的项，保持本机原样。
             current = dict(payload.get(key) or {})
             for surface, values in value.items():
                 if isinstance(values, dict):
+                    if key == "extensions":
+                        values = {name: item for name, item in values.items() if name not in _EXTENSION_LAYOUT_FIELDS}
+                        if "domain_custom_prompts" in values:
+                            values = {**values, "domain_custom_prompts": _canonicalize_prompt_map(values["domain_custom_prompts"])}
                     current[surface] = {**dict(current.get(surface) or {}), **values}
             payload[key] = current
             continue

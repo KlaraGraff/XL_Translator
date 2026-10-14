@@ -171,7 +171,8 @@ class 新板块TaskRunner(BaseTaskRunner):
 | 键 | `"excel"` 这样的固定名 | `ext:<id>` |
 | 后端登记 | `api/surfaces/__init__.py` 的 `_SURFACES` | `register_surface(surface)`，`builtin = False` |
 | 名称、图标、文件名词、开关 | 前端的表（`SURFACE_LABEL`、`TOGGLES` …） | `Surface` 的 `display_label`、`icon`、`file_noun`、`options`，经 `GET /api/surfaces` 给前端 |
-| 侧栏、路由、任务中心 | `TRANSLATE_ITEMS`、`registerView`、`tasks.ts` 的表 | 描述符到达后自动注册视图、放进侧栏（`settings.extensions[<id>].pinned` / `order`），任务中心按描述符显示 |
+| 侧栏、路由、任务中心 | `TRANSLATE_ITEMS`、`registerView`、`tasks.ts` 的表 | 描述符到达后自动注册视图；侧栏默认不显示，在「扩展」页打开（顺序和显示与内置四种在同一张 `settings.translation_types` 表里），任务中心按描述符显示 |
+| 内置规则 | `CORE_TRANSLATION_PROMPT`，不能改 | 默认取清单的 `prompt`（`Surface.default_prompt`），没有则是通用的那份；用户可在翻译参数里改写（`settings.extensions[<id>].prompt`） |
 | 语言、补充要求等设置 | `settings.py` 上的平铺字段 | `settings.extensions[<id>]`，经 `core/surface_settings.py` 读写 |
 | 开关值 | `TaskOptions` 上的同名字段 | 请求的 `options` 字典 |
 | 统计格、文件表列 | 板块自己的 `if (surface === "…")` 分支 | 通用的一套（文件数、总大小、跳过项；文件、格式、大小、状态） |

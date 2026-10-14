@@ -8,14 +8,15 @@ import "./styles/palettes.css";
 import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
-import { mountShell, relocalizeShell, setExtensionSideItems } from "./shell";
-import { mountRouter, navigate, registerView, remountCurrentView } from "./router";
+import { mountShell, relocalizeShell } from "./shell";
+import { currentView, mountRouter, navigate, registerView, remountCurrentView, type ViewId } from "./router";
 import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
-import { extSurfaceIcon, extSurfaceLabel, isExtSurface, loadSurfaceDescriptors, pinnedExtDescriptors } from "./surface-descriptors";
+import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems, visibleTypeKeys } from "./surface-descriptors";
+import type { SurfaceDescriptor } from "./api-client";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
@@ -26,6 +27,7 @@ import * as cadView from "./views/cad";
 import * as tasksView from "./views/tasks";
 import * as libraryView from "./views/library";
 import * as pluginsView from "./views/plugins";
+import * as extensionsPageView from "./views/extensions-page";
 import * as mcpView from "./views/mcp";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
@@ -93,24 +95,26 @@ async function syncAppearanceFromBackend(): Promise<void> {
 }
 
 /**
- * 运行时注册的翻译类型（以后的格式扩展，键为 `ext:<id>`）：描述符到了之后给每个类型注册
- * 一个工作区视图（任务中心「打开工作区」也靠它），设置里没取消固定的放进侧栏「翻译」组。
- * 没有这类类型时什么都不做，也不多发请求。
+ * 侧栏「翻译」组：描述符到了之后给每个运行时注册的类型（格式扩展，键为 `ext:<id>`）注册
+ * 一个工作区视图（隐藏的也注册，任务中心「打开工作区」靠它），再按「扩展」页的设置
+ * 重排整组（内置四种也能隐藏、调序）。描述符拉不到时只按设置排内置四种。
  */
-async function mountExtensionPages(): Promise<void> {
-  const extensions = (await loadSurfaceDescriptors()).filter((item) => !item.builtin && isExtSurface(item.key));
-  if (!extensions.length) return;
-  for (const item of extensions) {
-    if (isExtSurface(item.key)) registerView(item.key, extensionView(item.key));
-  }
+async function mountTranslationTypes(): Promise<void> {
   const client = new ApiClient();
   await client.connect();
-  const settings = await client.request<{ extensions?: Record<string, unknown> }>("/api/settings");
-  setExtensionSideItems(pinnedExtDescriptors(settings.extensions ?? {}).flatMap((item) => (
-    isExtSurface(item.key)
-      ? [{ id: item.key, label: () => extSurfaceLabel(item.key), icon: extSurfaceIcon(item.key) }]
-      : []
-  )));
+  const [items, settings] = await Promise.all([
+    loadSurfaceDescriptors().catch((): SurfaceDescriptor[] => []),
+    client.request<Record<string, unknown>>("/api/settings"),
+  ]);
+  for (const item of items) {
+    if (!item.builtin && isExtSurface(item.key)) registerView(item.key, extensionView(item.key));
+  }
+  refreshTranslateSideItems(settings);
+  // 启动时先打开的是 Excel；它被隐藏了就换到侧栏里的第一项。页面本身仍可从任务中心打开。
+  const visible = visibleTypeKeys(settings);
+  if (currentView()?.id === "excel" && !visible.includes("excel") && visible.length) {
+    navigate(visible[0] as ViewId);
+  }
 }
 
 /**
@@ -187,6 +191,7 @@ function main(): void {
   registerView("tasks", tasksView);
   registerView("library", libraryView);
   registerView("plugins", pluginsView);
+  registerView("extensions", extensionsPageView);
   registerView("mcp", mcpView);
   registerView("settings", settingsView);
   registerView("help", helpView);
@@ -196,9 +201,9 @@ function main(): void {
 
   void syncAppearanceFromBackend().catch(() => undefined);
 
-  // 板块类型描述符：拉一次放进内存，运行时注册的页面（以后的格式扩展）靠它取名称和开关，
-  // 并据此注册视图、放进侧栏。内置四个页面不依赖它，拉取失败也不影响启动。
-  void mountExtensionPages().catch(() => undefined);
+  // 板块类型描述符：拉一次放进内存，运行时注册的页面（格式扩展）靠它取名称和开关，
+  // 并据此注册视图；侧栏「翻译」组按「扩展」页的设置重排。拉取失败也不影响启动。
+  void mountTranslationTypes().catch(() => undefined);
 
   // 顶栏「当前模型」药丸：先按已保存的配置点亮一次，之后由设置页每次保存/测试后刷新。
   void refreshModelPill();

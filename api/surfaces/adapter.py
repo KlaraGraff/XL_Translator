@@ -169,6 +169,7 @@ class AdapterSurface(Surface):
         self.file_extensions = suffixes(manifest.extensions)
         self.output_bilingual = manifest.capabilities.bilingual
         self.output_translation_only = manifest.capabilities.translation_only
+        self.default_prompt = manifest.prompt
         both = self.output_bilingual and self.output_translation_only
         self.options = ((BILINGUAL_OPTION,) if both else ()) + tuple(
             OptionDef(option.key, dict(option.label), default=option.default, help=dict(option.help))
@@ -179,6 +180,10 @@ class AdapterSurface(Surface):
 
     def describe(self) -> dict[str, Any]:
         descriptor = super().describe()
+        descriptor["description"] = dict(self.manifest.description)
+        if self.manifest.prompt:
+            # 「翻译参数」里这个类型的内置规则默认值；没有时界面显示通用的那份。
+            descriptor["prompt"] = self.manifest.prompt
         descriptor["adapter"] = {
             "id": self.manifest.id,
             "version": self.manifest.version,
@@ -304,6 +309,7 @@ class AdapterSurface(Surface):
             connection_ids=tuple(request.connection_chains.get("translation") or ()),
             api_scheduler=request.api_schedulers.get("translation"),
             marked_in="review_list",
+            default_prompt=self.default_prompt,
         )
         return AdapterTaskRunner(
             request.files,

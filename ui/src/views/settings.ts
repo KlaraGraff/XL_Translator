@@ -14,6 +14,7 @@ import {
   createField,
   createSelectField,
   createDropdown,
+  createLanguageField,
   createSwitch,
   createHintBadge,
   createEmptyState,
@@ -67,6 +68,16 @@ import {
 import { refreshRateOverview, renderRateSection, renderTmParamsCard } from "./settings-rate";
 import "./settings.css";
 import { docPromptAnatomy, openPromptAnatomy, pdfPromptAnatomy, promptAnatomyButton, type PromptAnatomy } from "./prompt-anatomy";
+import { localizedLanguageOptions } from "./workspace-util";
+import {
+  extSurfaceLabel,
+  isExtSurface,
+  loadSurfaceDescriptors,
+  orderedTypeKeys,
+  surfaceDescriptor,
+  surfaceDescriptors,
+  type ExtSurface,
+} from "../surface-descriptors";
 import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLocale, t, tx, type Locale, localized } from "../i18n";
 
 // ---------------------------------------------------------------------------
@@ -75,8 +86,10 @@ import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, setLocale, storeLo
 
 export type JsonObject = Record<string, unknown>;
 export type SettingsPage = "models" | "params" | "appearance" | "data" | "about";
-type TranslationSurface = "excel" | "word" | "cad";
-export type ParamsSurface = "excel" | "word" | "pdf" | "cad";
+// 运行时注册的类型（格式适配器，键为 `ext:<id>`）每种一个页签，标签用类型名，排在哪里跟
+// 「扩展」页的顺序一致（被隐藏的也保留页签）。paramsTab 直接记类型键。
+type TranslationSurface = "excel" | "word" | "cad" | ExtSurface;
+export type ParamsSurface = "excel" | "word" | "pdf" | "cad" | ExtSurface;
 
 export type PoolConnection = {
   id: string;
@@ -389,6 +402,7 @@ export function setSubmitModelForm(submit: (() => Promise<void>) | null): void {
 }
 
 let targetOptions: LanguageOption[] = [];
+let sourceOptions: LanguageOption[] = [];
 
 /** update-controller 的退订函数；unmount 时必须调用，否则每挂载一次就多一个订阅者，
  *  下载进度会把已经摘掉的 DOM 重画一遍。 */
@@ -420,7 +434,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   const requestedPage = params.page;
   const requestedRole = typeof params.role === "string" && MODEL_ROLE_ORDER.includes(params.role) ? params.role : null;
   const requestedSurface = params.paramsSurface;
-  if (requestedSurface === "excel" || requestedSurface === "word" || requestedSurface === "pdf" || requestedSurface === "cad") {
+  if (requestedSurface === "excel" || requestedSurface === "word" || requestedSurface === "pdf" || requestedSurface === "cad"
+    || (typeof requestedSurface === "string" && isExtSurface(requestedSurface))) {
     paramsTab = requestedSurface;
   }
   pendingDomainPreset = typeof params.domainPreset === "string" ? params.domainPreset : null;
@@ -929,6 +944,7 @@ async function refreshLanguages(): Promise<void> {
     target_options: LanguageOption[];
   }>("/api/languages");
   targetOptions = Array.isArray(payload.target_options) ? payload.target_options : [];
+  sourceOptions = Array.isArray(payload.source_options) ? payload.source_options : [];
 }
 
 async function refreshMaintenance(): Promise<void> {
@@ -1205,19 +1221,25 @@ function pdfParamsSettings(): JsonObject {
   return record(settings?.pdf);
 }
 
+/** settings.extensions[<id>]：运行时注册的类型的那一份设置；没存过时为空对象（按后端默认值显示）。 */
+function extParams(surface: ExtSurface): JsonObject {
+  return record(record(settings?.extensions)[surface.slice("ext:".length)]);
+}
+
 function domainSettingsFor(surface: TranslationSurface): {
   smartContext: boolean;
   preset: string;
   customPrompts: Record<string, Record<string, string>>;
 } {
-  const prefix = surface;
+  // 内置页面是平铺的 `<页面>_smart_context` 等字段；运行时注册的类型在 extensions[<id>] 里，字段名不带前缀。
+  const read = (name: string): unknown => (isExtSurface(surface) ? extParams(surface)[name] : settings?.[`${surface}_${name}`]);
   // 补充要求是「名称 → {_base: 正文}」；这里保留嵌套读取，兼容旧版按目标语言保存的
   // 配置，保存时由后端统一折叠回 `_base`。
   return {
-    smartContext: settings?.[`${prefix}_smart_context`] !== false,
-    preset: text(settings?.[`${prefix}_domain_preset`], NO_EXTRA_PROMPT),
+    smartContext: read("smart_context") !== false,
+    preset: text(read("domain_preset"), NO_EXTRA_PROMPT),
     customPrompts: Object.fromEntries(
-      Object.entries(record(settings?.[`${prefix}_domain_custom_prompts`])).map(([name, langs]) => [
+      Object.entries(record(read("domain_custom_prompts"))).map(([name, langs]) => [
         name,
         Object.fromEntries(
           Object.entries(record(langs)).filter((e): e is [string, string] => typeof e[1] === "string"),
@@ -1228,6 +1250,7 @@ function domainSettingsFor(surface: TranslationSurface): {
 }
 
 function targetLangForDomain(surface: TranslationSurface): string {
+  if (isExtSurface(surface)) return text(extParams(surface).target_lang, "en");
   const key = surface === "excel" ? "excel_target_lang" : surface === "word" ? "word_target_lang" : "target_lang";
   return text(settings?.[key], surface === "word" ? "fr" : surface === "cad" ? "zh" : "en");
 }
@@ -1243,6 +1266,8 @@ const PROMPT_CONFIG_FIELDS = [
   "cad_domain_preset", "cad_smart_context", "cad_custom_prompt", "cad_domain_name_overrides", "cad_domain_prompt_overrides",
   "cad_domain_custom_prompts", "cad_domain_disabled_presets",
 ] as const;
+// 运行时注册的类型的语言和提示词在 extensions[<id>] 里，提示词文件只带这几项（不带侧栏显示、顺序和开关）。
+const EXT_PROMPT_CONFIG_FIELDS = new Set(["source_lang", "target_lang", "domain_preset", "smart_context", "domain_custom_prompts"]);
 
 async function exportPromptConfig(): Promise<void> {
   try {
@@ -1252,6 +1277,11 @@ async function exportPromptConfig(): Promise<void> {
     for (const field of PROMPT_CONFIG_FIELDS) {
       if (field in source) document[field] = source[field];
     }
+    const extensions = Object.entries(record(source.extensions)).flatMap(([id, entry]) => {
+      const kept = Object.entries(record(entry)).filter(([field]) => EXT_PROMPT_CONFIG_FIELDS.has(field));
+      return kept.length ? [[id, Object.fromEntries(kept)] as const] : [];
+    });
+    if (extensions.length) document.extensions = Object.fromEntries(extensions);
     const promptPayload = {
       type: "translator_document_config",
       version: num(payload.version, 2),
@@ -1282,7 +1312,7 @@ function renderParamsPage(host: HTMLElement): void {
   // 包内同时包含各页面参数、语言和领域提示词，因此这里也就是提示词的一键导入/导出。
   host.append(bundleCard({
     title: t("翻译参数配置导入与导出"),
-    description: t("一键备份或导入 Excel、Word、PDF、CAD 的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。"),
+    description: t("一键备份或导入 Excel、Word、PDF、CAD 和扩展类型的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。"),
     buttons: [
       createButton({ label: t("导出配置"), size: "mini", onClick: () => void exportDocumentConfig() }),
       createButton({ label: t("导入配置"), size: "mini", onClick: () => importDocumentConfig() }),
@@ -1291,10 +1321,19 @@ function renderParamsPage(host: HTMLElement): void {
   const card = createCard([]);
   const tabs = document.createElement("div");
   tabs.className = "tabs";
-  const tabDefs: { id: ParamsSurface; label: string }[] = [
-    { id: "excel", label: "Excel" }, { id: "word", label: "Word" }, { id: "pdf", label: "PDF" },
-    { id: "cad", label: "CAD" },
-  ];
+  // 页签：内置四种和每个运行时注册的类型各一个，顺序同「扩展」页。描述符一般在启动时就拉好了；
+  // 还没拉到时先画内置四种，拉到后重画。
+  if (!surfaceDescriptors().length) {
+    void loadSurfaceDescriptors().then((items) => {
+      if (currentPage === "params" && items.some((item) => isExtSurface(item.key))) renderBody();
+    }, () => undefined);
+  }
+  const BUILTIN_TAB_LABELS: Record<string, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+  const tabDefs: { id: ParamsSurface; label: string }[] = orderedTypeKeys(settings).flatMap((key) => {
+    if (isExtSurface(key)) return [{ id: key, label: extSurfaceLabel(key) }];
+    return key in BUILTIN_TAB_LABELS ? [{ id: key as ParamsSurface, label: BUILTIN_TAB_LABELS[key] }] : [];
+  });
+  if (!tabDefs.some((def) => def.id === paramsTab)) paramsTab = tabDefs[0]?.id ?? "excel";
   for (const def of tabDefs) {
     const tab = document.createElement("div");
     tab.className = def.id === paramsTab ? "tab on" : "tab";
@@ -1359,12 +1398,14 @@ function renderParamsPage(host: HTMLElement): void {
     note.style.color = "var(--ink-3)";
     note.textContent = t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；提示词可以在下方设置。");
     body.append(...renderRateSection("cad"), note);
+  } else if (isExtSurface(paramsTab)) {
+    body.append(...renderExtParams(paramsTab));
   }
 
   card.append(body);
   host.append(card);
 
-  if (paramsTab === "excel" || paramsTab === "word" || paramsTab === "cad") {
+  if (paramsTab === "excel" || paramsTab === "word" || paramsTab === "cad" || isExtSurface(paramsTab)) {
     host.append(renderDomainPromptCard(paramsTab));
   } else if (paramsTab === "pdf") {
     host.append(renderPdfPromptCard());
@@ -1372,6 +1413,49 @@ function renderParamsPage(host: HTMLElement): void {
 
   // 记忆库对每种文件类型都生效，不跟着上面的页签切换。
   host.append(renderTmParamsCard());
+}
+
+/** 运行时注册的类型的页签：目标语言和源语言；速率与重试只放一句说明（这类类型按文档翻译模型取默认值）。 */
+function renderExtParams(surface: ExtSurface): HTMLElement[] {
+  const id = surface.slice("ext:".length);
+  const saved = extParams(surface);
+  const label = extSurfaceLabel(surface);
+  // 与类型页右栏一样按对象写补丁，不拼点路径。
+  const persistExt = (name: string, value: string) => void reRenderAfter(() => persistSettings({ extensions: { [id]: { [name]: value } } }));
+  const parts: HTMLElement[] = [];
+  const languages = document.createElement("div");
+  languages.className = "grid2";
+  const target = createLanguageField({
+    label: t("目标语言"),
+    options: localizedLanguageOptions(targetOptions),
+    value: text(saved.target_lang, "en"),
+    recentKey: `${surface}-target`,
+    onChange: (value) => persistExt("target_lang", value),
+  });
+  target.root.querySelector("label")?.append(hintBadge(t("与「{0}」页右侧的目标语言是同一项设置，在任一处修改均可。默认：英文。", label)));
+  // /api/languages 的 source_options 头一项本来就是「自动识别」，只有后端没给时才补。
+  const sourceList: LanguageOption[] = sourceOptions.some((option) => option.code === "auto")
+    ? sourceOptions
+    : [{ code: "auto", display_name: t("自动识别"), aliases: ["auto", "自动识别", "自动检测", t("自动识别")] }, ...sourceOptions]; // i18n-ignore 中文别名供搜索匹配
+  const source = createLanguageField({
+    label: t("源语言"),
+    options: localizedLanguageOptions(sourceList),
+    value: text(saved.source_lang, "auto"),
+    recentKey: `${surface}-source`,
+    onChange: (value) => persistExt("source_lang", value),
+  });
+  source.root.querySelector("label")?.append(hintBadge(t("与「{0}」页右侧的源语言是同一项设置，在任一处修改均可。默认：自动识别。", label)));
+  languages.append(target.root, source.root);
+  parts.push(languages);
+
+  const note = document.createElement("p");
+  note.className = "note";
+  note.style.margin = "0";
+  note.style.fontSize = "12.5px";
+  note.style.color = "var(--ink-3)";
+  note.textContent = t("速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。");
+  parts.push(note);
+  return parts;
 }
 
 function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color: string) => void): HTMLDivElement {
@@ -1447,7 +1531,11 @@ function smartContextRow(checked: boolean, note: string, persist: (checked: bool
   return row;
 }
 
-const PARAMS_SURFACE_LABELS: Record<ParamsSurface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+const PARAMS_SURFACE_LABELS: Record<"excel" | "word" | "pdf" | "cad", string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+
+function paramsSurfaceLabel(surface: ParamsSurface): string {
+  return isExtSurface(surface) ? extSurfaceLabel(surface) : PARAMS_SURFACE_LABELS[surface];
+}
 
 /** 按已保存的设置写出这一页的提示词组成（「?」弹窗的内容）。 */
 function buildPromptAnatomy(surface: ParamsSurface): PromptAnatomy {
@@ -1469,8 +1557,8 @@ function buildPromptAnatomy(surface: ParamsSurface): PromptAnatomy {
     ? (entry._base || entry[targetLangForDomain(surface)] || Object.values(entry).find((value) => value.trim()) || "")
     : "";
   return docPromptAnatomy({
-    surface,
-    corePrompt,
+    surface: isExtSurface(surface) ? "ext" : surface,
+    corePrompt: isExtSurface(surface) ? extCoreRules(surface) : corePrompt,
     extraName: domain.preset,
     extraText,
     smartContext: domain.smartContext,
@@ -1478,11 +1566,64 @@ function buildPromptAnatomy(surface: ParamsSurface): PromptAnatomy {
   });
 }
 
+/** 运行时注册的类型的默认内置规则：清单自带的，没有则是通用的那份。 */
+function extDefaultCoreRules(surface: ExtSurface): string {
+  return (surfaceDescriptor(surface)?.prompt || corePrompt).trim();
+}
+
+/** 运行时注册的类型这一次会发的内置规则：用户改过的优先，否则是默认的。 */
+function extCoreRules(surface: ExtSurface): string {
+  return text(extParams(surface).prompt, "").trim() || extDefaultCoreRules(surface);
+}
+
+/**
+ * 运行时注册的类型的「内置规则」：可以改，也可以恢复默认（清单自带的，没有则是通用的那份）。
+ * 失焦保存；与默认相同或清空都存成空，即跟着默认走（以后默认改了也跟着改）。
+ */
+function renderExtCoreRules(surface: ExtSurface, enqueueSave: (task: () => Promise<unknown>) => Promise<unknown>): HTMLDivElement {
+  const id = surface.slice("ext:".length);
+  const defaults = extDefaultCoreRules(surface);
+  const saved = text(extParams(surface).prompt, "").trim();
+  const area = document.createElement("textarea");
+  area.className = "domain-prompt core-rules";
+  area.rows = 7;
+  area.maxLength = 4000;
+  area.value = saved || defaults;
+  const store = (value: string, message: string): void => {
+    void enqueueSave(() => reRenderAfter(async () => {
+      await persistSettings({ extensions: { [id]: { prompt: value } } });
+      showToast({ message });
+    }));
+  };
+  area.addEventListener("change", () => {
+    const value = area.value.trim();
+    const next = !value || value === defaults ? "" : value;
+    if (next === saved) {
+      if (!value) area.value = defaults;
+      return;
+    }
+    store(next, next ? t("已保存内置规则。") : t("已恢复默认内置规则。"));
+  });
+  const field = fieldWithHint(t("内置规则"), area, t("每次翻译都会发送这些规则，补充要求接在它们后面。这种文件类型的内置规则可以修改；清空或点「恢复默认」即改回默认规则。返回格式（只回译文、条数与原文一致）另由程序固定附上。"));
+  const foot = document.createElement("div");
+  foot.className = "core-rules-foot";
+  const note = document.createElement("span");
+  note.textContent = saved ? t("已修改，与默认规则不同。") : t("当前使用默认规则。");
+  foot.append(note, createButton({
+    label: t("恢复默认"),
+    size: "mini",
+    disabled: !saved,
+    onClick: () => store("", t("已恢复默认内置规则。")),
+  }));
+  field.append(foot);
+  return field;
+}
+
 /** 提示词设置的卡片标题：标题旁一个「?」，点开组成说明弹窗。 */
 function promptCardHead(surface: ParamsSurface, tools: HTMLElement[] = []): HTMLDivElement {
   const head = tcHead(t("提示词设置"), tools);
   head.querySelector("b")?.after(promptAnatomyButton(() => {
-    openPromptAnatomy(PARAMS_SURFACE_LABELS[surface], buildPromptAnatomy(surface));
+    openPromptAnatomy(paramsSurfaceLabel(surface), buildPromptAnatomy(surface));
   }));
   return head;
 }
@@ -1535,7 +1676,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     || Object.values(current.customPrompts[name] || {}).find((value) => value.trim())
     || "";
   const putDomain = async (payload: { smart_context: boolean; preset: string; custom_prompts: Record<string, Record<string, string>> }): Promise<true> => {
-    await client.request(`/api/domains/${surface}`, { method: "PUT", body: JSON.stringify(payload) });
+    await client.request(`/api/domains/${encodeURIComponent(surface)}`, { method: "PUT", body: JSON.stringify(payload) });
     await refreshSettings();
     return true;
   };
@@ -1570,11 +1711,15 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     }),
   ));
 
-  // ② 内置规则：每次都发、谁也改不了，所以只给看，不给框。
-  const coreBox = document.createElement("div");
-  coreBox.className = "prompt-readonly";
-  coreBox.textContent = corePrompt || t("内置规则读取失败，请稍后重新打开此页。");
-  body.append(fieldWithHint(t("内置规则"), coreBox, t("每次翻译都会发送这些规则，不能修改。补充要求写什么都只会追加在它们后面。返回格式（只回译文、条数与原文一致）另由程序固定附上。")));
+  // ② 内置规则：内置四种每次都发、谁也改不了，所以只给看，不给框；运行时注册的类型可以改。
+  if (isExtSurface(surface)) {
+    body.append(renderExtCoreRules(surface, enqueueSave));
+  } else {
+    const coreBox = document.createElement("div");
+    coreBox.className = "prompt-readonly";
+    coreBox.textContent = corePrompt || t("内置规则读取失败，请稍后重新打开此页。");
+    body.append(fieldWithHint(t("内置规则"), coreBox, t("每次翻译都会发送这些规则，不能修改。补充要求写什么都只会追加在它们后面。返回格式（只回译文、条数与原文一致）另由程序固定附上。")));
+  }
 
   // ③ 补充要求：用户自己的，可以有好几条，选一条用；只追加，不替换内置规则。
   let selectedExtra = selected;
@@ -1795,7 +1940,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
         const prompt = extra
           ? `${promptArea.value}\n\n用户补充整理要求：${extra}` // i18n-ignore 发给模型的提示词正文
           : promptArea.value;
-        const result = await client.request<{ prompt: string }>(`/api/domains/${surface}/optimize`, {
+        const result = await client.request<{ prompt: string }>(`/api/domains/${encodeURIComponent(surface)}/optimize`, {
           method: "POST",
           body: JSON.stringify({
             preset: selectedExtra === ADD_PROMPT_PRESET ? "自定义提示词" : selectedExtra, // i18n-ignore 发回后端的占位名

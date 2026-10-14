@@ -99,6 +99,14 @@
     "en": "Translation memory: {0} saved whole-text {0|translation does|translations do} not use the current set translation and will be retranslated",
     "fr": "Mémoire de traduction : {0} {0|traduction enregistrée n'utilise|traductions enregistrées n'utilisent} pas la traduction définie actuelle et {0|sera retraduite|seront retraduites}"
   },
+  "扩展类型参数": {
+    "en": "Extension type settings",
+    "fr": "Paramètres des types d'extension"
+  },
+  "至少保留一种翻译类型显示在侧栏。": {
+    "en": "Keep at least one translation type in the sidebar.",
+    "fr": "Gardez au moins un type de traduction dans la barre latérale."
+  },
   "状态：[阶段 2/{0}] 正在为反复出现的词确定统一译法…": {
     "en": "Status: [Step 2/{0}] Setting one translation for recurring words…",
     "fr": "État : [Étape 2/{0}] Harmonisation de la traduction des termes récurrents…"
