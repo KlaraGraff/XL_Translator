@@ -38,8 +38,17 @@ from tests.test_format_adapter import ECHO_DIR, ECHO_KEY, register_echo
 class FakeEngine:
     engine_name = "openai/fake"
 
-    def __init__(self, *, fail: set[str] = frozenset(), drop_tokens: bool = False, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        fail: set[str] = frozenset(),
+        echo: set[str] = frozenset(),
+        drop_tokens: bool = False,
+        delay: float = 0.0,
+    ) -> None:
         self.fail = set(fail)
+        #: Texts the model hands back unchanged.
+        self.echo = set(echo)
         self.drop_tokens = drop_tokens
         self.delay = delay
         self.calls: list[list[str]] = []
@@ -57,7 +66,7 @@ class FakeEngine:
             raise ValueError("接口故障")
         out = {}
         for text in texts:
-            value = f"[fr] {text}"
+            value = text if text in self.echo else f"[fr] {text}"
             if self.drop_tokens:
                 value = value.replace("⟦1⟧", "")
             out[text] = value
@@ -279,6 +288,59 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         assert Path(result["output_path"]).read_text(encoding="utf-8") == "Liste des 设备\n"
         assert "译文中仍有原文" in Path(done.review["report_path"]).read_text(encoding="utf-8-sig")
         assert done.review["items"][0]["action"] == "已保留译文"
+
+    def test_source_text_the_model_returns_unchanged_is_listed(self) -> None:
+        # 本机真实模型：缩进的一行中文被原样还回来，任务却记为全部完成、没有复核项。
+        path = self._file("a.txt", "Inspection\n注意：发现异常时，请立即电话通知值班主管。\n")
+        engine = FakeEngine(echo={"注意：发现异常时，请立即电话通知值班主管。"})
+        _runner, messages = self._run(engine, [path], source_lang="zh")
+        done = self._end(messages)
+        result = done.file_results[0]
+        assert result["status"] == "needs_review" and result["review_count"] == 1
+        assert result["translated_count"] == 1
+        assert Path(result["output_path"]).read_text(encoding="utf-8") == (
+            "[fr] Inspection\n注意：发现异常时，请立即电话通知值班主管。\n"
+        )
+        assert done.review["items"][0]["excerpt"] == "注意：发现异常时，请立即电话通知值班主管。"
+        assert done.review["items"][0]["issue"] == "未获得译文"
+        assert done.review["items"][0]["action"] == "已保留原文"
+        assert "a.txt\tline 2\t注意：发现异常时，请立即电话通知值班主管。\t未获得译文" in Path(
+            done.review["report_path"]
+        ).read_text(encoding="utf-8-sig")
+        assert any("1 段模型返回的译文与原文相同" in getattr(message, "message", "") for message in messages)
+
+    def test_a_translation_the_quality_check_sends_back_is_listed(self) -> None:
+        # 漏了数字的译文被质量校验退回原文，同样不能算已翻译。
+        path = self._file("a.txt", "共 12 台设备\n")
+
+        class Lossy(FakeEngine):
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                self.calls.append(list(texts))
+                return {text: "Équipements au total" for text in texts}
+
+        _runner, messages = self._run(Lossy(), [path], source_lang="zh")
+        result = self._end(messages).file_results[0]
+        assert result["review_count"] == 1
+        assert Path(result["output_path"]).read_text(encoding="utf-8") == "共 12 台设备\n"
+
+    def test_text_already_in_the_target_language_may_come_back_unchanged(self) -> None:
+        # 中译外文档里夹的英文行、英译英时的英文：原样回来是对的。
+        path = self._file("a.txt", "Inspection\nMIT License\n")
+        _runner, messages = self._run(FakeEngine(echo={"MIT License"}), [path], source_lang="zh")
+        result = self._end(messages).file_results[0]
+        assert result["status"] == "completed" and result["review_count"] == 0
+
+        settings = self._settings()
+        settings.target_lang = "en"
+        path = self._file("b.txt", "Hello world\n")
+        _runner, messages = self._run(FakeEngine(echo={"Hello world"}), [path], settings=settings, source_lang="auto")
+        result = self._end(messages).file_results[0]
+        assert result["status"] == "completed" and result["review_count"] == 0
+
+        # 自动识别出的源语言（英文）不同于目标语言（法文）时，英文原样回来就是没翻。
+        path = self._file("c.txt", "Hello world\n")
+        _runner, messages = self._run(FakeEngine(echo={"Hello world"}), [path], source_lang="auto")
+        assert self._end(messages).file_results[0]["review_count"] == 1
 
     def test_protected_fragments_come_back_unchanged(self) -> None:
         path = self._file("a.txt", "Hello {{name}}, see {{link}}\n")

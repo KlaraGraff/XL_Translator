@@ -14,7 +14,9 @@
 6. 需复核的单元汇总成一份「需复核清单.txt」放在输出目录里。
 
 复核口径与 CAD、PDF 原位替换一致：没拿到译文的单元保留原文、记「未获得译文」、计入需复核；
-有译文但体检发现仍有原文、或未采用设定译法的，保留译文并计入需复核。
+有译文但体检发现仍有原文、或未采用设定译法的，保留译文并计入需复核。模型原样还回原文（或质量
+校验把译文退回原文）也算没拿到译文——原文确实是要翻的源语言文字时（与 Excel、Word 的「未译源文」
+同一个判据），不算已翻译、不进记忆库。
 
 ``TextUnit.protected`` 里的片段（行内代码、链接地址）翻译前换成 ``⟦1⟧`` 这样的标记，
 翻译后换回；标记没有原样回来的单元保留原文并计入需复核，保证这些片段一个字符不变。
@@ -47,6 +49,7 @@ from core.residual_pipeline import run_residual_pass
 from core.runner_base import BaseTaskRunner
 from core.task_runner import user_facing_reason
 from core.task_runner_messages import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StoppedMsg
+from core.translation_coverage import looks_like_source_text
 from core.unit_ledger import (
     STATE_CLEAN,
     STATE_NEEDS_REVIEW,
@@ -149,6 +152,14 @@ class _ReviewEntry:
 
 def _has_text(value: str) -> bool:
     return any(char.isalpha() for char in value)
+
+
+def _same_text(left: str, right: str) -> bool:
+    return " ".join(left.split()).casefold() == " ".join(right.split()).casefold()
+
+
+def _lang_base(code: str) -> str:
+    return re.split(r"[-_]", str(code or "").strip().lower(), maxsplit=1)[0]
 
 
 class AdapterTaskRunner(BaseTaskRunner):
@@ -545,6 +556,7 @@ class AdapterTaskRunner(BaseTaskRunner):
 
         remaining = [text for text in texts if text not in translations]
         already = len(translations)
+        echoed: set[str] = set()
 
         def report(done: int, total: int) -> None:
             fraction = (already + done) / max(1, len(texts))
@@ -579,10 +591,20 @@ class AdapterTaskRunner(BaseTaskRunner):
                 )
             for text in remaining:
                 value = str(model.get(text) or "").strip()
-                if value:
-                    translations[text] = value
-                    origins[text] = "model"
-        unfinished = {text for text in remaining if text not in translations} if self._stop_event.is_set() else set()
+                if not value:
+                    continue
+                if self._echoes_source(path, text, value):
+                    echoed.add(text)
+                    continue
+                translations[text] = value
+                origins[text] = "model"
+            if echoed:
+                self._log("WARN", f"{path.name}：{len(echoed)} 段模型返回的译文与原文相同，已保留原文并标记需复核")
+        unfinished = (
+            {text for text in remaining if text not in translations and text not in echoed}
+            if self._stop_event.is_set()
+            else set()
+        )
 
         # 记忆库：未采用「始终采用」词条设定译法的（已重译仍不符）保留译文、计入需复核；
         # 「自动识别场景」下模型新译的短词自动保存。
@@ -608,6 +630,31 @@ class AdapterTaskRunner(BaseTaskRunner):
         if residual.auto_fixed:
             self._log("INFO", f"{path.name}：残留序号已自动修复 {len(residual.auto_fixed)} 段")
         return translations, origins, reasons, unfinished
+
+    def _echoes_source(self, path: Path, text: str, value: str) -> bool:
+        """模型原样还回了原文（质量校验把译文退回原文时也是这样）：原文是要翻的源语言文字就不算译文。
+
+        判据与 Excel、Word 的「未译源文」相同（``looks_like_source_text``）。中译英文档里夹的英文行
+        原样回来是对的，不算。
+        """
+        if not _same_text(text, value):
+            return False
+        return any(
+            looks_like_source_text(text, source_lang=lang, target_lang=self._target_lang)
+            for lang in self._echo_source_langs(path)
+        )
+
+    def _echo_source_langs(self, path: Path) -> list[str]:
+        """按哪种源语言判断：选了就是它；自动识别时用这个文件的预检结果，没有结果按默认源语言。
+
+        与目标语言相同的不算（英译英表里的英文本来就不用翻）。
+        """
+        if self._source_lang != AUTO_SOURCE_LANG:
+            candidates = [self._source_lang]
+        else:
+            candidates = self._languages.get(path.name) or [AUTO_SOURCE_LANG]
+        target = _lang_base(self._target_lang)
+        return [lang for lang in candidates if _lang_base(lang) != target]
 
     # ── 需复核清单 ───────────────────────────────────────────────────────
 
