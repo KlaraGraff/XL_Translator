@@ -42,7 +42,9 @@
 | `api/task_manager.py` | 任务生命周期：准备、互斥与资源占用、启动执行器、把执行器消息转成任务事件、历史落盘、暂停/继续/停止 |
 | `api/task_contracts.py` | 执行器协议 `Runner`、`TaskOptions`、任务异常 |
 | `core/runner_base.py` | 所有执行器共用的「后台线程 + 消息队列」外壳 `BaseTaskRunner` |
-| `core/text_translation_service.py` | 共享的文本翻译接线 `TextTranslationService`（速率与重试、引擎、提示词、分批请求、记忆库），CAD 和 PDF 原位替换在用 |
+| `translator_adapter/` | 格式适配器要 import 的协议类型（只依赖标准库），见下文「格式适配器」 |
+| `core/format_adapter.py`、`core/adapter_runner.py`、`api/surfaces/adapter.py` | 适配器清单与加载、通用执行器、按清单生成的页面 |
+| `core/text_translation_service.py` | 共享的文本翻译接线 `TextTranslationService`（速率与重试、引擎、提示词、分批请求、记忆库），CAD、PDF 原位替换和格式适配器在用 |
 | `core/surface_settings.py` | 按页面取设置：内置页面读平铺字段，运行时注册的类型读 `settings.extensions` |
 | `core/task_runner_messages.py` | 执行器发给任务管理器的消息类型（进度、状态、日志、完成、出错、已停止……） |
 | `core/task_runner.py` | Excel 执行器 |
@@ -86,7 +88,7 @@
 
 内置的四个翻译页面随应用发布，前端为它们写了编译期的表和 `surface === "…"` 分支。以后
 新增的文件类型（格式适配器）不随应用发布，在运行时注册，前后端都不为它写专门代码，走一条
-通用路径。阶段 A 只把这条路径搭好，应用里还没有任何运行时注册的类型。
+通用路径。格式适配器（见下文「格式适配器」）就是按这条路径注册的。
 
 - **注册**：`api/surfaces/__init__.py` 的 `register_surface(surface)`，只接受键为 `ext:<id>`、
   `builtin = False` 的 `Surface`，不能顶替或冒充内置页面；`unregister_surface(key)` 移除，
@@ -118,8 +120,66 @@
 - **测试**：`tests/fixtures/sample_surface.py` 注册仅测试用的 `ext:sample`（扫描 `.txt`，原样写出，
   开关「转为大写」，可暂停），`tests/test_runtime_surface.py` 用真实路由走通整条路径。它不随应用发布。
 
-还没有的（后续阶段）：通用适配器执行器、从外部安装格式适配器、插件页卡片、「翻译参数」里给扩展类型的
-页签、命令行与 MCP 入口。
+还没有的（后续阶段）：从外部安装格式适配器、插件页卡片、「翻译参数」里给扩展类型的页签、
+命令行与 MCP 入口。
+
+### 格式适配器
+
+只需要「从文件里取出文字、把译文写回去」的格式，不写 `Surface` 子类，也不写执行器，而是写一个
+格式适配器：一个目录、两个文件。页面、模型调用、记忆库、重试、复核、进度和任务中心都由应用负责。
+
+```
+adapters/<id>/
+  adapter.json   清单：是什么类型、处理哪些文件、页面上显示什么
+  adapter.py     scan（可省）、extract、write 三个函数，只用标准库和 translator_adapter
+```
+
+- **协议**（`translator_adapter/`，只依赖标准库，不 import 应用；`ADAPTER_API_VERSION = 1`，以后只做加法）：
+  - `extract(path) -> list[TextUnit]`。`TextUnit` 的字段：`id`（文件内唯一，`write` 靠它放回译文）、
+    `text`、`context`（给人看的位置，如「第 12 行」，写进需复核清单；空着时清单写 `id`）、`kind`
+    （`paragraph`、`heading`、`list_item`、`table_cell` 等，目前只作记录）、`locked`（原样写回、不送模型，
+    如代码块）、`protected`（`text` 里必须原样回来的片段，如行内代码、链接地址）。
+  - `scan(path) -> ScanItem(unit_count, warnings)`：扫描时显示的单元数；省略时按 `extract` 数未锁定的单元。
+  - `write(path, units, mode, out_path, options) -> OutputFile(path, review_count)`：`units` 是
+    `TranslatedUnit(id, text, translation, status)`（`translation` 与 `text` 相同表示保留原文），`mode` 为
+    `translation_only` 或 `bilingual`，`options` 是本次任务的开关值；返回 `None` 视为已写到 `out_path`。
+  - 适配器不调模型、不碰记忆库、不读密钥、不联网。
+- **清单**（`core/format_adapter.py` 的 `AdapterManifest`，未知字段一律拒绝）：`id`（小写字母、数字、`_`、`-`，
+  页面键为 `ext:<id>`，设置在 `settings.extensions[<id>]`）、`version`、`adapter_api_version`（须在
+  `SUPPORTED_ADAPTER_API_VERSIONS` 内）、`label` 与 `file_noun`（中英法三语必填）、`description`（三语，可省，
+  页面「?」里的说明）、`icon`（`ui/src/icons.ts` 的图标名）、`extensions`、`capabilities`（`bilingual`、
+  `translation_only`，至少一个）、`options`（开关；`bilingual` 留给应用）、`license`、`repo`、`min_app_version`。
+  两种输出都支持时，应用给页面加「双语对照」开关（默认关），执行器据此选 `mode`。
+- **加载**：`create_app` 调 `register_bundled_adapters()`（`api/surfaces/adapter.py`），把 `adapters/` 下每个合格
+  目录注册成一个 `AdapterSurface`；清单不合格或缺 `adapter.py` 的写日志跳过，不影响启动。`InProcessAdapterHost`
+  第一次用到时从源码加载 `adapter.py`，不读也不写 `__pycache__`（安装包签过名，不能往里写文件）；适配器抛出
+  的异常一律换成 `AdapterError`，返回值按协议类型核对（`id` 非空且不重复，`protected` 只留原文里确有的片段）。
+  打包时 spec 只收每个目录的 `adapter.json` 与 `adapter.py`。从外部安装适配器（子进程执行）是下一阶段。
+- **执行器**（`core/adapter_runner.py` 的 `AdapterTaskRunner`，不认识任何具体格式）对每个文件：
+  1. `extract` 取单元；锁定的和不含文字的不送模型。
+  2. 原文语言为「自动」时识别这个文件的原文语言（用于记忆库语言对和日志，提示词仍按「自动」）。
+  3. 「自动识别场景」开启时读一遍生成文档说明。
+  4. 记忆库整段命中的直接采用；其余把 `protected` 片段换成 `⟦n⟧` 标记，经 `TextTranslationService`
+     分批送模型（速率与重试按文档翻译模型的吞吐量，`core/surface_rate.py` 的 `extension_rate`）。
+  5. 还原标记，做残留原文体检（`run_residual_pass`），按单元记进 `UnitLedger`。
+  6. `write` 到 `{来源文件夹}_翻译输出_{时间}/` 下与来源相同的相对路径，文件名
+     `{原名}_{目标语言}[_双语].{扩展名}`。
+
+  进度按文件大小加权直接给总百分比，不会每换一个文件就从头走一遍；文件之间、批次之间都能暂停；停止时
+  正在翻的文件已有译文就照样写出，后面的文件记为「未开始」；一个文件读写出错只算它失败，全部失败才报错。
+- **复核口径**：下面几种单元记为需复核，写进输出目录的 `需复核清单.txt`（UTF-8 带 BOM，制表符分隔四列：
+  文件、单元、原文、原因），任务结果的 `review.items` 带前 200 条给任务中心的结果表，`review.report_path`
+  是清单路径。停止时还没翻的不算复核。
+
+  | 情况 | 写回 |
+  |---|---|
+  | 未获得译文（接口放弃，或 `⟦n⟧` 标记丢失、重复） | 原文 |
+  | 受保护片段没能原样保留 | 原文 |
+  | 译文里仍有原文 | 译文 |
+  | 记忆库设定的译法没被采用 | 译文 |
+- **测试**：`tests/fixtures/adapters/echo`（每行一个单元，`#!` 行锁定，`{{name}}` 受保护，仅测试用）；
+  `tests/test_format_adapter.py` 测清单、宿主和描述符，`tests/test_adapter_runner.py` 用假引擎测执行器，
+  末尾一项经真实路由跑到结束。
 
 ## 执行器内部的阶段
 
@@ -149,7 +209,8 @@ Excel 和 Word 的 `_run()` 只做编排，每个阶段是一个独立方法，�
 | 想做的事 | 去哪里 |
 |---|---|
 | 新增一个内置翻译板块 | [ADDING_A_TRANSLATION_PAGE.md](ADDING_A_TRANSLATION_PAGE.md) |
-| 让一种新格式在运行时出现在界面上 | 上文「类型描述符与通用路径」：写一个 `builtin = False`、键为 `ext:<id>` 的 `Surface`，用 `register_surface` 注册 |
+| 支持一种新文件格式（只需取字和写回） | 上文「格式适配器」：在 `adapters/<id>/` 写 `adapter.json` 和 `adapter.py`，不新增内置板块 |
+| 让一种需要特殊流程的格式在运行时出现在界面上 | 上文「类型描述符与通用路径」：写一个 `builtin = False`、键为 `ext:<id>` 的 `Surface`，用 `register_surface` 注册 |
 | 新增一个 HTTP 接口 | 对应领域的 `api/routes/<领域>.py`，请求体放 `api/schemas.py` |
 | 新增一个设置项 | `settings.py`，必须带默认值（见 `AGENTS.md` 旧数据兼容规则） |
 | 新增一家模型厂商 | `engines/` 加一个 `TranslationEngine` 子类，再在 `core/engine_dispatcher.py` 里按厂商构建它。厂商名还散在 `config.py`、`core/model_catalog.py`、`model_config.py`、`api_config_check.py`、`connectivity_check.py` 和设置页 `ui/src/views/settings-models.ts`，拿已有厂商名（如 `ollama`）全仓搜一遍逐处补上 |
