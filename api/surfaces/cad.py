@@ -20,14 +20,8 @@ from api.surfaces.base import (
     suffixes,
 )
 from api.task_contracts import Runner, TaskInputError, TaskOptions
-from core import bilingual_writer, tm_manager
+from core import bilingual_writer
 from core.cad_task_runner import CadTaskRunner
-from core.term_session import DocumentTermMemory
-from core.document_profile import (
-    append_profile,
-    is_context_sensitive,
-    request_document_profile,
-)
 from core.cad_translation import (
     CAD_OUTPUT_VERSIONS,
     CAD_SUPPORTED_EXTENSIONS,
@@ -40,7 +34,7 @@ from core.cad_translation import (
 )
 from core.cad_cache import default_cad_cache
 from core.task_runner import user_facing_reason
-from core.engine_dispatcher import TranslationBatchRunStats, build_role_engine
+from core.text_translation_service import TextTranslationService
 from core.file_progress import file_progress_id
 from core.language_registry import get_target_lang_display
 from settings import AppSettings
@@ -336,35 +330,31 @@ class CadSurface(Surface):
         if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
             configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
         output_dir = bilingual_writer.build_output_dir(request.source_root, configured_output_dir)
-        # 速率与重试按「翻译参数 → CAD」（core/surface_rate.py）。以前 CAD 读的是没有界面的
-        # engine.batch_size（固定 20）和 engine.concurrency，模型服务里改了也不起作用。
-        from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
-
-        rate = resolve_surface_rate(settings, "cad")
-        engine = build_role_engine(
-            engine_settings_for_rate(settings, rate),
-            "translation",
+        # 引擎、提示词、分批请求和记忆库的接线在 core/text_translation_service.py，与 PDF「原位
+        # 替换」共用。速率与重试按「翻译参数 → CAD」（core/surface_rate.py）。
+        service = TextTranslationService(
+            settings,
+            surface_key="cad",
+            rate_surface="cad",
+            target_lang=settings.target_lang,
+            # CAD preflight may keep mixed English/French text under
+            # automatic detection.  Passing ``zh`` here silently changes the
+            # model instruction and can produce a wrong translation; the
+            # engine accepts ``auto`` and should receive the user's actual
+            # selection.
+            source_lang=source_lang,
             connection_ids=tuple(chains.get("translation") or ()),
+            api_scheduler=api_schedulers.get("translation"),
+            marked_in="cad_review",
         )
-        from core.engine_dispatcher import (
-            get_system_prompt,
-            smart_context_enabled,
-            translate_texts,
-            translate_texts_with_sources,
-        )
-        system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
-        smart_mode = smart_context_enabled(settings, "cad")
+        # 开始任务时就建好引擎：连接设置有问题时任务直接报错，不等到第一张图纸。
+        engine = service.engine()
+        smart_mode = service.smart_mode
 
         def profile_requester(
             texts: list[str], log: Callable[[str, str], None], *, neighbor_rows: list[str] = ()
         ) -> str:
-            return request_document_profile(
-                engine.chat,
-                texts,
-                target_language=get_target_lang_display(settings.target_lang),
-                log=log,
-                neighbor_rows=neighbor_rows,
-            )
+            return service.document_profile(texts, log=log, neighbor_rows=neighbor_rows)
 
         def translate_batch(
             texts: list[str],
@@ -376,47 +366,18 @@ class CadSurface(Surface):
             context: str = "",
             term_session: Any = None,
         ) -> dict[str, str]:
-            prompt = append_profile(system_prompt, context)
-            if glossary:
-                prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
-            stats = TranslationBatchRunStats()
-            results = translate_texts(
+            # 接口放弃、停止时没发出去的条目不在结果里：管线记为「未获得译文」，图纸里保留
+            # 原文，结果标为需复核（不再当成「已翻译」计数）。
+            return service.translate(
                 texts,
-                # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
-                term_session.wrap(engine) if term_session is not None else engine,
-                settings.target_lang,
-                prompt,
-                rate.batch_items,
-                rate.concurrency,
-                # CAD preflight may keep mixed English/French text under
-                # automatic detection.  Passing ``zh`` here silently
-                # changes the model instruction and can produce a wrong
-                # translation; the engine accepts ``auto`` and should
-                # receive the user's actual selection.
-                source_lang=source_lang,
-                api_scheduler=api_schedulers.get("translation"),
-                # 逐批回调：CAD 进度条在「AI 翻译」阶段跟着批次走，而不是停住再跳。
-                progress_callback=progress,
-                # 停止在批次之间生效，不必等整张图纸的请求都发完。
+                glossary=glossary,
+                context=context,
+                term_session=term_session,
+                progress=progress,
                 should_stop=should_stop,
-                # 拆小重试、整批放弃、限流降速这些情况写进运行日志（与 Excel 一致）。
                 error_callback=error_callback,
-                # 每批请求的发出与返回：写进运行日志。
                 request_callback=request_callback,
-                stats=stats,
-                throughput_unlocked=bool(settings.engine.concurrency_unlocked),
-                # 接口临时故障时同一批的重发次数（翻译参数 → CAD → 失败重试次数）。
-                transient_retries=rate.request_retry,
-                max_chars=rate.batch_chars,
-                item_retries=rate.item_retry,
             )
-            # 接口放弃的批次、停止时没发出去的批次，translate_texts 按原文占位交回。
-            # 那不是译文：以前管线把它们当成「已翻译」计数，日志和报告都说全翻好了。
-            # 摘掉之后管线记为「未获得译文」，图纸里保留原文，结果标为需复核。
-            for text in stats.untranslated_sources | stats.stopped_sources:
-                if results.get(text) == text:
-                    results.pop(text, None)
-            return results
 
         def translate_batch_with_sources(
             texts: list[str],
@@ -428,85 +389,32 @@ class CadSurface(Surface):
             term_session: Any = None,
         ) -> dict[str, Any]:
             """程序判断不了语种的文字：翻译的同时让模型回报原文语种（与 Excel/Word 自动识别相同的协议）。"""
-            prompt = append_profile(system_prompt, context)
-            if glossary:
-                prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
-            stats = TranslationBatchRunStats()
-            results = translate_texts_with_sources(
+            return service.translate_with_sources(
                 texts,
-                term_session.wrap(engine) if term_session is not None else engine,
-                settings.target_lang,
-                prompt,
-                rate.batch_items,
-                rate.concurrency,
-                progress,
-                error_callback,
+                glossary=glossary,
+                context=context,
+                term_session=term_session,
+                progress=progress,
                 should_stop=should_stop,
-                api_scheduler=api_schedulers.get("translation"),
-                stats=stats,
-                throughput_unlocked=bool(settings.engine.concurrency_unlocked),
-                transient_retries=rate.request_retry,
-                max_chars=rate.batch_chars,
-                item_retries=rate.item_retry,
+                error_callback=error_callback,
             )
-            # 接口放弃或停止时没发出去的条目按原文占位交回，那不是译文，也不是语种判断。
-            failed = stats.untranslated_sources | stats.stopped_sources
-            return {text: (item.translation, item.source_lang) for text, item in results.items() if text not in failed}
-
-        source_pair = str(source_lang or "").strip()
-        target_base = str(settings.target_lang or "").split("-", 1)[0].lower()
-        memory_pairs = (
-            [f"{source_pair}-{settings.target_lang}"]
-            if source_pair and source_pair != "auto"
-            # 原文和译文同一种语言的组合查不出东西（英译英），不必去查。
-            else [f"{candidate}-{settings.target_lang}" for candidate in ("en", "fr", "zh") if candidate != target_base]
-        )
-
-        def memory_lookup(texts: list[str]) -> dict[str, str | None]:
-            hits: dict[str, str | None] = {text: None for text in texts}
-            remaining = list(texts)
-            for pair in memory_pairs:
-                if not remaining:
-                    break
-                current = tm_manager.lookup_batch(remaining, pair)
-                if smart_mode:
-                    # 「自动识别场景」：「甲」「FM」这类短词只认用户定下的记忆，自动存下的可能来自别的场景。
-                    short = [text for text in remaining if is_context_sensitive(text)]
-                    if short:
-                        current.update(tm_manager.lookup_batch(short, pair, locked_only=True))
-                for text, value in current.items():
-                    if value and hits.get(text) in (None, ""):
-                        hits[text] = value
-                remaining = [text for text in remaining if not hits.get(text)]
-            return hits
 
         # 记忆库与 Excel / Word 同一套规则：整段复用（手动维护的优先）、句中采用设定译法、
         # 按备注场景选用、核对后重译、自动保存短词（core.term_session）。
-        term_memory = (
-            DocumentTermMemory(
-                settings.tm,
-                target_lang=settings.target_lang,
-                lang_pairs=memory_pairs,
-                smart_mode=smart_mode,
-                engine_provider=lambda: engine,
-                marked_in="cad_review",
-            )
-            if options.cad_use_memory
-            else None
-        )
+        term_memory = service.term_memory() if options.cad_use_memory else None
 
         return CadTaskRunner(
             files,
             source_root=request.source_root,
             output_dir=output_dir,
             converter=SubprocessCadConverter(converter_path) if converter_path else None,
-            memory_lookup=memory_lookup if options.cad_use_memory else None,
+            memory_lookup=service.memory_lookup if options.cad_use_memory else None,
             term_memory=term_memory,
             translator=translate_batch,
             language_translator=translate_batch_with_sources,
             profile_requester=profile_requester if smart_mode else None,
             # 几张图纸的图纸说明提前同时请求，沿用翻译的并发设置；本地模型一次一个。
-            profile_concurrency=rate.concurrency if rate.mode != "local" else 1,
+            profile_concurrency=service.rate.concurrency if service.rate.mode != "local" else 1,
             filename_translator=engine,
             glossary=load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
             options=CadPipelineOptions(

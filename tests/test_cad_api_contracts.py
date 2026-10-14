@@ -81,7 +81,7 @@ def test_cad_auto_source_language_reaches_translation_engine(tmp_path, monkeypat
 
     with (
         patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
-        patch("api.surfaces.cad.build_role_engine", return_value=object()),
+        patch("core.engine_dispatcher.build_role_engine", return_value=object()),
         patch("core.engine_dispatcher.get_system_prompt", return_value="CAD prompt"),
         patch("core.engine_dispatcher.translate_texts", side_effect=fake_translate),
     ):
@@ -206,7 +206,7 @@ def test_cad_task_options_reach_the_pipeline(tmp_path, monkeypatch):
     source.write_text(_dxf_text(), encoding="utf-8")
     with (
         patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
-        patch("api.surfaces.cad.build_role_engine", return_value=object()),
+        patch("core.engine_dispatcher.build_role_engine", return_value=object()),
     ):
         runner = manager._build_runner(
             surface="cad",
