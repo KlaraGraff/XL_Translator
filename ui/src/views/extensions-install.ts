@@ -18,7 +18,7 @@ import {
   type LocalizedText,
   type RegistryExtension,
 } from "../api-client";
-import { createButton, createCard, createChip, createEmptyState, createProgressBar, openModal, showToast } from "../components";
+import { createButton, createCard, createEmptyState, createProgressBar, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
 import { hasView, registerView, unregisterView } from "../router";
@@ -635,7 +635,7 @@ function entryRow(entry: RegistryExtension): HTMLElement {
   title.className = "ext-entry-title";
   const name = document.createElement("b");
   name.textContent = entryName(entry);
-  title.append(name, createChip({ label: entry.status === "official" ? t("官方") : t("已审核"), tone: entry.status === "official" ? "tint" : "mute" }));
+  title.append(name);
   const summary = document.createElement("p");
   summary.textContent = localizedText(entry.summary);
   const meta = document.createElement("small");

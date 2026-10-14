@@ -48,8 +48,6 @@
   "无法获取扩展列表。": {"en": "Cannot load the extension list.", "fr": "Impossible de charger la liste des extensions."},
   "扩展列表里还没有扩展": {"en": "The extension list is empty", "fr": "La liste des extensions est vide"},
   "没有找到匹配的扩展": {"en": "No matching extensions", "fr": "Aucune extension correspondante"},
-  "官方": {"en": "Official", "fr": "Officielle"},
-  "已审核": {"en": "Reviewed", "fr": "Vérifiée"},
   "已安装 {0}": {"en": "{0} installed", "fr": "{0} installée"},
   "不兼容": {"en": "Incompatible", "fr": "Incompatible"},
   "这个类型随应用提供，无需安装。": {"en": "This type is bundled with the app; there is nothing to install.", "fr": "Ce type est fourni avec l'application ; rien à installer."},
