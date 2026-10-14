@@ -219,3 +219,61 @@ def test_bilingual_line_stays_above_the_row_line_and_the_source_moves_up_to_make
     assert line_y - 0.33 * line_height >= 0
     assert line_y + line_height < source_y
     assert result.stats.layout_unresolved == 0
+
+
+# ── 窄格子里最小比例仍放不下：折成两行 ──────────────────────────────
+
+
+ROOM = "强弱电间"
+ROOM_FR = "Local courant fort et courant faible"
+
+
+def _room_drawing(width=3000):
+    # 窄房间，房间名居中（中心对齐），字高 400：译文一行缩到最小比例也放不下。
+    x = width / 2
+    return _drawing(*_cell(0, 0, width, 6000), *_text("20", ROOM, x=x, y=3000, height=400,
+                                                     extra=((72, "1"), (11, str(x)), (21, "3000"), (73, "2"))))
+
+
+def _boxes(output):
+    out = []
+    for body in _entities(output, "TEXT"):
+        left, right = _span(body)
+        height, y = float(_field(body, 40)), float(_field(body, 21))
+        out.append((_field(body, 1), left, right, y - height / 2, y + height / 2, _field(body, 5)))
+    return sorted(out, key=lambda item: -item[3])
+
+
+def test_long_name_in_a_narrow_cell_is_split_into_two_lines_inside_it(tmp_path):
+    result, output, messages = _translate(tmp_path, _room_drawing(), {ROOM: ROOM_FR})
+    lines = _boxes(output)
+    assert [line[0] for line in lines] == ["Local courant fort", "et courant faible"]
+    for _text_value, left, right, bottom, top, _handle in lines:
+        assert 0 < left and right < 3000 and 0 < bottom and top < 6000
+    # 上下两行不叠，第二行有自己的句柄。
+    assert lines[1][4] < lines[0][3]
+    assert lines[0][5] and lines[1][5] and lines[0][5] != lines[1][5]
+    assert result.stats.layout_wrapped == 1 and result.stats.layout_unresolved == 0
+    assert any("已在原处折成两行" in message for message in messages)
+
+
+def test_split_lines_of_a_bilingual_translation_are_both_removed_on_the_next_run(tmp_path):
+    from core.cad_writeback import restore_previous_run
+
+    # 双语的译文行字高是原文的 0.8，房间再窄一些它才放不下。
+    result, output, _messages = _translate(tmp_path, _room_drawing(2200), {ROOM: ROOM_FR}, display_mode="source_first")
+    texts = [_field(body, 1) for body in _entities(output, "TEXT")]
+    assert texts == [ROOM, "Local courant fort", "et courant faible"]
+    assert result.stats.layout_wrapped == 1
+    records = _parse_dxf(output.read_text(encoding="utf-8"))
+    restore_previous_run(records)
+    values = [record.value for record in records if record.code == 1]
+    assert values.count(ROOM) == 1 and not any("courant" in value for value in values)
+
+
+def test_no_split_when_the_two_lines_would_not_fit_the_cell_height(tmp_path):
+    drawing = _drawing(*_cell(0, 2780, 3000, 3220), *_text("20", ROOM, x=1500, y=3000, height=400,
+                                                         extra=((72, "1"), (11, "1500"), (21, "3000"), (73, "2"))))
+    result, output, _messages = _translate(tmp_path, drawing, {ROOM: ROOM_FR})
+    assert [_field(body, 1) for body in _entities(output, "TEXT")] == [ROOM_FR]
+    assert result.stats.layout_wrapped == 0 and result.stats.layout_unresolved == 1

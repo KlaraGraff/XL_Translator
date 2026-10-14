@@ -617,6 +617,8 @@ class CadTranslationStats:
     layout_fitted: int = 0
     # 其中缩到最小比例仍放不下、需要人看一眼的条数。
     layout_unresolved: int = 0
+    # 缩到最小比例一行仍放不下、在原处折成两行的条数（第二行是新增的单行文字）。
+    layout_wrapped: int = 0
     # 落在锁定图块 / 锁定图层里、按用户要求原样保留的文字条数（不计入文字实体）。
     locked_texts: int = 0
     # 双语显示时新增的译文文字条数（单行文字的译文另起一行）。
@@ -2266,6 +2268,7 @@ class CadTranslationPipeline:
                 self._emit("write", 0, 1, f"{tables_synced} 个表格的单元格内容已同步为译文，在 AutoCAD 里编辑表格也不会变回原文")
             handles.finish()
             layout_unresolved: list[dict[str, str]] = []
+            layout_wrapped: list[dict[str, str]] = []
             if options.fit_layout:
                 # 单行文字的译文伸出去会压到同一行紧挨着的另一段文字（「设备基坑：」后面的
                 # 「2830X1700mm」），或伸出图框：这些译文按能用的空间缩小字宽/字高。
@@ -2290,7 +2293,12 @@ class CadTranslationPipeline:
                     _plain_text,
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,
+                    # 一行缩到最小仍放不下的，在格子里折成两行：第二行是新文字，要新句柄。
+                    new_handle=handles.next,
+                    wrapped=layout_wrapped,
                 )
+                stats.layout_wrapped = len(layout_wrapped)
+                handles.finish()
                 # 表格格子不会跟着译文变高：双语多出的一行、折成几行的英文按格子高度整段缩小。
                 stats.layout_fitted += fit_table_cells(
                     records,
@@ -2305,6 +2313,8 @@ class CadTranslationPipeline:
                         "write", 0, 1,
                         f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字或伸出图框，已缩小字宽或字高",
                     )
+                if layout_wrapped:
+                    self._emit("write", 0, 1, f"{len(layout_wrapped)} 处译文缩到最小比例一行仍放不下，已在原处折成两行")
                 if layout_unresolved:
                     self._emit(
                         "write", 0, 1,
@@ -2364,7 +2374,7 @@ class CadTranslationPipeline:
                     locked_blocks=options.locked_blocks,
                     locked_layers=options.locked_layers,
                 )
-                if options.check_entity_counts and len(output_units) != len(units) + stats.bilingual_added:
+                if options.check_entity_counts and len(output_units) != len(units) + stats.bilingual_added + stats.layout_wrapped:
                     raise CadPipelineError("写回后的图纸文字数量不一致，为安全起见未输出。")
             else:
                 output_records = records

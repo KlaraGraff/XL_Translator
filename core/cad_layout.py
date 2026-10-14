@@ -625,6 +625,8 @@ def fit_translated_texts(
     plain_text: Callable[[str], str],
     settings: FitSettings | None = None,
     unresolved: list[dict[str, str]] | None = None,
+    new_handle: Callable[[], str | None] | None = None,
+    wrapped: list[dict[str, str]] | None = None,
 ) -> int:
     """Shrink translated TEXT/ATTRIB entities that would overlap a neighbour or leave their frame.
 
@@ -634,6 +636,11 @@ def fit_translated_texts(
     The frame is the cell of solid lines around the source text (see
     :meth:`_CellIndex.cell`). Entities that still overlap at the minimum scale are appended to
     ``unresolved`` as ``{"source", "translation"}``.
+
+    With ``new_handle`` (hands out entity handles), a TEXT inside a cell that does not fit even at
+    the minimum scale is split at a space into two lines stacked in its place when they fit there
+    (see :func:`_wrap_plan`); the second line is a new TEXT right after the first. Each split is
+    appended to ``wrapped`` and is not counted in the return value.
     """
     if not originals:
         return 0
@@ -661,6 +668,7 @@ def fit_translated_texts(
         return _horizontal_span(neighbor.halign, _local(neighbor)[0], width)
 
     edits: list[tuple[_TextEntity, float, float]] = []
+    splits: list[_WrapPlan] = []
     for entity in entities:
         original = originals.get(entity.entity_no)
         if original is None or entity.entity_type not in _SINGLE_LINE_TYPES or entity.halign not in {0, 1, 2, 4}:
@@ -728,14 +736,160 @@ def fit_translated_texts(
         if needed <= room:
             continue
         scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
+        if not fits and new_handle is not None and entity.entity_type == "TEXT" and cell is not None:
+            # 格子里最小比例一行仍放不下（窄房间的长房间名、图签格子里的长工程名）：在空格处分成两行，
+            # 两行叠在原来那一行的位置上，上下不碰别的文字和格线时就这么放。不在格子里的（「标签：
+            # 数值」这类挨着摆的）不折，照旧列入复核。
+            plan = _wrap_plan(entity, records, boxes[lo:hi] + _vertical_neighbours(indexes[group], entity, bottom, top),
+                              cell, room, calibration, settings)
+            if plan is not None:
+                splits.append(plan)
+                if wrapped is not None:
+                    wrapped.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
+                continue
         if not fits and unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
             unresolved.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
         height_scale, width_scale = _scales(scale)
         edits.append((entity, height * height_scale, width_factor * width_scale))
 
-    for entity, new_height, new_width_factor in sorted(edits, key=lambda item: item[0].start, reverse=True):
+    # 从后往前改：改字高、插入第二行都会让后面的记录后移。
+    changes = [(entity.start, entity, height, width, None) for entity, height, width in edits]
+    changes += [(plan.entity.start, plan.entity, plan.height, plan.width_factor, plan) for plan in splits]
+    for _start, entity, new_height, new_width_factor, plan in sorted(changes, key=lambda item: item[0], reverse=True):
         _write_size(records, entity.start, entity.end, new_height, new_width_factor)
+        if plan is not None:
+            _apply_wrap(records, plan, new_handle)
     return len(edits)
+
+
+# 折成两行时，两行之间的空（按新字高计）。
+_WRAP_GAP = 0.5
+
+
+@dataclass(frozen=True)
+class _WrapPlan:
+    entity: _TextEntity
+    first: str  # 第一行、第二行在 DXF 里的原始写法（转义照旧）
+    second: str
+    height: float
+    width_factor: float
+    first_shift: float  # 两行各自沿文字的上下方向挪多少
+    second_shift: float
+
+
+def _vertical_neighbours(index: tuple[list[float], list[_TextBox], float], entity: _TextEntity,
+                         bottom: float, top: float) -> list[_TextBox]:
+    """上下各一行高范围内的文字：折成两行后会占到原来那一行的上下方。"""
+    bottoms, boxes, tallest = index
+    height = top - bottom
+    lo = bisect.bisect_left(bottoms, bottom - height - tallest)
+    hi = bisect.bisect_right(bottoms, top + height)
+    return [box for box in boxes[lo:hi] if box.entity_no != entity.entity_no]
+
+
+def _text_record(records: Sequence[Any], start: int, end: int) -> int | None:
+    for index in range(start + 1, end):
+        if records[index].code == 101:
+            break
+        if records[index].code == 1:
+            return index
+    return None
+
+
+def _wrap_plan(
+    entity: _TextEntity,
+    records: Sequence[Any],
+    neighbours: Sequence[_TextBox],
+    cell: _TextBox,
+    room: float,
+    calibration: float,
+    settings: FitSettings,
+) -> _WrapPlan | None:
+    """一行放不下的译文在哪个空格处分成两行、缩到多大：两行都要放进 ``room`` 宽，
+    叠起来的高度不碰原来上下方的文字和格线。放不下就是 None（照旧列入复核）。"""
+    index = _text_record(records, entity.start, entity.end)
+    if index is None:
+        return None
+    raw = records[index].value
+    raw_spaces = [position for position, char in enumerate(raw) if char == " "]
+    words = entity.text.split(" ")
+    # 转义（%%c、\U+00E9）里没有空格：原始写法和显示文字的空格一一对应才分。
+    if len(words) < 2 or len(raw_spaces) != len(words) - 1:
+        return None
+    height, width_factor = entity.height, entity.width_factor
+    best: tuple[float, int] | None = None
+    for cut in range(1, len(words)):
+        first, second = " ".join(words[:cut]).strip(), " ".join(words[cut:]).strip()
+        if not first or not second:
+            continue
+        widest = max(estimate_text_width(part, height, width_factor, entity.font_class) for part in (first, second))
+        if best is None or widest < best[0]:
+            best = (widest, cut)
+    if best is None:
+        return None
+    widest, cut = best
+    x, y = _local(entity)
+    bottom, top = _vertical_span(entity.valign, y, height)
+    middle = (bottom + top) / 2
+    old_anchor = {3: top, 2: middle}.get(entity.valign, bottom)
+    fit = max(room, 0.0) / (widest * calibration)
+    for tier in settings.tiers():
+        if tier > fit + 1e-9:
+            continue
+        height_scale, width_scale = _scales(tier)
+        new_height = height * height_scale
+        offset = (1 + _WRAP_GAP) * new_height / 2
+        left, right = _horizontal_span(entity.halign, x, widest * tier)
+        # 两行先以原来那一行为中心上下摊开；上方或下方有东西（双语时紧挨着的原文）时，
+        # 改为顶对齐往下排、底对齐往上排。
+        for centre in (middle, top - offset - new_height / 2, bottom + offset + new_height / 2):
+            span_bottom = centre - offset - new_height / 2 - _DESCENDER * new_height
+            span_top = centre + offset + new_height / 2
+            if span_bottom < cell.bottom or span_top > cell.top:
+                continue
+            if any(
+                box.top > span_bottom and box.bottom < span_top and box.right > left and box.left < right
+                # 和原来那一行同一行的左右邻居由横向的边界管，这里只看上下方。
+                and min(box.top, top) - max(box.bottom, bottom) < 0.3 * min(box.top - box.bottom, top - bottom)
+                for box in neighbours
+            ):
+                continue
+
+            def shift(line_centre: float, new_height: float = new_height) -> float:
+                box_bottom = line_centre - new_height / 2
+                anchor = {3: box_bottom + new_height, 2: line_centre}.get(entity.valign, box_bottom)
+                return anchor - old_anchor
+
+            return _WrapPlan(
+                entity, raw[:raw_spaces[cut - 1]], raw[raw_spaces[cut - 1] + 1:],
+                new_height, width_factor * width_scale, shift(centre + offset), shift(centre - offset),
+            )
+    return None
+
+
+def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
+    """第一行写回原实体，第二行是紧跟在后面的一个副本（新句柄，不带原实体的反应器和扩展数据，
+    双语新增行的标记照带：再翻一次时两行一起删掉）。"""
+    from core.cad_writeback import MARK_ADDED, _strip_owned_extras, marker_records, read_marker
+
+    entity = plan.entity
+    start = entity.start
+    end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
+    index = _text_record(records, start, end)
+    if index is None:
+        return
+    marked = read_marker(records[start + 1:end])
+    copy = [replace(records[start]), *_strip_owned_extras(list(records[start + 1:end]))]
+    copy_index = next(position for position, record in enumerate(copy) if record.code == 1)
+    copy[copy_index] = replace(copy[copy_index], value=plan.second)
+    handle = new_handle() if new_handle is not None else None
+    copy = [record if record.code != 5 else replace(record, value=handle) for record in copy if record.code != 5 or handle]
+    if marked is not None and marked[0] == MARK_ADDED:
+        copy += marker_records(records[start], MARK_ADDED)
+    _shift_entity(copy, 0, len(copy), entity.rotation, plan.second_shift)
+    records[index] = replace(records[index], value=plan.first)
+    _shift_entity(records, start, end, entity.rotation, plan.first_shift)
+    records[end:end] = copy
 
 
 def _write_size(records: list[Any], start: int, end: int, height: float, width_factor: float) -> None:
