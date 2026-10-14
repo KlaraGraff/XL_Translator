@@ -99,6 +99,21 @@ class SurfaceRateDefaultsTests(unittest.TestCase):
         self.assertEqual(task_role_rate(settings, "cad_translate", config), (7, 20))
         self.assertEqual(task_role_rate(settings, "excel_translate", config), (30, 20))
 
+    def test_a_format_adapter_runs_at_the_rate_the_scheduler_reserved(self) -> None:
+        # 运行时注册的类型在「翻译参数」里没有自己的一组：同时请求数和每批条数取文档翻译模型的
+        # 吞吐量，与调度器为 page_key = "adapter" 预留的一致。
+        settings = AppSettings()
+        set_cloud_provider_config(
+            settings.engine, "custom_openai", cloud_model="m", cloud_base_url="https://api.example/v1"
+        )
+        config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+        set_model_throughput(settings, config, batch_size=11, concurrency=4)
+        settings.rate.cad.concurrency = 7
+        rate = resolve_surface_rate(settings, "ext:text")
+        self.assertEqual((rate.concurrency, rate.batch_items), task_role_rate(settings, "adapter", config))
+        self.assertEqual((rate.concurrency, rate.batch_items), (4, 11))
+        self.assertEqual((rate.request_retry, rate.item_retry), (2, 3))
+
 
 class DocumentBundleTests(unittest.TestCase):
     def test_rate_travels_with_the_document_config_bundle(self) -> None:

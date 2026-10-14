@@ -330,6 +330,6 @@ class AdapterRouteTests(IsolatedAppDataTestCase):
         assert all(item["file_id"] for item in payload["items"])
         # A file the adapter cannot read is listed as skipped, with the reason.
         assert [item["name"] for item in payload["skipped"]] == ["bad.txt"]
-        assert payload["skipped"][0]["reason"].startswith("无法读取")
+        assert payload["skipped"][0]["reason"] == "无法读取此文件。"
         assert payload["summary"] == {"scanned_count": 3, "selected_count": 2, "skipped_count": 1, "unit_count": 2}
         assert payload["previous_output"] is None

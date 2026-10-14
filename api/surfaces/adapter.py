@@ -32,6 +32,8 @@ from api.surfaces.base import (
     suffixes,
 )
 from api.task_contracts import Runner, TaskInputError, TaskOptions
+from core import bilingual_writer
+from core.adapter_runner import AdapterTaskRunner
 from core.format_adapter import (
     BILINGUAL_OPTION_KEY,
     BUNDLED_ADAPTERS_DIR,
@@ -43,6 +45,8 @@ from core.format_adapter import (
 )
 from core.language_registry import get_target_lang_display
 from core.surface_settings import EXTENSION_PAGE_KEY, extension_settings
+from core.task_runner import user_facing_reason
+from core.text_translation_service import TextTranslationService
 from settings import AppSettings
 
 #: Where an adapter came from, shown on the 扩展 page.
@@ -233,7 +237,7 @@ class AdapterSurface(Surface):
                         path=item.path,
                         name=item.name,
                         relative_path=item.relative_path,
-                        reason=f"无法读取：{exc}",
+                        reason=user_facing_reason(exc, fallback="无法读取此文件。"),
                         format=item.format,
                     )
                 )
@@ -273,8 +277,40 @@ class AdapterSurface(Surface):
     def owner_label(self, snapshot: dict[str, object]) -> str:
         return f"{self.label} → {get_target_lang_display(str(snapshot.get('target_lang') or ''))}"
 
+    def write_bilingual(self, options: dict[str, bool]) -> bool:
+        """Write source + translation: the 双语对照 switch, or the only output the adapter has."""
+        if self.output_bilingual and self.output_translation_only:
+            return bool(options.get(BILINGUAL_OPTION_KEY, False))
+        return self.output_bilingual
+
     def build_runner(self, request: RunnerRequest) -> Runner:
-        raise TaskInputError("此翻译类型的执行器尚未接入。")
+        settings = request.settings
+        options = self.resolve_options(settings, request.options)
+        # 引擎、提示词、分批请求和记忆库的接线与 CAD、PDF 原位替换共用；速率与重试按
+        # 文档翻译模型的吞吐量取（core/surface_rate.py extension_rate）。
+        service = TextTranslationService(
+            settings,
+            surface_key=self.key,
+            rate_surface=self.key,
+            target_lang=settings.target_lang,
+            source_lang=request.source_lang,
+            connection_ids=tuple(request.connection_chains.get("translation") or ()),
+            api_scheduler=request.api_schedulers.get("translation"),
+            marked_in="review_list",
+        )
+        return AdapterTaskRunner(
+            request.files,
+            host=self.host,
+            service=service,
+            source_root=request.source_root,
+            output_dir=bilingual_writer.build_output_dir(request.source_root),
+            target_lang=settings.target_lang,
+            source_lang=request.source_lang,
+            bilingual=self.write_bilingual(options),
+            options=options,
+            key_overrides=request.key_overrides,
+            label=self.display_label.get("zh", self.key),
+        )
 
 
 def register_bundled_adapters(directory: str | Path | None = None) -> list[str]:
