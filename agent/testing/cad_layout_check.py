@@ -6,7 +6,8 @@
 
 - 压字：一段新文字（译文、双语新增行）的外框和另一段文字的外框重叠，原图里这两处
   （按插入点认）并不重叠；
-- 穿线：一段新文字的外框被一条实线横穿或竖穿，原图同一位置的文字并没有穿过这条线。
+- 穿线：一段新文字的外框被一条实线横穿、竖穿或斜穿（含门的开启弧、箭头这类弧线和斜线），
+  原图同一位置的文字并没有穿过这条线。
 
 用法（仓库根目录）::
 
@@ -32,7 +33,7 @@ if str(ROOT) not in sys.path:
 from core.cad_layout import (  # noqa: E402
     _box,
     _collect_entities,
-    _line_segments,
+    _geometry,
     _local,
     _TextEntity,
     _to_local,
@@ -63,7 +64,8 @@ def _load(path: Path) -> tuple[list[_Text], dict]:
         x, y = _local(entity)
         key = (entity.container, round(entity.rotation, 1), round(x, 1), round(y, 1))
         texts.append(_Text(entity, key, box.left, box.right, box.bottom, box.top))
-    return texts, _line_segments(records)
+    lines, curves = _geometry(records)
+    return texts, {key: lines.get(key, []) + curves.get(key, []) for key in set(lines) | set(curves)}
 
 
 def _overlap(a: _Text, b: _Text) -> bool:
@@ -88,7 +90,17 @@ def _crossed(text: _Text, segment: tuple[float, float, float, float]) -> bool:
         # 横线：从字身中间穿过（贴着字底、字顶的不算）。
         return (text.bottom + 0.15 * height < ay < text.top - 0.15 * height
                 and min(ax, bx) < text.right - 0.5 * height and max(ax, bx) > text.left + 0.5 * height)
-    return False
+    # 斜线、弧线折成的弦：和字身中间那块（左右各让 0.1 字高，上下各让 0.15）有交点就算。
+    low, high = 0.0, 1.0
+    for delta, start, lo, hi in ((bx - ax, ax, text.left + 0.1 * height, text.right - 0.1 * height),
+                                 (by - ay, ay, text.bottom + 0.15 * height, text.top - 0.15 * height)):
+        if abs(delta) < 1e-12:
+            if not lo < start < hi:
+                return False
+            continue
+        t1, t2 = sorted(((lo - start) / delta, (hi - start) / delta))
+        low, high = max(low, t1), min(high, t2)
+    return low < high
 
 
 def check(source: Path, translated: Path) -> tuple[list[str], list[_Text], list[_Text], list[_Text], dict]:

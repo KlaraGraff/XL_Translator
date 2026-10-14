@@ -71,22 +71,28 @@ def test_translation_that_cannot_fit_in_the_frame_is_reported(tmp_path):
     assert any("缩到最小比例仍会压到旁边的文字或伸出图框" in message for message in messages)
 
 
-@pytest.mark.parametrize(
-    "blocks, entities",
-    [
-        # 原文不在框里（框在别处）。
-        (_frame_block(), (*_insert(x=500), )),
-        # 不闭合的多段线、带圆弧的多段线都不是框。
-        (_frame_block(closed=False), _insert()),
-        (_frame_block(bulge=0.5), _insert()),
-    ],
-)
-def test_text_outside_any_closed_rectangle_is_left_alone(tmp_path, blocks, entities):
-    drawing = _drawing(*entities, *_text("20", NOTE, x=60, y=20), blocks=blocks)
+def test_text_with_no_line_in_its_way_is_left_alone(tmp_path):
+    # 框在别处：原文和译文旁边都没有线。
+    drawing = _drawing(*_insert(x=500), *_text("20", NOTE, x=60, y=20), blocks=_frame_block())
     result, output, _messages = _translate(tmp_path, drawing, {NOTE: LONG})
     note = _entities(output, "TEXT")[0]
     assert _field(note, 40) == "2.5" and _field(note, 41) is None
     assert result.stats.layout_fitted == 0
+
+
+@pytest.mark.parametrize("polyline", [{"closed": False}, {"bulge": 0.5}])
+def test_translation_stops_before_an_open_or_curved_line_it_would_cross(tmp_path, polyline):
+    # 不闭合的多段线、带圆弧的多段线围不成格子，但译文照样不该横穿原文旁边的线（门的开启弧、箭头）。
+    drawing = _drawing(*_insert(), *_text("20", NOTE, x=60, y=20), blocks=_frame_block(**polyline))
+    result, output, _messages = _translate(tmp_path, drawing, {NOTE: LONG})
+    note = _entities(output, "TEXT")[0]
+    right = _right_edge(note)
+    if "bulge" in polyline:
+        # 右边那段弧从 (100, 0) 鼓到 (100, 50) 的右侧，在字高范围里离原文最近的是弧的左端附近。
+        assert right < 112
+    else:
+        assert right < 100
+    assert result.stats.layout_fitted == 1
 
 
 def _bounds(segments):
@@ -209,11 +215,12 @@ def test_translation_stays_in_a_table_cell_drawn_with_lines(tmp_path):
 def test_bilingual_line_stays_above_the_row_line_and_the_source_moves_up_to_make_room(tmp_path):
     # 行高 3.2 倍字高、原文居中：新增的译文行放在原文下面会压到这一行的底线。
     drawing = _drawing(*_cell(0, 0, 60, 8), *_cell(0, 8, 60, 16), *_text("20", "普通门", x=2, y=2.75))
+    # 「coupe」里的 p 往下伸：下面要留出下伸的深度。
     result, output, _messages = _translate(
-        tmp_path, drawing, {"普通门": "Porte ordinaire"}, display_mode="source_first",
+        tmp_path, drawing, {"普通门": "Porte coupe-feu"}, display_mode="source_first",
     )
     texts = {_field(body, 1): body for body in _entities(output, "TEXT")}
-    source, line = texts["普通门"], texts["Porte ordinaire"]
+    source, line = texts["普通门"], texts["Porte coupe-feu"]
     source_y, line_y, line_height = float(_field(source, 20)), float(_field(line, 20)), float(_field(line, 40))
     assert source_y > 2.75 and source_y + 2.5 < 8
     assert line_y - 0.33 * line_height >= 0
@@ -277,3 +284,44 @@ def test_no_split_when_the_two_lines_would_not_fit_the_cell_height(tmp_path):
     result, output, _messages = _translate(tmp_path, drawing, {ROOM: ROOM_FR})
     assert [_field(body, 1) for body in _entities(output, "TEXT")] == [ROOM_FR]
     assert result.stats.layout_wrapped == 0 and result.stats.layout_unresolved == 1
+
+
+# ── 门的开启弧、箭头挡住伸出去的译文；双语逐行说明不压下一行 ──────────────
+
+
+def _arc(cx, cy, radius, start, end):
+    return (0, "ARC"), (8, "0"), (10, str(cx)), (20, str(cy)), (40, str(radius)), (50, str(start)), (51, str(end))
+
+
+def test_translation_stops_before_a_door_swing_and_an_arrow(tmp_path):
+    centred = ((72, "1"), (11, "3000"), (21, "3300"), (73, "2"))
+    arrow = _lwpolyline(((5200, 3000), (5800, 3300), (5200, 3600)), closed=False)
+    drawing = _drawing(
+        # 门厅左边是门的开启弧（圆心 (100, 2550)，半径 1500），右边是入口箭头。
+        *_arc(100, 2550, 1500, 0, 90), *arrow,
+        *_text("20", "门厅", x=3000, y=3300, height=400, extra=centred),
+    )
+    result, output, _messages = _translate(tmp_path, drawing, {"门厅": "Hall d'entrée principale"})
+    left, right = _span(_entities(output, "TEXT")[0])
+    # 字身高度范围里，弧最右到 x≈1460，箭头最左在 x≈5200 附近。
+    assert left > 1460 and right < 5300
+    assert result.stats.layout_fitted == 1
+
+
+def test_bilingual_note_lines_leave_room_for_descenders_above_the_next_note(tmp_path):
+    notes = {"一、尺寸以毫米计": "1. Dimensions en mm, cotes en mètres", "二、高差为三百": "2. Différence de niveau",
+             "三、防火门设闭门器": "3. Les portes coupe-feu ont un groom"}
+    drawing = _drawing(*(
+        part for number, source in enumerate(notes)
+        for part in _text(str(20 + number), source, x=0, y=1000 - 650 * number, height=320, extra=((73, "2"), (11, "0"), (21, str(1000 - 650 * number))))
+    ))
+    _result, output, _messages = _translate(tmp_path, drawing, notes, display_mode="source_first")
+    boxes = []
+    for body in _entities(output, "TEXT"):
+        height, y = float(_field(body, 40)), float(_field(body, 21))
+        drop = 0.33 * height if any(char in "gjpqy," for char in _field(body, 1)) else 0.0
+        boxes.append((y - height / 2 - drop, y + height / 2, _field(body, 1)))
+    boxes.sort(key=lambda box: -box[1])
+    # 从上到下：原文、译文、原文、译文……任何两行（译文连下伸笔画）都不重叠。
+    for (bottom, _top, upper), (_bottom, top, lower) in zip(boxes, boxes[1:], strict=False):
+        assert bottom >= top, (upper, lower)

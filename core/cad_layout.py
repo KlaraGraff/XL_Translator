@@ -381,25 +381,60 @@ def _solid(fields: Mapping[int, str], layers: Mapping[str, str]) -> bool:
     return linetype in {"CONTINUOUS", "BYBLOCK", ""}
 
 
+def _arc_chords(cx: float, cy: float, radius: float, start: float, sweep: float) -> list[_Segment]:
+    """圆弧按每段不超过 22.5° 折成弦（``start``、``sweep`` 为弧度，逆时针为正）。"""
+    if radius <= 0 or not sweep:
+        return []
+    steps = max(2, math.ceil(abs(sweep) / (math.pi / 8)))
+    points = [(cx + radius * math.cos(start + sweep * step / steps), cy + radius * math.sin(start + sweep * step / steps))
+              for step in range(steps + 1)]
+    return [(x1, y1, x2, y2) for (x1, y1), (x2, y2) in zip(points, points[1:], strict=False)]
+
+
+def _bulge_chords(x1: float, y1: float, x2: float, y2: float, bulge: float) -> list[_Segment]:
+    """多段线上凸度为 ``bulge`` 的一段圆弧折成弦。"""
+    chord = math.hypot(x2 - x1, y2 - y1)
+    if chord <= 0:
+        return []
+    # 圆心在弦的左侧（凸度为正时）偏 chord·(1-b²)/(4b) 处；圆心角 4·atan(b)。
+    offset = chord * (1 - bulge * bulge) / (4 * bulge)
+    cx = (x1 + x2) / 2 - (y2 - y1) / chord * offset
+    cy = (y1 + y2) / 2 + (x2 - x1) / chord * offset
+    return _arc_chords(cx, cy, math.hypot(x1 - cx, y1 - cy), math.atan2(y1 - cy, x1 - cx), 4 * math.atan(bulge))
+
+
 def _line_segments(records: Sequence[Any]) -> dict[tuple[str, str], list[_Segment]]:
-    """每个容器（模型空间、图纸空间、各个图块）里的直线段，换算到该容器的坐标。
+    """每个容器（模型空间、图纸空间、各个图块）里的直线段，换算到该容器的坐标。"""
+    return _geometry(records)[0]
+
+
+def _geometry(
+    records: Sequence[Any],
+) -> tuple[dict[tuple[str, str], list[_Segment]], dict[tuple[str, str], list[_Segment]]]:
+    """每个容器（模型空间、图纸空间、各个图块）里的 ``(直线段, 圆弧折成的弦)``，换算到该容器的坐标。
 
     LINE、多段线（LWPOLYLINE、旧式 POLYLINE）的直边都算；插入的图块（图框、图签通常是
     一个图块）里的线按插入点、比例、旋转换算出来，算进插入它的容器，图块里再插图块的
-    一层层往下找。格子、图框、房间的墙都是这样画出来的。
+    一层层往下找。格子、图框、房间的墙都是这样画出来的。ARC、CIRCLE 和多段线的圆弧段
+    （门的开启线、轴号圈）折成弦单独放：它们不当格线，只用来挡住伸过去的译文。
     """
     layers = _linetypes(records)
     own: dict[tuple[str, str], list[_Segment]] = {}
+    own_curves: dict[tuple[str, str], list[_Segment]] = {}
     inserts: dict[tuple[str, str], list[tuple[str, float, float, float, float, float]]] = {}
     bases: dict[str, tuple[float, float]] = {}
     block = ""
 
     def add_polyline(container: tuple[str, str], points: list[tuple[float, float, float]], closed: bool) -> None:
-        # 每个点带着从它出发那条边的凸度：不为 0 是圆弧，跳过。
+        # 每个点带着从它出发那条边的凸度：不为 0 是圆弧。
         edges = list(zip(points, points[1:] + (points[:1] if closed else []), strict=False))
         for (x1, y1, bulge), (x2, y2, _next) in edges:
-            if abs(bulge) <= 1e-9 and (x1, y1) != (x2, y2):
+            if (x1, y1) == (x2, y2):
+                continue
+            if abs(bulge) <= 1e-9:
                 own.setdefault(container, []).append((x1, y1, x2, y2))
+            else:
+                own_curves.setdefault(container, []).extend(_bulge_chords(x1, y1, x2, y2, bulge))
 
     # 旧式 POLYLINE 的顶点是后面一串 VERTEX，到 SEQEND 为止。
     polyline: tuple[tuple[str, str], bool, list[tuple[float, float, float]]] | None = None
@@ -423,7 +458,7 @@ def _line_segments(records: Sequence[Any]) -> dict[tuple[str, str], list[_Segmen
         if entity_type == "ENDBLK":
             block = ""
             continue
-        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT"}:
+        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "ARC", "CIRCLE"}:
             continue
         fields: dict[int, str] = {}
         points: list[tuple[float, float, float]] = []
@@ -457,40 +492,106 @@ def _line_segments(records: Sequence[Any]) -> dict[tuple[str, str], list[_Segmen
             x1, y1, x2, y2 = (_float(fields.get(code)) for code in (10, 20, 11, 21))
             if (x1, y1) != (x2, y2):
                 own.setdefault(container, []).append((x1, y1, x2, y2))
+        elif entity_type in {"ARC", "CIRCLE"}:
+            cx, cy, radius = _float(fields.get(10)), _float(fields.get(20)), _float(fields.get(40))
+            if entity_type == "ARC":
+                start = math.radians(_float(fields.get(50)))
+                sweep = (math.radians(_float(fields.get(51))) - start) % (2 * math.pi) or 2 * math.pi
+            else:
+                start, sweep = 0.0, 2 * math.pi
+            chords = _arc_chords(cx, cy, radius, start, sweep)
+            if _float(fields.get(230), 1.0) < 0:
+                # 拉伸方向朝 -Z（镜像过的图块里常见）：物体坐标系的 x 轴反向。
+                chords = [(-x1, y1, -x2, y2) for x1, y1, x2, y2 in chords]
+            own_curves.setdefault(container, []).extend(chords)
         elif entity_type == "LWPOLYLINE":
             add_polyline(container, points, bool(flags & 1))
         elif not flags & _POLYLINE_NOT_FLAT:
             polyline = (container, bool(flags & 1), [])
 
-    resolved: dict[tuple[str, str], list[_Segment]] = {}
-    in_progress: set[tuple[str, str]] = set()
+    def resolver(source: dict[tuple[str, str], list[_Segment]]) -> dict[tuple[str, str], list[_Segment]]:
+        resolved: dict[tuple[str, str], list[_Segment]] = {}
+        in_progress: set[tuple[str, str]] = set()
 
-    def resolve(container: tuple[str, str]) -> list[_Segment]:
-        if container in resolved:
-            return resolved[container]
-        if container in in_progress:
-            # 图块互相插入：不再往下找。
-            return []
-        in_progress.add(container)
-        result = list(own.get(container, []))
-        for name, x, y, scale_x, scale_y, rotation in inserts.get(container, []):
-            if len(result) >= _MAX_SEGMENTS:
-                break
-            base_x, base_y = bases.get(name, (0.0, 0.0))
-            angle = math.radians(rotation)
-            cos, sin = math.cos(angle), math.sin(angle)
+        def resolve(container: tuple[str, str]) -> list[_Segment]:
+            if container in resolved:
+                return resolved[container]
+            if container in in_progress:
+                # 图块互相插入：不再往下找。
+                return []
+            in_progress.add(container)
+            result = list(source.get(container, []))
+            for name, x, y, scale_x, scale_y, rotation in inserts.get(container, []):
+                if len(result) >= _MAX_SEGMENTS:
+                    break
+                base_x, base_y = bases.get(name, (0.0, 0.0))
+                angle = math.radians(rotation)
+                cos, sin = math.cos(angle), math.sin(angle)
 
-            def place(px: float, py: float) -> tuple[float, float]:
-                sx, sy = (px - base_x) * scale_x, (py - base_y) * scale_y
-                return x + sx * cos - sy * sin, y + sx * sin + sy * cos
+                def place(px: float, py: float) -> tuple[float, float]:
+                    sx, sy = (px - base_x) * scale_x, (py - base_y) * scale_y
+                    return x + sx * cos - sy * sin, y + sx * sin + sy * cos
 
-            for x1, y1, x2, y2 in resolve(("BLOCK", name))[:_MAX_SEGMENTS - len(result)]:
-                result.append((*place(x1, y1), *place(x2, y2)))
-        in_progress.discard(container)
-        resolved[container] = result
-        return result
+                for x1, y1, x2, y2 in resolve(("BLOCK", name))[:_MAX_SEGMENTS - len(result)]:
+                    result.append((*place(x1, y1), *place(x2, y2)))
+            in_progress.discard(container)
+            resolved[container] = result
+            return result
 
-    return {container: segments for container in set(own) | set(inserts) if (segments := resolve(container))}
+        return {container: segments for container in set(source) | set(inserts) if (segments := resolve(container))}
+
+    return resolver(own), resolver(own_curves)
+
+
+class _ObstacleIndex:
+    """一个容器、一个文字方向上的全部实线和弧（斜线、箭头、门的开启弧都在内），按纵向分条。
+
+    译文比原文伸出去的那一段要是会横穿原文没碰到的线，就停在线前面。
+    """
+
+    _BUCKETS = 512
+
+    def __init__(self, segments: Sequence[_Segment], rotation: float, bottom: float, top: float) -> None:
+        self.low = bottom
+        self.size = max((top - bottom) / self._BUCKETS, 1e-9)
+        self.buckets: dict[int, list[tuple[float, float, float, float]]] = {}
+        for x1, y1, x2, y2 in segments:
+            a, b = _to_local(x1, y1, rotation), _to_local(x2, y2, rotation)
+            first = max(math.floor((min(a[1], b[1]) - self.low) / self.size), 0)
+            last = min(math.floor((max(a[1], b[1]) - self.low) / self.size), self._BUCKETS)
+            for bucket in range(first, last + 1):
+                self.buckets.setdefault(bucket, []).append((*a, *b))
+
+    def limits(self, band: tuple[float, float], old: tuple[float, float],
+               new: tuple[float, float]) -> tuple[float, float]:
+        """``(右边界, 左边界)``：在字身 ``band`` 这个高度范围里，原文（``old``）两侧、
+        译文（``new``）伸过去会碰到的最近的线。原文本来就碰着的线不算。"""
+        right, left = math.inf, -math.inf
+        first = max(math.floor((band[0] - self.low) / self.size), 0)
+        last = min(math.floor((band[1] - self.low) / self.size), self._BUCKETS)
+        seen: set[tuple[float, float, float, float]] = set()
+        for bucket in range(first, last + 1):
+            for segment in self.buckets.get(bucket, ()):
+                if segment in seen:
+                    continue
+                seen.add(segment)
+                ax, ay, bx, by = segment
+                if max(ay, by) < band[0] or min(ay, by) > band[1]:
+                    continue
+                # 线落在这一高度范围里的那一截的横向范围。
+                xs = []
+                for y in (max(min(ay, by), band[0]), min(max(ay, by), band[1])):
+                    xs.append(ax if ay == by else ax + (bx - ax) * (y - ay) / (by - ay))
+                if ay == by:
+                    xs = [ax, bx]
+                low, high = min(xs), max(xs)
+                if high >= old[0] and low <= old[1]:
+                    continue
+                if low >= old[1] and low < new[1]:
+                    right = min(right, low)
+                elif high <= old[0] and high > new[0]:
+                    left = max(left, high)
+        return right, left
 
 
 class _CellIndex:
@@ -654,8 +755,9 @@ def fit_translated_texts(
         boxes.sort(key=lambda box: box.bottom)
         tallest = max(box.top - box.bottom for box in boxes)
         indexes[key] = ([box.bottom for box in boxes], boxes, tallest)
-    segments = _line_segments(records)
+    segments, curves = _geometry(records)
     cell_indexes: dict[tuple[tuple[str, str], float], _CellIndex] = {}
+    obstacle_indexes: dict[tuple[tuple[str, str], float], _ObstacleIndex] = {}
     by_no = {entity.entity_no: entity for entity in entities}
 
     def original_span(neighbor_no: int, box: _TextBox) -> tuple[float, float]:
@@ -720,6 +822,16 @@ def fit_translated_texts(
                 right_limit = min(right_limit, cell.right)
             if new_left < cell.left:
                 left_limit = max(left_limit, cell.left)
+        # 格子以外的线也挡着：入口箭头、门的开启弧、斜线，原文没碰到，译文伸过去就会横穿。
+        if group not in obstacle_indexes:
+            obstacle_indexes[group] = _ObstacleIndex(
+                [*segments.get(entity.container, ()), *curves.get(entity.container, ())], entity.rotation,
+                bottoms[0], max(box.top for box in boxes),
+            )
+        line_right, line_left = obstacle_indexes[group].limits(
+            (bottom + 0.15 * height, top - 0.15 * height), (old_left, old_right), (new_left, new_right),
+        )
+        right_limit, left_limit = min(right_limit, line_right), max(left_limit, line_left)
         if entity.halign in {1, 4}:
             half = min(right_limit - x, x - left_limit)
             allowed = 2 * half
@@ -921,6 +1033,11 @@ def _write_size(records: list[Any], start: int, end: int, height: float, width_f
 _MIN_LINE_GAP = 0.15
 # 西文下伸笔画（p、g、q）在基线以下的深度，按字高计：simplex 是 7/21。
 _DESCENDER = 0.33
+_DESCENDER_CHARS = frozenset("gjpqyçÇ,;()[]{}|_")
+
+
+def _has_descender(text: str) -> bool:
+    return any(char in _DESCENDER_CHARS for char in text)
 
 
 def fit_added_lines(
@@ -943,9 +1060,11 @@ def fit_added_lines(
     settings = (settings or FitSettings()).normalized()
     entities = _collect_entities(records, plain_text)
     by_no = {entity.entity_no: entity for entity in entities}
-    groups: dict[tuple[tuple[str, str], float], list[_TextBox]] = {}
+    # 每段文字现在的外框：挪过的随时更新，后面的行按挪过之后的位置躲。
+    current = {entity.entity_no: _box(entity) for entity in entities}
+    groups: dict[tuple[tuple[str, str], float], list[int]] = {}
     for entity in entities:
-        groups.setdefault((entity.container, round(entity.rotation, 1)), []).append(_box(entity))
+        groups.setdefault((entity.container, round(entity.rotation, 1)), []).append(entity.entity_no)
 
     segments = _line_segments(records)
     cell_indexes: dict[tuple[tuple[str, str], float], _CellIndex] = {}
@@ -953,16 +1072,19 @@ def fit_added_lines(
     # (实体, 新字高或 None, 上下挪多少)：译文行缩字并挪位置，原文只挪位置。
     moves: list[tuple[_TextEntity, float | None, float]] = []
     fitted = 0
-    for added_no, (source_no, below) in added.items():
-        line, source = by_no.get(added_no), by_no.get(source_no)
-        if line is None or source is None:
-            continue
-        line_box, source_box = _box(line), _box(source)
+    # 从上往下排（译文在上时从下往上）：一行挪完，下一行按它的新位置让开。
+    order = sorted(
+        (item for item in added.items() if item[0] in by_no and item[1][0] in by_no),
+        key=lambda item: -current[item[1][0]].top if item[1][1] else current[item[1][0]].bottom,
+    )
+    for added_no, (source_no, below) in order:
+        line, source = by_no[added_no], by_no[source_no]
+        line_box, source_box = current[added_no], current[source_no]
         source_height = source.height
         obstacles = []
         group = (line.container, round(line.rotation, 1))
         if group not in cell_indexes:
-            boxes = groups[group]
+            boxes = [current[number] for number in groups[group]]
             cell_indexes[group] = _CellIndex(
                 segments.get(line.container, ()), line.rotation,
                 (min(box.left for box in boxes), max(box.right for box in boxes),
@@ -970,13 +1092,15 @@ def fit_added_lines(
             )
         # 原文在表格格子里：译文行也留在格子里，连 p、g 这类下伸的笔画都不压到格子的横线上。
         cell = cell_indexes[group].cell(source_box)
-        descender = _DESCENDER * line.height
+        # 译文行在下方、又有 p、g 这类往下伸的字母时，它下面要多留下伸的深度（随字高缩放）。
+        drop = _DESCENDER if below and _has_descender(line.text) else 0.0
+        descender = drop * line.height
         if cell is not None:
             if below and cell.bottom > line_box.bottom - descender:
-                obstacles.append(cell.bottom + descender)
+                obstacles.append(cell.bottom)
             elif not below and cell.top < line_box.top:
                 obstacles.append(cell.top)
-        for box in groups.get((line.container, round(line.rotation, 1)), []):
+        for box in (current[number] for number in groups[group]):
             if box.entity_no in {added_no, source_no}:
                 continue
             # 和原文在同一行的（左右相邻的文字）不算，那是横向防重叠管的。
@@ -985,7 +1109,7 @@ def fit_added_lines(
                 continue
             if min(box.right, line_box.right) - max(box.left, line_box.left) <= 0.1 * source_height:
                 continue
-            if below and box.top > line_box.bottom and box.bottom < source_box.bottom:
+            if below and box.top > line_box.bottom - descender and box.bottom < source_box.bottom:
                 obstacles.append(box.top)
             elif not below and box.bottom < line_box.top and box.top > source_box.top:
                 obstacles.append(box.bottom)
@@ -997,34 +1121,37 @@ def fit_added_lines(
             available = min(obstacles) - source_box.top
         line_height = line.height
         min_gap = _MIN_LINE_GAP * source_height
-        if cell is not None and available - min_gap < line_height:
+        # 下面那道空（下伸笔画）按字高算进去：放得下要 ``available - min_gap >= 字高 × reach``。
+        reach = 1 + drop
+        if cell is not None and available - min_gap < line_height * reach:
             # 格子里原文另一侧还有空（表格行高往往是字高的两三倍，原文居中）：原文往那边挪，
             # 给译文行腾地方，挪到离格线或那边的文字还留一道空为止。
             if below:
                 limit = cell.top - min_gap
-                for box in groups[group]:
+                for box in (current[number] for number in groups[group]):
                     if box.entity_no not in {added_no, source_no} and source_box.top <= box.bottom < limit and \
                             min(box.right, source_box.right) - max(box.left, source_box.left) > 0:
                         limit = box.bottom - min_gap
                 room = limit - source_box.top
             else:
                 limit = cell.bottom + min_gap
-                for box in groups[group]:
+                for box in (current[number] for number in groups[group]):
                     if box.entity_no not in {added_no, source_no} and limit < box.top <= source_box.bottom and \
                             min(box.right, source_box.right) - max(box.left, source_box.left) > 0:
                         limit = box.top + min_gap
                 room = source_box.bottom - limit
-            lift = max(0.0, min(room, line_height + min_gap - available))
+            lift = max(0.0, min(room, line_height * reach + min_gap - available))
             if lift:
                 available += lift
                 shift = lift if below else -lift
                 source_box = replace(source_box, bottom=source_box.bottom + shift, top=source_box.top + shift)
+                current[source_no] = source_box
                 moves.append((source, None, shift))
-        if available - min_gap >= line_height:
+        if available - min_gap >= line_height * reach:
             new_height = line_height
             fits = True
         else:
-            fit = max(available - min_gap, 0.0) / source_height
+            fit = max(available - min_gap, 0.0) / reach / source_height
             tiers = [tier * source_height for tier in settings.tiers() if tier * source_height < line_height]
             tiers = tiers or [min(line_height, settings.min_scale * source_height)]
             new_height = next((height for height in tiers if height <= fit * source_height + 1e-9), tiers[-1])
@@ -1032,7 +1159,8 @@ def fit_added_lines(
         if not fits and unresolved is not None:
             unresolved.append({"source": source.text, "translation": line.text, "entity": added_no})
         current_gap = source_box.bottom - line_box.top if below else line_box.bottom - source_box.top
-        gap = min(current_gap, available - new_height) if fits else min_gap
+        # 放得下时，挤出来的空上下各留一半，不贴着任何一边。
+        gap = min(current_gap, max(min_gap, (available - new_height * reach) / 2)) if fits else min_gap
         if below:
             new_top = source_box.bottom - gap
             new_bottom = new_top - new_height
@@ -1043,6 +1171,10 @@ def fit_added_lines(
         new_anchor = {3: new_top, 2: (new_bottom + new_top) / 2}.get(line.valign, new_bottom)
         old_anchor = {3: top, 2: (bottom + top) / 2}.get(line.valign, bottom)
         moves.append((line, new_height, new_anchor - old_anchor))
+        ratio = new_height / line_height if line_height else 1.0
+        x = _local(line)[0]
+        current[added_no] = _TextBox(added_no, *_horizontal_span(line.halign, x, (line_box.right - line_box.left) * ratio),
+                                     new_bottom, new_top)
         fitted += 1
 
     # 改字高可能多插一条记录，从后往前改，前面实体的位置不受影响。
