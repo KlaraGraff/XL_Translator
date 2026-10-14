@@ -157,6 +157,22 @@ def test_install_from_a_folder_registers_the_type(tmp_path: Path, isolated: Path
     assert (package / "samples" / "hello.txt").is_file()
 
 
+def test_a_new_extension_shows_in_the_sidebar_unless_the_user_chose_otherwise(tmp_path: Path, isolated: Path) -> None:
+    from settings import load_settings, save_settings
+
+    with TestClient(create_app()) as client:
+        _install(client, make_package(tmp_path / "v1"))
+        assert load_settings().translation_types.visible[KEY] is True
+        settings = load_settings()
+        settings.translation_types.visible[KEY] = False  # the user hides it on the 「扩展」 page
+        save_settings(settings)
+        _install(client, make_package(tmp_path / "v2", version="1.1.0"))
+        assert load_settings().translation_types.visible[KEY] is False  # an update keeps the choice
+        assert client.post("/api/extensions/linetext/uninstall").status_code == 200
+        _install(client, make_package(tmp_path / "v3"))
+        assert load_settings().translation_types.visible[KEY] is False  # so does a reinstall
+
+
 def test_install_from_a_zip_with_a_top_level_folder(tmp_path: Path, isolated: Path) -> None:
     archive = zip_package(make_package(tmp_path / "linetext"), tmp_path / "linetext.zip")
     summary = adapter_install.preview(archive)

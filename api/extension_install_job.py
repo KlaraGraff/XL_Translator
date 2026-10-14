@@ -5,6 +5,8 @@
 - 注册 / 注销页面：装好后立即出现在 ``GET /api/surfaces``（侧栏、任务中心、命令行、MCP 都认），
   卸载后立即消失；应用启动时 ``register_installed_adapters()`` 把已装的逐个注册，坏的跳过并记日志。
 - 有任务的类型不能换：同一类型还有任务在跑或暂停时，拒绝更新和卸载（旧目录会被删掉）。
+- 新装的显示在侧栏：扩展类型默认不显示（``settings.translation_types``），用户主动装的除外；
+  用户在「扩展」页拨过它的开关时不动，更新也不动。
 
 安装走与插件页相同的后台任务样式（``InstallJob``：进度、取消、结果轮询），同一时间只装一个。
 """
@@ -28,6 +30,7 @@ from core.adapter_install import AdapterInstallError
 from core.adapter_registry import RegistryError
 from core.adapter_subprocess_host import SubprocessAdapterHost
 from core.format_adapter import AdapterHost, AdapterManifest
+from settings import update_settings_atomically
 
 #: ``AdapterSurface.origin`` of a type installed by the user.
 INSTALLED_ORIGIN = "installed"
@@ -110,6 +113,21 @@ def _reactivate(adapter_id: str) -> None:
             return
 
 
+def _show_in_sidebar(key: str) -> None:
+    """新装的扩展显示在侧栏；用户拨过这个类型的开关时不动。设置写不进去不影响安装。"""
+
+    def update(current: Any) -> bool:
+        if key in current.translation_types.visible:
+            return False
+        current.translation_types.visible[key] = True
+        return True
+
+    try:
+        update_settings_atomically(update)
+    except Exception as exc:  # noqa: BLE001 - the extension is installed either way
+        logger.warning(f"[扩展] 无法把 {key} 设为显示在侧栏：{exc}")
+
+
 def _busy_check(active_surfaces: Callable[[], frozenset[str]]) -> Callable[[AdapterManifest], None]:
     """换上新目录之前：先注销旧的（不再接新任务），再看还有没有任务在用它。"""
 
@@ -139,6 +157,7 @@ def install_and_activate(
     if progress:
         progress("install", 0, 1)
     adapter_id = ""
+    previously_installed = set(adapter_install.read_registry())
 
     def before_replace(manifest: AdapterManifest) -> None:
         nonlocal adapter_id
@@ -166,6 +185,8 @@ def install_and_activate(
                 raise AdapterInstallError(item.problem or "扩展已复制，但无法读取")
             activate(item.directory, item.manifest)
             break
+    if record["id"] not in previously_installed:
+        _show_in_sidebar(f"ext:{record['id']}")
     if progress:
         progress("done", 1, 1)
     return record
