@@ -232,12 +232,12 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         assert done.review["total_count"] == 1
         listing = Path(done.review["report_path"]).read_text(encoding="utf-8-sig")
         assert Path(done.review["report_path"]).name == REVIEW_LIST_NAME
-        assert "a.txt\tL2（line 2）\tBroken\t未获得译文" in listing
+        assert "a.txt\tline 2\tBroken\t未获得译文" in listing
         # The task center's result table reads these rows.
         assert done.review["items"] == [
             {
                 "file": "a.txt",
-                "location": "L2（line 2）",
+                "location": "line 2",
                 "excerpt": "Broken",
                 "issue": "未获得译文",
                 "action": "已保留原文",

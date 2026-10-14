@@ -461,7 +461,8 @@ class AdapterTaskRunner(BaseTaskRunner):
 
     @staticmethod
     def _unit_label(unit: TextUnit) -> str:
-        return f"{unit.id}（{unit.context}）" if unit.context else unit.id
+        # context 是适配器写给人看的位置（「第 3 行」）；没写才退回内部 id。
+        return unit.context or unit.id
 
     def _plan(self, units: list[TextUnit]) -> _Plan:
         plan = _Plan(units=units)

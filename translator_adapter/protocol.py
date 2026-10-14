@@ -82,7 +82,8 @@ class TextUnit:
     #: Unique within the file; ``write`` gets it back to put the translation in place.
     id: str
     text: str
-    #: Where the text sits, for the user and the model ("heading", "table B3").
+    #: Where the text sits, as the user reads it in the review list
+    #: ("line 12", "table B3"); left empty, the review list shows ``id``.
     context: str = ""
     #: What the text is ("paragraph", "heading", "list_item", "cell" …).
     kind: str = "paragraph"
