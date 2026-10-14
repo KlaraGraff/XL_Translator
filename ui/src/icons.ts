@@ -34,6 +34,7 @@ export const ICON_NAMES = [
   "close",
   "message",
   "lock",
+  "link",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -174,6 +175,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 反馈页勾选原文件、译文时的隐私说明。
     body: '<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
+  },
+  link: {
+    viewBox: "0 0 24 24",
+    // 两个环扣在一起：侧栏「MCP」（让智能体接入）。
+    body: '<path d="M10 13.5a4 4 0 0 0 6 .4l2.6-2.6a4 4 0 0 0-5.7-5.7l-1.4 1.4"/><path d="M14 10.5a4 4 0 0 0-6-.4l-2.6 2.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/>',
   },
 };
 

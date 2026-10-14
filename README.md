@@ -174,6 +174,48 @@ Windows 的数据目录为 `%LOCALAPPDATA%\Translator`。
 
 安全提示：任何安装了本应用的用户均可解密 `.xltcfg` 文件。该加密仅用于防止文件在传输过程中被无关人员查看，无法防范持有本应用的用户。请勿将含密钥的配置文件发布到公开群组或网盘。导出文件仅包含在本机手动填写的密钥，从他人配置中导入的密钥不会被再次导出。
 
+## 接入智能体
+
+Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用：智能体可查询支持的文件类型、扫描文件、发起翻译、查看进度并取得结果文件的路径。同一程序也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型、语言和翻译参数沿用应用中的设置，使用前需先在应用中完成模型配置。译文写入原文件旁的新文件夹，原文件不会被修改。
+
+最简单的接入方式：打开应用侧栏的「MCP」页面，点击「复制接入说明」，粘贴并发送给智能体，由它完成配置；按提示重新启动智能体后即可使用。以下为手动配置方法。
+
+翻译引擎的位置：
+
+- macOS：`/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
+- Windows：`C:\Users\<用户名>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
+
+「MCP」页面的「高级」中显示本机的实际路径，配置和命令可直接复制。以下示例使用 macOS 路径；Windows 路径写入 JSON 时，需将每个 `\` 写作 `\\`。配置文件中已有其他服务时，将 `translator` 一项加入现有的 `mcpServers` 即可。
+
+**Claude Desktop**：在「Settings → Developer → Edit Config」中打开 `claude_desktop_config.json`（macOS 位于 `~/Library/Application Support/Claude/`，Windows 位于 `%APPDATA%\Claude\`），加入以下内容后重新启动 Claude Desktop。
+
+```json
+{
+  "mcpServers": {
+    "translator": {
+      "command": "/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Claude Code**：在终端中执行以下命令，对所有项目生效；如仅用于某个项目，可将上面的 JSON 保存为该项目根目录下的 `.mcp.json`。
+
+```bash
+claude mcp add --scope user translator -- /Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar mcp
+```
+
+**Cursor**：将上面的 JSON 保存为 `~/.cursor/mcp.json`（对所有项目生效；Windows 为 `%USERPROFILE%\.cursor\mcp.json`），或项目中的 `.cursor/mcp.json`。
+
+**命令行**：带子命令运行同一程序即可，例如将一个文件译为法语并等待完成：
+
+```bash
+"/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar" translate ~/Documents/检查表.xlsx --to fr --wait
+```
+
+`--help` 列出全部子命令（`types`、`scan`、`translate`、`status`、`stop`、`mcp`）；`translate --dry-run` 仅列出将翻译的文件和需要确认的事项，不发起翻译。在 Windows PowerShell 中，带引号的路径前需加 `&`。
+
 ## 版本更新
 
 应用启动后会在后台检查一次更新，发现新版本时在侧栏「设置」上显示提示标记。在「设置 → 更新与关于」中可直接完成更新：应用下载官方更新包、校验签名并就地替换，签名不符的更新包一律拒绝安装。macOS 上替换完成后由用户决定重启时间；Windows 上由安装程序完成更新，安装前会确认是否中断正在运行的任务。后台更新提醒可以暂停，也可以忽略指定版本。

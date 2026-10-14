@@ -48,7 +48,9 @@ INSTRUCTIONS = (
     "configured in the Translator app. Usual flow: start_translation with absolute paths and a target "
     "language, then wait_task until done is true, then get_task_result for the output files. Results "
     "are written to a new folder next to the sources; source files are never changed. Use scan_sources "
-    "first to see which files a folder would contribute."
+    "first to see which files a folder would contribute. list_types also reports model_setup: if it "
+    "is not ready, or Translator refuses a task because a model or API key is missing, tell the user "
+    "to set the model up in Translator (Settings → Models) and do not translate the files yourself."
 )
 
 T = TypeVar("T")
@@ -110,19 +112,23 @@ def build_server(session: EngineSession) -> MCPServer:
         except flow.CliError as exc:
             raise ToolError(exc.message) from None
         except EngineError as exc:
-            raise ToolError(exc.detail) from None
+            raise ToolError(flow.refusal_message(exc)) from None
         except EngineUnavailable as exc:
             raise ToolError(str(exc)) from None
 
     @server.tool(
         description=(
             "List the file types Translator can translate: each type's key, names, file extensions "
-            "and its switches (usable as start_translation options)."
+            "and its switches (usable as start_translation options); and model_setup, whether the "
+            "models Translator translates with are set up in the app."
         )
     )
     def list_types() -> dict[str, Any]:
-        types = run(lambda client: flow.file_types(client.surfaces()))
-        return {"types": [flow.type_payload(item) for item in types]}
+        def describe(client: EngineClient) -> dict[str, Any]:
+            types = flow.file_types(client.surfaces())
+            return {"types": [flow.type_payload(item) for item in types], "model_setup": flow.read_model_setup(client)}
+
+        return run(describe)
 
     @server.tool(
         description=(
