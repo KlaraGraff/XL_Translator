@@ -326,8 +326,13 @@ class CadSurface(Surface):
         if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
             configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
         output_dir = bilingual_writer.build_output_dir(request.source_root, configured_output_dir)
+        # 速率与重试按「翻译参数 → CAD」（core/surface_rate.py）。以前 CAD 读的是没有界面的
+        # engine.batch_size（固定 20）和 engine.concurrency，模型服务里改了也不起作用。
+        from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
+
+        rate = resolve_surface_rate(settings, "cad")
         engine = build_role_engine(
-            settings,
+            engine_settings_for_rate(settings, rate),
             "translation",
             connection_ids=tuple(chains.get("translation") or ()),
         )
@@ -364,7 +369,6 @@ class CadSurface(Surface):
             prompt = append_profile(system_prompt, context)
             if glossary:
                 prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
-            concurrency = max(1, int(settings.engine.concurrency))
             stats = TranslationBatchRunStats()
             results = translate_texts(
                 texts,
@@ -372,8 +376,8 @@ class CadSurface(Surface):
                 term_session.wrap(engine) if term_session is not None else engine,
                 settings.target_lang,
                 prompt,
-                max(1, int(settings.engine.batch_size)),
-                concurrency,
+                rate.batch_items,
+                rate.concurrency,
                 # CAD preflight may keep mixed English/French text under
                 # automatic detection.  Passing ``zh`` here silently
                 # changes the model instruction and can produce a wrong
@@ -390,8 +394,11 @@ class CadSurface(Surface):
                 # 每批请求的发出与返回：写进运行日志。
                 request_callback=request_callback,
                 stats=stats,
+                throughput_unlocked=bool(settings.engine.concurrency_unlocked),
                 # 接口临时故障时同一批的重发次数（翻译参数 → CAD → 失败重试次数）。
-                transient_retries=settings.request_retry.cad,
+                transient_retries=rate.request_retry,
+                max_chars=rate.batch_chars,
+                item_retries=rate.item_retry,
             )
             # 接口放弃的批次、停止时没发出去的批次，translate_texts 按原文占位交回。
             # 那不是译文：以前管线把它们当成「已翻译」计数，日志和报告都说全翻好了。
@@ -420,14 +427,17 @@ class CadSurface(Surface):
                 term_session.wrap(engine) if term_session is not None else engine,
                 settings.target_lang,
                 prompt,
-                max(1, int(settings.engine.batch_size)),
-                max(1, int(settings.engine.concurrency)),
+                rate.batch_items,
+                rate.concurrency,
                 progress,
                 error_callback,
                 should_stop=should_stop,
                 api_scheduler=api_schedulers.get("translation"),
                 stats=stats,
-                transient_retries=settings.request_retry.cad,
+                throughput_unlocked=bool(settings.engine.concurrency_unlocked),
+                transient_retries=rate.request_retry,
+                max_chars=rate.batch_chars,
+                item_retries=rate.item_retry,
             )
             # 接口放弃或停止时没发出去的条目按原文占位交回，那不是译文，也不是语种判断。
             failed = stats.untranslated_sources | stats.stopped_sources
@@ -486,9 +496,7 @@ class CadSurface(Surface):
             language_translator=translate_batch_with_sources,
             profile_requester=profile_requester if smart_mode else None,
             # 几张图纸的图纸说明提前同时请求，沿用翻译的并发设置；本地模型一次一个。
-            profile_concurrency=(
-                max(1, int(settings.engine.concurrency)) if settings.engine.mode != "local" else 1
-            ),
+            profile_concurrency=rate.concurrency if rate.mode != "local" else 1,
             filename_translator=engine,
             glossary=load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
             options=CadPipelineOptions(

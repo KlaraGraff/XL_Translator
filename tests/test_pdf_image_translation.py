@@ -28,7 +28,6 @@ from core.image_generation import (
     pdf_page_ratio_tolerance,
     pdf_page_request_size,
 )
-from core.model_throughput import EffectiveModelThroughput
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -295,7 +294,6 @@ class PdfFileProgressTests(unittest.TestCase):
         model_config = types.SimpleNamespace(provider="mock", model="mock-image")
         with (
             patch("core.pdf_image_translation.resolve_effective_model_config", return_value=model_config),
-            patch("core.pdf_image_translation.get_model_throughput", return_value=types.SimpleNamespace(concurrency=1)),
             patch("core.pdf_image_translation.image_model_signature", return_value="mock-signature"),
             patch("core.pdf_image_translation.provider_supports_capability", return_value=True),
             patch("core.pdf_image_translation.build_pdf_output_dir", return_value=root / "out"),
@@ -1654,7 +1652,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             task_logger_enabled=False,
         )
 
-        self.assertEqual(runner._resolve_pdf_concurrency(), 2)
+        self.assertEqual(runner._resolve_pdf_concurrency(), 10)
 
     def test_stopped_runner_assembles_completed_pdf_but_not_partial_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3559,7 +3557,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
 
         settings.pdf.page_generation_concurrency = None
         self.assertEqual(runner._resolve_pdf_concurrency(7), 7)
-        self.assertEqual(runner._resolve_pdf_concurrency(None), 2)
+        self.assertEqual(runner._resolve_pdf_concurrency(None), 10)
 
         settings.pdf.page_generation_concurrency = 999
         self.assertEqual(runner._resolve_pdf_concurrency(2), 20)
@@ -3569,7 +3567,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
         settings.pdf.page_generation_concurrency = 0
         self.assertEqual(runner._resolve_pdf_concurrency(2), 1)
 
-    def test_run_honours_the_user_page_concurrency_over_model_throughput(self) -> None:
+    def test_run_honours_the_user_page_concurrency_over_the_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             names = ["a", "b", "c", "d"]
@@ -3592,18 +3590,13 @@ class PdfDefectRegressionTests(unittest.TestCase):
             with patch.dict(
                 sys.modules,
                 {"pypdfium2": _fake_pdfium_module_by_page_count({f"{n}.pdf": 1 for n in names})},
-            ), patch("core.model_roles.get_key", return_value="secret"), patch(
-                "core.pdf_image_translation.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="test", batch_size=None, concurrency=1
-                ),
-            ):
+            ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
             messages = _drain_all_messages(runner)
             done = [item for item in messages if isinstance(item, DoneMsg)]
             self.assertTrue(done)
-            # 吞吐档案建议 1，用户设置 3——跑起来必须是 3。
+            # 默认 10 页，用户设置 3——跑起来必须是 3。
             self.assertEqual(image_client.max_active, 3)
             logs = [item.message for item in messages if isinstance(item, LogMsg)]
             self.assertTrue(any("同时处理 3 页（按设置里指定的数量）" in line for line in logs))

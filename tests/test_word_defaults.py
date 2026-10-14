@@ -6,6 +6,7 @@ from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
     MIXED_MARK_UNRESOLVED,
 )
+from core.surface_rate import resolve_surface_rate
 from settings import AppSettings, WordBatchSettings
 
 
@@ -25,10 +26,11 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.excel_review.mark_colors, two_colors)
         self.assertTrue(settings.excel_review.mark_review_items)
         self.assertEqual(settings.excel_review.existing_fill_policy, "red_font")
-        self.assertEqual(settings.word_batch.max_paragraphs_per_batch, 8)
-        self.assertEqual(settings.word_batch.max_chars_per_batch, 800)
-        self.assertEqual(settings.word_batch.split_paragraph_chars, 800)
-        self.assertEqual(settings.word_batch.strict_retry_attempts, 3)
+        word = resolve_surface_rate(settings, "word", mode="cloud")
+        self.assertEqual(word.batch_items, 8)
+        self.assertEqual(word.batch_chars, 1000)
+        self.assertEqual(word.item_retry, 3)
+        self.assertEqual(word.request_retry, 2)
         self.assertEqual(settings.pdf.page_retry_attempts, 1)
         self.assertTrue(settings.word_conversion.use_native_preprocessing)
         self.assertTrue(settings.word_conversion.prefer_native_word)

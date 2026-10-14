@@ -50,19 +50,20 @@ class OaProtocolApiTests(unittest.TestCase):
         locked_sizes = self.client.put(
             "/api/settings",
             json={
-                "word_batch": {
-                    "max_paragraphs_per_batch": 1000000,
-                    "max_chars_per_batch": 1000000,
-                    "split_paragraph_chars": 1000000,
+                "rate": {
+                    "word": {"batch_items": 1000000, "batch_chars": 1000000},
+                    "cad": {"concurrency": 1000000},
                 },
                 "pdf": {"page_generation_concurrency": 1000000},
             },
         )
         self.assertEqual(locked_sizes.status_code, 200)
-        self.assertEqual(locked_sizes.json()["word_batch"]["max_paragraphs_per_batch"], 8)
-        self.assertEqual(locked_sizes.json()["word_batch"]["max_chars_per_batch"], 12000)
-        self.assertEqual(locked_sizes.json()["word_batch"]["split_paragraph_chars"], 12000)
         self.assertEqual(locked_sizes.json()["pdf"]["page_generation_concurrency"], 20)
+        locked_rate = self.client.get("/api/settings/rate").json()["surfaces"]
+        self.assertEqual(locked_rate["word"]["effective"]["batch_items"], 8)
+        self.assertEqual(locked_rate["word"]["effective"]["batch_chars"], 12000)
+        self.assertEqual(locked_rate["cad"]["effective"]["concurrency"], 50)
+        self.assertEqual(locked_rate["pdf_image"]["effective"]["page_generation_concurrency"], 20)
         self.assertEqual(
             self.client.post("/api/models/throughput/unlock", json={"code": "wrong"}).status_code,
             422,
@@ -105,22 +106,18 @@ class OaProtocolApiTests(unittest.TestCase):
             role_bounds = self.client.get(f"/api/models/throughput/{role}").json()
             self.assertIsNone(role_bounds["concurrency_bounds"], role)
 
-        word_batch = self.client.put(
+        unlocked_sizes = self.client.put(
             "/api/settings",
-            json={
-                "word_batch": {
-                    "max_paragraphs_per_batch": 1000000,
-                    "max_chars_per_batch": 1000000,
-                    "split_paragraph_chars": 1000000,
-                },
-                "pdf": {"page_generation_concurrency": 1000000},
-            },
+            json={"pdf": {"page_generation_concurrency": 1000000}},
         )
-        self.assertEqual(word_batch.status_code, 200)
-        self.assertEqual(word_batch.json()["word_batch"]["max_paragraphs_per_batch"], 8)
-        self.assertEqual(word_batch.json()["word_batch"]["max_chars_per_batch"], 1000000)
-        self.assertEqual(word_batch.json()["word_batch"]["split_paragraph_chars"], 1000000)
-        self.assertEqual(word_batch.json()["pdf"]["page_generation_concurrency"], 1000000)
+        self.assertEqual(unlocked_sizes.status_code, 200)
+        self.assertEqual(unlocked_sizes.json()["pdf"]["page_generation_concurrency"], 1000000)
+        unlocked_rate = self.client.get("/api/settings/rate").json()["surfaces"]
+        # Word 每批最多 8 段是分批器的结构上限，解锁也不变。
+        self.assertEqual(unlocked_rate["word"]["effective"]["batch_items"], 8)
+        self.assertEqual(unlocked_rate["word"]["effective"]["batch_chars"], 1000000)
+        self.assertEqual(unlocked_rate["cad"]["effective"]["concurrency"], 1000000)
+        self.assertEqual(unlocked_rate["pdf_image"]["effective"]["page_generation_concurrency"], 1000000)
 
     def test_protocol_round_trip_for_role_and_secondary_connection(self) -> None:
         role = self.client.put(

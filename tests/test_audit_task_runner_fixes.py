@@ -25,10 +25,10 @@ from core.api_config_check import ApiConfigCheckResult
 from core.excel_coverage import ExcelCoveragePlan
 from core.file_scanner import FileItem
 from core.language_preflight import TranslationLanguageResult
-from core.model_throughput import EffectiveModelThroughput
 from core.translation_coverage import COVERAGE_SOURCE_ONLY, CoverageUnit
 from core.task_runner import StoppedMsg, TaskRunner
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 
 class _PreflightEngine:
@@ -73,8 +73,8 @@ def _base_patches(stack: ExitStack, *, root: Path, engine) -> None:
     stack.enter_context(patch("core.task_runner.resolve_effective_model_config", return_value=object()))
     stack.enter_context(
         patch(
-            "core.task_runner.get_model_throughput",
-            return_value=EffectiveModelThroughput(profile_key="audit", batch_size=10, concurrency=1),
+            "core.task_runner.resolve_surface_rate",
+            side_effect=pinned_surface_rate(batch_items=10, concurrency=1),
         )
     )
     stack.enter_context(

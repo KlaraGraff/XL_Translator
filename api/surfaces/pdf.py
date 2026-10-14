@@ -209,8 +209,8 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     """
     from core.document_profile import request_document_profile
     from core.engine_dispatcher import build_role_engine, translate_texts
-    from core.model_throughput import get_model_throughput
     from core.ocr_engine import resolve_tesseract, tesseract_languages
+    from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
     from core.pdf_vector import InplaceHooks
     from core.term_session import DocumentTermMemory
     from engines.base_engine import engine_supports_chat
@@ -218,25 +218,25 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     state: dict[str, Any] = {}
     lock = threading.Lock()
 
+    # 速率与重试按「翻译参数 → PDF → 文字翻译」（core/surface_rate.py）。
+    rate = resolve_surface_rate(settings, "pdf_text")
+
     def engine():
         with lock:
             if "engine" not in state:
-                state["engine"] = build_role_engine(settings, "translation", connection_ids=connection_ids)
+                state["engine"] = build_role_engine(
+                    engine_settings_for_rate(settings, rate), "translation", connection_ids=connection_ids
+                )
             return state["engine"]
-
-    try:
-        throughput = get_model_throughput(settings, resolve_effective_model_config(settings, ROLE_TRANSLATION))
-        batch_size = int(throughput.batch_size or 20)
-        concurrency = 1 if settings.engine.mode == "local" else int(throughput.concurrency or 4)
-    except Exception as exc:  # noqa: BLE001 - defaults are fine for a Beta path
-        logger.debug(f"[PDF] 原位替换：读取文档翻译模型批量设置失败：{exc!r}")
-        batch_size, concurrency = 20, 4
 
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
         # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
         eng = term_session.wrap(engine()) if term_session is not None else engine()
-        return translate_texts(texts, eng, "zh", prompt, batch_size=batch_size,
-                               concurrency=concurrency, source_lang="auto", should_stop=should_stop)
+        return translate_texts(texts, eng, "zh", prompt, batch_size=rate.batch_items,
+                               concurrency=rate.concurrency, source_lang="auto", should_stop=should_stop,
+                               throughput_unlocked=bool(settings.engine.concurrency_unlocked),
+                               transient_retries=rate.request_retry, max_chars=rate.batch_chars,
+                               item_retries=rate.item_retry)
 
     profile = None
     if getattr(settings.pdf, "smart_context", False):
@@ -269,13 +269,13 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
 
 
 def _document_profile_concurrency(settings: AppSettings) -> int:
-    """几份 PDF 的文档说明同时请求几个：沿用文档翻译模型的并发设置；本地模型一次一个。"""
+    """几份 PDF 的文档说明同时请求几个：沿用 PDF 文字翻译的同时请求数；本地模型一次一个。"""
     if settings.engine.mode == "local":
         return 1
     try:
-        from core.model_throughput import get_model_throughput
+        from core.surface_rate import resolve_surface_rate
 
-        return max(1, int(get_model_throughput(settings, resolve_effective_model_config(settings, ROLE_TRANSLATION)).concurrency))
+        return max(1, int(resolve_surface_rate(settings, "pdf_text").concurrency))
     except Exception as exc:  # noqa: BLE001 - fall back to one at a time.
         logger.debug(f"[PDF] 读取文档翻译模型并发设置失败：{exc!r}")
         return 1

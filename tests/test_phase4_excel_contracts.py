@@ -23,9 +23,9 @@ from core import tm_manager, xls_converter
 from core.file_scanner import FileItem, scan_excel_sources
 from core.language_preflight import TranslationLanguageResult
 from core.mixed_language import MIXED_MARK_UNRESOLVED
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, StoppedMsg, TaskRunner
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 
 class _PreflightEngine:
@@ -314,10 +314,8 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
         stack.enter_context(patch("core.task_runner.resolve_effective_model_config", return_value=object()))
         stack.enter_context(
             patch(
-                "core.task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="phase4", batch_size=10, concurrency=1
-                ),
+                "core.task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(batch_items=10, concurrency=1),
             )
         )
         stack.enter_context(

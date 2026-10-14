@@ -31,7 +31,6 @@ from core.api_config_check import ApiConfigCheckResult
 from core.language_preflight import TranslationLanguageResult
 from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.model_api_identity import TaskApiContext
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, WordRecoveryStatusMsg
 from core.tm_hygiene import sanitize_tm_pairs as real_sanitize_tm_pairs
 from core.word_converter import WordConversionError, convert_doc_to_docx
@@ -39,6 +38,7 @@ from core.word_document import WordFileItem, WordSegment, extract_word_segments,
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings, WordBatchSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.rate_pins import pinned_surface_rate
 
 
 class _DormantRunner:
@@ -221,7 +221,7 @@ class WordSettingsAndTaskSnapshotContractTests(IsolatedAppDataTestCase):
             self.assertEqual(snapshot["doc_file_count"], 0)
             self.assertEqual(snapshot["doc_conversion_mode"], "compatibility")
             self.assertTrue(snapshot["word_output"]["use_custom_output_dir"])
-            self.assertIn("word_batch", snapshot)
+            self.assertIn("rate", snapshot)
             self.assertIn("word_review", snapshot)
             self.assertIn("word_conversion", snapshot)
 
@@ -384,10 +384,8 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
         stack.enter_context(patch("core.word_task_runner.resolve_effective_model_config", return_value=object()))
         stack.enter_context(
             patch(
-                "core.word_task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="phase5", batch_size=10, concurrency=1
-                ),
+                "core.word_task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(concurrency=1),
             )
         )
         stack.enter_context(

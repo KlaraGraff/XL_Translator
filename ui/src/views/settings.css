@@ -228,3 +228,13 @@
 .ret-name small { font-size: 11px; }
 .ret-ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
 .ret-ctl input[type="number"] { width: 72px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 6px; text-align: right; }
+
+/* 翻译参数 · 速率与重试（settings-rate.ts）：三列一行；组标题一行放说明和右侧的
+ * 「恢复默认值」。 */
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; }
+.rp-sec.rate-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; }
+.rp-sec.rate-head .btn { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 500; }
+.rp-sec .rate-sub { margin-left: 8px; font-size: 11.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
+.note.rate-note { margin: 0 0 4px; }
+.note.rate-pointer { margin: 2px 0 10px; display: flex; align-items: center; gap: 8px; }
+.rate-tm-grid { margin-top: 8px; }

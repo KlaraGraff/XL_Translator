@@ -22,7 +22,6 @@ from docx.oxml.ns import nsdecls, qn
 from docx.oxml.parser import parse_xml
 
 from core.api_config_check import ApiConfigCheckResult
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import ErrorMsg
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from core.word_batching import WordBatchRunStats, _split_long_word_text
@@ -43,6 +42,7 @@ from core.word_task_runner import (
 from core.word_converter import WordConversionResult
 from settings import AppSettings, WordBatchSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.rate_pins import pinned_surface_rate
 
 
 def _replace(text: str) -> str:
@@ -870,10 +870,8 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
         )
         stack.enter_context(
             patch(
-                "core.word_task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="defect", batch_size=10, concurrency=1
-                ),
+                "core.word_task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(concurrency=1),
             )
         )
         stack.enter_context(

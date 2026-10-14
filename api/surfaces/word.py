@@ -20,6 +20,14 @@ from core.word_task_runner import WordTaskRunner
 from settings import AppSettings
 
 
+def _word_rate_snapshot(settings: AppSettings) -> dict[str, object]:
+    """任务开始时 Word 实际用的速率与重试（翻译参数 → Word，默认值已代入）。"""
+    from core.surface_rate import RATE_FIELDS, resolve_surface_rate
+
+    rate = resolve_surface_rate(settings, "word")
+    return {field: getattr(rate, field) for field in RATE_FIELDS}
+
+
 class WordSurface(Surface):
     key = "word"
     label = "Word translation"
@@ -75,7 +83,7 @@ class WordSurface(Surface):
     ) -> dict[str, object]:
         return {
             "word_output": settings.word_output.model_dump(mode="json"),
-            "word_batch": settings.word_batch.model_dump(mode="json"),
+            "rate": _word_rate_snapshot(settings),
             "word_review": settings.word_review.model_dump(mode="json"),
             "word_conversion": settings.word_conversion.model_dump(mode="json"),
             "tm": {"max_len": settings.tm.max_len},

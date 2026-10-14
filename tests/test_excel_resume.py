@@ -44,9 +44,9 @@ from core.file_scanner import FileItem
 from core.language_preflight import LanguagePreflightResult
 from core.language_registry import get_target_lang_display
 from core.language_preflight import TranslationLanguageResult
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, LogMsg, TaskRunner
 from settings import AppSettings, EngineSettings
+from tests.rate_pins import pinned_surface_rate
 
 TARGET_LANG = "en"
 SOURCE_LANG = "zh"
@@ -152,10 +152,8 @@ def _pipeline_patches(
     )
     stack.enter_context(
         patch(
-            "core.task_runner.get_model_throughput",
-            return_value=EffectiveModelThroughput(
-                profile_key="test", batch_size=20, concurrency=1
-            ),
+            "core.task_runner.resolve_surface_rate",
+            side_effect=pinned_surface_rate(batch_items=20, concurrency=1),
         )
     )
     stack.enter_context(patch("core.task_runner.tm_manager.lookup_batch", return_value={}))

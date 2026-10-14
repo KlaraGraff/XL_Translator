@@ -82,7 +82,7 @@ from core.mixed_language import (
     translate_mixed_language_texts,
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
-from core.model_throughput import get_model_throughput
+from core.surface_rate import engine_settings_for_rate, resolve_surface_rate
 from core.residual_classifier import (
     CATEGORY_TERM_FRAGMENT,
     check_heading_consistency,
@@ -373,6 +373,9 @@ class WordTaskRunner(BaseTaskRunner):
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler_override = api_scheduler
+        # 本次任务的速率与重试；_run 里按任务实际用的连接重新取一次。
+        self._rate = resolve_surface_rate(settings, "word")
+        self._word_batch = self._rate.word_batch_settings()
         self._untranslated_only = bool(untranslated_only)
         self._protect_front_matter = bool(protect_front_matter)
         self._translate_headers_footers = bool(translate_headers_footers)
@@ -750,15 +753,21 @@ class WordTaskRunner(BaseTaskRunner):
                 self._file_progress.emit_many("unstarted", "not_started")
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
-            engine = build_engine(settings)
+            # 速率与重试按「翻译参数 → Word」（core/surface_rate.py）。PDF 转 Word 翻译
+            # 进来时，调用方已换成 PDF 文字那一组。
+            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            self._rate = resolve_surface_rate(
+                settings, "word", mode=getattr(model_config, "mode", None)
+            )
+            self._word_batch = self._rate.word_batch_settings()
+            engine = build_engine(engine_settings_for_rate(settings, self._rate))
             system_prompt = get_system_prompt(
                 settings,
                 target_lang=target_lang,
                 source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
                 page_key="word",
             )
-            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
-            concurrency = get_model_throughput(settings, model_config).concurrency
+            concurrency = self._rate.concurrency
             api_scheduler = (
                 self._api_scheduler_override
                 if settings.engine.mode != "local"
@@ -1104,7 +1113,7 @@ class WordTaskRunner(BaseTaskRunner):
                 t0 = datetime.now()
                 word_prompt = _build_word_batch_prompt(system_prompt)
                 retry_prompt = _build_word_retry_prompt(system_prompt)
-                retry_batch_settings = settings.word_batch.model_copy(
+                retry_batch_settings = self._word_batch.model_copy(
                     update={"max_paragraphs_per_batch": 1}
                 )
                 # 带局部格式的段落换成带标记的原文发出；没有这类段落时不包
@@ -1119,7 +1128,7 @@ class WordTaskRunner(BaseTaskRunner):
                     target_lang=target_lang,
                     retry_prompt=retry_prompt,
                     retry_batch_settings=retry_batch_settings,
-                    retry_attempts=settings.word_batch.strict_retry_attempts,
+                    retry_attempts=self._word_batch.strict_retry_attempts,
                     source_lang=source_lang,
                     api_scheduler=api_scheduler,
                     concurrency=concurrency,
@@ -1176,10 +1185,11 @@ class WordTaskRunner(BaseTaskRunner):
 
                 logger.info(
                     "Word 批次策略："
-                    f"每批最多 {settings.word_batch.max_paragraphs_per_batch} 段，"
-                    f"字符预算 {settings.word_batch.max_chars_per_batch}，"
+                    f"每批最多 {self._word_batch.max_paragraphs_per_batch} 段，"
+                    f"字符预算 {self._word_batch.max_chars_per_batch}，"
                     "长段按字符预算自动拆分，"
-                    f"失败严格重试 {settings.word_batch.strict_retry_attempts} 轮"
+                    f"临时故障重发 {self._rate.request_retry} 次，"
+                    f"失败严格重试 {self._word_batch.strict_retry_attempts} 轮"
                 )
                 # 逐批日志与 Excel、CAD 共用 core.request_log：开头一行写分几批发送，之后每批
                 # 返回一行，久不返回时说明还在等几批。只有夹杂多种语言的段落时没有批次计划，
@@ -1235,7 +1245,7 @@ class WordTaskRunner(BaseTaskRunner):
                         term_engine,
                         target_lang,
                         word_prompt,
-                        settings.word_batch,
+                        self._word_batch,
                         concurrency,
                         progress_callback=progress_cb,
                         # Batch retries and temporary single-paragraph fallbacks
@@ -1247,6 +1257,7 @@ class WordTaskRunner(BaseTaskRunner):
                         stats=word_batch_stats,
                         api_scheduler=api_scheduler,
                         request_category=API_REQUEST_CATEGORY_NORMAL,
+                        transient_retries=self._rate.request_retry,
                         candidate_callback=recovery_candidate_cb,
                         report_source_languages=auto_source_lang,
                         source_result_callback=model_source_result_cb,
@@ -1275,12 +1286,12 @@ class WordTaskRunner(BaseTaskRunner):
                         system_prompt=system_prompt,
                         source_lang=source_lang,
                         concurrency=concurrency,
-                        max_items_per_batch=settings.word_batch.max_paragraphs_per_batch,
+                        max_items_per_batch=self._word_batch.max_paragraphs_per_batch,
                         max_chars_per_batch=max(
                             DEFAULT_MIXED_MAX_BATCH_CHARS,
-                            settings.word_batch.max_chars_per_batch,
+                            self._word_batch.max_chars_per_batch,
                         ),
-                        retry_attempts=settings.word_batch.strict_retry_attempts,
+                        retry_attempts=self._word_batch.strict_retry_attempts,
                         progress_callback=mixed_progress_cb,
                         error_callback=lambda msg: self._log("WARN", msg),
                         should_stop=self.stop_requested,
@@ -1362,7 +1373,7 @@ class WordTaskRunner(BaseTaskRunner):
                             term_engine,
                             target_lang,
                             word_prompt,
-                            settings.word_batch,
+                            self._word_batch,
                             concurrency,
                             error_callback=lambda msg: self._log("INFO", msg),
                             should_stop=self.stop_requested,
@@ -1370,6 +1381,7 @@ class WordTaskRunner(BaseTaskRunner):
                             stats=WordBatchRunStats(),
                             api_scheduler=api_scheduler,
                             request_category=API_REQUEST_CATEGORY_NORMAL,
+                            transient_retries=self._rate.request_retry,
                         )
                         not_translated = []
                         for source in kept_bilingual:
@@ -1538,7 +1550,7 @@ class WordTaskRunner(BaseTaskRunner):
                         recovery_outcome.unresolved_sources,
                         problem="重译后仍未获得有效译文",
                         status=(
-                            f"已自动重译 {settings.word_batch.strict_retry_attempts} "
+                            f"已自动重译 {self._word_batch.strict_retry_attempts} "
                             "轮并复查，仍保留原文，需人工复核。"
                         ),
                         severity="needs_review",
@@ -3471,7 +3483,7 @@ class WordTaskRunner(BaseTaskRunner):
                 "auto_recovered_text_count": recovered_count,
             },
             "recovery": {
-                "strict_retry_attempts": self._settings.word_batch.strict_retry_attempts,
+                "strict_retry_attempts": self._word_batch.strict_retry_attempts,
                 "recovered_count": recovered_count,
                 "unresolved_count": unresolved_count,
                 "semantic_checked_count": semantic_checked_count,

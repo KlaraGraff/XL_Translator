@@ -37,12 +37,12 @@ from core.api_config_check import ApiConfigCheckResult
 from core.bilingual_writer import bilingual_output_name
 from core.language_preflight import LanguagePreflightResult
 from core.language_registry import get_target_lang_display
-from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, LogMsg
 from core.word_document import WordFileItem, _normalize_word_output_name
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.rate_pins import pinned_surface_rate
 
 
 def _tm_translation_stub(texts, _pair):
@@ -122,10 +122,8 @@ class WordResumeTests(IsolatedAppDataTestCase):
         )
         stack.enter_context(
             patch(
-                "core.word_task_runner.get_model_throughput",
-                return_value=EffectiveModelThroughput(
-                    profile_key="resume", batch_size=10, concurrency=1
-                ),
+                "core.word_task_runner.resolve_surface_rate",
+                side_effect=pinned_surface_rate(concurrency=1),
             )
         )
         stack.enter_context(

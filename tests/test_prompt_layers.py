@@ -219,7 +219,7 @@ class DocumentBundleTests(unittest.TestCase):
             cad_domain_custom_prompts={"图纸": {"_base": "图签保持原样"}},
         )
         exported = build_document_config_export_payload(source)
-        self.assertEqual(exported["version"], 4)
+        self.assertEqual(exported["version"], 5)
         merged = apply_document_config_import(AppSettings(), parse_document_config_import(exported))
         self.assertFalse(merged.cad_smart_context)
         self.assertEqual(merged.cad_domain_preset, "图纸")

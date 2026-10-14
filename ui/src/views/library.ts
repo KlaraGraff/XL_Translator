@@ -14,7 +14,6 @@ import {
   createDropdown,
   createSelectField,
   createLanguagePicker,
-  createSwitch,
   createSwitchRow,
   createEmptyState,
   openModal,
@@ -23,6 +22,7 @@ import {
   closeLanguagePopover,
   closeMenu,
   openMenu as openSharedMenu,
+  placePopover,
   type MenuItem,
   type ChipTone,
   type LanguageOption,
@@ -33,6 +33,7 @@ import { t, tx, fmtNum, localized } from "../i18n";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
+import { tmSwitchDefs } from "./tm-switches";
 
 // ---------------------------------------------------------------------------
 // 类型 / 工具函数
@@ -569,6 +570,137 @@ async function setAdvancedMode(next: boolean): Promise<void> {
     renderTable();
     showToast({ message: t("保存失败：{0}", errorMessage(error)), error: true });
   }
+}
+
+// ---------------------------------------------------------------------------
+// 右上角「设置」浮层
+// ---------------------------------------------------------------------------
+
+let tmSettingsBtn: HTMLButtonElement | null = null;
+/** 展开中的「设置」浮层的关闭函数和重新定位函数；没展开时为 null。 */
+let closeTmSettings: (() => void) | null = null;
+let repositionTmSettings: (() => void) | null = null;
+
+/**
+ * 右上角「设置」：最上面是高级模式，打开后下面出现记忆库的三个开关。三个开关与
+ * 「设置 · 翻译参数」的记忆库卡片是同一组设置（tm.*），数值项只在那边。每次展开都
+ * 重新读一遍设置，设置页刚改过也能看到。
+ */
+async function toggleTmSettings(): Promise<void> {
+  if (closeTmSettings) {
+    closeTmSettings();
+    return;
+  }
+  const generation = mountGeneration;
+  let tm: JsonObject;
+  try {
+    const client = await getClient();
+    tm = record((await client.request<JsonObject>("/api/settings")).tm);
+  } catch (error) {
+    showToast({ message: t("读取设置失败：{0}", errorMessage(error)), error: true });
+    return;
+  }
+  if (!mounted || generation !== mountGeneration || closeTmSettings || !tmSettingsBtn) return;
+  hideHint();
+  closeMenus();
+
+  const pop = document.createElement("div");
+  pop.className = "menu tm-settings-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", t("记忆库设置"));
+
+  const place = () => {
+    if (tmSettingsBtn?.isConnected) placePopover(pop, tmSettingsBtn);
+  };
+  const saveSwitch = async (key: string, next: boolean): Promise<void> => {
+    const previous = tm[key];
+    tm[key] = next;
+    try {
+      await persistSettings({ tm: { [key]: next } });
+    } catch (error) {
+      tm[key] = previous;
+      render();
+      showToast({ message: t("保存失败：{0}", errorMessage(error)), error: true });
+    }
+  };
+  const render = () => {
+    pop.innerHTML = "";
+    pop.append(createSwitchRow({
+      label: t("高级模式"),
+      hint: t("开启后，记忆库页面、记忆条目编辑窗口和任务详情中将显示采用方式、生效范围、使用次数等信息，并可在此调整记忆库选项。默认关闭。"),
+      checked: advancedMode,
+      onChange: (next) => {
+        const saving = setAdvancedMode(next);
+        render();
+        // 保存失败时 setAdvancedMode 会把开关退回去，这里跟着重画。
+        void saving.then(render);
+      },
+    }));
+    if (advancedMode) {
+      const group = document.createElement("div");
+      group.className = "tm-settings-group";
+      for (const def of tmSwitchDefs()) {
+        group.append(createSwitchRow({
+          label: def.label,
+          hint: def.hint,
+          checked: typeof tm[def.key] === "boolean" ? Boolean(tm[def.key]) : def.fallback,
+          onChange: (next) => void saveSwitch(def.key, next),
+        }));
+      }
+      pop.append(group);
+    }
+    const foot = document.createElement("p");
+    foot.className = "tm-settings-foot";
+    foot.append(document.createTextNode(t("重试次数和每批词条上限在「翻译参数」中设置。")));
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "resume-link";
+    go.textContent = t("前往");
+    go.addEventListener("click", () => {
+      close();
+      navigate("settings", { page: "params" });
+    });
+    foot.append(go);
+    pop.append(foot);
+    place();
+  };
+
+  const close = () => {
+    pop.remove();
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onKey);
+    window.removeEventListener("scroll", onScroll, true);
+    window.removeEventListener("resize", close);
+    if (closeTmSettings === close) {
+      closeTmSettings = null;
+      repositionTmSettings = null;
+    }
+    tmSettingsBtn?.setAttribute("aria-expanded", "false");
+  };
+  // 「?」提示浮层挂在 body 上，点它不算点到外面。
+  const onOutside = (event: PointerEvent) => {
+    const target = event.target as Element | null;
+    if (target && (pop.contains(target) || tmSettingsBtn?.contains(target) || target.closest?.(".tip"))) return;
+    close();
+  };
+  const onScroll = (event: Event) => {
+    const target = event.target as Node | null;
+    if (target && pop.contains(target)) return;
+    close();
+  };
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") close();
+  };
+
+  document.body.append(pop);
+  closeTmSettings = close;
+  repositionTmSettings = place;
+  tmSettingsBtn.setAttribute("aria-expanded", "true");
+  render();
+  document.addEventListener("pointerdown", onOutside, true);
+  document.addEventListener("keydown", onKey);
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", close);
 }
 
 function confirmBulkDelete(): void {
@@ -1600,14 +1732,17 @@ function rebuildToolbar(): void {
   actions.append(importBtn, exportBtn);
   // 清洗会调用模型、按条数花钱，所以是普通按钮、点了先确认；库是空的时候没东西可洗。
   actions.append(createButton({ label: t("清洗记忆库"), disabled: cleaningState === "running" || (!keyword && total === 0), onClick: () => confirmTmClean() }));
-  // 高级模式开关放在右上角，默认关闭；设置页「翻译参数 · 记忆库」是同一项。
-  const advancedToggle = document.createElement("label");
-  advancedToggle.className = "tm-adv-toggle";
-  advancedToggle.append(
-    createSwitch({ checked: advancedMode, onChange: (value) => void setAdvancedMode(value) }),
-    document.createTextNode(t("高级模式")),
-  );
-  actions.append(advancedToggle);
+  // 右上角「设置」：高级模式和记忆库的三个开关（见 toggleTmSettings）。工具栏重建后
+  // 浮层改挂到新按钮上，所以按钮存在模块级变量里。
+  tmSettingsBtn = createButton({
+    label: t("设置"),
+    icon: "gear",
+    onClick: () => void toggleTmSettings(),
+  });
+  tmSettingsBtn.setAttribute("aria-haspopup", "dialog");
+  tmSettingsBtn.setAttribute("aria-expanded", String(Boolean(closeTmSettings)));
+  actions.append(tmSettingsBtn);
+  repositionTmSettings?.();
   row.append(actions);
   toolbarCardEl.append(row);
 
@@ -2158,6 +2293,8 @@ export function unmount(): void {
   hideHint();
   closeLanguagePopover();
   closeMenu();
+  closeTmSettings?.();
+  tmSettingsBtn = null;
   if (searchDebounce !== null) {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;

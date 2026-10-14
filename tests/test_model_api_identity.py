@@ -36,6 +36,14 @@ class ModelApiIdentityTests(unittest.TestCase):
 
         snapshot = context.model_snapshot[ROLE_TRANSLATION]
         self.assertEqual(snapshot["model"], "snapshot-model")
+        # v38 起文字翻译的速率按「翻译参数 → Excel」，不再按模型保存的速率。
+        self.assertEqual(snapshot["throughput"]["batch_size"], 20)
+        self.assertEqual(snapshot["throughput"]["concurrency"], 30)
+        settings.rate.excel.batch_items = 11
+        settings.rate.excel.concurrency = 3
+        with patch("core.model_roles.get_key", return_value="snapshot-secret"):
+            context = task_api_context_for_page(settings, "excel_translate")
+        snapshot = context.model_snapshot[ROLE_TRANSLATION]
         self.assertEqual(snapshot["throughput"]["batch_size"], 11)
         self.assertEqual(snapshot["throughput"]["concurrency"], 3)
         self.assertEqual(
