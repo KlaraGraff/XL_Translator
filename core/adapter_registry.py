@@ -4,8 +4,8 @@
 一个条目（名称、简介、支持的扩展名、作者、项目主页、许可证、版本、下载地址、SHA-256、体积……），
 扩展代码本身在作者自己的仓库里。这里只做三件事：
 
-- ``fetch_index``：先取 jsDelivr，失败换 raw.githubusercontent.com；缓存 24 小时；两处都连不上而
-  有缓存时返回缓存并标 ``stale``。不合规的条目跳过，只列「官方」和「已审核」两种。
+- ``fetch_index``：先取 jsDelivr；它失败或几秒内没回应就同时取 raw.githubusercontent.com，先拿到
+  的为准；缓存 24 小时；两处都连不上而有缓存时返回缓存并标 ``stale``。不合规的条目跳过，只列「官方」和「已审核」两种。
 - ``download_entry``：按条目里的地址列表依次下载 zip，核对大小和 SHA-256（``core/component_download``）；
   地址只是搬运工，内容不对就不装，镜像无法篡改。安装本身走与本地添加相同的检查
   （``core/adapter_install``），由 ``api/extension_install_job.py`` 接上注册。
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -40,17 +41,22 @@ REGISTRY_REPO = "KlaraGraff/XL_Translator-extensions"
 REGISTRY_HOME = f"https://github.com/{REGISTRY_REPO}"
 TEMPLATE_HOME = "https://github.com/KlaraGraff/XL_Translator-extension-template"
 #: ``index.json`` 的地址，按顺序尝试：jsDelivr 在国内大多可达，GitHub 原始地址作后备。
+#: 前一个失败，或 ``FALLBACK_DELAY_SECONDS`` 秒内没有结果，就同时开始取下一个，先拿到的为准：
+#: jsDelivr 偶尔卡住十几秒才报 503，不能让「浏览扩展」跟着转圈。
 INDEX_URLS = (
     f"https://cdn.jsdelivr.net/gh/{REGISTRY_REPO}@main/index.json",
     f"https://raw.githubusercontent.com/{REGISTRY_REPO}/main/index.json",
 )
 #: 缓存多久之内不再联网。
 CACHE_TTL_SECONDS = 24 * 3600
+FALLBACK_DELAY_SECONDS = 3.0
 #: 列表本身的上限（几百个条目也只有几百 KB）。
 MAX_INDEX_BYTES = 4 * 1024 * 1024
 LISTED_STATUSES = ("official", "reviewed")
 
 _TIMEOUT = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+#: 下载扩展包：一个地址 15 秒没有新数据就换下一个（通用组件下载是 60 秒，扩展包只有几十 KB）。
+_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=15.0, write=20.0, pool=10.0)
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOCK = threading.Lock()
@@ -229,20 +235,43 @@ def _http_client() -> httpx.Client | None:
     return None
 
 
+def _get_index(client: httpx.Client, url: str) -> dict[str, Any]:
+    response = client.get(url)
+    response.raise_for_status()
+    if len(response.content) > MAX_INDEX_BYTES:
+        raise ValueError("index.json 过大")
+    data = response.json()
+    parse_index(data)
+    return data
+
+
 def _download_index(client: httpx.Client) -> tuple[dict[str, Any], str]:
-    last_error = ""
-    for url in INDEX_URLS:
+    results: queue.Queue[tuple[str, dict[str, Any] | None, Exception | None]] = queue.Queue()
+
+    def fetch(url: str) -> None:
         try:
-            response = client.get(url)
-            response.raise_for_status()
-            if len(response.content) > MAX_INDEX_BYTES:
-                raise ValueError("index.json 过大")
-            data = response.json()
-            parse_index(data)
+            results.put((url, _get_index(client, url), None))
+        except Exception as exc:  # 每个地址都必须回一个结果，否则下面会一直等
+            results.put((url, None, exc))
+
+    waiting = list(INDEX_URLS)
+    running = 0
+    while waiting or running:
+        # 刚开始、上一个地址失败了，或等了 FALLBACK_DELAY_SECONDS 秒还没结果：开始取下一个。
+        # 守护线程：没回来的那个不拖住调用方，也不拖住退出。
+        if waiting:
+            url = waiting.pop(0)
+            threading.Thread(target=fetch, args=(url,), name="extension-index", daemon=True).start()
+            running += 1
+        try:
+            url, data, error = results.get(timeout=FALLBACK_DELAY_SECONDS if waiting else None)
+        except queue.Empty:
+            logger.info(f"[扩展列表] {FALLBACK_DELAY_SECONDS:g} 秒内没有结果，同时尝试下一个地址")
+            continue
+        running -= 1
+        if data is not None:
             return data, url
-        except (httpx.HTTPError, ValueError) as exc:
-            last_error = f"{url}: {exc}"
-            logger.warning(f"[扩展列表] 获取失败，换下一个地址：{last_error}")
+        logger.warning(f"[扩展列表] 获取失败，换下一个地址：{url}: {error}")
     raise RegistryError("无法获取扩展列表，请检查网络连接。")
 
 
@@ -342,12 +371,17 @@ def download_entry(
 ) -> Path:
     """按条目的地址依次下载 zip，大小和 SHA-256 不对就换下一个；全部失败抛 ``RegistryError``。"""
     item = RemoteFile(f"{entry.id}-{_safe(entry.version)}.zip", tuple(entry.download), entry.size, entry.sha256)
+    provided = _http_client()
+    client = provided or httpx.Client(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
     try:
-        return download_files([item], target_dir, progress=progress, cancel=cancel, client=_http_client())[0]
+        return download_files([item], target_dir, progress=progress, cancel=cancel, client=client)[0]
     except ComponentDownloadCancelled as exc:
         raise RegistryError("安装已取消。") from exc
     except ComponentDownloadError as exc:
         raise RegistryError("扩展下载失败，请检查网络连接。") from exc
+    finally:
+        if provided is None:
+            client.close()
 
 
 def _safe(value: str) -> str:
