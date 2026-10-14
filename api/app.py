@@ -12,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from api.extension_install_job import register_installed_adapters
 from api.surfaces.adapter import register_bundled_adapters
 from api.task_manager import (
     TaskConflictError,
@@ -28,6 +29,7 @@ from settings import (
 )
 from api.routes import (
     cad as cad_routes,
+    extensions as extensions_routes,
     ocr as ocr_routes,
     pdf2docx as pdf2docx_routes,
     pdf_routes as pdf_route_routes,
@@ -179,6 +181,11 @@ def create_app(
         register_bundled_adapters()
     except Exception as exc:  # noqa: BLE001 - never block startup on an adapter
         logger.warning(f"注册随应用提供的翻译类型失败：{exc!r}")
+    # 用户安装的扩展（<应用数据>/plugins/adapters/）排在随应用提供的之后；装坏的跳过。
+    try:
+        register_installed_adapters()
+    except Exception as exc:  # noqa: BLE001 - never block startup on an extension
+        logger.warning(f"注册已安装的扩展失败：{exc!r}")
 
     # Route registration order matters wherever a literal path and a
     # parameterised sibling overlap (Starlette matches in declaration
@@ -261,6 +268,7 @@ def create_app(
     config_transfer_routes.register(app)
     maintenance_routes.register(app)
     feedback_routes.register(app)
+    extensions_routes.register(app)
 
 
     return app
