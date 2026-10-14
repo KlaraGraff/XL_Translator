@@ -8,8 +8,8 @@
 // 其它视图时依然保持准确，满足“任务中心数据是徽标权威来源”的要求。凡是会触碰当前
 // 视图 DOM 的渲染函数都额外用 `mounted` 门控，避免后台事件在别的视图挂载期间乱写 DOM。
 
-import type { ViewParams } from "../router";
-import { navigate } from "../router";
+import type { ViewId, ViewParams } from "../router";
+import { hasView, navigate } from "../router";
 import { setTopbar, setTaskBadge, setTaskPill } from "../shell";
 import {
   closeMenu,
@@ -31,6 +31,7 @@ import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
+import { extSurfaceIcon, extSurfaceLabel, isExtSurface, surfaceDescriptor } from "../surface-descriptors";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -195,12 +196,20 @@ const SURFACE_TASK_LABEL: Record<TaskSurface, string> = localized(() => ({
 /** 能在翻译工作区里打开的任务（侧栏「翻译」下的四个页面）。 */
 const WORKSPACE_SURFACES = new Set<TaskSurface>(["excel", "word", "pdf", "cad"]);
 
+/** 运行时注册的翻译类型（`ext:<id>`）不在上面两张表里，图标和名称按描述符取。 */
 function surfaceIcon(surface: TaskSurface): IconName {
+  if (isExtSurface(surface)) return extSurfaceIcon(surface);
   return SURFACE_ICON[surface] ?? "book";
 }
 
 function taskSurfaceLabel(surface: TaskSurface): string {
+  if (isExtSurface(surface)) return extSurfaceLabel(surface);
   return SURFACE_TASK_LABEL[surface] ?? t("记忆库清洗");
+}
+
+/** 翻译工作区里的任务：侧栏「翻译」下的四个页面，加上运行时注册的类型。 */
+function isWorkspaceSurface(surface: TaskSurface): boolean {
+  return WORKSPACE_SURFACES.has(surface) || isExtSurface(surface);
 }
 
 const STATE_LABELS = TASK_STATE_LABELS;
@@ -1158,9 +1167,15 @@ async function stopTask(taskId: string): Promise<void> {
 /** 暂停/继续：PDF（暂停提交新页面）和 CAD（不再发出新的一批翻译请求）都支持。 */
 const PAUSABLE_SURFACES = new Set<TaskSurface>(["pdf", "cad"]);
 
+/** 运行时注册的类型能不能暂停看描述符。 */
+function isPausableSurface(surface: TaskSurface): boolean {
+  if (isExtSurface(surface)) return Boolean(surfaceDescriptor(surface)?.capabilities.can_pause);
+  return PAUSABLE_SURFACES.has(surface);
+}
+
 async function pauseTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
-  if (!entry || !PAUSABLE_SURFACES.has(entry.task.surface)) return;
+  if (!entry || !isPausableSurface(entry.task.surface)) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/pause`, { method: "POST" });
@@ -1172,7 +1187,7 @@ async function pauseTask(taskId: string): Promise<void> {
 
 async function resumeTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
-  if (!entry || !PAUSABLE_SURFACES.has(entry.task.surface)) return;
+  if (!entry || !isPausableSurface(entry.task.surface)) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/resume`, { method: "POST" });
@@ -1470,13 +1485,13 @@ function splitSourceLabel(label: string): { name: string; fileCount: number | nu
 function cardTitle(task: TaskStatus): string {
   const fallback = t("任务 {0}", task.task_id.slice(0, 8));
   const label = text(task.source_label);
-  if (!WORKSPACE_SURFACES.has(task.surface)) return `${taskSurfaceLabel(task.surface)} · ${tx(label) || fallback}`;
+  if (!isWorkspaceSurface(task.surface)) return `${taskSurfaceLabel(task.surface)} · ${tx(label) || fallback}`;
   return splitSourceLabel(label).name || fallback;
 }
 
 function cardSubtitle(entry: TaskEntry): string {
   const meta = taskStateMeta(entry.task, entry.streamState);
-  const isWorkspaceTask = WORKSPACE_SURFACES.has(entry.task.surface);
+  const isWorkspaceTask = isWorkspaceSurface(entry.task.surface);
   const surfaceLabel = isWorkspaceTask ? taskSurfaceLabel(entry.task.surface) : "";
   const labelCount = splitSourceLabel(text(entry.task.source_label)).fileCount;
   if (isTaskActive(entry.task)) {
@@ -1676,13 +1691,14 @@ function renderDetail(): void {
       }),
     );
   }
-  if (WORKSPACE_SURFACES.has(task.surface)) {
+  // 运行时注册的类型要等描述符到了、视图注册了才能打开；类型已被移除时不给这个按钮。
+  if (isWorkspaceSurface(task.surface) && hasView(task.surface)) {
     actions.append(
       createButton({
         label: t("打开工作区"),
         icon: "play",
         size: "mini",
-        onClick: () => navigate(task.surface as "excel" | "word" | "pdf" | "cad", { taskId: task.task_id }),
+        onClick: () => navigate(task.surface as ViewId, { taskId: task.task_id }),
       }),
     );
   }
@@ -1700,6 +1716,14 @@ function renderDetail(): void {
       actions.append(createButton({ label: t("结束任务"), variant: "danger", size: "mini", onClick: () => void endPausedPdfTask(task.task_id) }));
     } else if (task.surface === "pdf") {
       actions.append(createButton({ label: t("暂停"), size: "mini", onClick: () => void pauseTask(task.task_id) }));
+    } else if (isExtSurface(task.surface) && isPausableSurface(task.surface)) {
+      // 运行时注册的类型照 CAD 的按钮组：暂停 / 继续，随时可停止。
+      if (task.state === "paused") {
+        actions.append(createButton({ label: t("继续翻译"), variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
+      } else if (task.state !== "pausing" && task.state !== "stopping") {
+        actions.append(createButton({ label: t("暂停"), size: "mini", onClick: () => void pauseTask(task.task_id) }));
+      }
+      actions.append(createButton({ label: t("停止"), variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     } else {
       actions.append(createButton({ label: t("停止"), variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     }

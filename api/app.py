@@ -12,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from api.surfaces.adapter import register_bundled_adapters
 from api.task_manager import (
     TaskConflictError,
     TaskInputError,
@@ -172,6 +173,12 @@ def create_app(
     )
     app.state.task_manager = task_manager or TranslationTaskManager()
     app.state.auth_token = str(auth_token or "")
+    # 随应用提供的格式适配器（adapters/<id>/）注册成 ``ext:<id>`` 页面；重复调用时跳过
+    # 已注册的，坏的适配器只记日志，不影响启动。
+    try:
+        register_bundled_adapters()
+    except Exception as exc:  # noqa: BLE001 - never block startup on an adapter
+        logger.warning(f"注册随应用提供的翻译类型失败：{exc!r}")
 
     # Route registration order matters wherever a literal path and a
     # parameterised sibling overlap (Starlette matches in declaration
@@ -212,7 +219,12 @@ def create_app(
 
     @app.exception_handler(TaskInputError)
     async def task_input_error(_request, exc):
-        return _json_error(422, str(exc), reason=getattr(exc, "reason", "invalid_input"))
+        return _json_error(
+            422,
+            str(exc),
+            reason=getattr(exc, "reason", "invalid_input"),
+            accept=getattr(exc, "accept", None),
+        )
 
     @app.exception_handler(SettingsSchemaError)
     async def settings_schema_error(_request, exc):

@@ -121,5 +121,8 @@
   "没有翻译任何内容，原因见任务报告": {"en": "Nothing was translated; see the task report for the reason", "fr": "Rien n'a été traduit ; voir le rapport de tâche pour la raison"},
   "未翻译任何内容": {"en": "Nothing translated", "fr": "Rien traduit"},
   "识别到 {0} 处文字，均未替换（{1}）": {"en": "{0} text items were recognized, none replaced ({1})", "fr": "{0} textes reconnus, aucun remplacé ({1})"},
-  "本文件没有翻译任何内容，输出 PDF 与源文件一致。各页原因见任务报告。": {"en": "Nothing in this file was translated; the output PDF matches the source file. See the task report for the reason on each page.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source. Les raisons page par page figurent dans le rapport de tâche."}
+  "本文件没有翻译任何内容，输出 PDF 与源文件一致。各页原因见任务报告。": {"en": "Nothing in this file was translated; the output PDF matches the source file. See the task report for the reason on each page.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source. Les raisons page par page figurent dans le rapport de tâche."},
+  "{0} 处未获得译文，需复核": {"en": "{0} {0|label got|labels got} no translation and {0|needs|need} review", "fr": "{0} {0|étiquette n'a|étiquettes n'ont} pas été {0|traduite|traduites} et {0|est|sont} à vérifier"},
+  "{0} 处未获得译文，已保留原文，需复核": {"en": "{0} {0|label got|labels got} no translation; the original text was kept and needs review", "fr": "{0} {0|étiquette n'a|étiquettes n'ont} pas été {0|traduite|traduites} ; le texte d'origine est conservé et à vérifier"},
+  "原位替换文字（Beta）": {"en": "Replace text in place (Beta)", "fr": "Remplacer le texte sur place (Bêta)"}
 }

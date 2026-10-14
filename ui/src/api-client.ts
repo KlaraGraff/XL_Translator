@@ -10,7 +10,8 @@ export type SidecarInfo = {
 
 export type TaskStatus = {
   task_id: string;
-  surface: "excel" | "word" | "pdf" | "cad" | "cleaner" | "tm_clean";
+  // `ext:<id>`：运行时注册的翻译类型，名称和图标按描述符取（见 surface-descriptors.ts）。
+  surface: "excel" | "word" | "pdf" | "cad" | "cleaner" | "tm_clean" | `ext:${string}`;
   source_label?: string;
   state: "preflight" | "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
   terminal: boolean;
@@ -131,6 +132,8 @@ export type SurfaceDescriptor = {
   phases: LocalizedText[];
   /** 运行设置里的开关；内置页面为空。 */
   options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
+  /** 由格式适配器生成的类型才有（api/surfaces/adapter.py）：来自清单的 id、版本和来源。 */
+  adapter?: { id: string; version: string; origin: "bundled"; license: string; repo: string };
 };
 
 export type SseEvent = {
@@ -173,6 +176,8 @@ export type PdfPage = {
   inplace_written?: number;
   inplace_kept?: number;
   inplace_review?: number;
+  /** 接口放弃、没拿到译文而保留原文的处数（也在 inplace_review_items 里，kind 为 untranslated）。 */
+  inplace_untranslated?: number;
   /** 译文已写入、但未采用记忆库中设定的译法的处数（也在 inplace_review_items 里，kind 为 term）。 */
   inplace_term_review?: number;
   inplace_review_items?: { text: string; reason: string; detail?: string; kind?: string; box_px?: number[] }[];

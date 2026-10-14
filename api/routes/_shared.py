@@ -20,10 +20,18 @@ def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
         )
 
 
-def _json_error(status_code: int, detail: str, *, reason: str | None = None) -> Response:
+def _json_error(
+    status_code: int,
+    detail: str,
+    *,
+    reason: str | None = None,
+    accept: dict[str, Any] | None = None,
+) -> Response:
     payload: dict[str, Any] = {"detail": detail}
     if reason:
         payload["reason"] = reason
+    if accept:
+        payload["accept"] = accept
     return JSONResponse(status_code=status_code, content=payload)
 
 

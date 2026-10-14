@@ -1,0 +1,8 @@
+{
+  "id": "Broken!",
+  "version": "1.0.0",
+  "adapter_api_version": 1,
+  "label": {"zh": "坏的", "en": "Broken", "fr": "Cassé"},
+  "file_noun": {"zh": "文件", "en": "files", "fr": "fichiers"},
+  "extensions": ["bad"]
+}

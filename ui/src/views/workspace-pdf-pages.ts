@@ -15,7 +15,7 @@ import { ApiError, type PdfPage, type PdfPageFile, type PdfPagesSnapshot } from 
 import { createButton, createChip, openModal, showToast, type ModalHandle } from "../components";
 import { t, tx } from "../i18n";
 import { icon } from "../icons";
-import { getClient, rerender, states, SURFACE_LABEL, type LocalTask, type Surface } from "./workspace";
+import { getClient, rerender, stateOf, surfaceLabel, type LocalTask, type Surface } from "./workspace";
 import { el, redactedText } from "./workspace-util";
 
 // ---------------------------------------------------------------------------
@@ -48,11 +48,11 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
  *  记一笔，界面立刻按「有一页在跑」渲染，等快照把真实状态换上来再清掉。 */
 type PendingRerun = { taskId: string; relativePath: string; pageNumber: number };
 
-const pendingReruns: Record<Surface, PendingRerun | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
+const pendingReruns = new Map<Surface, PendingRerun>();
 
 /** 本地这笔只对发起它的那个任务有效——切到别的任务不能跟着禁用。 */
 function pendingRerunFor(surface: Surface, taskId: string): PendingRerun | undefined {
-  const pending = pendingReruns[surface];
+  const pending = pendingReruns.get(surface);
   return pending && pending.taskId === taskId ? pending : undefined;
 }
 
@@ -126,7 +126,7 @@ function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile
 async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): Promise<void> {
   // 请求还在路上时表里其他行就得先锁上，不能等两秒后的那次轮询。
   const pending: PendingRerun = { taskId, relativePath: file.relative_path, pageNumber: page.page_number };
-  pendingReruns[surface] = pending;
+  pendingReruns.set(surface, pending);
   rerender(surface);
   try {
     const c = await getClient();
@@ -141,8 +141,8 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
   } finally {
     // 快照回来了（或者没拉动）就把话语权交回给它：本地这笔只负责盖住中间那一小段。
     // 拉失败时也要清——那种情况下我们并不知道后端在跑什么，不该一直锁着整张表。
-    if (pendingReruns[surface] === pending) {
-      pendingReruns[surface] = undefined;
+    if (pendingReruns.get(surface) === pending) {
+      pendingReruns.delete(surface);
       rerender(surface);
     }
   }
@@ -155,14 +155,14 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
  *  local.pdfPagesSnapshot.rerun.active 停在拉失败前的最后一次真值上，永远不会自己变
  *  false，下一轮判断条件形同虚设。这里改成连续失败计数：失败就退避（翻倍，封顶 20
  *  秒），累计到上限就整个停掉并且只在停的那一刻说一句话，不再每一轮都弹 toast。 */
-const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
-const rerunTickerFailures: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
+const rerunTickers = new Map<Surface, number>();
+const rerunTickerFailures = new Map<Surface, number>();
 const RERUN_POLL_BASE_MS = 2000;
 const RERUN_POLL_MAX_MS = 20000;
 const RERUN_POLL_MAX_FAILURES = 5;
 
 function startPdfRerunTicker(surface: Surface, taskId: string): void {
-  if (rerunTickers[surface] !== undefined) return;
+  if (rerunTickers.has(surface)) return;
   // fetchPdfPagesSnapshot 的成功分支无条件调用这里——包括「请求发出去时页面还挂载着，
   // 响应回来时用户已经切走」这种情形（unmountWorkspace 早就 stopPdfRerunTicker 把槽位
   // 清空了）。不看挂载状态就重开，会在用户已经离开的页面上复活出一个 handle：紧接着
@@ -170,15 +170,15 @@ function startPdfRerunTicker(surface: Surface, taskId: string): void {
   // 它，两条链就在设置、记忆库等不相干的页面上继续轮询、继续弹「已停止自动刷新」的
   // toast——正是高-10 要消灭的跨页面行为（B1-2）。renderer 在 unmountWorkspace 里被置
   // 空、mountWorkspace 里被重新赋值，用它当「这一屏当前是否挂载」的判断刚好合适。
-  if (states[surface].renderer === null) return;
-  rerunTickerFailures[surface] = 0;
+  if (stateOf(surface).renderer === null) return;
+  rerunTickerFailures.set(surface, 0);
   scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
 }
 
 function scheduleRerunTick(surface: Surface, taskId: string, delay: number): void {
-  rerunTickers[surface] = window.setTimeout(() => {
+  rerunTickers.set(surface, window.setTimeout(() => {
     void (async () => {
-      const local = states[surface].task;
+      const local = stateOf(surface).task;
       if (!local || local.task.task_id !== taskId || !local.pdfPagesSnapshot?.rerun.active) {
         stopPdfRerunTicker(surface);
         return;
@@ -186,30 +186,31 @@ function scheduleRerunTick(surface: Surface, taskId: string, delay: number): voi
       const ok = await fetchPdfPagesSnapshot(surface, taskId, { silent: true });
       // 这次 await 期间可能已经被 stopPdfRerunTicker 掐掉（unmountWorkspace、任务切走），
       // handle 已经清空，不该再续排下一轮。
-      if (rerunTickers[surface] === undefined) return;
+      if (!rerunTickers.has(surface)) return;
       if (!ok) {
-        rerunTickerFailures[surface] += 1;
-        if (rerunTickerFailures[surface] >= RERUN_POLL_MAX_FAILURES) {
+        const failures = (rerunTickerFailures.get(surface) ?? 0) + 1;
+        rerunTickerFailures.set(surface, failures);
+        if (failures >= RERUN_POLL_MAX_FAILURES) {
           stopPdfRerunTicker(surface);
           showToast({ message: t("刷新重新生成进度连续失败，已停止自动刷新；重新打开该任务即可重试。"), error: true });
           return;
         }
-        scheduleRerunTick(surface, taskId, Math.min(RERUN_POLL_BASE_MS * 2 ** rerunTickerFailures[surface], RERUN_POLL_MAX_MS));
+        scheduleRerunTick(surface, taskId, Math.min(RERUN_POLL_BASE_MS * 2 ** failures, RERUN_POLL_MAX_MS));
         return;
       }
-      rerunTickerFailures[surface] = 0;
+      rerunTickerFailures.set(surface, 0);
       scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
     })();
-  }, delay);
+  }, delay));
 }
 
 export function stopPdfRerunTicker(surface: Surface): void {
-  const handle = rerunTickers[surface];
+  const handle = rerunTickers.get(surface);
   if (handle !== undefined) {
     window.clearTimeout(handle);
-    rerunTickers[surface] = undefined;
+    rerunTickers.delete(surface);
   }
-  rerunTickerFailures[surface] = 0;
+  rerunTickerFailures.delete(surface);
 }
 
 export function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement | null {
@@ -488,7 +489,7 @@ async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boole
   await sleep(1500);
   let failures = 0;
   for (;;) {
-    const local = states[surface].task;
+    const local = stateOf(surface).task;
     if (!local || local.task.task_id !== taskId) return true;
     if (!local.pdfPagesSnapshot?.rerun.active) return true;
     // sidecar 中途重启过时快照会连续拉不到：local.pdfPagesSnapshot.rerun.active 停在
@@ -526,11 +527,11 @@ async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageR
       //   - 状态被换掉：被新一轮批量盖掉；
       //   - taskId 对不上：用户在同一个工作区切到了别的任务。第三条以前漏了——原来的
       //     注释写着「任务切走了」，但 pdfBatchRerunState 只在这个函数里改，focusTask
-      //     换 states[surface].task 时压根不碰它，这个守卫对任务切换是瞎的。后果是
+      //     换 stateOf(surface).task 时压根不碰它，这个守卫对任务切换是瞎的。后果是
       //     waitForRerunSlot 的 taskId 检查会让它每次立刻返回，剩下几页背靠背连发，
       //     后端一路 409（page_rerun_active），连弹几条错误 toast，一页也没重跑成。
       if (pdfBatchRerunState[surface] !== batch || batch.stopped) return;
-      if (states[surface].task?.task.task_id !== taskId) return;
+      if (stateOf(surface).task?.task.task_id !== taskId) return;
       batch.current = { fileName: file.name, pageNumber: page.page_number };
       rerender(surface);
       try {
@@ -869,6 +870,8 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
   if (page.inplace_status === "done") {
     const review = Number(page.inplace_review ?? 0);
     const termReview = Number(page.inplace_term_review ?? 0);
+    const untranslated = Number(page.inplace_untranslated ?? 0);
+    if (untranslated > 0) return createChip({ label: t("原位替换 · {0} 处未获得译文", untranslated), tone: "warn" });
     if (review > 0) return createChip({ label: t("原位替换 · {0} 处保留原文", review), tone: "warn" });
     if (termReview > 0) return createChip({ label: t("原位替换 · {0} 处需复核", termReview), tone: "warn" });
     return createChip({ label: t("原位替换"), tone: "ok" });
@@ -930,8 +933,14 @@ function inplaceNote(page: PdfPage): string {
   const head = page.inplace_message ? tx(page.inplace_message) : "";
   const all = page.inplace_review_items ?? [];
   const parts: string[] = head ? [head] : [];
-  const keptItems = all.filter((item) => item.kind !== "term");
+  const keptItems = all.filter((item) => item.kind !== "term" && item.kind !== "untranslated");
   const termItems = all.filter((item) => item.kind === "term");
+  const missingItems = all.filter((item) => item.kind === "untranslated");
+  if (missingItems.length) {
+    const items = missingItems.slice(0, 5);
+    const list = items.map((item) => t("「{0}」{1}", item.text, "").trim()).join(t("、"));
+    parts.push(t("未获得译文的地方：{0}{1}", list, missingItems.length > items.length ? t("等") : ""));
+  }
   if (keptItems.length) {
     const items = keptItems.slice(0, 5);
     const list = items.map((item) => t("「{0}」{1}", item.text, tx(item.reason))).join(t("；"));
@@ -1271,7 +1280,7 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
     translatedCol.header.append(toggle.root, restoreBtn);
     // 重生成正在跑（或刚点下去还没确认）时，输出文件正在被另一件事重装，换回
     // 只会撞上后端的忙锁；先禁掉，理由挂在 title 上。
-    const local = states[surface].task;
+    const local = stateOf(surface).task;
     const snapshot = local?.task.task_id === taskId ? local.pdfPagesSnapshot : undefined;
     const busy = !!snapshot?.rerun.active || !!pendingRerunFor(surface, taskId);
     if (busy) {
@@ -1281,11 +1290,11 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
   }
 
   // 来源标签跟卡片标题同一个说法：没开审核时那张卡片叫「逐页结果」。
-  const reviewEnabled = states[surface].task?.pdfPagesSnapshot?.review_enabled ?? true;
+  const reviewEnabled = stateOf(surface).task?.pdfPagesSnapshot?.review_enabled ?? true;
   handle = openModal({
     tone: "warn",
     icon: "pdf",
-    sourceLabel: (reviewEnabled ? t("逐页审核") : t("逐页结果")) + " · " + SURFACE_LABEL[surface],
+    sourceLabel: (reviewEnabled ? t("逐页审核") : t("逐页结果")) + " · " + surfaceLabel(surface),
     title: t("第 {0} 页对比 · {1}", page.page_number, file.name),
     body: [wrap],
     actions: [
@@ -1408,7 +1417,7 @@ async function runPdfPageRestorePrevious(
   // 的真实状态。拿到新快照后重开对比弹窗，图片跟着重新拉一次。
   const ok = await fetchPdfPagesSnapshot(surface, taskId);
   if (!ok) return;
-  const local = states[surface].task;
+  const local = stateOf(surface).task;
   if (local?.task.task_id !== taskId) return;
   const nextFile = local.pdfPagesSnapshot?.files.find((item) => item.relative_path === file.relative_path);
   const nextPage = nextFile?.pages.find((item) => item.page_number === page.page_number);
@@ -1471,7 +1480,7 @@ export function schedulePdfSnapshotRefresh(surface: Surface, taskId: string): vo
 }
 
 async function loadPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
-  const st = states[surface];
+  const st = stateOf(surface);
   if (!st.task || st.task.task.task_id !== taskId) return false;
   const local = st.task;
   if (local.pdfPagesUnavailable) return false;

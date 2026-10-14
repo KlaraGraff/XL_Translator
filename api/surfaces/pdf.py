@@ -69,6 +69,15 @@ class PdfSurface(Surface):
     can_end_paused = True
     keeps_runner_after_finish = True
 
+    def saved_request_defaults(self, settings: AppSettings, *, target_lang: str) -> dict[str, Any]:
+        # 「也翻译图片文件」存在 pdf.include_images。
+        return {"include_images": bool(settings.pdf.include_images)}
+
+    def saved_scan_defaults(
+        self, settings: AppSettings, *, source_lang: str, target_lang: str
+    ) -> dict[str, Any]:
+        return {"include_images": bool(settings.pdf.include_images)}
+
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_pdf_path(root, include_images=options.include_images)
 
@@ -140,7 +149,10 @@ class PdfSurface(Surface):
             # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
                 "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。",
+                # 界面认这个 reason 开弹窗，所以不改成通用的 needs_confirmation；
+                # 命令行和 MCP 看 accept。
                 reason="pdf_review_model_unavailable",
+                accept={"allow_known_review_failure": True},
             )
 
     def snapshot(
@@ -240,11 +252,10 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     )
 
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
-        # 页面自己拼提示词；接口放弃的条目按原文交回，页面把「原样返回」的再重试一次，
-        # 仍是原文就按保留原文处理（core/pdf_vector/classify.py _translate_with_retry）。
-        return service.translate(
-            texts, prompt=prompt, should_stop=should_stop, term_session=term_session, drop_failed=False
-        )
+        # 页面自己拼提示词。接口放弃、停止时没发出去的条目不在结果里：页面再试一次，仍
+        # 没有就记为「未获得译文」、列进这一页的复核清单，与 CAD 一致；原样返回的才可能是
+        # 模型有意保留原文（core/pdf_vector/classify.py _translate_with_retry）。
+        return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session)
 
     profile = None
     if smart_mode:

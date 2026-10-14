@@ -99,17 +99,16 @@ def test_a_given_prompt_replaces_the_page_prompt():
     assert engine.calls[0]["prompt"] == "只译图纸标注"
 
 
-def test_items_the_api_gave_up_on_are_dropped_unless_the_caller_keeps_them():
+def test_items_the_api_gave_up_on_are_dropped():
     engine = FakeEngine(fail={"Cassé"})
     service = _service(engine)
     errors: list[str] = []
     dropped = service.translate(["Porte", "Cassé"], error_callback=errors.append)
-    kept = service.translate(["Porte", "Cassé"], drop_failed=False)
 
+    # A returned source is not a translation: CAD and the in-place PDF pages both
+    # read a missing entry as "no translation" and list it for review.
     assert dropped == {"Porte": "Porte-译"}
     assert errors
-    # The in-place PDF pages read a returned source as "kept as is" and retry it.
-    assert kept == {"Porte": "Porte-译", "Cassé": "Cassé"}
 
 
 def test_stop_takes_effect_between_batches():

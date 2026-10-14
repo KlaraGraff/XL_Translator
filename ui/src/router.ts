@@ -1,10 +1,13 @@
 // V9 视图路由 —— 极简版：一个挂载容器 + 一张视图注册表，负责 mount/unmount 切换。
 // 不做历史记录、不做 URL 同步；侧栏点击与「查看完整报告」之类的深链都直接调用 navigate()。
 
-/** 侧栏可切换的顶层视图。 */
-export type ViewId = "excel" | "word" | "pdf" | "cad" | "tasks" | "library" | "plugins" | "settings" | "help" | "feedback";
+/** 随应用发布的顶层视图。 */
+export type BuiltinViewId = "excel" | "word" | "pdf" | "cad" | "tasks" | "library" | "plugins" | "settings" | "help" | "feedback";
 
-export const VIEW_IDS: ViewId[] = ["excel", "word", "pdf", "cad", "tasks", "library", "plugins", "settings", "help", "feedback"];
+/** 侧栏可切换的顶层视图；`ext:<id>` 是运行时注册的翻译类型，描述符到了之后才注册（见 app.ts）。 */
+export type ViewId = BuiltinViewId | `ext:${string}`;
+
+export const VIEW_IDS: BuiltinViewId[] = ["excel", "word", "pdf", "cad", "tasks", "library", "plugins", "settings", "help", "feedback"];
 
 /** 跳转参数：例如 settings 的子页 id、tasks 的任务 id。各视图自行约定 key。 */
 export type ViewParams = Record<string, unknown>;
@@ -31,6 +34,11 @@ let current: { id: ViewId; params: ViewParams } | null = null;
 /** 注册一个视图实现。通常在 app.ts 启动时对全部 7 个视图各调用一次。 */
 export function registerView(id: ViewId, view: View): void {
   registry.set(id, view);
+}
+
+/** 这个视图注册过没有。运行时注册的翻译类型在描述符到达之前、或已被移除时没有视图。 */
+export function hasView(id: string): id is ViewId {
+  return registry.has(id as ViewId);
 }
 
 /** 告诉路由把视图挂载到哪个容器（shell.ts 暴露的 contentContainer）。 */

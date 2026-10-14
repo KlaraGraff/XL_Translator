@@ -339,16 +339,20 @@ def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
     if not pages:
         return []
     done = [page for page in pages if page.inplace_status == "done"]
+    untranslated = sum(page.inplace_untranslated for page in pages)
     lines = [
         f"- 原位替换文字（Beta）：{len(done)}/{len(pages)} 页已替换，"
         f"共替换 {sum(page.inplace_written for page in done)} 处，"
         f"保留原文 {sum(page.inplace_review for page in done)} 处"
+        + (f"，未获得译文 {untranslated} 处（需复核）" if untranslated else "")
     ]
     for page in sorted(pages, key=lambda item: item.page_number):
         lines.append(f"  - 第 {page.page_number} 页：{page.inplace_message or page.inplace_status}")
         for item in page.inplace_review_items[:30]:
             if item.get("kind") == "term":
                 lines.append(f"    - 需复核「{item.get('text', '')}」：{item.get('detail') or item.get('reason', '')}")
+            elif item.get("kind") == "untranslated":
+                lines.append(f"    - 未获得译文「{item.get('text', '')}」：保留原文，需复核")
             else:
                 lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
     return lines
@@ -739,6 +743,22 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         "translated_image_path": "",
                     }
                 )
+        if not _record_translated_nothing(file_record):
+            # 原位替换的页里接口放弃、没拿到译文的文字（与 CAD「未获得译文」一样计入需复核）。
+            # 整份文件一处都没译成时由下面「未翻译任何内容」那条说明，不再逐页重复。
+            for page in file_record.pages:
+                if page.inplace_untranslated:
+                    issues.append(
+                        {
+                            "file": file_record.name,
+                            "location_label": f"第 {page.page_number} 页",
+                            "severity": "needs_review",
+                            "problem": f"{page.inplace_untranslated} 处未获得译文，已保留原文，需复核",
+                            "status": "原位替换文字（Beta）",
+                            "source_image_path": file_record.source_path,
+                            "translated_image_path": "",
+                        }
+                    )
         if _record_is_fully_skipped_oversize(file_record):
             issues.append(
                 {

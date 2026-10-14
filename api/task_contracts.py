@@ -7,6 +7,7 @@ options, so they live here; ``api.task_manager`` re-exports all of them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -34,11 +35,28 @@ class TaskConflictError(RuntimeError):
 
 
 class TaskInputError(ValueError):
-    """Raised when a source path has no usable files for the selected surface."""
+    """Raised when a source path has no usable files for the selected surface.
 
-    def __init__(self, message: str, *, reason: str = "invalid_input") -> None:
+    ``accept`` marks a stop the user may step past (the window shows it with
+    「仍要继续」): the request fields that, sent again, say "yes, continue".
+    A caller without the window – the command line, MCP – reads them from the
+    error body instead of matching the sentence.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "invalid_input",
+        accept: Mapping[str, bool] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.accept = dict(accept) if accept else None
+
+
+#: ``reason`` of a stop the user may step past by confirming (see ``TaskInputError.accept``).
+REASON_NEEDS_CONFIRMATION = "needs_confirmation"
 
 
 # 模型还没配好时的拦截原因（随错误响应的 reason 一起给界面）。界面认出这几个就在
@@ -88,6 +106,8 @@ class TaskOptions:
     cad_translation_font: str = "compatible"
     # DWG 译文图纸的版本：source 跟随原图，或 2018/2013/2010/2007/2004/2000。
     cad_output_version: str = "source"
+    # 运行时注册的类型（ext:<id>）自己的开关，键见它的描述符 options；内置页面不用。
+    options: Mapping[str, bool | int | float | str] | None = None
 
     @property
     def xls_conversion_mode(self) -> str:

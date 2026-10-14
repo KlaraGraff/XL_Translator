@@ -19,6 +19,7 @@ import { createButton, createCard, createDropdown, createHintBadge, openModal, s
 import { icon } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
+import { extSurfaceLabel, isExtSurface } from "../surface-descriptors";
 import {
   SEND_FAILURES,
   confirmSendWithoutEmail,
@@ -129,6 +130,11 @@ const SURFACE_LABEL: Record<string, string> = localized(() => ({
   cleaner: t("记忆库清洗"),
   tm_clean: t("记忆库清洗"),
 }));
+
+/** 任务类型的名字；运行时注册的类型按描述符取。 */
+function surfaceName(surface: string): string {
+  return SURFACE_LABEL[surface] ?? (isExtSurface(surface) ? extSurfaceLabel(surface) : surface);
+}
 
 /** 上次成功发送时留的邮箱；新写的反馈默认填它，省得每次重输。 */
 let rememberedEmail = "";
@@ -710,7 +716,7 @@ let taskListEl: HTMLElement | null = null;
 let taskCountEl: HTMLElement | null = null;
 
 function taskLabel(task: FeedbackTask): string {
-  return [SURFACE_LABEL[task.surface] ?? task.surface, tx(task.source_label)].filter(Boolean).join(" · ");
+  return [surfaceName(task.surface), tx(task.source_label)].filter(Boolean).join(" · ");
 }
 
 function taskDetail(task: FeedbackTask): string {
@@ -909,7 +915,7 @@ function openPreviewModal(preview: PreviewPayload): void {
   };
   item(draft.contact.trim() ? t("反馈内容与邮箱") : t("反馈内容"));
   if (preview.system) item(t("系统与版本信息"));
-  for (const task of preview.tasks) item(t("任务日志：{0} · {1}", SURFACE_LABEL[task.surface] ?? task.surface, taskStateWord(task.state)));
+  for (const task of preview.tasks) item(t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateWord(task.state)));
   for (const image of preview.images ?? []) item(t("截图：{0}（{1}）", image.name, formatBytes(image.bytes)));
   for (const file of preview.files) item(t("文件：{0}（{1}）", file.name, formatBytes(file.bytes)));
   body.push(list);
@@ -919,7 +925,7 @@ function openPreviewModal(preview: PreviewPayload): void {
   }
   for (const task of preview.tasks) {
     body.push(previewBlock(
-      t("任务日志：{0} · {1}", SURFACE_LABEL[task.surface] ?? task.surface, taskStateWord(task.state)),
+      t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateWord(task.state)),
       task.log || t("（此任务没有日志）"),
     ));
   }
