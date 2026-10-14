@@ -233,11 +233,9 @@ def test_bilingual_puts_each_translation_after_its_source(tmp_path: Path) -> Non
 T<段落第一行
 段落第二行>
 
-- 项目一
-
+- 项目一\\
   T<项目一>
-- [ ] 待办
-
+- [ ] 待办\\
   T<待办>
 
 > 引用的话
@@ -252,6 +250,47 @@ T<段落第一行
 |------|------|
 | 甲 / T<甲> | 第一项 / T<第一项> |
 """
+
+
+def test_bilingual_list_items_and_footnotes_stay_tight(tmp_path: Path) -> None:
+    # A blank line inside an item would make the whole list loose; a hard break keeps it as it was.
+    source = (
+        "1. 第一行\n"
+        "   第二行  \n"
+        "   - 子项\n"
+        "2. 路径 C:\\\n"
+        "\n"
+        "正文[^1]。\n"
+        "\n"
+        "[^1]: 脚注。\n"
+    )
+    path = _text(tmp_path, "list.md", source)
+    translations = {
+        "第一行\n第二行": "One\nTwo",
+        "子项": "Sub",
+        "路径 C:\\": "Path C:\\",
+        "正文[^1]。": "Body[^1].",
+        "脚注。": "Note.",
+    }
+    out = _write(path, lambda unit: translations[unit.text], MODE_BILINGUAL).decode("utf-8")
+    assert out == (
+        "1. 第一行\n"
+        "   第二行\\\n"
+        "   One\n"
+        "   Two\n"
+        "   - 子项\\\n"
+        "     Sub\n"
+        # After a backslash of the source's own, the break is two spaces.
+        "2. 路径 C:\\  \n"
+        "   Path C:\\\n"
+        "\n"
+        "正文[^1]。\n"
+        "\n"
+        "Body[^1].\n"
+        "\n"
+        "[^1]: 脚注。\\\n"
+        "    Note.\n"
+    )
 
 
 def test_a_translation_with_more_or_fewer_lines_keeps_the_block(tmp_path: Path) -> None:
@@ -269,6 +308,10 @@ def test_crlf_and_bom_are_kept_on_added_lines(tmp_path: Path) -> None:
     assert out == codecs.BOM_UTF8 + b"  One\r\n  Two\r\n\r\nThree\r\n"
     bilingual = _write(path, lambda unit: "One" if unit.text == "第一段" else "Three", MODE_BILINGUAL)
     assert bilingual == codecs.BOM_UTF8 + "  第一段\r\n\r\n  One\r\n\r\n第二段\r\n\r\nThree\r\n".encode("utf-8")
+    listed = tmp_path / "win.md"
+    listed.write_bytes(codecs.BOM_UTF8 + "- 第一项\r\n- 第二项\r\n".encode("utf-8"))
+    bilingual = _write(listed, lambda unit: "One" if unit.text == "第一项" else "Two", MODE_BILINGUAL)
+    assert bilingual == codecs.BOM_UTF8 + "- 第一项\\\r\n  One\r\n- 第二项\\\r\n  Two\r\n".encode("utf-8")
 
 
 def test_table_pipes_are_escaped_and_link_gaps_closed(tmp_path: Path) -> None:
