@@ -14,12 +14,10 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import httpx
 import pytest
 from openpyxl import Workbook, load_workbook
 
@@ -27,9 +25,9 @@ from cli import flow
 from cli.main import main as cli_main
 from core import engine_client, engine_file
 from core.engine_client import EngineError
+from tests.fixtures.cli_engine import FIXTURE_ENGINE, AppEngine
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_ENGINE = [sys.executable, str(ROOT / "tests" / "fixtures" / "cli_engine.py")]
 
 DESCRIPTORS: list[dict[str, Any]] = [
     {"key": "excel", "builtin": True, "label": {"zh": "Excel 表格"}, "extensions": ["xls", "xlsx"],
@@ -276,35 +274,6 @@ def test_review_count_follows_the_task_center():
 # ── end to end ───────────────────────────────────────────────────────────
 
 
-class _AppEngine:
-    """The fixture engine as the open app."""
-
-    def __init__(self, data_dir: Path, *, delay: float) -> None:
-        env = {**os.environ, "TRANSLATOR_APP_DATA_DIR": str(data_dir), "CLI_TEST_SAMPLE_DELAY": str(delay)}
-        env.pop("TRANSLATOR_SIDECAR_PARENT_PID", None)
-        self.process = subprocess.Popen(
-            FIXTURE_ENGINE, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
-        port, token = engine_client.parse_handshake(self.process.stdout.readline().decode())
-        self.http = httpx.Client(base_url=f"http://127.0.0.1:{port}", headers={"X-Translator-Token": token}, trust_env=False)
-        deadline = time.monotonic() + 10
-        while engine_file.read_engine_file(data_dir) is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-
-    def close(self) -> None:
-        try:
-            self.http.post("/api/system/shutdown", timeout=2)
-        except httpx.HTTPError:
-            pass
-        try:
-            self.process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-        self.http.close()
-        self.process.stdout.close()
-
-
 @pytest.fixture(scope="module")
 def app_data(tmp_path_factory) -> Path:
     return tmp_path_factory.mktemp("app-data")
@@ -312,7 +281,7 @@ def app_data(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def app(app_data: Path):
-    engine = _AppEngine(app_data, delay=0.2)
+    engine = AppEngine(app_data, delay=0.2)
     yield engine
     engine.close()
 
@@ -335,14 +304,8 @@ def _notes(root: Path, count: int = 2) -> Path:
     return root
 
 
-def _wait_terminal(app: _AppEngine, task_id: str) -> dict:
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        status = app.http.get(f"/api/tasks/{task_id}").json()
-        if status.get("terminal"):
-            return status
-        time.sleep(0.1)
-    raise TimeoutError(task_id)
+def _wait_terminal(app: AppEngine, task_id: str) -> dict:
+    return app.wait_terminal(task_id)
 
 
 def test_types_lists_built_in_and_run_time_types(app, run):

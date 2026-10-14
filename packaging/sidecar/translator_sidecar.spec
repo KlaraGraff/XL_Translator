@@ -48,8 +48,15 @@ hiddenimports += collect_submodules("core")
 hiddenimports += collect_submodules("engines")
 # 格式适配器要 import 的协议包（随应用提供的适配器从 adapters/ 按文件加载，见 core/format_adapter.py）。
 hiddenimports += collect_submodules("translator_adapter")
-# 命令行子命令（types / scan / translate / status / stop），见 scripts/launch_sidecar.py。
+# 命令行子命令（types / scan / translate / status / stop / mcp），见 scripts/launch_sidecar.py。
 hiddenimports += collect_submodules("cli")
+# mcp 子命令（cli/mcp_server.py）用的 SDK 服务端，和冻结冒烟握手用的客户端。不整包收：
+# mcp.cli 要 typer，mcp.server.fastmcp 在 2.x 里一导入就报错。
+hiddenimports += [
+    "mcp.server.mcpserver",
+    "mcp.server.stdio",
+    "mcp.client.stdio",
+]
 hiddenimports += [
     "docx",
     "httpx",
