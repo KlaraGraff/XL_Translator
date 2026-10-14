@@ -1605,6 +1605,7 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
                 repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
+                document_note=document_profile,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -2549,6 +2550,7 @@ class WordTaskRunner(BaseTaskRunner):
         segment_locations,
         target_lang,
         repair_concurrency=1,
+        document_note="",
     ) -> tuple[ResidualPassResult, list[ResidualUnitReport]]:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；仍修不上的记入待复核。返回体检结果与仍待复核的单元。"""
         residual_result = run_residual_pass(
@@ -2602,6 +2604,7 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 send=engine.chat,
                 convention=residual_result.convention,
+                document_note=document_note,
                 max_units=_RESIDUAL_REPAIR_MAX_UNITS,
                 breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
                 should_stop=self.stop_requested,

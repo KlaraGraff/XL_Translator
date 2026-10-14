@@ -143,6 +143,52 @@ class OutputNameTranslationTests(unittest.TestCase):
             finally:
                 saved.close()
 
+    def test_long_translated_sheet_title_is_cut_at_a_word_boundary(self):
+        # 宣传视频回放：「给排水工程」的法文名 32 个字符，硬截成了
+        # 「Plomberie et évacuation des eau」——截在单词中间。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.xlsx"
+            output = root / "output.xlsx"
+            workbook = Workbook()
+            workbook.active.title = "给排水工程"
+            workbook.create_sheet("土建工程")
+            workbook.create_sheet("给水")
+            workbook.save(source)
+            workbook.close()
+
+            result = rename_worksheets(source, output, {
+                "给排水工程": "Plomberie et évacuation des eaux",
+                "土建工程": "Bill of Quantities (Civil Works and Structure)",
+                "给水": "给水给水给水给水给水给水给水给水给水给水给水给水给水给水给水给水",
+            })
+            self.assertEqual(result.status, "renamed")
+            saved = load_workbook(output)
+            try:
+                self.assertEqual(saved.sheetnames, [
+                    # 截掉半个词，再去掉挂在末尾的虚词 des
+                    "Plomberie et évacuation",
+                    # 截了一半的括号整个不要
+                    "Bill of Quantities",
+                    # 不用空格分词的名称没有词边界，仍按 31 个字符截
+                    "给水给水给水给水给水给水给水给水给水给水给水给水给水给水给水给",
+                ])
+            finally:
+                saved.close()
+
+    def test_sheet_name_prompt_asks_for_a_title_that_fits(self):
+        prompts = []
+
+        class _Recording(_NameEngine):
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                prompts.append(system_prompt)
+                return super().translate_batch(texts, target_lang, system_prompt, source_lang)
+
+        translate_names(_Recording(), ["数据"], "fr", "zh", kind="工作表名称")
+        translate_names(_Recording(), ["报告"], "fr", "zh", kind="输出文件名")
+        self.assertIn("不超过 31 个字符", prompts[0])
+        self.assertNotIn("31", prompts[1])
+
     def test_pdf_output_paths_use_translated_stem_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -103,6 +103,38 @@ class SurgicalLadderTest(unittest.TestCase):
         self.assertEqual(len(outcome.reject_reasons), 2)
 
 
+class DocumentNoteTest(unittest.TestCase):
+    """补译请求带上「自动识别场景」写的文档说明（宣传视频回放：FM甲1021 补成了 FM Class 1021）。"""
+
+    NOTE = "FM甲/乙为甲、乙级防火门型号。"
+
+    def test_both_repair_requests_carry_the_document_note(self):
+        surgical = _RecordingSend([_reply("Ouvrir une rainure V")])  # 改写过多，拒收
+        retranslate = _RecordingSend([_reply(GOOD_RETRANSLATION)])
+        outcome = repair_unit(
+            SOURCE,
+            TARGET_WITH_FRAGMENT,
+            target_lang="fr",
+            surgical_send=surgical,
+            retranslate_send=retranslate,
+            document_note=self.NOTE,
+        )
+        self.assertTrue(outcome.accepted)
+        self.assertEqual(len(surgical.calls), 1)
+        self.assertEqual(len(retranslate.calls), 1)
+        for system, _user in surgical.calls + retranslate.calls:
+            self.assertIn(self.NOTE, system)
+            self.assertIn("本文档说明", system)
+
+    def test_no_note_leaves_the_request_unchanged(self):
+        with_note = _RecordingSend([_reply(GOOD_SURGICAL)])
+        without = _RecordingSend([_reply(GOOD_SURGICAL)])
+        repair_unit(SOURCE, TARGET_WITH_FRAGMENT, target_lang="fr", surgical_send=without)
+        repair_unit(SOURCE, TARGET_WITH_FRAGMENT, target_lang="fr", surgical_send=with_note, document_note="  ")
+        self.assertEqual(with_note.calls, without.calls)
+        self.assertNotIn("本文档说明", without.calls[0][0])
+
+
 class ZeroApiRoutingTest(unittest.TestCase):
     def test_cn_date_unit_blocks_without_api_calls(self):
         surgical = _RecordingSend([_reply("x")])
