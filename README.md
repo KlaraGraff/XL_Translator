@@ -2,13 +2,13 @@
 
 **简体中文** | [English](README.en.md)
 
-Translator 是一款基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel 与 Word 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。
+Translator 是一款开源的、基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel 与 Word 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。其他文件类型可通过扩展增加，也可作为 MCP 服务器供智能体调用。
 
 [下载最新版本](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
 ![Translator 主界面：Excel 翻译完成](docs/images/readme/app-excel.png)
 
-> 本页的界面截图与各功能下的翻译前后对照图对应同一批工程文档：Excel 与 PDF 为法译中，Word 与 CAD 图纸为中译法。截图中的文件名均为中性的示例名称，界面语言为中文，配色为默认的素雅灰。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
+> 本页的界面截图和翻译结果均使用虚构的示例资料，不含真实项目内容；翻译结果由应用实际翻译生成，CAD 图纸为 AutoCAD 中的实际显示效果。界面语言为中文，配色为默认的素雅灰。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
 
 ## 功能
 
@@ -19,10 +19,9 @@ Translator 是一款基于大语言模型的桌面文档翻译应用，支持批
 ![Excel 翻译进行中](docs/images/readme/app-excel-running.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-excel-original.png" width="49%" alt="Excel 原文（法语）">
-  <img src="docs/images/readme/result-excel-bilingual.png" width="49%" alt="Excel 双语输出（法语原文下附中文译文）">
+  <img src="docs/images/readme/result-excel-bilingual.jpg" width="90%" alt="Excel 双语输出：每个单元格中文原文下附法语译文">
 </p>
-<p align="center"><sub>左：原文（法语）；右：双语输出，原文在上，中文译文在下</sub></p>
+<p align="center"><sub>双语输出：每个单元格中，原文在上，译文（法语）在下</sub></p>
 
 ### Word
 
@@ -31,10 +30,9 @@ Translator 是一款基于大语言模型的桌面文档翻译应用，支持批
 ![Word 翻译完成](docs/images/readme/app-word.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-word-original.png" width="49%" alt="Word 原文（中文）">
-  <img src="docs/images/readme/result-word-bilingual.png" width="49%" alt="Word 双语输出（每段原文后附法语译文）">
+  <img src="docs/images/readme/result-word-bilingual.jpg" width="55%" alt="Word 双语输出：每段中文原文后附法语译文">
 </p>
-<p align="center"><sub>左：原文（中文）；右：双语输出，每段原文后附法语译文</sub></p>
+<p align="center"><sub>双语输出：每段原文后附法语译文，标题与页眉同样对照</sub></p>
 
 ### PDF 与图片
 
@@ -43,10 +41,16 @@ Translator 是一款基于大语言模型的桌面文档翻译应用，支持批
 ![PDF 翻译完成及逐页结果](docs/images/readme/app-pdf.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-pdf-original.png" width="49%" alt="PDF 原文页面（法语）">
-  <img src="docs/images/readme/result-pdf-translated.png" width="49%" alt="PDF 译文页面（中文）">
+  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="PDF 原文页面（中文）">
+  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="PDF 译文页面（法语）">
 </p>
-<p align="center"><sub>左：原文页面（法语）；右：译文页面（中文）</sub></p>
+<p align="center"><sub>左：原文页面（中文）；右：译文页面（法语）</sub></p>
+
+<p align="center">
+  <img src="docs/images/readme/result-image-original.jpg" width="49%" alt="图片原图（中文）">
+  <img src="docs/images/readme/result-image-translated.jpg" width="49%" alt="图片译图（法语）">
+</p>
+<p align="center"><sub>图片同样逐张重绘：左为原图（中文），右为译图（法语）</sub></p>
 
 ### CAD 图纸
 
@@ -58,20 +62,29 @@ DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File
 - 译文字体：默认使用 AutoCAD 自带字体写入译文，在其他电脑上打开也能正常显示；也可沿用原文字体。
 - 超长译文自动缩小：译文较长、会压到相邻文字时，先收窄字宽，再缩小字号（默认先缩至 70%，最小 40%）；仍放不下的列入报告供复核。
 - 锁定不翻译：指定图框、标题栏等图块和图层，其中的文字保持原样；名称可直接输入，也可从图纸中挑选。
+- 排版：译文较长时自动缩小，不伸出图框和表格格子，也不压到旁边的文字、门的开启线和箭头；窄格子放不下时折成两行；同一列说明的译文字高保持一致。
 
 ![CAD 翻译完成，右侧为译文写回选项](docs/images/readme/app-cad.png)
 
-![CAD 原图（中文）](docs/images/readme/result-cad-original.png)
+下图为在 AutoCAD 中打开示例图纸的实际显示效果，同一视图下的原图与译图上下对照。
 
-![CAD 译图（法语）](docs/images/readme/result-cad-translated.png)
+![CAD 平面图原图（中文）](docs/images/readme/result-cad-plan-original.jpg)
 
-<p align="center"><sub>上：原图（中文）；下：译图（法语）</sub></p>
+![CAD 平面图译图（法语，原文在上，译文在下）](docs/images/readme/result-cad-plan-bilingual.jpg)
+
+<p align="center"><sub>上：原图（中文）；下：译图（法语，原文在上，译文在下）</sub></p>
+
+![CAD 门窗表与说明原图（中文）](docs/images/readme/result-cad-table-original.jpg)
+
+![CAD 门窗表与说明译图（法语，仅译文）](docs/images/readme/result-cad-table-translated.jpg)
+
+<p align="center"><sub>上：门窗表与说明原图（中文）；下：译图（法语，仅译文）</sub></p>
 
 ### 记忆库
 
-Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和 CAD 图纸时优先复用。已固定的词条始终采用指定译法。记忆库支持导入、导出和清洗。
+Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和 CAD 图纸时优先复用。手动维护的词条始终采用指定译法。记忆库支持导入、导出和清洗。
 
-![记忆库（带图钉标记的为已固定词条）](docs/images/readme/app-library.png)
+![记忆库（来源分为手动维护和自动保存）](docs/images/readme/app-library.png)
 
 ### 任务中心
 
@@ -95,7 +108,7 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 
 内置 59 种语言，支持自动识别源语言及自定义目标语言。
 
-各翻译页面提供「自动识别场景」开关，默认开启：翻译前先通读一遍文档，判断文档类型和所属专业，再据此理解单独出现的短词，例如图纸门号中的「甲」不会被译成合同中的「甲方」。开启后每份文件多调用一次模型。
+各翻译页面提供「自动识别场景」开关，默认开启：翻译前先通读一遍文档，判断文档类型和所属专业，再据此理解单独出现的短词，例如图纸门号中的「甲」不会被译成合同中的「甲方」。开启后每份文件多调用一次模型。文档较长（约 3000 字以上）时，翻译前还会先为反复出现的词定好译法，全文统一采用，适用于 Excel、Word 和 CAD。
 
 提示词由固定的内置规则和可选的「补充要求」组成：内置规则每次都会发送，补充要求只追加在其后，不会替换内置规则。补充要求可在「设置 → 翻译参数」中按 Excel、Word、CAD 分别设置，并可导出和导入。
 
@@ -104,6 +117,8 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 ### 扩展
 
 除 Excel、Word、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md），在「扩展」页打开后即出现在侧栏。在「扩展」页可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
+
+![扩展页：选择侧栏显示的翻译类型，浏览并安装扩展](docs/images/readme/app-extensions.png)
 
 ## 模型服务
 
@@ -183,6 +198,8 @@ Windows 的数据目录为 `%LOCALAPPDATA%\Translator`。
 Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用：智能体可查询支持的文件类型、扫描文件、发起翻译、查看进度并取得结果文件的路径。同一程序也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型、语言和翻译参数沿用应用中的设置，使用前需先在应用中完成模型配置。译文写入原文件旁的新文件夹，原文件不会被修改。
 
 最简单的接入方式：打开应用侧栏的「MCP」页面，点击「复制接入说明」，粘贴并发送给智能体，由它完成配置；按提示重新启动智能体后即可使用。以下为手动配置方法。
+
+![MCP 页：复制接入说明](docs/images/readme/app-mcp.png)
 
 翻译引擎的位置：
 

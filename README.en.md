@@ -2,13 +2,13 @@
 
 [简体中文](README.md) | **English**
 
-Translator is a desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, image and CAD (DWG / DXF) files**. Excel and Word files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent.
+Translator is an open-source desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, image and CAD (DWG / DXF) files**. Excel and Word files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent. Other file types can be added through extensions, and AI agents can use Translator as an MCP server.
 
 [Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
 ![Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> The application screenshots and the before-and-after comparisons on this page use the same set of engineering documents: the Excel and PDF examples were translated from French into Chinese, and the Word and CAD examples from Chinese into French. File names in the screenshots are neutral sample names; the interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+> The application screenshots and translation results on this page use fictional sample documents and contain no real project content. The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
 ## Features
 
@@ -19,10 +19,9 @@ Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formu
 ![Excel translation in progress](docs/images/readme/app-excel-running.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-excel-original.png" width="49%" alt="Original Excel sheet (French)">
-  <img src="docs/images/readme/result-excel-bilingual.png" width="49%" alt="Bilingual Excel output (Chinese below the French source)">
+  <img src="docs/images/readme/result-excel-bilingual.jpg" width="90%" alt="Bilingual Excel output: the French translation below the Chinese source in each cell">
 </p>
-<p align="center"><sub>Left: original (French). Right: bilingual output with the Chinese translation below the source text.</sub></p>
+<p align="center"><sub>Bilingual output: in each cell, the source text above and the translation (French) below.</sub></p>
 
 ### Word
 
@@ -31,10 +30,9 @@ Supports `.docx` and legacy `.doc` files, including body text, tables, headers a
 ![Word translation completed](docs/images/readme/app-word.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-word-original.png" width="49%" alt="Original Word document (Chinese)">
-  <img src="docs/images/readme/result-word-bilingual.png" width="49%" alt="Bilingual Word output (French after each Chinese paragraph)">
+  <img src="docs/images/readme/result-word-bilingual.jpg" width="55%" alt="Bilingual Word output: a French translation after each Chinese paragraph">
 </p>
-<p align="center"><sub>Left: original (Chinese). Right: bilingual output with the French translation after each paragraph.</sub></p>
+<p align="center"><sub>Bilingual output: the French translation follows each paragraph; headings and headers are paired in the same way.</sub></p>
 
 ### PDF and images
 
@@ -43,10 +41,16 @@ Each page is redrawn in the target language by an image model, preserving the or
 ![PDF translation with per-page results](docs/images/readme/app-pdf.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-pdf-original.png" width="49%" alt="Original PDF page (French)">
-  <img src="docs/images/readme/result-pdf-translated.png" width="49%" alt="Translated PDF page (Chinese)">
+  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="Original PDF page (Chinese)">
+  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="Translated PDF page (French)">
 </p>
-<p align="center"><sub>Left: original page (French). Right: translated page (Chinese).</sub></p>
+<p align="center"><sub>Left: original page (Chinese). Right: translated page (French).</sub></p>
+
+<p align="center">
+  <img src="docs/images/readme/result-image-original.jpg" width="49%" alt="Original image (Chinese)">
+  <img src="docs/images/readme/result-image-translated.jpg" width="49%" alt="Translated image (French)">
+</p>
+<p align="center"><sub>Images are redrawn in the same way: original (Chinese) on the left, translation (French) on the right.</sub></p>
 
 ### CAD drawings
 
@@ -58,20 +62,29 @@ How translations are written back is set under Writing translations on the right
 - Translation font: translations are written in AutoCAD's built-in fonts by default, so they display correctly on other computers; the original font can be kept instead.
 - Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is listed in the report for review.
 - Do not translate: text in specified blocks and layers, such as title blocks and frames, is left unchanged. Names can be typed in or picked from the drawings.
+- Layout: long translations are shrunk automatically so they do not extend past the drawing frame or out of table cells, or overlap nearby text, door swings and arrows; translations that do not fit in a narrow cell wrap onto two lines; translations in the same column of notes keep the same text height.
 
 ![CAD translation completed, with the write-back options on the right](docs/images/readme/app-cad.png)
 
-![Original drawing (Chinese)](docs/images/readme/result-cad-original.png)
+The images below show a sample drawing as displayed in AutoCAD, with the original and the translation of the same view one above the other.
 
-![Translated drawing (French)](docs/images/readme/result-cad-translated.png)
+![Floor plan, original (Chinese)](docs/images/readme/result-cad-plan-original.jpg)
 
-<p align="center"><sub>Top: original drawing (Chinese). Bottom: translated drawing (French).</sub></p>
+![Floor plan, translated (French, source above translation)](docs/images/readme/result-cad-plan-bilingual.jpg)
+
+<p align="center"><sub>Top: original (Chinese). Bottom: translation (French, source above translation).</sub></p>
+
+![Door and window schedule with notes, original (Chinese)](docs/images/readme/result-cad-table-original.jpg)
+
+![Door and window schedule with notes, translated (French, translation only)](docs/images/readme/result-cad-table-translated.jpg)
+
+<p align="center"><sub>Top: schedule and notes, original (Chinese). Bottom: translation (French, translation only).</sub></p>
 
 ### Translation memory
 
-Translations from Excel and Word jobs are stored automatically and reused first when translating Excel, Word and CAD files. Pinned entries always use the specified translation. The memory supports import, export and cleanup.
+Translations from Excel and Word jobs are stored automatically and reused first when translating Excel, Word and CAD files. Manually maintained entries always use the specified translation. The memory supports import, export and cleanup.
 
-![Translation memory with pinned entries](docs/images/readme/app-library.png)
+![Translation memory, with entries marked as manually maintained or saved automatically](docs/images/readme/app-library.png)
 
 ### Task center
 
@@ -95,7 +108,7 @@ Light and dark modes are available and can follow the system setting. Five color
 
 59 built-in languages, automatic source-language detection and custom target languages are supported.
 
-Each translation page has an Auto-detect switch, on by default. Before translation, the document is read once to identify its type and field, and short standalone words are interpreted accordingly; for example, 甲 in a drawing's door number is not translated as "Party A" as in a contract. With the switch on, each file uses one additional model request.
+Each translation page has an Auto-detect switch, on by default. Before translation, the document is read once to identify its type and field, and short standalone words are interpreted accordingly; for example, 甲 in a drawing's door number is not translated as "Party A" as in a contract. With the switch on, each file uses one additional model request. For longer documents (roughly 3,000 characters or more), the translation of each recurring term is also fixed before translating and used throughout; this applies to Excel, Word and CAD.
 
 Prompts consist of fixed built-in rules and optional extra instructions. The built-in rules are always sent, and extra instructions are only appended after them, never replacing them. Extra instructions are set separately for Excel, Word and CAD under Settings → Translation options, and can be exported and imported.
 
@@ -104,6 +117,8 @@ Prompts consist of fixed built-in rules and optional extra instructions. The bui
 ### Extensions
 
 Besides Excel, Word, PDF and CAD, other file types can be translated through extensions, such as the bundled Text type (.txt, .md), which appears in the sidebar once switched on in the Extensions page. The Extensions page lets you browse and install reviewed extensions from the extension list, or add an extension package someone sent you; extensions are written by third-party authors and run with your user permissions, so only install them from sources you trust. To build your own, start from the [extension template](https://github.com/KlaraGraff/XL_Translator-extension-template) and submit it to the [extension list](https://github.com/KlaraGraff/XL_Translator-extensions) to share it; the steps are in [docs/EXTENSIONS.md](docs/EXTENSIONS.md) (Chinese).
+
+![Extensions page: choose the translation types shown in the sidebar, browse and install extensions](docs/images/readme/app-extensions.png)
 
 ## Model services
 
@@ -183,6 +198,8 @@ Security note: any user with the application installed can decrypt an `.xltcfg` 
 Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor. An agent can list the supported file types, scan files, start a translation, check its progress and retrieve the paths of the output files. The same program can also be used from a terminal. While Translator is open, tasks appear in the Task center; otherwise the translation engine runs in the background and exits when done. Models, languages and translation options follow the application settings, so a model service must be configured in the application first. Translations are written to a new folder next to the source files, and the source files are never modified.
 
 The simplest way to connect: open the MCP page from the sidebar, click Copy setup instructions, and paste them into a message to the agent, which completes the setup itself. Restart the agent if prompted, and it is ready to use. Manual setup is described below.
+
+![MCP page: copy the setup instructions](docs/images/readme/app-mcp.png)
 
 Location of the translation engine:
 
