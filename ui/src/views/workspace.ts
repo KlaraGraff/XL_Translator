@@ -4546,7 +4546,6 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     generated,
     failed,
     review + pageProblems + untranslatedFiles + openIssues + unfinishedTexts,
-    autoFixed,
     severityBucketed,
   );
   // 完成汇总要用扫描期的图片/文本框计数。任务失败时不出这张卡：那种情况下
@@ -4592,19 +4591,16 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       hasOutput: generated > 0,
     };
   } else {
-    // 后缀要指着「让这条横幅变黄的那件事」说。提示排在自动处理前面的话，一份既有
-    // 目录提示、又有自动恢复的文档，横幅写「有提示」而真正让它变黄的是自动处理——
-    // 用户照着提示去 Word 按了 F9，回来发现还是黄的。所以按报黄的顺序排：需复核 →
-    // 自动处理 → 提示（提示本身不报黄，排最后）。
+    // 后缀要指着「让这条横幅变黄的那件事」说，按报黄的顺序排：未生成 → 需复核 → 提示
+    // （提示本身不报黄，排最后）。已自动处理的条目不报黄、也不进后缀：绿色横幅上挂着
+    // 「有自动处理」读起来还是像有事要做，条数在小结里已经写了。
     const suffix = failed > 0
       ? t("有文件未生成")
       : review > 0 || pageProblems > 0 || openIssues > 0
         ? t("需复核")
-        : autoFixed > 0
-          ? t("有自动处理")
-          : hints > 0
-            ? t("有提示")
-            : "";
+        : hints > 0
+          ? t("有提示")
+          : "";
     st.bannerInfo = {
       title: stateWord === t("已完成")
         ? t("已生成 {0} 个文件", generated)
@@ -4742,7 +4738,6 @@ function resultTone(
   generated: number,
   failed: number,
   review: number,
-  autoFixed: number,
   settled: boolean,
 ): ResultTone {
   if (state === "error" || state === "interrupted") return "fail";
@@ -4750,7 +4745,11 @@ function resultTone(
   if (state === "stopped") return "warn";
   if (generated === 0) return "fail";
   if (failed > 0) return "warn";
-  if (review > 0 || autoFixed > 0) return "warn";
+  // 已自动处理的条目不报黄：后端已经修好，用户不用再管。黄色只留给「还有要人处理的
+  // 地方」——以前严格重试补回了几段译文的 Word 任务，横幅会顶着橙色「完成但有问题 ·
+  // 有自动处理」，用户以为还有事要做；任务中心对同样的任务却显示绿色「已完成」，
+  // 两屏说法也对不上。条数照旧写在小结里。
+  if (review > 0) return "warn";
   // 后端只要给出任何一条结果项，任务终态就是 completed_with_issues，这一行过去无条件
   // 报黄——包括一条待办都没有、只剩「去 Word 里按 F9 刷新目录」这类提示的任务。真正
   // 该报黄的情况上面几行已经全部拦下。
