@@ -152,3 +152,31 @@ def test_the_manifest_is_read_by_the_parent(tmp_path: Path) -> None:
     host = SubprocessAdapterHost(ECHO_DIR)
     assert host.manifest == load_manifest(ECHO_DIR)
     assert host.log_label == "[扩展 回声文本]"
+
+
+def test_non_ascii_crosses_a_code_page_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The frozen sidecar ignores PYTHONUTF8 / PYTHONIOENCODING, so on Windows the
+    child's pipes default to the system code page (V10.2.0 build: cp1252 could not
+    write the result).  Force a code page here and send Chinese both ways."""
+    import core.adapter_subprocess_host as host_module
+
+    real_environment = host_module.child_environment
+
+    def code_page_environment(temporary_dir: str) -> dict[str, str]:
+        env = real_environment(temporary_dir)
+        env.update(PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
+        return env
+
+    monkeypatch.setattr(host_module, "child_environment", code_page_environment)
+    folder = tmp_path / "图纸 说明"
+    folder.mkdir()
+    source = folder / "说明.txt"
+    source.write_text("你好 {{name}}\n\n世界\n", encoding="utf-8")
+    child = SubprocessAdapterHost(ECHO_DIR)
+    assert child.scan(source) == InProcessAdapterHost(ECHO_DIR).scan(source)
+    units = child.extract(source)
+    assert [unit.text for unit in units] == ["你好 {{name}}", "世界"]
+    out_path = folder / "译文.txt"
+    translated = [TranslatedUnit(id=unit.id, text=unit.text, translation=f"译：{unit.text}") for unit in units]
+    assert child.write(source, translated, MODE_TRANSLATION_ONLY, out_path, {}).path == str(out_path)
+    assert "译：世界" in out_path.read_text(encoding="utf-8")
