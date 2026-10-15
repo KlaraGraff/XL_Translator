@@ -206,7 +206,19 @@ cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 # ULMO (LZMA) rather than the default UDZO (zlib): about 20% smaller for this
 # app. Mounting it needs macOS 10.15+, below the 12.0 minimum we declare.
-hdiutil create -volname Translator -srcfolder "$STAGING_DIR" -ov -format ULMO "$DMG_PATH"
+# GitHub 的 macOS 构建机上 hdiutil 偶尔报「Resource busy」（系统还在扫描刚签好的
+# app），V10.2.0 首次正式构建就停在这里；等几秒重试，最多四次。
+for attempt in 1 2 3 4; do
+  if hdiutil create -volname Translator -srcfolder "$STAGING_DIR" -ov -format ULMO "$DMG_PATH"; then
+    break
+  fi
+  if [[ "$attempt" == 4 ]]; then
+    echo "[ERROR] hdiutil create failed four times." >&2
+    exit 1
+  fi
+  echo "[WARN] hdiutil create failed (attempt $attempt), retrying in $((attempt * 10)) seconds." >&2
+  sleep $((attempt * 10))
+done
 
 if [[ -n "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
   codesign --force --timestamp --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY" "$DMG_PATH"

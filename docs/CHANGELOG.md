@@ -86,6 +86,10 @@
 
   **Fix: help tooltips flickering and URLs overflowing**: While install progress refreshes on the Plugins page, "?" tooltips no longer flicker or jump to the top-left, and pinned tooltips stay open; URLs sit on their own line and wrap only after "/" (#101).
 
+- **修复：Windows 上装进来的扩展收发中文出错**：扩展子进程（`translator-sidecar --adapter-host`）的标准输入输出显式改为 UTF-8。冻结版不认 `PYTHONUTF8` / `PYTHONIOENCODING`，Windows 管道默认按系统代码页，中文路径会读错、带中文的结果写不出（V10.2.0 首次正式构建的冻结冒烟在 Windows 上因此失败）。
+
+  **Fix: installed extensions failing on non-ASCII text on Windows**: The extension child process now reads and writes UTF-8 explicitly; the frozen engine ignores `PYTHONUTF8` / `PYTHONIOENCODING`, so on Windows its pipes used the system code page.
+
 ## V10.1.0
 
 - **PDF 翻译方式「自动组合」（Beta）**：默认仍为整页图像翻译；自动组合按页分类（扫描页、可提取文字的页、图纸和大图）各选首选方式，另设保底方式；可提取文字的页经「PDF 处理组件」（pdf2docx 和 PyMuPDF，插件，不随应用打包）转 Word 翻译，再用本机 Word 或 LibreOffice 转回 PDF；图纸页原位替换文字、保留矢量（core/pdf_vector，目前只译成中文，可选 Tesseract）；按原页序合成一份 PDF，整份走 Word 时可同时输出 .docx；新增 /api/pdf/route-capabilities。「PDF 处理组件」在插件页「一键安装」（从 PyPI 或国内镜像下载固定版本，核对大小和 SHA-256，解压到应用数据目录并自检；macOS 约 94 MB，Windows 约 72 MB），也可「选择安装位置」连接自行安装的 pdf2docx；未安装时页数统计、扫描、预览和整页图像翻译照常，自动组合中原位替换和转 Word 的页改用保底方式，页面分类改用 pdfium。安装包不再包含 PyMuPDF（macOS DMG 回到约 50 MB）。插件页 GitHub 开源组件的按钮改为「项目主页」。「文字识别组件」（Tesseract OCR）同样可一键安装：程序和库取自 conda-forge 的固定版本（只取开头一段，不下载整个约 180 MB 的包），识别数据取自 tessdata_fast 4.1.0（英、法、德、西、意、葡），全部核对 SHA-256 并试识别一行字后启用，macOS 约 43 MB、Windows 约 51 MB；也可「选择安装位置」或自动找到系统里装好的。「图纸转换工具」（ODA File Converter，翻译 DWG 需要）也可一键安装：用户确认 ODA 的使用条款后，从 ODA 官网下载安装包（macOS 挂载 DMG 拷出 .app，Windows 用 msiexec /a 解包，不需要管理员），核对 ODA 的数字签名，并把一张小图纸转成 DWG 再转回 DXF 确认可用；按钮文字与另外两个组件统一为「选择安装位置」「重新检测」，一键安装的可卸载。PyMuPDF、pdf2docx 等沿用各自许可，见 THIRD_PARTY_NOTICES.md。

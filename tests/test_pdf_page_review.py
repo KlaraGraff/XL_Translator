@@ -462,7 +462,8 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                             json={"file": "source.pdf", "page": 2})
                 closing = threading.Thread(target=lambda: manager.shutdown(timeout=0.01))
                 closing.start()
-                time.sleep(0.08)
+                # shutdown(timeout=0.01) 到期就返回；等它返回而不是固定睡 80 ms，慢的构建机上也稳。
+                closing.join(2)
                 self.assertFalse(closing.is_alive())
                 self.assertEqual(manager.active_task_count(), 1)
                 self.assertEqual(manager._tasks[task_id].state, original_state)

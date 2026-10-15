@@ -203,6 +203,11 @@ def _run_action(directory: Path, action: str, request: Mapping[str, Any]) -> Any
 def host_main(directory: str, action: str) -> int:
     """``--adapter-host <目录> <动作>``：读 stdin 的请求，跑一次适配器，结果写一行到 stdout。"""
     sys.dont_write_bytecode = True
+    # 引擎按 UTF-8 收发。冻结版不认 PYTHONUTF8 / PYTHONIOENCODING，Windows 管道默认按
+    # 系统代码页（cp1252、cp936…），中文路径读错、结果写不出，这里显式改成 UTF-8。
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="strict" if stream is sys.stdin else "replace")
     result_stream = sys.stdout
     # 适配器里的 print() 不能混进结果：执行期间 stdout 转到 stderr（写进日志）。
     sys.stdout = sys.stderr
