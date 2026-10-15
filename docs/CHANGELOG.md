@@ -1,6 +1,6 @@
 # Translator 版本更新日志
 
-## 未发布
+## V10.3.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
 
@@ -73,6 +73,18 @@
 - **命令行：制作和安装扩展**：`translator-sidecar adapter new <id>` 从模板生成一个能用的扩展（「键 = 值」文本文件的示例、两份样例、AGENTS.md、中英文 README、MIT 许可证、打包脚本和 Release 工作流；模板在 cli/adapter_template/，与模板仓库 KlaraGraff/XL_Translator-extension-template 逐字节相同，PR 检查会拉取模板仓库比对）。`adapter test <文件夹或 zip>` 做与安装时相同的检查，再在子进程里对 samples/ 中每份样例运行 scan、extract 和两种输出的 write，核对以原文作译文写回后再取字与原文一致、带标记的译文都写进了文件，问题和提醒逐条列出，通过时退出码 0、否则 1（`--json` 输出一个对象，`--skip-id-check` 用于检查随应用提供的类型）；扩展列表的自动检查跑的就是它。`adapter install <文件夹或 zip>` 经翻译引擎安装：先列出名称、版本、扩展名、许可证和确认提示，加 `--yes` 才装；`adapter uninstall <id>` 卸载并保留设置。`adapter pack` 先做静态检查，再用模板里的 scripts/pack.py 打出 `dist/<id>-<版本>.zip`（固定时间戳，同样的文件打出同样的 zip）、`.sha256` 和扩展列表的条目。冻结冒烟新增一次 new → test → pack。
 
   **Command line: make and install extensions**: `translator-sidecar adapter new <id>` creates a working extension from the template (a "key = value" text file example, two samples, AGENTS.md, Chinese and English READMEs, the MIT license, a pack script and a Release workflow; the template lives in cli/adapter_template/ and is byte-identical to the template repository KlaraGraff/XL_Translator-extension-template, which the PR checks clone and compare). `adapter test <folder or zip>` runs the same checks as an install, then runs scan, extract and write in both output modes on every sample in samples/ in a child process, checking that writing the source back as the translation gives the same text when extracted again and that marked translations all reach the file; it lists every problem and warning and exits with 0 when everything passes, 1 otherwise (`--json` prints one object; `--skip-id-check` is for checking a type shipped with the app). The extension list's checks run exactly this. `adapter install <folder or zip>` installs through the engine: it lists the name, version, file extensions, license and the confirmation notice, and installs only with `--yes`; `adapter uninstall <id>` removes it and keeps its settings. `adapter pack` runs the static checks, then uses the template's scripts/pack.py to build `dist/<id>-<version>.zip` (fixed timestamps, so the same files give the same zip), `.sha256` and the extension list entry. The frozen smoke test adds a new → test → pack run.
+
+- **本文档统一用词**：「自动识别场景」开着且文档文字不少于 3000 字时，翻译前在本机找出反复出现的词，连同文档说明请记忆库清洗模型（失败时改用文档翻译模型）为每个词定一个译法，随各批一并发送；有批次没照用的随第一轮重译一次，不标需复核；多数位置采用了的译法按「自动保存」存进记忆库，备注写适用行业。适用于 Excel、Word（含 PDF 转 Word）和 CAD。真实模型复测：两份施工方案前后不一致的词由 13 个降到 3–7 个、11 个降到 2–3 个，请求数约多 15%–18%（#103）。
+
+  **Consistent terms within a document**: With Detect scenario on and at least 3,000 characters of text, Translator finds recurring terms locally before translating and asks the memory cleanup model (or the document translation model if that fails) to fix one translation for each, sent with every batch; batches that did not follow it are retranslated once in the first round without being marked for review, and translations used in most places are saved to the translation memory under Auto save, noted with the industry. Applies to Excel, Word (including PDF to Word) and CAD (#103).
+
+- **修复：文档翻译换成 DeepSeek / 阿里百炼 / 本地模型时存不进去**：新装状态下「PDF 与图片审核模型」默认跟随文档翻译模型，保存文档翻译时会连带校验它能否看图，不能就整单拒绝。现在保存只按能力检查正在改的那条连接；别的用途因此用不了时照常保存，在模型服务页标「不可用」并写明原因，保存后提示受影响的用途；通用设置保存、删除连接、导入配置也不再因此被拒。用到审核模型的 PDF 任务开始前给出同一句原因。顺带修复换服务商时推荐模型名没存下、刷新后显示「缺少模型名称」（#129）。
+
+  **Fix: document translation could not be saved after switching to DeepSeek, Alibaba Bailian or a local model**: The PDF and image review model follows the document translation model by default, and saving used to reject everything when that follower could not read images. Saving now checks only the connection being edited; a use that becomes unavailable is still saved, marked Unavailable with the reason on the model services page, and a notice lists the affected uses. Also fixed: the suggested model name was not saved when switching provider (#129).
+
+- **修复：「?」提示框闪烁跳位、网址伸出框外**：插件页安装进度刷新时，「?」提示框不再反复重建闪烁或跳到左上角，钉住的提示不再消失；提示正文两端对齐，网址单独成行、只在「/」后断行（#101）。
+
+  **Fix: help tooltips flickering and URLs overflowing**: While install progress refreshes on the Plugins page, "?" tooltips no longer flicker or jump to the top-left, and pinned tooltips stay open; URLs sit on their own line and wrap only after "/" (#101).
 
 ## V10.1.0
 
