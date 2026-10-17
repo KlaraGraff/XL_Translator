@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+import tempfile
+import types
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
+
+from core import ppt_converter
+from core.ppt_converter import (
+    FIDELITY_COMPATIBILITY,
+    FIDELITY_HIGH,
+    PptConversionCache,
+    PptConversionError,
+    PptConversionResult,
+    convert_ppt_to_pptx,
+    converted_name,
+    is_legacy_ppt,
+    validate_pptx,
+)
+from core.word_converter import _find_soffice
+
+
+_CONTENT_TYPES = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
+)
+_ROOT_RELS = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+    'relationships/officeDocument" Target="ppt/presentation.xml"/>'
+    "</Relationships>"
+)
+_PRESENTATION = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>'
+)
+
+
+def _write_pptx(path: Path, *, presentation: str = _PRESENTATION, rels: str = _ROOT_RELS) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        archive.writestr("_rels/.rels", rels)
+        archive.writestr("ppt/presentation.xml", presentation)
+    return path
+
+
+def _missing(message: str):
+    def converter(_path: Path) -> Path:
+        raise ppt_converter._ToolMissing(message)
+
+    return converter
+
+
+def _failing(message: str):
+    def converter(_path: Path) -> Path:
+        raise PptConversionError(message)
+
+    return converter
+
+
+class _Workspace(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        self.source = self.root / "汇报.ppt"
+        self.source.write_bytes(b"legacy powerpoint payload")
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def converters(self, native, libreoffice):
+        return patch.multiple(
+            ppt_converter,
+            convert_with_native_powerpoint=native,
+            convert_with_libreoffice=libreoffice,
+        )
+
+
+class NamingTests(unittest.TestCase):
+    def test_legacy_suffixes(self) -> None:
+        self.assertTrue(is_legacy_ppt("a.ppt"))
+        self.assertTrue(is_legacy_ppt("A.PPS"))
+        self.assertFalse(is_legacy_ppt("a.pptx"))
+        self.assertFalse(is_legacy_ppt("a.doc"))
+
+    def test_converted_name_only_changes_legacy_suffix(self) -> None:
+        self.assertEqual(converted_name("季度 汇报.ppt"), "季度 汇报.pptx")
+        self.assertEqual(converted_name("放映.PPS"), "放映.pptx")
+        self.assertEqual(converted_name("已是新版.pptx"), "已是新版.pptx")
+
+
+class ConversionOrderTests(_Workspace):
+    def test_powerpoint_first_and_libreoffice_untouched(self) -> None:
+        output = _write_pptx(self.root / "out.pptx")
+        libreoffice_calls: list[Path] = []
+
+        def libreoffice(path: Path) -> Path:
+            libreoffice_calls.append(path)
+            return output
+
+        with self.converters(lambda _path: output, libreoffice):
+            result = convert_ppt_to_pptx(self.source)
+
+        self.assertEqual(result.path, output)
+        self.assertEqual(result.method, "PowerPoint")
+        self.assertEqual(result.fidelity, FIDELITY_HIGH)
+        self.assertEqual(libreoffice_calls, [])
+        self.assertEqual(result.note, "原文件为旧版 .ppt，已用 PowerPoint 转换为 .pptx 后翻译，输出为 .pptx。")
+
+    def test_libreoffice_takes_over_without_confirmation(self) -> None:
+        output = _write_pptx(self.root / "out.pptx")
+        with self.converters(_failing("PowerPoint 未能完成本次转换。"), lambda _path: output):
+            result = convert_ppt_to_pptx(self.source)
+
+        self.assertEqual(result.method, "LibreOffice")
+        self.assertEqual(result.fidelity, FIDELITY_COMPATIBILITY)
+        self.assertEqual(result.fallback_messages, ["PowerPoint：PowerPoint 未能完成本次转换。"])
+        self.assertIn("版式可能与原文件略有差异", result.note)
+
+    def test_invalid_output_is_deleted_and_next_route_used(self) -> None:
+        broken = self.root / "broken.pptx"
+        broken.write_bytes(b"not a zip")
+        output = _write_pptx(self.root / "out.pptx")
+        with self.converters(lambda _path: broken, lambda _path: output):
+            result = convert_ppt_to_pptx(self.source)
+
+        self.assertEqual(result.method, "LibreOffice")
+        self.assertFalse(broken.exists())
+        self.assertIn("不是有效的 .pptx", result.fallback_messages[0])
+
+    def test_nothing_installed_asks_to_save_as(self) -> None:
+        with self.converters(_missing("未找到 Microsoft PowerPoint，可能尚未安装。"), _missing("本机未找到 LibreOffice。")):
+            with self.assertRaises(PptConversionError) as caught:
+                convert_ppt_to_pptx(self.source)
+
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("本机未找到 PowerPoint 或 LibreOffice"))
+        self.assertIn("请先在 PowerPoint 里将它另存为 .pptx", message)
+        self.assertEqual(len(caught.exception.attempts), 2)
+
+    def test_both_fail_lists_reasons_then_asks_to_save_as(self) -> None:
+        with self.converters(_failing("PowerPoint 无响应。"), _failing("LibreOffice 未能转换此文件。")):
+            with self.assertRaises(PptConversionError) as caught:
+                convert_ppt_to_pptx(self.source)
+
+        message = str(caught.exception)
+        self.assertIn("PowerPoint：PowerPoint 无响应。", message)
+        self.assertIn("LibreOffice：LibreOffice 未能转换此文件。", message)
+        self.assertTrue(message.endswith("再翻译另存后的文件。"))
+
+    def test_raw_automation_error_is_humanized(self) -> None:
+        def denied(_path: Path) -> Path:
+            raise RuntimeError("execution error: Not authorized to send Apple events to Microsoft PowerPoint. (-1743)")
+
+        with self.converters(denied, _missing("本机未找到 LibreOffice。")):
+            with self.assertRaises(PptConversionError) as caught:
+                convert_ppt_to_pptx(self.source)
+
+        self.assertIn("系统未授权本程序控制 Office", str(caught.exception))
+        self.assertNotIn("-1743", str(caught.exception))
+
+    def test_rejects_non_legacy_and_missing_files(self) -> None:
+        with self.assertRaises(PptConversionError):
+            convert_ppt_to_pptx(self.root / "new.pptx")
+        with self.assertRaises(PptConversionError) as caught:
+            convert_ppt_to_pptx(self.root / "gone.ppt")
+        self.assertIn("文件不存在", str(caught.exception))
+
+    def test_native_powerpoint_unsupported_platform_is_missing_not_failure(self) -> None:
+        with patch.object(ppt_converter.platform, "system", return_value="Linux"):
+            with self.assertRaises(ppt_converter._ToolMissing):
+                ppt_converter.convert_with_native_powerpoint(self.source)
+
+
+class ValidateTests(_Workspace):
+    def test_accepts_minimal_presentation(self) -> None:
+        validate_pptx(_write_pptx(self.root / "ok.pptx"))
+
+    def test_rejects_wordprocessing_package(self) -> None:
+        document = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'
+        path = _write_pptx(self.root / "doc.pptx", presentation=document)
+        with self.assertRaises(PptConversionError):
+            validate_pptx(path)
+
+    def test_rejects_missing_main_part(self) -> None:
+        rels = _ROOT_RELS.replace("ppt/presentation.xml", "ppt/elsewhere.xml")
+        with self.assertRaises(PptConversionError):
+            validate_pptx(_write_pptx(self.root / "rels.pptx", rels=rels))
+
+    def test_rejects_empty_file(self) -> None:
+        empty = self.root / "empty.pptx"
+        empty.write_bytes(b"")
+        with self.assertRaises(PptConversionError):
+            validate_pptx(empty)
+
+
+class CacheTests(_Workspace):
+    def _counting(self, *, fail: bool = False):
+        calls: list[Path] = []
+
+        def converter(path: Path) -> PptConversionResult:
+            calls.append(path)
+            if fail:
+                raise PptConversionError("转不了")
+            output = _write_pptx(self.root / f"converted_{len(calls)}.pptx")
+            return PptConversionResult(source=path, path=output, method="PowerPoint")
+
+        return calls, converter
+
+    def test_same_file_converted_once_per_task(self) -> None:
+        calls, converter = self._counting()
+        cache = PptConversionCache(converter)
+        first = cache.convert(self.source)
+        second = cache.convert(str(self.source))
+        self.assertIs(first, second)
+        self.assertEqual(len(calls), 1)
+
+    def test_changed_file_is_converted_again(self) -> None:
+        calls, converter = self._counting()
+        cache = PptConversionCache(converter)
+        cache.convert(self.source)
+        self.source.write_bytes(b"legacy powerpoint payload, edited")
+        cache.convert(self.source)
+        self.assertEqual(len(calls), 2)
+
+    def test_failure_is_remembered(self) -> None:
+        calls, converter = self._counting(fail=True)
+        cache = PptConversionCache(converter)
+        for _ in range(2):
+            with self.assertRaises(PptConversionError):
+                cache.convert(self.source)
+        self.assertEqual(len(calls), 1)
+
+    def test_cleanup_removes_temporary_files(self) -> None:
+        _calls, converter = self._counting()
+        with PptConversionCache(converter) as cache:
+            result = cache.convert(self.source)
+            self.assertTrue(result.path.exists())
+        self.assertFalse(result.path.exists())
+        self.assertTrue(self.source.exists())
+
+
+class _FakePresentation:
+    def __init__(self, app: _FakeApp) -> None:
+        self.app = app
+        self.saved: list[tuple[str, int]] = []
+
+    def SaveAs(self, path: str, file_format: int) -> None:  # noqa: N802 - COM 名字
+        if self.app.fail_save:
+            raise RuntimeError("(-2147352567, 'PowerPoint could not save')")
+        self.saved.append((path, file_format))
+        _write_pptx(Path(path))
+
+    def Close(self) -> None:  # noqa: N802
+        self.app.presentations.items.remove(self)
+        self.app.closed += 1
+
+
+class _FakePresentations:
+    def __init__(self, app: _FakeApp, already_open: int) -> None:
+        self.app = app
+        self.items: list[object] = [object() for _ in range(already_open)]
+        self.open_calls: list[tuple[str, dict]] = []
+
+    @property
+    def Count(self) -> int:  # noqa: N802
+        return len(self.items)
+
+    def Open(self, path: str, **kwargs) -> _FakePresentation:  # noqa: N802
+        self.open_calls.append((path, kwargs))
+        presentation = _FakePresentation(self.app)
+        self.items.append(presentation)
+        return presentation
+
+
+class _FakeApp:
+    def __init__(self, *, already_open: int = 0, fail_save: bool = False) -> None:
+        self.presentations = _FakePresentations(self, already_open)
+        self.DisplayAlerts = 2
+        self.AutomationSecurity = 1
+        self.fail_save = fail_save
+        self.quit_calls = 0
+        self.closed = 0
+
+    @property
+    def Presentations(self) -> _FakePresentations:  # noqa: N802
+        return self.presentations
+
+    def Quit(self) -> None:  # noqa: N802
+        self.quit_calls += 1
+
+
+class WindowsPowerPointTests(_Workspace):
+    def _run(self, app: _FakeApp) -> Path:
+        pythoncom = types.SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None)
+        client = types.SimpleNamespace(DispatchEx=lambda progid: app if progid == "PowerPoint.Application" else None)
+        win32com = types.ModuleType("win32com")
+        win32com.client = client
+        output = self.root / "out.pptx"
+        with patch.dict(sys.modules, {"pythoncom": pythoncom, "win32com": win32com, "win32com.client": client}):
+            ppt_converter._convert_with_windows_powerpoint(self.source, output)
+        return output
+
+    def test_opens_read_only_without_window_and_saves_as_pptx(self) -> None:
+        app = _FakeApp()
+        output = self._run(app)
+
+        path, kwargs = app.presentations.open_calls[0]
+        self.assertEqual(path, str(self.source.resolve()))
+        self.assertEqual(kwargs, {"ReadOnly": -1, "Untitled": 0, "WithWindow": 0})
+        validate_pptx(output)
+        self.assertEqual(app.closed, 1)
+        self.assertEqual(app.quit_calls, 1)
+
+    def test_never_quits_when_user_already_had_presentations_open(self) -> None:
+        app = _FakeApp(already_open=1)
+        self._run(app)
+
+        self.assertEqual(app.quit_calls, 0)
+        self.assertEqual(app.DisplayAlerts, 2)
+        self.assertEqual(app.AutomationSecurity, 1)
+        self.assertEqual(app.presentations.Count, 1)
+
+    def test_failed_save_still_closes_and_reports_sentence(self) -> None:
+        app = _FakeApp(fail_save=True)
+        with self.assertRaises(PptConversionError):
+            self._run(app)
+        self.assertEqual(app.closed, 1)
+        self.assertEqual(app.quit_calls, 1)
+
+
+class MacPowerPointTests(_Workspace):
+    def test_script_saves_open_xml_and_quits_only_if_it_started_powerpoint(self) -> None:
+        captured: list[list[str]] = []
+
+        def run(command, **kwargs):
+            captured.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(ppt_converter.subprocess, "run", side_effect=run):
+            ppt_converter._convert_with_macos_powerpoint(self.source, self.root / "out.pptx")
+
+        script = captured[0][2]
+        self.assertIn('tell application "Microsoft PowerPoint"', script)
+        self.assertIn("as save as Open XML presentation", script)
+        self.assertIn("if not wasRunning then quit saving no", script)
+        self.assertEqual(captured[0][3:], [str(self.source.resolve()), str(self.root / "out.pptx")])
+
+    def test_permission_denial_becomes_sentence(self) -> None:
+        def run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, "", "Not authorized to send Apple events (-1743)")
+
+        with patch.object(ppt_converter.subprocess, "run", side_effect=run):
+            with self.assertRaises(PptConversionError) as caught:
+                ppt_converter._convert_with_macos_powerpoint(self.source, self.root / "out.pptx")
+        self.assertIn("自动化", str(caught.exception))
+
+
+_FLAT_ODP = """<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+ office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.presentation">
+ <office:body><office:presentation>
+  <draw:page draw:name="p1"><draw:frame svg:width="20cm" svg:height="3cm" svg:x="2cm" svg:y="2cm">
+   <draw:text-box><text:p>项目进度汇报</text:p></draw:text-box></draw:frame></draw:page>
+  <draw:page draw:name="p2"><draw:frame svg:width="20cm" svg:height="3cm" svg:x="2cm" svg:y="2cm">
+   <draw:text-box><text:p>第二页：施工计划</text:p></draw:text-box></draw:frame></draw:page>
+ </office:presentation></office:body></office:document>
+"""
+
+
+@unittest.skipIf(_find_soffice() is None, "需要 LibreOffice")
+class RealLibreOfficeTests(unittest.TestCase):
+    """真的跑一遍 soffice：先把一份两页的演示文稿存成 .ppt，再用转换器转回 .pptx。"""
+
+    def test_legacy_ppt_round_trip_keeps_slides_and_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "deck.fodp").write_text(_FLAT_ODP, encoding="utf-8")
+            subprocess.run(
+                [
+                    str(_find_soffice()),
+                    "--headless",
+                    f"-env:UserInstallation={(root / 'profile').as_uri()}",
+                    "--convert-to",
+                    "ppt",
+                    "--outdir",
+                    str(root),
+                    str(root / "deck.fodp"),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            legacy = root / "项目 汇报.ppt"
+            (root / "deck.ppt").rename(legacy)
+            self.assertTrue(legacy.read_bytes().startswith(b"\xd0\xcf\x11\xe0"), "应是旧版二进制格式")
+
+            with PptConversionCache() as cache:
+                with patch.object(
+                    ppt_converter, "convert_with_native_powerpoint", _missing("未找到 Microsoft PowerPoint。")
+                ):
+                    result = cache.convert(legacy)
+                    again = cache.convert(legacy)
+                self.assertIs(result, again)
+                self.assertEqual(result.method, "LibreOffice")
+                self.assertTrue(result.path.name.startswith("项目 汇报_"))
+                with zipfile.ZipFile(result.path) as archive:
+                    slides = sorted(
+                        name for name in archive.namelist()
+                        if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+                    )
+                    text = "".join(archive.read(name).decode("utf-8") for name in slides)
+                self.assertEqual(len(slides), 2)
+                self.assertIn("项目进度汇报", text)
+                self.assertIn("第二页：施工计划", text)
+            self.assertFalse(result.path.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
