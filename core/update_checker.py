@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from app_meta import APP_SAFE_NAME, APP_UPDATE_USER_AGENT, APP_VERSION
+from core import system_proxy
 
 
 GITHUB_REPO = "KlaraGraff/XL_Translator"
@@ -346,12 +347,13 @@ def check_for_updates(
     machine: str | None = None,
 ) -> UpdateCheckResult:
     """Check one stable release and expose only a complete native DMG."""
-    try:
+
+    def request(*, direct: bool) -> UpdateCheckResult:
         # GitHub 的 release 下载链接(含校验和兜底请求命中的 checksum_url)
         # 一律 302 到 objects.githubusercontent.com,httpx 默认不跟随重
         # 定向——不加 follow_redirects 会把 302 的空/占位正文当校验和文件
         # 去解析,解析失败后整次检查被误判为「正式发布包尚未就绪」。
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=not direct) as client:
             response = client.get(
                 LATEST_RELEASE_API_URL,
                 headers={
@@ -370,6 +372,15 @@ def check_for_updates(
                 machine=machine,
             )
             return _fetch_checksum(client, result)
+
+    try:
+        try:
+            return request(direct=False)
+        except system_proxy.PROXY_CONNECT_ERRORS as exc:
+            # 系统代理连不上（常见于关掉的 VPN / 代理软件留下的设置）：直连再查一次。
+            if not system_proxy.should_retry_direct(exc, LATEST_RELEASE_API_URL):
+                raise
+            return request(direct=True)
     except Exception as exc:  # noqa: BLE001 - UI receives a concise safe state.
         return UpdateCheckResult(
             ok=False,
