@@ -161,7 +161,7 @@ from core.word_document import (
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
-from core.word_inline_marks import InlineMarkEngine, place_marks, unmark
+from core.word_inline_marks import InlineMarkEngine, place_marks, same_text, unmark
 from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_batching import (
     WordBatchRunStats,
@@ -1985,7 +1985,7 @@ class WordTaskRunner(BaseTaskRunner):
             if not translation or translation == source:
                 continue
             entry = known.get(source)
-            if entry is not None and unmark(entry[1], entry[0], source).strip() == translation:
+            if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
                 continue
             items.append((source, marked, translation))
         if not items:

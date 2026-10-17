@@ -88,11 +88,11 @@ class PptConversionResult:
 
     @property
     def note(self) -> str:
-        """写进结果的一句话：原文件是什么格式、用什么转的、输出是什么格式。"""
+        """读取后显示在文件行上的提示：原文件是什么格式、用什么转的、输出是什么格式。"""
         suffix = self.source.suffix.lower() or ".ppt"
-        sentence = f"原文件为旧版 {suffix}，已用 {self.method} 转换为 .pptx 后翻译，输出为 .pptx。"
+        sentence = f"旧版 {suffix} 已用 {self.method} 转换为 .pptx，输出为 .pptx"
         if self.fidelity == FIDELITY_COMPATIBILITY:
-            sentence += "版式可能与原文件略有差异。"
+            sentence += "，版式可能与原文件略有差异"
         return sentence
 
 
@@ -134,22 +134,6 @@ def get_local_powerpoint_availability() -> tuple[bool, str]:
             return False, "未找到 Microsoft PowerPoint，可能尚未安装。"
         return True, "已检测到 Microsoft PowerPoint。"
     return False, "当前系统不支持使用本机 PowerPoint 进行转换。"
-
-
-def libreoffice_ppt_conversion_available() -> bool:
-    from core.word_converter import _find_soffice
-
-    return _find_soffice() is not None
-
-
-def legacy_ppt_conversion_available() -> tuple[bool, str]:
-    """扫描时用：本机能不能转换旧版 .ppt；不能时给出整句提示。"""
-    powerpoint_ok, _reason = get_local_powerpoint_availability()
-    if powerpoint_ok:
-        return True, "将先用本机 PowerPoint 转换为 .pptx，输出为 .pptx。"
-    if libreoffice_ppt_conversion_available():
-        return True, "将先用 LibreOffice 转换为 .pptx，输出为 .pptx，版式可能略有差异。"
-    return False, "本机未找到 PowerPoint 或 LibreOffice，无法转换旧版文件。" + SAVE_AS_PPTX_HINT
 
 
 def _windows_powerpoint_registered() -> bool:
@@ -500,6 +484,15 @@ class PptConversionCache:
         if isinstance(entry, PptConversionError):
             raise entry
         return entry
+
+    def release(self, path: str | Path) -> None:
+        """这个文件用完了（写出后，或转换失败要让下次重试）：忘掉它，删掉临时文件。"""
+        resolved = str(Path(path).resolve())
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == resolved]:
+                entry = self._entries.pop(key)
+                if isinstance(entry, PptConversionResult):
+                    _discard(entry.path)
 
     def cleanup(self) -> None:
         with self._lock:

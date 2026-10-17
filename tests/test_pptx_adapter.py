@@ -49,6 +49,9 @@ class FrenchEngine(FakeEngine):
 
 
 def french(text: str) -> str:
+    # Inline formatting marks (<g1>…</g1>) do not come back: the app then places
+    # them itself or writes the paragraph whole, so the words match the plain text.
+    text = re.sub(r"</?g\d+>", "", text)
     tokens = re.findall(r"⟦\d+⟧", text)
     # About as long as a real French line and with the same figures, so the
     # quality check takes it for a translation.
@@ -68,7 +71,7 @@ def test_manifest() -> None:
     assert manifest.key == "ext:pptx"
     assert manifest.label == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
-    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx"]
+    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx", "ppt", "pps"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
     assert [(option.key, option.default) for option in manifest.options] == [
         ("translate_notes", True),
@@ -183,7 +186,11 @@ class PptxTaskTests(IsolatedAppDataTestCase):
         assert french("第 ⟦1⟧ 页").replace("⟦1⟧", "3") in _texts(out, "ppt/slides/slide3.xml")
         assert engine.prompts[0].startswith(CORE_TRANSLATION_PROMPT)
         assert "不扩写" in engine.prompts[0]
-        assert result["status"] == "completed", result
+        # The vertical text box on slide 7 is reported by write and listed for review.
+        assert [(item["location"], item["issue"]) for item in done.review["items"]] == [
+            ("第 7 页 · TextBox 1", "竖排文本框，译文可能需要改为横排")
+        ]
+        assert result["status"] == "needs_review" and result["review_count"] == 1, result
 
     def test_bilingual_option_writes_both(self) -> None:
         path = self.source / "讲义.pptx"
@@ -211,7 +218,7 @@ def test_the_page_is_registered_with_the_app() -> None:
         descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
-        assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
+        assert descriptor["extensions"] == ["potx", "pps", "ppsx", "ppt", "pptm", "pptx"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
         if not already:

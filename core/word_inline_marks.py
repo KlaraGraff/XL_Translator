@@ -436,8 +436,18 @@ _BOUNDARY_GAP_RE = re.compile(
 )
 
 
-def add_boundary_spaces(translation: str, target_lang: str | None) -> str:
-    """译文用空格分词时，补上标记边界处模型漏掉的空格（见 _BOUNDARY_GAP_RE）。"""
+# 脚注编号、图片这类不占字符的占位符夹在两个词中间：「béton<x1/>doit」。原文是中文时
+# 本来没有空格，模型常照抄，写回成「béton¹doit」。在占位符后面补一个空格（放在格式外面）
+_OBJECT_GAP_RE = re.compile(
+    r"(?<=[^\W\d_]|[.,;:!?)\]»])(<\s*x\s*(\d+)\s*/\s*>)(?=(?:<\s*[gG]\s*\d+\s*>)*[^\W\d_])"
+)
+
+
+def add_boundary_spaces(
+    translation: str, target_lang: str | None, placeholders: dict[int, str] | None = None
+) -> str:
+    """译文用空格分词时，补上标记边界处模型漏掉的空格（见 _BOUNDARY_GAP_RE）；placeholders
+    给出占位符对应的字符时，不占字符的占位符（脚注编号、图片）两边也补（见 _OBJECT_GAP_RE）。"""
     lang = str(target_lang or "").strip().lower().replace("_", "-").split("-")[0]
     if lang in ("zh", "ja", "ko", "th", "lo", "km", "my"):
         return translation
@@ -446,7 +456,33 @@ def add_boundary_spaces(translation: str, target_lang: str | None) -> str:
         closing, opening = match.group(1), match.group(2)
         return f"{closing} {opening}" if closing or opening else match.group(0)
 
-    return _BOUNDARY_GAP_RE.sub(fill, str(translation or ""))
+    text = _BOUNDARY_GAP_RE.sub(fill, str(translation or ""))
+    if placeholders:
+        text = _OBJECT_GAP_RE.sub(
+            lambda match: match.group(1) + " " if placeholders.get(int(match.group(2))) == "" else match.group(0),
+            text,
+        )
+    return text
+
+
+_WHITESPACE_SPLIT_RE = re.compile(r"(\s+)")
+
+
+def same_text(candidate: str, settled: str) -> bool:
+    """去掉标记后的译文 candidate 和定稿译文 settled 算不算同一段：文字一字不差；定稿里
+    只有空格的地方，candidate 可以是任何空白。记忆库里的定稿常把原文的制表符、软换行存成
+    了空格，补标记时占位符顶替那个空格，写回的仍是这段译文；定稿里本来就有的制表符、换行
+    不能挪到别处。"""
+    left = _WHITESPACE_SPLIT_RE.split(str(candidate or "").strip())
+    right = _WHITESPACE_SPLIT_RE.split(str(settled or "").strip())
+    if len(left) != len(right):
+        return False
+    for index, (mine, theirs) in enumerate(zip(left, right)):
+        if mine == theirs:
+            continue
+        if index % 2 == 0 or theirs.strip(" ") or not mine.isspace():
+            return False
+    return True
 
 
 def parse_marked(text: str, allowed_ids, placeholder_ids=()) -> list[tuple[str | Slot, int | None]] | None:
@@ -614,7 +650,7 @@ class InlineMarkEngine:
             return translation
         ok = marks_match(sent, translation)
         if ok:
-            translation = add_boundary_spaces(translation, target_lang)
+            translation = add_boundary_spaces(translation, target_lang, placeholder_texts(sent, plain))
         with self._lock:
             if ok:
                 self.marked_translations[plain] = (sent, translation)
@@ -675,7 +711,7 @@ PLACE_MARKS_PROMPT = (
     "请在译文中插入与原文相同的标记，各包住与原文标记内容对应的译文。只插入标记，译文的其他字符"
     "（包括空格、标点、换行）一个都不能改动；每对标记恰好出现一次，不得嵌套。"
     "原文里 <x1/> 这样的自闭合占位符（制表符、图片、脚注编号等）在译文中也必须恰好出现一次："
-    "译文里已经有的保持原位，没有的插到对应的位置。"
+    "译文里已经有的保持原位，没有的插到对应的位置；原文占位符处译文只有一个空格时，用占位符替换这个空格。"
     "按原顺序返回 JSON 字符串数组，长度与输入相同，每项是插好标记的译文；不要输出解释或 markdown 代码块。"
 )
 
@@ -700,8 +736,9 @@ def _seed_slots(marked: str, translation: str, texts: dict[int, str]) -> str:
 
 def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple[str, str]]:
     """给已经定稿、但没有带标记版本的译文补上标记（记忆库直接套用的、夹杂多种语言那条路
-    翻的、模型弄丢标记的、复查改过的）。只让模型插标记：插完去掉标记必须和定稿一字不差，
-    否则放弃，按整段写法写回。items: [(原文, 带标记原文, 定稿译文)]。"""
+    翻的、模型弄丢标记的、复查改过的）。只让模型插标记：插完去掉标记必须和定稿一字不差
+    （只允许空白不同，见 same_text），否则放弃，按整段写法写回。
+    items: [(原文, 带标记原文, 定稿译文)]。"""
     import json
 
     from engines.base_engine import engine_supports_chat, strip_markdown_json
@@ -739,7 +776,7 @@ def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple
         for (source, marked, translation, _seeded, texts), answer in zip(batch, answers):
             if (
                 isinstance(answer, str)
-                and strip_marks(answer, texts) == translation
+                and same_text(strip_marks(answer, texts), translation)
                 and marks_match(marked, answer)
             ):
                 placed[source] = (marked, answer)

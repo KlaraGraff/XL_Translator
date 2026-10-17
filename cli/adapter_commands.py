@@ -26,7 +26,16 @@ from typing import Any
 from core import adapter_install
 from core.adapter_install import CONFIRM_NOTICE, inspect_package
 from core.adapter_subprocess_host import SubprocessAdapterHost
-from core.format_adapter import LANGUAGES, MANIFEST_FILE, AdapterError, AdapterManifest
+from core.format_adapter import (
+    BUNDLED_ADAPTERS_DIR,
+    LANGUAGES,
+    MANIFEST_FILE,
+    TARGET_LANG_OPTION_KEY,
+    AdapterError,
+    AdapterHost,
+    AdapterManifest,
+    InProcessAdapterHost,
+)
 from translator_adapter import (
     MODE_BILINGUAL,
     MODE_TRANSLATION_ONLY,
@@ -42,6 +51,8 @@ TEMPLATE_DIR = Path(__file__).resolve().parent / "adapter_template"
 TEMPLATE_ID = "my-format"
 #: 自测写回时加在译文后面的标记，再取字时每段都应带着它。
 TEST_MARK = " [TR]"
+#: 试运行时交给适配器的目标语言。
+TEST_TARGET_LANG = "en"
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _MODE_NAMES = {MODE_TRANSLATION_ONLY: "仅译文", MODE_BILINGUAL: "原文 + 译文"}
@@ -170,14 +181,27 @@ def check_adapter(directory: Path, *, allow_reserved_id: bool = False) -> CheckR
         suffixes = "、".join(f".{suffix}" for suffix in manifest.extensions)
         report.problems.append(f"samples/ 里没有 {suffixes} 样例，无法试运行")
         return report
-    host = SubprocessAdapterHost(directory, manifest)
-    options = {option.key: option.default for option in manifest.options}
+    # 随应用提供的类型在应用进程里运行，可以导入应用模块和 lxml：照样在本进程里试。
+    # 第三方扩展照安装后的样子，在子进程里试（只有标准库和 translator_adapter）。
+    host: AdapterHost = (
+        InProcessAdapterHost(directory, manifest) if is_bundled_adapter(directory) else SubprocessAdapterHost(directory, manifest)
+    )
+    # 与应用里一样：开关默认值，加上目标语言（试运行用英文）。
+    options = {**{option.key: option.default for option in manifest.options}, TARGET_LANG_OPTION_KEY: TEST_TARGET_LANG}
     with tempfile.TemporaryDirectory(prefix="translator-adapter-test-") as work:
         for index, name in enumerate(runnable):
             output_dir = Path(work) / str(index)
             output_dir.mkdir()
             report.runs.append(_run_sample(host, manifest, directory / name, name, output_dir, options, report))
     return report
+
+
+def is_bundled_adapter(directory: Path) -> bool:
+    """``directory`` 是随应用提供的类型（源码树的 ``adapters/<id>/``）。"""
+    try:
+        return Path(directory).resolve().parent == BUNDLED_ADAPTERS_DIR.resolve()
+    except OSError:
+        return False
 
 
 def _text_warnings(manifest: AdapterManifest) -> list[str]:
@@ -193,7 +217,7 @@ def _text_warnings(manifest: AdapterManifest) -> list[str]:
 
 
 def _run_sample(
-    host: SubprocessAdapterHost,
+    host: AdapterHost,
     manifest: AdapterManifest,
     path: Path,
     name: str,
@@ -205,11 +229,11 @@ def _run_sample(
     started = time.monotonic()
     try:
         try:
-            run.scan_units = host.scan(path).unit_count
+            run.scan_units = host.scan(path, options).unit_count
         except AdapterError as exc:
             report.problems.append(f"{name}：scan 出错：{exc}")
         try:
-            units = host.extract(path)
+            units = host.extract(path, options)
         except AdapterError as exc:
             report.problems.append(f"{name}：extract 出错：{exc}")
             return run
@@ -238,13 +262,15 @@ def _translated(units: list[TextUnit], suffix: str) -> list[TranslatedUnit]:
             text=unit.text,
             translation=unit.text if unit.locked else f"{unit.text}{suffix}",
             status=STATUS_LOCKED if unit.locked else STATUS_TRANSLATED,
+            # 带段内格式标记的单元：写回时也把带标记的译文交过去，试一下适配器按标记写回的那条路。
+            marked_translation=f"{unit.marked}{suffix}" if unit.marked and not unit.locked else "",
         )
         for unit in units
     ]
 
 
 def _check_mode(
-    host: SubprocessAdapterHost,
+    host: AdapterHost,
     path: Path,
     name: str,
     units: list[TextUnit],
@@ -268,7 +294,7 @@ def _check_mode(
     if mode != MODE_TRANSLATION_ONLY:
         return "ok"
     try:
-        again = host.extract(plain)
+        again = host.extract(plain, options)
     except AdapterError as exc:
         report.problems.append(f"{label}：写回的文件无法再取字：{exc}")
         return "failed"
@@ -278,7 +304,7 @@ def _check_mode(
     marked = output_dir / f"{mode}-marked{path.suffix}"
     try:
         host.write(path, _translated(units, TEST_MARK), mode, marked, options)
-        again = host.extract(marked)
+        again = host.extract(marked, options)
     except AdapterError as exc:
         report.problems.append(f"{label}：写回带标记的译文时出错：{exc}")
         return "failed"

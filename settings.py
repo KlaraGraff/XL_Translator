@@ -1332,13 +1332,16 @@ class ExtensionSettings(BaseModel):
     # 内置规则：空表示用默认的那份（清单 adapter.json 的 ``prompt``，没有则是
     # ``config.CORE_TRANSLATION_PROMPT``）；用户在「翻译参数」里改过才有值（v40 起）。
     prompt: str = ""
+    # 输出位置（与 Word 页的 word_output 同两项）：关着时写在来源文件夹里。加法改动，旧文件读时补默认值。
+    use_custom_output_dir: bool = False
+    custom_output_dir: str = ""
 
 
 class TranslationTypesSettings(BaseModel):
     """侧栏「翻译」组：全部翻译类型（内置四种与 ``ext:<id>``）的顺序和是否显示，v40 起。
 
-    「扩展」页里改。内置四种默认显示；扩展类型（随应用提供的「文本」也一样）默认不显示，
-    在「扩展」页打开。不显示只是不放进侧栏：页面照常注册，任务中心「打开工作区」、命令行
+    「扩展」页里改。内置四种默认显示；扩展类型默认不显示，在「扩展」页打开，随应用提供、
+    清单写了 ``visible_by_default`` 的（PPT）除外。不显示只是不放进侧栏：页面照常注册，任务中心「打开工作区」、命令行
     和 MCP 照常能用。至少要留一种显示，由 PUT /api/settings 和界面两头拦。
     """
 
@@ -1367,10 +1370,12 @@ class TranslationTypesSettings(BaseModel):
                 switches[key] = flag
         return switches
 
-    def shows(self, key: str) -> bool:
-        """``key`` 是否显示在侧栏：拨过的按拨的；没拨过的内置显示、扩展类型不显示。"""
+    def shows(self, key: str, *, visible_by_default: bool | None = None) -> bool:
+        """``key`` 是否显示在侧栏：拨过的按拨的；没拨过的按 ``visible_by_default``（页面的
+        ``Surface.visible_by_default``），不给时内置显示、扩展类型不显示。"""
         normalized = str(key or "").strip().lower()
-        return self.visible.get(normalized, not normalized.startswith("ext:"))
+        default = not normalized.startswith("ext:") if visible_by_default is None else visible_by_default
+        return self.visible.get(normalized, default)
 
 
 class AppSettings(BaseModel):

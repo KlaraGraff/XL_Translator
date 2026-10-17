@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -47,7 +48,10 @@ BUNDLED_ADAPTERS_DIR = Path(__file__).resolve().parents[1] / "adapters"
 
 #: 「双语对照」开关的键：两种输出都支持的类型由应用统一加上这个开关，清单里不能再用。
 BILINGUAL_OPTION_KEY = "bilingual"
-RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY})
+#: 执行器交给适配器的 options 里带上目标语言（设置里的语言代码，如 "fr"）：写回时改语言
+#: 属性、断行规则要用。清单开关同样不能用这个键。
+TARGET_LANG_OPTION_KEY = "target_lang"
+RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY, TARGET_LANG_OPTION_KEY})
 
 #: 描述符和界面要求的三种界面语言。
 LANGUAGES = ("zh", "en", "fr")
@@ -56,6 +60,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
+_CLOSING_MARK_RE = re.compile(r"<\s*/\s*g\s*\d+\s*>", re.IGNORECASE)
 #: 清单里内置规则的长度上限：比应用通用的那份长得多就该拆成补充要求了。
 _PROMPT_MAX_CHARS = 4000
 
@@ -157,6 +162,11 @@ class AdapterManifest(BaseModel):
     repo: str = ""
     #: 需要的最低应用版本；空表示不限。
     min_app_version: str = ""
+    #: 只对随应用提供的类型生效：没在「扩展」页拨过时也显示在侧栏（像内置四种一样）。
+    #: 用户装进来的扩展写了也按不显示处理——它们装上时本来就打开了（``api/extension_install_job.py``）。
+    visible_by_default: bool = False
+    #: 只对随应用提供的类型生效：侧栏默认顺序里紧跟在哪个类型后面（如 ``word``）；空表示排在最后。
+    sidebar_after: str = ""
 
     @field_validator("id")
     @classmethod
@@ -227,6 +237,14 @@ class AdapterManifest(BaseModel):
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ValueError(f"开关的 key 重复：{', '.join(duplicates)}")
+        return value
+
+    @field_validator("sidebar_after")
+    @classmethod
+    def _sidebar_after(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value and not re.match(r"^(?:ext:)?[a-z0-9][a-z0-9_-]{0,39}$", value):
+            raise ValueError("sidebar_after 应是一个类型键，如 word 或 ext:text")
         return value
 
     @field_validator("min_app_version")
@@ -322,9 +340,9 @@ class AdapterHost(Protocol):
 
     manifest: AdapterManifest
 
-    def scan(self, path: Path) -> ScanItem: ...
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem: ...
 
-    def extract(self, path: Path) -> list[TextUnit]: ...
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]: ...
 
     def write(
         self,
@@ -352,7 +370,8 @@ def _coerce(value: Any, cls: type[_T], what: str) -> _T:
 
 
 def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUnit]:
-    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段。"""
+    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段；``marked``
+    去掉标记后须与原文一字不差、标记成对不嵌套，否则按没有标记处理（与 Word 同一套校验）。"""
     seen: set[str] = set()
     for unit in units:
         if not unit.id:
@@ -361,7 +380,26 @@ def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUni
             raise AdapterError(f"{what} 返回的单元 id 重复：{unit.id!r}")
         seen.add(unit.id)
         unit.protected = [fragment for fragment in dict.fromkeys(unit.protected) if fragment and fragment in unit.text]
+        if unit.marked and not _usable_marks(unit.marked, unit.text):
+            unit.marked = ""
     return units
+
+
+def _usable_marks(marked: str, text: str) -> bool:
+    # 只有带标记的单元才用到；word_inline_marks 带着 python-docx，不在模块顶部导入。
+    from core.word_inline_marks import MAX_GROUPS_PER_UNIT, marks_match, strip_marks
+
+    if marked == text or strip_marks(marked) != text or not marks_match(marked, marked):
+        return False
+    return len(_CLOSING_MARK_RE.findall(marked)) <= MAX_GROUPS_PER_UNIT
+
+
+def _takes_second_argument(function: Callable[..., Any]) -> bool:
+    try:
+        inspect.signature(function).bind("path", {})
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
@@ -429,14 +467,21 @@ class InProcessAdapterHost:
         except Exception as exc:
             raise AdapterError(f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__) from exc
 
-    def scan(self, path: Path) -> ScanItem:
+    def _call_with_options(self, name: str, path: Path, options: Mapping[str, Any] | None) -> Any:
+        # scan / extract 的第二个参数可选：写了 ``def extract(path, options=None)`` 的适配器拿到
+        # 开关值和目标语言（如关掉「翻译演讲者备注」时取字就跳过备注），只收路径的照旧。
+        if options is not None and _takes_second_argument(getattr(self._load(), name)):
+            return self._call(name, str(path), dict(options))
+        return self._call(name, str(path))
+
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem:
         if callable(getattr(self._load(), "scan", None)):
-            return _coerce(self._call("scan", str(path)), ScanItem, "scan")
-        units = self.extract(path)
+            return _coerce(self._call_with_options("scan", path, options), ScanItem, "scan")
+        units = self.extract(path, options)
         return ScanItem(unit_count=sum(1 for unit in units if not unit.locked))
 
-    def extract(self, path: Path) -> list[TextUnit]:
-        raw = self._call("extract", str(path))
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]:
+        raw = self._call_with_options("extract", path, options)
         if not isinstance(raw, (list, tuple)):
             raise AdapterError(f"extract 应返回 TextUnit 列表，实际是 {type(raw).__name__}")
         return validate_units([_coerce(item, TextUnit, "extract") for item in raw])
@@ -464,6 +509,7 @@ __all__ = [
     "BUNDLED_ADAPTERS_DIR",
     "MANIFEST_FILE",
     "RESERVED_OPTION_KEYS",
+    "TARGET_LANG_OPTION_KEY",
     "SUPPORTED_ADAPTER_API_VERSIONS",
     "AdapterCapabilities",
     "AdapterError",
