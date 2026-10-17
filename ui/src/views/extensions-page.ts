@@ -30,12 +30,15 @@ import { installSections, mountInstall, uninstallButton, unmountInstall } from "
 import "./extensions-page.css";
 
 let mounted = false;
+/** 嵌在「扩展」页的「文件类型」页签里：顶栏由扩展页管，这里不设。 */
+let embedded = false;
 let rootEl: HTMLElement | null = null;
 let settings: Record<string, unknown> = {};
 let busy = false;
 
-export function mount(container: HTMLElement, _params: ViewParams): void {
+export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
+  embedded = params.embedded === true;
   rootEl = container;
   mountInstall({ onChanged: refresh });
   render();
@@ -171,8 +174,8 @@ function typeRow(key: string, index: number, count: number, visibleCount: number
 
 function render(): void {
   if (!mounted || !rootEl) return;
-  setTopbar({ title: t("扩展"), subtitle: t("设置侧栏里显示哪些翻译类型，以及它们的顺序") });
-  rootEl.className = "content extensions-content";
+  if (!embedded) setTopbar({ title: t("扩展"), subtitle: t("设置侧栏里显示哪些翻译类型，以及它们的顺序") });
+  rootEl.classList.add("extensions-content");
   clearElement(rootEl);
 
   const column = document.createElement("div");

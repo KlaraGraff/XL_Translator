@@ -11,20 +11,19 @@ import { createButton, createCard, createStatus, showToast } from "../components
 import { icon } from "../icons";
 import { t } from "../i18n";
 import { ApiClient, sidecarExecutable } from "../api-client";
+import { isWindows } from "../platform";
 import "./mcp.css";
-
-const IS_WINDOWS = /Windows/i.test(navigator.userAgent);
 
 // 拿不到本机路径时（开发构建）用默认安装位置，与 tauri.conf.json 的 resources
 // （resources/sidecar → sidecar）和 NSIS 当前用户安装目录（%LOCALAPPDATA%\Translator）一致。
-const DEFAULT_EXECUTABLE = IS_WINDOWS
+const DEFAULT_EXECUTABLE = isWindows()
   ? "%LOCALAPPDATA%\\Translator\\sidecar\\translator-sidecar\\translator-sidecar.exe"
   : "/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar";
 
-const CLAUDE_DESKTOP_CONFIG = IS_WINDOWS
+const CLAUDE_DESKTOP_CONFIG = isWindows()
   ? "%APPDATA%\\Claude\\claude_desktop_config.json"
   : "~/Library/Application Support/Claude/claude_desktop_config.json";
-const CURSOR_CONFIG = IS_WINDOWS ? "%USERPROFILE%\\.cursor\\mcp.json" : "~/.cursor/mcp.json";
+const CURSOR_CONFIG = isWindows() ? "%USERPROFILE%\\.cursor\\mcp.json" : "~/.cursor/mcp.json";
 
 type RolePayload = { model?: unknown; mode?: unknown; has_api_key?: unknown; availability_status?: unknown };
 /** undefined：还在读取；null：没读到。 */
@@ -44,7 +43,7 @@ function claudeCodeCommand(executable: string): string {
 function cliExample(executable: string): string {
   // PowerShell 要用 & 才能运行带引号的路径；macOS 的终端直接写。
   const source = t("文件或文件夹路径");
-  return `${IS_WINDOWS ? "& " : ""}"${executable}" translate "${source}" --to en --wait`;
+  return `${isWindows() ? "& " : ""}"${executable}" translate "${source}" --to en --wait`;
 }
 
 /** 发给智能体的接入说明：写给智能体看，让它按自己所在的客户端完成配置并自检。 */
@@ -270,10 +269,11 @@ function render(container: HTMLElement): void {
   container.append(column);
 }
 
-export function mount(container: HTMLElement, _params: ViewParams): void {
+export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
-  setTopbar({ title: "MCP", subtitle: t("让智能体调用 Translator 翻译文件") });
-  container.className = "content mcp-content";
+  // 嵌在「扩展」页的「智能体接入」页签里时，顶栏由扩展页管。
+  if (params.embedded !== true) setTopbar({ title: "MCP", subtitle: t("让智能体调用 Translator 翻译文件") });
+  container.classList.add("mcp-content");
   state = { executable: "", roles: undefined };
   render(container);
   void sidecarExecutable().then((executable) => {
