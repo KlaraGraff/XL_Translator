@@ -774,10 +774,26 @@ def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple
         if not isinstance(answers, list) or len(answers) != len(batch):
             continue
         for (source, marked, translation, _seeded, texts), answer in zip(batch, answers):
-            if (
-                isinstance(answer, str)
-                and same_text(strip_marks(answer, texts), translation)
-                and marks_match(marked, answer)
-            ):
-                placed[source] = (marked, answer)
+            if not isinstance(answer, str) or not marks_match(marked, answer):
+                continue
+            for candidate in (_settle_object_gaps(answer, texts), answer):
+                if same_text(strip_marks(candidate, texts), translation):
+                    placed[source] = (marked, candidate)
+                    break
     return placed
+
+
+# 补标记时模型把脚注编号、图片这类不占字符的占位符插在两个词之间的空格上：「béton<x1/>doit」
+# 「béton <x1/>doit」。去掉占位符后少了空格就对不上定稿，整段退回写法会把脚注挪到段尾。
+_OBJECT_SPACE_RE = re.compile(
+    r"(?<=[^\W\d_]|[.,;:!?)\]»])( ?)(<\s*x\s*(\d+)\s*/\s*>)(?=(?:<\s*[gG]\s*\d+\s*>)*[^\W\d_])"
+)
+
+
+def _settle_object_gaps(answer: str, texts: dict[int, str]) -> str:
+    """不占字符的占位符夹在两个词中间时，统一写成「词<xN/> 词」（编号紧跟前一个词，后面留
+    空格）。是否采用仍由 same_text 和定稿比对决定，定稿那里本来没有空格的不会补。"""
+    return _OBJECT_SPACE_RE.sub(
+        lambda match: match.group(2) + " " if texts.get(int(match.group(3))) == "" else match.group(0),
+        answer,
+    )

@@ -5,6 +5,7 @@ docx 都用 python-docx 真实构造（含 w:hyperlink），断言落在输出�
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -437,6 +438,23 @@ class PlaceMarksTests(unittest.TestCase):
         # 只差空白可以，改了字不行
         engine = _ChatEngine('["1.2<x1/><g1>Portée des travaux</g1> : voir le dessin."]')
         self.assertEqual(place_marks(engine, items), {})
+
+    def test_note_reference_that_took_the_space_between_two_words_still_lands_in_the_sentence(self) -> None:
+        """模型把脚注编号插在空格上（「béton<x1/>doit」「béton <x1/>doit」）：编号留在句中，后面补回空格。"""
+        source, marked = "混凝土强度应满足设计要求。", "混凝土<x1/>强度应满足设计要求。"
+        translation = "La résistance du béton doit satisfaire aux exigences de conception."
+        for answer in ("La résistance du béton<x1/>doit satisfaire aux exigences de conception.",
+                       "La résistance du béton <x1/>doit satisfaire aux exigences de conception.",
+                       "La résistance du béton<x1/> doit satisfaire aux exigences de conception."):
+            placed = place_marks(_ChatEngine(json.dumps([answer], ensure_ascii=False)), [(source, marked, translation)])
+            self.assertEqual(placed[source][1], "La résistance du béton<x1/> doit satisfaire aux exigences de conception.")
+        # 定稿那里本来没有空格的不补，补了就和定稿对不上
+        placed = place_marks(_ChatEngine('["béton<x1/>armé"]'), [("钢筋混凝土", "钢筋<x1/>混凝土", "bétonarmé")])
+        self.assertEqual(placed["钢筋混凝土"][1], "béton<x1/>armé")
+        # 制表符的占位符有字符，不按这条补空格
+        placed = place_marks(_ChatEngine('["No<x1/>Désignation <g1>x</g1>"]'),
+                             [("编号\t名称甲", "编号<x1/>名称<g1>甲</g1>", "No Désignation x")])
+        self.assertEqual(placed["编号\t名称甲"][1], "No<x1/>Désignation <g1>x</g1>")
 
     def test_bad_reply_and_engines_without_chat_place_nothing(self) -> None:
         self.assertEqual(place_marks(_ChatEngine("not json"), self.ITEMS), {})
