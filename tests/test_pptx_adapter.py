@@ -52,6 +52,9 @@ C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 
 
 def french(text: str) -> str:
+    # Inline formatting marks (<g1>…</g1>) do not come back: the app then places
+    # them itself or writes the paragraph whole, so the words match the plain text.
+    text = re.sub(r"</?g\d+>", "", text)
     tokens = re.findall(r"⟦\d+⟧", text)
     # About as long as a real French line and with the same figures, so the
     # quality check takes it for a translation.
@@ -186,7 +189,11 @@ class PptxTaskTests(IsolatedAppDataTestCase):
         assert french("第 ⟦1⟧ 页").replace("⟦1⟧", "3") in _texts(out, "ppt/slides/slide3.xml")
         assert engine.prompts[0].startswith(CORE_TRANSLATION_PROMPT)
         assert "不扩写" in engine.prompts[0]
-        assert result["status"] == "completed", result
+        # The vertical text box on slide 7 is reported by write and listed for review.
+        assert [(item["location"], item["issue"]) for item in done.review["items"]] == [
+            ("第 7 页 · TextBox 1", "竖排文本框，译文可能需要改为横排")
+        ]
+        assert result["status"] == "needs_review" and result["review_count"] == 1, result
 
     def test_charts_and_smartart_are_translated_in_a_task(self) -> None:
         path = self.source / "季度产值.pptx"

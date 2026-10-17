@@ -367,6 +367,15 @@ class BoundarySpaceTests(unittest.TestCase):
         ):
             self.assertEqual(add_boundary_spaces(text, "en"), text)
 
+    def test_space_after_a_note_reference_between_two_words(self) -> None:
+        texts = {1: "", 2: "\t"}
+        self.assertEqual(add_boundary_spaces("béton<x1/>doit", "fr", texts), "béton<x1/> doit")
+        self.assertEqual(add_boundary_spaces("béton<x1/><g1>doit</g1>", "fr", texts), "béton<x1/> <g1>doit</g1>")
+        self.assertEqual(add_boundary_spaces("fini.<x1/>Le", "fr", texts), "fini.<x1/> Le")
+        for text in ("béton<x1/> doit", "béton <x1/>, doit", "1.2<x2/>Portée"):
+            self.assertEqual(add_boundary_spaces(text, "fr", texts), text)
+        self.assertEqual(add_boundary_spaces("混凝土<x1/>强度", "zh", texts), "混凝土<x1/>强度")
+
     def test_languages_written_without_spaces_are_untouched(self) -> None:
         for lang in ("zh", "zh-CN", "ja", "ko"):
             self.assertEqual(add_boundary_spaces("<g1>注:</g1>尺寸", lang), "<g1>注:</g1>尺寸")
@@ -416,6 +425,17 @@ class PlaceMarksTests(unittest.TestCase):
     def test_moved_tab_is_rejected(self) -> None:
         engine = _ChatEngine('["1.2 <g1>Périmètre</g1><x1/><x2/>: voir plan."]')
         items = [("1.2\t施工范围见附图。", "1.2<x1/><g1>施工范围</g1><x2/>见附图。", "1.2\tPérimètre : voir plan.")]
+        self.assertEqual(place_marks(engine, items), {})
+
+    def test_placeholder_may_replace_the_space_a_stored_translation_has_for_a_tab(self) -> None:
+        """记忆库里的定稿把制表符存成了空格：占位符顶替这个空格也算没改译文。"""
+        engine = _ChatEngine('["1.2<x1/><g1>Portée des travaux</g1> : voir le dessin annexe."]')
+        items = [("1.2\t施工范围见附图。", "1.2<x1/><g1>施工范围</g1>见附图。",
+                  "1.2 Portée des travaux : voir le dessin annexe.")]
+        placed = place_marks(engine, items)
+        self.assertEqual(placed["1.2\t施工范围见附图。"][1], "1.2<x1/><g1>Portée des travaux</g1> : voir le dessin annexe.")
+        # 只差空白可以，改了字不行
+        engine = _ChatEngine('["1.2<x1/><g1>Portée des travaux</g1> : voir le dessin."]')
         self.assertEqual(place_marks(engine, items), {})
 
     def test_bad_reply_and_engines_without_chat_place_nothing(self) -> None:
@@ -573,6 +593,21 @@ class WriteBackTests(unittest.TestCase):
         )
         self.assertEqual(_sequence(out.paragraphs[0]), "混凝土强度¹应满足设计要求。")
         self.assertEqual(_sequence(out.paragraphs[1]), "La résistance du béton doit satisfaire aux exigences.")
+
+    def test_stored_translation_with_a_space_for_the_tab_still_keeps_tab_and_bold(self) -> None:
+        """本机实测：双语跑过一次后记忆库存的是「1.2 Portée…」（制表符成了空格），再跑仅译文
+        命中这条、补上标记后，写回仍是 1.2⇥加粗标题，段尾没有多出来的制表符。"""
+        doc = Document()
+        _numbered_heading_paragraph(doc)
+        source = "1.2\t施工范围见附图。"
+        stored = "1.2 Portée des travaux : voir le dessin annexe."
+        marked = "1.2<x1/><g1>施工范围</g1>见附图。"
+        out, _ = self._write(
+            doc, {source: stored},
+            {source: (marked, "1.2<x1/><g1>Portée des travaux</g1> : voir le dessin annexe.")},
+            translation_only=True,
+        )
+        self.assertEqual(_sequence(out.paragraphs[0]), "1.2⇥【粗|Portée des travaux】 : voir le dessin annexe.")
 
     def test_lost_placeholder_falls_back_to_whole_paragraph(self) -> None:
         doc = Document()

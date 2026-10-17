@@ -1,0 +1,12 @@
+{
+  "id": "marks",
+  "version": "1.0.0",
+  "adapter_api_version": 1,
+  "label": {"zh": "标记文本", "en": "Marked text", "fr": "Texte balisé"},
+  "file_noun": {"zh": "文本文件", "en": "text files", "fr": "fichiers texte"},
+  "icon": "doc-file",
+  "extensions": ["mk"],
+  "capabilities": {"bilingual": true, "translation_only": true},
+  "license": "MIT",
+  "repo": ""
+}
