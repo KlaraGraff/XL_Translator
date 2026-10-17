@@ -14,6 +14,10 @@
 
   **Interface refresh (step three): Translate home page, drop to route, drop-area light**: The app now opens on a new Translate page (the Translate item in the sidebar). At the top is a drop area: drag in files or folders, or use Choose files / Choose folder; four type chips (with their supported extensions) go straight to each page. Below, Recent lists the last four tasks (click one to open it on the Tasks page), and Ready shows the document model, the PDF & image model, the translation memory's entry count and languages, extra instructions and the drawing converter. Dropping files or folders anywhere on the window counts them by extension and opens the page with the most matching files, reading them straight away (`~` temporary files and translation output folders inside a folder are skipped); if other types were included too, a note says which pages can take them. Already on a type page whose files are in the drop, the app stays on that page; if that page is translating, it asks you to drop again when it finishes; with nothing translatable, it says so and stays put. The drop areas on the home page and on each type page's empty state have a new light: the stretch of border nearest the pointer lights up, a faint glow and dot grid follow the pointer, and the icon tilts slightly; while dragging a file over it the border becomes a multicolour light that circles round, stopping on release. With the system's Reduce motion setting on, it lights up without moving.
 
+- **结果卡上的「提示」说法**：翻译完成后，结果卡小结里原来写「N 处提示需手动处理」，Excel 的提示多是已自动修好的内容，绿色卡片上挂着「需手动处理」读起来像还有事要做。现在改为「N 条提示，详见报告」，各类型通用，颜色不变。
+
+  **Wording of notes on the result card**: The result card summary used to say "N notes to handle manually"; on Excel most notes are things already fixed automatically, so the green card read as if work remained. It now says "N notes, see the report" on every type; the colour is unchanged.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
