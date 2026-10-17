@@ -18,6 +18,10 @@
 
   **Wording of notes on the result card**: The result card summary used to say "N notes to handle manually"; on Excel most notes are things already fixed automatically, so the green card read as if work remained. It now says "N notes, see the report" on every type; the colour is unchanged.
 
+- **反馈发送留下记录**：在线发送反馈原来只把结果显示在页面上，发不出去时 app.log 里什么也没有，事后查不到原因。现在每次发送都在 app.log 记下开始、成功（反馈编号）或失败（断在连接、上传还是等服务器回话，HTTP 状态码和中转站给的错误代码，或网络异常的类型和说明，已上传多少，耗时），以及是否经过代理；不记描述、邮箱、文件名和路径。打包阶段出的意外和没能在本机记下邮箱选择也会记一笔。
+
+  **Feedback sends leave a trace**: Sending feedback used to show its outcome only on the page; a failed send left nothing in app.log, so the cause could not be found afterwards. Every send now logs its start and its success (the feedback number) or failure (whether it broke while connecting, uploading or waiting for the server, the HTTP status and the relay's error code, or the network error's type and message, how much had been uploaded, elapsed time), plus whether a proxy was used. The description, email address, file names and paths are never logged. Unexpected errors while packaging, and failing to remember the email choice on this machine, are logged too.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。

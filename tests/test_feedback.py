@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import time
 import zipfile
 from typing import Any
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.task_contracts import TaskNotFoundError
-from core import feedback
+from core import feedback, task_logger
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
@@ -261,6 +262,93 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self._send_with(ok, contact="")
         self.assertEqual(context_email(), "")
         self.assertFalse(asks_for_email())
+
+    def _app_log(self) -> str:
+        path = self.app_data_dir / "app.log"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def _assert_nothing_private(self, log: str) -> None:
+        for private in ("导出时报错", "a@example.com", "盛泰", "客户清单", "/Users/someone"):
+            self.assertNotIn(private, log)
+
+    def test_every_send_attempt_leaves_a_private_free_trace_in_app_log(self) -> None:
+        self.addCleanup(task_logger._remove_file_handlers)
+
+        def ok(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"ok": True, "id": "FB-20261017-ABCDEF"})
+
+        def tls_failure(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed", request=request)
+
+        def slow(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        def relay_error(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(502, json={"error": "upstream"})
+
+        def portal(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, headers={"location": "http://portal.example/login?mac=1"}, text="<html>")
+
+        self.assertEqual(self._send_with(ok, contact="a@example.com")["state"], "done")
+        for handler in (tls_failure, slow, relay_error, portal):
+            self.assertEqual(self._send_with(handler, contact="a@example.com")["state"], "error")
+        with patch.object(feedback, "_upload", side_effect=RuntimeError("boom")):
+            self.assertEqual(self._send_with(ok)["reason"], "server")
+        self.client.post("/api/feedback/send", json=self._body(task_ids=[], description=" "))
+
+        log = self._app_log()
+        lines = [line for line in log.splitlines() if "[task:feedback]" in line]
+        self.assertEqual(sum("反馈发送开始" in line for line in lines), 7, log)
+        success = next(line for line in lines if "反馈发送成功" in line)
+        self.assertIn("编号=FB-20261017-ABCDEF", success)
+        self.assertIn("耗时=", success)
+        failures = [line for line in lines if "反馈发送失败" in line]
+        self.assertEqual(len(failures), 5, log)
+        tls, timeout, relay, redirect, internal = failures
+        self.assertIn("阶段=连接", tls)
+        self.assertIn("ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]", tls)
+        self.assertIn("阶段=等待服务器确认", timeout)
+        self.assertIn("ReadTimeout", timeout)
+        self.assertIn("HTTP=502 | 服务器错误=upstream", relay)
+        self.assertIn("HTTP=302", redirect)
+        self.assertIn("跳转到=portal.example", redirect)
+        self.assertIn("非中转站应答", redirect)
+        self.assertIn("阶段=程序内部 | 异常=RuntimeError: boom", internal)
+        for line in failures:
+            self.assertIn("已上传=", line)
+            self.assertIn("耗时=", line)
+            # 开始、失败两行用同一个发送编号串起来。
+            tag = re.search(r"发送=(\w+)", line).group(1)
+            self.assertTrue(any("反馈发送开始" in other and f"发送={tag}" in other for other in lines))
+        self.assertTrue(any("反馈发送未开始" in line and "原因=empty_description" in line for line in lines), log)
+        self.assertIn("邮箱=已填", log)
+        self._assert_nothing_private(log)
+
+    def test_error_text_drops_paths_file_names_and_credentials(self) -> None:
+        try:
+            raise PermissionError(13, "Permission denied", "/Users/someone/项目/盛泰报价单.xlsx")
+        except PermissionError as exc:
+            text = feedback._error_text(exc)
+        self.assertTrue(text.startswith("PermissionError: [Errno 13] Permission denied"), text)
+        self.assertNotIn("盛泰", text)
+        self.assertNotIn("/Users", text)
+        self.assertIn("@ test_feedback.py:", text)
+        try:
+            raise httpx.ProxyError("http://bob:hunter2@proxy.local:8080 refused; token=abc123")
+        except httpx.ProxyError as exc:
+            text = feedback._error_text(exc)
+        self.assertNotIn("hunter2", text)
+        self.assertNotIn("abc123", text)
+
+    def test_proxy_label_names_only_the_kind_of_proxy(self) -> None:
+        relay = "https://relay.example"
+        with patch("urllib.request.getproxies", return_value={"https": "http://u:p@127.0.0.1:7890"}):
+            self.assertEqual(feedback._proxy_label(relay), "有（http，本机）")
+        with patch("urllib.request.getproxies", return_value={"https": "http://10.0.0.2:3128", "no": "localhost,.example"}):
+            self.assertEqual(feedback._proxy_label(relay), "无（不走代理）")
+            self.assertEqual(feedback._proxy_label("https://other.org"), "有（http，其他机器）")
+        with patch("urllib.request.getproxies", return_value={}):
+            self.assertEqual(feedback._proxy_label(relay), "无")
 
     def test_unknown_send_job_is_reported(self) -> None:
         response = self.client.get("/api/feedback/send/nope")

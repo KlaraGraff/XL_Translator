@@ -132,6 +132,17 @@ def setup_file_handler() -> None:
     _installed_log_path = log_path
 
 
+def app_event_logger(tag: str) -> logging.LoggerAdapter:
+    """A logger for app.log lines that belong to no translation task.
+
+    The lines carry ``[task:<tag>]`` (for example ``[task:feedback]``), so they
+    can be found the same way as a task's own lines. Callers write only what
+    is safe to keep: no user text, addresses, file names or paths.
+    """
+    setup_file_handler()
+    return logging.LoggerAdapter(logging.getLogger(_LOGGER_NAME), extra={"task_id": tag})
+
+
 def _remove_file_handlers() -> None:
     """Detach and close the rotating handlers this module installed."""
     global _handler_installed, _installed_log_path
