@@ -73,6 +73,7 @@ import {
   refreshModelRoles,
   refreshSettings,
   renderBody,
+  riseBelow,
   reRenderAfter,
   restoreModelFormDraft,
   sec,
@@ -222,6 +223,7 @@ export function renderModelsPage(host: HTMLElement): void {
     title: t("用途"),
     desc: t("每种用途可以指定不同的模型；「跟随」表示借用另一用途的连接，只需单独填写模型名称。"),
     actions: [exportBtn, createButton({ label: t("导入配置"), icon: "down", size: "mini", onClick: () => importModelConfig() })],
+    className: "roles-sec",
   });
   // 用途切换（4 张卡）
   let seg = buildRoleSeg();
@@ -311,6 +313,7 @@ export function renderModelsPage(host: HTMLElement): void {
       value: access,
       ariaLabel: t("连接方式"),
       onChange: onAccessChange,
+      motionKey: `models.access.${role}`,
     })
     : createDropdown({ options: accessOptions, value: access, onChange: onAccessChange }).root;
   if (accessControl.classList.contains("seg")) {
@@ -696,16 +699,15 @@ function selectConnection(role: string, connectionId: string | null): void {
 
 function buildRoleSeg(): HTMLElement {
   const seg = document.createElement("div");
-  seg.className = "roles stag";
+  seg.className = "roles";
   seg.setAttribute("role", "tablist");
-  for (const [index, role] of MODEL_ROLE_ORDER.entries()) {
+  for (const role of MODEL_ROLE_ORDER) {
     const payload = record(modelRoles[role]);
     const card = document.createElement("button");
     card.type = "button";
     card.className = role === modelRole ? "role on" : "role";
     card.setAttribute("role", "tab");
     card.setAttribute("aria-selected", String(role === modelRole));
-    card.style.setProperty("--i", String(index));
     const b = document.createElement("b");
     b.textContent = MODEL_ROLE_SHORT_LABELS[role] || role;
     // 四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
@@ -753,6 +755,8 @@ function buildRoleSeg(): HTMLElement {
       // 盖掉期间已经保存（或被导入、被跟随来源改动）的新值，下一次失焦又把旧值写回去。
       delete modelFormDrafts[role];
       if (roleDraft) restoreModelFormDraft(roleDraft);
+      // 用途卡就是这一页的页签：卡片原地不动，下面换成这个用途的连接，和翻译参数换文件类型同一种。
+      riseBelow(".roles-sec");
     });
     seg.append(card);
   }
