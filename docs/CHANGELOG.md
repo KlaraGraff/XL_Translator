@@ -22,6 +22,10 @@
 
   **Feedback sends leave a trace**: Sending feedback used to show its outcome only on the page; a failed send left nothing in app.log, so the cause could not be found afterwards. Every send now logs its start and its success (the feedback number) or failure (whether it broke while connecting, uploading or waiting for the server, the HTTP status and the relay's error code, or the network error's type and message, how much had been uploaded, elapsed time), plus whether a proxy was used. The description, email address, file names and paths are never logged. Unexpected errors while packaging, and failing to remember the email choice on this machine, are logged too.
 
+- **记忆库页换新版式**：记忆库页原来上面是一张塞满按钮的工具卡、一排统计卡，再往下才是表格。现在顶部一行放语言对（中间一个按钮即可交换方向）、搜索和「新增词条 / 导入 / 导出 / 更多」，「清洗记忆库」和「记忆库设置」收进「更多」；统计卡去掉，条数在筛选页签上，高级模式的本月统计改成筛选行末一句话；编辑、删除在鼠标移到那一行时出现。功能和操作结果不变。
+
+  **New layout for the translation memory page**: The page used to open with a card crowded with buttons and a row of statistics cards above the table. A single top row now holds the language pair (one button swaps the direction), search, and "New entry / Import / Export / More"; "Clean up memory" and the memory settings moved into "More". The statistics cards are gone: counts are on the filter tabs, and advanced mode's monthly figures are one line at the end of the filter row. Edit and delete appear when the pointer is over a row. Features and results are unchanged.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
