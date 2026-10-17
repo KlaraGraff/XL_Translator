@@ -26,6 +26,14 @@
 
   **Interface refresh: a seven-item sidebar, and Plugins, Extensions and MCP merged into one Extensions page**: The sidebar's Task center is now called Tasks. The former Extensions, Plugins and MCP pages are one Extensions page with three tabs, File types, Components and Agent access, with the same content as before; existing links (such as Open plugins on a workspace) go straight to the matching tab. A "Search or enter a path" entry sits at the top of the sidebar (shown as ⌘K on Mac and Ctrl+K on Windows; the search panel follows in a later update). The update card's "View on GitHub" button now reads "Project page".
 
+- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
+
+  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
+
+- **新增全局搜索**：Mac 按 ⌘K、Windows 按 Ctrl+K（或点侧栏顶部的「搜索或输入路径」），可搜页面、任务和记忆库词条；输入文件路径回车即开始翻译。方向键选择、回车打开、Esc 关闭；任务回车直接打开那条任务，词条回车进入记忆库并定位到这条。
+
+  **Global search**: Press ⌘K on Mac or Ctrl+K on Windows (or click "Search or enter a path" at the top of the sidebar) to search pages, tasks and translation-memory entries; type a file path and press Enter to start translating it. Arrow keys select, Enter opens, Esc closes; Enter on a task opens that task, and Enter on an entry opens the translation memory at that entry.
+
 - **界面焕新：「任务」页**：「任务中心」改名「任务」，顶栏只在有任务进行中时挂「N 个进行中」，没有时副标题直接说今天跑了几个任务、几个需复核、几个失败；筛选从「全部 / 活动」改为「全部 / 进行中 / 需复核 / 失败」，筛选和搜索框在列表滚动时始终留在顶部；进行中的任务行带一条细进度条，百分比挪到第二行；详情先用一句话说明类型、语言和提示词，结果统计改成一行数字，按钮、复核清单和生成的文件都照旧。
 
   **Interface refresh: the Tasks page**: Task center is now called Tasks. The top bar shows "N in progress" only while a task runs; otherwise its subtitle says how many tasks ran today and how many need review or failed. The filters are now All / In progress / Needs review / Failed instead of All / Active, and they stay at the top with the search box while the list scrolls. A running task's row has a thin progress bar, with the percentage on its second line. The details open with one sentence giving the type, languages and prompt, and the result counts are a single row of numbers; buttons, the review list and the generated files are unchanged.
