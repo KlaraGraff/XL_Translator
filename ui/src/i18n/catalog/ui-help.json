@@ -1,0 +1,126 @@
+{
+  "填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文档翻译、PDF 与图片、记忆库清洗可分别使用不同的模型。": {
+    "en": "Enter the provider, model and API key, then click “Test connection” to confirm the configuration works. Document translation, PDF & images and memory cleanup can each use a different model.",
+    "fr": "Renseignez le fournisseur, le modèle et la clé API, puis cliquez sur « Tester la connexion » pour vérifier que la configuration fonctionne. La traduction de documents, les PDF et images et le nettoyage de la mémoire peuvent chacun utiliser un modèle différent."
+  },
+  "打开模型配置": {
+    "en": "Open model settings",
+    "fr": "Ouvrir la configuration des modèles"
+  },
+  "PDF / 图片": {
+    "en": "PDF / images",
+    "fr": "PDF / images"
+  },
+  "CAD 图纸": {
+    "en": "CAD drawings",
+    "fr": "Plans CAO"
+  },
+  "记忆库": {
+    "en": "Translation memory",
+    "fr": "Mémoire de traduction"
+  },
+  "Excel 和 Word 中已翻译的词句将保存到记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定词条始终按您设定的译法翻译；语言混杂或识别不准确的内容照常翻译，但不会保存到记忆库。": {
+    "en": "Words and phrases translated in Excel and Word are saved to the translation memory and reused first when you later translate Excel, Word or CAD drawings. Locked entries are always translated as you defined them. Mixed-language text or text whose language cannot be identified reliably is still translated, but is not saved to the memory.",
+    "fr": "Les mots et phrases traduits dans Excel et Word sont enregistrés dans la mémoire de traduction et réutilisés en priorité lors des traductions suivantes d'Excel, de Word et de plans CAO. Les entrées verrouillées sont toujours traduites comme vous l'avez défini. Les textes en plusieurs langues ou dont la langue est mal identifiée sont traduits normalement, mais ne sont pas enregistrés dans la mémoire."
+  },
+  "打开记忆库": {
+    "en": "Open translation memory",
+    "fr": "Ouvrir la mémoire de traduction"
+  },
+  "任务、停止与并行": {
+    "en": "Tasks, stopping and running in parallel",
+    "fr": "Tâches, arrêt et exécution en parallèle"
+  },
+  "不同类型的任务可同时进行。两个任务使用同一条模型连接时，将先提示可能出现变慢、排队或超时，且两项任务均会计费；确认后才会开始第二个任务。": {
+    "en": "Different kinds of tasks can run at the same time. If two tasks would use the same model connection, a warning first explains that processing may slow down, queue or time out and that both tasks will be billed; the second task starts only after you confirm.",
+    "fr": "Des tâches de types différents peuvent s'exécuter en même temps. Si deux tâches doivent utiliser la même connexion au modèle, un avertissement indique d'abord que cela peut ralentir, mettre en file d'attente ou expirer, et que les deux seront facturées ; la seconde ne démarre qu'après votre confirmation."
+  },
+  "输出与兼容格式": {
+    "en": "Output and compatible formats",
+    "fr": "Sortie et formats compatibles"
+  },
+  "转换旧版文件时提示没有权限？": {
+    "en": "Permission error when converting older files?",
+    "fr": "Erreur d'autorisation lors de la conversion d'anciens fichiers ?"
+  },
+  "用本机 Office 转换旧版 .xls / .doc 时，macOS 会询问是否允许 Translator 控制 Excel 或 Word。如果当时选了「不允许」，转换会失败。可在「系统设置 → 隐私与安全性 → 自动化」（macOS 12 为「系统偏好设置 → 安全性与隐私 → 隐私 → 自动化」）中为 Translator 勾选 Microsoft Excel 或 Word，然后重试。": {
+    "en": "When older .xls / .doc files are converted with Office on this Mac, macOS asks whether Translator may control Excel or Word. If you chose “Don’t Allow”, the conversion fails. Go to System Settings → Privacy & Security → Automation (on macOS 12: System Preferences → Security & Privacy → Privacy → Automation), turn on Microsoft Excel or Word for Translator, then try again.",
+    "fr": "Lorsque d'anciens fichiers .xls / .doc sont convertis avec Office sur ce Mac, macOS demande si Translator peut contrôler Excel ou Word. Si vous avez choisi « Refuser », la conversion échoue. Ouvrez Réglages Système → Confidentialité et sécurité → Automatisation (sous macOS 12 : Préférences Système → Sécurité et confidentialité → Confidentialité → Automatisation), activez Microsoft Excel ou Word pour Translator, puis réessayez."
+  },
+  "更新、支持与隐私": {
+    "en": "Updates, support and privacy",
+    "fr": "Mises à jour, assistance et confidentialité"
+  },
+  "可在设置中检查更新：下载后先验证签名再安装，重启时间由您决定（Windows 将打开安装程序，安装完成后自动重新打开应用）。诊断信息仅在您主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。反馈仅在您点击「发送」后上传，附带哪些日志和文件由您逐项选择。": {
+    "en": "You can check for updates in Settings: the download's signature is verified before installation, and you decide when to restart (on Windows, the installer opens and the app reopens automatically afterwards). Diagnostic information is created only when you export it, and never includes API keys, source text, translations, prompts or file paths. Feedback is uploaded only when you click “Send”, and you choose each log and file it includes.",
+    "fr": "Vous pouvez rechercher des mises à jour directement dans les paramètres : la signature du téléchargement est vérifiée avant l'installation, et c'est vous qui choisissez quand redémarrer (sous Windows, le programme d'installation s'ouvre et l'application se relance automatiquement ensuite). Les informations de diagnostic ne sont créées que lorsque vous les exportez vous-même et ne contiennent jamais de clés API, de textes sources, de traductions, de prompts ni de chemins de fichiers. Un retour n'est envoyé que lorsque vous cliquez sur « Envoyer », et c'est vous qui choisissez chaque journal et fichier joint."
+  },
+  "维护与诊断": {
+    "en": "Maintenance & diagnostics",
+    "fr": "Maintenance et diagnostic"
+  },
+  "检查更新": {
+    "en": "Check for updates",
+    "fr": "Rechercher des mises à jour"
+  },
+  "反馈问题": {
+    "en": "Report a problem",
+    "fr": "Signaler un problème"
+  },
+  "欢迎使用 Translator": {
+    "en": "Welcome to Translator",
+    "fr": "Bienvenue dans Translator"
+  },
+  "快速开始": {
+    "en": "Quick start",
+    "fr": "Démarrage rapide"
+  },
+  "反馈": {
+    "en": "Feedback",
+    "fr": "Retours"
+  },
+  "帮助": {
+    "en": "Help",
+    "fr": "Aide"
+  },
+  "三步开始": {
+    "en": "Get started in three steps",
+    "fr": "Démarrer en trois étapes"
+  },
+  "三步开始，常见问题在下方": {
+    "en": "Three steps to get started, with common questions below",
+    "fr": "Trois étapes pour démarrer, questions fréquentes ci-dessous"
+  },
+  "前往翻译": {
+    "en": "Go to Translation",
+    "fr": "Aller à Traduction"
+  },
+  "常见问题": {
+    "en": "Common questions",
+    "fr": "Questions fréquentes"
+  },
+  "打开任务": {
+    "en": "Open tasks",
+    "fr": "Ouvrir les tâches"
+  },
+  "把 Excel、Word、PDF、图片和 CAD 图纸交给它，保留版式，中外文双向互译。帮助内容随应用提供，无需联网。": {
+    "en": "Hand it Excel, Word, PDF, images and CAD drawings: it translates between Chinese and other languages in both directions and keeps the layout. This help is built into the app and works offline.",
+    "fr": "Confiez-lui vos fichiers Excel, Word, PDF, images et plans CAO : il traduit du chinois vers d'autres langues et inversement, en conservant la mise en page. Cette aide est intégrée à l'application et fonctionne hors ligne."
+  },
+  "把文件交给 Translator": {
+    "en": "Hand your files to Translator",
+    "fr": "Confiez vos fichiers à Translator"
+  },
+  "拖入 Excel、Word、PDF、图片或 CAD 图纸（DWG / DXF），自动进入对应工作区并读取内容；也可以在路径栏选择文件或文件夹。源语言默认自动识别，PDF 和图片仅需选择目标语言。": {
+    "en": "Drag in Excel, Word, PDF, image or CAD (DWG / DXF) files: the matching workspace opens and reads them. You can also choose files or folders in the path bar. The source language is detected automatically; for PDF and images, choose only the target language.",
+    "fr": "Faites glisser des fichiers Excel, Word, PDF, images ou plans CAO (DWG / DXF) : l'espace de travail correspondant s'ouvre et les lit. Vous pouvez aussi choisir des fichiers ou des dossiers dans la barre de chemin. La langue source est détectée automatiquement ; pour les PDF et les images, choisissez seulement la langue cible."
+  },
+  "标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「扩展 → 组件」中连接图纸转换工具。": {
+    "en": "Standard .xlsx, .docx, PDF, images and DXF drawings do not require Office. Older .xls / .doc files can be converted in high quality with Office on this computer; if it is not installed or not authorized, you will be asked whether to use compatibility conversion instead. DWG drawings require connecting the drawing converter in “Extensions → Components” first.",
+    "fr": "Les fichiers .xlsx et .docx standard, les PDF, les images et les plans DXF ne nécessitent pas Office. Les anciens fichiers .xls / .doc peuvent être convertis en haute qualité avec l'Office installé sur cet ordinateur ; s'il est absent ou non autorisé, il vous sera demandé si vous souhaitez utiliser la conversion compatible à la place. Les plans DWG nécessitent d'abord de connecter le convertisseur de plans dans « Extensions → Composants »."
+  },
+  "配置翻译模型": {
+    "en": "Set up the translation model",
+    "fr": "Configurer le modèle de traduction"
+  }
+}

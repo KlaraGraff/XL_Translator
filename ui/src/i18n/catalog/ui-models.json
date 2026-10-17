@@ -174,5 +174,17 @@
   "（{0}）": {"en": " ({0})", "fr": " ({0})"},
   "：": {"en": ": ", "fr": " : "},
   "此文件在传输过程中已损坏或被修改，未导入任何内容。请让发送方重新发送。": {"en": "This file was damaged in transit or has been modified; nothing was imported. Ask the sender to send it again.", "fr": "Ce fichier a été endommagé pendant le transfert ou a été modifié ; rien n'a été importé. Demandez à l'expéditeur de le renvoyer."},
-  "已保存。{0}": {"en": "Saved. {0}", "fr": "Enregistré. {0}"}
+  "已保存。{0}": {"en": "Saved. {0}", "fr": "Enregistré. {0}"},
+  "{0}当前使用的连接。": {"en": "Connections currently used for {0}.", "fr": "Connexions actuellement utilisées pour {0}."},
+  "修改后自动保存。": {"en": "Changes are saved automatically.", "fr": "Les modifications sont enregistrées automatiquement."},
+  "修改后自动保存。速率与重试在「翻译参数」中按文件类型设置。": {"en": "Changes are saved automatically. Rate and retries are set per file type in “Translation options”.", "fr": "Les modifications sont enregistrées automatiquement. Le débit et les nouvelles tentatives se règlent par type de fichier dans « Options de traduction »."},
+  "可放心分享，导入方需自行填写密钥。": {"en": "Safe to share; whoever imports it adds their own keys.", "fr": "Peut être partagé sans risque ; la personne qui l'importe saisit ses propres clés."},
+  "含密钥的文件将加密，默认有效期 30 天；从他人配置导入的密钥不会再次导出。": {"en": "Files with keys are encrypted and valid for 30 days by default; keys imported from someone else's settings are never exported again.", "fr": "Les fichiers avec clés sont chiffrés et valables 30 jours par défaut ; les clés importées depuis la configuration d'une autre personne ne sont jamais réexportées."},
+  "多个任务同时运行时分散到不同连接": {"en": "Spread simultaneous tasks across connections", "fr": "Répartir les tâches simultanées sur plusieurs connexions"},
+  "整页图像": {"en": "Full-page images", "fr": "Pages entières en image"},
+  "文档翻译": {"en": "Document translation", "fr": "Traduction de documents"},
+  "每种用途可以指定不同的模型；「跟随」表示借用另一用途的连接，只需单独填写模型名称。": {"en": "Each use can have its own model. “Same as” borrows another use's connection, so only the model name needs to be entered.", "fr": "Chaque usage peut avoir son propre modèle. « Comme » reprend la connexion d'un autre usage : seul le nom du modèle est à saisir."},
+  "用途": {"en": "Uses", "fr": "Usages"},
+  "记忆库词条": {"en": "Memory entries", "fr": "Entrées de la mémoire"},
+  "连接方式": {"en": "Connection type", "fr": "Type de connexion"}
 }

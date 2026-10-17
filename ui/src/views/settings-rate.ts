@@ -5,7 +5,7 @@
 // settings.pdf。留空（null）表示按文档翻译模型是云端还是本地取默认值，所以框里
 // 显示的数、可填的上限都来自 GET /api/settings/rate，而不是在这里写死。
 
-import { createButton, createCard, createHintBadge, createSwitch } from "../components";
+import { createButton, createSwitch } from "../components";
 import { t } from "../i18n";
 import { isExtSurface, surfaceDescriptors } from "../surface-descriptors";
 import { tmSwitchDefs } from "./tm-switches";
@@ -14,12 +14,15 @@ import {
   type JsonObject,
   num,
   numberField,
+  optRow,
   persistSettings,
   record,
   refreshSettings,
   renderBody,
   reRenderAfter,
   saveSettingPath,
+  sec,
+  secNote,
   sectionLabel,
   settings,
 } from "./settings";
@@ -176,6 +179,7 @@ function resetButton(resetPatch: JsonObject): HTMLButtonElement {
   return createButton({
     label: t("恢复默认值"),
     size: "mini",
+    variant: "ghost",
     onClick: () => void reRenderAfter(() => resetRateValues(resetPatch), { rerenderOnError: true }),
   });
 }
@@ -190,31 +194,26 @@ function textResetPatch(surface: RateSurface): JsonObject {
   return { rate: { [surface]: reset } };
 }
 
-function rateNote(textContent: string): HTMLParagraphElement {
-  const note = document.createElement("p");
-  note.className = "note rate-note";
-  note.textContent = textContent;
-  return note;
-}
-
-function groupTitle(title: string, subtitle: string | null, reset: HTMLButtonElement): HTMLDivElement {
+/** PDF 两组各自的小标题：标题、一句灰色适用范围，右侧「恢复默认值」。 */
+function groupTitle(title: string, subtitle: string, reset: HTMLButtonElement): HTMLDivElement {
   const head = sectionLabel(title);
   head.classList.add("rate-head");
-  if (subtitle) {
-    const small = document.createElement("small");
-    small.className = "rate-sub";
-    small.textContent = subtitle;
-    head.append(small);
-  }
-  head.append(reset);
+  const small = document.createElement("small");
+  small.className = "rate-sub";
+  small.textContent = subtitle;
+  head.append(small, reset);
   return head;
 }
 
-/** 「翻译参数」各页签共用的「速率与重试」一节；PDF 页签分整页图像和文字翻译两组。 */
-export function renderRateSection(tab: "excel" | "word" | "pdf" | "cad"): HTMLElement[] {
+/**
+ * 「翻译参数」各页签共用的「速率与重试」一节的内容；PDF 页签分整页图像和文字翻译两组。
+ * 只有一组时「恢复默认值」放在节标题右侧（actions），PDF 两组各放在自己的小标题上。
+ */
+export function renderRateSection(tab: "excel" | "word" | "pdf" | "cad"): { actions: HTMLElement[]; parts: HTMLElement[] } {
   const parts: HTMLElement[] = [];
+  const actions: HTMLElement[] = [];
   if (tab === "pdf") {
-    parts.push(rateNote(t("翻译方式为「整页图像翻译」时仅使用第一组设置；为「自动组合」时，各页按其处理方式使用对应的一组。")));
+    parts.push(secNote(t("翻译方式为「整页图像翻译」时仅使用第一组设置；为「自动组合」时，各页按其处理方式使用对应的一组。")));
     parts.push(groupTitle(
       t("整页图像翻译"),
       t("翻译方式为「整页图像翻译」，或自动组合中按整页图像处理的页面"),
@@ -228,11 +227,11 @@ export function renderRateSection(tab: "excel" | "word" | "pdf" | "cad"): HTMLEl
     ));
     parts.push(textRateGrid("pdf_text"));
   } else {
-    parts.push(groupTitle(t("速率与重试"), null, resetButton(textResetPatch(tab))));
+    actions.push(resetButton(textResetPatch(tab)));
     parts.push(textRateGrid(tab));
   }
-  parts.push(rateNote(t("更改即时保存，不影响运行中的任务。")));
-  return parts;
+  parts.push(secNote(t("更改即时保存，不影响运行中的任务。")));
+  return { actions, parts };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,30 +241,21 @@ export function renderRateSection(tab: "excel" | "word" | "pdf" | "cad"): HTMLEl
 
 export function renderTmParamsCard(): HTMLElement {
   const tm = record(settings?.tm);
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  const head = sectionLabel(t("记忆库"));
-  const scope = document.createElement("small");
-  scope.className = "rate-sub";
-  scope.textContent = surfaceDescriptors().some((item) => isExtSurface(item.key))
-    ? t("适用于 Excel、Word、PDF、CAD 和扩展类型")
-    : t("适用于 Excel、Word、PDF、CAD");
-  head.append(scope);
-  body.append(head);
+  const { root, body } = sec({
+    title: t("记忆库"),
+    desc: surfaceDescriptors().some((item) => isExtSurface(item.key))
+      ? t("适用于 Excel、Word、PDF、CAD 和扩展类型")
+      : t("适用于 Excel、Word、PDF、CAD"),
+  });
 
   for (const def of tmSwitchDefs()) {
-    const row = document.createElement("div");
-    row.className = "swrow";
-    row.append(document.createTextNode(def.label), createHintBadge(def.hint, "swrow-hint"));
     const checked = typeof tm[def.key] === "boolean" ? Boolean(tm[def.key]) : def.fallback;
-    row.append(createSwitch({
+    const sw = createSwitch({
       checked,
       onChange: (next) => void reRenderAfter(() => saveSettingPath(`tm.${def.key}`, next), { rerenderOnError: true }),
-    }));
-    body.append(row);
+    });
+    sw.setAttribute("aria-label", def.label);
+    body.append(optRow({ title: def.label, hint: def.hint, control: sw }));
   }
 
   const grid = document.createElement("div");
@@ -283,6 +273,5 @@ export function renderTmParamsCard(): HTMLElement {
     { min: 5, max: 100, integer: true, hint: t("单批内容涉及的词条超过此数时，将自动拆分为更小的批次，确保相关词条均随内容发送。默认 20，范围 5–100。") },
   ));
   body.append(grid);
-  card.append(body);
-  return card;
+  return root;
 }

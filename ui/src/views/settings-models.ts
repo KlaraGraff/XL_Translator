@@ -9,12 +9,16 @@
 
 import { navigate } from "../router";
 import {
-  createCard,
+  clearElement,
   createChip,
   createButton,
-  createSwitchRow,
+  createDropdown,
+  createField,
+  createSegmented,
+  createSwitch,
   createSelectField,
   createEmptyState,
+  openMenu,
   openModal,
   showToast,
   type ModalHandle,
@@ -56,6 +60,7 @@ import {
   modelRoles,
   mountToken,
   openSettingsPage,
+  optRow,
   persistSettings,
   type PoolConnection,
   providerBaseUrlDefaults,
@@ -70,7 +75,7 @@ import {
   renderBody,
   reRenderAfter,
   restoreModelFormDraft,
-  sectionLabel,
+  sec,
   selectedConnection,
   selectField,
   setApplyProviderDerivedState,
@@ -81,7 +86,6 @@ import {
   snapshotModelFormDraft,
   statusChip,
   submitModelForm,
-  tcHead,
   text,
   textField,
 } from "./settings";
@@ -124,18 +128,38 @@ function accessFollowSource(role: string): string {
   return value.startsWith(FOLLOW_PREFIX) ? value.slice(FOLLOW_PREFIX.length) : "independent";
 }
 
-function accessModeOptions(role: string): { value: string; label: string }[] {
+// 用途的短名（分段控件、卡片标题、「X 当前使用的连接」里用）；全名带适用范围，见 MODEL_ROLE_LABELS。
+const MODEL_ROLE_SHORT_LABELS: Record<string, string> = localized(() => ({
+  translation: t("文档翻译"),
+  cleaner: t("记忆库清洗"),
+  image: t("PDF 与图片翻译"),
+  pdf_review: t("PDF 与图片审核"),
+}));
+// 用途卡第二行开头的适用范围（跟随别的用途时改写「跟随…」）。
+const MODEL_ROLE_SCOPES: Record<string, string> = localized(() => ({
+  translation: "Excel / Word / CAD",
+  cleaner: t("记忆库词条"),
+  image: t("整页图像"),
+  pdf_review: t("逐页审核"),
+}));
+
+/** 连接方式的选项。label 是完整说法（下拉、悬停提示），short 是分段控件里放得下的短说法。 */
+function accessModeOptions(role: string): { value: string; label: string; short: string }[] {
   const saved = record(modelRoles[role]);
   const sources = Array.isArray(saved.source_role_options)
     ? (saved.source_role_options as unknown[]).map((item) => text(item))
     : ["independent"];
-  const options = [{ value: "cloud", label: t("云端 API") }];
+  const options = [{ value: "cloud", label: t("云端 API"), short: t("云端 API") }];
   if (saved.supports_local !== false) {
-    options.push({ value: "local", label: t("本地模型") });
+    options.push({ value: "local", label: t("本地模型"), short: t("本地模型") });
   }
   for (const source of sources) {
     if (source === "independent") continue;
-    options.push({ value: `${FOLLOW_PREFIX}${source}`, label: t("跟随{0}", MODEL_ROLE_LABELS[source] || source) });
+    options.push({
+      value: `${FOLLOW_PREFIX}${source}`,
+      label: t("跟随{0}", MODEL_ROLE_LABELS[source] || source),
+      short: t("跟随{0}", MODEL_ROLE_SHORT_LABELS[source] || source),
+    });
   }
   return options;
 }
@@ -188,40 +212,21 @@ function clearModelCatalog(role: string, message = t("尚未获取当前连接�
 }
 
 export function renderModelsPage(host: HTMLElement): void {
-  // 这张卡导出的是整套模型服务，不属于下面任何一个角色或连接，放在角色切换之前。
-  host.append(bundleCard({
-    title: t("模型服务配置导入与导出"),
-    description: t("备份或分享完整的模型配置，供他人一键导入。含密钥的文件将加密，默认有效期 30 天；从他人配置导入的密钥不会再次导出。"),
-    buttons: [
-      createButton({ label: t("导出（不含密钥）"), size: "mini", onClick: () => void exportModelConfig(false) }),
-      createButton({ label: t("导出（含密钥）"), size: "mini", onClick: () => void exportModelConfig(true) }),
-      createButton({ label: t("导入配置"), size: "mini", onClick: () => importModelConfig() }),
-    ],
-  }));
-
-  // 并发提醒紧跟模型配置导入导出，和它描述的全局连接行为保持同一上下文。
-  const spreadCard = createCard([]);
-  const spreadBody = document.createElement("div");
-  spreadBody.style.padding = "14px 16px";
-  spreadBody.append(sectionLabel(t("多个任务同时运行")));
-  spreadBody.append(createSwitchRow({
-    label: t("并行任务分散到不同连接"),
-    hint: t("关闭时，所有任务均使用主用连接，其他连接仅作故障切换备用；开启后，同时运行的任务各自占用一条空闲连接。"),
-    checked: Boolean(settings?.spread_tasks_across_connections),
-    onChange: (checked) => void reRenderAfter(() => persistSettings({ spread_tasks_across_connections: checked })),
-  }));
-  const spreadNote = document.createElement("p");
-  spreadNote.className = "note";
-  spreadNote.style.fontSize = "12px";
-  spreadNote.style.color = "var(--ink-3)";
-  spreadNote.textContent = t("多个任务共用同一条连接时，请求会叠加，可能被服务商限速，费用也会增加。")
-  spreadBody.append(spreadNote);
-  spreadCard.append(spreadBody);
-  host.append(spreadCard);
-
-  // 角色切换（4 张卡）
+  // 导入导出的是整套模型服务，不属于下面任何一个用途或连接，挂在「用途」这一节的右上角。
+  const exportBtn = createButton({ label: t("导出配置"), icon: "upload", size: "mini" });
+  exportBtn.addEventListener("click", () => openMenu(exportBtn, [
+    { label: t("导出（不含密钥）"), description: t("可放心分享，导入方需自行填写密钥。"), onSelect: () => void exportModelConfig(false) },
+    { label: t("导出（含密钥）"), description: t("含密钥的文件将加密，默认有效期 30 天；从他人配置导入的密钥不会再次导出。"), onSelect: () => void exportModelConfig(true) },
+  ], { width: 300 }));
+  const rolesSec = sec({
+    title: t("用途"),
+    desc: t("每种用途可以指定不同的模型；「跟随」表示借用另一用途的连接，只需单独填写模型名称。"),
+    actions: [exportBtn, createButton({ label: t("导入配置"), icon: "down", size: "mini", onClick: () => importModelConfig() })],
+  });
+  // 用途切换（4 张卡）
   let seg = buildRoleSeg();
-  host.append(seg);
+  rolesSec.body.append(seg);
+  host.append(rolesSec.root);
 
   const role = modelRole;
   const rolePayload = record(modelRoles[role]);
@@ -272,56 +277,58 @@ export function renderModelsPage(host: HTMLElement): void {
   // 一并交上去，所以它在这一页存活期间会变：要用的地方都现算，不在渲染时算死。
   const accessDirty = () => modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
 
-  // ---- 连接列表卡 ----
+  // ---- 连接：列表在上，所选连接的表单紧接在同一节里 ----
+  const connSec = sec({
+    title: t("连接"),
+    desc: t("{0}当前使用的连接。", MODEL_ROLE_SHORT_LABELS[role] || role),
+    actions: [buildAddConnectionButton(role)],
+  });
   let listCard = buildConnectionListCard(role);
-  host.append(listCard);
-
-  // ---- 连接详情卡 ----
-  const detailCard = createCard([]);
+  connSec.body.append(listCard);
+  const detailCard = connSec.root;
   const detailBody = document.createElement("div");
-  detailBody.style.padding = "14px 16px";
-  detailBody.style.display = "flex";
-  detailBody.style.flexDirection = "column";
-  detailBody.style.gap = "10px";
+  detailBody.className = "conn-form";
+  connSec.body.append(detailBody);
 
-  // 连接方式属于当前选中的这一条连接；切换另一行不会改变它。
-  const accessBar = document.createElement("div");
-  accessBar.className = "accessbar";
-  const accessLabel = document.createElement("span");
-  accessLabel.className = "accessbar-label";
-  accessLabel.textContent = t("当前连接方式");
-  accessLabel.append(hintBadge(t("选择「跟随」时，将沿用另一用途主用连接的服务商、地址和密钥，只需单独选择模型。")));
-  accessBar.append(accessLabel);
-  const radioRow = document.createElement("div");
-  radioRow.className = "radio-row";
-  for (const option of accessModeOptions(role)) {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "accessMode";
-    input.checked = access === option.value;
-    input.addEventListener("change", () => {
-      modelAccessDraft[role] = option.value;
-      renderBody();
-      // 切换即保存，和这一页其它字段一样。以前切完要再点「保存配置」，否则一离开
-      // 设置页草稿就被丢掉（见 settings.ts unmount），用户以为切了其实没切。
-      // renderBody() 已按新方式重画表单并登记了新的 submitModelForm，交的就是新表单。
-      if (!selected) return;
-      void reRenderAfter(async () => {
-        await ensureFormSavedBeforeCatalog();
-        showToast({ message: t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" })) });
-      }, { preserveDraft: false });
-    });
-    label.append(input, document.createTextNode(option.label));
-    radioRow.append(label);
+  // 连接方式属于当前选中的这一条连接；切换另一行不会改变它。两三项用分段控件，
+  // 跟随的来源多、超过五项时退回下拉。
+  const accessOptions = accessModeOptions(role);
+  const onAccessChange = (value: string) => {
+    modelAccessDraft[role] = value;
+    renderBody();
+    // 切换即保存，和这一页其它字段一样。以前切完要再点「保存配置」，否则一离开
+    // 设置页草稿就被丢掉（见 settings.ts unmount），用户以为切了其实没切。
+    // renderBody() 已按新方式重画表单并登记了新的 submitModelForm，交的就是新表单。
+    if (!selected) return;
+    void reRenderAfter(async () => {
+      await ensureFormSavedBeforeCatalog();
+      showToast({ message: t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" })) });
+    }, { preserveDraft: false });
+  };
+  const accessControl: HTMLElement = accessOptions.length <= 5
+    ? createSegmented({
+      options: accessOptions.map((option) => ({ value: option.value, label: option.short })),
+      value: access,
+      ariaLabel: t("连接方式"),
+      onChange: onAccessChange,
+    })
+    : createDropdown({ options: accessOptions, value: access, onChange: onAccessChange }).root;
+  if (accessControl.classList.contains("seg")) {
+    const buttons = accessControl.querySelectorAll<HTMLButtonElement>("button");
+    accessOptions.forEach((option, index) => { if (buttons[index]) buttons[index].title = option.label; });
   }
-  accessBar.append(radioRow);
+  const accessBar = createField(t("连接方式"), accessControl);
+  accessBar.classList.add("access-field");
+  // 四个以上选项时整行显示，分段里每一格才放得下「跟随…」。
+  if (accessOptions.length > 3) accessBar.classList.add("span2");
+  const accessLabel = accessBar.querySelector("label")!;
+  accessLabel.append(hintBadge(t("选择「跟随」时，将沿用另一用途主用连接的服务商、地址和密钥，只需单独选择模型。")));
   const accessDirtyChip = createChip({ label: t("未保存"), tone: "warn" });
-  if (accessDirty()) accessBar.append(accessDirtyChip);
-  detailBody.append(accessBar);
+  if (accessDirty()) accessLabel.append(accessDirtyChip);
 
   const grid = document.createElement("div");
   grid.className = "grid2";
+  grid.append(accessBar);
 
   // onChange 需要拿到下面才创建的 baseUrlField，用可变引用打个转 —— select 的 change
   // 事件只会在用户真的切换了选项时触发一次，天然满足「只在切换动作发生时重填，不覆盖
@@ -403,13 +410,13 @@ export function renderModelsPage(host: HTMLElement): void {
   // 条灰色系统条，跟这一页其余的下拉完全不是一套东西，用户也找不到「怎么把它调出来」。
   // 改成输入框右侧一个箭头按钮，点开走 openMenu，和「浏览」那类锚定菜单同一套外观。
   attachModelNameDropdown(modelNameField.input, currentCatalog, () => providerSelectEl.value);
-  // 服务商和模型名称并排；Base URL 长，独占一行摆在它们下面。三者都要等 modelNameField
-  // 建好之后再挂进 DOM，因为 onProviderChange 的闭包引用它。
-  grid.append(modelNameField.root);
+  // 两列：连接方式 | 服务商；模型名称 | Base URL；API 密钥 | 文本请求协议；连接名称整行。
+  // 都要等 modelNameField 建好之后再挂进 DOM，因为 onProviderChange 的闭包引用它。
+  grid.append(modelNameField.root, baseUrlField.root);
   detailBody.append(grid);
-  detailBody.append(baseUrlField.root);
 
   let apiModeSelect: HTMLSelectElement | null = null;
+  let apiModeRoot: HTMLElement | null = null;
   if (cloudMode) {
     const apiModeField = selectField(
       t("文本请求协议"),
@@ -423,13 +430,13 @@ export function renderModelsPage(host: HTMLElement): void {
       { disabled: following, hint: t("如不确定，请选择「自动识别」；仅在服务商明确要求时手动指定。") },
     );
     apiModeSelect = apiModeField.select;
-    detailBody.append(apiModeField.root);
+    apiModeRoot = apiModeField.root;
   }
 
   const labelField = textField(t("连接名称"), selected?.label ?? "", () => undefined, { placeholder: t("例如 主账号 / 备用厂商") });
   const connectionLabelField = labelField.input;
   connectionLabelField.id = "settings-model-connection-label";
-  detailBody.append(labelField.root);
+  labelField.root.classList.add("span2");
 
   let apiKeyField: HTMLInputElement | null = null;
   if (cloudMode) {
@@ -444,23 +451,27 @@ export function renderModelsPage(host: HTMLElement): void {
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
     const keyField = fieldWithHint(t("API 密钥"), keyInput, t("留空表示沿用已保存的密钥；密钥仅保存在本机密钥存储中，不随配置导出（选择「导出（含密钥）」时除外）。"));
-    detailBody.append(keyField);
+    grid.append(keyField);
   }
+  if (apiModeRoot) grid.append(apiModeRoot);
+  grid.append(labelField.root);
 
-  // 速率与重试不再按模型设置（v38 起在「翻译参数」里按文件类型设置），这里只留一行说明
-  // 指过去。清洗记忆库没有对应的设置项，不显示。
-  if (role !== "cleaner") {
-    const rateNote = document.createElement("p");
-    rateNote.className = "note rate-pointer";
-    rateNote.append(document.createTextNode(t("速率与重试在「翻译参数」中按文件类型设置。")));
+  // 速率与重试不再按模型设置（v38 起在「翻译参数」里按文件类型设置），这里只留一句说明
+  // 指过去。清洗记忆库没有对应的设置项，只说自动保存。
+  const rateNote = document.createElement("p");
+  rateNote.className = "sec-note rate-pointer";
+  if (role === "cleaner") {
+    rateNote.textContent = t("修改后自动保存。");
+  } else {
+    rateNote.append(document.createTextNode(t("修改后自动保存。速率与重试在「翻译参数」中按文件类型设置。")));
     const goto = document.createElement("button");
     goto.type = "button";
     goto.className = "resume-link";
     goto.textContent = t("前往");
     goto.addEventListener("click", () => openSettingsPage("params", role === "translation" ? "excel" : "pdf"));
     rateNote.append(goto);
-    detailBody.append(rateNote);
   }
+  detailBody.append(rateNote);
 
   // 状态胶囊。取的是**当前选中那条连接**的测试结果，不是角色级的那份——角色级状态
   // 是主用连接的镜像（core/model_roles.py 里照抄 primary 的三个字段），拿它当详情卡的
@@ -469,19 +480,15 @@ export function renderModelsPage(host: HTMLElement): void {
   //
   // 整块做成可重画的：失焦自动保存不重画整页（会抢焦点），但换了模型或密钥之后测试
   // 结论已经被后端打回「未测试」，这里还挂着「测试通过」就是在报告没发生的事。
+  // 节底一行：左边状态胶囊和自动保存时间，右边三个按钮；失败原因在这一行下面。
+  const formFoot = document.createElement("div");
+  formFoot.className = "conn-foot";
   const statusRow = document.createElement("div");
-  statusRow.style.display = "flex";
-  statusRow.style.gap = "8px";
-  statusRow.style.alignItems = "center";
-  statusRow.style.flexWrap = "wrap";
+  statusRow.className = "conn-status";
   const autoSaveNote = document.createElement("span");
-  autoSaveNote.style.fontSize = "12px";
-  autoSaveNote.style.color = "var(--ink-3)";
+  autoSaveNote.className = "conn-saved";
   const statusReasonNote = document.createElement("div");
-  statusReasonNote.style.fontSize = "12px";
-  statusReasonNote.style.lineHeight = "1.5";
-  statusReasonNote.style.marginTop = "6px";
-  detailBody.append(statusRow, statusReasonNote);
+  statusReasonNote.className = "conn-reason";
   const paintStatus = (connection: PoolConnection | null) => {
     const availabilitySource: JsonObject = connection
       ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at, config_problem: connection.config_problem ?? "" }
@@ -501,7 +508,8 @@ export function renderModelsPage(host: HTMLElement): void {
     catalogChip.title = matches ? (tx(modelCatalogMessage[role]) || t("尚未获取当前连接的模型列表。")) : t("当前连接尚未获取模型列表。保存配置后可手动获取。");
     const availChip = statusChip(availabilityLabel, availabilityTone);
     availChip.title = tx(text(availabilitySource.availability_message, t("当前配置尚未测试。"))) + (checkedAt ? ` · ${checkedAt}` : "");
-    statusRow.replaceChildren(catalogChip, availChip, autoSaveNote);
+    clearElement(statusRow);
+    statusRow.append(catalogChip, availChip, autoSaveNote);
 
     // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
     // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点
@@ -526,8 +534,8 @@ export function renderModelsPage(host: HTMLElement): void {
       statusParts.push(note);
     }
     statusReasonNote.hidden = !statusParts.length;
-    statusReasonNote.style.color = "var(--ink-3)";
-    statusReasonNote.replaceChildren(
+    clearElement(statusReasonNote);
+    statusReasonNote.append(
       ...statusParts.flatMap((part, index) => (index ? [document.createTextNode(" · "), part] : [part])),
     );
   };
@@ -576,7 +584,7 @@ export function renderModelsPage(host: HTMLElement): void {
     listCard.replaceWith(nextList);
     listCard = nextList;
     if (accessDirty()) {
-      if (!accessDirtyChip.isConnected) accessBar.append(accessDirtyChip);
+      if (!accessDirtyChip.isConnected) accessLabel.append(accessDirtyChip);
     } else {
       accessDirtyChip.remove();
     }
@@ -620,9 +628,8 @@ export function renderModelsPage(host: HTMLElement): void {
       { preserveDraft: false },
     );
   };
-  detailBody.append(fieldRow([
-    createButton({ label: t("保存配置"), icon: "check", onClick: doSaveModel }),
-    createButton({ label: t("获取模型列表"), onClick: () => void reRenderAfter(async () => {
+  const formActions = fieldRow([
+    createButton({ label: t("获取模型列表"), size: "mini", onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
       const result = await client.request<{ ok: boolean; models: string[]; message: string }>(
         `/api/models/catalog/${encodeURIComponent(role)}`,
@@ -635,7 +642,7 @@ export function renderModelsPage(host: HTMLElement): void {
       // 表单已经被 ensureFormSavedBeforeCatalog 提交了，重画该显示服务端回填的值，
       // 再把草稿盖回去只会让「已保存的密钥」以明文停在框里。
     }, { preserveDraft: false }) }),
-    createButton({ label: t("测试连接"), onClick: () => void reRenderAfter(async () => {
+    createButton({ label: t("测试连接"), size: "mini", onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
       // 测的必须是面板正在显示的这条连接：不带 id 时后端一律拨主连接。
       const result = await client.request<{ ok: boolean; message: string }>(
@@ -645,11 +652,27 @@ export function renderModelsPage(host: HTMLElement): void {
       showToast({ message: tx(result.message), error: !result.ok });
       await refreshModelRoles();
     }, { preserveDraft: false }) }),
-  ]));
+    createButton({ label: t("保存配置"), icon: "check", variant: "primary", size: "mini", onClick: doSaveModel }),
+  ]);
+  formActions.classList.add("acts");
+  formFoot.append(statusRow, formActions);
+  detailBody.append(formFoot, statusReasonNote);
+  host.append(connSec.root);
 
-  detailCard.append(detailBody);
-  host.append(detailCard);
-
+  // 多个任务同时运行：全局行为，不属于某个用途，放在页底。
+  const spreadSw = createSwitch({
+    checked: Boolean(settings?.spread_tasks_across_connections),
+    onChange: (checked) => void reRenderAfter(() => persistSettings({ spread_tasks_across_connections: checked })),
+  });
+  spreadSw.setAttribute("aria-label", t("多个任务同时运行时分散到不同连接"));
+  const spreadSec = sec();
+  spreadSec.body.append(optRow({
+    title: t("多个任务同时运行时分散到不同连接"),
+    hint: t("关闭时，所有任务均使用主用连接，其他连接仅作故障切换备用；开启后，同时运行的任务各自占用一条空闲连接。"),
+    desc: t("多个任务共用同一条连接时，请求会叠加，可能被服务商限速，费用也会增加。"),
+    control: spreadSw,
+  }));
+  host.append(spreadSec.root);
 }
 
 function apiKeyPlaceholder(connection: PoolConnection | null, following: boolean, preview: string): string {
@@ -673,27 +696,33 @@ function selectConnection(role: string, connectionId: string | null): void {
 
 function buildRoleSeg(): HTMLElement {
   const seg = document.createElement("div");
-  seg.className = "seg seg-roles";
-  for (const role of MODEL_ROLE_ORDER) {
+  seg.className = "roles stag";
+  seg.setAttribute("role", "tablist");
+  for (const [index, role] of MODEL_ROLE_ORDER.entries()) {
     const payload = record(modelRoles[role]);
-    const segc = document.createElement("div");
-    segc.className = role === modelRole ? "segc on" : "segc";
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = role === modelRole ? "role on" : "role";
+    card.setAttribute("role", "tab");
+    card.setAttribute("aria-selected", String(role === modelRole));
+    card.style.setProperty("--i", String(index));
     const b = document.createElement("b");
-    b.textContent = MODEL_ROLE_LABELS[role] || role;
-    // 窄窗口下四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
-    b.title = b.textContent;
+    b.textContent = MODEL_ROLE_SHORT_LABELS[role] || role;
+    // 四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
+    b.title = MODEL_ROLE_LABELS[role] || role;
     const primary = roleConnections(role)[0];
     const problem = text(primary?.config_problem ?? payload.config_problem);
     const primarySource = primary?.source_role || text(payload.source_role, "independent");
     const following = primary?.connection_mode === "follow";
     const modelName = primary ? primary.model : text(payload.model);
-    const modeSummary = following
-      ? t("跟随{0}", MODEL_ROLE_LABELS[primarySource] || primarySource)
-      : modelName || (primary?.connection_mode === "local" ? t("本地模型") : t("云端 API"));
+    const scope = following
+      ? t("跟随{0}", MODEL_ROLE_SHORT_LABELS[primarySource] || primarySource)
+      : MODEL_ROLE_SCOPES[role] || "";
+    const modeSummary = modelName || (following ? "" : primary?.connection_mode === "local" ? t("本地模型") : primary ? t("云端 API") : t("未配置"));
     const span = document.createElement("span");
-    span.className = "segc-sub";
+    span.className = "role-sub";
     const summary = document.createElement("i");
-    summary.textContent = modeSummary || t("未配置");
+    summary.textContent = [scope, modeSummary].filter(Boolean).join(" · ");
     span.append(summary);
     // 有连接但模型名还空着：跟随行尤其容易漏——卡片写着「跟随…」看起来已经配好，
     // 真用到这个用途时才报错。在卡片上直接标出来；摘要太长时省略的是摘要，不是这个标记。
@@ -711,8 +740,8 @@ function buildRoleSeg(): HTMLElement {
       summary.textContent,
       problem ? tx(problem) : primary && !modelName ? t("缺少模型名称") : "",
     ].filter(Boolean).join(" · ");
-    segc.append(b, span);
-    segc.addEventListener("click", () => {
+    card.append(b, span);
+    card.addEventListener("click", () => {
       if (modelRole === role) return;
       const draft = snapshotModelFormDraft();
       if (draft) modelFormDrafts[modelRole] = draft;
@@ -725,15 +754,13 @@ function buildRoleSeg(): HTMLElement {
       delete modelFormDrafts[role];
       if (roleDraft) restoreModelFormDraft(roleDraft);
     });
-    seg.append(segc);
+    seg.append(card);
   }
   return seg;
 }
 
-function buildConnectionListCard(role: string): HTMLElement {
-  const selected = activeConnection(role);
-  const connections = roleConnections(role);
-  const addBtn = createButton({
+function buildAddConnectionButton(role: string): HTMLButtonElement {
+  return createButton({
     label: t("新增连接"), size: "mini", icon: "plus",
     onClick: () => void reRenderAfter(async () => {
       const payload = await client.request<JsonObject>(
@@ -746,22 +773,29 @@ function buildConnectionListCard(role: string): HTMLElement {
       showToast({ message: t("已新增一条连接。填写 Base URL、模型和密钥后，点击「保存配置」。") });
     }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
   });
-  const listCard = createCard([tcHead(t("连接列表"), [addBtn])]);
+}
+
+function buildConnectionListCard(role: string): HTMLElement {
+  const selected = activeConnection(role);
+  const connections = roleConnections(role);
+  const list = document.createElement("div");
+  list.className = "conn-list";
   if (!connections.length) {
-    listCard.append(createEmptyState({ title: t("尚无连接"), description: t("点击右上角的「新增连接」开始配置。"), icon: "gear" }));
-    return listCard;
+    list.append(createEmptyState({ title: t("尚无连接"), description: t("点击右上角的「新增连接」开始配置。"), icon: "gear" }));
+    return list;
   }
   for (const [index, connection] of connections.entries()) {
     const tone = connection.availability_status === "available"
       ? "ok" : connection.availability_status === "unavailable" ? "warn" : "mute";
     const dot = document.createElement("span");
-    dot.className = "cdot";
-    // 测试失败用琥珀色，和详情卡里「测试失败」胶囊、失败原因同一个颜色。
-    dot.style.background = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--warn)" : "var(--ink-3)";
-    const name = document.createElement("span");
-    name.style.flex = "1";
-    name.style.fontWeight = "600";
+    dot.className = `cd ${tone}`;
+    const name = document.createElement("b");
     name.textContent = tx(connection.display_label) || t("连接 {0}", index + 1);
+    // 灰字「服务商 · 模型」：跟随行显示的是来源连接的服务商。
+    const meta = document.createElement("span");
+    meta.className = "conn-meta";
+    meta.textContent = [providerLabel(connection.provider), connection.model].filter(Boolean).join(" · ");
+    meta.title = meta.textContent;
     const chips: HTMLElement[] = [];
     if (index === 0) chips.push(createChip({ label: t("主用"), tone: "tint" }));
     // 没起名的跟随行，名称本身就是「跟随…」（见 saveModel），再挂一个同样文字的胶囊是重复。
@@ -772,16 +806,18 @@ function buildConnectionListCard(role: string): HTMLElement {
     if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
       chips.push(createChip({ label: t("无密钥"), tone: "warn" }));
     }
-    const actions = document.createElement("span");
-    actions.style.display = "flex";
-    actions.style.gap = "6px";
-    actions.append(createButton({
-      label: t("测试"), size: "mini",
+    // 测试结论：通过是绿的，没通过才是需要人处理的橙色；没测过不挂。
+    if (connection.availability_status === "available") chips.push(createChip({ label: t("测试通过"), tone: "ok" }));
+    else if (connection.availability_status === "unavailable") chips.push(createChip({ label: t("未通过"), tone: "warn" }));
+    const actions = document.createElement("div");
+    actions.className = "acts";
+    actions.append(...chips, createButton({
+      label: t("测试"), size: "mini", variant: "ghost",
       onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
     }));
     if (index > 0) {
       actions.append(createButton({
-        label: t("设为主用"), size: "mini",
+        label: t("设为主用"), size: "mini", variant: "ghost",
         onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
       }));
     }
@@ -791,31 +827,16 @@ function buildConnectionListCard(role: string): HTMLElement {
         onClick: (e) => { e.stopPropagation(); confirmDeleteConnection(role, connection); },
       }));
     }
-    const row = connRow([dot, name, ...chips, actions], {
+    const row = connRow([dot, name, meta, actions], {
       selected: Boolean(selected && selected.id === connection.id),
       onClick: () => {
         selectConnection(role, connection.id);
         renderBody();
       },
     });
-    listCard.append(row);
+    list.append(row);
   }
-  return listCard;
-}
-
-export function bundleCard(opts: { title: string; description: string; buttons: HTMLElement[] }): HTMLElement {
-  const card = createCard([tcHead(opts.title, opts.buttons)]);
-  const note = document.createElement("p");
-  note.className = "note";
-  note.style.margin = "0";
-  note.style.padding = "0 16px 14px";
-  note.style.fontSize = "12px";
-  note.style.color = "var(--ink-3)";
-  // 模型服务打包卡片的说明分三段（\n 分隔），其余调用方都是单行，pre-line 对它们是无操作。
-  note.style.whiteSpace = "pre-line";
-  note.textContent = opts.description;
-  card.append(note);
-  return card;
+  return list;
 }
 
 async function ensureFormSavedBeforeCatalog(): Promise<void> {
