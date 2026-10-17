@@ -975,3 +975,16 @@ tr.hid {
   width: max-content;
   max-width: 280px;
 }
+/* 提示右下角的「安装 ↗ 组件」：浮在最后一行右边，放不下就换到下一行靠右。 */
+.route-note.warn { display: flow-root; }
+.route-note-link {
+  float: right;
+  margin-left: 10px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
