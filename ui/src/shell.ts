@@ -129,10 +129,8 @@ function buildTranslateGroup(): HTMLDivElement {
   item.append(icon("trans", { size: "sm" }));
   translateGroupText = document.createTextNode(t("翻译"));
   item.append(translateGroupText);
-  item.addEventListener("click", () => {
-    const first = translateItems[0]?.def.id;
-    if (first) navigate(first);
-  });
+  // 「翻译」本身是入口页（拖入或选择文件，按类型分到各工作区）；四个类型页是它的子项。
+  item.addEventListener("click", () => navigate("home"));
   return item;
 }
 
@@ -202,6 +200,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
   translateGroupEl = buildTranslateGroup();
   nav.append(translateGroupEl);
   const itemMap = new Map<ViewId, HTMLDivElement>();
+  itemMap.set("home", translateGroupEl);
   // 先按默认顺序画内置四种；读到设置后由 setTranslateSideItems 按「扩展」页的设置重排。
   translateItems = [];
   for (const def of TRANSLATE_ITEMS) {

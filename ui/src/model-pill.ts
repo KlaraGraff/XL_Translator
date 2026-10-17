@@ -75,20 +75,22 @@ function renderModelPill(): void {
   const roleKey = currentView()?.id === "settings" && settingsRoleOverride
     ? settingsRoleOverride
     : roleKeyForView(currentView()?.id);
-  const resolvedRoleKey = effectiveRoleKey(roleKey);
-  const role = (lastRoles?.[resolvedRoleKey] ?? null) as RolePayload | null;
+  setModelPill({ ...modelRoleSummary(roleKey), role: roleKey });
+}
+
+/** 某个角色（translation / image）当前生效的模型和测试状态，按缓存的角色表算。
+ *  顶栏药丸和「翻译」入口页的「已就绪」用同一份说法。 */
+export function modelRoleSummary(roleKey: string): { label: string; tone: "ok" | "warn" | "idle" } {
+  const role = (lastRoles?.[effectiveRoleKey(roleKey)] ?? null) as RolePayload | null;
   const model = String(role?.model ?? "").trim();
-  if (!model) {
-    // 这个视图对应的角色没配模型就老实说「未连接模型」，不能回退去显示别的角色——
-    // 那正是徽章跟当前页面对不上的 bug 本身。
-    setModelPill({ label: t("未连接模型"), tone: "idle", role: roleKey });
-    return;
-  }
+  // 这个角色没配模型就老实说「未连接模型」，不能回退去显示别的角色——
+  // 那正是徽章跟当前页面对不上的 bug 本身。
+  if (!model) return { label: t("未连接模型"), tone: "idle" };
   const status = String(role?.availability_status ?? "").trim();
   const local = String(role?.mode ?? "") === "local";
   // 没测过就是没测过：绿点只给测通的那一刻，不能因为填了型号就假装连上了。
   const tone = status === "available" ? "ok" : status === "unavailable" ? "warn" : "idle";
-  setModelPill({ label: local ? t("本地 · {0}", model) : model, tone, role: roleKey });
+  return { label: local ? t("本地 · {0}", model) : model, tone };
 }
 
 // 切视图时用缓存重算，不重新发请求。模块只会被 import 一次（ESM 单例），

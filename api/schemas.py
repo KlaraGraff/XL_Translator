@@ -27,6 +27,11 @@ class ApiKeyPayload(BaseModel):
     base_url: str = Field(default="", max_length=2_048)
 
 
+class ClassifySourcesRequest(BaseModel):
+    """「翻译」入口页：拖入或选中的路径，按扩展名数一数再决定进哪个类型页。"""
+    paths: list[str] = Field(min_length=1, max_length=500)
+
+
 class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
     # The file-based pages registered in api/surfaces/.

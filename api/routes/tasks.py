@@ -18,6 +18,7 @@ from settings import (
     load_settings,
 )
 from api.schemas import (
+    ClassifySourcesRequest,
     ScanRequest,
     PdfPageActionRequest,
     TaskStartRequest,
@@ -30,6 +31,17 @@ from api.routes._shared import (
 
 def register(app: FastAPI) -> None:
     """Register the tasks routes on ``app``."""
+
+    @app.post("/api/sources/classify")
+    def classify_sources(request: ClassifySourcesRequest) -> dict[str, Any]:
+        """只数扩展名、不读内容：入口页据此把拖入的文件分到个数最多的那个类型页。"""
+        from core.source_classify import classify_source_paths
+
+        result = classify_source_paths(request.paths)
+        return {
+            "items": [asdict(item) for item in result.items],
+            "truncated": result.truncated,
+        }
 
     @app.post("/api/sources/scan")
     def scan_sources(request: ScanRequest) -> dict[str, Any]:

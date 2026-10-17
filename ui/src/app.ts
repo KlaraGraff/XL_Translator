@@ -9,16 +9,20 @@ import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
 import { mountShell, relocalizeShell } from "./shell";
-import { currentView, mountRouter, navigate, registerView, remountCurrentView, type ViewId } from "./router";
+import { mountRouter, navigate, onNavigate, registerView, remountCurrentView } from "./router";
+import { isTauri } from "@tauri-apps/api/core";
+import { dispatchPaths } from "./drop-dispatch";
+import { dragEnded, dragOverAt, installDropGlow, resetDropGlow } from "./drop-glow";
 import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
-import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems, visibleTypeKeys } from "./surface-descriptors";
+import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems } from "./surface-descriptors";
 import type { SurfaceDescriptor } from "./api-client";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 
+import * as homeView from "./views/home";
 import * as excelView from "./views/excel";
 import { applyPalettes, initPalettes, palettesFromAppearance, storePalettes } from "./palette";
 import * as wordView from "./views/word";
@@ -110,11 +114,43 @@ async function mountTranslationTypes(): Promise<void> {
     if (!item.builtin && isExtSurface(item.key)) registerView(item.key, extensionView(item.key));
   }
   refreshTranslateSideItems(settings);
-  // 启动时先打开的是 Excel；它被隐藏了就换到侧栏里的第一项。页面本身仍可从任务中心打开。
-  const visible = visibleTypeKeys(settings);
-  if (currentView()?.id === "excel" && !visible.includes("excel") && visible.length) {
-    navigate(visible[0] as ViewId);
+}
+
+/**
+ * 文件拖进窗口：Tauri 的 onDragDropEvent 全局听一次，拖动经过投放区时点亮边光，松手后按当前页分配
+ * （drop-dispatch.ts）。浏览器开发态没有 Tauri 拖放，用 DOM 的 drop 事件，只拿得到文件名；
+ * 走查时可以在 dataTransfer 的 text/plain 里放本机绝对路径（每行一个）。
+ */
+async function installFileDrop(): Promise<void> {
+  installDropGlow();
+  onNavigate(() => resetDropGlow());
+  if (isTauri()) {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      if (payload.type === "enter" || payload.type === "over") {
+        // 事件给的是物理像素，换成 CSS 像素再找落在哪个投放区。
+        const ratio = window.devicePixelRatio || 1;
+        dragOverAt(payload.position.x / ratio, payload.position.y / ratio);
+      } else if (payload.type === "drop") {
+        dragEnded();
+        void dispatchPaths(payload.paths);
+      } else {
+        dragEnded();
+      }
+    }).catch(() => undefined);
+    return;
   }
+  if (!import.meta.env.DEV) return;
+  document.addEventListener("dragover", (event) => event.preventDefault());
+  document.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const data = event.dataTransfer;
+    if (!data) return;
+    const typed = data.getData("text/plain").split(/\r?\n/).map((line) => line.trim()).filter((line) => /^(\/|[A-Za-z]:[\\/]|~)/.test(line));
+    const names = Array.from(data.files ?? []).map((file) => file.name);
+    void dispatchPaths(typed.length ? typed : names);
+  });
 }
 
 /**
@@ -184,6 +220,7 @@ function main(): void {
 
   // 整模块注册：视图文件导出 mount（必需）与 unmount（可选，清理 SSE/定时器），
   // 这里原样接线，视图新增 unmount 时无需回来改注册代码。
+  registerView("home", homeView);
   registerView("excel", excelView);
   registerView("word", wordView);
   registerView("pdf", pdfView);
@@ -197,7 +234,8 @@ function main(): void {
   registerView("help", helpView);
   registerView("feedback", feedbackView);
 
-  navigate("excel");
+  navigate("home");
+  void installFileDrop();
 
   void syncAppearanceFromBackend().catch(() => undefined);
 

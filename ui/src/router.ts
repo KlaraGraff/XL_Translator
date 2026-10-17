@@ -6,12 +6,12 @@
 import { EASE_IN, EASE_OUT, motionAllowed } from "./motion";
 
 /** 随应用发布的顶层视图。 */
-export type BuiltinViewId = "excel" | "word" | "pdf" | "cad" | "tasks" | "library" | "plugins" | "extensions" | "mcp" | "settings" | "help" | "feedback";
+export type BuiltinViewId = "home" | "excel" | "word" | "pdf" | "cad" | "tasks" | "library" | "plugins" | "extensions" | "mcp" | "settings" | "help" | "feedback";
 
 /** 侧栏可切换的顶层视图；`ext:<id>` 是运行时注册的翻译类型，描述符到了之后才注册（见 app.ts）。 */
 export type ViewId = BuiltinViewId | `ext:${string}`;
 
-export const VIEW_IDS: BuiltinViewId[] = ["excel", "word", "pdf", "cad", "tasks", "library", "plugins", "extensions", "mcp", "settings", "help", "feedback"];
+export const VIEW_IDS: BuiltinViewId[] = ["home", "excel", "word", "pdf", "cad", "tasks", "library", "plugins", "extensions", "mcp", "settings", "help", "feedback"];
 
 /** 跳转参数：例如 settings 的子页 id、tasks 的任务 id。各视图自行约定 key。 */
 export type ViewParams = Record<string, unknown>;

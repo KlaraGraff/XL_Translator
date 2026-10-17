@@ -1,0 +1,219 @@
+/* 「翻译」入口页（views/home.ts）：上面投放区 .hero，下面两栏「最近」「已就绪」。
+ * 投放区的光（::before / ::after、.lit、.dragging）在 styles/app.css「投放区的光」。 */
+.home {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  /* 拖入时投放区外圈有 4px 的光，滚动容器会把它裁掉，留出这点余量。 */
+  padding: 5px;
+  margin: -5px;
+}
+.home > * {
+  flex: none;
+}
+
+.hero {
+  border: 1.5px dashed var(--line-2);
+  border-radius: var(--r-lg);
+  padding: 34px 24px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  background: radial-gradient(50% 80% at 50% 0%, var(--tint), var(--surface-clear) 70%);
+}
+.hero:hover {
+  border-color: var(--tint-line);
+}
+.hero .big {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  color: var(--on-accent);
+  background: linear-gradient(135deg, var(--accent), var(--glow));
+  box-shadow: 0 10px 24px -12px var(--accent);
+  margin-bottom: 6px;
+}
+.hero h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.hero p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-width: 460px;
+}
+.hero .types {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 6px;
+}
+.type-chip {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.type-chip:hover {
+  border-color: var(--tint-line);
+  background: var(--tint);
+  color: var(--tint-ink);
+}
+.type-chip .ext {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+.type-chip:hover .ext {
+  color: inherit;
+}
+.hero .acts {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.hgrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 20px;
+}
+.home .h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.home .h3 .more {
+  margin-left: auto;
+  font-weight: 500;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+}
+.home .rows {
+  display: flex;
+  flex-direction: column;
+}
+.home .row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 6px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.home .row:hover {
+  background: var(--surface-2);
+}
+.home .row > svg {
+  color: var(--ink-3);
+  flex: none;
+}
+.home .row .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+.home .row .meta {
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.home .row .chip {
+  flex: none;
+}
+.home .ready .row {
+  cursor: default;
+}
+.home .ready .row:hover {
+  background: none;
+}
+.home .ready .row .nm {
+  font-weight: 500;
+  color: var(--ink-2);
+  /* 右栏窄、法语名称长（「Modèle de traduction de documents」），名称换行，值不让位。 */
+  white-space: normal;
+  line-height: 1.4;
+}
+.home .ready .row .val {
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  min-width: 0;
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home .ready .row .val .chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home .chip .led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.home .empty {
+  padding: 14px 6px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+/* 两栏的行依次浮现（每行 28ms），和统计条同一套。 */
+.home .stag > * {
+  animation: home-rise var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
+@keyframes home-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 999px) {
+  .hgrid { grid-template-columns: minmax(0, 1fr); }
+}

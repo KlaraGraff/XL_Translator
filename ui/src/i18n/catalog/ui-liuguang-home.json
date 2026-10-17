@@ -1,0 +1,54 @@
+{
+  "Excel、Word、PDF 与图片、CAD 图纸都可以放在这里，Translator 会按类型分到对应的工作区并读取内容。": {
+    "en": "Excel, Word, PDF and images, and CAD drawings can all go here. Translator sends each to the matching workspace and reads it.",
+    "fr": "Excel, Word, PDF et images, plans CAO : déposez-les ici. Translator envoie chaque fichier vers l'espace de travail correspondant et le lit."
+  },
+  "{0} 条 · {1} → {2}": {
+    "en": "{0} entries · {1} → {2}",
+    "fr": "{0} entrées · {1} → {2}"
+  },
+  "{0}正在翻译，完成后再放入新的文件。": {
+    "en": "{0} is translating. Add new files once it finishes.",
+    "fr": "{0} : traduction en cours. Ajoutez de nouveaux fichiers une fois terminée."
+  },
+  "全部任务": {
+    "en": "All tasks",
+    "fr": "Toutes les tâches"
+  },
+  "另有 {0}，可到对应页面处理。": {
+    "en": "Also found {0}; open the matching page to translate them.",
+    "fr": "Également trouvé : {0} ; ouvrez la page correspondante pour les traduire."
+  },
+  "可翻译的文件": {
+    "en": "Translatable files",
+    "fr": "Fichiers traduisibles"
+  },
+  "已就绪": {
+    "en": "Ready",
+    "fr": "Prêt"
+  },
+  "把文件交给 Translator，按类型自动进入对应工作区": {
+    "en": "Hand files to Translator; each type opens in its own workspace",
+    "fr": "Confiez vos fichiers à Translator ; chaque type s'ouvre dans son espace de travail"
+  },
+  "拖入文件或文件夹": {
+    "en": "Drop files or folders",
+    "fr": "Déposez des fichiers ou des dossiers"
+  },
+  "最近": {
+    "en": "Recent",
+    "fr": "Récents"
+  },
+  "正在加载…": {
+    "en": "Loading…",
+    "fr": "Chargement…"
+  },
+  "没有可翻译的文件。": {
+    "en": "No translatable files.",
+    "fr": "Aucun fichier traduisible."
+  },
+  "还没有翻译任务。拖入文件开始第一次翻译。": {
+    "en": "No translation tasks yet. Drop files to start your first one.",
+    "fr": "Aucune tâche de traduction pour l'instant. Déposez des fichiers pour commencer."
+  }
+}

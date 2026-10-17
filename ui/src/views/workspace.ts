@@ -239,7 +239,7 @@ const SURFACE_PAGE_TITLE: Record<BuiltinSurface, string> = localized(() => ({ ex
 const SURFACE_FILE_NOUN: Record<BuiltinSurface, string> = localized(() => ({ excel: t("表格文件"), word: t("文档"), pdf: t("PDF / 图片文件"), cad: t("DWG / DXF 图纸") }));
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
-function fileNounPhrase(surface: Surface, count: number): string {
+export function fileNounPhrase(surface: Surface, count: number): string {
   if (isExtSurface(surface)) return t("{0} 个{1}", count, nounAfterCjk(surfaceFileNoun(surface)));
   switch (surface) {
     case "excel": return t("{0} 个表格文件", count);
@@ -274,7 +274,7 @@ export function surfaceLabel(surface: Surface): string {
   return isExtSurface(surface) ? extSurfaceLabel(surface) : SURFACE_LABEL[surface];
 }
 
-function surfaceIcon(surface: Surface): IconName {
+export function surfaceIcon(surface: Surface): IconName {
   return isExtSurface(surface) ? extSurfaceIcon(surface) : SURFACE_ICON[surface];
 }
 
@@ -1501,16 +1501,31 @@ function buildScanSkeleton(surface: Surface, st: SurfaceState): HTMLElement[] {
   return [sum, card];
 }
 
-/** 单文件选择时的扩展名过滤，与后端 scanner 的 SUPPORTED_*_SUFFIXES 一一对应。 */
+const PDF_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+
+/**
+ * 每个类型页认的扩展名（小写、不带点），与后端 scanner 的 SUPPORTED_*_SUFFIXES 一一对应；
+ * 扩展类型取描述符。PDF 页总是带上图片——图片要不要一起翻由页面开关决定，但拖进来的图片
+ * 只能交给这一页。「翻译」入口页按它分配拖入的文件。
+ */
+export function surfaceFileExtensions(surface: Surface): string[] {
+  if (surface === "excel") return ["xlsx", "xls"];
+  if (surface === "word") return ["docx", "doc"];
+  if (surface === "cad") return ["dwg", "dxf"];
+  if (isExtSurface(surface)) return (surfaceDescriptor(surface)?.extensions ?? []).map((ext) => ext.toLowerCase());
+  return ["pdf", ...PDF_IMAGE_EXTENSIONS];
+}
+
+/** 单文件选择时的扩展名过滤。 */
 function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; extensions: string[] } {
-  if (surface === "excel") return { name: t("Excel 表格"), extensions: ["xlsx", "xls"] };
-  if (surface === "word") return { name: t("Word 文档"), extensions: ["docx", "doc"] };
-  if (surface === "cad") return { name: t("CAD 图纸"), extensions: ["dwg", "dxf"] };
+  if (surface === "excel") return { name: t("Excel 表格"), extensions: surfaceFileExtensions(surface) };
+  if (surface === "word") return { name: t("Word 文档"), extensions: surfaceFileExtensions(surface) };
+  if (surface === "cad") return { name: t("CAD 图纸"), extensions: surfaceFileExtensions(surface) };
   if (isExtSurface(surface)) {
-    const extensions = surfaceDescriptor(surface)?.extensions ?? [];
+    const extensions = surfaceFileExtensions(surface);
     return { name: surfaceFileNoun(surface), extensions: extensions.length ? extensions : ["*"] };
   }
-  const images = st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [];
+  const images = st.toggles.get("pdfImages") ? PDF_IMAGE_EXTENSIONS : [];
   return { name: images.length ? t("PDF 与图片") : "PDF", extensions: ["pdf", ...images] };
 }
 
@@ -1542,6 +1557,34 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
   if (!pickedList.length) return;
+  await applySourcePaths(surface, pickedList);
+}
+
+/**
+ * 从别处交过来的路径（拖入、「翻译」入口页分配）：等同于填进路径栏后回车。这一页正有任务
+ * 在跑时不替换来源，提示一句并返回 false。调用方先 navigate 到这一页再调。
+ */
+export async function openSourcePaths(surface: Surface, paths: string[]): Promise<boolean> {
+  const list = paths.filter((item) => item.trim().length > 0);
+  if (!list.length) return false;
+  const st = stateOf(surface);
+  try {
+    await ensureBootstrap();
+    // 刚挂载的页面可能还没接管后台正在跑的任务；先接管，再判断能不能换来源。
+    await adoptExistingTask(surface, () => true);
+  } catch {
+    // 初始化失败时页面自己会报错；这里照常往下走，读取会再报一次具体原因。
+  }
+  if (st.task && !st.task.task.terminal) {
+    showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
+    return false;
+  }
+  await applySourcePaths(surface, list);
+  return true;
+}
+
+async function applySourcePaths(surface: Surface, pickedList: string[]): Promise<void> {
+  const st = stateOf(surface);
   clearWorkspaceInput(surface);
   // 多选时 sourcePath 记它们共同的上级目录：任务启动要用它重扫，selected_paths 再收窄
   // 回这几个文件；清单和统计仍然只显示选中的这几份（扫描只扫这几个路径）。

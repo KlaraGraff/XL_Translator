@@ -51,6 +51,8 @@
   --accent-ink: #1d4ed8;
   --glow: #38bdf8;
   --glow-soft: rgb(56 189 248 / 28%);
+  --spot: rgb(37 99 235 / 11%);
+  --dot: rgb(16 24 40 / 26%);
   --line-3: #b5bfce;
   --sel: rgb(37 99 235 / 20%);
   --sheen: rgb(255 255 255 / 55%);
@@ -91,6 +93,8 @@
   --accent-ink: #8cb0ff;
   --glow: #22d3ee;
   --glow-soft: rgb(34 211 238 / 20%);
+  --spot: rgb(34 211 238 / 13%);
+  --dot: rgb(255 255 255 / 20%);
   --line-3: #3b4963;
   --sel: rgb(77 132 245 / 40%);
   --sheen: rgb(255 255 255 / 35%);
