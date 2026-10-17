@@ -152,23 +152,18 @@ class RuntimeSurfaceRouteTests(IsolatedAppDataTestCase):
                 if item["capabilities"].get("requires_source", True) and item["extensions"]
             ]
             assert "excel" in keys and SAMPLE_KEY in keys and "tm_clean" not in keys
-            # Extension types are off by default, so switching the four built-ins off leaves nothing.
-            refused = client.put(
-                "/api/settings", json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False}}}
-            )
+            # Other extension types are off by default; PPT is shown by default, so it is switched
+            # off too: then switching the four built-ins off leaves nothing.
+            hidden = {"excel": False, "word": False, "pdf": False, "cad": False, "ext:pptx": False}
+            refused = client.put("/api/settings", json={"translation_types": {"visible": hidden}})
             shown = client.put("/api/settings", json={"translation_types": {"order": [SAMPLE_KEY], "visible": {SAMPLE_KEY: True}}})
-            kept = client.put(
-                "/api/settings", json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False}}}
-            )
+            kept = client.put("/api/settings", json={"translation_types": {"visible": hidden}})
             stored = client.get("/api/settings").json()["translation_types"]
         assert refused.status_code == 422
         assert "至少保留一种翻译类型" in refused.json()["detail"]
         assert shown.status_code == 200, shown.text
         assert kept.status_code == 200, kept.text
-        assert stored == {
-            "order": [SAMPLE_KEY],
-            "visible": {SAMPLE_KEY: True, "excel": False, "word": False, "pdf": False, "cad": False},
-        }
+        assert stored == {"order": [SAMPLE_KEY], "visible": {SAMPLE_KEY: True, **hidden}}
 
     def test_an_unregistered_page_is_refused_like_an_unknown_one(self) -> None:
         unregister_surface(SAMPLE_KEY)

@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from api.surfaces import all_surfaces, get_surface, unregister_surface
+from api.surfaces import get_surface, unregister_surface
 from api.surfaces.adapter import AdapterSurface, register_bundled_adapters
 from api.surfaces.base import RunnerRequest
 from api.task_contracts import TaskOptions
@@ -211,15 +211,18 @@ class PptxTaskTests(IsolatedAppDataTestCase):
 
 
 def test_the_page_is_registered_with_the_app() -> None:
-    key = "ext:pptx"
-    already = any(surface.key == key for surface in all_surfaces())
+    added: list[str] = []
     try:
-        register_bundled_adapters()
-        descriptor = get_surface(key).describe()
+        # Only the types this call adds are taken away again, so the registry
+        # (and its order) is as the next test expects.
+        added = register_bundled_adapters()
+        descriptor = get_surface("ext:pptx").describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
+        # Shown in the sidebar right after Word until the user switches it off.
+        assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
         assert descriptor["icon"] == "ppt"
         assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
-        if not already:
+        for key in added:
             unregister_surface(key)

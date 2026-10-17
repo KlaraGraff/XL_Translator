@@ -59,6 +59,8 @@
       "default": false
     }
   ],
+  "visible_by_default": true,
+  "sidebar_after": "word",
   "license": "MIT",
   "repo": "https://github.com/KlaraGraff/XL_Translator"
 }
