@@ -5,7 +5,7 @@
 // 还得写一句哪里不对。原文件始终要用户自己勾。要贴截图或加别的文件，点「在反馈页填写」去完整的反馈页。
 
 import { ApiClient, ApiError } from "./api-client";
-import { createButton, openModal, showToast, type ModalHandle } from "./components";
+import { clearElement, createButton, openModal, showToast, type ModalHandle } from "./components";
 import { currentLocale, t, tx } from "./i18n";
 import { navigate } from "./router";
 import {
@@ -103,7 +103,8 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
       row.append(box, label);
       return row;
     };
-    kinds.replaceChildren(
+    clearElement(kinds);
+    kinds.append(
       option(t("系统与版本信息"), "includeSystem"),
       option(t("任务日志"), "includeLogs"),
       option(t("原文件"), "includeSources"),
@@ -187,7 +188,8 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
     const line = document.createElement("p");
     line.className = error ? "feedback-note feedback-error" : "feedback-note";
     line.textContent = message;
-    status.replaceChildren(line);
+    clearElement(status);
+    status.append(line);
   }
 
   async function send(): Promise<void> {
@@ -201,7 +203,8 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
     renderKinds();
     sync();
     const progress = createSendProgress();
-    status.replaceChildren(progress.root);
+    clearElement(status);
+    status.append(progress.root);
     try {
       const client = await getClient();
       const result = await uploadFeedback(client, {

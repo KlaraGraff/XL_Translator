@@ -22,6 +22,18 @@
 
   **Feedback sends leave a trace**: Sending feedback used to show its outcome only on the page; a failed send left nothing in app.log, so the cause could not be found afterwards. Every send now logs its start and its success (the feedback number) or failure (whether it broke while connecting, uploading or waiting for the server, the HTTP status and the relay's error code, or the network error's type and message, how much had been uploaded, elapsed time), plus whether a proxy was used. The description, email address, file names and paths are never logged. Unexpected errors while packaging, and failing to remember the email choice on this machine, are logged too.
 
+- **界面焕新：侧栏收成 7 项，插件、扩展、MCP 合成「扩展」一页**：侧栏「任务中心」改名「任务」；原来的「扩展」「插件」「MCP」三页合成一页「扩展」，分「文件类型」「组件」「智能体接入」三个页签，内容不变，原来的入口（如工作区的「打开插件」）都直接到对应页签；侧栏顶部新增「搜索或输入路径」入口（快捷键在 Mac 上写 ⌘K，Windows 上写 Ctrl+K，搜索面板随后提供）。更新提示卡片的「在 GitHub 查看」改为「项目主页」。
+
+  **Interface refresh: a seven-item sidebar, and Plugins, Extensions and MCP merged into one Extensions page**: The sidebar's Task center is now called Tasks. The former Extensions, Plugins and MCP pages are one Extensions page with three tabs, File types, Components and Agent access, with the same content as before; existing links (such as Open plugins on a workspace) go straight to the matching tab. A "Search or enter a path" entry sits at the top of the sidebar (shown as ⌘K on Mac and Ctrl+K on Windows; the search panel follows in a later update). The update card's "View on GitHub" button now reads "Project page".
+
+- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
+
+  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
+
+- **新增全局搜索**：Mac 按 ⌘K、Windows 按 Ctrl+K（或点侧栏顶部的「搜索或输入路径」），可搜页面、任务和记忆库词条；输入文件路径回车即开始翻译。方向键选择、回车打开、Esc 关闭；任务回车直接打开那条任务，词条回车进入记忆库并定位到这条。
+
+  **Global search**: Press ⌘K on Mac or Ctrl+K on Windows (or click "Search or enter a path" at the top of the sidebar) to search pages, tasks and translation-memory entries; type a file path and press Enter to start translating it. Arrow keys select, Enter opens, Esc closes; Enter on a task opens that task, and Enter on an entry opens the translation memory at that entry.
+
 - **记忆库页换新版式**：记忆库页原来上面是一张塞满按钮的工具卡、一排统计卡，再往下才是表格。现在顶部一行放语言对（中间一个按钮即可交换方向）、搜索和「新增词条 / 导入 / 导出 / 更多」，「清洗记忆库」和「记忆库设置」收进「更多」；统计卡去掉，条数在筛选页签上，高级模式的本月统计改成筛选行末一句话；编辑、删除在鼠标移到那一行时出现。功能和操作结果不变。
 
   **New layout for the translation memory page**: The page used to open with a card crowded with buttons and a row of statistics cards above the table. A single top row now holds the language pair (one button swaps the direction), search, and "New entry / Import / Export / More"; "Clean up memory" and the memory settings moved into "More". The statistics cards are gone: counts are on the filter tabs, and advanced mode's monthly figures are one line at the end of the filter row. Edit and delete appear when the pointer is over a row. Features and results are unchanged.
