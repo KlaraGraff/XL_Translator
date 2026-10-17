@@ -26,6 +26,10 @@
 
   **Interface refresh: a seven-item sidebar, and Plugins, Extensions and MCP merged into one Extensions page**: The sidebar's Task center is now called Tasks. The former Extensions, Plugins and MCP pages are one Extensions page with three tabs, File types, Components and Agent access, with the same content as before; existing links (such as Open plugins on a workspace) go straight to the matching tab. A "Search or enter a path" entry sits at the top of the sidebar (shown as ⌘K on Mac and Ctrl+K on Windows; the search panel follows in a later update). The update card's "View on GitHub" button now reads "Project page".
 
+- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
+
+  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。

@@ -15,11 +15,11 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
-import { icon } from "../icons";
+import { clearElement, createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
+import { icon, type IconName } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
-import { extSurfaceLabel, isExtSurface } from "../surface-descriptors";
+import { extSurfaceIcon, extSurfaceLabel, isExtSurface } from "../surface-descriptors";
 import {
   SEND_FAILURES,
   confirmSendWithoutEmail,
@@ -131,9 +131,17 @@ const SURFACE_LABEL: Record<string, string> = localized(() => ({
   tm_clean: t("记忆库清洗"),
 }));
 
+const SURFACE_ICON: Record<string, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
+
 /** 任务类型的名字；运行时注册的类型按描述符取。 */
 function surfaceName(surface: string): string {
   return SURFACE_LABEL[surface] ?? (isExtSurface(surface) ? extSurfaceLabel(surface) : surface);
+}
+
+/** 任务行前面的类型图标，和任务页同一套（tasks.ts surfaceIcon）。 */
+function surfaceIcon(surface: string): IconName {
+  if (isExtSurface(surface)) return extSurfaceIcon(surface);
+  return SURFACE_ICON[surface] ?? "book";
 }
 
 /** 上次成功发送时留的邮箱；新写的反馈默认填它，省得每次重输。 */
@@ -303,37 +311,56 @@ async function loadTaskFiles(taskId: string): Promise<void> {
 
 function render(): void {
   if (!mounted || !rootEl) return;
-  setTopbar({ title: t("反馈"), subtitle: t("报告问题或提出建议") });
+  setTopbar({ title: t("反馈"), subtitle: t("报告问题或提出建议，附带的日志只用于排查") });
   rootEl.className = "content feedback-content";
-  rootEl.replaceChildren();
-  const column = document.createElement("div");
-  column.className = "feedback-column";
+  clearElement(rootEl);
+  const fill = document.createElement("div");
+  fill.className = "feedback-fill";
   if (sentId) {
-    column.append(buildSentCard());
+    fill.append(buildSentCard());
   } else {
-    // 宽窗口左右两栏：左边写内容，右边挑附件；窄窗口退回上下排列。
+    // 宽窗口左右两栏直接铺在页面上、上下铺满，底栏一行；窄窗口退回上下排列。
     const grid = document.createElement("div");
     grid.className = "feedback-grid";
-    grid.append(buildMessageCard(), buildAttachmentCard());
-    column.append(grid, buildActions());
+    grid.append(buildMessageColumn(), buildAttachmentColumn());
+    fill.append(grid, buildActions());
   }
-  rootEl.append(column);
+  rootEl.append(fill);
 }
 
-function sectionTitle(text: string, hint?: string): HTMLElement {
+/** 节标题；hint 是标题后的「?」说明，note 是跟在标题后的一句灰色小注。 */
+function sectionTitle(text: string, hint?: string, note?: string): HTMLElement {
   const title = document.createElement("h3");
-  title.className = "feedback-section-title";
-  title.textContent = text;
+  title.className = note ? "feedback-section-title has-note" : "feedback-section-title";
+  const label = document.createElement("span");
+  label.className = "feedback-section-label";
+  label.textContent = text;
+  title.append(label);
   if (hint) title.append(createHintBadge(hint));
+  if (note) {
+    const muted = document.createElement("span");
+    muted.className = "feedback-muted";
+    muted.textContent = note;
+    title.append(muted);
+  }
   return title;
 }
 
-function buildMessageCard(): HTMLElement {
-  const card = createCard([], "feedback-card");
+/** 一个节：标题 + 内容。grow 的节吃掉所在那栏的剩余高度（描述框、任务列表）。 */
+function field(className: string, ...children: HTMLElement[]): HTMLElement {
+  const box = document.createElement("div");
+  box.className = `feedback-field ${className}`.trim();
+  box.append(...children);
+  return box;
+}
 
-  card.append(sectionTitle(t("类型")));
-  const seg = document.createElement("div");
-  seg.className = "seg feedback-seg";
+function buildMessageColumn(): HTMLElement {
+  const column = document.createElement("div");
+
+  const cards = document.createElement("div");
+  cards.className = "feedback-cards";
+  cards.setAttribute("role", "radiogroup");
+  cards.setAttribute("aria-label", t("类型"));
   for (const option of CATEGORIES) {
     const item = document.createElement("div");
     item.className = option.value === draft.category ? "segc on" : "segc";
@@ -356,17 +383,15 @@ function buildMessageCard(): HTMLElement {
         choose();
       }
     });
-    seg.append(item);
+    cards.append(item);
   }
-  card.append(seg);
+  column.append(field("", sectionTitle(t("类型")), cards));
 
-  card.append(sectionTitle(t("描述")));
-  // 跟 Claude 的输入框一样：截图以缩略图卡片排在框内文字上方，框和图是一个整体。
-  // 截图不限张数，只排一行、横向滚动，粘得再多也不会挤掉写字的地方。
+  // 描述框吃掉左栏剩下的高度；截图以缩略图排在框下方一行，不限张数，多了横向滚动。
   const composer = document.createElement("div");
   composer.className = "feedback-composer";
   imagesEl = document.createElement("div");
-  imagesEl.className = "feedback-images";
+  imagesEl.className = "feedback-shots";
   // 普通鼠标只有竖向滚轮：指针在截图行上时，把竖向滚动换成横向。
   imagesEl.addEventListener("wheel", (event) => {
     const strip = event.currentTarget as HTMLElement;
@@ -376,9 +401,9 @@ function buildMessageCard(): HTMLElement {
   }, { passive: false });
   const area = document.createElement("textarea");
   area.className = "feedback-text";
-  area.rows = 12;
   area.maxLength = 5000;
-  area.placeholder = t("请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。可直接粘贴截图。");
+  area.setAttribute("aria-label", t("描述"));
+  area.placeholder = t("请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。");
   area.value = draft.description;
   area.addEventListener("input", () => {
     draft.description = area.value;
@@ -401,14 +426,13 @@ function buildMessageCard(): HTMLElement {
     event.preventDefault();
     void addImages(images);
   });
-  composer.append(imagesEl, area);
+  composer.append(area);
   composer.addEventListener("click", (event) => {
     if (event.target === composer) area.focus();
   });
-  card.append(composer);
+  column.append(field("feedback-grow", sectionTitle(t("描述"), undefined, t("可直接粘贴截图")), composer, imagesEl));
   renderImages();
 
-  card.append(sectionTitle(t("邮箱（建议填写）")));
   const contact = document.createElement("input");
   contact.type = "email";
   contact.className = "feedback-input";
@@ -416,16 +440,17 @@ function buildMessageCard(): HTMLElement {
   contact.autocomplete = "email";
   contact.spellcheck = false;
   contact.placeholder = "name@example.com";
+  contact.setAttribute("aria-label", t("邮箱"));
   contact.value = draft.contact;
   const contactNote = document.createElement("p");
   contactNote.className = "feedback-note";
+  // 说明已在标题小注里；下面这行只在格式不对时出现。
   const syncContactNote = (): void => {
     const invalid = !emailLooksValid(draft.contact);
     contact.classList.toggle("invalid", invalid);
     contactNote.classList.toggle("feedback-error", invalid);
-    contactNote.textContent = invalid
-      ? t("邮箱格式不正确，请检查后再发送。")
-      : t("留下邮箱后，问题解决或功能上线时，我们会发邮件通知您。");
+    contactNote.hidden = !invalid;
+    contactNote.textContent = invalid ? t("邮箱格式不正确，请检查后再发送。") : "";
   };
   contact.addEventListener("input", () => {
     draft.contact = contact.value;
@@ -434,30 +459,29 @@ function buildMessageCard(): HTMLElement {
     syncActionState();
   });
   syncContactNote();
-  card.append(contact, contactNote);
-  return card;
+  column.append(field("feedback-field-last", sectionTitle(t("邮箱"), undefined, t("建议填写，问题处理或功能上线后通知您")), contact, contactNote));
+  return column;
 }
 
-function checkRow(options: { checked: boolean; disabled?: boolean; title: string; detail?: string; onChange: (checked: boolean) => void }): HTMLLabelElement {
+/** 任务列表的一行：勾选框、类型图标、文件名，右边是「类型 · 状态 · 日期」。 */
+function taskRow(task: FeedbackTask, options: { checked: boolean; disabled: boolean; onChange: (checked: boolean) => void }): HTMLLabelElement {
   const row = document.createElement("label");
-  row.className = options.disabled ? "feedback-check disabled" : "feedback-check";
+  row.className = options.disabled ? "feedback-task disabled" : "feedback-task";
   const box = document.createElement("input");
   box.type = "checkbox";
   box.className = "ck";
   box.checked = options.checked;
-  box.disabled = Boolean(options.disabled);
+  box.disabled = options.disabled;
   box.addEventListener("change", () => options.onChange(box.checked));
-  const copy = document.createElement("span");
-  copy.className = "feedback-check-copy";
-  const title = document.createElement("b");
-  title.textContent = options.title;
-  copy.append(title);
-  if (options.detail) {
-    const detail = document.createElement("span");
-    detail.textContent = options.detail;
-    copy.append(detail);
-  }
-  row.append(box, copy);
+  const name = document.createElement("span");
+  name.className = "feedback-task-name";
+  name.textContent = taskName(task);
+  name.title = taskName(task);
+  const meta = document.createElement("span");
+  meta.className = "feedback-task-meta";
+  meta.textContent = taskMeta(task);
+  meta.title = taskMeta(task);
+  row.append(box, icon(surfaceIcon(task.surface), { size: "sm" }), name, meta);
   return row;
 }
 
@@ -507,7 +531,7 @@ async function addImages(files: File[]): Promise<void> {
 function renderImages(): void {
   const el = imagesEl;
   if (!el) return;
-  el.replaceChildren();
+  clearElement(el);
   el.hidden = !draft.images.length;
   draft.images.forEach((image, index) => {
     const tile = document.createElement("div");
@@ -545,35 +569,37 @@ function openImage(image: PastedImage): void {
   openModal({ tone: "tint", icon: "search", title: t("截图"), body: [img], actions: [{ label: t("关闭"), variant: "primary" }], wide: true });
 }
 
-function buildAttachmentCard(): HTMLElement {
-  const card = createCard([], "feedback-card");
+function buildAttachmentColumn(): HTMLElement {
+  const column = document.createElement("div");
 
-  card.append(sectionTitle(t("附带内容")));
   kindsEl = document.createElement("div");
-  kindsEl.className = "feedback-kinds";
-  card.append(kindsEl);
+  kindsEl.className = "feedback-attach";
+  column.append(field("", sectionTitle(t("附带内容")), kindsEl));
   renderKinds();
 
-  card.append(sectionTitle(
+  const tasks = field("feedback-grow", sectionTitle(
     t("选择任务"),
     t("上面勾选的任务日志、原文件和译文取自这里选中的任务。日志已去除 API 密钥和文件路径，文件名替换为「文件1」「文件2」等；为便于定位问题，可能保留少量原文片段。发送前可点击「查看将发送的内容」逐条核对。"),
   ));
-  if (context?.tasks.length) card.append(buildTaskToolbar());
+  if (context?.tasks.length) tasks.append(buildTaskToolbar());
   taskListEl = document.createElement("div");
-  taskListEl.className = "feedback-list feedback-task-list";
+  taskListEl.className = "feedback-task-list";
   renderTaskList();
-  card.append(taskListEl);
+  tasks.append(taskListEl);
+  column.append(tasks);
 
-  card.append(sectionTitle(t("其他文件"), t("任务以外的文件，例如别处的文档。添加了就会上传，移除即不上传。文件可能包含客户资料，仅在需要我们查看时添加。")));
+  // 「其他文件」固定在右栏底部：已添加的文件，下面一行是「添加文件…」和文件合计。
   otherFilesEl = document.createElement("div");
   otherFilesEl.className = "feedback-other-files";
-  card.append(otherFilesEl);
-  renderOtherFiles();
-
   fileSummaryEl = document.createElement("p");
-  card.append(fileSummaryEl);
+  column.append(field(
+    "feedback-field-last",
+    sectionTitle(t("其他文件"), t("任务以外的文件，例如别处的文档。添加了就会上传，移除即不上传。文件可能包含客户资料，仅在需要我们查看时添加。")),
+    otherFilesEl,
+  ));
+  renderOtherFiles();
   renderFileSummary();
-  return card;
+  return column;
 }
 
 let kindsEl: HTMLElement | null = null;
@@ -622,7 +648,8 @@ function kindOption(options: { checked: boolean; title: string; hint: string; co
 function renderKinds(): void {
   const el = kindsEl;
   if (el) {
-    el.replaceChildren(
+    clearElement(el);
+    el.append(
       kindOption({
         checked: draft.includeSystem,
         title: t("系统与版本信息"),
@@ -658,7 +685,7 @@ function renderKinds(): void {
 function renderOtherFiles(): void {
   const list = otherFilesEl;
   if (!list) return;
-  list.replaceChildren();
+  clearElement(list);
   for (const file of draft.files) {
     const row = document.createElement("div");
     row.className = "feedback-file";
@@ -682,13 +709,17 @@ function renderOtherFiles(): void {
     list.append(row);
   }
   const maxFiles = context?.max_files ?? 10;
-  list.append(createButton({
+  const foot = document.createElement("div");
+  foot.className = "feedback-other-foot";
+  foot.append(createButton({
     label: t("添加文件…"),
     icon: "plus",
     size: "mini",
     disabled: draft.files.length >= maxFiles,
     onClick: () => void pickFiles(),
   }));
+  if (fileSummaryEl) foot.append(fileSummaryEl);
+  list.append(foot);
 }
 
 let fileSummaryEl: HTMLElement | null = null;
@@ -715,12 +746,13 @@ let taskLimit = 10;
 let taskListEl: HTMLElement | null = null;
 let taskCountEl: HTMLElement | null = null;
 
-function taskLabel(task: FeedbackTask): string {
-  return [surfaceName(task.surface), tx(task.source_label)].filter(Boolean).join(" · ");
+/** 行上显示的名字：文件名；没有记录文件名时退回类型名。 */
+function taskName(task: FeedbackTask): string {
+  return tx(task.source_label) || surfaceName(task.surface);
 }
 
-function taskDetail(task: FeedbackTask): string {
-  return `${taskStateWord(task.state)} · ${formatWhen(task.updated_at)}`;
+function taskMeta(task: FeedbackTask): string {
+  return [surfaceName(task.surface), taskStateWord(task.state), formatWhen(task.updated_at)].filter(Boolean).join(" · ");
 }
 
 function buildTaskToolbar(): HTMLElement {
@@ -731,6 +763,9 @@ function buildTaskToolbar(): HTMLElement {
   const search = document.createElement("input");
   search.type = "text";
   search.placeholder = t("搜索文件名、类型、状态或日期…");
+  search.setAttribute("aria-label", t("搜索任务"));
+  search.title = search.placeholder;
+  search.spellcheck = false;
   search.value = taskQuery;
   search.addEventListener("input", () => {
     taskQuery = search.value;
@@ -755,7 +790,7 @@ function buildTaskToolbar(): HTMLElement {
 function renderTaskList(): void {
   const list = taskListEl;
   if (!list) return;
-  list.replaceChildren();
+  clearElement(list);
   if (!context && !contextError) {
     list.append(note(t("正在读取任务记录…")));
     return;
@@ -771,7 +806,7 @@ function renderTaskList(): void {
   }
   const query = taskQuery.trim().toLowerCase();
   const matches = (task: FeedbackTask): boolean =>
-    !query || `${taskLabel(task)} ${taskDetail(task)}`.toLowerCase().includes(query);
+    !query || `${taskName(task)} ${taskMeta(task)}`.toLowerCase().includes(query);
   const selected = tasks.filter((task) => draft.taskIds.has(task.task_id));
   const others = tasks.filter((task) => !draft.taskIds.has(task.task_id) && matches(task));
   const matchedCount = selected.filter(matches).length + others.length;
@@ -779,17 +814,15 @@ function renderTaskList(): void {
   const shown = [...selected, ...others.slice(0, room)];
   if (taskCountEl) {
     taskCountEl.textContent = query
-      ? t("找到 {0} 条，共 {1} 条", matchedCount, tasks.length)
+      ? t("匹配 {0} / {1} 条", matchedCount, tasks.length)
       : t("共 {0} 条", tasks.length);
   }
   const maxTasks = context?.max_tasks ?? 5;
   for (const task of shown) {
     const checked = draft.taskIds.has(task.task_id);
-    list.append(checkRow({
+    list.append(taskRow(task, {
       checked,
       disabled: !checked && draft.taskIds.size >= maxTasks,
-      title: taskLabel(task),
-      detail: taskDetail(task),
       onChange: (value) => {
         setTaskChecked(task.task_id, value);
         renderTaskList();
@@ -844,7 +877,7 @@ function syncActionState(): void {
 
 function buildActions(): HTMLElement {
   const wrap = document.createElement("div");
-  wrap.className = "feedback-actions-wrap";
+  wrap.className = "feedback-foot";
 
   if (sendFailure) {
     const banner = document.createElement("div");

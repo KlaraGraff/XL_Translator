@@ -1,6 +1,5 @@
 {
   "反馈": {"en": "Feedback", "fr": "Retours"},
-  "报告问题或提出建议": {"en": "Report a problem or suggest an improvement", "fr": "Signaler un problème ou proposer une amélioration"},
   "建议": {"en": "Suggestion", "fr": "Suggestion"},
   "其他": {"en": "Other", "fr": "Autre"},
   "功能异常、报错或结果不正确": {"en": "Something does not work, shows an error or gives a wrong result", "fr": "Un dysfonctionnement, un message d'erreur ou un résultat incorrect"},
@@ -30,7 +29,7 @@
   "保存为 ZIP": {"en": "Save as ZIP", "fr": "Enregistrer en ZIP"},
   "正在发送…": {"en": "Sending…", "fr": "Envoi…"},
   "发送": {"en": "Send", "fr": "Envoyer"},
-  "仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。": {"en": "Nothing is uploaded until you click “Send”. Attached logs and files are used only to investigate the problem and are deleted once it has been dealt with, after 90 days at most.", "fr": "Rien n'est envoyé avant que vous cliquiez sur « Envoyer ». Les journaux et fichiers joints servent uniquement à analyser le problème et sont supprimés dès qu'il est traité, au plus tard au bout de 90 jours."},
+  "仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。": {"en": "Nothing is uploaded until you click “Send”. Attached logs and files are used only to investigate the problem and are deleted once it has been dealt with, after 90 days at most.", "fr": "Rien n'est envoyé avant « Envoyer ». Pièces jointes supprimées après traitement, sous 90 jours."},
   "原文件和译文仅用于定位和修复问题，绝不会公开或泄露；问题处理完毕后立即删除，不再保存。": {"en": "Original and translated files are used only to locate and fix the problem. They are never made public or shared, and are deleted as soon as the problem has been dealt with.", "fr": "Les fichiers originaux et traduits servent uniquement à localiser et corriger le problème. Ils ne sont jamais rendus publics ni divulgués, et sont supprimés dès que le problème est traité."},
   "此版本尚未开通在线发送，可先保存为 ZIP。": {"en": "Online sending is not available in this version yet. You can save the feedback as a ZIP.", "fr": "L'envoi en ligne n'est pas encore disponible dans cette version. Vous pouvez enregistrer le retour au format ZIP."},
   "反馈内容与邮箱": {"en": "Your message and email", "fr": "Votre message et votre e-mail"},
@@ -65,7 +64,6 @@
   "搜索文件名、类型、状态或日期…": {"en": "Search by file name, type, status or date…", "fr": "Rechercher par nom de fichier, type, état ou date…"},
   "显示 {0} 条": {"en": "Show {0}", "fr": "Afficher {0}"},
   "显示全部": {"en": "Show all", "fr": "Tout afficher"},
-  "找到 {0} 条，共 {1} 条": {"en": "{0} of {1} {1|task|tasks}", "fr": "{0} sur {1} {1|tâche|tâches}"},
   "共 {0} 条": {"en": "{0} {0|task|tasks}", "fr": "{0} {0|tâche|tâches}"},
   "没有匹配的任务。": {"en": "No matching tasks.", "fr": "Aucune tâche correspondante."},
   "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} autres non affichées. Recherchez ou affichez-en davantage."},
@@ -82,7 +80,6 @@
   "无法读取图片：{0}": {"en": "Could not read the image: {0}", "fr": "Impossible de lire l'image : {0}"},
   "移除": {"en": "Remove", "fr": "Retirer"},
   "系统与版本信息": {"en": "System and version", "fr": "Système et version"},
-  "请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。可直接粘贴截图。": {"en": "Describe the problem or what you would like improved. For a problem, include the steps you took and the message you saw. You can paste screenshots directly.", "fr": "Décrivez le problème rencontré ou l'amélioration souhaitée. Pour un problème, indiquez les étapes suivies et le message affiché. Vous pouvez coller des captures d'écran directement."},
   "只能粘贴 PNG、JPEG、GIF 或 WebP 图片。": {"en": "Only PNG, JPEG, GIF or WebP images can be pasted.", "fr": "Seules les images PNG, JPEG, GIF ou WebP peuvent être collées."},
   "一次最多附上 50 个文件，请少选几次任务或不附原文件。": {"en": "You can attach up to 50 files at a time. Choose fewer tasks or leave out the originals.", "fr": "Vous pouvez joindre 50 fichiers au maximum. Choisissez moins de tâches ou ne joignez pas les originaux."},
   "找不到文件：{0}": {"en": "File not found: {0}", "fr": "Fichier introuvable : {0}"},
@@ -108,5 +105,11 @@
   "直接发送": {"en": "Send without email", "fr": "Envoyer sans e-mail"},
   "请描述哪里不对，例如哪段译文有误、哪一步出错。": {"en": "Describe what is wrong, for example which translation is incorrect or which step failed.", "fr": "Décrivez ce qui ne va pas, par exemple quelle traduction est incorrecte ou quelle étape a échoué."},
   "问题描述（选填）": {"en": "Description (optional)", "fr": "Description (facultative)"},
-  "（用户未填写描述，请查看所附任务的日志。）": {"en": "(No description given. Please see the attached task log.)", "fr": "(Aucune description. Veuillez consulter le journal de la tâche jointe.)"}
+  "（用户未填写描述，请查看所附任务的日志。）": {"en": "(No description given. Please see the attached task log.)", "fr": "(Aucune description. Veuillez consulter le journal de la tâche jointe.)"},
+  "报告问题或提出建议，附带的日志只用于排查": {"en": "Report a problem or suggest an improvement. Attached logs are used only for troubleshooting.", "fr": "Signalez un problème ou une idée. Les journaux joints ne servent qu'au diagnostic."},
+  "邮箱": {"en": "Email", "fr": "E-mail"},
+  "可直接粘贴截图": {"en": "You can paste screenshots", "fr": "Vous pouvez coller des captures d'écran"},
+  "建议填写，问题处理或功能上线后通知您": {"en": "Recommended. We will let you know when it is resolved or available.", "fr": "Recommandé. Nous vous préviendrons dès que ce sera traité ou disponible."},
+  "请描述遇到的问题或希望改进的地方。如是问题，请说明操作步骤和看到的提示。": {"en": "Describe the problem or what you would like improved. For a problem, include the steps you took and the message you saw.", "fr": "Décrivez le problème rencontré ou l'amélioration souhaitée. Pour un problème, indiquez les étapes suivies et le message affiché."},
+  "匹配 {0} / {1} 条": {"en": "{0} of {1}", "fr": "{0} sur {1}"}
 }
