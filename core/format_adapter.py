@@ -58,6 +58,11 @@ LANGUAGES = ("zh", "en", "fr")
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+#: pydantic 把字符串当布尔值时认的写法（开关的 default 以前按它转）。
+_LAX_BOOLS = {
+    **dict.fromkeys(("1", "on", "t", "true", "y", "yes"), True),
+    **dict.fromkeys(("0", "off", "f", "false", "n", "no"), False),
+}
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
 _CLOSING_MARK_RE = re.compile(r"<\s*/\s*g\s*\d+\s*>", re.IGNORECASE)
@@ -152,6 +157,9 @@ class AdapterOption(BaseModel):
         if self.kind == "toggle":
             if self.choices:
                 raise ValueError(f"开关 {self.key} 不能有 choices（多选一请写 \"kind\": \"choice\"）")
+            if isinstance(self.default, str):
+                # 以前 default 只收布尔值，"true"、"0" 这类字符串照 pydantic 的规矩转过；照旧收。
+                self.default = _LAX_BOOLS.get(self.default.strip().lower(), self.default)
             if not isinstance(self.default, bool):
                 raise ValueError(f"开关 {self.key} 的 default 只能是 true 或 false")
             return self

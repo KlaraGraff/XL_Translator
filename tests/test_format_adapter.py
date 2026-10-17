@@ -360,6 +360,12 @@ def test_a_broken_choice_option_is_refused(change, message):
         parse_manifest(_manifest(options=[{**_LAYOUT, **change}]))
 
 
+def test_a_toggle_default_written_as_text_still_loads():
+    # 多选一以前，default 只收布尔值，"true" 这类字符串照布尔转；装好的扩展照样能读。
+    option = {"key": "upper", "label": _LAYOUT["label"], "default": "true"}
+    assert parse_manifest(_manifest(options=[option])).options[0].default is True
+
+
 def test_registration_is_idempotent_and_skips_broken_adapters():
     try:
         first = register_bundled_adapters(FIXTURES)
