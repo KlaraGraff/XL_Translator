@@ -92,15 +92,21 @@ export function translationTypesLayout(settings: Record<string, unknown> | null 
   return { order, visible };
 }
 
-/** 是否显示在侧栏：拨过的按拨的；没拨过的内置四种显示、扩展类型不显示（与后端 shows 一致）。 */
+/**
+ * 是否显示在侧栏：拨过的按拨的；没拨过的内置四种显示，扩展类型按描述符的 visible_by_default
+ * （随应用提供、清单要求的才显示，如 PPT），与后端 shows 一致。
+ */
 export function isTypeVisible(settings: Record<string, unknown> | null | undefined, key: string): boolean {
   const flag = translationTypesLayout(settings).visible[key];
-  return typeof flag === "boolean" ? flag : !isExtSurface(key);
+  if (typeof flag === "boolean") return flag;
+  return isExtSurface(key) ? surfaceDescriptor(key)?.visible_by_default === true : true;
 }
 
 /**
  * 全部翻译类型（内置四种 + 已拉到描述符的运行时注册类型），按「扩展」页排的顺序；
- * 没排到的（新装的类型）按描述符顺序接在后面。「扩展」页、侧栏和翻译参数的页签都按这个顺序。
+ * 没排到的（新装的类型）按描述符顺序接在后面，描述符写了 sidebar_after 的（随应用提供的 PPT
+ * 紧跟 Word）插在那个类型后面。用户排过的顺序只增不改：已排的类型之间的先后不动。
+ * 「扩展」页、侧栏和翻译参数的页签都按这个顺序。
  */
 export function orderedTypeKeys(settings: Record<string, unknown> | null | undefined): string[] {
   const known: string[] = [
@@ -108,7 +114,27 @@ export function orderedTypeKeys(settings: Record<string, unknown> | null | undef
     ...descriptors.filter((item) => !item.builtin && isExtSurface(item.key)).map((item) => item.key),
   ];
   const ranked = translationTypesLayout(settings).order.filter((key) => known.includes(key));
-  return [...ranked, ...known.filter((key) => !ranked.includes(key))];
+  const anchorOf = (key: string): string => (ranked.includes(key) ? "" : surfaceDescriptor(key)?.sidebar_after ?? "");
+  const keys = [...ranked, ...known.filter((key) => !ranked.includes(key) && !anchorOf(key))];
+  // 有锚点的插在锚点后面（同一个锚点的按描述符顺序排）；锚点不在列表里的接在最后。
+  const anchored = known.filter((key) => anchorOf(key));
+  let pending = anchored;
+  while (pending.length) {
+    const rest = pending.filter((key) => {
+      const anchor = keys.indexOf(anchorOf(key));
+      if (anchor < 0) return true;
+      let at = anchor + 1;
+      while (at < keys.length && anchorOf(keys[at]) === anchorOf(key)) at += 1;
+      keys.splice(at, 0, key);
+      return false;
+    });
+    if (rest.length === pending.length) {
+      keys.push(...rest);
+      break;
+    }
+    pending = rest;
+  }
+  return keys;
 }
 
 /** 显示在侧栏的翻译类型，顺序同上。 */

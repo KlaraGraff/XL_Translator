@@ -164,7 +164,11 @@ class LegacyTaskTests(PptxTaskTests):
         result = done.file_results[0]
         out = Path(result["output_path"])
         assert out.name == "项目进展汇报_法文.pptx" and out.is_file()
-        assert result["status"] == "completed", result
+        # Same as the .pptx task: the vertical text box on slide 7 is listed for review.
+        assert [(item["location"], item["issue"]) for item in done.review["items"]] == [
+            ("第 7 页 · TextBox 1", "竖排文本框，译文可能需要改为横排")
+        ]
+        assert result["status"] == "needs_review" and result["review_count"] == 1, result
         assert _texts(out, "ppt/slides/slide2.xml")[0] == french("项目概况")
         # Read, extracted and written from one conversion, deleted afterwards.
         assert len(self.conversions.calls) == 1

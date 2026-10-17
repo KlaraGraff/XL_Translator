@@ -43,6 +43,7 @@ from core.word_inline_marks import (
     iter_new_runs,
     paragraph_marks,
     replace_paragraph_content,
+    same_text,
     strip_marks,
 )
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
@@ -1742,14 +1743,15 @@ def _cell_text_paragraphs(cell: _Cell) -> list[Paragraph]:
 
 
 def _usable_marked_pieces(marks, entry, text: str):
-    """翻译时发出的带标记原文和这一处对得上、译文去掉标记后就是最终译文时，返回带标记
-    的译文；否则 None（按整段写法写回）。复查、修数字等后续步骤改过译文的，也会对不上。"""
+    """翻译时发出的带标记原文和这一处对得上、译文去掉标记后就是最终译文时（只差空白也算：
+    记忆库里的译文常把制表符存成空格），返回带标记的译文；否则 None（按整段写法写回）。
+    复查、修数字等后续步骤改过译文的，也会对不上。"""
     if marks is None or entry is None or not marks.is_marked:
         return None
     sent, translation = entry
     if marks.marked_text != sent:
         return None
-    if strip_marks(translation, marks.placeholder_texts).strip() != str(text or "").strip():
+    if not same_text(strip_marks(translation, marks.placeholder_texts), text):
         return None
     return translation
 

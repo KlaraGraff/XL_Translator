@@ -150,6 +150,10 @@ export type SurfaceDescriptor = {
   options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
   /** 由格式适配器生成的类型才有（api/surfaces/adapter.py）：来自清单的 id、版本和来源。 */
   adapter?: { id: string; version: string; origin: "bundled" | "installed"; license: string; repo: string };
+  /** 格式适配器生成的类型才有：没在「扩展」页拨过时是否显示在侧栏（随应用提供、清单要求的才为 true）。 */
+  visible_by_default?: boolean;
+  /** 格式适配器生成的类型才有：侧栏默认顺序里紧跟在哪个类型后面（如 "word"）；空表示排在最后。 */
+  sidebar_after?: string;
 };
 
 /** 「添加扩展…」检查一个文件夹或 zip 的结果（POST /api/extensions/preview），确认弹窗照它画。 */

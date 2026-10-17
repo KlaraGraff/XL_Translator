@@ -134,6 +134,35 @@ def test_the_bundled_text_type_passes(tmp_path: Path) -> None:
     assert not check_adapter(text).ok  # its id is taken by the app itself
 
 
+def test_a_bundled_type_runs_in_process_and_may_use_app_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A type shipped with the app is loaded inside the app, so it may import app modules and lxml;
+    # ``adapter test`` tries it the same way instead of in the extension subprocess.
+    bundled = tmp_path / "adapters"
+    directory = bundled / "fmt"
+    shutil.copytree(ROOT / "tests" / "fixtures" / "mark_adapters" / "marks", directory)
+    manifest = directory / "adapter.json"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace('"id": "marks"', '"id": "fmt"'), encoding="utf-8")
+    source = (directory / "adapter.py").read_text(encoding="utf-8")
+    (directory / "adapter.py").write_text(
+        source.replace(
+            "from translator_adapter import",
+            "import lxml.etree  # noqa: F401\n\nfrom core.word_inline_marks import strip_marks  # noqa: F401\nfrom translator_adapter import",
+        ),
+        encoding="utf-8",
+    )
+    (directory / "samples").mkdir()
+    (directory / "samples" / "a.mk").write_text("Press *Start* now\nPlain line\n", encoding="utf-8")
+    monkeypatch.setattr(adapter_commands, "BUNDLED_ADAPTERS_DIR", bundled)
+
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("a bundled type is tried in process")
+
+    monkeypatch.setattr(adapter_commands, "SubprocessAdapterHost", no_subprocess)
+    report = check_adapter(directory, allow_reserved_id=True)
+    assert report.ok, report.problems
+    assert report.runs[0].modes == {"translation_only": "ok", "bilingual": "ok"}
+
+
 # ── test catches broken adapters ─────────────────────────────────────────
 
 
