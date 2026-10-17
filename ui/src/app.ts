@@ -64,6 +64,7 @@ function applyTheme(preference: ThemePreference): void {
  */
 function initTheme(): void {
   applyTheme(readStoredThemePreference());
+  settingsView.applyStoredMotionPreference();
   initPalettes();
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (readStoredThemePreference() === "system") {

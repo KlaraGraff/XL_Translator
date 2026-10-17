@@ -1,14 +1,10 @@
 /*
- * 设置页补充样式 —— app.css 已经从样张搬来了 .set-nav/.set-body/.seg/.conn/.grid2/
- * .swatch/.tabs/.field(select,input[type=text]) 等设置页专属类，这里只补三类缺口：
- *   1. app.css 的 .field 只给 select 和 input[type=text] 定过样式，密码框/数字框/
- *      文本域要跟它们视觉一致。
- *   2. 原生 <input type="color"> 的默认浏览器 UI 和样张里 26×26 的 .swatch 展示框
- *      对不上，需要用 -webkit-appearance 系列属性重置成同款瓷片。
- *   3. 几个本文件自造的小工具类（.field-row 按钮行、.field 内的「?」提示角标、
- *      .note 说明小字、.conn.selected 选中态、.danger-section 危险区卡片）。
- * 没有发明新的板式系统——数据与维护/外观与语言/更新与关于三个子页刻意复用
- * .card/.tc-head/.conn/.chip/table.tbl 这套已有词汇，见 IA 方案的版式说明。
+ * 设置页样式。版式（流光原型 .set）：左 196px 子导航 + 右侧按节排列的正文，节与节之间
+ * 只有一条发丝线（.sec），不再是一张张卡片；表单两列（.grid2），开关行 .opt-row。
+ * app.css 里 .set-nav / .set-body / .seg / .conn / .tabs 等旧的共享规则不动（反馈页等还在用），
+ * 这里一律用 .set-row / .set-body 前缀盖住。
+ * 另外补三类缺口：密码框/数字框/文本域与 .field 的下拉同款；原生 <input type="color">
+ * 重置成 26×26 的色块；本文件自造的小工具类（.field-row 按钮行、「?」角标等）。
  */
 
 .set-body .field input[type="password"],
@@ -142,34 +138,7 @@
 .note { font-size: 12px; color: var(--ink-3); }
 .note.missing { color: var(--danger); display: flex; align-items: center; gap: 6px; }
 
-.conn.selected { background: var(--tint); }
 .conn .key-state code { font-family: var(--mono); }
-
-/* 当前连接方式位于详情卡内，和列表所选行保持同一层级。 */
-.set-body .accessbar {
-  padding: 0 0 10px;
-  border-bottom: 1px solid var(--line);
-}
-.set-body .accessbar .radio-row { flex-wrap: wrap; }
-
-/* 模型服务的四张用途卡。名字和摘要都只占一行，放不下就省略（title 里有全文）——
-   以前窄窗口下「PDF 与图片翻译」这类标题折成两行，四张卡高矮不齐。窗口再窄一些时
-   改成两列两行，而不是四张都挤成只剩几个字。断点按设置页宽度算：侧栏 210 + 内容区
-   左右留白 44 + 设置导航 188 + 间距 16，四张卡各至少 ~205px 时需要约 1300px 的窗口。
-   只认 .seg-roles：外观页的主题选择也是 .seg（三个选项），不能被套成四列。 */
-.set-body .seg.seg-roles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.set-body .seg-roles .segc { min-width: 0; padding: 11px 12px; }
-.set-body .seg-roles .segc b,
-.set-body .seg-roles .segc .segc-sub i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-body .seg-roles .segc .segc-sub { display: flex; gap: 6px; min-width: 0; }
-.set-body .seg-roles .segc .segc-sub i { font-style: normal; min-width: 0; }
-.set-body .seg-roles .segc .segc-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: none; }
-@media (max-width: 1300px) {
-  .set-body .seg.seg-roles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-/* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */
-.card.danger-section { border-color: var(--danger-l); background: var(--danger-t); }
 
 /* 数据恢复横幅复用 app.css 的 .banner.warn（黄色警示条），那边已经给全了底色和描边。
    只差一条：.banner .bi 那个圆形图标底色写死在 ok 绿上，警示态要跟着换成 warn。 */
@@ -217,8 +186,6 @@
 /* 扩展类型的内置规则可以改：框下一行写当前是默认还是改过，右边「恢复默认」。 */
 .set-body textarea.domain-prompt.core-rules { font-size: 12.5px; line-height: 1.6; }
 .core-rules-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }
-.prompt-smart-row { display: flex; flex-direction: column; gap: 4px; }
-.prompt-smart-row .swrow { padding: 0; }
 .prompt-note {
   margin: 0;
   color: var(--ink-3);
@@ -240,6 +207,139 @@
 .rp-sec.rate-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; }
 .rp-sec.rate-head .btn { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 500; }
 .rp-sec .rate-sub { margin-left: 8px; font-size: 11.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
-.note.rate-note { margin: 0 0 4px; }
-.note.rate-pointer { margin: 2px 0 10px; display: flex; align-items: center; gap: 8px; }
 .rate-tm-grid { margin-top: 8px; }
+
+/* ========== 流光：设置页骨架 ========== */
+/* 子导航 196px + 正文。断点按舞台宽算：1080 的最小窗口里舞台约 790px，减掉画布内边距、
+   子导航和间距，正文还有约 520px，两列表单和四张用途卡都按 minmax(0, 1fr) 收得下。 */
+.set-row { flex: 1; min-height: 0; display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 0 24px; }
+.set-row .set-nav { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.set-row .set-nav .si { width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
+.set-row .set-nav .si svg { flex: none; }
+.set-row .set-nav .si:hover { background: var(--surface-2); color: var(--ink); }
+.set-row .set-nav .si.on { background: var(--tint); color: var(--tint-ink); font-weight: 600; }
+.set-row .set-nav .si:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.set-row .si-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 正文自己滚动；Windows 常驻 8px 滚动条，右侧留 2px 免得内容贴着滚动条。 */
+.set-row .set-body { display: block; min-width: 0; min-height: 0; overflow: auto; padding-right: 2px; }
+.set-body > .empty { min-height: 240px; }
+
+/* 节：标题 + 灰色说明 + 右上角小按钮，节间一条发丝线，首节无线。 */
+.set-body .sec { padding: 18px 0; border-top: 1px solid var(--line); }
+.set-body .sec:first-child { border-top: 0; padding-top: 4px; }
+.set-body .sh { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.set-body .sh-copy { flex: 1; min-width: 0; }
+.set-body .sh h3 { margin: 0; font-size: 14px; font-weight: 650; color: var(--ink); }
+.set-body .sh .desc { font-size: 12.5px; color: var(--ink-3); margin-top: 2px; line-height: 1.55; max-width: 640px; }
+.set-body .sh .acts { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.set-body .sec-b { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.set-body .sec-b:empty { display: none; }
+.set-body .sec-b > .field { margin-bottom: 0; }
+/* 提示词那一节的标题由 promptCardHead（.tc-head）产出，外观对齐 .sh。 */
+.set-body .sec > .tc-head { padding: 0; border: 0; margin-bottom: 12px; gap: 8px; }
+.set-body .sec > .tc-head b { font-size: 14px; font-weight: 650; }
+/* 节内的小标题：不再是全大写的小字。 */
+.set-body .rp-sec { margin: 6px 0 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink-2); }
+.set-body .rp-sec:first-child { margin-top: 0; }
+.set-body .sec-note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-3); }
+
+/* 两列表单：两列都允许收窄，长 Base URL 不会把右列撑出去。 */
+.set-body .grid2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.set-body .grid2 > .span2 { grid-column: 1 / -1; }
+
+/* 开关行：左侧标题 + 一句灰色说明，右侧开关、分段或按钮。 */
+.set-body .opt-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.set-body .sec-b > .opt-row:first-child { border-top: 0; padding-top: 0; }
+.set-body .opt-row .lb { flex: 1; min-width: 0; }
+.set-body .opt-row .lb-t { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+.set-body .opt-row .lb-t .swrow-hint { margin-left: 0; }
+.set-body .opt-row .lb small { display: block; margin-top: 1px; font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+.set-body .opt-row .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+.set-body .opt-row .ctl .sw { margin-left: 0; }
+
+/* 分段控件：app.css 里旧的 .seg { gap: 8px } 会把滑块和按钮错开，这里归零。4–5 项时滑块宽度。 */
+.set-body .seg { gap: 0; }
+.set-body .seg.n4 .thumb { width: calc(25% - 1.5px); }
+.set-body .seg.n5 .thumb { width: calc(20% - 1.2px); }
+.set-body .seg.seg-narrow { max-width: 360px; }
+.set-body .seg.seg-motion { width: 180px; }
+
+/* 页签：底部 2px 主色下划线，切换时滑过去（transform，Safari 15.1 可用）。页签多时换行。 */
+.set-body .tabs { position: relative; display: flex; flex-wrap: wrap; gap: 4px; padding: 0; border-bottom: 1px solid var(--line); }
+.set-body .tabs .tab { height: 36px; padding: 0 12px; margin: 0; border: 0; background: none; font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer; transition: color var(--t-fast) var(--ease-out); }
+.set-body .tabs .tab:hover { color: var(--ink); }
+.set-body .tabs .tab.on { color: var(--ink); font-weight: 600; }
+.set-body .tabs .tab:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
+.set-body .tabs .ul { position: absolute; left: 0; top: 0; width: 0; height: 2px; border-radius: 2px; background: var(--accent); pointer-events: none; transition: transform var(--t-page) var(--ease-out), width var(--t-page) var(--ease-out); }
+.set-body .tabs .ul.still { transition: none; }
+.set-body .params-head .sec-b { gap: 0; }
+
+/* 折叠块（内置规则、高级）：节内用，不再额外留上边距。 */
+.set-body .sec-b > .fold { margin-top: 0; }
+.set-body .fold-b { padding: 0 0 8px; }
+.core-rules-box { display: flex; flex-direction: column; gap: 6px; }
+.set-body .prompt-actions { align-items: center; margin-top: 0; }
+.set-body .prompt-actions .sec-note { margin-right: auto; }
+
+/* 进页时卡片错落浮现；同一页里保存后的重画不再播（.enter 只在换子页后挂一会儿）。 */
+.set-body.enter .stag > * { animation: set-rise var(--t-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 28ms); }
+@keyframes set-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ========== 模型服务 ========== */
+/* 四张用途卡：名字和摘要都只占一行，放不下就省略（title 里有全文）。 */
+.set-body .roles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.set-body .role { min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
+.set-body .role:hover { border-color: var(--line-2); }
+.set-body .role:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.set-body .role b { display: block; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .role-sub { display: flex; gap: 6px; min-width: 0; margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
+.set-body .role-sub i { font-style: normal; flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 摘要先省略；卡片窄到连标记也放不下时（法语「Nom du modèle manquant」）标记再省略，全文在 title 里。 */
+.set-body .role-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .role.on { border-color: var(--tint-line); background: var(--tint); }
+.set-body .role.on b { color: var(--tint-ink); }
+.set-body .role.on .role-sub { color: var(--ink-2); }
+
+/* 连接列表：每条一行圆角框，选中行主色细边。 */
+.set-body .conn-list { display: flex; flex-direction: column; gap: 6px; }
+.set-body .conn-list .conn { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; font-size: 13px; min-width: 0; transition: border-color var(--t-fast) var(--ease-out); }
+.set-body .conn-list .conn:hover { border-color: var(--line-2); }
+.set-body .conn-list .conn.selected { border-color: var(--tint-line); box-shadow: 0 0 0 1px var(--tint-line); background: var(--surface); }
+.set-body .conn .cd { width: 8px; height: 8px; border-radius: 99px; flex: none; background: var(--ink-3); }
+.set-body .conn .cd.ok { background: var(--ok); }
+.set-body .conn .cd.warn { background: var(--warn); }
+.set-body .conn > b { flex: 0 1 auto; min-width: 0; max-width: 45%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .conn-meta { flex: 1 1 60px; min-width: 0; font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .conn > .acts { margin-left: auto; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* 所选连接的表单，接在列表下面。 */
+.set-body .conn-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.set-body .access-field label .chip { min-height: 18px; padding: 1px 7px; font-size: 11px; }
+.sec-note.rate-pointer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.set-body .conn-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.set-body .conn-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.set-body .conn-saved { font-size: 12px; color: var(--ink-3); }
+.set-body .conn-foot > .acts { margin: 0 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.set-body .conn-reason { font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+
+/* ========== 数据与维护 / 更新与关于 ========== */
+/* 数据目录：等宽块整段显示，Windows 的长反斜杠路径放不下就折行，不省略、不横向滚动。 */
+.set-body .code { font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: var(--ink-2); background: var(--surface-2); border-radius: var(--r-md); padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.set-body > .banner.set-banner { margin: 4px 0 14px; }
+.set-body .limit-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.set-body .limit-row span { color: var(--ink-3); }
+.set-body .diag-table { overflow-x: auto; }
+.set-body .sec.danger-sec { margin-top: 6px; padding: 14px 16px; border: 1px solid var(--danger-l); border-radius: var(--r-lg); background: var(--danger-t); }
+.set-body .danger-sec .sh .desc { color: var(--ink-2); }
+.set-body .license-name { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.set-body .about-version .sec-b { gap: 8px; }
+
+/* 窄窗口（浏览器预览、将来更小的最小窗口）：子导航折成一行，用途卡两列，表单单列。 */
+@media (max-width: 1000px) {
+  .set-row { display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  .set-row .set-nav { flex-direction: row; flex-wrap: wrap; }
+  .set-row .set-nav .si { width: auto; }
+  .set-row .set-body { overflow: visible; }
+  .set-body .roles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .set-body .grid2 { grid-template-columns: minmax(0, 1fr); }
+}
