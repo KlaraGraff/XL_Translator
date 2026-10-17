@@ -1,0 +1,55 @@
+{
+ "noauto-free": [
+  "Le projet est situé au cœur de la nouvelle zone urbaine, sur une superficie totale d'environ quatorze hectares, et comprend trois volets : bureaux de recherche et développement, commerces de proximité et logements pour talents."
+ ],
+ "noauto-blocked": [
+  "Pendant les travaux, respectez strictement les règles de sécurité : le port du casque et du harnais est obligatoire pour accéder au chantier, sans exception, y compris pour les visiteurs accompagnés."
+ ],
+ "title": [
+  "Avancement global du projet et planning de la phase suivante"
+ ],
+ "body": [
+  "Le gros œuvre est terminé, avec deux semaines d'avance sur le planning initial",
+  "Les installations électromécaniques sont en pleine phase, avec environ trois cents personnes sur site",
+  "Le deuxième lot de matériaux de façade est arrivé et sa réception est en cours",
+  "Les réseaux extérieurs sont retardés par la saison des pluies ; l'ordre des travaux doit être ajusté",
+  "Mois prochain : livraison de l'appartement témoin et essais conjoints du système incendie",
+  "Risque : la date de livraison de certains équipements importés reste à confirmer",
+  "Qualité et sécurité : aucun accident ce mois-ci, 100 % des anomalies corrigées"
+ ],
+ "spauto-free": [
+  "Le compte rendu de réunion doit être envoyé à tous les participants pour validation dans les deux jours ouvrables suivant la réunion."
+ ],
+ "spauto-label": [
+  "Responsable de la conception"
+ ],
+ "spauto-near": [
+  "L'entreprise de supervision organise chaque semaine une inspection de la qualité sur l'ensemble du chantier et en établit un compte rendu écrit, transmis au maître d'ouvrage et à l'entreprise générale."
+ ],
+ "table": [
+  "Ouvrage",
+  "Unité",
+  "Quantité",
+  "Béton armé",
+  "Mètre cube",
+  "Douze mille",
+  "Maçonnerie de remplissage",
+  "Mètre carré",
+  "Huit mille cinq cents",
+  "Isolation thermique des façades",
+  "Mètre carré",
+  "Six mille trois cents"
+ ],
+ "group-a": [
+  "Merci de remettre le rapport mensuel avant vendredi."
+ ],
+ "group-b": [
+  "Toute modification des plans doit être confirmée par écrit par l'institut de conception."
+ ],
+ "vertical": [
+  "La sécurité avant tout"
+ ],
+ "rotated": [
+  "Veuillez maintenir les entrées et sorties dégagées en permanence."
+ ]
+}
