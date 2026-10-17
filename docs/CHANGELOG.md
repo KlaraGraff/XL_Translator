@@ -54,6 +54,10 @@
 
   **Word in-paragraph formatting kept around tabs, line breaks, pictures and footnote numbers**: Paragraphs containing a tab, a soft line break, an inline picture or a footnote number used to be written back in a single format: the bold in "1.2⇥**Scope of works** see drawing" was lost; in "Line one↵line two (red)" the whole translation turned red in translation-only output and lost the red in bilingual output; pictures and footnote numbers in mid-sentence moved to the end of the paragraph. These items are now sent to the model as placeholders and put back exactly where the model places them, unchanged, so bold, colour and tab stops follow the original. In bilingual output the translation line copies only tabs and line breaks; pictures and footnote numbers stay on the original line. When the placeholders do not come back intact, the paragraph is written as before. Word output is also checked after saving: parts that were not meant to change (pictures, theme, embedded objects) must match the original file, otherwise no output is produced and the part is named.
 
+- **Word 段内格式：记忆库里制表符存成空格时也能保留**：同一份文件先跑过双语、记忆库里存的译文把「1.2⇥施工范围」的制表符存成了空格，再跑仅译文命中这条时，加粗丢了、制表符跑到段尾。现在补标记时允许占位符顶替那个空格，制表位和加粗都按原文写回；定稿里原有的制表符、换行仍不允许挪位。另外，脚注编号、图片夹在两个外文单词中间时补上漏掉的空格（「béton¹ doit」）。
+
+  **Word in-paragraph formatting kept when memory stored a tab as a space**: After a bilingual run, the translation memory could hold "1.2 Scope…" with the tab saved as a space; a later translation-only run that reused it lost the bold and pushed the tab to the end of the paragraph. Placing the formatting marks may now put the placeholder where that space is, so the tab and bold come back as in the original; tabs and line breaks already in the stored translation still cannot move. A missing space after a footnote number or picture between two words is also added ("béton¹ doit").
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
