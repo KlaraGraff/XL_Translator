@@ -1,0 +1,285 @@
+/* 「任务」页（V10.3「流光」）。
+ *
+ * 全部选择器以 .content.tasks 开头：.tk-filters / .tk-search / .f 还被记忆库和扩展安装页用，
+ * .kv 被设置页用，.kpi(s) 被 task-terms 用，这里只改任务页里的样子，不动全局值。
+ * app.css 里旧的 .tk-list / .tkcard / .tk-detail / .kpis 规则还在（本页不再用 .tkcard），
+ * 下面需要覆盖的属性都显式写出来。 */
+
+/* ---------- 布局：左列表 320px，右详情左边一条发丝线 ---------- */
+.content.tasks {
+  gap: 0 20px;
+}
+.content.tasks .tk-list {
+  width: 320px;
+  gap: 8px;
+  padding-right: 2px;
+}
+.content.tasks .tk-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 0 auto;
+}
+.content.tasks .tk-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 0 2px 0 20px;
+  border-left: 1px solid var(--line);
+}
+@media (max-width: 1279px) {
+  .content.tasks .tk-list {
+    width: 280px;
+  }
+}
+
+/* ---------- 筛选胶囊 + 搜索框 ---------- */
+/* 筛选和搜索框贴在列表顶上：选中靠下的任务、列表滚下去以后仍然看得见、点得到。 */
+.content.tasks .tk-filters {
+  gap: 6px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-bottom: 4px;
+  background: var(--surface);
+}
+.content.tasks .tk-filters .f {
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.content.tasks .tk-filters .f:hover {
+  border-color: var(--line-2);
+}
+.content.tasks .tk-filters .f.on {
+  background: var(--tint);
+  border-color: var(--tint-line);
+  color: var(--tint-ink);
+  font-weight: 600;
+}
+.content.tasks .tk-search {
+  flex: 1 1 120px;
+  min-width: 120px;
+}
+.content.tasks .tk-search > svg {
+  left: 9px;
+}
+/* 悬停 / 聚焦的边框与外发光交给 app.css 末尾的全局输入框规则，这里只给静止态。 */
+.content.tasks .tk-search input {
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 0 10px 0 28px;
+  font-size: 12px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+/* ---------- 任务行 ---------- */
+.content.tasks .tk-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 13px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.content.tasks .tk-row:hover {
+  background: var(--surface-2);
+}
+.content.tasks .tk-row.on {
+  border-color: var(--tint-line);
+  background: var(--tint);
+}
+.content.tasks .tk-row .r1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+.content.tasks .tk-row .r1 > svg {
+  flex: none;
+  color: var(--ink-3);
+}
+.content.tasks .tk-row .r1 > .ttl {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.content.tasks .tk-row .r1 > .chip {
+  flex: none;
+  margin-left: auto;
+}
+.content.tasks .tk-row .r2 {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 3px;
+  padding-left: 24px;
+  overflow-wrap: anywhere;
+}
+.content.tasks .tk-row .bar {
+  height: 3px;
+  margin: 8px 0 0 24px;
+}
+.content.tasks .chip.run .led {
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: currentColor;
+  animation: led-blink 1.4s ease-in-out infinite;
+}
+
+/* ---------- 详情：头部、摘要句、键值、一行数字 ---------- */
+.content.tasks .tk-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.content.tasks .tk-top h2 {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.content.tasks .tk-top .acts {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.content.tasks .tk-detail > .banner {
+  margin: 0;
+}
+.content.tasks .smart {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.content.tasks .smart .ic {
+  flex: none;
+  color: var(--accent-ink);
+  margin-top: 3px;
+}
+.content.tasks .kv {
+  margin: 0;
+  gap: 4px 14px;
+}
+.content.tasks .kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 0;
+  margin: 0;
+  padding: 10px 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: none;
+}
+.content.tasks .kpi {
+  padding: 2px 18px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  white-space: nowrap;
+}
+.content.tasks .kpi:first-child {
+  border-left: 0;
+}
+.content.tasks .kpi b {
+  display: block;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.content.tasks .kpi span {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.content.tasks .kpi.warn {
+  border-color: var(--line);
+  background: none;
+}
+.content.tasks .kpi.warn b {
+  color: var(--warn);
+}
+.content.tasks .sub-h {
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: -6px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.content.tasks .sub-h .muted {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+/* 记忆库小节（task-terms.ts）原本自带上下外边距，在这里改由详情栏的 gap 统一隔开。 */
+.content.tasks .tm-report {
+  margin: 0;
+}
+.content.tasks .tm-report > .tm-report-title:first-child {
+  margin-top: 0;
+}
+.content.tasks .tm-report > :last-child {
+  margin-bottom: 0;
+}
+/* 产物表：1080×700 窗口里详情列只有 ~490px，英法的状态徽章（Generated · Needs review）
+ * 不折行会把整张表撑出详情列；这一页允许徽章在空格处折成两行（keep-all：中文徽章不拆成竖排单字）。 */
+.content.tasks .files-tbl td:nth-child(2) {
+  white-space: normal;
+}
+.content.tasks .files-tbl .chip {
+  white-space: normal;
+  word-break: keep-all;
+  line-height: 1.3;
+}
+.content.tasks .tk-note {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin: -8px 0 0;
+}
+
+/* ---------- 错落浮现：进页、切筛选、搜索时每行晚 28ms ---------- */
+/* 浮现途中赶上一次轮询重绘时，新建的行带着 --tk-elapsed 接着播，不从头再来一遍。 */
+.content.tasks .stag > * {
+  animation: tk-rise var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 28ms - var(--tk-elapsed, 0ms));
+}
+@keyframes tk-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
