@@ -170,6 +170,8 @@ def fit_after_write(
     part_name: str,
     root: object,
     touched: list[object],
+    *,
+    fixed_layout: bool = False,
 ) -> list[FitIssue]:
     """占位：放不下自动缩小由 ``core/pptx_fit.py`` 提供，合并前什么都不做。"""
     return []
@@ -995,9 +997,13 @@ def write_file(
     bilingual: bool = False,
     target_lang: str | None = None,
     translate_notes: bool = True,
+    fixed_layout: bool = False,
     fit: Callable[..., list] | None = None,
 ) -> WriteResult:
-    """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。"""
+    """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。
+
+    ``fixed_layout``：所有框和表格的大小位置不动，放不下只缩字号（交给缩字那一步）。
+    """
     source = Path(source)
     out_path = Path(out_path)
     fit = fit_after_write if fit is None else fit
@@ -1019,7 +1025,9 @@ def write_file(
                     continue
                 root = deck.root(scope.part)
                 if scope.kind != "notes":
-                    for issue in fit(package.read, scope.part, root, list(result.touched)) or []:
+                    # 「固定版面」关着时不传这个参数，缩字那一步按原稿各框的自动调整设置走。
+                    extra = {"fixed_layout": True} if fixed_layout else {}
+                    for issue in fit(package.read, scope.part, root, list(result.touched), **extra) or []:
                         target = getattr(issue, "target", None)
                         slot = next((item for item in slots if item.owner is target), None)
                         review.append(

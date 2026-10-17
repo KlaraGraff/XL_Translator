@@ -12,13 +12,13 @@ from __future__ import annotations
 import shutil
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lxml import etree
 
 from core.pptx_text import (
     REASON_VERTICAL,
-    FitIssue,
     PptxError,
     Translation,
     extract_units,
@@ -319,7 +319,7 @@ def test_the_fit_hook_sees_each_written_part_and_its_issues_go_to_review(tmp_pat
         assert read_part("ppt/slideLayouts/slideLayout2.xml")
         if part_name == "ppt/slides/slide3.xml":
             frame = next(item for item in touched if etree.QName(item).localname == "graphicFrame")
-            return [FitIssue(frame, "缩到 60% 仍放不下")]
+            return [SimpleNamespace(part_name=part_name, target=frame, reason="缩到 60% 仍放不下")]
         return []
 
     result, _out = _write(tmp_path, fit=fit)
@@ -330,6 +330,20 @@ def test_the_fit_hook_sees_each_written_part_and_its_issues_go_to_review(tmp_pat
     assert [(item.context, item.reason) for item in result.review if item.reason.startswith("缩到")] == [
         ("第 3 页 · Table 2", "缩到 60% 仍放不下")
     ]
+
+
+def test_fixed_layout_reaches_the_fit_only_when_on(tmp_path: Path) -> None:
+    seen = []
+
+    def fit(read_part, part_name, root, touched, **kwargs):
+        seen.append(kwargs)
+        return []
+
+    _write(tmp_path, fit=fit)
+    assert seen and all(kwargs == {} for kwargs in seen)
+    seen.clear()
+    _write(tmp_path, fit=fit, fixed_layout=True)
+    assert seen and all(kwargs == {"fixed_layout": True} for kwargs in seen)
 
 
 def test_a_box_the_fit_grows_passes_the_check(tmp_path: Path) -> None:

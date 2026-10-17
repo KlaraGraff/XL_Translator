@@ -27,6 +27,9 @@ from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, T
 NOTES_OPTION = "translate_notes"
 #: The target language the app passes along with the switches (``lang`` of the written text).
 TARGET_LANG_OPTION = "target_lang"
+#: 「固定版面」: boxes and tables keep their size and place, text only shrinks.
+#: Not on the page yet (waits on the product call); honoured when passed.
+FIXED_LAYOUT_OPTION = "fixed_layout"
 
 _TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}
 _OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
@@ -83,6 +86,7 @@ def write(
             bilingual=mode == MODE_BILINGUAL,
             target_lang=str((options or {}).get(TARGET_LANG_OPTION) or "") or None,
             translate_notes=_notes(options),
+            fixed_layout=bool((options or {}).get(FIXED_LAYOUT_OPTION, False)),
         )
     except PptxError as exc:
         raise AdapterError(str(exc)) from exc
