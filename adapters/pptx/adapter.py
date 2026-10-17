@@ -19,16 +19,22 @@ adapter it may import app modules.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import fields
 from typing import Any
 
-from core.format_adapter import TARGET_LANG_OPTION_KEY, AdapterError
+from core.format_adapter import AdapterError
 from core.pptx_text import PptxError, Translation, extract_units, scan_file, write_file
-from translator_adapter import MODE_BILINGUAL, OutputFile, ReviewItem, ScanItem, TextUnit, TranslatedUnit
+from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, TranslatedUnit
 
 NOTES_OPTION = "translate_notes"
+#: The target language the app passes along with the switches (``lang`` of the written text).
+TARGET_LANG_OPTION = "target_lang"
 #: 「固定版面」 (off by default): boxes and tables keep their size and place,
 #: text that does not fit only gets smaller.
 FIXED_LAYOUT_OPTION = "fixed_layout"
+
+_TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}
+_OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
 
 
 def _notes(options: Mapping[str, Any] | None) -> bool:
@@ -48,17 +54,19 @@ def extract(path: str, options: Mapping[str, Any] | None = None) -> list[TextUni
         units = extract_units(path, translate_notes=_notes(options))
     except PptxError as exc:
         raise AdapterError(str(exc)) from exc
-    return [
-        TextUnit(
-            id=unit.id,
-            text=unit.text,
-            context=unit.context,
-            kind=unit.kind,
-            protected=list(unit.protected),
-            marked=unit.marked,
-        )
-        for unit in units
-    ]
+    extracted = []
+    for unit in units:
+        values: dict[str, Any] = {
+            "id": unit.id,
+            "text": unit.text,
+            "context": unit.context,
+            "kind": unit.kind,
+            "protected": list(unit.protected),
+        }
+        if unit.marked and "marked" in _TEXT_UNIT_FIELDS:
+            values["marked"] = unit.marked
+        extracted.append(TextUnit(**values))
+    return extracted
 
 
 def write(
@@ -68,18 +76,23 @@ def write(
     out_path: str,
     options: Mapping[str, Any],
 ) -> OutputFile:
-    translations = {unit.id: Translation(unit.translation, unit.marked_translation) for unit in units}
+    translations = {
+        unit.id: Translation(unit.translation, str(getattr(unit, "marked_translation", "") or ""))
+        for unit in units
+    }
     try:
         result = write_file(
             path,
             out_path,
             translations,
             bilingual=mode == MODE_BILINGUAL,
-            target_lang=str((options or {}).get(TARGET_LANG_OPTION_KEY) or "") or None,
+            target_lang=str((options or {}).get(TARGET_LANG_OPTION) or "") or None,
             translate_notes=_notes(options),
             fixed_layout=bool((options or {}).get(FIXED_LAYOUT_OPTION, False)),
         )
     except PptxError as exc:
         raise AdapterError(str(exc)) from exc
-    review = [ReviewItem(reason=item.reason, id=item.unit_id, context=item.context) for item in result.review]
-    return OutputFile(path=result.path, review_items=review)
+    review = [{"id": item.unit_id, "context": item.context, "reason": item.reason} for item in result.review]
+    if "review_items" in _OUTPUT_FIELDS:
+        return OutputFile(path=result.path, review_count=len(review), review_items=review)  # type: ignore[call-arg]
+    return OutputFile(path=result.path, review_count=len(review))

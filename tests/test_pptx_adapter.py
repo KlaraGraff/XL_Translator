@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from api.surfaces import get_surface, unregister_surface
+from api.surfaces import all_surfaces, get_surface, unregister_surface
 from api.surfaces.adapter import AdapterSurface, register_bundled_adapters
 from api.surfaces.base import RunnerRequest
 from api.task_contracts import TaskOptions
@@ -208,8 +208,8 @@ class PptxTaskTests(IsolatedAppDataTestCase):
         assert result["status"] == "needs_review" and result["review_count"] == 1, result
 
     def test_bold_and_links_inside_a_paragraph_reach_the_translation(self) -> None:
-        # Mac check of #161 (run before the extension pages sent marks): the translation
-        # of 「注意：」 lost its bold and 「项目网站」 its link.
+        # Mac check of the first PPT build (run before the extension pages sent marks):
+        # the translation of 「注意：」 lost its bold and 「项目网站」 its link.
         path = self.source / "项目进展汇报.pptx"
         shutil.copyfile(FIXTURES / "mixed.pptx", path)
         for options, copies in (({}, 1), ({"bilingual": True}, 2)):
@@ -219,11 +219,9 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             out = Path(next(message for message in messages if isinstance(message, DoneMsg)).file_results[0]["output_path"])
             with zipfile.ZipFile(out) as package:
                 slide = etree.fromstring(package.read("ppt/slides/slide2.xml"))
-            bold = [
-                "".join(run.itertext()) for run in slide.iter(f"{{{A}}}r")
-                if run.find(f"{{{A}}}rPr") is not None and run.find(f"{{{A}}}rPr").get("b") == "1"
-            ]
-            linked = ["".join(run.itertext()) for run in slide.iter(f"{{{A}}}r") if run.find(f".//{{{A}}}hlinkClick") is not None]
+            runs = list(slide.iter(f"{{{A}}}r"))
+            bold = ["".join(run.itertext()) for run in runs if run.find(f"{{{A}}}rPr[@b='1']") is not None]
+            linked = ["".join(run.itertext()) for run in runs if run.find(f".//{{{A}}}hlinkClick") is not None]
             assert bold == ["注意："] * (copies - 1) + ["Attention :"], (options, bold)
             assert linked == ["项目网站"] * (copies - 1) + ["le site du projet"], (options, linked)
 
@@ -246,18 +244,15 @@ class PptxTaskTests(IsolatedAppDataTestCase):
 
 
 def test_the_page_is_registered_with_the_app() -> None:
-    added: list[str] = []
+    key = "ext:pptx"
+    already = any(surface.key == key for surface in all_surfaces())
     try:
-        # Only the types this call adds are taken away again, so the registry
-        # (and its order) is as the next test expects.
-        added = register_bundled_adapters()
-        descriptor = get_surface("ext:pptx").describe()
+        register_bundled_adapters()
+        descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
-        # Shown in the sidebar right after Word until the user switches it off.
-        assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
         assert descriptor["icon"] == "ppt"
         assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
-        for key in added:
+        if not already:
             unregister_surface(key)

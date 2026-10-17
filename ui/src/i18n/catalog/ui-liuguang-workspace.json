@@ -49,7 +49,7 @@
   },
   "拖入{0}": {
     "en": "Drop {0} here",
-    "fr": "Déposez {0} ici"
+    "fr": "Déposez des {0} ici"
   },
   "拖入文件或文件夹，或粘贴路径后回车": {
     "en": "Drop files or a folder, or paste a path and press Enter",

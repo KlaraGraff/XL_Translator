@@ -289,6 +289,21 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         assert "译文中仍有原文" in Path(done.review["report_path"]).read_text(encoding="utf-8-sig")
         assert done.review["items"][0]["action"] == "已保留译文"
 
+    def test_a_wan_left_in_the_translation_is_listed(self) -> None:
+        # 「12 万」译成「12万 m²」：Excel、Word 只记一条提示放行；扩展类型没有那份报告，计入需复核。
+        path = self._file("a.txt", "总建筑面积 12 万平方米\n")
+
+        class KeepsWan(FakeEngine):
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                self.calls.append(list(texts))
+                return {text: "Surface totale de 12万 m²" for text in texts}
+
+        _runner, messages = self._run(KeepsWan(), [path], source_lang="zh")
+        done = self._end(messages)
+        assert done.file_results[0]["review_count"] == 1
+        assert done.review["items"][0]["issue"] == "译文中仍有原文"
+        assert done.review["items"][0]["action"] == "已保留译文"
+
     def test_source_text_the_model_returns_unchanged_is_listed(self) -> None:
         # 本机真实模型：缩进的一行中文被原样还回来，任务却记为全部完成、没有复核项。
         path = self._file("a.txt", "Inspection\n注意：发现异常时，请立即电话通知值班主管。\n")
