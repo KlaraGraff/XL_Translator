@@ -126,7 +126,7 @@ class FitIssue:
     #: 部件名，例如 ``ppt/slides/slide3.xml``。
     part_name: str
     #: 调用方传进 ``touched`` 的那个 ``a:txBody`` 或 ``p:graphicFrame``（同一个对象）。
-    element: Any
+    target: Any
     #: 整句中文原因，例如「缩到 60% 仍放不下」。
     reason: str
 
@@ -170,7 +170,7 @@ def fit_after_write(
         else:
             continue
         if not fits:
-            issues.append(FitIssue(part_name=part_name, element=element, reason=REASON_OVERFLOW))
+            issues.append(FitIssue(part_name=part_name, target=element, reason=REASON_OVERFLOW))
     return issues
 
 

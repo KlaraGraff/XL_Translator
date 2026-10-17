@@ -158,14 +158,14 @@ def test_no_autofit_box_shrinks_runs_to_fit(parts, french):
     sizes = _sizes(touched["noauto-free"])
     assert len(sizes) == 1 and 1080 <= sizes.pop() < 1800
     assert _ext(shape) == _ext(_shape(before, "noauto-free"))  # 缩字放下了，框不动
-    assert "noauto-free" not in {issue.element.getparent().find("*/" + P + "cNvPr").get("name") for issue in issues}
+    assert "noauto-free" not in {issue.target.getparent().find("*/" + P + "cNvPr").get("name") for issue in issues}
 
 
 def test_no_autofit_box_blocked_below_goes_to_review(parts, french):
     root, touched, issues = _run(parts, french, 1, bilingual=True)
     blocked = touched["noauto-blocked"]
     assert _sizes(blocked) == {1050}  # 18 磅缩到 60%，取到半磅
-    assert [issue for issue in issues if issue.element is blocked] == [
+    assert [issue for issue in issues if issue.target is blocked] == [
         FitIssue("ppt/slides/slide1.xml", blocked, REASON_OVERFLOW)
     ]
     assert REASON_OVERFLOW == "缩到 60% 仍放不下"
@@ -181,7 +181,7 @@ def test_no_autofit_box_grows_into_blank_space_at_floor(parts, french):
     shape = _shape(root, "noauto-free")
     assert _sizes(touched["noauto-free"]) == {1050}
     assert _ext(shape)[3] > int(0.5 * 914400)
-    assert all(issue.element is not touched["noauto-free"] for issue in issues)
+    assert all(issue.target is not touched["noauto-free"] for issue in issues)
 
 
 # ---------------------------------------------------------------- 溢出时缩排文字
@@ -218,7 +218,7 @@ def test_bilingual_body_too_long_goes_to_review(parts, french):
     _root, touched, issues = _run(parts, french, 2, bilingual=True)
     norm = touched["body"].find(f"{A}bodyPr/{A}normAutofit")
     assert norm.get("fontScale") == "62500" and norm.get("lnSpcReduction") == "20000"
-    assert [issue.element for issue in issues] == [touched["body"]]
+    assert [issue.target for issue in issues] == [touched["body"]]
 
 
 # ---------------------------------------------------------------- 根据文字调整形状大小
@@ -283,7 +283,7 @@ def test_table_blocked_right_below_goes_to_review(parts, french):
 
     _root, touched, issues = _run(parts, french, 4, edit=block)
     assert _sizes(touched["table"]) == {1050}
-    assert [issue.element for issue in issues] == [touched["table"]]
+    assert [issue.target for issue in issues] == [touched["table"]]
 
 
 def test_group_shapes_scale_with_group_and_never_grow(parts, french):
@@ -298,7 +298,7 @@ def test_vertical_box_untouched_and_rotated_box_listed(parts, french):
     root, touched, issues = _run(parts, french, 6)
     assert _sizes(touched["vertical"]) == {1800}
     assert _sizes(touched["rotated"]) == {1050}
-    assert [issue.element for issue in issues] == [touched["rotated"]]
+    assert [issue.target for issue in issues] == [touched["rotated"]]
 
 
 # ---------------------------------------------------------------- 继承与边界
