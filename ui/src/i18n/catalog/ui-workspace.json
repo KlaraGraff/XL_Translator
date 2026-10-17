@@ -1439,9 +1439,9 @@
     "en": "{0} to review",
     "fr": "{0} à vérifier"
   },
-  "{0} 处提示需手动处理": {
-    "en": "{0} {0|note|notes} to handle manually",
-    "fr": "{0} {0|remarque|remarques} à traiter manuellement"
+  "{0} 条提示，详见报告": {
+    "en": "{0} {0|note|notes}, see the report",
+    "fr": "{0} {0|remarque|remarques}, voir le rapport"
   },
   "中途切换了连接，后续部分由「{0}」完成": {
     "en": "Connection switched midway; the remainder was handled by “{0}”",

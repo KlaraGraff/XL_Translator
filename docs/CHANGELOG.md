@@ -18,6 +18,10 @@
 
   **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
 
+- **结果卡上的「提示」说法**：翻译完成后，结果卡小结里原来写「N 处提示需手动处理」，Excel 的提示多是已自动修好的内容，绿色卡片上挂着「需手动处理」读起来像还有事要做。现在改为「N 条提示，详见报告」，各类型通用，颜色不变。
+
+  **Wording of notes on the result card**: The result card summary used to say "N notes to handle manually"; on Excel most notes are things already fixed automatically, so the green card read as if work remained. It now says "N notes, see the report" on every type; the colour is unchanged.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
