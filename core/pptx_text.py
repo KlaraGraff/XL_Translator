@@ -58,7 +58,7 @@ from core.drawingml_marks import (
     read_pieces,
     write_paragraph,
 )
-from core.opc_package import OpcPackage, rels_path, resolve_part
+from core.opc_package import OpcPackage, PackageVerificationError, rels_path, resolve_part
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -269,9 +269,13 @@ class _Deck:
         return self._listed(root, "sldLayoutIdLst", "sldLayoutId", by_id, REL_SLIDE_LAYOUT)
 
 
+class _PptPackage(OpcPackage):
+    kind = "PPT"
+
+
 def _open(path: Path) -> OpcPackage:
     try:
-        return OpcPackage(path)
+        return _PptPackage(path)
     except zipfile.BadZipFile as exc:
         with path.open("rb") as handle:
             head = handle.read(8)
@@ -1027,7 +1031,10 @@ def write_file(
                         )
                 checks[scope.part] = _part_check(root, result)
                 package.write(scope.part, _serialize(root))
-            package.save()
+            try:
+                package.save()
+            except PackageVerificationError as exc:
+                raise PptxError(str(exc)) from exc
         problem = _first_problem(source, out_path, checks)
         if problem:
             raise PptxError(f"写出的文件未通过检查，已放弃：{problem}")

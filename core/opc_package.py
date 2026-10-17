@@ -11,9 +11,22 @@ import os
 import zipfile
 from pathlib import Path
 
+from lxml import etree
+
+
+class PackageVerificationError(ValueError):
+    """保存后核对没通过：输出包里某个部件和预期不一致。"""
+
+    def __init__(self, part: str, kind: str = "Office"):
+        self.part = part
+        super().__init__(f"生成的 {kind} 文件核对未通过（{part} 与预期不一致），为避免输出损坏的文件，本次未写出。")
+
 
 class OpcPackage:
     """打开 Office 文件的 zip 包，记录改写/新增/删除，保存时其余条目原字节照抄。"""
+
+    #: 核对没通过时报给用户的文件类型名。
+    kind = "Office"
 
     def __init__(self, path: Path):
         self._path = Path(path)
@@ -86,12 +99,40 @@ class OpcPackage:
                         self._overrides[name],
                         zipfile.ZIP_DEFLATED,
                     )
+            self._verify_saved(temp_path)
         except BaseException:
             # 半成品 zip 不能留在磁盘上，它和成品同名只差一个后缀。
             temp_path.unlink(missing_ok=True)
             raise
         self._zip.close()
         os.replace(temp_path, self._path)
+
+    def _verify_saved(self, temp_path: Path) -> None:
+        """保存后核对：包能重新打开，没改的部件和原文件逐字节一样（比 CRC 和长度），
+        改过的 XML 部件能正常解析。不对就不替换输出，并报出是哪个部件。"""
+        expected = [name for name in self._order if name not in self._removed]
+        expected += [name for name in self._added if name not in self._removed]
+        try:
+            with zipfile.ZipFile(temp_path, "r") as saved:
+                entries = saved.infolist()
+                infos = {info.filename: info for info in entries}
+                missing = [name for name in expected if name not in infos]
+                if missing or len(entries) != len(expected):
+                    raise PackageVerificationError(missing[0] if missing else "（文件目录）", self.kind)
+                for name in expected:
+                    info = infos[name]
+                    if name not in self._overrides:
+                        source = self._infos[name]
+                        if (info.CRC, info.file_size) != (source.CRC, source.file_size):
+                            raise PackageVerificationError(name, self.kind)
+                    elif name.lower().endswith((".xml", ".rels", ".vml")):
+                        try:
+                            # huge_tree：真实工作簿的 sheetData 可能远超 lxml 默认的文本节点上限。
+                            etree.fromstring(saved.read(name), parser=etree.XMLParser(huge_tree=True))
+                        except etree.XMLSyntaxError as exc:
+                            raise PackageVerificationError(name, self.kind) from exc
+        except zipfile.BadZipFile as exc:
+            raise PackageVerificationError("（整个文件）", self.kind) from exc
 
 
 def clone_zipinfo(source: zipfile.ZipInfo) -> zipfile.ZipInfo:
@@ -122,4 +163,4 @@ def rels_path(part: str) -> str:
     return f"{directory}/_rels/{name}.rels" if directory else f"_rels/{name}.rels"
 
 
-__all__ = ["OpcPackage", "clone_zipinfo", "relative_part", "rels_path", "resolve_part"]
+__all__ = ["OpcPackage", "PackageVerificationError", "clone_zipinfo", "relative_part", "rels_path", "resolve_part"]

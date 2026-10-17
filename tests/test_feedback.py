@@ -195,7 +195,7 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
     def _send_with(self, handler: Any, **overrides: Any) -> dict[str, Any]:
         transport = httpx.MockTransport(handler)
         with patch.object(feedback, "FEEDBACK_ENDPOINT", "https://relay.example/"), patch.object(
-            feedback, "_open_client", lambda: httpx.Client(transport=transport)
+            feedback, "_open_client", lambda direct=False: httpx.Client(transport=transport)
         ):
             started = self.client.post("/api/feedback/send", json=self._body(**overrides))
             self.assertEqual(started.status_code, 200, started.text)
@@ -367,7 +367,7 @@ def test_upload_progress_counts_only_bytes_already_handed_over():
             received.append(len(chunk))
         return httpx.Response(200, json={"id": "FB-1"})
 
-    with patch.object(feedback, "_open_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))):
+    with patch.object(feedback, "_open_client", lambda direct=False: httpx.Client(transport=httpx.MockTransport(handler))):
         reference = feedback._upload("https://relay.example", data, {"category": "problem"}, on_progress=reported.append)
 
     assert reference == "FB-1"
