@@ -31,7 +31,6 @@ import re
 import threading
 import time
 import traceback
-import urllib.request
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -43,7 +42,7 @@ from typing import Any
 import httpx
 
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
-from core import diagnostics
+from core import diagnostics, system_proxy
 from core.task_logger import app_event_logger, redact_absolute_paths
 import settings as settings_module
 
@@ -559,7 +558,7 @@ def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any
         )
 
     try:
-        reference = _upload(endpoint, data, meta, on_progress=progress)
+        reference = _upload(endpoint, data, meta, on_progress=progress, tag=job.tag)
     except FeedbackError as exc:
         failed(f"原因={exc.reason} | {exc.log_detail or '阶段=未知'}")
         with _jobs_lock:
@@ -649,33 +648,41 @@ class _CountingReader(io.BytesIO):
 
 
 def _upload(
-    endpoint: str, data: bytes, meta: dict[str, Any], *, on_progress: Callable[[int], None] | None = None
+    endpoint: str,
+    data: bytes,
+    meta: dict[str, Any],
+    *,
+    on_progress: Callable[[int], None] | None = None,
+    tag: str = "-",
 ) -> str:
-    """Post the package to the relay and return its reference number."""
+    """Post the package to the relay and return its reference number.
+
+    When the system proxy cannot even be connected to (often one left behind
+    by a VPN or proxy app that is no longer running), the package is sent once
+    more directly. Only connection-stage errors qualify: nothing reached the
+    relay yet, so it cannot be received twice.
+    """
     package: bytes | _CountingReader = _CountingReader(data, on_progress) if on_progress else data
+    direct = False
     try:
-        with _open_client() as client:
-            response = client.post(
-                f"{endpoint}/v1/feedback",
-                data={"meta": json.dumps(meta, ensure_ascii=False)},
-                files={"package": (package_filename(), package, "application/zip")},
-                headers={"User-Agent": f"{APP_UPDATE_USER_AGENT}/{APP_VERSION}"},
-            )
+        response = _post(endpoint, package, meta)
     except httpx.HTTPError as exc:
-        # 断在哪一步：连不上、传到一半、还是传完了等不到服务器回话。
-        uploaded = package.tell() >= len(data) if isinstance(package, _CountingReader) else None
-        raise FeedbackError(
-            "发送超时，请检查网络后重试，或保存为 ZIP。"
-            if isinstance(exc, httpx.TimeoutException)
-            else "无法连接反馈服务，请检查网络后重试，或保存为 ZIP。",
-            reason="network",
-            log_detail=f"阶段={_network_stage(exc, uploaded)} | 异常={_error_text(exc)}",
-        ) from exc
+        if not system_proxy.should_retry_direct(exc, endpoint):
+            raise _network_error(exc, package, data) from exc
+        _log(logging.INFO, f"反馈经系统代理连不上，已改直连重试 | 发送={tag} | 代理那次={_error_text(exc)}")
+        if isinstance(package, _CountingReader):
+            package.seek(0)
+        direct = True
+        try:
+            response = _post(endpoint, package, meta, direct=True)
+        except httpx.HTTPError as retry_exc:
+            raise _network_error(retry_exc, package, data, retried=True) from retry_exc
+        _log(logging.INFO, f"反馈直连重试已连上 | 发送={tag} | HTTP={response.status_code}")
     try:
         body = response.json()
     except ValueError:
         body = {}
-    detail = f"阶段=服务器返回 | {_response_text(response, body)}"
+    detail = f"阶段=服务器返回 | {_response_text(response, body)}" + (" | 已改直连重试" if direct else "")
     if response.status_code == 413:
         raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large", log_detail=detail)
     if response.status_code == 429:
@@ -684,6 +691,31 @@ def _upload(
     if response.status_code != 200 or not reference:
         raise FeedbackError("反馈服务暂时不可用，请稍后重试，或保存为 ZIP。", reason="server", log_detail=detail)
     return reference
+
+
+def _post(endpoint: str, package: bytes | _CountingReader, meta: dict[str, Any], *, direct: bool = False) -> httpx.Response:
+    with _open_client(direct=direct) as client:
+        return client.post(
+            f"{endpoint}/v1/feedback",
+            data={"meta": json.dumps(meta, ensure_ascii=False)},
+            files={"package": (package_filename(), package, "application/zip")},
+            headers={"User-Agent": f"{APP_UPDATE_USER_AGENT}/{APP_VERSION}"},
+        )
+
+
+def _network_error(
+    exc: httpx.HTTPError, package: bytes | _CountingReader, data: bytes, *, retried: bool = False
+) -> FeedbackError:
+    # 断在哪一步：连不上、传到一半、还是传完了等不到服务器回话。
+    uploaded = package.tell() >= len(data) if isinstance(package, _CountingReader) else None
+    return FeedbackError(
+        "发送超时，请检查网络后重试，或保存为 ZIP。"
+        if isinstance(exc, httpx.TimeoutException)
+        else "无法连接反馈服务，请检查网络后重试，或保存为 ZIP。",
+        reason="network",
+        log_detail=f"阶段={_network_stage(exc, uploaded)} | 异常={_error_text(exc)}"
+        + (" | 已改直连重试，仍失败" if retried else ""),
+    )
 
 
 # ── app.log：每次发送留下开始、成功或失败，只记排查用得上、又不涉及隐私的信息 ──────────
@@ -776,19 +808,13 @@ def _response_text(response: httpx.Response, body: Any) -> str:
 def _proxy_label(endpoint: str) -> str:
     """Whether httpx will go through a proxy (it reads the same settings), without its address."""
     try:
-        proxies = urllib.request.getproxies()
-        host = httpx.URL(endpoint).host
+        url = system_proxy.configured_proxy(endpoint)
+        if url and system_proxy.bypasses_proxy(endpoint):
+            return "无（不走代理）"
     except Exception:  # noqa: BLE001 - 只是为了日志
         return "未知"
-    url = proxies.get("https") or proxies.get("all") or ""
     if not url:
         return "无"
-    # httpx 按 NO_PROXY 绕开代理的规则（精确或后缀匹配，「*」为全部）。
-    excluded = [item.strip().lstrip("*").lstrip(".") for item in proxies.get("no", "").split(",")]
-    if proxies.get("no", "").strip() == "*" or any(
-        item and (host == item or host.endswith(f".{item}")) for item in excluded
-    ):
-        return "无（不走代理）"
     scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
     try:
         proxy_host = httpx.URL(url if "://" in url else f"http://{url}").host
@@ -798,9 +824,10 @@ def _proxy_label(endpoint: str) -> str:
     return f"有（{_safe_token(scheme, 10)}，{where}）"
 
 
-def _open_client() -> httpx.Client:
-    # 跟随系统代理（httpx 默认读 HTTPS_PROXY 等环境变量），与检查更新一致。
-    return httpx.Client(timeout=_SEND_TIMEOUT, follow_redirects=False)
+def _open_client(*, direct: bool = False) -> httpx.Client:
+    # 默认跟随系统代理（httpx 读 HTTPS_PROXY 等环境变量和系统代理设置），与检查更新一致；
+    # direct=True 是系统代理连不上时的那一次直连重试。
+    return httpx.Client(timeout=_SEND_TIMEOUT, follow_redirects=False, trust_env=not direct)
 
 
 def _unique_name(name: str, used: set[str]) -> str:
