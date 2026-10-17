@@ -63,6 +63,7 @@
 | `core/model_*.py`、`engine_dispatcher.py`、`failover_engine.py`、`api_scheduler.py` | 模型配置、角色、吞吐量、失败切换、全局并发调度 |
 | `engines/` | `TranslationEngine` 基类和各厂商实现 |
 | `ui/src/views/workspace.ts` | 四个翻译页共用的页面模板；`excel.ts`、`word.ts`、`pdf.ts`、`cad.ts` 只是一行封装，运行时注册的类型由 `extension.ts` 按键生成同样的封装 |
+| `ui/src/views/home.ts`、`drop-dispatch.ts`、`drop-glow.ts` | 「翻译」入口页；拖入窗口的路径经 `POST /api/sources/classify`（`core/source_classify.py`，按扩展名计数）分到文件最多的类型页；投放区的光 |
 | `ui/src/surface-descriptors.ts` | 启动时拉一次类型描述符，按当前界面语言取名称、图标、文件名词 |
 | `ui/src/components.ts`、`task-panels.ts` | 共享界面组件 |
 | `tests/` | pytest；`test_*_contracts.py` 是「结构约定」测试，失败时提示信息会说该补哪里 |

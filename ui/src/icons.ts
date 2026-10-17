@@ -28,6 +28,7 @@ export const ICON_NAMES = [
   "ext",
   "doc-file",
   "down",
+  "upload",
   "restart",
   "spark",
   "wand",
@@ -150,6 +151,10 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   down: {
     viewBox: "0 0 24 24",
     body: '<path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4.5 20h15"/>',
+  },
+  upload: {
+    viewBox: "0 0 24 24",
+    body: '<path d="M12 15.5V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4.5 14.5v3A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5v-3"/>',
   },
   restart: {
     viewBox: "0 0 24 24",

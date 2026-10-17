@@ -1552,6 +1552,18 @@ function cardSubtitle(entry: TaskEntry): string {
   return [surfaceLabel, detail, formatDay(entry.task.updated_at ?? entry.task.created_at)].filter(Boolean).join(" · ");
 }
 
+/** 「翻译」入口页的「最近」一行：图标、标题、类型 · 时间、状态徽章，和任务中心卡片同一套说法。 */
+export function taskRowSummary(task: TaskStatus): { icon: IconName; title: string; meta: string; chip: { label: string; tone: ChipTone } } {
+  const meta = taskStateMeta(task);
+  const chip = isTaskActive(task) ? { label: meta.label, tone: "tint" as ChipTone } : (reviewChip(task) ?? meta);
+  return {
+    icon: surfaceIcon(task.surface),
+    title: cardTitle(task),
+    meta: [taskSurfaceLabel(task.surface, task.task_snapshot), formatDay(task.updated_at ?? task.created_at)].filter(Boolean).join(" · "),
+    chip,
+  };
+}
+
 function renderCard(id: string): HTMLDivElement {
   const entry = tasks.get(id)!;
   const card = document.createElement("div");

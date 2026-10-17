@@ -130,8 +130,7 @@
   padding: 24px;
   text-align: center;
   color: var(--ink-3);
-  background: var(--surface);
-  transition: border-color var(--t-base) var(--ease-out);
+  background: radial-gradient(60% 70% at 50% 40%, var(--surface-2), var(--surface-clear));
 }
 .drop:hover {
   border-color: var(--tint-line);
