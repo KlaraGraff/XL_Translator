@@ -7,6 +7,7 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import {
+  clearElement,
   createCard,
   createChip,
   createButton,
@@ -34,6 +35,7 @@ import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
 import { tmSwitchDefs } from "./tm-switches";
+import "./library.css";
 
 // ---------------------------------------------------------------------------
 // 类型 / 工具函数
@@ -261,11 +263,18 @@ function invalidateTmQuery(): number {
   selectAllBusy = false;
   return ++tmQueryRevision;
 }
-let toolbarCardEl: HTMLDivElement | null = null;
-let statsRowEl: HTMLDivElement | null = null;
+// 页面骨架（buildLayout）：.lib 根节点下依次是工具行、筛选行、最近语言对、提示区、表格、底栏。
+let libTopEl: HTMLDivElement | null = null;
+let libFiltersEl: HTMLDivElement | null = null;
+let libRecentEl: HTMLDivElement | null = null;
+let libNoticeEl: HTMLDivElement | null = null;
 let stateRowEl: HTMLDivElement | null = null;
+let conflictHostEl: HTMLDivElement | null = null;
 let tableScrollEl: HTMLDivElement | null = null;
+/** 底栏 .lib-foot：「已选」「选择全部」「批量删除」和分页，按 data-role 找控件。 */
 let tcHeadEl: HTMLDivElement | null = null;
+/** 上一次画出行的查询版本：只有数据换了那一次加行浮现动画，勾选引起的重绘不重播。 */
+let renderedRevision = -1;
 let searchDebounce: number | null = null;
 // 加载中 / 加载失败时占位卡片：语言对、TM 条目、冲突三个请求任何一个失败都不构建下面
 // 的工具条 / 表格结构（否则会出现空 select + 空表格，且永远没有重试入口），而是把这张
@@ -519,7 +528,7 @@ async function saveLangPair(source: string, target: string): Promise<void> {
     if (!currentTmScope(generation, revision)) return;
     rebuildToolbar();
     renderTable();
-    renderStatsRow();
+    renderFilterRow();
     renderTopbarStatus();
     // 切了语言对，「有 N 条清洗建议待复核」也要跟着换成新语言对下的数字。
     await refreshCleanBadge();
@@ -528,10 +537,14 @@ async function saveLangPair(source: string, target: string): Promise<void> {
     if (!queryLoaded) restoreConfirmedQuery();
     rebuildToolbar();
     renderTable();
-    renderStatsRow();
+    renderFilterRow();
     renderTopbarStatus();
     showToast({ message: t("切换语言对失败：{0}", errorMessage(error)), error: true });
   }
+}
+
+function libSubtitle(): string {
+  return t("翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法");
 }
 
 function renderTopbarStatus(): void {
@@ -539,7 +552,7 @@ function renderTopbarStatus(): void {
   setTopbar({
     title: t("记忆库"),
     status: { label: t("{0} 条", fmtNum(total)), tone: "idle" },
-    subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法"),
+    subtitle: libSubtitle(),
   });
 }
 
@@ -559,14 +572,14 @@ async function setAdvancedMode(next: boolean): Promise<void> {
     });
   }
   rebuildToolbar();
-  renderStatsRow();
+  renderFilterRow();
   renderTable();
   try {
     await persistSettings({ tm: { advanced_mode: next } });
   } catch (error) {
     advancedMode = previous;
     rebuildToolbar();
-    renderStatsRow();
+    renderFilterRow();
     renderTable();
     showToast({ message: t("保存失败：{0}", errorMessage(error)), error: true });
   }
@@ -730,7 +743,7 @@ function confirmBulkDelete(): void {
           selectedIds.clear();
           await refreshTm();
           renderTable();
-          renderStatsRow();
+          renderFilterRow();
           showToast({
             message: result.protected
               ? t("已删除 {0} 条记忆条目，{1} 条固定词条未删除。", fmtNum(result.deleted), fmtNum(result.protected))
@@ -755,11 +768,15 @@ function openAddEditModal(editing: TmEntry | null): void {
   if (!tmQueryReady()) return;
   const generation = mountGeneration;
   const revision = tmQueryRevision;
-  const sourceField = createTextField({ label: t("原文"), value: editing?.source_text ?? "" });
-  const targetField = createTextField({ label: t("译文"), value: editing?.target_text ?? "" });
-  const noteField = createTextField({ label: t("备注（可选）"), value: editing?.note ?? "" });
-  noteField.root.append(fieldHint(t("填写后，仅在备注所述场景中采用此译法；留空则适用于所有文档。")));
-  const body: HTMLElement[] = [sourceField.root, targetField.root, noteField.root];
+  const sourceField = createTextField({ label: t("原文"), value: editing?.source_text ?? "", placeholder: t("例如：基坑支护") });
+  const targetField = createTextField({ label: t("译文"), value: editing?.target_text ?? "", placeholder: t("例如：foundation pit support") });
+  const noteField = createTextField({ label: t("备注（适用场景，可留空）"), value: editing?.note ?? "", placeholder: t("例如：基坑验收") });
+  const body: Array<HTMLElement | string> = [
+    t("手动维护的词条始终按设定译法翻译，在句中出现时同样采用。"),
+    sourceField.root,
+    targetField.root,
+    noteField.root,
+  ];
 
   // 采用方式：只有用户动过单选才写进去，否则按来源和备注推出默认值（备注一填就变成按场景选用）。
   let chosenUsage: string | null = null;
@@ -823,9 +840,9 @@ function openAddEditModal(editing: TmEntry | null): void {
   }
 
   trackModal(openModal({
-    tone: "warn",
+    tone: "tint",
     icon: editing ? "edit" : "plus",
-    title: editing ? t("编辑记忆条目") : t("新增记忆条目"),
+    title: editing ? t("编辑词条") : t("新增词条"),
     body,
     actions: [
       { label: t("取消"), variant: "default" },
@@ -897,7 +914,7 @@ function openAddEditModal(editing: TmEntry | null): void {
             await refreshTm();
             rebuildToolbar();
             renderTable();
-            renderStatsRow();
+            renderFilterRow();
             currentModalClose?.();
           } catch (error) {
             const message = errorMessage(error);
@@ -934,8 +951,8 @@ function openDeleteModal(entryToDelete: TmEntry): void {
     openModal({
       tone: "danger",
       icon: "trash",
-      title: t("删除记忆条目"),
-      body: [t("将永久删除“{0}”。此操作不能撤销。", entryToDelete.source_text)],
+      title: t("删除词条「{0}」？", entryToDelete.source_text),
+      body: [t("删除后，之后翻译时不再采用这条译法；已生成的文件不受影响。此操作不能撤销。")],
       actions: [
         { label: t("取消"), variant: "default" },
         {
@@ -957,7 +974,7 @@ function openDeleteModal(entryToDelete: TmEntry): void {
             selectedIds.delete(entryToDelete.id);
             await refreshTm();
             renderTable();
-            renderStatsRow();
+            renderFilterRow();
             showToast({ message: t("记忆条目已删除。") });
           },
         },
@@ -1295,7 +1312,7 @@ function openCleanReviewModal(): void {
           try {
             await refreshTm();
             renderTable();
-            renderStatsRow();
+            renderFilterRow();
           } catch {
             showToast({ message: t("记忆库列表刷新失败，切换语言对或重新进入本页可重新加载。") });
           }
@@ -1539,7 +1556,7 @@ function openImportPreviewModal(fileName: string, format: "json" | "csv", langPa
             });
             await refreshTm();
             renderTable();
-            renderStatsRow();
+            renderFilterRow();
             showToast({ message: t("已完成导入：新增或更新 {0}，跳过 {1}，重复 {2}。", fmtNum(num(result.inserted)), fmtNum(num(result.skipped)), fmtNum(num(result.duplicates))) });
           } catch (error) {
             showToast({ message: t("导入失败：{0}", errorMessage(error)), error: true });
@@ -1601,7 +1618,7 @@ function openFullImportPreviewModal(fileName: string, payload: JsonObject): void
             await refreshTm();
             await refreshConflicts();
             renderTable();
-            renderStatsRow();
+            renderFilterRow();
             renderConflictArea();
             showToast({
               message: t("新增或更新 {0} 条，跳过 {1} 条，重复 {2} 条，恢复待裁决冲突 {3} 条。", fmtNum(num(result.inserted)), fmtNum(num(result.skipped)), fmtNum(num(result.duplicates)), fmtNum(num(result.conflicts))),
@@ -1623,7 +1640,7 @@ async function resolveTmConflict(candidateId: number, action: string): Promise<v
     await refreshTm();
     renderConflictArea();
     renderTable();
-    renderStatsRow();
+    renderFilterRow();
   } catch (error) {
     showToast({ message: t("裁决失败：{0}", errorMessage(error)), error: true });
   }
@@ -1660,34 +1677,66 @@ function langPicker(
   return createLanguagePicker({ options, value, recentKey, onChange }).root;
 }
 
+/** 交换语言方向：自定义目标语言没有对应的源语言，不能反过来。 */
+function canSwapPair(): boolean {
+  return pairAllowsReverse()
+    && sourceOptions.some((option) => option.code === targetLang)
+    && targetOptions.some((option) => option.code === sourceLang);
+}
+
+/** 「更多 ▾」：清洗记忆库、记忆库设置。条件不满足时项仍在，点了说明原因。 */
+function openMoreMenu(anchor: HTMLButtonElement): void {
+  // 设置浮层开着时再点「更多」就是收起它，和原来的「设置」按钮一样。
+  if (closeTmSettings) {
+    closeTmSettings();
+    return;
+  }
+  openMenu(anchor, [
+    {
+      label: t("清洗记忆库"),
+      onClick: () => {
+        // 清洗会调用模型、按条数花钱，所以点了先确认；库是空的时候没东西可洗。
+        if (cleaningState === "running") showToast({ message: t("正在分析未固定条目…") });
+        else if (!keyword && total === 0) showToast({ message: t("当前语言对没有可清洗的词条") });
+        else confirmTmClean();
+      },
+    },
+    { label: t("记忆库设置"), onClick: () => void toggleTmSettings() },
+  ]);
+}
+
 function rebuildToolbar(): void {
-  if (!toolbarCardEl) return;
-  toolbarCardEl.innerHTML = "";
-  toolbarCardEl.style.cssText = "display:flex;flex-direction:column;gap:8px;padding:11px 14px";
+  if (!libTopEl) return;
+  clearElement(libTopEl);
 
-  const row = document.createElement("div");
-  // 窄窗口（1024 宽）下一行放不下：允许整组换行，按钮文字不许折成两行（「新增词/条」）。
-  row.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
-
-  row.append(
+  // 语言对组合控件：源语言 ⇄ 目标语言，一个外框。
+  const pair = document.createElement("div");
+  pair.className = "pair";
+  const swap = document.createElement("button");
+  swap.type = "button";
+  swap.className = "swap";
+  swap.append(icon("convert", { size: "sm" }));
+  const swappable = canSwapPair();
+  swap.disabled = !swappable;
+  swap.title = swappable ? t("交换语言方向") : t("自定义目标语言不能交换");
+  swap.setAttribute("aria-label", swap.title);
+  swap.addEventListener("click", () => {
+    if (canSwapPair()) void saveLangPair(targetLang, sourceLang);
+  });
+  pair.append(
     langPicker(sourceOptions, sourceLang, "tm-source", (next) => void saveLangPair(next, targetLang)),
-  );
-  const arrow = document.createElement("span");
-  arrow.style.color = "var(--ink-3)";
-  arrow.textContent = "→";
-  row.append(arrow);
-  row.append(
+    swap,
     langPicker(targetOptions, targetLang, "tm-target", (next) => void saveLangPair(sourceLang, next)),
   );
+  libTopEl.append(pair);
 
   const searchWrap = document.createElement("div");
-  searchWrap.style.cssText = "flex:1 1 180px;position:relative;max-width:340px;min-width:160px";
+  searchWrap.className = "lib-search";
   const searchInput = document.createElement("input");
-  searchInput.type = "text";
+  searchInput.type = "search";
   searchInput.placeholder = t("搜索原文、译文或备注…");
+  searchInput.setAttribute("aria-label", t("搜索原文、译文或备注…"));
   searchInput.value = keyword;
-  searchInput.style.cssText =
-    "width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 10px 0 32px";
   searchInput.addEventListener("input", () => {
     if (searchDebounce !== null) window.clearTimeout(searchDebounce);
     searchDebounce = window.setTimeout(() => {
@@ -1702,17 +1751,16 @@ function rebuildToolbar(): void {
       });
     }, 320);
   });
-  const searchIcon = icon("search", { size: "sm" });
-  searchIcon.style.cssText = "position:absolute;left:10px;top:8px;color:var(--ink-3)";
-  searchWrap.append(searchInput, searchIcon);
-  row.append(searchWrap);
+  searchWrap.append(icon("search", { size: "sm" }), searchInput);
+  libTopEl.append(searchWrap);
 
+  // 按钮组：主按钮「新增词条」+ 导入 / 导出 + 更多。窄窗口下整组换行，按钮文字不折行。
   const actions = document.createElement("div");
-  actions.style.cssText = "margin-left:auto;display:flex;gap:7px;white-space:nowrap";
-  actions.append(createButton({ label: t("新增词条"), icon: "plus", onClick: () => openAddEditModal(null) }));
+  actions.className = "acts";
+  actions.append(createButton({ label: t("新增词条"), icon: "plus", variant: "primary", onClick: () => openAddEditModal(null) }));
   const importBtn = createButton({
     label: t("导入"),
-    icon: "chev",
+    icon: "down",
     onClick: (event) =>
       openMenu(event.currentTarget as HTMLElement, [
         { label: t("从 JSON / CSV 导入"), onClick: () => importTm() },
@@ -1721,7 +1769,7 @@ function rebuildToolbar(): void {
   });
   const exportBtn = createButton({
     label: t("导出"),
-    icon: "chev",
+    icon: "upload",
     onClick: (event) =>
       openMenu(event.currentTarget as HTMLElement, [
         { label: t("导出 JSON"), onClick: () => void exportTm("json") },
@@ -1729,39 +1777,27 @@ function rebuildToolbar(): void {
         { label: t("导出完整备份"), onClick: () => void exportFullTm() },
       ]),
   });
-  actions.append(importBtn, exportBtn);
-  // 清洗会调用模型、按条数花钱，所以是普通按钮、点了先确认；库是空的时候没东西可洗。
-  actions.append(createButton({ label: t("清洗记忆库"), disabled: cleaningState === "running" || (!keyword && total === 0), onClick: () => confirmTmClean() }));
-  // 右上角「设置」：高级模式和记忆库的三个开关（见 toggleTmSettings）。工具栏重建后
-  // 浮层改挂到新按钮上，所以按钮存在模块级变量里。
-  tmSettingsBtn = createButton({
-    label: t("设置"),
-    icon: "gear",
-    onClick: () => void toggleTmSettings(),
-  });
-  tmSettingsBtn.setAttribute("aria-haspopup", "dialog");
-  tmSettingsBtn.setAttribute("aria-expanded", String(Boolean(closeTmSettings)));
-  actions.append(tmSettingsBtn);
+  // 「记忆库设置」浮层（toggleTmSettings）挂在「更多」按钮上；工具条重建后浮层改挂到新按钮。
+  const moreBtn = createButton({ label: t("更多"), onClick: () => openMoreMenu(moreBtn) });
+  moreBtn.classList.add("lib-more");
+  moreBtn.append(icon("chev", { size: "sm" }));
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", String(Boolean(closeTmSettings)));
+  tmSettingsBtn = moreBtn;
+  actions.append(importBtn, exportBtn, moreBtn);
+  libTopEl.append(actions);
   repositionTmSettings?.();
-  row.append(actions);
-  toolbarCardEl.append(row);
 
-  // 三条规则说明：来源和备注决定译法怎么用，用户不必理解更多概念。
-  const rules = document.createElement("div");
-  rules.className = "tm-rule";
-  for (const [name, desc] of [
-    [t("手动维护"), t("始终按您设定的译法翻译，在句中出现时同样采用。")],
-    [t("自动保存"), t("仅供参考，由模型对照备注和文档说明判断是否采用。")],
-    [t("备注"), t("填写后，仅在备注所述场景中采用。")],
-  ]) {
-    const item = document.createElement("span");
-    const strong = document.createElement("b");
-    strong.textContent = name;
-    item.append(strong, document.createTextNode(t("：{0}", desc)));
-    rules.append(item);
-  }
-  toolbarCardEl.append(rules);
+  renderFilterRow();
+  renderRecentPairs();
+  renderStateRow();
+  renderConflictArea();
+}
 
+/** 筛选行：页签（计数在后）+ 规则一句话；高级模式在行尾多一句本月统计。 */
+function renderFilterRow(): void {
+  if (!libFiltersEl) return;
+  clearElement(libFiltersEl);
   const filters = document.createElement("div");
   filters.className = "tk-filters wrap";
   for (const filter of advancedMode ? [...BASIC_FILTERS, ...ADVANCED_FILTERS] : BASIC_FILTERS) {
@@ -1777,143 +1813,130 @@ function rebuildToolbar(): void {
         entryFilter = filter;
         page = 1;
         selectedIds.clear();
-      }).then(() => rebuildToolbar());
+      }).then(() => renderFilterRow());
     });
     filters.append(pill);
   }
-  toolbarCardEl.append(filters);
+  libFiltersEl.append(filters);
 
-  if (recentPairs.length) {
-    const recentRow = document.createElement("div");
-    recentRow.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap";
-    const label = document.createElement("span");
-    label.style.cssText = "font-size:11.5px;color:var(--ink-3)";
-    label.textContent = t("最近使用");
-    recentRow.append(label);
-    for (const pair of recentPairs.slice(0, 8)) {
-      const parsed = splitTmPair(pair);
-      const button = createButton({
-        label: tmPairLabel(pair),
-        size: "mini",
-        variant: pair === tmLangPair() ? "primary" : "default",
-        onClick: () => {
-          if (parsed) void saveLangPair(parsed.source, parsed.target);
-        },
-      });
-      recentRow.append(button);
-    }
-    toolbarCardEl.append(recentRow);
+  const rule = document.createElement("span");
+  rule.className = "lib-rule";
+  rule.textContent = t("手动维护的词条始终按设定译法翻译；自动保存的仅供模型参考，按备注里的场景选用。");
+  libFiltersEl.append(rule);
+  renderMetaLine();
+}
+
+/** 高级模式的本月统计（原来的统计卡）；普通模式不显示。未采用设定译法要人工核对，>0 时标橙。 */
+function renderMetaLine(): void {
+  if (!libFiltersEl || !advancedMode) return;
+  const notApplied = num(stats.month_not_applied);
+  const meta = document.createElement("span");
+  meta.className = "lib-meta";
+  const line = t("本月使用 {0} 次 · 未采用设定译法 {1} 处", fmtNum(num(stats.month_uses)), fmtNum(notApplied));
+  const cut = line.lastIndexOf(" · ");
+  if (notApplied > 0 && cut > 0) {
+    const attn = document.createElement("span");
+    attn.className = "attn";
+    attn.textContent = line.slice(cut + 3);
+    meta.append(document.createTextNode(line.slice(0, cut + 3)), attn);
+  } else {
+    meta.textContent = line;
   }
+  libFiltersEl.append(meta);
+}
 
-  stateRowEl = document.createElement("div");
-  toolbarCardEl.append(stateRowEl);
-  renderStateRow();
+/** 最近使用的语言对：小字标签 + 胶囊，当前语言对高亮；没有记录时不占位。 */
+function renderRecentPairs(): void {
+  if (!libRecentEl) return;
+  clearElement(libRecentEl);
+  libRecentEl.hidden = recentPairs.length === 0;
+  if (!recentPairs.length) return;
+  const label = document.createElement("span");
+  label.className = "lib-recent-label";
+  label.textContent = t("最近使用");
+  libRecentEl.append(label);
+  for (const pair of recentPairs.slice(0, 8)) {
+    const parsed = splitTmPair(pair);
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = pair === tmLangPair() ? "f on" : "f";
+    pill.textContent = tmPairLabel(pair);
+    pill.addEventListener("click", () => {
+      if (parsed) void saveLangPair(parsed.source, parsed.target);
+    });
+    libRecentEl.append(pill);
+  }
+}
 
-  const conflictRowHost = document.createElement("div");
-  conflictRowHost.id = "v9-tm-conflicts";
-  toolbarCardEl.append(conflictRowHost);
-  renderConflictArea();
+/** 提示区（清洗状态、冲突）没有内容时整块收起，不占高度。 */
+function syncNoticeVisibility(): void {
+  if (!libNoticeEl) return;
+  libNoticeEl.hidden = !stateRowEl?.childElementCount && !conflictHostEl?.childElementCount;
 }
 
 function renderStateRow(): void {
   if (!stateRowEl) return;
-  stateRowEl.innerHTML = "";
+  clearElement(stateRowEl);
   if (cleaningState !== "idle") {
     // 正在跑清洗 / 刚失败 / 刚生成待复核，这三种「本次会话内」的状态优先于
     // 常驻提示——用户此刻更需要知道这次操作的结果，不是「还有旧建议没看」。
     const tone: ChipTone = cleaningState === "error" ? "dgr" : cleaningState === "ready" ? "warn" : "tint";
     const label =
       cleaningState === "running" ? t("正在分析未固定条目…") : cleaningState === "ready" ? t("清洗建议已生成，请复核后写入。") : t("清洗失败，请检查模型连接后重试。");
-    const chip = createChip({ label, tone });
-    stateRowEl.append(chip);
+    stateRowEl.append(createChip({ label, tone }));
     if (cleaningState === "ready" && cleanTaskId) {
-      const reviewBtn = createButton({ label: t("查看建议"), size: "mini", onClick: () => openCleanReviewModal() });
-      reviewBtn.style.marginLeft = "8px";
-      stateRowEl.append(reviewBtn);
+      stateRowEl.append(createButton({ label: t("查看建议"), size: "mini", onClick: () => openCleanReviewModal() }));
     }
-    return;
-  }
-  if (pendingCleanCount > 0) {
+  } else if (pendingCleanCount > 0) {
     // 常驻提示：不依赖「刚跑完清洗」这次会话，只要当前语言对下还有没处理的
     // 建议就一直显示，进任务中心深链复核完、或写完最后一条后自动消失。
-    const chip = createChip({ label: t("有 {0} 条清洗建议待复核", fmtNum(pendingCleanCount)), tone: "warn" });
-    stateRowEl.append(chip);
-    const reviewBtn = createButton({ label: t("查看建议"), size: "mini", onClick: () => void openCleanReviewForCurrentPair() });
-    reviewBtn.style.marginLeft = "8px";
-    stateRowEl.append(reviewBtn);
+    stateRowEl.append(createChip({ label: t("有 {0} 条清洗建议待复核", fmtNum(pendingCleanCount)), tone: "warn" }));
+    stateRowEl.append(createButton({ label: t("查看建议"), size: "mini", onClick: () => void openCleanReviewForCurrentPair() }));
   }
+  syncNoticeVisibility();
 }
 
 function renderConflictArea(): void {
-  const host = toolbarCardEl?.querySelector<HTMLDivElement>("#v9-tm-conflicts");
+  const host = conflictHostEl;
   if (!host) return;
-  host.innerHTML = "";
+  clearElement(host);
   if (conflictMessage) {
     const row = document.createElement("div");
-    row.style.cssText = "display:flex;align-items:center;gap:8px";
+    row.className = "lib-conflict-msg";
     row.append(createChip({ label: tx(conflictMessage), tone: "dgr" }));
     const closeBtn = createButton({ label: t("关闭"), size: "mini", onClick: () => { conflictMessage = ""; renderConflictArea(); } });
     row.append(closeBtn);
     host.append(row);
   }
-  if (!conflicts.length) return;
-  const header = document.createElement("div");
-  header.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:6px";
-  const title = document.createElement("strong");
-  title.style.fontSize = "12.5px";
-  title.textContent = t("待裁决冲突 {0}", fmtNum(conflicts.length));
-  header.append(title);
-  header.append(createButton({ label: t("刷新"), size: "mini", onClick: () => void refreshConflicts().then(renderConflictArea) }));
-  host.append(header);
-  for (const item of conflicts) {
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:12.5px";
-    const info = document.createElement("div");
-    info.style.flex = "1";
-    const strong = document.createElement("strong");
-    strong.textContent = item.source_text;
-    const small = document.createElement("div");
-    small.style.cssText = "color:var(--ink-3);font-size:11.5px";
-    small.textContent = `${item.lang_pair} · ${item.existing_target} → ${item.candidate_target}`;
-    info.append(strong, small);
-    row.append(info);
-    row.append(createButton({ label: t("保留当前"), size: "mini", onClick: () => void resolveTmConflict(item.id, "keep_existing") }));
-    row.append(createButton({ label: t("采用候选"), size: "mini", variant: "primary", onClick: () => void resolveTmConflict(item.id, "use_candidate") }));
-    row.append(createButton({ label: t("拒绝"), size: "mini", variant: "danger", onClick: () => void resolveTmConflict(item.id, "reject") }));
-    host.append(row);
+  if (conflicts.length) {
+    const list = document.createElement("div");
+    list.className = "lib-conflicts";
+    const header = document.createElement("div");
+    header.className = "lib-conflicts-head";
+    const title = document.createElement("strong");
+    title.textContent = t("待裁决冲突 {0}", fmtNum(conflicts.length));
+    header.append(title);
+    header.append(createButton({ label: t("刷新"), size: "mini", onClick: () => void refreshConflicts().then(renderConflictArea) }));
+    list.append(header);
+    for (const item of conflicts) {
+      const row = document.createElement("div");
+      row.className = "lib-conflict";
+      const info = document.createElement("div");
+      info.className = "info";
+      const strong = document.createElement("strong");
+      strong.textContent = item.source_text;
+      const small = document.createElement("small");
+      small.textContent = `${item.lang_pair} · ${item.existing_target} → ${item.candidate_target}`;
+      info.append(strong, small);
+      row.append(info);
+      row.append(createButton({ label: t("保留当前"), size: "mini", onClick: () => void resolveTmConflict(item.id, "keep_existing") }));
+      row.append(createButton({ label: t("采用候选"), size: "mini", variant: "primary", onClick: () => void resolveTmConflict(item.id, "use_candidate") }));
+      row.append(createButton({ label: t("拒绝"), size: "mini", variant: "danger", onClick: () => void resolveTmConflict(item.id, "reject") }));
+      list.append(row);
+    }
+    host.append(list);
   }
-}
-
-function renderStatsRow(): void {
-  if (!statsRowEl) return;
-  statsRowEl.innerHTML = "";
-  const notApplied = num(stats.month_not_applied);
-  const tiles: Array<{ label: string; value: string; iconName: "book" | "check" | "doc-file" | "spark" | "warn"; attn?: boolean }> = [
-    { label: t("总条目"), value: fmtNum(num(stats.total)), iconName: "book" },
-    { label: t("手动维护"), value: fmtNum(num(stats.origin_manual)), iconName: "check" },
-    { label: t("自动保存"), value: fmtNum(num(stats.origin_auto)), iconName: "doc-file" },
-  ];
-  if (advancedMode) {
-    tiles.push(
-      { label: t("本月使用"), value: t("{0} 次", fmtNum(num(stats.month_uses))), iconName: "spark" },
-      { label: t("未采用设定译法"), value: t("{0} 处", fmtNum(notApplied)), iconName: "warn", attn: notApplied > 0 },
-    );
-  }
-  statsRowEl.className = tiles.length > 4 ? "stats five" : "stats three";
-  for (const tileInfo of tiles) {
-    const tile = document.createElement("div");
-    tile.className = tileInfo.attn ? "stat attn" : "stat";
-    const head = document.createElement("div");
-    head.style.cssText = "display:flex;align-items:center;gap:6px;color:var(--ink-3)";
-    head.append(icon(tileInfo.iconName, { size: "sm" }));
-    const span = document.createElement("span");
-    span.textContent = tileInfo.label;
-    head.append(span);
-    const b = document.createElement("b");
-    b.textContent = tileInfo.value;
-    tile.append(head, b);
-    statsRowEl.append(tile);
-  }
+  syncNoticeVisibility();
 }
 
 function updateSelectionUi(): void {
@@ -1923,7 +1946,11 @@ function updateSelectionUi(): void {
   // 圈定的范围一致），不是当前页的条数，避免用户误以为只有一页那么多可选。
   if (chip) chip.textContent = t("已选 {0} / {1}", fmtNum(selectedIds.size), fmtNum(total));
   const deleteBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
-  if (deleteBtn) deleteBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
+  if (deleteBtn) {
+    // 没选中时不显示「批量删除」；有选中但数据还在加载时显示为禁用。
+    deleteBtn.style.display = selectedIds.size === 0 ? "none" : "";
+    deleteBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
+  }
   const selectAllLink = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=select-all]");
   if (selectAllLink) {
     const reachable = Math.min(total, SELECT_ALL_CAP);
@@ -1934,14 +1961,25 @@ function updateSelectionUi(): void {
   }
 }
 
+/** 加载骨架：三行渐变条，代替原来的「加载中…」。 */
+function createTableSkeleton(): HTMLDivElement {
+  const list = document.createElement("div");
+  list.className = "lib-sk-list";
+  list.setAttribute("role", "status");
+  list.setAttribute("aria-label", t("加载中…"));
+  for (let index = 0; index < 3; index += 1) {
+    const bar = document.createElement("div");
+    bar.className = "lib-sk";
+    list.append(bar);
+  }
+  return list;
+}
+
 function renderTable(): void {
   if (!tableScrollEl) return;
-  tableScrollEl.innerHTML = "";
+  clearElement(tableScrollEl);
   if (!tmQueryReady()) {
-    const loading = document.createElement("div");
-    loading.className = "empty";
-    loading.textContent = t("加载中…");
-    tableScrollEl.append(loading);
+    tableScrollEl.append(createTableSkeleton());
     updateSelectionUi();
     return;
   }
@@ -1955,9 +1993,10 @@ function renderTable(): void {
   } else {
     const table = document.createElement("table");
     table.className = "tbl";
+    const thead = document.createElement("thead");
     const head = document.createElement("tr");
     const selectAll = document.createElement("th");
-    selectAll.style.width = "34px";
+    selectAll.style.width = "36px";
     const selectAllCheckbox = document.createElement("input");
     selectAllCheckbox.type = "checkbox";
     selectAllCheckbox.className = "ck";
@@ -1988,7 +2027,6 @@ function renderTable(): void {
           ]
         : []),
       { id: "updated", label: t("更新时间"), width: "96px" },
-      { id: "actions", label: t("操作"), width: "96px" },
     ];
     for (const column of columns) {
       const th = document.createElement("th");
@@ -1997,15 +2035,28 @@ function renderTable(): void {
       if (column.width) th.style.width = column.width;
       head.append(th);
     }
-    table.append(head);
+    // 操作列表头留空：编辑 / 删除是悬停才出现的图标按钮，读屏仍能读到列名。
+    const actionsTh = document.createElement("th");
+    actionsTh.dataset.col = "actions";
+    actionsTh.className = "acts-col";
+    actionsTh.setAttribute("aria-label", t("操作"));
+    head.append(actionsTh);
+    thead.append(head);
+    table.append(thead);
 
-    for (const entry of entries) {
+    const tbody = document.createElement("tbody");
+    // 只在数据换了之后那一次渲染加行浮现；勾选引起的重绘不重播。
+    if (renderedRevision !== tmQueryRevision) tbody.className = "stag";
+    renderedRevision = tmQueryRevision;
+    entries.forEach((entry, index) => {
       const tr = document.createElement("tr");
+      tr.style.setProperty("--i", String(Math.min(index, 12)));
       const selectTd = document.createElement("td");
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "ck";
       checkbox.checked = selectedIds.has(entry.id);
+      checkbox.setAttribute("aria-label", t("选择 {0}", entry.source_text));
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selectedIds.add(entry.id);
         else selectedIds.delete(entry.id);
@@ -2015,6 +2066,7 @@ function renderTable(): void {
       tr.append(selectTd);
 
       const sourceTd = document.createElement("td");
+      sourceTd.className = "lib-src";
       sourceTd.textContent = entry.source_text;
       tr.append(sourceTd);
       const targetTd = document.createElement("td");
@@ -2022,8 +2074,8 @@ function renderTable(): void {
       tr.append(targetTd);
 
       const noteTd = document.createElement("td");
-      noteTd.className = "tm-note";
-      noteTd.textContent = entry.note || "";
+      noteTd.className = entry.note ? "note" : "dim";
+      noteTd.textContent = entry.note || "—";
       tr.append(noteTd);
 
       const originTd = document.createElement("td");
@@ -2037,6 +2089,7 @@ function renderTable(): void {
         tr.append(usageTd);
         const scopeTd = document.createElement("td");
         scopeTd.textContent = entry.scope ? t("文件名或文件夹名包含「{0}」", entry.scope) : "—";
+        if (!entry.scope) scopeTd.className = "dim";
         tr.append(scopeTd);
         const usesTd = document.createElement("td");
         usesTd.className = "num";
@@ -2050,24 +2103,23 @@ function renderTable(): void {
       if (entry.updated_at) updatedTd.title = entry.updated_at;
       tr.append(updatedTd);
 
+      // 行内操作：悬停或 Tab 到这一行时出现（library.css .rowacts）。
       const actionsTd = document.createElement("td");
-      const editLink = document.createElement("span");
-      editLink.className = "linklike";
-      editLink.textContent = t("编辑");
-      editLink.addEventListener("click", () => openAddEditModal(entry));
-      const sep = document.createTextNode(" · ");
-      const deleteLink = document.createElement("span");
-      deleteLink.className = "linklike";
-      deleteLink.textContent = t("删除");
-      deleteLink.style.color = "var(--danger)";
-      deleteLink.addEventListener("click", () => openDeleteModal(entry));
-      // 「编辑 · 删除」不折行：法文「Modifier · Supprimer」比中文宽，让列跟着变宽。
-      actionsTd.style.whiteSpace = "nowrap";
-      actionsTd.append(editLink, sep, deleteLink);
+      actionsTd.className = "acts-cell";
+      const rowActs = document.createElement("div");
+      rowActs.className = "rowacts";
+      const editBtn = createButton({ icon: "edit", variant: "ghost", size: "mini", title: t("编辑"), onClick: () => openAddEditModal(entry) });
+      editBtn.setAttribute("aria-label", t("编辑"));
+      const deleteBtn = createButton({ icon: "trash", variant: "ghost", size: "mini", title: t("删除"), onClick: () => openDeleteModal(entry) });
+      deleteBtn.classList.add("del");
+      deleteBtn.setAttribute("aria-label", t("删除"));
+      rowActs.append(editBtn, deleteBtn);
+      actionsTd.append(rowActs);
       tr.append(actionsTd);
 
-      table.append(tr);
-    }
+      tbody.append(tr);
+    });
+    table.append(tbody);
     tableScrollEl.append(table);
   }
   updateSelectionUi();
@@ -2085,71 +2137,84 @@ function renderPaginationBar(): void {
   if (nextBtn) nextBtn.disabled = page >= totalPages;
 }
 
-function buildTcHead(): HTMLDivElement {
+/** 底栏：左边「已选 x / xx · 选择全部 · 批量删除」，右边每页条数和翻页。 */
+function buildFoot(): HTMLDivElement {
   const bar = document.createElement("div");
-  bar.className = "tc-head";
-  bar.style.borderTop = "1px solid var(--line)";
-  bar.style.borderBottom = "0";
+  bar.className = "lib-foot";
 
-  const chip = createChip({ label: t("已选 {0} / {1}", fmtNum(selectedIds.size), fmtNum(total)), tone: "tint" });
-  chip.dataset.role = "sel-chip";
-  bar.append(chip);
+  const selected = document.createElement("span");
+  selected.className = "sel";
+  selected.dataset.role = "sel-chip";
+  selected.textContent = t("已选 {0} / {1}", fmtNum(selectedIds.size), fmtNum(total));
+  bar.append(selected);
 
-  // 「选择全部」紧挨着「已选」徽章，跟它组成一组（已选 x / xx · 选择全部），
-  // 「批量删除」留在右边——原来在最右边的「本页全选」按钮挪到这里，
-  // 语义也从「只选本页」换成「选中当前筛选条件下的全部匹配项（跨页）」。
+  // 「选择全部」选中当前筛选条件下的全部匹配项（跨页），不只是本页。
   const selectAllLink = document.createElement("span");
   selectAllLink.className = "linklike";
   selectAllLink.dataset.role = "select-all";
+  selectAllLink.setAttribute("role", "button");
+  selectAllLink.tabIndex = 0;
   selectAllLink.textContent = t("选择全部");
   selectAllLink.addEventListener("click", () => void handleSelectAllTm());
-  bar.append(document.createTextNode(" · "), selectAllLink);
+  selectAllLink.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      void handleSelectAllTm();
+    }
+  });
+  bar.append(selectAllLink);
 
   const deleteBtn = createButton({ label: t("批量删除"), icon: "trash", size: "mini", variant: "danger", onClick: () => confirmBulkDelete() });
   deleteBtn.dataset.role = "bulk-delete";
   bar.append(deleteBtn);
 
   const tools = document.createElement("div");
-  tools.className = "tc-tools";
+  tools.className = "pg-ctl";
   const sizeSelect = createDropdown({
-    className: "tm-page-size",
+    className: "lib-page-size",
     options: [25, 50, 100].map((size) => ({ value: String(size), label: t("{0} / 页", size) })),
     value: String(pageSize),
     onChange: (value) => {
-    void applyTmQueryChange(() => {
-      pageSize = Number(value) || 25;
-      page = 1;
-    }).then((ok) => {
-      // 取数失败时 pageSize 已回滚，下拉框也要跟着退回去，否则控件显示的
-      // 每页条数和表格里的实际条数对不上。
-      if (!ok) sizeSelect.setValue(String(pageSize));
-    });
+      void applyTmQueryChange(() => {
+        pageSize = Number(value) || 25;
+        page = 1;
+      }).then((ok) => {
+        // 取数失败时 pageSize 已回滚，下拉框也要跟着退回去，否则控件显示的
+        // 每页条数和表格里的实际条数对不上。
+        if (!ok) sizeSelect.setValue(String(pageSize));
+      });
     },
   });
   tools.append(sizeSelect.root);
 
   const pageLabel = document.createElement("span");
-  pageLabel.style.cssText = "color:var(--ink-3);font-size:12px";
+  pageLabel.className = "num";
   pageLabel.dataset.role = "page-label";
   tools.append(pageLabel);
 
   const prevBtn = createButton({
     label: "‹",
+    variant: "ghost",
     size: "mini",
+    title: t("上一页"),
     onClick: () => {
       if (page > 1) void applyTmQueryChange(() => { page -= 1; });
     },
   });
   prevBtn.dataset.role = "page-prev";
+  prevBtn.setAttribute("aria-label", t("上一页"));
   const nextBtn = createButton({
     label: "›",
+    variant: "ghost",
     size: "mini",
+    title: t("下一页"),
     onClick: () => {
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
       if (page < totalPages) void applyTmQueryChange(() => { page += 1; });
     },
   });
   nextBtn.dataset.role = "page-next";
+  nextBtn.setAttribute("aria-label", t("下一页"));
   tools.append(prevBtn, nextBtn);
   bar.append(tools);
 
@@ -2180,25 +2245,35 @@ function renderLoadFailure(container: HTMLElement, message: string, onRetry: () 
   container.append(placeholderEl);
 }
 
-/** 三个加载请求都成功后才搭建工具条 / 统计条 / 表格的容器结构。 */
+/** 三个加载请求都成功后才搭建页面骨架（不套卡片，照原型 .lib）。 */
 function buildLayout(container: HTMLElement): void {
-  toolbarCardEl = createCard();
-  container.append(toolbarCardEl);
+  const root = document.createElement("div");
+  root.className = "lib";
 
-  statsRowEl = document.createElement("div");
-  statsRowEl.className = "stats";
-  container.append(statsRowEl);
+  libTopEl = document.createElement("div");
+  libTopEl.className = "lib-top";
+  libFiltersEl = document.createElement("div");
+  libFiltersEl.className = "lib-filters";
+  libRecentEl = document.createElement("div");
+  libRecentEl.className = "lib-recent tk-filters";
+  libRecentEl.hidden = true;
 
-  const tableCard = createCard([], "tablecard");
+  libNoticeEl = document.createElement("div");
+  libNoticeEl.className = "lib-notice";
+  libNoticeEl.hidden = true;
+  stateRowEl = document.createElement("div");
+  stateRowEl.className = "lib-state";
+  conflictHostEl = document.createElement("div");
+  conflictHostEl.className = "lib-conflict-host";
+  conflictHostEl.id = "v9-tm-conflicts";
+  libNoticeEl.append(stateRowEl, conflictHostEl);
+
   tableScrollEl = document.createElement("div");
-  // 结果区域本身也使用纵向 flex，让空态/加载态的通用 .empty 组件
-  // 可以占满可用高度并在区域中央展示。此前这里只设置了 overflow，
-  // .empty 的 flex:1 没有生效，内容会贴在结果区域顶部。
-  tableScrollEl.style.cssText = "flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column";
-  tableCard.append(tableScrollEl);
-  tcHeadEl = buildTcHead();
-  tableCard.append(tcHeadEl);
-  container.append(tableCard);
+  tableScrollEl.className = "lib-scroll";
+  tcHeadEl = buildFoot();
+
+  root.append(libTopEl, libFiltersEl, libRecentEl, libNoticeEl, tableScrollEl, tcHeadEl);
+  container.append(root);
 }
 
 /** 任务详情「编辑」深链：定位到这条词条所在的语言对并按原文搜索，找到后直接打开编辑窗口。 */
@@ -2229,10 +2304,10 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null, 
     await Promise.all([refreshTm(), refreshConflicts()]);
   } catch (error) {
     if (!isCurrent()) return;
-    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
+    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: libSubtitle() });
     renderLoadFailure(container, errorMessage(error), () => {
       if (!isCurrent()) return;
-      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
+      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: libSubtitle() });
       renderLoadingPlaceholder(container);
       void loadLibrary(container, reviewTaskId, focus);
     });
@@ -2243,7 +2318,7 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null, 
   placeholderEl = null;
   buildLayout(container);
   rebuildToolbar();
-  renderStatsRow();
+  renderFilterRow();
   renderTable();
   renderTopbarStatus();
   const focused = focus ? entries.find((item) => item.id === focus.id) : undefined;
@@ -2268,7 +2343,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   selectedIds.clear();
   container.style.flexDirection = "column";
 
-  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法") });
+  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: libSubtitle() });
 
   renderLoadingPlaceholder(container);
 
@@ -2299,9 +2374,12 @@ export function unmount(): void {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;
   }
-  toolbarCardEl = null;
-  statsRowEl = null;
+  libTopEl = null;
+  libFiltersEl = null;
+  libRecentEl = null;
+  libNoticeEl = null;
   stateRowEl = null;
+  conflictHostEl = null;
   tableScrollEl = null;
   tcHeadEl = null;
   placeholderEl = null;
