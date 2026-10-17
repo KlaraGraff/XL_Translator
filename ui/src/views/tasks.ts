@@ -616,6 +616,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   tm_write_failed: "翻译记忆库写入失败", // i18n-ignore 参与复核判断与合并，显示时 tx()
   cell_text_truncated: "超长单元格文本被截断", // i18n-ignore 参与复核判断与合并，显示时 tx()
   shape_text_overflow: "文本框放不下译文，已缩到最小字号", // i18n-ignore 参与复核判断与合并，显示时 tx()
+  locked_row_overflow: "行高已锁定，缩到最小字号仍放不下", // i18n-ignore 参与复核判断与合并，显示时 tx()
   term_not_applied: "未采用设定译法", // i18n-ignore 参与复核判断与合并，显示时 tx()
 };
 
