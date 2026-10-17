@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from api.surfaces.adapter import AdapterSurface
-from core.format_adapter import AdapterError, InProcessAdapterHost, load_manifest
+from core.format_adapter import AdapterError, InProcessAdapterHost
 from core.ppt_converter import (
     FIDELITY_COMPATIBILITY,
     PptConversionCache,
