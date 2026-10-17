@@ -10,6 +10,10 @@ A format adapter teaches the app one more file type with three functions in
     def write(path: str, units: list[TranslatedUnit], mode: str,
               out_path: str, options: dict) -> OutputFile: ...
 
+``options`` holds the page's switches plus ``target_lang`` (the app's language
+code, such as ``"fr"``).  ``scan`` and ``extract`` get it too when they take a
+second argument (``def extract(path, options=None)``).
+
 The app does everything else: the page, model calls, the translation memory,
 retries, review marks, progress, the task center.  An adapter never calls a
 model, reads keys or goes online.
@@ -30,6 +34,7 @@ from translator_adapter.protocol import (
     STATUSES,
     OptionSpec,
     OutputFile,
+    ReviewItem,
     ScanItem,
     TextUnit,
     TranslatedUnit,
@@ -48,6 +53,7 @@ __all__ = [
     "STATUS_UNTRANSLATED",
     "OptionSpec",
     "OutputFile",
+    "ReviewItem",
     "ScanItem",
     "TextUnit",
     "TranslatedUnit",

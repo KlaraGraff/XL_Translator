@@ -66,5 +66,7 @@
   "本应用支持的适配器协议版本为 {0}–{1}，清单写的是 {2}": {"en": "This app supports adapter API versions {0}–{1}; the manifest says {2}", "fr": "Cette application prend en charge les versions {0}–{1} du protocole d'adaptateur ; le manifeste indique {2}"},
   "id 只能用小写字母、数字、下划线和连字符，最长 40 个字符": {"en": "The id may contain only lowercase letters, digits, underscores and hyphens, up to 40 characters", "fr": "L'identifiant ne peut contenir que des minuscules, chiffres, tirets bas et tirets, 40 caractères au plus"},
   "无法识别的扩展名：{0}": {"en": "Unrecognized file extension: {0}", "fr": "Extension de fichier non reconnue : {0}"},
-  "extensions 至少要有一个扩展名": {"en": "extensions must list at least one file extension", "fr": "extensions doit contenir au moins une extension de fichier"}
+  "extensions 至少要有一个扩展名": {"en": "extensions must list at least one file extension", "fr": "extensions doit contenir au moins une extension de fichier"},
+  "已含两种语言的内容未能翻成目标语言": {"en": "Content already in two languages could not be translated into the target language", "fr": "Le contenu déjà bilingue n'a pas pu être traduit dans la langue cible"},
+  "没有找到需要翻译的文字。": {"en": "No text to translate was found.", "fr": "Aucun texte à traduire n'a été trouvé."}
 }
