@@ -34,6 +34,10 @@
 
   **Global search**: Press ⌘K on Mac or Ctrl+K on Windows (or click "Search or enter a path" at the top of the sidebar) to search pages, tasks and translation-memory entries; type a file path and press Enter to start translating it. Arrow keys select, Enter opens, Esc closes; Enter on a task opens that task, and Enter on an entry opens the translation memory at that entry.
 
+- **界面焕新：「任务」页**：「任务中心」改名「任务」，顶栏只在有任务进行中时挂「N 个进行中」，没有时副标题直接说今天跑了几个任务、几个需复核、几个失败；筛选从「全部 / 活动」改为「全部 / 进行中 / 需复核 / 失败」，筛选和搜索框在列表滚动时始终留在顶部；进行中的任务行带一条细进度条，百分比挪到第二行；详情先用一句话说明类型、语言和提示词，结果统计改成一行数字，按钮、复核清单和生成的文件都照旧。
+
+  **Interface refresh: the Tasks page**: Task center is now called Tasks. The top bar shows "N in progress" only while a task runs; otherwise its subtitle says how many tasks ran today and how many need review or failed. The filters are now All / In progress / Needs review / Failed instead of All / Active, and they stay at the top with the search box while the list scrolls. A running task's row has a thin progress bar, with the percentage on its second line. The details open with one sentence giving the type, languages and prompt, and the result counts are a single row of numbers; buttons, the review list and the generated files are unchanged.
+
 - **记忆库页换新版式**：记忆库页原来上面是一张塞满按钮的工具卡、一排统计卡，再往下才是表格。现在顶部一行放语言对（中间一个按钮即可交换方向）、搜索和「新增词条 / 导入 / 导出 / 更多」，「清洗记忆库」和「记忆库设置」收进「更多」；统计卡去掉，条数在筛选页签上，高级模式的本月统计改成筛选行末一句话；编辑、删除在鼠标移到那一行时出现。功能和操作结果不变。
 
   **New layout for the translation memory page**: The page used to open with a card crowded with buttons and a row of statistics cards above the table. A single top row now holds the language pair (one button swaps the direction), search, and "New entry / Import / Export / More"; "Clean up memory" and the memory settings moved into "More". The statistics cards are gone: counts are on the filter tabs, and advanced mode's monthly figures are one line at the end of the filter row. Edit and delete appear when the pointer is over a row. Features and results are unchanged.
