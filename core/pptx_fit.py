@@ -25,15 +25,18 @@
   - 「溢出时缩排文字」（``a:normAutofit``）：PowerPoint 打开文件时不重算，只按文件里存的
     ``fontScale``/``lnSpcReduction`` 画（GenOffice 实测：只写光秃秃的 ``normAutofit``
     会按 100% 溢出着画），原值是按原文算的，所以按译文重算，取 PowerPoint 自己的档位
-    （字号 100、92.5、85、77.5、70、62.5%，行距减 0、0、10、10、20、20%），字号本身不动。
-  - 「根据文字调整形状大小」（``a:spAutoFit``）：框跟着字变，先往下方空白处加高（不换行的
-    框先按对齐方式加宽），不压到别的形状、不出页面；空白不够再缩字号。
-  - 「不自动调整」：直接按比例缩各片段的 ``sz``（固定行距一起缩），每档 5%。
-  - 表格：PowerPoint 的表格不吃自动调整，行会跟着字撑高，所以和「根据文字调整形状大小」
-    一样先长进下方空白；放不下再整张表一起缩字号，保持字号统一。
+    （字号 100、92.5、85、77.5、70、62.5%，行距减 0、0、10、10、20、20%），字号本身不动；
+    缩到最后一档仍放不下才往下方空白处加高。
+  - 「根据文字调整形状大小」（``a:spAutoFit``）和「不自动调整」：先往下方空白处加高（不换行
+    的框先按对齐方式加宽），不压到别的形状、不出页面；空白不够再按比例缩各片段的 ``sz``
+    （固定行距一起缩），每档 5%，最低 60%（``text_box_fit.MIN_SCALE``）。
+  - 表格：PowerPoint 的表格不吃自动调整，行会跟着字撑高，所以同样先长进下方空白；放不下
+    再整张表一起缩字号，保持字号统一。
 
-另外两种缩到下限（``text_box_fit.MIN_SCALE``，60%）仍放不下时，照 Excel 文本框的规则往
-下方空白处加高；空白也不够的返回 ``FitIssue``，进需复核清单。
+``fixed_layout=True``（页面上的「固定版面」开关）时所有框和表格的位置大小都不动，只缩字：
+溢出缩排的框照档位缩，其余的框和表格缩 ``sz``。
+
+缩到下限仍放不下的返回 ``FitIssue``，进需复核清单。
 竖排（``eaVert`` 等）和艺术字变形的框不动（竖排由包 2 列入复核）。
 
 写回之前那份部件（``read_part(part_name)`` 读到的原字节）用来知道原文排得多满：
@@ -140,6 +143,7 @@ def fit_after_write(
     root,
     touched: Iterable,
     *,
+    fixed_layout: bool = False,
     fonts: FontLibrary | None = None,
 ) -> list[FitIssue]:
     """按译文调整 ``touched`` 里各框的字号或大小，就地改 ``root``；返回放不下的框。
@@ -147,6 +151,7 @@ def fit_after_write(
     ``read_part(name)`` 读包里任意部件的当前字节（版式、母版、主题、关系文件、
     ``presentation.xml``；``part_name`` 本身还没写回时读到的是原文）。只改 ``touched``
     里的形状。备注页等不是幻灯片、版式、母版的部件直接返回空列表。
+    ``fixed_layout`` 为真时不加高、不加宽任何框和表格，只缩字。
     """
     if not _FITTABLE_PART.match(part_name or ""):
         return []
@@ -154,6 +159,7 @@ def fit_after_write(
     if not elements:
         return []
     ctx = _PartContext(read_part, part_name, root, fonts or default_library())
+    ctx.fixed_layout = fixed_layout
     issues: list[FitIssue] = []
     done: set = set()
     for element in elements:
@@ -315,6 +321,8 @@ class _PartContext:
         self.part_name = part_name
         self.root = root
         self.fonts = fonts
+        #: 「固定版面」：只缩字，不动框和表格的位置大小。
+        self.fixed_layout = False
         self._parsed: dict[str, Any] = {}
         self.measurer = _Measurer(fonts)
 
@@ -1244,7 +1252,8 @@ def _fit_shape(ctx: _PartContext, tx_body) -> bool:
 
     before = _original_layout(ctx, sp, width)
     room_w = max(inner_w, before.widest if before else 0.0)
-    can_grow = not groups and not swapped and not _rotated(sp) and body.columns == 1
+    can_grow = (not ctx.fixed_layout and not groups and not swapped and not _rotated(sp)
+                and body.columns == 1)
 
     def fits(layout: _Layout, height: float) -> bool:
         return layout.height <= height + _FIT_EPSILON_PT and (body.wrap or layout.widest <= room_w + _FIT_EPSILON_PT)
@@ -1262,16 +1271,15 @@ def _fit_shape(ctx: _PartContext, tx_body) -> bool:
             return True
         return can_grow and body.wrap and _grow_down(ctx, sp, rect, layout.height - inner_h)
 
-    if body.kind == "sp" and can_grow:
-        return _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h)
+    tolerated_h = before.height if before else 0.0
+    if can_grow:
+        return _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h, tolerated_h)
 
-    room_h = max(capacity, before.height if before and body.kind == "none" else 0.0)
+    room_h = max(capacity, tolerated_h)
     scale, layout = _explicit_scale(paras, atoms, width, lambda lay: fits(lay, room_h))
     if scale < 1:
         _apply_explicit(paras, [(tx_body, paras)], scale)
-    if fits(layout, room_h):
-        return True
-    return can_grow and body.wrap and _grow_down(ctx, sp, rect, layout.height - inner_h)
+    return fits(layout, room_h)
 
 
 def _original_layout(ctx: _PartContext, sp, width: float | None) -> _Layout | None:
@@ -1306,8 +1314,11 @@ def _grow_down(ctx: _PartContext, sp, rect: _Rect, extra_pt: float) -> bool:
     return True
 
 
-def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h) -> bool:
-    """「根据文字调整形状大小」：先往空白处长（不换行的先加宽），长不下再缩字号。"""
+def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h, tolerated_h=0.0) -> bool:
+    """先往空白处长（不换行的先加宽），长不下再缩字号。
+
+    tolerated_h 是原文在这个框里排出的高度：原文本来就超出框，译文排到同样高度也算放下。
+    """
     width = inner_w if body.wrap else None
     full = _layout(paras, atoms, width, explicit_sizer(1.0))
     dx_left = dx_right = 0.0
@@ -1325,7 +1336,8 @@ def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_
             dx_right = min(need, right)
         room_w = inner_w + (dx_left + dx_right) / EMU_PER_PT
     grown = _Rect(rect.x - dx_left, rect.y, rect.cx + dx_left + dx_right, rect.cy)
-    room_h = inner_h + _room_below(ctx, sp, grown) / EMU_PER_PT
+    grow_h = inner_h + _room_below(ctx, sp, grown) / EMU_PER_PT
+    room_h = max(grow_h, tolerated_h)
 
     def accept(layout: _Layout) -> bool:
         return layout.height <= room_h + _FIT_EPSILON_PT and (body.wrap or layout.widest <= room_w + _FIT_EPSILON_PT)
@@ -1341,7 +1353,7 @@ def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_
             dx_left = min(dx_left, used)
         else:
             dx_right = min(dx_right, used)
-    dy = max(0.0, min(layout.height, room_h) - inner_h) * EMU_PER_PT
+    dy = max(0.0, min(layout.height, grow_h) - inner_h) * EMU_PER_PT
     if dx_left or dx_right or dy:
         _resize(ctx, sp, rect, dx_left=dx_left, dx_right=dx_right, dy=dy)
     return accept(layout)
@@ -1417,9 +1429,10 @@ def _fit_table(ctx: _PartContext, frame) -> bool:
     if not cells:
         return True
     # 表格的行跟着字撑高，和「根据文字调整形状大小」一个意思：先长进下方空白（不出页面、
-    # 不压到别的形状），放不下再整张表一起缩字号，保持字号统一。
+    # 不压到别的形状），放不下再整张表一起缩字号，保持字号统一。「固定版面」时不长，
+    # 缩到原来的行高里（PowerPoint 照样会撑高放不下的行，所以缩不下的进复核）。
     capacity = sum(heights)
-    if not groups and not _rotated(frame):
+    if not ctx.fixed_layout and not groups and not _rotated(frame):
         capacity += _room_below(ctx, frame, slide_rect) / EMU_PER_PT
     original = ctx.original_shapes.get(_shape_id(frame) or "")
     original_tbl = original.find(f".//{_a('tbl')}") if original is not None else None

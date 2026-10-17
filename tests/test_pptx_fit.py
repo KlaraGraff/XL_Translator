@@ -104,7 +104,7 @@ def _translate(root, translations, *, bilingual=False):
     return touched
 
 
-def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None):
+def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, fixed_layout=False):
     """``edit`` 改的是原文那份（包里的部件和要写回的都改），模拟另一种原稿。"""
     name = f"ppt/slides/slide{slide}.xml"
     if edit is not None:
@@ -113,7 +113,8 @@ def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None):
         parts = dict(parts, **{name: etree.tostring(source)})
     root = etree.fromstring(parts[name])
     touched = _translate(root, french, bilingual=bilingual)
-    issues = fit_after_write(parts.get, name, root, list(touched.values()), fonts=fonts)
+    issues = fit_after_write(parts.get, name, root, list(touched.values()), fonts=fonts,
+                             fixed_layout=fixed_layout)
     return root, touched, issues
 
 
@@ -151,14 +152,23 @@ def _add_rect(root, x, y, cx, cy, shape_id="99"):
 # ---------------------------------------------------------------- 不自动调整
 
 
-def test_no_autofit_box_shrinks_runs_to_fit(parts, french):
+def test_no_autofit_box_grows_into_blank_space_first(parts, french):
     before = etree.fromstring(parts["ppt/slides/slide1.xml"])
     root, touched, issues = _run(parts, french, 1)
-    shape = _shape(root, "noauto-free")
+    x0, y0, cx0, cy0 = _ext(_shape(before, "noauto-free"))
+    x1, y1, cx1, cy1 = _ext(_shape(root, "noauto-free"))
+    assert (x1, y1, cx1) == (x0, y0, cx0) and cy1 > cy0
+    assert _sizes(touched["noauto-free"]) == {1800}  # 下面有空白，字号不动
+    assert all(issue.target is not touched["noauto-free"] for issue in issues)
+
+
+def test_fixed_layout_shrinks_runs_and_keeps_every_box(parts, french):
+    before = etree.fromstring(parts["ppt/slides/slide1.xml"])
+    root, touched, issues = _run(parts, french, 1, fixed_layout=True)
     sizes = _sizes(touched["noauto-free"])
     assert len(sizes) == 1 and 1080 <= sizes.pop() < 1800
-    assert _ext(shape) == _ext(_shape(before, "noauto-free"))  # 缩字放下了，框不动
-    assert "noauto-free" not in {issue.target.getparent().find("*/" + P + "cNvPr").get("name") for issue in issues}
+    assert _ext(_shape(root, "noauto-free")) == _ext(_shape(before, "noauto-free"))
+    assert all(issue.target is not touched["noauto-free"] for issue in issues)
 
 
 def test_no_autofit_box_blocked_below_goes_to_review(parts, french):
@@ -171,16 +181,18 @@ def test_no_autofit_box_blocked_below_goes_to_review(parts, french):
     assert REASON_OVERFLOW == "缩到 60% 仍放不下"
 
 
-def test_no_autofit_box_grows_into_blank_space_at_floor(parts, french):
-    def shrink_box(root):
-        shape = _shape(root, "noauto-free")
-        shape.find(f"{P}spPr/{A}xfrm/{A}ext").set("cy", str(int(0.5 * 914400)))
-        shape.find(f".//{A}t").text = "本项目位于城市新区核心地段"
+def test_no_autofit_box_grows_to_shape_below_then_shrinks(parts, french):
+    def block(root):
+        x, y, cx, cy = _ext(_shape(root, "noauto-free"))
+        _add_rect(root, x, y + cy + int(0.3 * 914400), cx, 914400)
 
-    root, touched, issues = _run(parts, french, 1, edit=shrink_box)
-    shape = _shape(root, "noauto-free")
-    assert _sizes(touched["noauto-free"]) == {1050}
-    assert _ext(shape)[3] > int(0.5 * 914400)
+    root, touched, issues = _run(parts, french, 1, edit=block)
+    x, y, cx, cy = _ext(_shape(root, "noauto-free"))
+    obstacle = _shape(root, "obstacle 99")
+    assert y + cy <= _ext(obstacle)[1]
+    assert cy > _ext(_shape(etree.fromstring(parts["ppt/slides/slide1.xml"]), "noauto-free"))[3]
+    sizes = _sizes(touched["noauto-free"])
+    assert len(sizes) == 1 and 1080 <= sizes.pop() < 1800
     assert all(issue.target is not touched["noauto-free"] for issue in issues)
 
 
@@ -243,6 +255,14 @@ def test_unwrapped_label_widens_to_the_right(parts, french):
     assert _sizes(touched["spauto-label"]) == {1800}
 
 
+def test_fixed_layout_keeps_auto_resize_box_and_shrinks(parts, french):
+    before = etree.fromstring(parts["ppt/slides/slide3.xml"])
+    root, touched, _issues = _run(parts, french, 3, fixed_layout=True)
+    for name in ("spauto-free", "spauto-label"):
+        assert _ext(_shape(root, name)) == _ext(_shape(before, name)), name
+        assert max(_sizes(touched[name])) < 1800, name
+
+
 def test_auto_resize_box_stops_at_shape_below_then_shrinks(parts, french):
     root, touched, _issues = _run(parts, french, 3)
     shape = _shape(root, "spauto-near")
@@ -272,6 +292,19 @@ def test_table_shrinks_as_a_whole_when_blocked(parts, french):
     _root, touched, issues = _run(parts, french, 4, edit=block)
     sizes = _sizes(touched["table"])
     assert len(sizes) == 1 and 1080 <= sizes.pop() < 1800  # 整张表一个字号
+    assert issues == []
+
+
+def test_fixed_layout_table_shrinks_into_its_rows(parts, french):
+    """固定版面不往下长；「外墙保温」译成两行，缩到 60% 也超出原行高 2 磅，进复核。"""
+    _root, touched, issues = _run(parts, french, 4, fixed_layout=True)
+    assert _sizes(touched["table"]) == {1050}
+    assert [issue.target for issue in issues] == [touched["table"]]
+    roomy = french | {"table": [text.replace("Isolation thermique des façades", "Isolation")
+                                for text in french["table"]]}
+    _root, touched, issues = _run(parts, roomy, 4, fixed_layout=True)
+    sizes = _sizes(touched["table"])
+    assert len(sizes) == 1 and min(sizes) < 1800  # 整表缩进原来的行高里
     assert issues == []
 
 
@@ -384,7 +417,9 @@ def test_missing_parts_fall_back_to_defaults(parts, french):
     touched = _translate(root, french)
     issues = fit_after_write(lambda part: None, name, root, list(touched.values()), fonts=NO_FONTS)
     assert all(issue.reason == REASON_OVERFLOW for issue in issues)
-    assert max(_sizes(touched["noauto-free"])) < 1800
+    shape = _shape(root, "noauto-free")
+    source = _shape(etree.fromstring(parts[name]), "noauto-free")
+    assert max(_sizes(touched["noauto-free"])) < 1800 or _ext(shape)[3] > _ext(source)[3]
 
 
 def test_output_stays_well_formed(parts, french):
