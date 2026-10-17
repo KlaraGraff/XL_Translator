@@ -12,10 +12,12 @@ import type { ViewId, ViewParams } from "../router";
 import { hasView, navigate } from "../router";
 import { setTopbar, setTaskBadge, setTaskPill } from "../shell";
 import {
+  clearElement,
   closeMenu,
   createChip,
   createButton,
   createEmptyState,
+  createProgressBar,
   openMenu,
   openModal,
   showToast,
@@ -32,6 +34,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
+import { motionAllowed } from "../motion";
+import "./tasks.css";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -889,7 +893,8 @@ interface TaskEntry {
 
 const tasks = new Map<string, TaskEntry>();
 let order: string[] = [];
-let filter: "all" | "active" = "all";
+type TaskFilter = "all" | "active" | "review" | "failed";
+let filter: TaskFilter = "all";
 /** 搜索框里的关键词。跟 filter 一样是模块级状态：离开任务中心再回来，搜索条件还在。 */
 let searchQuery = "";
 let selectedId: string | null = null;
@@ -897,8 +902,12 @@ let selectedId: string | null = null;
 let mounted = false;
 let listRootEl: HTMLDivElement | null = null;
 let filtersEl: HTMLDivElement | null = null;
+let rowsEl: HTMLDivElement | null = null;
 let detailRootEl: HTMLDivElement | null = null;
 let fastPollTimer: number | null = null;
+/** 下一次 renderList 要不要让任务行错落浮现：只在进页、切筛选、输入搜索时置上，
+ *  用一次就清掉。4 秒轮询和 SSE 事件触发的重绘不带它，否则列表每 4 秒闪一次。 */
+let listStagger = false;
 
 let connectPromise: Promise<ApiClient> | null = null;
 
@@ -992,13 +1001,48 @@ function updateBadge(): void {
   setTaskPill({ count });
 }
 
+/** 任务落在哪个筛选里。进行中优先（已暂停的任务徽章是橙色，但它还没结束，不算需复核）；
+ *  需复核 = 列表徽章是橙色；失败 = 出错 / 应用中断，或徽章是红色（一个文件都没生成）。 */
+function entryBucket(entry: TaskEntry): "active" | "review" | "failed" | "other" {
+  if (isTaskActive(entry.task)) return "active";
+  const tone = cardChip(entry).tone;
+  if (tone === "warn") return "review";
+  if (entry.task.state === "error" || entry.task.state === "interrupted" || tone === "dgr") return "failed";
+  return "other";
+}
+
+/** 顶栏副标题，只读登记册：有任务在跑时说结果会留在这里；否则数今天发起的任务，
+ *  有需复核、失败的把「全部完成」换成各自的条数；今天还没有任务时沿用原来的说明。 */
+function topbarSubtitle(): string {
+  if (activeCount() > 0) return t("正在翻译，完成后结果会留在这里");
+  const today = new Date().toDateString();
+  let total = 0;
+  let review = 0;
+  let failed = 0;
+  for (const id of order) {
+    const entry = tasks.get(id);
+    if (!entry?.task.created_at || new Date(entry.task.created_at * 1000).toDateString() !== today) continue;
+    total += 1;
+    const bucket = entryBucket(entry);
+    if (bucket === "review") review += 1;
+    else if (bucket === "failed") failed += 1;
+  }
+  if (!total) return t("运行中的任务与最近结果");
+  const parts = [t("今天 {0} 个任务", total)];
+  if (review) parts.push(t("{0} 个需复核", review));
+  if (failed) parts.push(t("{0} 个失败", failed));
+  if (!review && !failed) parts.push(t("全部完成"));
+  return parts.join(" · ");
+}
+
 function refreshTopbarStatus(): void {
   if (!mounted) return;
   const count = activeCount();
+  // 没有进行中的任务时不挂芯片：状态词只用就绪 / 进行中 / 已完成 / 需复核 / 失败五个。
   setTopbar({
-    title: t("任务中心"),
-    status: count > 0 ? { label: t("{0} 个活动任务", count), tone: "run" } : { label: t("空闲"), tone: "idle" },
-    subtitle: t("运行中的任务与最近结果"),
+    title: t("任务"),
+    status: count > 0 ? { label: t("{0} 个进行中", count), tone: "run" } : undefined,
+    subtitle: topbarSubtitle(),
   });
 }
 
@@ -1321,7 +1365,7 @@ function confirmDeleteTask(taskId: string): void {
     tone: "warn",
     icon: "trash",
     title: t("删除这条任务记录？"),
-    body: [t("仅从任务中心移除此记录。已生成的译文、报告和诊断包将保留在原处，不会被删除。")],
+    body: [t("仅移除这条任务记录。已生成的译文、报告和诊断包将保留在原处，不会被删除。")],
     actions: [
       { label: t("取消"), variant: "default" },
       { label: t("删除记录"), variant: "danger-solid", onClick: () => void deleteTaskRecord(taskId) },
@@ -1357,9 +1401,11 @@ async function deleteTaskRecord(taskId: string): Promise<void> {
 
 /** 「全部」本来就按时间倒序排（运行中的置顶），原先第三个「最近结果」只是把运行中的
  *  去掉，和「全部」几乎一样，已删除；找某条任务改用旁边的搜索框。 */
-const FILTERS: Array<["all" | "active", string]> = localized(() => ([
+const FILTERS: Array<[TaskFilter, string]> = localized(() => ([
   ["all", t("全部")],
-  ["active", t("活动")],
+  ["active", t("进行中")],
+  ["review", t("需复核")],
+  ["failed", t("失败")],
 ]));
 
 /** 卡片排序用的时间戳。优先用 created_at（用户发起这批任务的时刻）——用户在列表里
@@ -1402,8 +1448,8 @@ function matchesSearch(entry: TaskEntry): boolean {
     tx(text(entry.task.source_label)),
     taskSurfaceLabel(entry.task.surface, entry.task.task_snapshot),
     cardChip(entry).label,
-    // 运行中的徽章是百分比，状态词（翻译中、已暂停）只在副标题里；已结束的任务只认徽章上
-    // 写的字，免得搜「有问题」搜出一排徽章写着「已完成」的卡片。
+    // 运行中的徽章只说「进行中」，具体状态词（翻译中、已暂停）在副标题里；已结束的任务只认
+    // 徽章上写的字，免得搜「有问题」搜出一排徽章写着「已完成」的卡片。
     isTaskActive(entry.task) ? taskStateMeta(entry.task, entry.streamState).label : "",
     cardSubtitle(entry),
   ].join(" "));
@@ -1415,7 +1461,7 @@ function visibleOrder(): string[] {
     .filter((id) => {
       const entry = tasks.get(id);
       if (!entry) return false;
-      if (filter === "active" && !isTaskActive(entry.task)) return false;
+      if (filter !== "all" && entryBucket(entry) !== filter) return false;
       return matchesSearch(entry);
     })
     .sort((idA, idB) => compareTaskOrder(tasks.get(idA)!.task, tasks.get(idB)!.task));
@@ -1489,13 +1535,20 @@ function entryPercent(entry: TaskEntry): number | null {
   return entry.stepTotal > 0 ? Math.round((entry.stepDone / entry.stepTotal) * 100) : null;
 }
 
-function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
-  const meta = taskStateMeta(entry.task, entry.streamState);
-  if (isTaskActive(entry.task)) {
-    const percent = entryPercent(entry);
-    return { label: percent !== null ? `${percent}%` : meta.label, tone: "tint" };
+/** 运行中的状态（准备、翻译、收尾）在徽章上一律说「进行中」，百分比挪到副标题末尾；
+ *  暂停、停止途中沿用状态词——那是用户自己按的，要看得出来。已结束的任务返回 null。 */
+function activeChip(task: TaskStatus, streamState?: StreamState): { label: string; tone: ChipTone; run: boolean } | null {
+  if (!isTaskActive(task)) return null;
+  if (task.state === "running" || task.state === "preflight" || task.state === "finalizing") {
+    return { label: t("进行中"), tone: "tint", run: true };
   }
-  return reviewChip(entry.task) ?? meta;
+  return { ...taskStateMeta(task, streamState), tone: "tint", run: false };
+}
+
+function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
+  const active = activeChip(entry.task, entry.streamState);
+  if (active) return { label: active.label, tone: active.tone };
+  return reviewChip(entry.task) ?? taskStateMeta(entry.task, entry.streamState);
 }
 
 /** source_label 是「首个文件名 等 N 个文件」（api/task_manager._selected_files_label）。
@@ -1554,8 +1607,8 @@ function cardSubtitle(entry: TaskEntry): string {
 
 /** 「翻译」入口页的「最近」一行：图标、标题、类型 · 时间、状态徽章，和任务中心卡片同一套说法。 */
 export function taskRowSummary(task: TaskStatus): { icon: IconName; title: string; meta: string; chip: { label: string; tone: ChipTone } } {
-  const meta = taskStateMeta(task);
-  const chip = isTaskActive(task) ? { label: meta.label, tone: "tint" as ChipTone } : (reviewChip(task) ?? meta);
+  const active = activeChip(task);
+  const chip = active ? { label: active.label, tone: active.tone } : (reviewChip(task) ?? taskStateMeta(task));
   return {
     icon: surfaceIcon(task.surface),
     title: cardTitle(task),
@@ -1564,11 +1617,13 @@ export function taskRowSummary(task: TaskStatus): { icon: IconName; title: strin
   };
 }
 
-function renderCard(id: string): HTMLDivElement {
+function renderCard(id: string, index: number): HTMLButtonElement {
   const entry = tasks.get(id)!;
-  const card = document.createElement("div");
-  card.className = id === selectedId ? "card tkcard sel" : "card tkcard";
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = id === selectedId ? "tk-row on" : "tk-row";
   card.dataset.taskId = id;
+  card.style.setProperty("--i", String(index));
   card.addEventListener("click", () => {
     selectedId = id;
     renderList();
@@ -1580,7 +1635,7 @@ function renderCard(id: string): HTMLDivElement {
   const ic = icon(surfaceIcon(entry.task.surface), { size: "sm" });
   r1.append(ic);
   // 标题挂在独立的 .ttl 上（不是裸文本节点）才能省略号截断：source_label 现在是文件名，
-  // 下划线连写的长英文名是不可断 token，直接铺出去会把状态徽章顶出 340px 的列表宽度，
+  // 下划线连写的长英文名是不可断 token，直接铺出去会把状态徽章顶出列表宽度，
   // 用户看不见这条任务到底成没成。完整名字放 title，悬停可看全。
   const titleText = cardTitle(entry.task);
   const titleEl = document.createElement("span");
@@ -1589,33 +1644,34 @@ function renderCard(id: string): HTMLDivElement {
   // 悬停时给出完整来源说明（含「等 N 个文件」）。
   titleEl.title = tx(text(entry.task.source_label, titleText));
   r1.append(titleEl);
+  const active = activeChip(entry.task, entry.streamState);
   const chipInfo = cardChip(entry);
-  const chip = createChip({ label: chipInfo.label, tone: chipInfo.tone });
-  chip.style.marginLeft = "auto";
+  const chip = createChip({ label: chipInfo.label, tone: chipInfo.tone, className: active?.run ? "run" : undefined });
+  if (active?.run) {
+    const led = document.createElement("span");
+    led.className = "led";
+    chip.prepend(led);
+  }
   r1.append(chip);
   card.append(r1);
 
+  // 百分比不再写进徽章，跟在副标题末尾。
+  const percent = entryPercent(entry);
+  const showProgress = isTaskActive(entry.task) && percent !== null;
   const r2 = document.createElement("div");
   r2.className = "r2";
-  r2.textContent = cardSubtitle(entry);
+  r2.textContent = showProgress ? `${cardSubtitle(entry)} · ${percent}%` : cardSubtitle(entry);
   card.append(r2);
 
-  const percent = entryPercent(entry);
-  if (isTaskActive(entry.task) && percent !== null) {
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    bar.style.marginTop = "9px";
-    const fill = document.createElement("i");
-    fill.style.width = `${percent}%`;
-    bar.append(fill);
-    card.append(bar);
-  }
+  if (showProgress) card.append(createProgressBar({ percent: percent! }).root);
   return card;
 }
 
 function renderList(): void {
-  if (!listRootEl) return;
-  while (listRootEl.children.length > 1) listRootEl.removeChild(listRootEl.lastChild!);
+  if (!rowsEl) return;
+  clearElement(rowsEl);
+  rowsEl.classList.toggle("stag", listStagger && motionAllowed());
+  listStagger = false;
   const ids = visibleOrder();
   if (!ids.length && normalizeSearch(searchQuery)) {
     const empty = createEmptyState({
@@ -1624,22 +1680,23 @@ function renderList(): void {
       icon: "search",
     });
     empty.style.flex = "1";
-    listRootEl.append(empty);
+    rowsEl.append(empty);
     return;
   }
   if (!ids.length) {
-    const empty = createEmptyState({
-      title: t("当前没有可显示的任务"),
-      description: t("开始 Excel、Word、PDF / 图片、CAD 图纸翻译或记忆库清洗后，进度和结果将显示在此处。"),
-      icon: "tasks",
-    });
+    // 选了某个筛选却一条都没有，跟「还没有任何任务」不是一回事。
+    const empty = filter !== "all" && order.length
+      ? createEmptyState({ title: t("没有符合条件的任务"), icon: "tasks" })
+      : createEmptyState({
+          title: t("当前没有可显示的任务"),
+          description: t("开始 Excel、Word、PDF / 图片、CAD 图纸翻译或记忆库清洗后，进度和结果将显示在此处。"),
+          icon: "tasks",
+        });
     empty.style.flex = "1";
-    listRootEl.append(empty);
+    rowsEl.append(empty);
     return;
   }
-  for (const id of ids) {
-    listRootEl.append(renderCard(id));
-  }
+  ids.forEach((id, index) => rowsEl!.append(renderCard(id, index)));
 }
 
 function buildActionButton(reference: { label: string; path: string; reveal: boolean }): HTMLButtonElement {
@@ -1668,23 +1725,13 @@ function renderDetail(): void {
   const { task } = entry;
 
   const header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.alignItems = "center";
-  header.style.gap = "10px";
-  header.style.flexWrap = "wrap";
+  header.className = "tk-top";
+  // 标题和列表行同一个说法（文件名），类型挪到下面的摘要句；完整来源（含「等 N 个文件」）
+  // 放 title。同卡片标题：长文件名必须省略（.tk-top h2），不然会把右侧「更多」推到可视区外。
   const title = document.createElement("h2");
-  title.style.fontSize = "15px";
-  title.style.fontWeight = "650";
-  // 同卡片标题：长文件名不截断会把右侧「删除记录」「导出诊断」推到可视区外，
-  // 详情页横向不滚动，那几个按钮就彻底点不到了。
-  title.style.flex = "1 1 200px";
-  title.style.minWidth = "0";
-  title.style.overflow = "hidden";
-  title.style.textOverflow = "ellipsis";
-  title.style.whiteSpace = "nowrap";
   const fallbackTitle = t("任务 {0}", task.task_id.slice(0, 8));
   const titleText = `${taskSurfaceLabel(task.surface, task.task_snapshot)} · ${tx(text(task.source_label, fallbackTitle))}`;
-  title.textContent = titleText;
+  title.textContent = cardTitle(task);
   title.title = titleText;
   header.append(title);
 
@@ -1693,11 +1740,7 @@ function renderDetail(): void {
   header.append(createChip(reviewChip(task) ?? meta));
 
   const actions = document.createElement("div");
-  actions.style.marginLeft = "auto";
-  actions.style.display = "flex";
-  actions.style.alignItems = "center";
-  actions.style.gap = "8px";
-  actions.style.flexWrap = "wrap";
+  actions.className = "acts";
   // 顶部只摆最常用的几个：第一个本地结果（通常是「打开输出目录」）、打开工作区、
   // 任务控制和「反馈此任务」；其余本地结果、导出诊断和「删除记录」收进「更多」。
   // CAD 任务以前一排 8 个按钮挤成两行，还有两个同名的「打开本地结果」。
@@ -1808,7 +1851,6 @@ function renderDetail(): void {
   if (failure) {
     const banner = document.createElement("div");
     banner.className = "banner res-err";
-    banner.style.margin = "12px 0 0";
     const copy = document.createElement("div");
     copy.className = "copy";
     const head = document.createElement("b");
@@ -1822,7 +1864,23 @@ function renderDetail(): void {
     detailRootEl.append(banner);
   }
 
-  const snapshots = taskSnapshotRows(task);
+  // 先一句摘要：类型 · 语言 · 提示词。后两段按标签从快照行里取，取不到就省略；
+  // 只剩类型时整句不出现（类型已经写在列表行和图标上了）。
+  const allSnapshots = taskSnapshotRows(task);
+  const summaryLabels = new Set([t("语言"), t("提示词")]);
+  const summaryParts = [t("语言"), t("提示词")]
+    .map((label) => allSnapshots.find(([rowLabel]) => rowLabel === label)?.[1] ?? "")
+    .filter(Boolean);
+  if (summaryParts.length) {
+    const smart = document.createElement("div");
+    smart.className = "smart";
+    const line = document.createElement("div");
+    line.textContent = [taskSurfaceLabel(task.surface, task.task_snapshot), ...summaryParts].join(" · ");
+    smart.append(icon("spark", { size: "sm" }), line);
+    detailRootEl.append(smart);
+  }
+
+  const snapshots = allSnapshots.filter(([label]) => !summaryLabels.has(label));
   if (snapshots.length) {
     const kv = document.createElement("dl");
     kv.className = "kv";
@@ -1850,17 +1908,18 @@ function renderDetail(): void {
   const kpis = richKpiRows(task);
   if (kpis.length) {
     const grid = document.createElement("div");
-    grid.className = "kpis";
-    for (const [label, value] of kpis) {
+    grid.className = motionAllowed() ? "kpis stag" : "kpis";
+    kpis.forEach(([label, value], index) => {
       const tile = document.createElement("div");
       tile.className = WARN_KPI_LABELS.has(label) && value > 0 ? "kpi warn" : "kpi";
-      const span = document.createElement("span");
-      span.textContent = label;
+      tile.style.setProperty("--i", String(index));
       const b = document.createElement("b");
       b.textContent = String(value);
-      tile.append(span, b);
+      const span = document.createElement("span");
+      span.textContent = label;
+      tile.append(b, span);
       grid.append(tile);
-    }
+    });
     detailRootEl.append(grid);
   }
 
@@ -1876,15 +1935,11 @@ function renderDetail(): void {
 
   if (reviews.length) {
     const sectionTitle = document.createElement("div");
+    sectionTitle.className = "sub-h";
     sectionTitle.dataset.reviewAnchor = "1";
-    sectionTitle.style.fontSize = "13px";
-    sectionTitle.style.fontWeight = "650";
-    sectionTitle.style.margin = "6px 0 8px";
     sectionTitle.textContent = t("需要复核的位置") + " ";
     const hint = document.createElement("span");
-    hint.style.fontWeight = "400";
-    hint.style.color = "var(--ink-3)";
-    hint.style.fontSize = "12px";
+    hint.className = "muted";
     hint.textContent = t("需复核项在前 · 每行一个位置，同一位置的多条判定已合并");
     sectionTitle.append(hint);
     detailRootEl.append(sectionTitle);
@@ -1955,9 +2010,7 @@ function renderDetail(): void {
     detailRootEl.append(table);
     if (reviews.length > 50) {
       const note = document.createElement("p");
-      note.style.fontSize = "12px";
-      note.style.color = "var(--ink-3)";
-      note.style.margin = "6px 0";
+      note.className = "tk-note";
       note.textContent = t("仅显示前 50 处，共 {0} 处。完整清单见运行日志与诊断包。", reviews.length);
       detailRootEl.append(note);
     }
@@ -1966,9 +2019,7 @@ function renderDetail(): void {
     // 用 review_marks 回填计数，见 core/task_runner.py）。什么都不显示的话，徽章上的
     // 「需复核 37」在详情页里无处可查，用户只能以为界面漏了内容。
     const note = document.createElement("p");
-    note.style.fontSize = "12px";
-    note.style.color = "var(--ink-3)";
-    note.style.margin = "6px 0 0";
+    note.className = "tk-note";
     note.textContent = t("本次未将复核标记写入输出文件，因此无法定位到单元格。如需定位，请在开始翻译前开启「标记需复核内容」。");
     detailRootEl.append(note);
   }
@@ -1976,9 +2027,7 @@ function renderDetail(): void {
   const files = fileRows(task);
   if (files.length) {
     const sectionTitle = document.createElement("div");
-    sectionTitle.style.fontSize = "13px";
-    sectionTitle.style.fontWeight = "650";
-    sectionTitle.style.margin = "16px 0 8px";
+    sectionTitle.className = "sub-h";
     sectionTitle.textContent = t("生成的文件");
     detailRootEl.append(sectionTitle);
 
@@ -2029,9 +2078,7 @@ function renderDetail(): void {
     detailRootEl.append(table);
     if (files.length > 30) {
       const note = document.createElement("p");
-      note.style.fontSize = "12px";
-      note.style.color = "var(--ink-3)";
-      note.style.margin = "6px 0";
+      note.className = "tk-note";
       note.textContent = t("仅显示前 30 个文件，共 {0} 个文件。完整清单见运行日志与诊断包。", files.length);
       detailRootEl.append(note);
     }
@@ -2039,9 +2086,7 @@ function renderDetail(): void {
 
   if (!task.terminal) {
     const logNote = document.createElement("p");
-    logNote.style.fontSize = "12px";
-    logNote.style.color = "var(--ink-3)";
-    logNote.style.marginTop = "10px";
+    logNote.className = "tk-note";
     logNote.textContent =
       entry.streamState === "reconnecting"
         ? t("与后台服务的连接暂时中断，正在自动重新连接；已有进度不会丢失，也不会重复处理。")
@@ -2080,30 +2125,37 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   else if (!selectedId) selectedId = visibleOrder()[0] ?? null;
 
   refreshTopbarStatus();
+  container.classList.add("tasks");
 
   listRootEl = document.createElement("div");
   listRootEl.className = "tk-list";
   filtersEl = document.createElement("div");
   filtersEl.className = "tk-filters";
   for (const [key, label] of FILTERS) {
-    const f = document.createElement("span");
+    const f = document.createElement("button");
+    f.type = "button";
     f.className = key === filter ? "f on" : "f";
     f.textContent = label;
+    f.setAttribute("aria-pressed", String(key === filter));
     f.addEventListener("click", () => {
       filter = key;
+      listStagger = true;
       renderFilters();
       renderList();
     });
     filtersEl.append(f);
   }
   filtersEl.append(buildSearchBox());
-  listRootEl.append(filtersEl);
+  rowsEl = document.createElement("div");
+  rowsEl.className = "tk-rows";
+  listRootEl.append(filtersEl, rowsEl);
 
   detailRootEl = document.createElement("div");
-  detailRootEl.className = "card tk-detail";
+  detailRootEl.className = "tk-detail";
 
   container.append(listRootEl, detailRootEl);
 
+  listStagger = true;
   renderList();
   renderDetail();
 
@@ -2117,7 +2169,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);
 }
 
-/** 筛选按钮右侧的搜索框。放在 filtersEl 里：renderList() 只重建卡片、不动第一个子节点，
+/** 筛选按钮右侧的搜索框。放在 filtersEl 里：renderList() 只重建 rowsEl 里的行，
  *  每 4 秒一次的巡检刷新不会让输入框失焦或丢掉光标位置。 */
 function buildSearchBox(): HTMLLabelElement {
   const wrap = document.createElement("label");
@@ -2130,6 +2182,7 @@ function buildSearchBox(): HTMLLabelElement {
   input.value = searchQuery;
   input.addEventListener("input", () => {
     searchQuery = input.value;
+    listStagger = true;
     renderList();
   });
   input.addEventListener("keydown", (event) => {
@@ -2146,9 +2199,10 @@ function buildSearchBox(): HTMLLabelElement {
 
 function renderFilters(): void {
   if (!filtersEl) return;
-  const children = Array.from(filtersEl.children) as HTMLSpanElement[];
+  const children = Array.from(filtersEl.children) as HTMLElement[];
   FILTERS.forEach(([key], index) => {
     children[index]?.classList.toggle("on", key === filter);
+    children[index]?.setAttribute("aria-pressed", String(key === filter));
   });
 }
 
@@ -2162,5 +2216,6 @@ export function unmount(): void {
   }
   listRootEl = null;
   filtersEl = null;
+  rowsEl = null;
   detailRootEl = null;
 }
