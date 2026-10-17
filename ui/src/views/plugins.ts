@@ -13,6 +13,7 @@ import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
 import { clearElement, createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
 import { icon } from "../icons";
+import { motionAllowed } from "../motion";
 import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
 
@@ -32,6 +33,13 @@ let detectDeadline = 0;
 let ocrCapability: OcrPluginStatus | null = null;
 let ocrErrorText = "";
 let ocrBusy = false;
+
+/** 从别的页跳过来时要定位的组件卡片（navigate("plugins", { focus: "pdf" })）：滚到它，
+ *  再闪一圈强调色。轮询会整页重绘，所以记住开始时刻，重绘后的新卡片接着同一段淡出。 */
+type ComponentKey = "oda" | "ocr" | "pdf";
+const FOCUS_MS = 2400;
+let focusKey: ComponentKey | null = null;
+let focusStart = 0;
 
 let wordCapability: Pdf2DocxPluginStatus | null = null;
 let wordErrorText = "";
@@ -78,7 +86,12 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
   embedded = params.embedded === true;
   rootEl = container;
+  const focus = params.focus;
+  focusKey = focus === "oda" || focus === "ocr" || focus === "pdf" ? focus : null;
+  focusStart = performance.now();
   render();
+  const target = focusKey ? container.querySelector<HTMLElement>(`[data-component="${focusKey}"]`) : null;
+  if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "center", behavior: motionAllowed() ? "smooth" : "auto" }));
   void refresh();
   void refreshOcr();
   void refreshWord();
@@ -91,6 +104,16 @@ export function unmount(): void {
   stopCadPolling();
   stopWordPolling();
   stopOcrPolling();
+}
+
+function markComponentCard(card: HTMLElement, key: ComponentKey): HTMLElement {
+  card.dataset.component = key;
+  const elapsed = performance.now() - focusStart;
+  if (focusKey === key && elapsed < FOCUS_MS) {
+    card.classList.add("plugins-focus");
+    card.style.animationDelay = `${-Math.round(elapsed)}ms`;
+  }
+  return card;
 }
 
 function stopAutoDetect(): void {
@@ -576,7 +599,7 @@ function renderOcrCard(): HTMLElement {
     body.append(warn);
   }
   card.append(body);
-  return card;
+  return markComponentCard(card, "ocr");
 }
 
 function wordInstalling(): boolean {
@@ -879,7 +902,7 @@ function renderWordCard(): HTMLElement {
     body.append(warn);
   }
   card.append(body);
-  return card;
+  return markComponentCard(card, "pdf");
 }
 
 function actionButtons(): HTMLElement {
@@ -975,7 +998,7 @@ function render(): void {
     body.append(warn);
   }
   card.append(body);
-  column.append(card);
+  column.append(markComponentCard(card, "oda"));
   column.append(renderOcrCard());
   column.append(renderWordCard());
 

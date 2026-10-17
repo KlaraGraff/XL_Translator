@@ -68,7 +68,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
   container.append(tabs, panelEl);
   syncTabs();
-  mountPanel(activeTab, false);
+  // focus：跳过来时要定位的组件卡片（navigate("plugins", { focus: "pdf" })），只在这次挂载时用。
+  mountPanel(activeTab, false, params.focus);
   // 挂载后才量得到页签宽度；第一次定位不带过渡，下一帧才加 .ready（同侧栏高亮块）。
   const underline = underlineEl;
   requestAnimationFrame(() => {
@@ -102,7 +103,7 @@ function selectTab(tab: HubTab): void {
   mountPanel(tab, motionAllowed());
 }
 
-function mountPanel(tab: HubTab, animate: boolean): void {
+function mountPanel(tab: HubTab, animate: boolean, focus?: unknown): void {
   const panel = panelEl;
   if (!panel) return;
   panelAnimation?.cancel();
@@ -111,7 +112,7 @@ function mountPanel(tab: HubTab, animate: boolean): void {
   // 面板会被嵌入的视图加上自己的类（plugins-content 等）；每次换页签回到基类，免得叠在一起。
   panel.className = "xhub-panel";
   panel.setAttribute("aria-labelledby", `xhub-tab-${tab}`);
-  PANELS[tab].view.mount(panel, { embedded: true });
+  PANELS[tab].view.mount(panel, focus === undefined ? { embedded: true } : { embedded: true, focus });
   if (animate) {
     panelAnimation = panel.animate(
       [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }],
