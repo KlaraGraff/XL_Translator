@@ -4744,8 +4744,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   }
   if (protectedParagraphs > 0) clauses.push(t("保护开头 {0} 段未翻译", protectedParagraphs));
   if (review > 0) clauses.push(t("{0} 处需复核", review));
-  // 提示不是待办，但也不能不说：自动目录那条要用户自己回 Word 按一下 F9，不说他不会做。
-  if (hints > 0) clauses.push(t("{0} 处提示需手动处理", hints));
+  // 提示不是待办，但也不能不说。Excel 的提示多是已自动修好的残留、只记录不改的写法差异，
+  // Word 的自动目录要回 Word 按一下 F9——各条该怎么办写在报告里，这里只报条数、指去报告，
+  // 不说「需手动处理」：绿色结果卡上挂这四个字，读起来像还有事要做（maple 10-17 定）。
+  if (hints > 0) clauses.push(t("{0} 条提示，详见报告", hints));
   // 中途换过连接就明说：这一半译文出自另一家服务商，用户回头比质量、查账单都要知道。
   // 详细的切换时刻和原因在任务中心的快照行里。
   const switchCount = num(record(result.connections).switch_count);
