@@ -21,6 +21,7 @@ import { ApiClient } from "./api-client";
 import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems } from "./surface-descriptors";
 import type { SurfaceDescriptor } from "./api-client";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
+import { installCmdk } from "./cmdk";
 
 import * as homeView from "./views/home";
 import * as excelView from "./views/excel";
@@ -255,6 +256,7 @@ function main(): void {
   window.setTimeout(() => {
     void runBackgroundUpdateCheck();
   }, 8000);
+  installCmdk();
 }
 
 main();

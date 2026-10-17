@@ -30,6 +30,10 @@
 
   **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
 
+- **新增全局搜索**：Mac 按 ⌘K、Windows 按 Ctrl+K（或点侧栏顶部的「搜索或输入路径」），可搜页面、任务和记忆库词条；输入文件路径回车即开始翻译。方向键选择、回车打开、Esc 关闭；任务回车直接打开那条任务，词条回车进入记忆库并定位到这条。
+
+  **Global search**: Press ⌘K on Mac or Ctrl+K on Windows (or click "Search or enter a path" at the top of the sidebar) to search pages, tasks and translation-memory entries; type a file path and press Enter to start translating it. Arrow keys select, Enter opens, Esc closes; Enter on a task opens that task, and Enter on an entry opens the translation memory at that entry.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
