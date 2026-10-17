@@ -71,7 +71,7 @@ def test_manifest() -> None:
     assert manifest.key == "ext:pptx"
     assert manifest.label == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
-    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx"]
+    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx", "ppt", "pps"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
     assert [(option.key, option.default) for option in manifest.options] == [
         ("translate_notes", True),
@@ -218,7 +218,7 @@ def test_the_page_is_registered_with_the_app() -> None:
         descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
-        assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
+        assert descriptor["extensions"] == ["potx", "pps", "ppsx", "ppt", "pptm", "pptx"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
         if not already:
