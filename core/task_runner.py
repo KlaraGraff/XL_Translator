@@ -108,6 +108,9 @@ from core.term_session import TaskTermSession
 from core import tm_manager
 from core.xlsx_embedded_text import KIND_SHAPE, EmbeddedTextOptions, collect_embedded_units
 from core.xlsx_patcher import is_generated_original_sheet_title
+from core.xlsx_rich_text import collect_marked_sources
+from core.word_inline_marks import InlineMarkEngine, place_marks, strip_marks
+from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.excel_automation import (
     create_excel_app,
     finalize_excel_thread,
@@ -327,6 +330,10 @@ class TaskRunner(BaseTaskRunner):
         self._untranslated_only = bool(untranslated_only)
         # 只读：上次输出目录，补译时用它的双语产物做底稿。绝不写入。
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
+        # 一格里有几种格式时：整格纯文本 → 带 <g1>…</g1> 标记的原文（core/xlsx_rich_text.py）；
+        # 翻译时由 InlineMarkEngine 换上，写回时按标记分片段
+        self._marked_sources: dict[str, str] = {}
+        self._inline_mark_engine: InlineMarkEngine | None = None
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
         # 本次任务的速率与重试；_run 里按任务实际用的连接重新取一次。
@@ -1029,7 +1036,7 @@ class TaskRunner(BaseTaskRunner):
                 auto_source_lang=auto_source_lang,
                 batch_size=batch_size,
                 concurrency=concurrency,
-                engine=term_session.wrap(engine),
+                engine=term_session.wrap(self._mark_engine(engine)),
                 excel_review_marks=excel_review_marks,
                 file_texts=file_texts,
                 global_unique_texts=global_unique_texts,
@@ -1124,6 +1131,10 @@ class TaskRunner(BaseTaskRunner):
                 counts=self._count_cell_occurrences(process_paths, short_words),
                 engine_name=engine.engine_name,
             )
+
+            # 限流时不再为补标记发请求：这些格的译文写成一个片段，原文格式照样保留
+            if not rate_limited:
+                self._place_missing_inline_marks(engine, global_translations)
 
             # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
             logger.info(f"阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
@@ -1697,6 +1708,49 @@ class TaskRunner(BaseTaskRunner):
                 continue
             # 译文与原文相同（含失败交回的原文）的格子由后面的汇总统一标需复核。
             api_translations[source] = collapse_echoed_repeat(translation, source)
+
+    def _mark_engine(self, engine):
+        """带局部格式的单元格换成带标记的原文发出；没有这类单元格时不包。"""
+        if not self._marked_sources:
+            return engine
+        self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
+        return self._inline_mark_engine
+
+    def _place_missing_inline_marks(self, engine, global_translations: dict[str, str]) -> None:
+        """带局部格式的单元格里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
+        语言、模型弄丢标记、修复改过），让模型只补标记。失败的译文写成一个片段。"""
+        if not self._marked_sources or self._stop_event.is_set():
+            return
+        if self._inline_mark_engine is None:
+            self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
+        known = self._inline_mark_engine.marked_translations
+        items = []
+        for source, marked in self._marked_sources.items():
+            value = global_translations.get(source)
+            if not value:
+                continue
+            translation = extract_replace_translation(value) if is_replace_translation(value) else value
+            translation = str(translation).strip()
+            if not translation or translation.lower() == source.lower():
+                continue
+            entry = known.get(source)
+            if entry is not None and strip_marks(entry[1]).strip() == translation:
+                continue
+            items.append((source, marked, translation))
+        if not items:
+            return
+        try:
+            placed = place_marks(
+                engine,
+                items,
+                should_stop=self.stop_requested,
+                log=lambda message: logger.info(message),
+            )
+        except Exception as exc:  # noqa: BLE001 - 补标记失败只是译文不分片段
+            logger.info(f"Excel 单元格局部格式补标记失败：{exc!r}")
+            return
+        known.update(placed)
+        logger.info(f"Excel 单元格局部格式：补标记 {len(placed)}/{len(items)} 处")
 
     def _translate_misses_via_api(
         self,
@@ -2508,6 +2562,10 @@ class TaskRunner(BaseTaskRunner):
                 )
                 return xls_file_count, total_sheet_count, raw_text_count
         text_set = set(texts)
+        # 补译的底稿是上次的双语产物，格里是原文加译文，不加标记
+        if coverage_plans[-1] is None and not self._untranslated_only:
+            for plain, marked in collect_marked_sources(process_path, text_set).items():
+                self._marked_sources.setdefault(plain, marked)
         text_set |= self._collect_embedded_texts(
             process_path,
             file_item.name,
@@ -2729,6 +2787,9 @@ class TaskRunner(BaseTaskRunner):
                     stats                = write_stats,
                     output_basename      = output_basename,
                     staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
+                    marked_translations  = (
+                        self._inline_mark_engine.marked_translations if self._inline_mark_engine else None
+                    ),
                 )
             shapes = int(write_stats.get("shape_paragraphs") or 0)
             comments = int(write_stats.get("comments") or 0)
