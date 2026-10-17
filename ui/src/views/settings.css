@@ -213,11 +213,15 @@
 /* 子导航 196px + 正文。断点按舞台宽算：1080 的最小窗口里舞台约 790px，减掉画布内边距、
    子导航和间距，正文还有约 520px，两列表单和四张用途卡都按 minmax(0, 1fr) 收得下。 */
 .set-row { flex: 1; min-height: 0; display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 0 24px; }
-.set-row .set-nav { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.set-row .set-nav .si { width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
+.set-row .set-nav { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 选中项的淡蓝底是一块会滑的 .set-ind（settings.ts 按选中项位置移动），和应用侧栏的 .side-ind 同一种；
+   第一次放到位不带过渡，到位后才加 .ready。各项自己只变字色。 */
+.set-row .set-nav .set-ind { position: absolute; left: 0; right: 0; top: 0; height: 32px; border-radius: var(--r-sm); background: var(--tint); pointer-events: none; opacity: 0; }
+.set-row .set-nav .set-ind.ready { transition: transform var(--t-page) var(--ease-spring), height var(--t-base) var(--ease-out), opacity var(--t-fast) var(--ease-out); }
+.set-row .set-nav .si { position: relative; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
 .set-row .set-nav .si svg { flex: none; }
 .set-row .set-nav .si:hover { background: var(--surface-2); color: var(--ink); }
-.set-row .set-nav .si.on { background: var(--tint); color: var(--tint-ink); font-weight: 600; }
+.set-row .set-nav .si.on, .set-row .set-nav .si.on:hover { background: transparent; color: var(--tint-ink); font-weight: 600; }
 .set-row .set-nav .si:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .set-row .si-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 正文自己滚动；Windows 常驻 8px 滚动条，右侧留 2px 免得内容贴着滚动条。 */
@@ -281,9 +285,7 @@
 .set-body .prompt-actions { align-items: center; margin-top: 0; }
 .set-body .prompt-actions .sec-note { margin-right: auto; }
 
-/* 进页时卡片错落浮现；同一页里保存后的重画不再播（.enter 只在换子页后挂一会儿）。 */
-.set-body.enter .stag > * { animation: set-rise var(--t-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 28ms); }
-@keyframes set-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* 换子页、换页签、换用途时的浮现由 motion.ts riseIn 播（Web Animations），这里没有对应样式。 */
 
 /* ========== 模型服务 ========== */
 /* 四张用途卡：名字和摘要都只占一行，放不下就省略（title 里有全文）。 */

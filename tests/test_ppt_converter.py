@@ -110,7 +110,7 @@ class ConversionOrderTests(_Workspace):
         self.assertEqual(result.method, "PowerPoint")
         self.assertEqual(result.fidelity, FIDELITY_HIGH)
         self.assertEqual(libreoffice_calls, [])
-        self.assertEqual(result.note, "原文件为旧版 .ppt，已用 PowerPoint 转换为 .pptx 后翻译，输出为 .pptx。")
+        self.assertEqual(result.note, "旧版 .ppt 已用 PowerPoint 转换为 .pptx，输出为 .pptx")
 
     def test_libreoffice_takes_over_without_confirmation(self) -> None:
         output = _write_pptx(self.root / "out.pptx")
@@ -235,6 +235,30 @@ class CacheTests(_Workspace):
             with self.assertRaises(PptConversionError):
                 cache.convert(self.source)
         self.assertEqual(len(calls), 1)
+
+    def test_release_forgets_one_file_and_deletes_its_copy(self) -> None:
+        calls, converter = self._counting()
+        other = self.root / "另一份.ppt"
+        other.write_bytes(b"another legacy payload")
+        cache = PptConversionCache(converter)
+        first = cache.convert(self.source)
+        kept = cache.convert(other)
+        cache.release(self.source)
+        self.assertFalse(first.path.exists())
+        self.assertTrue(kept.path.exists())
+        cache.convert(self.source)
+        cache.convert(other)
+        self.assertEqual(len(calls), 3)
+
+    def test_release_after_failure_allows_retry(self) -> None:
+        calls, converter = self._counting(fail=True)
+        cache = PptConversionCache(converter)
+        with self.assertRaises(PptConversionError):
+            cache.convert(self.source)
+        cache.release(self.source)
+        with self.assertRaises(PptConversionError):
+            cache.convert(self.source)
+        self.assertEqual(len(calls), 2)
 
     def test_cleanup_removes_temporary_files(self) -> None:
         _calls, converter = self._counting()
