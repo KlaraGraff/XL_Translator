@@ -39,8 +39,16 @@ PHASE_WRITE: LocalizedText = {"zh": "生成文件", "en": "Generating files", "f
 
 
 @dataclass(frozen=True)
+class ChoiceDef:
+    """One entry of a ``"choice"`` option: the value sent and its name."""
+
+    value: str
+    label: LocalizedText
+
+
+@dataclass(frozen=True)
 class OptionDef:
-    """One switch a page shows under 运行设置, declared instead of hand-built.
+    """One option a page shows under 运行设置, declared instead of hand-built.
 
     The four built-in pages still draw their switches from the front end's own
     tables and declare none; a page registered at run time has no such table,
@@ -49,19 +57,31 @@ class OptionDef:
 
     key: str
     label: LocalizedText
-    default: bool = False
+    #: ``bool`` for a toggle, one of ``choices``' values for a choice.
+    default: bool | str = False
     help: LocalizedText = field(default_factory=dict)
-    #: Only ``"toggle"`` for now.
-    kind: Literal["toggle"] = "toggle"
+    #: ``"toggle"`` is a switch; ``"choice"`` picks one of ``choices``.
+    kind: Literal["toggle", "choice"] = "toggle"
+    choices: tuple[ChoiceDef, ...] = ()
 
     def describe(self) -> dict[str, Any]:
-        return {
+        described: dict[str, Any] = {
             "key": self.key,
             "kind": self.kind,
             "label": dict(self.label),
             "help": dict(self.help),
             "default": self.default,
         }
+        if self.kind == "choice":
+            described["choices"] = [{"value": choice.value, "label": dict(choice.label)} for choice in self.choices]
+        return described
+
+    def coerce(self, value: Any) -> bool | str:
+        """A saved or requested value as this option takes it; an unknown choice falls back to the default."""
+        if self.kind == "choice":
+            text = str(value)
+            return text if any(choice.value == text for choice in self.choices) else self.default
+        return bool(value)
 
 
 def suffixes(values: Iterable[str]) -> tuple[str, ...]:

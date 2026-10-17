@@ -91,16 +91,42 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts[:4])
 
 
+class AdapterChoice(BaseModel):
+    """「选择」类选项里的一项：传给适配器的值，和界面上显示的名字。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
+    label: dict[str, str]
+
+    @field_validator("value")
+    @classmethod
+    def _value(cls, value: str) -> str:
+        if not _OPTION_KEY_RE.match(value):
+            raise ValueError("选项值只能用小写字母、数字和下划线，以字母开头")
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _label(cls, value: Any) -> dict[str, str]:
+        return _three_languages(value, "label")
+
+
 class AdapterOption(BaseModel):
-    """清单里的一个开关；字段与描述符的 ``OptionDef`` 一致。"""
+    """清单里的一个选项；字段与描述符的 ``OptionDef`` 一致。
+
+    ``kind`` 为 ``"toggle"``（默认）是开关，``default`` 是布尔值；为 ``"choice"`` 是多选一，
+    ``choices`` 列出各项，``default`` 是其中一项的 ``value``（不写时取第一项）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     key: str
-    kind: Literal["toggle"] = "toggle"
+    kind: Literal["toggle", "choice"] = "toggle"
     label: dict[str, str]
     help: dict[str, str] = Field(default_factory=dict)
-    default: bool = False
+    default: bool | str = False
+    choices: list[AdapterChoice] = Field(default_factory=list)
 
     @field_validator("key")
     @classmethod
@@ -120,6 +146,25 @@ class AdapterOption(BaseModel):
     @classmethod
     def _help(cls, value: Any) -> dict[str, str]:
         return _three_languages(value or {}, "help", required=False)
+
+    @model_validator(mode="after")
+    def _kind(self) -> AdapterOption:
+        if self.kind == "toggle":
+            if self.choices:
+                raise ValueError(f"开关 {self.key} 不能有 choices（多选一请写 \"kind\": \"choice\"）")
+            if not isinstance(self.default, bool):
+                raise ValueError(f"开关 {self.key} 的 default 只能是 true 或 false")
+            return self
+        values = [choice.value for choice in self.choices]
+        if len(values) < 2:
+            raise ValueError(f"选项 {self.key} 至少要有两项 choices")
+        if len(set(values)) != len(values):
+            raise ValueError(f"选项 {self.key} 的 choices 里 value 重复")
+        if self.default is False:
+            self.default = values[0]
+        if self.default not in values:
+            raise ValueError(f"选项 {self.key} 的 default 应为 choices 里的一个 value：{', '.join(values)}")
+        return self
 
 
 class AdapterCapabilities(BaseModel):
@@ -512,6 +557,7 @@ __all__ = [
     "TARGET_LANG_OPTION_KEY",
     "SUPPORTED_ADAPTER_API_VERSIONS",
     "AdapterCapabilities",
+    "AdapterChoice",
     "AdapterError",
     "AdapterHost",
     "AdapterManifest",

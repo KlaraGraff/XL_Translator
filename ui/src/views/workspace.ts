@@ -173,6 +173,15 @@ interface PreviousOutput {
 
 type TogglePathKind = "none" | "flat" | "output";
 
+/** 运行时注册的类型在「高级」里的多选一（描述符 options 里 kind 为 "choice" 的项）。 */
+interface ChoiceDef {
+  key: string;
+  label: string;
+  hint: string;
+  default: string;
+  choices: Array<{ value: string; label: string }>;
+}
+
 interface ToggleDef {
   key: string;
   label: string;
@@ -320,6 +329,24 @@ function surfaceToggles(surface: Surface): ToggleDef[] {
     }));
 }
 
+/** 运行设置里的多选一，只有运行时注册的类型有；和开关一样不落盘，值随开始任务的请求发出。 */
+function surfaceChoices(surface: Surface): ChoiceDef[] {
+  if (!isExtSurface(surface)) return [];
+  return (surfaceDescriptor(surface)?.options ?? [])
+    .filter((option) => option.kind === "choice" && (option.choices ?? []).length > 0)
+    .map((option) => {
+      const choices = (option.choices ?? []).map((choice) => ({ value: choice.value, label: localizedText(choice.label, choice.value) }));
+      const fallback = choices[0].value;
+      return {
+        key: option.key,
+        label: localizedText(option.label, option.key),
+        hint: localizedText(option.help),
+        default: choices.some((choice) => choice.value === option.default) ? String(option.default) : fallback,
+        choices,
+      };
+    });
+}
+
 // ---------------------------------------------------------------------------
 // 每个 surface 的本地状态（模块级，跨 mount/unmount 存活，与 tasks.ts 的后台徽标循环
 // 各自独立——见文件尾「架构偏离说明」）。
@@ -389,6 +416,8 @@ interface SurfaceState {
   scanSummary: JsonObject;
   selected: Set<string>;
   toggles: Map<string, boolean>;
+  /** 运行时注册的类型的多选一（见 surfaceChoices），键是选项的 key。 */
+  choices: Map<string, string>;
   targetLang: string;
   sourceLang: string;
   domainPreset: string;
@@ -459,6 +488,10 @@ function freshToggles(surface: Surface): Map<string, boolean> {
   return map;
 }
 
+function freshChoices(surface: Surface): Map<string, string> {
+  return new Map(surfaceChoices(surface).map((choice) => [choice.key, choice.default]));
+}
+
 function freshState(surface: Surface): SurfaceState {
   return {
     sourcePath: "",
@@ -468,6 +501,7 @@ function freshState(surface: Surface): SurfaceState {
     scanSummary: {},
     selected: new Set(),
     toggles: freshToggles(surface),
+    choices: freshChoices(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: NO_EXTRA_PROMPT,
@@ -2930,6 +2964,20 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     content.append(row);
   }
 
+  for (const choice of surfaceChoices(surface)) {
+    content.append(createSelectField({
+      label: choice.label,
+      hint: choice.hint,
+      options: choice.choices,
+      value: st.choices.get(choice.key) ?? choice.default,
+      disabled: active,
+      onChange: (value) => {
+        st.choices.set(choice.key, value);
+        rerender(surface);
+      },
+    }).root);
+  }
+
   if (surface === "cad") content.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
   // 输出位置是各页自己的设置项（运行时注册的类型存在 settings.extensions[<id>]）。
   content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
@@ -4016,9 +4064,10 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   if (isExtSurface(surface)) {
-    payload.options = Object.fromEntries(
-      surfaceToggles(surface).map((toggle) => [toggle.key, st.toggles.get(toggle.key) ?? toggle.default]),
-    );
+    payload.options = Object.fromEntries([
+      ...surfaceToggles(surface).map((toggle) => [toggle.key, st.toggles.get(toggle.key) ?? toggle.default]),
+      ...surfaceChoices(surface).map((choice) => [choice.key, st.choices.get(choice.key) ?? choice.default]),
+    ]);
   }
   if (surface === "cad") {
     // 已经是目标语言的文字不再送翻译——与扫描时「待翻译」的口径一致。

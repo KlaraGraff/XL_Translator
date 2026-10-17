@@ -26,6 +26,7 @@ from cli.adapter_commands import check_adapter
 from config import CORE_TRANSLATION_PROMPT
 from core import tm_manager
 from core.format_adapter import BUNDLED_ADAPTERS_DIR, AdapterError, InProcessAdapterHost, load_manifest
+from core.pptx_fit import LAYOUT_MODES
 from core.task_runner_messages import DoneMsg
 from settings import AppSettings, ExtensionSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
@@ -73,10 +74,12 @@ def test_manifest() -> None:
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
     assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
-    assert [(option.key, option.default) for option in manifest.options] == [
-        ("translate_notes", True),
-        ("fixed_layout", False),
+    assert [(option.key, option.kind, option.default) for option in manifest.options] == [
+        ("translate_notes", "toggle", True),
+        ("layout_mode", "choice", "fit"),
     ]
+    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（融合在前，是默认）。
+    assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
     # The PPT rules come on top of the app's own, which must stay word for word.
     assert manifest.prompt.startswith(CORE_TRANSLATION_PROMPT + "\n")
     assert "不扩写" in manifest.prompt and "不加句号" in manifest.prompt
@@ -136,12 +139,10 @@ def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
         return []
 
     cases = [
-        ({"fixed_layout": False}, {}),
+        ({}, {}),
         ({"layout_mode": "fit"}, {}),
         ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
         ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
-        ({"fixed_layout": True}, {"layout_mode": "fixed"}),  # 早先的「固定版面」开关
-        ({"layout_mode": "keep_size", "fixed_layout": True}, {"layout_mode": "keep_size"}),
         ({"layout_mode": "bogus"}, {}),
     ]
     with patch("core.pptx_text.fit_after_write", fit):
@@ -179,6 +180,23 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             )
             runner.start()
             return _drain(runner, timeout=60)
+
+    def test_the_layout_preference_of_the_task_reaches_the_fit(self) -> None:
+        path = self.source / "讲义.pptx"
+        shutil.copyfile(FIXTURES / "training.pptx", path)
+        seen: list[dict[str, Any]] = []
+
+        def fit(read_part, part_name, root, touched, **kwargs):
+            seen.append(kwargs)
+            return []
+
+        with patch("core.pptx_text.fit_after_write", fit):
+            for options, expected in (({}, {}), ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"})):
+                seen.clear()
+                messages = self._run(FrenchEngine(), [path], options=options)
+                done = next(message for message in messages if isinstance(message, DoneMsg))
+                assert done.file_results[0]["status"] == "completed", done.file_results
+                assert seen and all(kwargs == expected for kwargs in seen), (options, seen)
 
     def test_a_whole_task_writes_a_translated_deck(self) -> None:
         path = self.source / "项目进展汇报.pptx"
@@ -226,8 +244,13 @@ def test_the_page_is_registered_with_the_app() -> None:
         descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
+        # 分包说明：「PPT」默认显示在侧栏，排在 Word 后面。
+        assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
         assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
-        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
+        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode"]
+        layout = descriptor["options"][-1]
+        assert layout["kind"] == "choice" and layout["default"] == "fit"
+        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["融合", "保持字号", "固定版面"]
     finally:
         if not already:
             unregister_surface(key)

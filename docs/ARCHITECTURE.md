@@ -105,8 +105,8 @@
   `key`、`builtin`、`label`（中英法三语）、`file_noun`（三语）、`icon`（`ui/src/icons.ts` 的图标名）、
   `extensions`（小写、不带点）、`capabilities`（`requires_source`、`can_pause`、`pause_mode`、
   `can_resume`、`can_end_paused`、`bilingual`、`translation_only`）、`phases`（各阶段的三语名称，
-  与 `phase_weights` 一一对应）、`options`（运行设置里的开关：`key`、`kind`（目前只有 `"toggle"`）、
-  `label`、`help`、`default`）。
+  与 `phase_weights` 一一对应）、`options`（运行设置里的选项：`key`、`kind`（`"toggle"` 开关，或 `"choice"` 多选一，
+  后者另有 `choices: [{value, label}]`）、`label`、`help`、`default`）。
 - **设置**：每个运行时类型一份 `settings.extensions[<id>]`（`ExtensionSettings`，schema v39）：
   `target_lang`、`source_lang`、`domain_preset`、`smart_context`、`domain_custom_prompts`、
   `options`、`prompt`（v40：用户改过的内置规则，空表示用默认）；`pinned`、`order` 是 v39 的侧栏设置，v40 起

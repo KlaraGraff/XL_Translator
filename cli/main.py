@@ -117,7 +117,8 @@ def _types(args: argparse.Namespace, out: Output) -> int:
         extensions = " ".join(f".{suffix}" for suffix in item.get("extensions") or ())
         out.line(f"{item['key']:<14}{flow.label_of(item)}{extra}  {extensions}")
         for option in item.get("options") or ():
-            out.line(f"{'':<16}--option {option.get('key')}=…  {flow.label_of({'label': option.get('label')})}")
+            values = "|".join(str(choice.get("value")) for choice in option.get("choices") or ()) or "…"
+            out.line(f"{'':<16}--option {option.get('key')}={values}  {flow.label_of({'label': option.get('label')})}")
     return flow.EXIT_OK
 
 

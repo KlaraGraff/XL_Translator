@@ -307,6 +307,59 @@ def test_switch_values_prefer_the_request_then_the_saved_value():
     }
 
 
+_LAYOUT = {
+    "key": "layout",
+    "kind": "choice",
+    "label": {"zh": "版式", "en": "Layout", "fr": "Mise en page"},
+    "choices": [
+        {"value": "grow", "label": {"zh": "加高", "en": "Grow", "fr": "Agrandir"}},
+        {"value": "shrink", "label": {"zh": "缩小", "en": "Shrink", "fr": "Réduire"}},
+    ],
+}
+
+
+def test_a_choice_option_is_described_and_resolved():
+    from api.task_contracts import TaskOptions
+    from core.surface_settings import set_surface_setting
+    from settings import AppSettings
+
+    manifest = parse_manifest(_manifest(options=[_LAYOUT]))
+    # 不写 default 时取第一项。
+    assert manifest.options[0].default == "grow"
+    surface = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest))
+    described = surface.describe()["options"][-1]
+    assert described["kind"] == "choice" and described["default"] == "grow"
+    assert described["choices"] == [
+        {"value": "grow", "label": {"zh": "加高", "en": "Grow", "fr": "Agrandir"}},
+        {"value": "shrink", "label": {"zh": "缩小", "en": "Shrink", "fr": "Réduire"}},
+    ]
+    assert "choices" not in surface.describe()["options"][0]  # 开关不带 choices
+    settings = AppSettings()
+    assert surface.resolve_options(settings, TaskOptions())["layout"] == "grow"
+    set_surface_setting(settings, ECHO_KEY, "options", {"layout": "shrink"})
+    assert surface.resolve_options(settings, TaskOptions())["layout"] == "shrink"
+    # 请求里的值认不得（旧版本存的、命令行打错的）时按默认，不把怪值交给适配器。
+    assert surface.resolve_options(settings, TaskOptions(options={"layout": "bogus"}))["layout"] == "grow"
+    assert surface.resolve_options(settings, TaskOptions(options={"layout": True}))["layout"] == "grow"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"choices": _LAYOUT["choices"][:1]}, "至少要有两项"),
+        ({"choices": [_LAYOUT["choices"][0], _LAYOUT["choices"][0]]}, "value 重复"),
+        ({"default": "sideways"}, "default 应为"),
+        ({"kind": "toggle"}, "不能有 choices"),
+        ({"kind": "toggle", "choices": [], "default": "grow"}, "只能是 true 或 false"),
+        ({"choices": [{"value": "Grow!", "label": {"zh": "加高", "en": "Grow", "fr": "Agrandir"}}] * 2}, "选项值只能"),
+        ({"choices": [{"value": "grow", "label": {"zh": "加高"}}, _LAYOUT["choices"][1]]}, "label"),
+    ],
+)
+def test_a_broken_choice_option_is_refused(change, message):
+    with pytest.raises(AdapterManifestError, match=message):
+        parse_manifest(_manifest(options=[{**_LAYOUT, **change}]))
+
+
 def test_registration_is_idempotent_and_skips_broken_adapters():
     try:
         first = register_bundled_adapters(FIXTURES)

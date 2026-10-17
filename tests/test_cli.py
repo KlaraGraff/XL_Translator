@@ -153,6 +153,26 @@ def test_run_time_type_options_follow_its_descriptor():
         flow.request_fields(sample, {"untranslated_only": "true"})
 
 
+def test_a_choice_option_takes_one_of_its_values():
+    sample = {
+        **DESCRIPTORS[-1],
+        "options": [
+            {
+                "key": "layout",
+                "kind": "choice",
+                "default": "grow",
+                "label": {"zh": "版式"},
+                "choices": [{"value": "grow", "label": {"zh": "加高"}}, {"value": "shrink", "label": {"zh": "缩小"}}],
+            }
+        ],
+    }
+    assert flow.request_fields(sample, {"layout": " shrink "}) == {"options": {"layout": "shrink"}}
+    with pytest.raises(flow.InputError, match="grow、shrink"):
+        flow.request_fields(sample, {"layout": "sideways"})
+    with pytest.raises(flow.InputError, match="grow、shrink"):
+        flow.request_fields(sample, {"layout": True})
+
+
 def test_request_asks_for_the_apps_saved_values(tmp_path: Path):
     detection = flow.detect(DESCRIPTORS, [str(_touch(tmp_path / "a.txt"))])
 

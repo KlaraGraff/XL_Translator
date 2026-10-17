@@ -364,6 +364,11 @@ def _descriptor_options(descriptor: dict[str, Any], values: dict[str, Any]) -> d
 
 def _typed_value(key: str, raw: Any, spec: dict[str, Any]) -> Any:
     default = spec.get("default")
+    if spec.get("kind") == "choice":
+        values = [str(choice.get("value")) for choice in spec.get("choices") or ()]
+        if str(raw).strip() in values:
+            return str(raw).strip()
+        raise InputError(f"选项「{key}」可选的值：{'、'.join(values)}，收到的是「{raw}」。")
     if not isinstance(raw, str):
         return raw
     text = raw.strip()

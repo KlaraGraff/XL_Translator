@@ -24,6 +24,7 @@ from api.surfaces.base import (
     PHASE_READ,
     PHASE_TRANSLATE,
     PHASE_WRITE,
+    ChoiceDef,
     OptionDef,
     RunnerRequest,
     Surface,
@@ -176,7 +177,14 @@ class AdapterSurface(Surface):
         self.sidebar_after = manifest.sidebar_after if origin == "bundled" else ""
         both = self.output_bilingual and self.output_translation_only
         self.options = ((BILINGUAL_OPTION,) if both else ()) + tuple(
-            OptionDef(option.key, dict(option.label), default=option.default, help=dict(option.help))
+            OptionDef(
+                option.key,
+                dict(option.label),
+                default=option.default,
+                help=dict(option.help),
+                kind=option.kind,
+                choices=tuple(ChoiceDef(choice.value, dict(choice.label)) for choice in option.choices),
+            )
             for option in manifest.options
         )
 
@@ -200,18 +208,18 @@ class AdapterSurface(Surface):
         }
         return descriptor
 
-    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool]:
-        """Switch values for a task: descriptor default ← saved on the page ← the request."""
+    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool | str]:
+        """Option values for a task: descriptor default ← saved on the page ← the request."""
         saved = dict(extension_settings(settings, self.key).options) if settings is not None else {}
         requested = dict((options.options if options is not None else None) or {})
-        resolved: dict[str, bool] = {}
+        resolved: dict[str, bool | str] = {}
         for option in self.options:
             value: Any = option.default
             if option.key in saved:
                 value = saved[option.key]
             if option.key in requested:
                 value = requested[option.key]
-            resolved[option.key] = bool(value)
+            resolved[option.key] = option.coerce(value)
         return resolved
 
     # ── scan ─────────────────────────────────────────────────────────────
@@ -305,7 +313,7 @@ class AdapterSurface(Surface):
     def owner_label(self, snapshot: dict[str, object]) -> str:
         return f"{self.label} → {get_target_lang_display(str(snapshot.get('target_lang') or ''))}"
 
-    def write_bilingual(self, options: dict[str, bool]) -> bool:
+    def write_bilingual(self, options: dict[str, bool | str]) -> bool:
         """Write source + translation: the 双语对照 switch, or the only output the adapter has."""
         if self.output_bilingual and self.output_translation_only:
             return bool(options.get(BILINGUAL_OPTION_KEY, False))
