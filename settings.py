@@ -1273,10 +1273,12 @@ class OnboardingSettings(BaseModel):
 
 UI_LANGUAGES = ("zh", "en", "fr")
 # 配色方案 id，与 ui/src/palette.ts、ui/src/styles/palettes.css 保持一致。
-PALETTES = ("graphite", "warm", "cool", "celadon", "amber")
-# 默认「素雅灰」（id 沿用早期名称 graphite），排在第一位。
+PALETTES = ("liuguang", "graphite", "warm", "cool", "celadon", "amber")
+# 默认「流光」（v41 起），排在第一位；v40 及以前默认「素雅灰」（id 沿用早期名称 graphite），
+# 旧文件里的 graphite 按 _migrate_palette_default 换成流光。
 # v30 及更早的设置文件没有配色方案字段，补齐时同样取这个值。
-DEFAULT_PALETTE = "graphite"
+DEFAULT_PALETTE = "liuguang"
+PRE_V41_DEFAULT_PALETTE = "graphite"
 
 
 class AppearanceSettings(BaseModel):
@@ -1976,6 +1978,32 @@ def _migrate_theme_default(payload: dict, stored_version: int) -> dict:
     return migrated
 
 
+def _migrate_palette_default(payload: dict, stored_version: int) -> dict:
+    """v41: the default palette became 「流光」 (liuguang); carry old files' default along.
+
+    Up to v40 the default was 「素雅灰」 (graphite), and nothing in a v40 file tells
+    the default apart from a deliberate pick.  Almost every install never touched
+    it, so an old "graphite" is read as the old default and becomes "liuguang";
+    any other palette was picked on purpose and is kept.  Same reasoning and same
+    read-time placement as ``_migrate_theme_default``.
+    """
+    if stored_version >= 41:
+        return payload
+    appearance = payload.get("appearance")
+    if not isinstance(appearance, dict):
+        return payload
+    changed = {
+        key: DEFAULT_PALETTE
+        for key in ("palette_light", "palette_dark")
+        if appearance.get(key) == PRE_V41_DEFAULT_PALETTE
+    }
+    if not changed:
+        return payload
+    migrated = dict(payload)
+    migrated["appearance"] = {**appearance, **changed}
+    return migrated
+
+
 # v33 之前各页面的默认领域：Excel「无」，其余「同步工程场景」。
 _PRE_V33_DEFAULT_DOMAINS = {
     "domain_preset": "同步工程场景",
@@ -2513,7 +2541,8 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
         return "adopted", stored_version, _migrate_translation_types(_migrate_rate_settings(
             _migrate_prompt_layers(
                 _migrate_smart_domain_default(
-                    _migrate_theme_default(payload, stored_version), stored_version,
+                    _migrate_palette_default(_migrate_theme_default(payload, stored_version), stored_version),
+                    stored_version,
                 ),
                 stored_version,
             ),

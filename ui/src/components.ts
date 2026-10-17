@@ -651,7 +651,10 @@ export interface SelectFieldOptions {
 export interface SelectFieldHandle {
   root: HTMLDivElement;
   select: HTMLSelectElement;
+  /** 右侧的展开按钮。 */
   button: HTMLButtonElement;
+  /** 可输入的选择框本体（role=combobox）。 */
+  input: HTMLInputElement;
   setValue(value: string): void;
 }
 
@@ -668,11 +671,52 @@ export interface DropdownOptions {
 export interface DropdownHandle {
   root: HTMLDivElement;
   select: HTMLSelectElement;
+  /** 右侧的展开按钮。 */
   button: HTMLButtonElement;
+  /** 可输入的选择框本体（role=combobox）。 */
+  input: HTMLInputElement;
   setValue(value: string): void;
 }
 
-/** A platform-independent select whose popover can reliably flip above the trigger. */
+/** 列表超过这么多项才在底部提示键盘用法；两三项的下拉一眼看完，不需要。 */
+const COMBO_HINT_MIN_ITEMS = 7;
+
+/** 把 text 里第一处与 query 相同（不分大小写）的片段包成 <mark>，用真实节点而不是 innerHTML。 */
+function appendWithMark(host: HTMLElement, text: string, query: string): void {
+  const index = query ? text.toLowerCase().indexOf(query.toLowerCase()) : -1;
+  if (index < 0) {
+    host.append(document.createTextNode(text));
+    return;
+  }
+  host.append(document.createTextNode(text.slice(0, index)));
+  host.append(el("mark", { text: text.slice(index, index + query.length) }));
+  host.append(document.createTextNode(text.slice(index + query.length)));
+}
+
+/** 下拉底部那行键盘提示（↑↓ 选择 · ↵ 确认 · esc 还原）。 */
+function comboKeyHints(className: string, lead?: HTMLElement): HTMLDivElement {
+  const foot = el("div", { className });
+  if (lead) foot.append(lead);
+  const keys = el("span", { className: "combo-keys" });
+  keys.append(
+    el("span", { className: "kbd", text: "↑↓" }),
+    document.createTextNode(" " + t("选择") + " "),
+    el("span", { className: "kbd", text: "↵" }),
+    document.createTextNode(" " + t("确认") + " "),
+    el("span", { className: "kbd", text: "esc" }),
+    document.createTextNode(" " + t("还原")),
+  );
+  foot.append(keys);
+  return foot;
+}
+
+/**
+ * 可输入的下拉（V10.3）。框本身是一个输入框：点进去或按 ↓ 展开全部选项并高亮当前项；
+ * 直接打字就按名称、说明和取值筛选，命中片段高亮；↑↓ 移动、↵ 选中、Esc 还原；Tab 或点到
+ * 别处时，打的字与某一项完全相同或只剩一项匹配就选中它，否则还原成原来的值。
+ * 隐藏的原生 <select> 仍是取值桥梁：调用方给它赋值再派发 change，框里的文字跟着变。
+ * 列表浮层固定定位、挂在 body 上，靠 placePopover 在视口底部向上翻。
+ */
 export function createDropdown(options: DropdownOptions): DropdownHandle {
   const select = el("select");
   for (const opt of options.options) {
@@ -688,78 +732,97 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
   select.style.display = "none";
 
   const root = el("div", { className: options.className ? `dropdown ${options.className}` : "dropdown" });
-  const button = el("button", { className: "dropdown-btn" });
+  const field = el("div", { className: "dropdown-btn" });
+  const input = el("input", { className: "dropdown-value", attrs: { type: "text" } });
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const tagEl = el("em", { className: "opt-tag" });
+  const button = el("button", { className: "dropdown-caret" });
   button.type = "button";
-  button.setAttribute("role", "combobox");
-  button.setAttribute("aria-haspopup", "listbox");
-  button.setAttribute("aria-expanded", "false");
-  const valueLabel = el("span", { className: "dropdown-value" });
-  button.append(valueLabel, icon("chev", { className: "chev" }));
+  button.tabIndex = -1;
+  button.setAttribute("aria-label", t("展开选项"));
+  button.append(icon("chev", { className: "chev" }));
+  field.append(input, tagEl, button);
 
   const current = () => options.options.find((item) => item.value === select.value);
   const paint = () => {
-    valueLabel.textContent = current()?.label ?? select.value;
+    input.value = current()?.label ?? select.value;
     const tag = current()?.tag;
-    if (tag) valueLabel.append(el("em", { className: "opt-tag", text: tag }));
-    button.disabled = Boolean(options.disabled);
+    tagEl.textContent = tag ?? "";
+    tagEl.style.display = tag && !menu ? "" : "none";
+    const disabled = Boolean(options.disabled);
+    input.disabled = disabled;
+    button.disabled = disabled;
+    field.classList.toggle("disabled", disabled);
   };
   // Keep the visual trigger in sync when a caller restores a form by assigning
   // to the compatibility select element (settings drafts do this).
   select.addEventListener("change", paint);
-  paint();
 
-  const open = () => {
-    if (button.disabled) return;
-    closeActiveDropdown?.();
-    closeActiveMenu?.();
-    const menu = el("div", { className: "menu dropdown-menu" });
-    menu.setAttribute("role", "listbox");
-    if (options.className) menu.classList.add(`${options.className}-menu`);
-    const close = () => {
-      menu.remove();
-      button.setAttribute("aria-expanded", "false");
-      delete root.dataset.open;
-      document.removeEventListener("pointerdown", onOutside, true);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
-      if (closeActiveDropdown === close) closeActiveDropdown = null;
-    };
-    const onOutside = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && (menu.contains(target) || root.contains(target))) return;
-      close();
-    };
-    const onScroll = (event: Event) => {
-      const target = event.target as Node | null;
-      if (target && menu.contains(target)) return;
-      close();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-        button.focus();
+  let menu: HTMLDivElement | null = null;
+  /** 正在按输入的文字筛选；刚展开（显示全部）时为 false。 */
+  let filtering = false;
+  let active = 0;
+  let shown: SelectFieldOption[] = [];
+
+  const matches = (option: SelectFieldOption, query: string) =>
+    [option.label, option.description ?? "", option.value].some((text) => text.toLowerCase().includes(query));
+  const visibleOptions = () => {
+    const query = input.value.trim().toLowerCase();
+    return filtering && query ? options.options.filter((option) => matches(option, query)) : options.options;
+  };
+
+  /** 点选或回车选中照旧总是通知调用方（与改版前一致）；Tab/失焦确认时值没变就不通知。 */
+  const choose = (option: SelectFieldOption, explicit = true) => {
+    const changed = option.value !== select.value;
+    select.value = option.value;
+    close();
+    if (!changed && !explicit) return;
+    select.dispatchEvent(new Event("change"));
+    options.onChange?.(option.value);
+  };
+
+  /** Tab、点到别处、没有高亮项时回车：打的字能确定是哪一项就选它，否则还原。 */
+  const commitTyped = () => {
+    const typed = input.value.trim().toLowerCase();
+    if (filtering && typed) {
+      const exact = options.options.find((option) => option.label.toLowerCase() === typed || option.value.toLowerCase() === typed);
+      const candidates = visibleOptions();
+      const pick = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+      if (pick) {
+        choose(pick, false);
+        return;
       }
-    };
-    for (const option of options.options) {
+    }
+    close();
+  };
+
+  const render = () => {
+    if (!menu) return;
+    clearElement(menu);
+    shown = visibleOptions();
+    active = Math.max(0, Math.min(active, shown.length - 1));
+    const query = filtering ? input.value.trim() : "";
+    shown.forEach((option, index) => {
+      const selected = option.value === select.value;
       const action = options.actionFor?.(option);
+      const name = el("b");
+      appendWithMark(name, option.label, query);
+      if (option.tag) name.append(el("em", { className: "opt-tag", text: option.tag }));
+      let row: HTMLElement;
       if (action) {
-        const row = el("div", { className: "menu-item menu-item-row" });
-        row.setAttribute("role", "option");
-        row.setAttribute("aria-selected", String(option.value === select.value));
+        row = el("div", { className: "menu-item menu-item-row" });
         const main = el("button", { className: "menu-item-main" });
         main.type = "button";
-        main.append(el("b", { text: option.label }));
-        main.addEventListener("click", () => {
-          select.value = option.value;
-          paint();
-          select.dispatchEvent(new Event("change"));
-          close();
-          options.onChange?.(option.value);
-        });
+        main.tabIndex = -1;
+        main.append(name);
+        main.addEventListener("click", () => choose(option));
         const remove = el("button", { className: "menu-item-action", text: action.label });
         remove.type = "button";
+        remove.tabIndex = -1;
         remove.setAttribute("aria-label", action.label);
         remove.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -767,49 +830,150 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
           action.onClick();
         });
         row.append(main, remove);
-        menu.append(row);
-        continue;
+      } else {
+        row = el("button", { className: "menu-item" });
+        (row as HTMLButtonElement).type = "button";
+        row.tabIndex = -1;
+        row.append(name);
+        if (option.description) {
+          const description = el("span");
+          appendWithMark(description, option.description, query);
+          row.append(description);
+        }
+        row.addEventListener("click", () => choose(option));
       }
-      const item = el("button", { className: option.value === select.value ? "menu-item selected" : "menu-item" });
-      item.type = "button";
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(option.value === select.value));
-      const name = el("b", { text: option.label });
-      if (option.tag) name.append(el("em", { className: "opt-tag", text: option.tag }));
-      item.append(name);
-      if (option.description) item.append(el("span", { text: option.description }));
-      item.addEventListener("click", () => {
-        select.value = option.value;
-        paint();
-        select.dispatchEvent(new Event("change"));
-        close();
-        options.onChange?.(option.value);
-      });
-      menu.append(item);
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(selected));
+      if (selected) row.classList.add("selected");
+      if (index === active) row.classList.add("active");
+      menu!.append(row);
+    });
+    if (!shown.length) {
+      menu.append(el("div", { className: "menu-empty", text: t("没有匹配「{0}」的选项", input.value.trim()) }));
     }
+    if (options.options.length >= COMBO_HINT_MIN_ITEMS) menu.append(comboKeyHints("menu-hint"));
+    placePopover(menu, field, { minWidth: field.getBoundingClientRect().width });
+    menu.querySelector<HTMLElement>(".active")?.scrollIntoView({ block: "nearest" });
+  };
+
+  const onOutside = (event: PointerEvent) => {
+    const target = event.target as Node | null;
+    if (target && (menu?.contains(target) || root.contains(target))) return;
+    commitTyped();
+  };
+  const onScroll = (event: Event) => {
+    const target = event.target as Node | null;
+    if (target && menu?.contains(target)) return;
+    close();
+  };
+
+  function open(): void {
+    if (input.disabled) return;
+    if (menu) {
+      render();
+      return;
+    }
+    closeActiveDropdown?.();
+    closeActiveMenu?.();
+    menu = el("div", { className: "menu dropdown-menu" });
+    menu.setAttribute("role", "listbox");
+    if (options.className) menu.classList.add(`${options.className}-menu`);
+    // 点列表时别让输入框失焦：失焦会按「点到别处」处理，列表还没收到 click 就被关掉。
+    menu.addEventListener("pointerdown", (event) => event.preventDefault());
+    filtering = false;
+    active = Math.max(0, options.options.findIndex((option) => option.value === select.value));
     document.body.append(menu);
     root.dataset.open = "true";
-    button.setAttribute("aria-expanded", "true");
-    placePopover(menu, button, { minWidth: button.getBoundingClientRect().width });
+    input.setAttribute("aria-expanded", "true");
+    tagEl.style.display = "none";
+    render();
     document.addEventListener("pointerdown", onOutside, true);
-    document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     closeActiveDropdown = close;
-  };
+  }
 
-  button.addEventListener("click", () => {
-    if (root.dataset.open === "true") closeActiveDropdown?.();
-    else open();
+  function close(): void {
+    if (menu) {
+      menu.remove();
+      menu = null;
+      delete root.dataset.open;
+      input.setAttribute("aria-expanded", "false");
+      document.removeEventListener("pointerdown", onOutside, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+      if (closeActiveDropdown === close) closeActiveDropdown = null;
+    }
+    filtering = false;
+    paint();
+  }
+
+  // 鼠标点进来时全选文字：focus 里直接 select() 会被随后的 mouseup 取消，所以挡掉那一次 mouseup。
+  let selectOnMouseUp = false;
+  input.addEventListener("focus", () => {
+    open();
+    input.select();
+    selectOnMouseUp = true;
   });
-  button.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
+  input.addEventListener("mouseup", (event) => {
+    if (selectOnMouseUp) event.preventDefault();
+    selectOnMouseUp = false;
+  });
+  input.addEventListener("click", () => {
+    if (!menu) open();
+  });
+  input.addEventListener("blur", () => {
+    selectOnMouseUp = false;
+    if (menu) commitTyped();
+  });
+  input.addEventListener("input", () => {
+    filtering = true;
+    active = 0;
+    open();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (root.dataset.open !== "true") open();
+      if (!menu) {
+        open();
+        return;
+      }
+      if (!shown.length) return;
+      active = (active + (event.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length;
+      render();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (menu && shown[active]) choose(shown[active]);
+      else commitTyped();
+    } else if (event.key === "Escape") {
+      if (!menu) return;
+      // 只收起列表、还原文字；不让 Esc 继续冒泡去关掉外面的弹窗。
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (event.key === "Tab") {
+      if (menu) commitTyped();
     }
   });
-  root.append(button, select);
-  return { root, select, button, setValue: (value: string) => { select.value = value; paint(); } };
+  button.addEventListener("click", () => {
+    if (menu) {
+      close();
+      return;
+    }
+    if (document.activeElement === input) open();
+    else input.focus();
+  });
+  field.addEventListener("pointerdown", (event) => {
+    // 点框里空白处（标签、内边距）等同点输入框。
+    if (event.target === field) {
+      event.preventDefault();
+      input.focus();
+    }
+  });
+
+  paint();
+  root.append(field, select);
+  return { root, select, button, input, setValue: (value: string) => { select.value = value; paint(); } };
 }
 
 /** .field > label + shared dropdown. */
@@ -817,7 +981,7 @@ export function createSelectField(options: SelectFieldOptions): SelectFieldHandl
   const dropdown = createDropdown(options);
   const root = createField(options.label, dropdown.root);
   if (options.hint) root.querySelector("label")?.append(createHintBadge(options.hint));
-  return { root, select: dropdown.select, button: dropdown.button, setValue: dropdown.setValue };
+  return { root, select: dropdown.select, button: dropdown.button, input: dropdown.input, setValue: dropdown.setValue };
 }
 
 // ---------------------------------------------------------------------------
@@ -946,23 +1110,44 @@ export function closeLanguagePopover(): void {
   closeActiveLanguagePopover?.();
 }
 
-/** 光秃秃的选择器（无 label），记忆库工具条那种行内用法用它。 */
+/**
+ * 光秃秃的选择器（无 label），记忆库工具条那种行内用法用它。
+ *
+ * V10.3 起框本身就是搜索框（与 createDropdown 同一套操作）：点进去展开全部语言并高亮当前
+ * 那一门，直接打字按中文名、英文名或代码筛选，↑↓ / ↵ / Esc 同上；Tab 或点到别处时，打的字
+ * 与某门语言的名称或代码完全相同、或只剩一项匹配就选中它，否则还原。
+ */
 export function createLanguagePicker(options: LanguagePickerOptions): LanguagePickerHandle {
   const root = el("div", { className: options.className ? `lang ${options.className}` : "lang" });
-  const button = el("button", { className: "lang-btn" });
-  button.type = "button";
-  button.setAttribute("aria-haspopup", "listbox");
-  button.disabled = Boolean(options.disabled);
-  const valueLabel = el("span", { className: "val" });
+  const field = el("div", { className: "lang-btn" });
+  const input = el("input", { className: "val", attrs: { type: "text" } });
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = t("搜索语言、代码…");
+  input.disabled = Boolean(options.disabled);
   const codeBadge = el("span", { className: "code" });
-  button.append(valueLabel, codeBadge, icon("chev", { className: "chev" }));
-  root.append(button);
+  const caret = el("button", { className: "lang-caret" });
+  caret.type = "button";
+  caret.tabIndex = -1;
+  caret.disabled = Boolean(options.disabled);
+  caret.setAttribute("aria-label", t("展开选项"));
+  caret.append(icon("chev", { className: "chev" }));
+  field.classList.toggle("disabled", Boolean(options.disabled));
+  field.append(input, codeBadge, caret);
+  root.append(field);
 
   let current = options.value;
+  /** 正在按输入的文字筛选；刚展开（显示全部、带「最近使用」分组）时为 false。 */
+  let filtering = false;
+  /** 浮层开着时的几个动作，由 openPopover 填上。 */
+  let popover: { close: () => void; render: () => void; commit: () => void; key: (event: KeyboardEvent) => void } | null = null;
 
   const paintButton = () => {
     const found = options.options.find((item) => item.code === current);
-    valueLabel.textContent = found ? tx(found.display_name) : current;
+    input.value = found ? tx(found.display_name) : current;
     // 「自动识别」没有真正的语言代码，挂个 auto 角标只会让人以为那是一门语言。
     const showCode = Boolean(found) && current !== AUTO_LANG_CODE;
     codeBadge.textContent = showCode ? current : "";
@@ -971,49 +1156,44 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
   paintButton();
 
   const openPopover = () => {
+    if (input.disabled) return;
+    if (popover) {
+      popover.render();
+      return;
+    }
     closeActiveLanguagePopover?.();
 
     const pop = el("div", { className: "lang-pop" });
     pop.setAttribute("role", "listbox");
-
-    const searchWrap = el("div", { className: "lang-search" });
-    const search = el("input", { attrs: { type: "text" } });
-    search.placeholder = t("搜索语言、代码…");
-    searchWrap.append(search);
-    // 目录为空时搜索框只会误导——摆一个搜不出任何东西的输入框，等于暗示问题出在搜索上。
-    if (!options.options.length) searchWrap.style.display = "none";
+    // 点浮层时别让输入框失焦：失焦会按「点到别处」处理，列表还没收到 click 就被关掉。
+    pop.addEventListener("pointerdown", (event) => event.preventDefault());
 
     const list = el("div", { className: "lang-list" });
 
-    const foot = el("div", { className: "lang-foot" });
     const countLabel = el("span");
-    const keyHints = el("span");
-    keyHints.append(
-      el("span", { className: "kbd", text: "↑↓" }),
-      document.createTextNode(" " + t("选择") + " "),
-      el("span", { className: "kbd", text: "↵" }),
-      document.createTextNode(" " + t("确认") + " "),
-      el("span", { className: "kbd", text: "esc" }),
-      document.createTextNode(" " + t("关闭")),
-    );
-    foot.append(countLabel, keyHints);
+    const foot = comboKeyHints("lang-foot", countLabel);
 
-    pop.append(searchWrap, list, foot);
+    pop.append(list, foot);
     document.body.append(pop);
     root.dataset.open = "true";
+    input.setAttribute("aria-expanded", "true");
 
     const close = () => {
       pop.remove();
+      popover = null;
+      filtering = false;
       delete root.dataset.open;
+      input.setAttribute("aria-expanded", "false");
       document.removeEventListener("pointerdown", onOutside, true);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", close);
       if (closeActiveLanguagePopover === close) closeActiveLanguagePopover = null;
+      paintButton();
     };
     const onOutside = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (target && (pop.contains(target) || root.contains(target))) return;
-      close();
+      commit();
     };
     const onScroll = (event: Event) => {
       // 列表自身滚动（含键盘导航触发的 scrollIntoView）不该把浮层关掉，
@@ -1026,7 +1206,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
 
     const place = () => {
       // 语言选择器也走共享定位规则，保证它与普通下拉在视口底部的翻转行为一致。
-      placePopover(pop, button, { minWidth: button.getBoundingClientRect().width });
+      placePopover(pop, field, { minWidth: field.getBoundingClientRect().width });
     };
 
     const pick = (code: string) => {
@@ -1061,7 +1241,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
     };
 
     const renderList = () => {
-      const query = search.value.trim();
+      const query = filtering ? input.value.trim() : "";
       clearElement(list);
 
       const pool = options.options.filter((item) => languageMatches(item, query));
@@ -1125,12 +1305,36 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
       snapListHeight();
       // 条目数变了高度就变了，重算一次位置，否则贴着视口底部时会溢出。
       place();
+      // 刚展开时高亮当前那一门（回车就是「不改」）；筛选时高亮第一条（回车 = 要搜到的这个）。
+      const rows = items();
+      const cur = filtering ? rows[0] : rows.find((row) => row.dataset.code === current);
+      if (cur) {
+        cur.classList.add("cur");
+        cur.scrollIntoView({ block: "nearest" });
+      }
     };
 
     const items = () => Array.from(list.querySelectorAll<HTMLElement>(".lang-item"));
 
-    search.addEventListener("input", renderList);
-    search.addEventListener("keydown", (event) => {
+    /** Tab、点到别处：打的字能确定是哪一门语言就选它，否则还原。 */
+    const commit = () => {
+      const typed = input.value.trim().toLowerCase();
+      if (filtering && typed) {
+        const exact = options.options.find(
+          (item) => item.code.toLowerCase() === typed || tx(item.display_name).toLowerCase() === typed || item.display_name.toLowerCase() === typed,
+        );
+        const candidates = options.options.filter((item) => languageMatches(item, typed));
+        const chosen = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+        if (chosen) {
+          if (chosen.code === current) close();
+          else pick(chosen.code);
+          return;
+        }
+      }
+      close();
+    };
+
+    const onKey = (event: KeyboardEvent) => {
       const rows = items();
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -1147,25 +1351,65 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
         const chosen = rows.find((row) => row.classList.contains("cur")) ?? rows[0];
         if (chosen?.dataset.code) pick(chosen.dataset.code);
       } else if (event.key === "Escape") {
+        // 只收起浮层、还原文字；不让 Esc 继续冒泡去关掉外面的弹窗。
         event.preventDefault();
+        event.stopPropagation();
         close();
-        button.focus();
+      } else if (event.key === "Tab") {
+        commit();
       }
-    });
+    };
 
+    popover = { close, render: renderList, commit, key: onKey };
     renderList();
     document.addEventListener("pointerdown", onOutside, true);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
-    search.focus();
   };
 
-  button.addEventListener("click", () => {
-    if (root.dataset.open === "true") {
-      closeActiveLanguagePopover?.();
+  // 鼠标点进来时全选文字：focus 里直接 select() 会被随后的 mouseup 取消，所以挡掉那一次 mouseup。
+  let selectOnMouseUp = false;
+  input.addEventListener("focus", () => {
+    openPopover();
+    input.select();
+    selectOnMouseUp = true;
+  });
+  input.addEventListener("mouseup", (event) => {
+    if (selectOnMouseUp) event.preventDefault();
+    selectOnMouseUp = false;
+  });
+  input.addEventListener("click", () => {
+    if (!popover) openPopover();
+  });
+  input.addEventListener("blur", () => {
+    selectOnMouseUp = false;
+    popover?.commit();
+  });
+  input.addEventListener("input", () => {
+    filtering = true;
+    openPopover();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (popover) {
+      popover.key(event);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter") {
+      event.preventDefault();
+      openPopover();
+    }
+  });
+  caret.addEventListener("click", () => {
+    if (popover) {
+      popover.close();
       return;
     }
-    openPopover();
+    if (document.activeElement === input) openPopover();
+    else input.focus();
+  });
+  field.addEventListener("pointerdown", (event) => {
+    if (event.target === field) {
+      event.preventDefault();
+      input.focus();
+    }
   });
 
   return {

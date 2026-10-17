@@ -28,16 +28,17 @@ class AppearanceSettingsTests(unittest.TestCase):
             settings = AppSettings.model_validate({"appearance": {"ui_language": value}})
             self.assertEqual(settings.appearance.ui_language, value)
 
-    def test_default_palettes_are_graphite(self) -> None:
+    def test_default_palettes_are_liuguang(self) -> None:
         appearance = AppSettings().appearance
-        self.assertEqual(appearance.palette_light, "graphite")
-        self.assertEqual(appearance.palette_dark, "graphite")
+        self.assertEqual(appearance.palette_light, "liuguang")
+        self.assertEqual(appearance.palette_dark, "liuguang")
+        self.assertEqual(settings_module.PALETTES[0], "liuguang")
 
     def test_invalid_palette_falls_back_to_default(self) -> None:
         settings = AppSettings.model_validate({"appearance": {"palette_light": "neon", "palette_dark": "石墨"}})
 
-        self.assertEqual(settings.appearance.palette_light, "graphite")
-        self.assertEqual(settings.appearance.palette_dark, "graphite")
+        self.assertEqual(settings.appearance.palette_light, "liuguang")
+        self.assertEqual(settings.appearance.palette_dark, "liuguang")
 
     def test_light_and_dark_palettes_are_independent(self) -> None:
         for light in settings_module.PALETTES:
@@ -65,8 +66,8 @@ class PaletteUpgradeTests(IsolatedAppDataTestCase):
 
         loaded = settings_module.load_settings()
 
-        self.assertEqual(loaded.appearance.palette_light, "graphite")
-        self.assertEqual(loaded.appearance.palette_dark, "graphite")
+        self.assertEqual(loaded.appearance.palette_light, "liuguang")
+        self.assertEqual(loaded.appearance.palette_dark, "liuguang")
         # A v30 "system" was picked by the user (v30 already defaulted to light).
         self.assertEqual(loaded.appearance.theme, "system")
         self.assertEqual(loaded.appearance.ui_language, "en")
@@ -86,6 +87,71 @@ class PaletteUpgradeTests(IsolatedAppDataTestCase):
         self.assertEqual(persisted["appearance"]["theme"], "dark")
         reloaded = settings_module.load_settings().appearance
         self.assertEqual((reloaded.palette_light, reloaded.palette_dark), ("celadon", "amber"))
+
+
+class PaletteDefaultMigrationTests(IsolatedAppDataTestCase):
+    """v40 files stored the old default "graphite"; v41 reads that as 「流光」 (liuguang)."""
+
+    def _write_settings(self, payload: dict) -> None:
+        self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        (self.app_data_dir / "settings.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _read_settings(self) -> dict:
+        return json.loads((self.app_data_dir / "settings.json").read_text(encoding="utf-8"))
+
+    def test_old_graphite_becomes_liuguang(self) -> None:
+        self._write_settings(
+            {"settings_version": 40, "appearance": {"palette_light": "graphite", "palette_dark": "graphite"}}
+        )
+
+        appearance = settings_module.load_settings().appearance
+
+        self.assertEqual((appearance.palette_light, appearance.palette_dark), ("liuguang", "liuguang"))
+
+    def test_old_deliberate_choice_is_kept(self) -> None:
+        self._write_settings(
+            {"settings_version": 40, "appearance": {"palette_light": "graphite", "palette_dark": "amber"}}
+        )
+
+        appearance = settings_module.load_settings().appearance
+
+        self.assertEqual((appearance.palette_light, appearance.palette_dark), ("liuguang", "amber"))
+
+    def test_old_file_without_palettes_gets_liuguang(self) -> None:
+        self._write_settings({"settings_version": 40, "appearance": {"theme": "dark"}})
+
+        appearance = settings_module.load_settings().appearance
+
+        self.assertEqual((appearance.palette_light, appearance.palette_dark), ("liuguang", "liuguang"))
+        self.assertEqual(appearance.theme, "dark")
+
+    def test_current_graphite_is_a_deliberate_pick(self) -> None:
+        # Once the file is v41, graphite can only have been chosen in the settings page.
+        self._write_settings(
+            {
+                "settings_version": settings_module.SETTINGS_SCHEMA_VERSION,
+                "appearance": {"palette_light": "graphite", "palette_dark": "graphite"},
+            }
+        )
+
+        appearance = settings_module.load_settings().appearance
+
+        self.assertEqual((appearance.palette_light, appearance.palette_dark), ("graphite", "graphite"))
+
+    def test_migrated_palette_is_persisted_with_v41(self) -> None:
+        self._write_settings(
+            {"settings_version": 40, "appearance": {"palette_light": "graphite", "palette_dark": "celadon"}}
+        )
+
+        loaded = settings_module.load_settings()
+        settings_module.save_settings(loaded)
+
+        persisted = self._read_settings()
+        self.assertEqual(persisted["settings_version"], 41)
+        self.assertEqual(persisted["appearance"]["palette_light"], "liuguang")
+        self.assertEqual(persisted["appearance"]["palette_dark"], "celadon")
+        reloaded = settings_module.load_settings().appearance
+        self.assertEqual((reloaded.palette_light, reloaded.palette_dark), ("liuguang", "celadon"))
 
 
 class ThemeDefaultMigrationTests(IsolatedAppDataTestCase):

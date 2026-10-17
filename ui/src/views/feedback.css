@@ -85,7 +85,7 @@
 .feedback-kind.on { border-color: var(--tint-line); background: var(--tint); }
 .feedback-kind .ck { flex: none; margin: 0; }
 .feedback-privacy { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 7px; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--tint); color: var(--ink-2); font-size: 12px; line-height: 1.55; }
-.feedback-privacy svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--accent); }
+.feedback-privacy svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--accent-ink); }
 .feedback-kind-title { flex: none; font-weight: 550; color: var(--ink); white-space: nowrap; }
 .feedback-kind-count { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 6px; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feedback-other-files { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

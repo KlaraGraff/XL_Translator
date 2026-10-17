@@ -198,7 +198,7 @@ class SettingsUpgradeTests(IsolatedAppDataTestCase):
         settings_module.save_settings(loaded)
         stored = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(stored["settings_version"], SETTINGS_SCHEMA_VERSION)
-        self.assertEqual(SETTINGS_SCHEMA_VERSION, 40)
+        self.assertEqual(SETTINGS_SCHEMA_VERSION, 41)
         self.assertEqual(stored.pop("extensions"), {})
         self.assertEqual(stored.pop("translation_types"), {"order": [], "visible": {}})
         stored.pop("settings_version")

@@ -1,7 +1,7 @@
 // 配色方案（设置 → 外观与语言 → 配色方案）。
 //
 // 与「主题」（浅色 / 深色 / 跟随系统）是两个独立维度：主题决定 data-theme；浅色模式和深色模式
-// 各自选一个配色方案，当前生效的那个写到 data-palette 上。可以跨方案搭配，例如白天用素雅灰、
+// 各自选一个配色方案，当前生效的那个写到 data-palette 上。可以跨方案搭配，例如白天用流光、
 // 晚上用琥珀护眼。每个方案都有浅色、深色两套 token（暖调纸感在 styles/tokens.css 的 :root，
 // 其余在 styles/palettes.css），浅色模式只用到方案的浅色那套，深色同理。
 //
@@ -13,11 +13,11 @@
 
 import { t } from "./i18n";
 
-export type PaletteId = "warm" | "cool" | "celadon" | "graphite" | "amber";
+export type PaletteId = "liuguang" | "warm" | "cool" | "celadon" | "graphite" | "amber";
 export type PaletteMode = "light" | "dark";
 export type PaletteChoice = Record<PaletteMode, PaletteId>;
 
-export const DEFAULT_PALETTE: PaletteId = "graphite";
+export const DEFAULT_PALETTE: PaletteId = "liuguang";
 const STORAGE_KEYS: Record<PaletteMode, string> = {
   light: "translator.palette.light",
   dark: "translator.palette.dark",
@@ -32,9 +32,18 @@ export const PALETTES: {
   swatch: { light: PaletteSwatch; dark: PaletteSwatch };
 }[] = [
   {
+    id: "liuguang",
+    label: () => t("流光"),
+    hint: () => t("电光蓝主色，青色只用于进行中（默认）"),
+    swatch: {
+      light: { ground: "#f3f4f7", surface: "#ffffff", line: "#e5e7ec", ink: "#101828", ink3: "#5e697d", accent: "#2563eb" },
+      dark: { ground: "#0b0e13", surface: "#12161d", line: "#2b3340", ink: "#e8ebf1", ink3: "#8b93a2", accent: "#4d84f5" },
+    },
+  },
+  {
     id: "graphite",
     label: () => t("素雅灰"),
-    hint: () => t("纯中性灰，不带色偏（默认）"),
+    hint: () => t("纯中性灰，不带色偏"),
     swatch: {
       light: { ground: "#e5e5e5", surface: "#f4f4f4", line: "#c2c2c2", ink: "#1a1a1a", ink3: "#5e5e5e", accent: "#2462c8" },
       dark: { ground: "#171717", surface: "#222222", line: "#4b4b4b", ink: "#ececec", ink3: "#979797", accent: "#82a9ea" },

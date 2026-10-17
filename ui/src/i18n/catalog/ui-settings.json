@@ -1147,9 +1147,17 @@
     "en": "Warm off-white, easy on the eyes at night",
     "fr": "Blanc cassé chaud, doux pour les yeux le soir"
   },
-  "纯中性灰，不带色偏（默认）": {
-    "en": "Pure neutral grey with no color cast (default)",
-    "fr": "Gris neutre, sans dominante de couleur (par défaut)"
+  "纯中性灰，不带色偏": {
+    "en": "Pure neutral grey with no color cast",
+    "fr": "Gris neutre, sans dominante de couleur"
+  },
+  "流光": {
+    "en": "Lumen",
+    "fr": "Lumen"
+  },
+  "电光蓝主色，青色只用于进行中（默认）": {
+    "en": "Electric blue accent, cyan only for work in progress (default)",
+    "fr": "Bleu électrique, cyan réservé aux tâches en cours (par défaut)"
   },
   "浅色模式使用": {
     "en": "In light mode",

@@ -10,7 +10,6 @@
   "设置": { "en": "Settings", "fr": "Paramètres" },
   "帮助": { "en": "Help", "fr": "Aide" },
   "翻译": { "en": "Translation", "fr": "Traduction" },
-  "资源": { "en": "Resources", "fr": "Ressources" },
   "未连接模型": { "en": "No model connected", "fr": "Aucun modèle connecté" },
-  "{0} 个任务运行中": { "en": "{0} {0|task|tasks} running", "fr": "{0} {0|tâche|tâches} en cours" }
+  "{0} 个任务进行中": { "en": "{0} {0|task|tasks} in progress", "fr": "{0} {0|tâche|tâches} en cours" }
 }

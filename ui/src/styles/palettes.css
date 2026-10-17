@@ -2,7 +2,7 @@
  * 可选配色方案（设置 → 外观与语言 → 配色方案）。
  *
  * 「暖调纸感」直接写在 tokens.css 的 :root / [data-theme="dark"] 里，不需要单独的
- * 块。默认方案是「素雅灰」（id graphite）。这里的每个方案都给浅色和深色各一整套 token，
+ * 块。默认方案是「流光」（id liuguang，settings v41 起；之前是「素雅灰」graphite）。这里的每个方案都给浅色和深色各一整套 token，
  * 由 <html data-palette="…"> 选中；浅色块的特异性 (0,2,0) 与 tokens.css 的
  * 深色块相同、写在它后面，所以深色块 (0,3,0) 必须把浅色块里的每个 token
  * 都重新定义一遍，否则深色下会漏出浅色值。阴影、圆角、字体沿用 tokens.css。
@@ -11,6 +11,84 @@
  * 主色文字和状态色对卡片底色 ≥ 4.5；--ink-3 对 --ground-2 也 ≥ 4.5。
  * 方案 id 与 ui/src/palette.ts、settings.py 的 PALETTES 保持一致。
  */
+
+/* 流光（默认，v41 起）：灰画布上一张白色舞台，单一电光蓝主色，青色（--glow）只用于
+   「进行中」的渐变和光带。深色是近黑的蓝灰，主色提亮到 #4d84f5 配深色字（与其余四套深色
+   方案一致），主色当文字用时走 --accent-ink。
+   对比度：浅色 --ink-3 对 --surface 5.5、对 --ground-2 4.8；深色 --ink-3 对 --surface 5.9，
+   --accent 对 --surface 5.1，--on-accent 对 --accent 5.3；状态色对各自底色 ≥ 4.5。 */
+:root[data-palette="liuguang"] {
+  --ground: #f3f4f7;
+  --ground-2: #eceef2;
+  --rail: #f3f4f7;
+  --surface: #ffffff;
+  --surface-2: #f4f5f8;
+  --surface-3: #e8eaef;
+  --ink: #101828;
+  --ink-2: #475467;
+  --ink-3: #5e697d;
+  --line: #e5e7ec;
+  --line-2: #d0d4dc;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --on-accent: #ffffff;
+  --tint: #e8effd;
+  --tint-line: #c4d4fb;
+  --tint-ink: #1e4fd0;
+  --ok: #157038;
+  --ok-t: #e8f6ed;
+  --ok-l: #b7e1c6;
+  --warn: #b45309;
+  --warn-t: #fdf3e2;
+  --warn-l: #f3d9a8;
+  --danger: #c81e1e;
+  --danger-t: #fdecec;
+  --danger-l: #f5c2c2;
+  --ring: #93b4ea;
+  --ring-soft: rgb(37 99 235 / 18%);
+  --bar-end: #38bdf8;
+  --surface-clear: rgb(255 255 255 / 0%);
+  --accent-ink: #1d4ed8;
+  --glow: #38bdf8;
+  --glow-soft: rgb(56 189 248 / 28%);
+}
+
+:root[data-palette="liuguang"][data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0b0e13;
+  --ground-2: #07090d;
+  --rail: #0b0e13;
+  --surface: #12161d;
+  --surface-2: #191e27;
+  --surface-3: #232935;
+  --ink: #e8ebf1;
+  --ink-2: #aeb5c2;
+  --ink-3: #8b93a2;
+  --line: #1f2530;
+  --line-2: #2b3340;
+  --accent: #4d84f5;
+  --accent-strong: #3b78f0;
+  --on-accent: #0b1220;
+  --tint: #182440;
+  --tint-line: #2a3f6e;
+  --tint-ink: #a6c1ff;
+  --ok: #4ade80;
+  --ok-t: #13291c;
+  --ok-l: #1f4a30;
+  --warn: #fbbf24;
+  --warn-t: #2d2411;
+  --warn-l: #5a4615;
+  --danger: #f87171;
+  --danger-t: #351a1a;
+  --danger-l: #5c2727;
+  --ring: #3b6fd6;
+  --ring-soft: rgb(140 176 255 / 26%);
+  --bar-end: #22d3ee;
+  --surface-clear: rgb(18 22 29 / 0%);
+  --accent-ink: #8cb0ff;
+  --glow: #22d3ee;
+  --glow-soft: rgb(34 211 238 / 20%);
+}
 
 /* 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */
 :root[data-palette="cool"] {
@@ -144,7 +222,7 @@
   --surface-clear: rgb(31 39 36 / 0%);
 }
 
-/* 素雅灰（id graphite，默认方案）：纯中性灰，不带色偏，主色为标准蓝，接近系统原生界面。 */
+/* 素雅灰（id graphite，V10.2 及以前的默认方案）：纯中性灰，不带色偏，主色为标准蓝，接近系统原生界面。 */
 :root[data-palette="graphite"] {
   --ground: #e5e5e5;
   --ground-2: #dbdbdb;

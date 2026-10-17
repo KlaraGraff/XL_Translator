@@ -1,11 +1,12 @@
-// V9 应用外壳 —— 左侧分组侧栏 + 顶栏容器。对应样张的 .side + .stage(.topbar+.content)，
-// 但 .screen 那层「展示用卡片」被拆掉，改成撑满窗口的应用根布局（见 styles/app.css 的
-// .app-shell）。这里只负责外壳本身；具体页面内容由 router.ts 挂到 contentContainer 里。
+// 应用外壳（V10.3「流光」）—— 灰色画布上一条无边框的导航栏（.side）和一张白色圆角舞台
+// （.stage = .topbar + .content）。导航栏的选中块是一块会滑动的高亮（.side-ind），不是每项
+// 自己的底色。这里只负责外壳本身；具体页面内容由 router.ts 挂到 contentContainer 里。
 
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { currentView, navigate, onNavigate, type ViewId } from "./router";
 import { t, localized } from "./i18n";
+import { version as PACKAGE_VERSION } from "../package.json";
 
 interface SideItemDef {
   id: ViewId;
@@ -51,7 +52,7 @@ export interface TopbarConfig {
 }
 
 export interface TaskPillConfig {
-  /** 活动任务数；0 时顶栏药丸显示静态「任务中心」，>0 时显示 live 态「N 个任务运行中」。 */
+  /** 活动任务数；>0 时顶栏显示 live 态「N 个任务进行中」，0 时不显示（侧栏已有「任务中心」）。 */
   count: number;
 }
 
@@ -69,6 +70,10 @@ const PILL_TONE_COLOR: Record<NonNullable<ModelPillConfig["tone"]>, string> = {
 };
 
 let sideItemEls: Map<ViewId, HTMLDivElement> | null = null;
+let sideNavEl: HTMLDivElement | null = null;
+let sideIndicatorEl: HTMLDivElement | null = null;
+let translateGroupEl: HTMLDivElement | null = null;
+let translateGroupText: Text | null = null;
 let taskBadgeEl: HTMLSpanElement | null = null;
 let settingsDotEl: HTMLSpanElement | null = null;
 
@@ -82,9 +87,8 @@ let toastHost: HTMLDivElement | null = null;
  *  不会跳到临时提示的下面去。 */
 const toastSlots = new Map<string, HTMLDivElement>();
 
-// 侧栏里要跟着界面语言换的文字节点：分组标题按原文 key、各项按视图 id 记下来，
+// 侧栏里要跟着界面语言换的文字节点：各项按视图 id 记下来，「翻译」父项单独记，
 // relocalizeShell() 原地改文字，不重建侧栏（徽标、红点、选中态都不动）。
-const sideLabelNodes: { key: string; el: HTMLDivElement }[] = [];
 const sideItemTextNodes = new Map<ViewId, Text>();
 let lastTaskPill: TaskPillConfig = { count: 0 };
 
@@ -96,7 +100,8 @@ export interface TranslateSideItem {
   icon: IconName;
 }
 
-let resourceLabelEl: HTMLDivElement | null = null;
+/** 「翻译」组的子项都插在它前面（资源区第一项「任务中心」）。 */
+let translateAnchorEl: HTMLDivElement | null = null;
 let translateItems: { def: TranslateSideItem; el: HTMLDivElement }[] = [];
 
 /** 内置四种之一在侧栏里的那一项，与启动时画的相同；不是内置类型时为 undefined。 */
@@ -106,10 +111,10 @@ export function builtinTranslateSideItem(id: ViewId): TranslateSideItem | undefi
   return { id, label: () => TRANSLATE_ITEMS.find((item) => item.id === id)?.label ?? def.label, icon: def.icon };
 }
 
-function buildSideItem(def: SideItemDef): HTMLDivElement {
+function buildSideItem(def: SideItemDef, sub = false): HTMLDivElement {
   const item = document.createElement("div");
-  item.className = "side-item";
-  item.append(icon(def.icon));
+  item.className = sub ? "side-item sub" : "side-item";
+  item.append(icon(def.icon, { size: "sm" }));
   const text = document.createTextNode(def.label);
   sideItemTextNodes.set(def.id, text);
   item.append(text);
@@ -117,17 +122,23 @@ function buildSideItem(def: SideItemDef): HTMLDivElement {
   return item;
 }
 
-function buildSideLabel(key: string): HTMLDivElement {
-  const label = document.createElement("div");
-  label.className = "side-label";
-  label.textContent = t(key);
-  sideLabelNodes.push({ key, el: label });
-  return label;
+/** 「翻译」分组的父项。阶段 1 还没有「翻译」入口页，点它进入组里的第一项（默认 Excel）。 */
+function buildTranslateGroup(): HTMLDivElement {
+  const item = document.createElement("div");
+  item.className = "side-item side-group";
+  item.append(icon("trans", { size: "sm" }));
+  translateGroupText = document.createTextNode(t("翻译"));
+  item.append(translateGroupText);
+  item.addEventListener("click", () => {
+    const first = translateItems[0]?.def.id;
+    if (first) navigate(first);
+  });
+  return item;
 }
 
 /** 界面语言换了以后，原地换掉外壳上的文字（侧栏、任务药丸）。模型药丸由调用方刷新。 */
 export function relocalizeShell(): void {
-  for (const { key, el } of sideLabelNodes) el.textContent = t(key);
+  if (translateGroupText) translateGroupText.data = t("翻译");
   for (const def of [...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label;
@@ -141,15 +152,15 @@ export function relocalizeShell(): void {
 
 /** 按给定顺序重画侧栏「翻译」组（内置四种与运行时注册的类型，没列出的不显示）；再次调用时整组替换。 */
 export function setTranslateSideItems(items: TranslateSideItem[]): void {
-  if (!sideItemEls || !resourceLabelEl?.parentElement) return;
+  if (!sideItemEls || !translateAnchorEl?.parentElement) return;
   for (const { def, el } of translateItems) {
     el.remove();
     sideItemEls.delete(def.id);
     sideItemTextNodes.delete(def.id);
   }
   translateItems = items.map((def) => {
-    const el = buildSideItem({ id: def.id, label: def.label(), icon: def.icon });
-    resourceLabelEl!.before(el);
+    const el = buildSideItem({ id: def.id, label: def.label(), icon: def.icon }, true);
+    translateAnchorEl!.before(el);
     sideItemEls!.set(def.id, el);
     return { def, el };
   });
@@ -170,23 +181,37 @@ export function mountShell(root: HTMLElement): ShellHandle {
   const brandMark = document.createElement("span");
   brandMark.className = "brand-mark";
   brandMark.textContent = "文A"; // i18n-ignore 品牌标记，不翻
-  brand.append(brandMark, document.createTextNode("Translator"));
+  const brandName = document.createElement("span");
+  brandName.className = "brand-name";
+  brandName.textContent = "Translator";
+  const brandVersion = document.createElement("span");
+  brandVersion.className = "brand-ver";
+  brandVersion.textContent = PACKAGE_VERSION;
+  brand.append(brandMark, brandName, brandVersion);
   side.append(brand);
 
-  side.append(buildSideLabel("翻译")); // i18n-ignore 词条 key，显示时由 t() 翻译
+  // 各项和滑动高亮块放在同一个定位容器里，高亮块按选中项的 offsetTop 移动。
+  const nav = document.createElement("div");
+  nav.className = "side-nav";
+  sideNavEl = nav;
+  sideIndicatorEl = document.createElement("div");
+  sideIndicatorEl.className = "side-ind";
+  sideIndicatorEl.setAttribute("aria-hidden", "true");
+  nav.append(sideIndicatorEl);
+
+  translateGroupEl = buildTranslateGroup();
+  nav.append(translateGroupEl);
   const itemMap = new Map<ViewId, HTMLDivElement>();
   // 先按默认顺序画内置四种；读到设置后由 setTranslateSideItems 按「扩展」页的设置重排。
   translateItems = [];
   for (const def of TRANSLATE_ITEMS) {
     const item = builtinTranslateSideItem(def.id)!;
-    const itemEl = buildSideItem(def);
+    const itemEl = buildSideItem(def, true);
     itemMap.set(def.id, itemEl);
-    side.append(itemEl);
+    nav.append(itemEl);
     translateItems.push({ def: item, el: itemEl });
   }
 
-  resourceLabelEl = buildSideLabel("资源"); // i18n-ignore 词条 key，显示时由 t() 翻译
-  side.append(resourceLabelEl);
   for (const def of RESOURCE_ITEMS) {
     const itemEl = buildSideItem(def);
     itemMap.set(def.id, itemEl);
@@ -196,13 +221,14 @@ export function mountShell(root: HTMLElement): ShellHandle {
       badge.style.display = "none";
       itemEl.append(badge);
       taskBadgeEl = badge;
+      translateAnchorEl = itemEl;
     }
-    side.append(itemEl);
+    nav.append(itemEl);
   }
 
   const spacer = document.createElement("div");
   spacer.className = "side-spacer";
-  side.append(spacer);
+  nav.append(spacer);
 
   for (const def of SYSTEM_ITEMS) {
     const itemEl = buildSideItem(def);
@@ -214,8 +240,9 @@ export function mountShell(root: HTMLElement): ShellHandle {
       itemEl.append(dot);
       settingsDotEl = dot;
     }
-    side.append(itemEl);
+    nav.append(itemEl);
   }
+  side.append(nav);
 
   sideItemEls = itemMap;
   root.append(side);
@@ -286,6 +313,28 @@ function highlightSideItem(id: ViewId): void {
   for (const [itemId, itemEl] of sideItemEls) {
     itemEl.classList.toggle("on", itemId === id);
   }
+  moveSideIndicator();
+}
+
+/**
+ * 把滑动高亮块移到当前选中项上。第一次定位（启动时）不做动画：先放到位，下一帧才加上
+ * 带过渡的 .ready，否则启动时高亮块会从侧栏顶端滑下来。当前页没有对应的侧栏项（例如
+ * 已在「扩展」页隐藏的翻译类型）时高亮块淡出。
+ */
+function moveSideIndicator(): void {
+  const ind = sideIndicatorEl;
+  if (!ind || !sideNavEl) return;
+  const on = sideNavEl.querySelector<HTMLDivElement>(".side-item.on");
+  if (!on) {
+    ind.style.opacity = "0";
+    return;
+  }
+  ind.style.opacity = "1";
+  ind.style.height = `${on.offsetHeight}px`;
+  ind.style.transform = `translateY(${on.offsetTop}px)`;
+  if (!ind.classList.contains("ready")) {
+    requestAnimationFrame(() => requestAnimationFrame(() => ind.classList.add("ready")));
+  }
 }
 
 /** 更新任务中心侧栏徽标（活动任务数）。count <= 0 时隐藏徽标。 */
@@ -337,16 +386,16 @@ export function setTopbar(config: TopbarConfig): void {
   topbarSubEl.title = config.subtitle ?? "";
 }
 
-/** 更新顶栏右侧「任务中心」药丸。count > 0 时切到 live 态并显示计数。 */
+/** 更新顶栏右侧的任务药丸：有任务进行中时显示「N 个任务进行中」，没有时整颗不显示。 */
 export function setTaskPill(config: TaskPillConfig): void {
   lastTaskPill = config;
   if (!taskPillHost) return;
   taskPillHost.innerHTML = "";
-  const pill = config.count > 0
-    // 从「N 个任务运行中」进来，用户要看的就是正在跑的那个，而不是上次选中的旧结果。
-    ? createPill({ label: t("{0} 个任务运行中", config.count), live: true, onClick: () => navigate("tasks", { focus: "active" }) })
-    : createPill({ label: t("任务中心"), onClick: () => navigate("tasks") });
-  taskPillHost.append(pill);
+  if (config.count <= 0) return;
+  // 从「N 个任务进行中」进来，用户要看的就是正在跑的那个，而不是上次选中的旧结果。
+  taskPillHost.append(
+    createPill({ label: t("{0} 个任务进行中", config.count), live: true, onClick: () => navigate("tasks", { focus: "active" }) }),
+  );
 }
 
 /** 更新顶栏右侧「当前模型」药丸。 */
