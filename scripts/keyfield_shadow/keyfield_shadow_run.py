@@ -119,11 +119,28 @@ def docx_paragraphs(path: Path) -> list[str]:
     return [t for t in texts if t.strip()]
 
 
+def _align_docx(src_paras: list[str], out_paras: list[str]) -> list[tuple[str, str]] | None:
+    """仅译文：段数相同，逐段对应。双语：每段原文后面跟一段译文，或译文段以原文开头。"""
+    if len(src_paras) == len(out_paras):
+        pairs = []
+        for source, output in zip(src_paras, out_paras):
+            if output.strip().startswith(source.strip()) and output.strip() != source.strip():
+                output = output.strip()[len(source.strip()):]  # 同段双语：去掉前面的原文
+            pairs.append((source, output))
+        return pairs
+    if len(out_paras) == 2 * len(src_paras) and all(
+        out_paras[2 * i].strip() == src.strip() for i, src in enumerate(src_paras)
+    ):
+        return [(src, out_paras[2 * i + 1]) for i, src in enumerate(src_paras)]
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path)
     parser.add_argument("--find", default="")
-    parser.add_argument("--docx", nargs=2, type=Path, metavar=("SOURCE", "OUTPUT"))
+    parser.add_argument("--docx", nargs=2, type=Path, metavar=("SOURCE", "OUTPUT"), action="append",
+                        help="原文与译文 .docx，可重复给多对（例如同一份原文翻了几次）")
     parser.add_argument("--docx-langs", default="fr-zh")
     parser.add_argument("--out", type=Path, default=Path(".runtime/self-tests/contract-keyfield-shadow"))
     args = parser.parse_args()
@@ -150,25 +167,29 @@ def main() -> int:
                             f"- tm:{r['id']} [{r['lang_pair']}] 原文：{_short(r['source_text'], 160)} ／ "
                             f"译文：{_short(r['target_text'], 160)}"
                         )
-        if args.docx:
-            src_paras = docx_paragraphs(args.docx[0])
-            out_paras = docx_paragraphs(args.docx[1])
+        for pair_index, (source_doc, output_doc) in enumerate(args.docx or [], 1):
+            src_paras = docx_paragraphs(source_doc)
+            out_paras = docx_paragraphs(output_doc)
             source_lang, target_lang = _langs(args.docx_langs)
-            if len(src_paras) == len(out_paras):
-                pairs = [(f"docx:{i + 1}", args.docx_langs, s, t, source_lang, target_lang)
-                         for i, (s, t) in enumerate(zip(src_paras, out_paras))]
-                run_pairs(pairs, {}, findings_out, stats)
-            else:
+            aligned = _align_docx(src_paras, out_paras)
+            label = f"docx{pair_index}:{args.docx_langs}"
+            if aligned is None:
                 stats["errors"].append(
-                    f"docx 段落数不同（原文 {len(src_paras)}，译文 {len(out_paras)}），未逐段比对"
+                    f"{output_doc.name}：段落对不齐（原文 {len(src_paras)} 段，译文 {len(out_paras)} 段），未逐段比对"
                 )
+            else:
+                pairs = [(f"docx{pair_index}:{i + 1}", label, s_, t_, source_lang, target_lang)
+                         for i, (s_, t_) in enumerate(aligned)]
+                run_pairs(pairs, {}, findings_out, stats)
             if args.find:
                 pattern = re.compile(args.find, re.IGNORECASE)
-                for label, paras in (("原文", src_paras), ("译文", out_paras)):
+                for side, paras in (("原文", src_paras), ("译文", out_paras)):
                     for i, text in enumerate(paras, 1):
                         for m in pattern.finditer(text):
-                            start = max(0, m.start() - 30)
-                            found_lines.append(f"- docx {label} 第 {i} 段：…{_short(text[start:m.end() + 30], 100)}…")
+                            begin = max(0, m.start() - 30)
+                            found_lines.append(
+                                f"- docx{pair_index} {side} 第 {i} 段：…{_short(text[begin:m.end() + 30], 100)}…"
+                            )
 
     lines = ["# 关键信息核对实测", ""]
     lines.append("## 读了多少条")
