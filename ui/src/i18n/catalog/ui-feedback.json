@@ -29,7 +29,7 @@
   "保存为 ZIP": {"en": "Save as ZIP", "fr": "Enregistrer en ZIP"},
   "正在发送…": {"en": "Sending…", "fr": "Envoi…"},
   "发送": {"en": "Send", "fr": "Envoyer"},
-  "仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。": {"en": "Nothing is uploaded until you click “Send”. Attached logs and files are used only to investigate the problem and are deleted once it has been dealt with, after 90 days at most.", "fr": "Rien n'est envoyé avant « Envoyer ». Les pièces jointes servent au seul diagnostic et sont supprimées après traitement (90 jours au plus)."},
+  "仅在点击「发送」后上传。附带的日志和文件仅供排查问题，问题处理完毕后即删除，最长保存 90 天。": {"en": "Nothing is uploaded until you click “Send”. Attached logs and files are used only to investigate the problem and are deleted once it has been dealt with, after 90 days at most.", "fr": "Rien n'est envoyé avant « Envoyer ». Pièces jointes supprimées après traitement, sous 90 jours."},
   "原文件和译文仅用于定位和修复问题，绝不会公开或泄露；问题处理完毕后立即删除，不再保存。": {"en": "Original and translated files are used only to locate and fix the problem. They are never made public or shared, and are deleted as soon as the problem has been dealt with.", "fr": "Les fichiers originaux et traduits servent uniquement à localiser et corriger le problème. Ils ne sont jamais rendus publics ni divulgués, et sont supprimés dès que le problème est traité."},
   "此版本尚未开通在线发送，可先保存为 ZIP。": {"en": "Online sending is not available in this version yet. You can save the feedback as a ZIP.", "fr": "L'envoi en ligne n'est pas encore disponible dans cette version. Vous pouvez enregistrer le retour au format ZIP."},
   "反馈内容与邮箱": {"en": "Your message and email", "fr": "Votre message et votre e-mail"},
