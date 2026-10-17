@@ -1,42 +1,101 @@
-/* 反馈视图：宽窗口左右两栏等高、上下铺满，描述框和任务列表吃掉剩余高度；内容放不下时
-   整页滚动（列表至少留 180px）。窄窗口退回单列滚动。
-   沿用设置页的分段选择（.seg / .segc）与设计令牌。 */
-.feedback-content { display: flex; overflow: auto; }
-.feedback-content > .feedback-column { min-height: 100%; }
-.feedback-column { width: 100%; display: flex; flex-direction: column; gap: 14px; }
-.feedback-grid { flex: 1 0 auto; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 14px; align-items: stretch; }
-.feedback-grid .feedback-composer { flex: 1 1 0; min-height: 200px; }
-.feedback-grid .feedback-composer .feedback-text { flex: 1 1 0; }
-.feedback-grid .feedback-task-list { flex: 1 1 0; min-height: 180px; }
+/* 反馈视图（V10.3「流光」）：两栏直接铺在页面上，不再套卡片。宽窗口左右两栏上下铺满，
+   左栏描述框、右栏任务列表吃掉各自那栏的剩余高度；底栏一行固定在最下面。放不下时
+   （描述框至少 140px、列表至少 120px）整页滚动；窄窗口退回单列。
+   吃剩余高度的几块一律写 flex-basis: 0px 而不是 flex: 1（= 0%）：父级高度未定时 0% 按内容算，
+   列表有几十行时整页会被撑高，列表自己反而不滚动。
+   「反馈此任务」弹窗（task-feedback.ts）复用其中一部分 class，那些规则的值不要改，
+   页面自己的样式用新 class 叠加。 */
+.feedback-content { flex-direction: column; overflow: auto; gap: 0; }
+.feedback-fill { flex: 1 0 auto; display: flex; flex-direction: column; }
+.feedback-grid { flex: 1 1 auto; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 24px; }
+.feedback-grid > div { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.feedback-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; min-width: 0; }
+.feedback-field-last { flex: none; margin-bottom: 0; }
+.feedback-grow { flex: 1 1 0px; }
+/* 标题后跟小注时允许换行：放不下就整句挪到下一行，标题本身不折断。 */
+.feedback-section-title.has-note { flex-wrap: wrap; row-gap: 2px; }
+.feedback-section-label { white-space: nowrap; }
+.feedback-muted { min-width: 0; font-size: 11.5px; font-weight: 400; color: var(--ink-3); }
+
+/* 类型：三张并排的卡片，沿用全局 .segc 的皮肤。 */
+.feedback-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.feedback-cards .segc { min-width: 0; padding: 10px 12px; transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
+.feedback-cards .segc span { display: block; margin-top: 2px; line-height: 1.4; }
+.feedback-cards .segc:hover:not(.on) { border-color: var(--line-2); }
+.feedback-cards .segc:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+
+/* 描述框：只有外框一层聚焦效果，和邮箱框一样；里面的文字区不再单独亮一圈（全局 textarea:focus 会给它加）。 */
+.feedback-composer { flex: 1 1 0px; min-height: 140px; display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); padding: 9px 11px; cursor: text; transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out); }
+.feedback-composer:hover { border-color: var(--line-3); }
+.feedback-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.feedback-composer .feedback-text,
+.feedback-composer .feedback-text:focus { flex: 1 1 0px; min-height: 0; border: 0; border-radius: 0; padding: 0; background: transparent; resize: none; outline: none; box-shadow: none; }
+/* 截图缩略图排在描述框下方一行，多了横向滚动；上下留出删除按钮伸出去的位置。 */
+.feedback-shots { flex: none; display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 7px 7px 2px 0; margin-top: -6px; scrollbar-width: thin; }
+.feedback-shots[hidden] { display: none; }
+.feedback-image { position: relative; width: 64px; height: 44px; flex: none; }
+.feedback-image-view { display: block; width: 100%; height: 100%; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface-2); cursor: zoom-in; }
+.feedback-image-view img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.feedback-image-remove { position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line-2); border-radius: 99px; background: var(--surface); color: var(--ink-2); cursor: pointer; opacity: 0; transition: opacity var(--t-fast) var(--ease-out); box-shadow: var(--sh-sm); }
+.feedback-image:hover .feedback-image-remove, .feedback-image:focus-within .feedback-image-remove { opacity: 1; }
+.feedback-image-remove svg { width: 11px; height: 11px; }
+
+/* 附带内容：页面上是单列的行，弹窗里仍是两列（.feedback-kinds）。 */
+.feedback-attach { display: flex; flex-direction: column; gap: 6px; }
+/* 页面上照原型：勾选与否行都是白底细边，状态看勾选框；弹窗里仍用选中底色。 */
+.feedback-attach .feedback-kind { padding: 9px 12px; }
+.feedback-attach .feedback-kind.on { border-color: var(--line); background: var(--surface); }
+.feedback-attach .feedback-kind:hover { background: var(--surface-2); }
+
+/* 选择任务：搜索框 → 显示条数 → 计数，一行放不下时计数换到第二行。 */
+.feedback-task-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: -2px; }
+.feedback-search { flex: 1 1 140px; min-width: 120px; height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 8px 0 10px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--ink-3); transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out); }
+.feedback-search svg { flex: none; transition: color var(--t-fast) var(--ease-out); }
+.feedback-search:hover { border-color: var(--line-3); }
+.feedback-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.feedback-search:focus-within svg { color: var(--accent-ink); }
+/* 外框承担悬停和聚焦，里面的输入框不再单独亮一圈。 */
+.feedback-search input,
+.feedback-search input:hover,
+.feedback-search input:focus { flex: 1; min-width: 0; width: 100%; height: 100%; border: 0; border-radius: 0; padding: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12.5px; outline: none; box-shadow: none; }
+.feedback-search input::placeholder { color: var(--ink-3); }
+.feedback-limit { flex: none; width: 118px; }
+.feedback-limit .dropdown-btn { min-height: 32px; }
+.feedback-task-count { font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.feedback-task-list { flex: 1 1 0px; min-height: 120px; overflow: auto; border-bottom: 1px solid var(--line); margin-bottom: -2px; }
+.feedback-task-list > .feedback-note { padding: 10px 6px; border-top: 1px solid var(--line); }
+.feedback-task { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 9px 6px; border-top: 1px solid var(--line); cursor: pointer; font-size: 12.5px; color: var(--ink); transition: background-color var(--t-fast) var(--ease-out); }
+.feedback-task:hover { background: var(--surface-2); }
+.feedback-task.disabled { opacity: 0.55; cursor: not-allowed; }
+.feedback-task .ck { flex: none; margin: 0; }
+.feedback-task > svg { flex: none; color: var(--ink-3); }
+.feedback-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.feedback-task-meta { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* 其他文件：固定在右栏底部。 */
+.feedback-other-files { display: flex; flex-direction: column; gap: 6px; }
+.feedback-other-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.feedback-other-foot .feedback-total { min-width: 0; font-size: 12px; }
+
+/* 底栏：左边说明（发送时换成进度），右边三个按钮；窄时换行。 */
+.feedback-foot { flex: none; display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.feedback-foot .feedback-actions { margin-left: auto; }
+.feedback-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* 窄窗口（只在浏览器开发态触发，Tauri 最小窗口 1080 宽）：单列，铺满相关的都退回自然高度。 */
 @media (max-width: 1000px) {
-  .feedback-grid { flex: none; grid-template-columns: minmax(0, 1fr); }
-  .feedback-grid .feedback-composer { flex: none; }
-  .feedback-grid .feedback-composer .feedback-text { flex: none; min-height: 200px; }
-  .feedback-grid .feedback-task-list { flex: none; max-height: 420px; }
+  .feedback-grid { flex: none; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .feedback-fill, .feedback-grid > div, .feedback-grow, .feedback-task-list { flex: none; min-height: auto; overflow: visible; }
+  .feedback-composer { flex: none; min-height: 160px; }
+  .feedback-composer .feedback-text, .feedback-composer .feedback-text:focus { flex: none; min-height: 140px; }
+  .feedback-foot .feedback-actions { margin-left: 0; }
 }
-.feedback-task-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.feedback-search { position: relative; flex: 1 1 200px; min-width: 160px; color: var(--ink-3); }
-.feedback-search svg { position: absolute; left: 10px; top: 8px; }
-.feedback-search input { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 10px 0 32px; }
-.feedback-limit { flex: none; width: 128px; }
-.feedback-task-count { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
-.feedback-task-list { overflow: auto; align-items: stretch; flex-wrap: nowrap; }
 .feedback-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 8px; }
 .feedback-section-title { margin: 6px 0 0; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
 .feedback-section-title:first-child { margin-top: 0; }
 .feedback-card .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: 600; }
-.feedback-seg .segc { padding: 9px 12px; }
-.feedback-seg .segc:focus-visible { outline: 2px solid var(--tint-line); outline-offset: 1px; }
 .feedback-text { display: block; width: 100%; min-height: 120px; resize: vertical; border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 11px; font: inherit; font-size: 13px; line-height: 1.6; background: var(--surface); color: var(--ink); }
 .feedback-input { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 9px; }
-.feedback-list { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.feedback-check { display: flex; align-items: flex-start; gap: 9px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); width: 100%; cursor: pointer; background: var(--surface); }
-.feedback-check:hover { background: var(--ground-2); }
-.feedback-check.disabled { opacity: 0.55; cursor: not-allowed; }
-.feedback-check .ck { margin-top: 2px; flex: none; }
-.feedback-check-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.feedback-check-copy b { font-size: 12.5px; font-weight: 550; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.feedback-check-copy span { font-size: 11.5px; color: var(--ink-3); }
 .feedback-warning { margin: 0; font-size: 12px; line-height: 1.55; color: var(--warn); background: var(--warn-t); padding: 8px 10px; border-radius: var(--r-sm); }
 .feedback-file { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 12.5px; }
 .feedback-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -44,14 +103,12 @@
 .feedback-total { margin: 0; font-size: 11.5px; color: var(--ink-3); }
 .feedback-total.over { color: var(--danger); }
 .feedback-note { margin: 0; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
-.feedback-actions-wrap { display: flex; flex-direction: column; gap: 10px; }
 .feedback-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .feedback-bar .feedback-note { flex: 1 1 260px; }
 .feedback-progress { flex: 1 1 260px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .feedback-progress-label { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .feedback-input.invalid { border-color: var(--danger); }
 .feedback-note.feedback-error { color: var(--danger); }
-.feedback-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .feedback-banner { margin: 0; }
 .feedback-sent { max-width: 640px; width: 100%; align-self: center; align-items: center; text-align: center; padding: 32px 24px; gap: 6px; }
 .feedback-sent-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--ok-t); color: var(--ok); display: grid; place-items: center; font-size: 23px; }
@@ -62,21 +119,6 @@
 .feedback-preview-block { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 10px; }
 .feedback-preview-block summary { cursor: pointer; font-size: 12.5px; font-weight: 550; }
 .feedback-preview-block pre { margin: 8px 0 2px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11.5px; line-height: 1.5; color: var(--ink-2); }
-/* 描述框：截图缩略图和文字在同一个框里，跟 Claude 的输入框一样。 */
-.feedback-composer { display: flex; flex-direction: column; gap: 10px; min-width: 0; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); padding: 9px 11px; cursor: text; }
-/* 只有外框一层聚焦效果，和邮箱框一样；里面的文字区不再单独亮一圈（全局 textarea:focus 会给它加）。 */
-.feedback-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
-.feedback-composer .feedback-text,
-.feedback-composer .feedback-text:focus { border: 0; border-radius: 0; padding: 0; background: transparent; resize: none; outline: none; box-shadow: none; min-height: 120px; }
-/* 截图只排一行，多了横向滚动；上下留出删除按钮伸出去的位置。 */
-.feedback-images { display: flex; flex-wrap: nowrap; gap: 10px; overflow-x: auto; overflow-y: hidden; padding: 7px 7px 4px 0; margin: -7px 0 0; flex: none; scrollbar-width: thin; }
-.feedback-images[hidden] { display: none; }
-.feedback-image { position: relative; width: 72px; height: 72px; flex: none; }
-.feedback-image-view { display: block; width: 100%; height: 100%; padding: 0; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; background: var(--ground-2); cursor: zoom-in; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
-.feedback-image-view img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.feedback-image-remove { position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line-2); border-radius: 99px; background: var(--surface); color: var(--ink-2); cursor: pointer; opacity: 0; transition: opacity 0.12s; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
-.feedback-image:hover .feedback-image-remove, .feedback-image:focus-within .feedback-image-remove { opacity: 1; }
-.feedback-image-remove svg { width: 12px; height: 12px; }
 .feedback-image-full { display: block; max-width: 100%; max-height: 65vh; margin: 0 auto; border-radius: 8px; }
 /* 附带内容：两列紧凑勾选项，说明放在问号里。 */
 .feedback-kinds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -88,8 +130,6 @@
 .feedback-privacy svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--accent-ink); }
 .feedback-kind-title { flex: none; font-weight: 550; color: var(--ink); white-space: nowrap; }
 .feedback-kind-count { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 6px; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.feedback-other-files { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.feedback-task-list > * { flex: none; }
 /* 「反馈此任务」弹窗：和反馈页同一套控件，排得更紧凑。 */
 .task-feedback { display: flex; flex-direction: column; gap: 8px; }
 .task-feedback .feedback-text { min-height: 96px; resize: vertical; }

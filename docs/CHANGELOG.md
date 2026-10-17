@@ -14,6 +14,10 @@
 
   **Interface refresh (step three): Translate home page, drop to route, drop-area light**: The app now opens on a new Translate page (the Translate item in the sidebar). At the top is a drop area: drag in files or folders, or use Choose files / Choose folder; four type chips (with their supported extensions) go straight to each page. Below, Recent lists the last four tasks (click one to open it on the Tasks page), and Ready shows the document model, the PDF & image model, the translation memory's entry count and languages, extra instructions and the drawing converter. Dropping files or folders anywhere on the window counts them by extension and opens the page with the most matching files, reading them straight away (`~` temporary files and translation output folders inside a folder are skipped); if other types were included too, a note says which pages can take them. Already on a type page whose files are in the drop, the app stays on that page; if that page is translating, it asks you to drop again when it finishes; with nothing translatable, it says so and stays put. The drop areas on the home page and on each type page's empty state have a new light: the stretch of border nearest the pointer lights up, a faint glow and dot grid follow the pointer, and the icon tilts slightly; while dragging a file over it the border becomes a multicolour light that circles round, stopping on release. With the system's Reduce motion setting on, it lights up without moving.
 
+- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
+
+  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
