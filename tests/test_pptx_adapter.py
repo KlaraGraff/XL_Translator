@@ -60,6 +60,21 @@ def french(text: str) -> str:
     return " ".join([f"Texte {zlib.crc32(text.encode()) % 1000}", *words, *numbers, *tokens])
 
 
+#: What a real model answers for the two formatted lines of mixed.pptx slide 2: the marks come back.
+MARKED_FRENCH = {
+    "<g1>注意：</g1>所有图纸以最新版本为准。": "<g1>Attention :</g1> seuls les plans à jour font foi.",
+    "详细资料见<g1>项目网站</g1>。": "Pour plus de détails, consultez <g1>le site du projet</g1>.",
+}
+
+
+class MarkKeepingEngine(FrenchEngine):
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        with self.lock:
+            self.calls.append(list(texts))
+            self.prompts.append(system_prompt)
+        return {text: MARKED_FRENCH.get(text) or french(text) for text in texts}
+
+
 def _texts(path: Path, part: str) -> list[str]:
     with zipfile.ZipFile(path) as package:
         root = etree.fromstring(package.read(part))
@@ -191,6 +206,26 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             ("第 7 页 · TextBox 1", "竖排文本框，译文可能需要改为横排")
         ]
         assert result["status"] == "needs_review" and result["review_count"] == 1, result
+
+    def test_bold_and_links_inside_a_paragraph_reach_the_translation(self) -> None:
+        # Mac check of #161 (run before the extension pages sent marks): the translation
+        # of 「注意：」 lost its bold and 「项目网站」 its link.
+        path = self.source / "项目进展汇报.pptx"
+        shutil.copyfile(FIXTURES / "mixed.pptx", path)
+        for options, copies in (({}, 1), ({"bilingual": True}, 2)):
+            engine = MarkKeepingEngine()
+            messages = self._run(engine, [path], options=options)
+            assert "<g1>注意：</g1>所有图纸以最新版本为准。" in [text for batch in engine.calls for text in batch]
+            out = Path(next(message for message in messages if isinstance(message, DoneMsg)).file_results[0]["output_path"])
+            with zipfile.ZipFile(out) as package:
+                slide = etree.fromstring(package.read("ppt/slides/slide2.xml"))
+            bold = [
+                "".join(run.itertext()) for run in slide.iter(f"{{{A}}}r")
+                if run.find(f"{{{A}}}rPr") is not None and run.find(f"{{{A}}}rPr").get("b") == "1"
+            ]
+            linked = ["".join(run.itertext()) for run in slide.iter(f"{{{A}}}r") if run.find(f".//{{{A}}}hlinkClick") is not None]
+            assert bold == ["注意："] * (copies - 1) + ["Attention :"], (options, bold)
+            assert linked == ["项目网站"] * (copies - 1) + ["le site du projet"], (options, linked)
 
     def test_bilingual_option_writes_both(self) -> None:
         path = self.source / "讲义.pptx"
