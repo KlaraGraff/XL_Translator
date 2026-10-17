@@ -114,8 +114,10 @@
   `surface_setting` / `set_surface_setting`，内置页面读平铺字段（`excel_target_lang` …），调用方不用分辨。
 - **侧栏顺序与显示**：`settings.translation_types`（`TranslationTypesSettings`，v40）一张表管全部翻译类型
   （内置四种与 `ext:`）：`order` 是类型键的顺序（没列到的按描述符顺序排在后面，空即默认顺序，所以新类型排在
-  最后），`visible` 是拨过「显示在侧栏」的类型；没拨过的按 `shows()` 的默认：内置四种显示，扩展类型（随应用
-  提供的「文本」也一样）不显示，在「扩展」页打开。v39 升级时调过的 `order` 换成整张表的顺序，`pinned` 不沿用。
+  最后），`visible` 是拨过「显示在侧栏」的类型；没拨过的按 `shows(key, visible_by_default=…)` 的默认：内置四种
+  显示，扩展类型按页面的 `Surface.visible_by_default`（随应用提供、清单写了 `visible_by_default` 的才显示，如 PPT；
+  「文本」不显示），在「扩展」页打开。清单写了 `sidebar_after` 的随应用提供类型在默认顺序里插在那个类型后面
+  （`orderedTypeKeys`；用户排过的顺序里各类型的先后不动，只把新类型插进去）。v39 升级时调过的 `order` 换成整张表的顺序，`pinned` 不沿用。
   不显示只影响侧栏：视图照常注册，任务中心「打开工作区」、命令行和 MCP 照常可用。`PUT /api/settings` 拒绝
   让全部类型都不显示（422），界面同样拦。
 - **模型与速率**：`page_key = "adapter"` 的任务只占文档翻译模型（`task_model_roles_for_page`）；
@@ -160,14 +162,21 @@ adapters/<id>/
   adapter.py     scan（可省）、extract、write 三个函数，只用标准库和 translator_adapter
 ```
 
+随应用提供的适配器在应用进程里加载，可以导入应用模块和 lxml（重活放在 `core/` 里，`adapter.py` 只是薄壳）；
+`adapter test` 对它们用 `InProcessAdapterHost` 试样例（`cli/adapter_commands.py` 的 `is_bundled_adapter`）。
+用户装进来的仍只能用标准库和 `translator_adapter`。
+
 - **协议**（`translator_adapter/`，只依赖标准库，不 import 应用；`ADAPTER_API_VERSION = 1`，以后只做加法）：
   - `extract(path) -> list[TextUnit]`。`TextUnit` 的字段：`id`（文件内唯一，`write` 靠它放回译文）、
     `text`、`context`（给人看的位置，如「第 12 行」，写进需复核清单；空着时清单写 `id`）、`kind`
     （`paragraph`、`heading`、`list_item`、`table_cell` 等，目前只作记录）、`locked`（原样写回、不送模型，
-    如代码块）、`protected`（`text` 里必须原样回来的片段，如行内代码、链接地址）。
+    如代码块）、`protected`（`text` 里必须原样回来的片段，如行内代码、链接地址）、`marked`（段内格式标记：
+    格式与主体不同的几截用 `<g1>…</g1>` 包住，去掉标记须与 `text` 一字不差，否则 `validate_units` 清空它；
+    标记写法和校验与 Word 共用 `core/word_inline_marks.py`）。
   - `scan(path) -> ScanItem(unit_count, warnings)`：扫描时显示的单元数；省略时按 `extract` 数未锁定的单元。
   - `write(path, units, mode, out_path, options) -> OutputFile(path, review_count)`：`units` 是
-    `TranslatedUnit(id, text, translation, status)`（`translation` 与 `text` 相同表示保留原文），`mode` 为
+    `TranslatedUnit(id, text, translation, status, marked_translation)`（`translation` 与 `text` 相同表示保留原文；
+    `marked_translation` 是带段内格式标记的译文，空表示按整段写法写回），`mode` 为
     `translation_only` 或 `bilingual`，`options` 是本次任务的开关值；返回 `None` 视为已写到 `out_path`。
   - 适配器不调模型、不碰记忆库、不读密钥、不联网。
 - **清单**（`core/format_adapter.py` 的 `AdapterManifest`，未知字段一律拒绝）：`id`（小写字母、数字、`_`、`-`，
@@ -175,7 +184,9 @@ adapters/<id>/
   `SUPPORTED_ADAPTER_API_VERSIONS` 内）、`label` 与 `file_noun`（中英法三语必填）、`description`（三语，可省，
   页面「?」里的说明）、`prompt`（这种文件的内置规则，可省，最长 4000 字，省略时用通用的那份；描述符带出，
   用户可在翻译参数里改写）、`icon`（`ui/src/icons.ts` 的图标名）、`extensions`、`capabilities`（`bilingual`、
-  `translation_only`，至少一个）、`options`（开关；`bilingual` 留给应用）、`license`、`repo`、`min_app_version`。
+  `translation_only`，至少一个）、`options`（开关；`bilingual` 留给应用）、`license`、`repo`、`min_app_version`，
+  以及只对随应用提供的类型生效的 `visible_by_default`（没拨过时也显示在侧栏）和 `sidebar_after`（侧栏默认顺序里
+  紧跟哪个类型），描述符同名带出（装进来的扩展一律为 false / 空）。
   两种输出都支持时，应用给页面加「双语对照」开关（默认关），执行器据此选 `mode`。
 - **加载**：`create_app` 调 `register_bundled_adapters()`（`api/surfaces/adapter.py`），把 `adapters/` 下每个合格
   目录注册成一个 `AdapterSurface`；清单不合格或缺 `adapter.py` 的写日志跳过，不影响启动。`InProcessAdapterHost`
@@ -187,9 +198,17 @@ adapters/<id>/
   2. 原文语言为「自动」时识别这个文件的原文语言（用于记忆库语言对和日志，提示词仍按「自动」）。
   3. 「自动识别场景」开启时读一遍生成文档说明。
   4. 记忆库整段命中的直接采用；其余把 `protected` 片段换成 `⟦n⟧` 标记，经 `TextTranslationService`
-     分批送模型（速率与重试按文档翻译模型的吞吐量，`core/surface_rate.py` 的 `extension_rate`）。
-  5. 还原标记，做残留原文体检（`run_residual_pass`），按单元记进 `UnitLedger`。
-  6. `write` 到 `{来源文件夹}_翻译输出_{时间}/` 下与来源相同的相对路径，文件名
+     分批送模型（速率与重试按文档翻译模型的吞吐量，`core/surface_rate.py` 的 `extension_rate`）。带 `marked` 的
+     单元由 `InlineMarkEngine` 换成带标记的原文发出（记忆库词条包在它外面，按纯文本查词核对）。
+     仅译文模式下原文是中文时，「中文 + 外文」的内容先分出来，与 Excel、Word 同一套规则单独翻
+     （`split_mixed_language_sources` / `translate_mixed_language_texts(translation_only=True)`，不用记忆库）：
+     模型认为已有双语的整体再翻一遍（`collapse_echoed_repeat`），翻不出的保留原文；译文里仍夹着外文、原文疑似
+     夹杂错误外文的保留译文；都计入需复核。原文语言为「自动」时按这个文件的语言预检结果判断有没有中文。
+  5. 还原标记，做残留原文体检（`run_residual_pass`），按单元记进 `UnitLedger`。带段内格式的单元：模型带回的
+     标记去掉后与定稿一致就直接用，否则（记忆库命中、混合内容那一路、标记丢了、体检改过）用 `place_marks` 让模型
+     只补标记，补不上的 `marked_translation` 留空。
+  6. `write` 到 `{来源文件夹}_翻译输出_{时间}/`（页面「输出位置」选了自定义时放在那个文件夹里，
+     `settings.extensions[<id>].use_custom_output_dir` / `custom_output_dir`）下与来源相同的相对路径，文件名
      `{原名}_{目标语言}[_双语].{扩展名}`。
 
   进度按文件大小加权直接给总百分比，不会每换一个文件就从头走一遍；文件之间、批次之间都能暂停；停止时
@@ -204,6 +223,8 @@ adapters/<id>/
   | 受保护片段没能原样保留 | 原文 |
   | 译文里仍有原文 | 译文 |
   | 记忆库设定的译法没被采用 | 译文 |
+  | 仅译文：已含两种语言的内容未能翻成目标语言、夹杂多种语言的内容未能确认 | 原文 |
+  | 仅译文：译文中仍夹带未翻译的外文、原文疑似夹杂错误外文 | 译文 |
 - **测试**：`tests/fixtures/adapters/echo`（每行一个单元，`#!` 行锁定，`{{name}}` 受保护，仅测试用）；
   `tests/test_format_adapter.py` 测清单、宿主和描述符，`tests/test_adapter_runner.py` 用假引擎测执行器，
   末尾一项经真实路由跑到结束。

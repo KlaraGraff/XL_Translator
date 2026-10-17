@@ -114,6 +114,11 @@ class Surface:
     phase_names: ClassVar[tuple[LocalizedText, ...]] = ()
     #: Switches under 运行设置 the front end draws from the descriptor.
     options: ClassVar[tuple[OptionDef, ...]] = ()
+    #: Shown in the sidebar until the user switches it off on the 扩展 page
+    #: (``TranslationTypesSettings.shows``).  None follows the key: built-in
+    #: pages show, ``ext:`` types do not.  A format adapter sets it from its
+    #: manifest when shipped with the app.
+    visible_by_default: ClassVar[bool | None] = None
 
     # ── task start ───────────────────────────────────────────────────────
     #: False only for TM cleaning, which runs on a language pair, not on files.

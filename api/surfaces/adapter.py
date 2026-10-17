@@ -170,6 +170,9 @@ class AdapterSurface(Surface):
         self.output_bilingual = manifest.capabilities.bilingual
         self.output_translation_only = manifest.capabilities.translation_only
         self.default_prompt = manifest.prompt
+        # 侧栏默认显示和默认位置只认随应用提供的类型；装进来的扩展写了也不算（装上时本来就打开了）。
+        self.visible_by_default = origin == "bundled" and manifest.visible_by_default
+        self.sidebar_after = manifest.sidebar_after if origin == "bundled" else ""
         both = self.output_bilingual and self.output_translation_only
         self.options = ((BILINGUAL_OPTION,) if both else ()) + tuple(
             OptionDef(option.key, dict(option.label), default=option.default, help=dict(option.help))
@@ -184,6 +187,9 @@ class AdapterSurface(Surface):
         if self.manifest.prompt:
             # 「翻译参数」里这个类型的内置规则默认值；没有时界面显示通用的那份。
             descriptor["prompt"] = self.manifest.prompt
+        # 侧栏：没在「扩展」页拨过时是否显示、默认顺序里紧跟哪个类型（界面 surface-descriptors.ts）。
+        descriptor["visible_by_default"] = self.visible_by_default
+        descriptor["sidebar_after"] = self.sidebar_after
         descriptor["adapter"] = {
             "id": self.manifest.id,
             "version": self.manifest.version,
@@ -260,6 +266,11 @@ class AdapterSurface(Surface):
             raise TaskInputError(f"没有可翻译的{self.file_noun.get('zh', '文件')}。")
         require_target_lang(settings.target_lang, self.display_label.get("zh", self.key))
         require_translation_model(settings)
+        saved = extension_settings(settings, self.key)
+        if saved.use_custom_output_dir:
+            output_error = bilingual_writer.get_custom_output_dir_error(saved.custom_output_dir)
+            if output_error:
+                raise TaskInputError(output_error)
 
     def snapshot(self, *, settings: AppSettings, files: list[Any], options: TaskOptions) -> dict[str, object]:
         return {
@@ -311,12 +322,14 @@ class AdapterSurface(Surface):
             marked_in="review_list",
             default_prompt=self.default_prompt,
         )
+        saved = extension_settings(settings, self.key)
+        custom_output_dir = saved.custom_output_dir.strip() if saved.use_custom_output_dir else ""
         return AdapterTaskRunner(
             request.files,
             host=self.host,
             service=service,
             source_root=request.source_root,
-            output_dir=bilingual_writer.build_output_dir(request.source_root),
+            output_dir=bilingual_writer.build_output_dir(request.source_root, custom_output_dir or None),
             target_lang=settings.target_lang,
             source_lang=request.source_lang,
             bilingual=self.write_bilingual(options),

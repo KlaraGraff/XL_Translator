@@ -26,7 +26,15 @@ from typing import Any
 from core import adapter_install
 from core.adapter_install import CONFIRM_NOTICE, inspect_package
 from core.adapter_subprocess_host import SubprocessAdapterHost
-from core.format_adapter import LANGUAGES, MANIFEST_FILE, AdapterError, AdapterManifest
+from core.format_adapter import (
+    BUNDLED_ADAPTERS_DIR,
+    LANGUAGES,
+    MANIFEST_FILE,
+    AdapterError,
+    AdapterHost,
+    AdapterManifest,
+    InProcessAdapterHost,
+)
 from translator_adapter import (
     MODE_BILINGUAL,
     MODE_TRANSLATION_ONLY,
@@ -170,7 +178,11 @@ def check_adapter(directory: Path, *, allow_reserved_id: bool = False) -> CheckR
         suffixes = "、".join(f".{suffix}" for suffix in manifest.extensions)
         report.problems.append(f"samples/ 里没有 {suffixes} 样例，无法试运行")
         return report
-    host = SubprocessAdapterHost(directory, manifest)
+    # 随应用提供的类型在应用进程里运行，可以导入应用模块和 lxml：照样在本进程里试。
+    # 第三方扩展照安装后的样子，在子进程里试（只有标准库和 translator_adapter）。
+    host: AdapterHost = (
+        InProcessAdapterHost(directory, manifest) if is_bundled_adapter(directory) else SubprocessAdapterHost(directory, manifest)
+    )
     options = {option.key: option.default for option in manifest.options}
     with tempfile.TemporaryDirectory(prefix="translator-adapter-test-") as work:
         for index, name in enumerate(runnable):
@@ -178,6 +190,14 @@ def check_adapter(directory: Path, *, allow_reserved_id: bool = False) -> CheckR
             output_dir.mkdir()
             report.runs.append(_run_sample(host, manifest, directory / name, name, output_dir, options, report))
     return report
+
+
+def is_bundled_adapter(directory: Path) -> bool:
+    """``directory`` 是随应用提供的类型（源码树的 ``adapters/<id>/``）。"""
+    try:
+        return Path(directory).resolve().parent == BUNDLED_ADAPTERS_DIR.resolve()
+    except OSError:
+        return False
 
 
 def _text_warnings(manifest: AdapterManifest) -> list[str]:
@@ -193,7 +213,7 @@ def _text_warnings(manifest: AdapterManifest) -> list[str]:
 
 
 def _run_sample(
-    host: SubprocessAdapterHost,
+    host: AdapterHost,
     manifest: AdapterManifest,
     path: Path,
     name: str,
@@ -238,13 +258,15 @@ def _translated(units: list[TextUnit], suffix: str) -> list[TranslatedUnit]:
             text=unit.text,
             translation=unit.text if unit.locked else f"{unit.text}{suffix}",
             status=STATUS_LOCKED if unit.locked else STATUS_TRANSLATED,
+            # 带段内格式标记的单元：写回时也把带标记的译文交过去，试一下适配器按标记写回的那条路。
+            marked_translation=f"{unit.marked}{suffix}" if unit.marked and not unit.locked else "",
         )
         for unit in units
     ]
 
 
 def _check_mode(
-    host: SubprocessAdapterHost,
+    host: AdapterHost,
     path: Path,
     name: str,
     units: list[TextUnit],

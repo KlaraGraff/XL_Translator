@@ -31,6 +31,7 @@
 | `capabilities` | 否 | `{"translation_only": true, "bilingual": true}`，至少一种；两种都支持时页面有「双语对照」开关 |
 | `options` | 否 | 页面上的开关：`{"key", "label", "help", "default"}` |
 | `icon`、`license`、`repo`、`min_app_version` | 否 | 图标名、许可证、项目主页、需要的最低 Translator 版本 |
+| `visible_by_default`、`sidebar_after` | 否 | 只对随 Translator 提供的类型生效：没在「扩展」页拨过时也显示在侧栏、默认顺序里紧跟哪个类型（如 `word`）。装进来的扩展写了也不起作用（装上时本来就显示在侧栏） |
 
 清单不认识的字段一律拒绝，也不支持 `requires`（扩展不能依赖第三方库）。
 
@@ -44,15 +45,16 @@ def write(path: str, units: list[TranslatedUnit], mode: str, out_path: str, opti
 def scan(path: str) -> ScanItem: ...  # 可省，省略时按 extract 计数
 ```
 
-- `extract` 按阅读顺序返回 `TextUnit(id, text, context, kind, locked, protected)`。`id` 在文件内唯一，同一个文件每次取出的 `id` 相同；`context` 是给人看的位置（如「第 12 行」），写进需复核清单。整段不该翻译的设 `locked=True`；段内必须原样保留的片段（占位符、行内代码、链接地址）放进 `protected`。
-- `write` 只读 `path`，写到 `out_path`。`units` 是 `TranslatedUnit(id, text, translation, status)`，没译成的和锁定的 `translation` 就是原文。`mode` 是 `translation_only` 或 `bilingual`，`options` 是本次任务的开关值。文字以外的内容（结构、编码、换行符）尽量逐字节保留。
+- `extract` 按阅读顺序返回 `TextUnit(id, text, context, kind, locked, protected, marked)`。`id` 在文件内唯一，同一个文件每次取出的 `id` 相同；`context` 是给人看的位置（如「第 12 行」），写进需复核清单。整段不该翻译的设 `locked=True`；段内必须原样保留的片段（占位符、行内代码、链接地址）放进 `protected`。
+- `write` 只读 `path`，写到 `out_path`。`units` 是 `TranslatedUnit(id, text, translation, status, marked_translation)`，没译成的和锁定的 `translation` 就是原文。`mode` 是 `translation_only` 或 `bilingual`，`options` 是本次任务的开关值。文字以外的内容（结构、编码、换行符）尽量逐字节保留。
+- 段内格式（可选）：一段里有几截格式和主体不同（加粗、斜体、链接）时，把这几截用成对的 `<g1>…</g1>`、`<g2>…</g2>` 包住放进 `marked`，去掉标记必须与 `text` 一字不差，标记不能嵌套、不能跨行，一段最多 12 对；不满足时 Translator 按没有标记处理。模型会把标记放到译文对应的位置，`write` 拿到的 `marked_translation` 是带标记的译文（去掉标记就是 `translation`），按标记把每截写回原来的格式；它为空时（标记没能完整回来）把 `translation` 整段按主体格式写回。没有段内格式的段落 `marked` 留空。
 - 时限：`scan` 每个文件 30 秒，`extract`、`write` 每个文件 120 秒。超时或进程崩溃时只有这个文件失败。
 
 ## 限制
 
 Translator 安装前会检查这些规则，违反的装不上：
 
-- 只用 Python 标准库和 `translator_adapter`。
+- 只用 Python 标准库和 `translator_adapter`（随 Translator 提供的类型在应用进程里运行，可以导入应用模块和 lxml，不受这一条限制）。
 - 不能导入联网模块（`socket`、`ssl`、`http`、`urllib`、`requests`、`httpx`、`asyncio` 等）、启动其他程序的模块（`subprocess`、`multiprocessing`、`pty`）、加载原生代码的模块（`ctypes`、`cffi`）和动态加载代码的模块（`importlib`、`pickle`、`marshal`、`runpy` 等）。
 - 不能调用 `exec`、`eval`、`compile`、`__import__`、`os.system`、`os.popen`、`os.fork`、`os.exec*`、`os.spawn*` 等。
 - 扩展包里只能有 `.py`、`.json`、`.md`、`.txt` 和 `LICENSE`（`samples/` 下不限）；不能有原生库、可执行文件、符号链接；合计不超过 2 MB、200 个文件。
@@ -70,7 +72,7 @@ Translator 安装前会检查这些规则，违反的装不上：
    translator-sidecar adapter test .
    ```
 
-   它做与安装时相同的检查，再在子进程里用 `samples/` 跑一遍 `scan`、`extract`、`write`（两种输出都试），核对以原文作译文写回后再取字与原文一致。全部通过时退出码为 0；加 `--json` 输出一个 JSON 对象。
+   它做与安装时相同的检查，再在子进程里用 `samples/` 跑一遍 `scan`、`extract`、`write`（两种输出都试；带 `marked` 的段落也把带标记的译文交给 `write`），核对以原文作译文写回后再取字与原文一致。全部通过时退出码为 0；加 `--json` 输出一个 JSON 对象。随 Translator 提供的类型（源码 `adapters/<id>/`，加 `--skip-id-check`）在本进程里试，与应用里的运行方式相同。
 4. 试用：在 Translator 的「扩展」页点「从文件夹添加…」选这个文件夹，或运行 `translator-sidecar adapter install . --yes`。侧栏出现新类型后，翻译一份真实文件看看效果。改了代码后再添加一次即可更新。
 
 `translator-sidecar` 是 Translator 自带的命令行：macOS 在 `/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`，Windows 在 `%LOCALAPPDATA%\Translator\sidecar\translator-sidecar\translator-sidecar.exe`。有 Translator 源码时，也可以在源码目录运行 `python -m cli adapter …`。
@@ -94,6 +96,8 @@ Translator 安装前会检查这些规则，违反的装不上：
 
 - **安装前**：Translator 先检查扩展包，再弹出确认框，列出名称、版本、文件类型、许可证、来源和告警，并写明扩展以用户权限运行。检查没通过的会逐条列出原因，不能安装。从扩展列表安装时，下载的 zip 须与条目的大小和 SHA-256 一致。
 - **安装后**：扩展复制到应用数据目录的 `plugins/adapters/<id>/` 下（`samples/` 不复制），登记在 `plugins/adapters/installed.json`，新类型立即出现在侧栏（用户关过它的不动）。翻译参数里多一个这个类型的页签，`prompt` 是它的默认内置规则。
+- **翻译页**：和 Word 页同一套：目标语言、源语言、补充要求、输出位置（「高级」里，可选写在来源文件夹旁或自定义文件夹），存在 `settings.extensions[<id>]`。扫描后文件表列出每个文件 `scan` 数出的段数和 `warnings`（整句，如「3 张图片中的文字未翻译」，界面按整句翻译成界面语言，认不出的原样显示）。
+- **仅译文时的混合内容**：原文是中文、目标是别的语言、选了「仅译文」时，已经夹着外文的内容（「土石方工程合计 Total of Earthworks」）与 Excel、Word 同一套规则整体翻成目标语言；翻不出的保留原文、列入需复核清单，译文里仍夹着没翻的外文的保留译文、列入需复核清单。双语对照不受影响。
 - **更新和卸载**：「浏览扩展」里有新版本时显示「更新」；翻译类型列表里装进来的类型旁边有「卸载」。类型还有任务在进行或已暂停时，不能更新或卸载。卸载后这个类型的翻译参数保留，重新安装后恢复。
 
 ## 命令行速查

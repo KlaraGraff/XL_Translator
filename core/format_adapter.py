@@ -56,6 +56,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
+_CLOSING_MARK_RE = re.compile(r"<\s*/\s*g\s*\d+\s*>", re.IGNORECASE)
 #: 清单里内置规则的长度上限：比应用通用的那份长得多就该拆成补充要求了。
 _PROMPT_MAX_CHARS = 4000
 
@@ -157,6 +158,11 @@ class AdapterManifest(BaseModel):
     repo: str = ""
     #: 需要的最低应用版本；空表示不限。
     min_app_version: str = ""
+    #: 只对随应用提供的类型生效：没在「扩展」页拨过时也显示在侧栏（像内置四种一样）。
+    #: 用户装进来的扩展写了也按不显示处理——它们装上时本来就打开了（``api/extension_install_job.py``）。
+    visible_by_default: bool = False
+    #: 只对随应用提供的类型生效：侧栏默认顺序里紧跟在哪个类型后面（如 ``word``）；空表示排在最后。
+    sidebar_after: str = ""
 
     @field_validator("id")
     @classmethod
@@ -227,6 +233,14 @@ class AdapterManifest(BaseModel):
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ValueError(f"开关的 key 重复：{', '.join(duplicates)}")
+        return value
+
+    @field_validator("sidebar_after")
+    @classmethod
+    def _sidebar_after(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value and not re.match(r"^(?:ext:)?[a-z0-9][a-z0-9_-]{0,39}$", value):
+            raise ValueError("sidebar_after 应是一个类型键，如 word 或 ext:text")
         return value
 
     @field_validator("min_app_version")
@@ -352,7 +366,8 @@ def _coerce(value: Any, cls: type[_T], what: str) -> _T:
 
 
 def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUnit]:
-    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段。"""
+    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段；``marked``
+    去掉标记后须与原文一字不差、标记成对不嵌套，否则按没有标记处理（与 Word 同一套校验）。"""
     seen: set[str] = set()
     for unit in units:
         if not unit.id:
@@ -361,7 +376,18 @@ def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUni
             raise AdapterError(f"{what} 返回的单元 id 重复：{unit.id!r}")
         seen.add(unit.id)
         unit.protected = [fragment for fragment in dict.fromkeys(unit.protected) if fragment and fragment in unit.text]
+        if unit.marked and not _usable_marks(unit.marked, unit.text):
+            unit.marked = ""
     return units
+
+
+def _usable_marks(marked: str, text: str) -> bool:
+    # 只有带标记的单元才用到；word_inline_marks 带着 python-docx，不在模块顶部导入。
+    from core.word_inline_marks import MAX_GROUPS_PER_UNIT, marks_match, strip_marks
+
+    if marked == text or strip_marks(marked) != text or not marks_match(marked, marked):
+        return False
+    return len(_CLOSING_MARK_RE.findall(marked)) <= MAX_GROUPS_PER_UNIT
 
 
 class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):

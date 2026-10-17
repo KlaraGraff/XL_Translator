@@ -123,6 +123,9 @@ type FileItem = JsonObject & {
   shape_text_count?: number | null;
   comment_count?: number | null;
   anchor_frozen_count?: number;
+  /** 运行时注册的类型：适配器 scan 数出的单元数，和给用户看的整句提示（「3 张图片中的文字未翻译」）。 */
+  unit_count?: number | null;
+  warnings?: string[];
 };
 
 type ScanSkippedItem = { path?: string; relative_path?: string; name?: string; reason?: string };
@@ -768,12 +771,14 @@ function extSettingsPatch(surface: ExtSurface, name: string, value: unknown): Js
   return { extensions: { [surface.slice("ext:".length)]: { [name]: value } } };
 }
 
-/** 没存过时与后端 ExtensionSettings 的默认值一致：译成英文、自动识别源语言、补充要求「无」。 */
+/** 没存过时与后端 ExtensionSettings 的默认值一致：译成英文、自动识别源语言、补充要求「无」、写在来源文件夹里。 */
 function applyExtSettings(surface: ExtSurface, st: SurfaceState): void {
   const saved = extSettingsRecord(surface);
   st.targetLang = text(saved.target_lang, "en");
   st.sourceLang = text(saved.source_lang, "auto");
   st.domainPreset = text(saved.domain_preset, NO_EXTRA_PROMPT);
+  st.useCustomOutputDir = Boolean(saved.use_custom_output_dir);
+  st.customOutputDir = text(saved.custom_output_dir);
 }
 
 /** 运行时注册的类型的目标语言、源语言和补充要求也能在「设置 · 翻译参数」里该类型的页签改，
@@ -806,6 +811,8 @@ function readPath(obj: JsonObject, path: string): unknown {
 
 /** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output、cad_output 没有。 */
 function outputRecord(surface: Surface): JsonObject {
+  // 运行时注册的类型的输出位置与其他设置一起放在 settings.extensions[<id>]。
+  if (isExtSurface(surface)) return extSettingsRecord(surface);
   if (surface === "pdf" || surface === "cad") return record(settings[`${surface}_output`]);
   const isolated = record(settings[`${surface}_output`]);
   return Object.keys(isolated).length ? isolated : record(settings.output);
@@ -814,6 +821,11 @@ function outputRecord(surface: Surface): JsonObject {
 function outputSettingPathPrefix(surface: Surface): string {
   if (surface === "pdf" || surface === "cad") return `${surface}_output`;
   return hasOwn(settings, `${surface}_output`) ? `${surface}_output` : "output";
+}
+
+/** 写输出位置的一项（use_custom_output_dir / custom_output_dir）的补丁。 */
+function outputSettingPatch(surface: Surface, name: string, value: unknown): JsonObject {
+  return isExtSurface(surface) ? extSettingsPatch(surface, name, value) : nestedPatch(`${outputSettingPathPrefix(surface)}.${name}`, value);
 }
 
 function readOutputPath(surface: Surface, key: string): unknown {
@@ -1673,8 +1685,10 @@ function buildReadyNote(surface: Surface, st: SurfaceState): HTMLElement | null 
   if (surface === "pdf") {
     count = files.reduce((sum, f) => sum + num(f.page_count), 0);
     template = t("读取完成，{0} 页待翻译。", "\u0000");
-  } else if (surface === "excel" || surface === "word" || surface === "cad") {
-    if (surface === "cad") {
+  } else if (surface === "excel" || surface === "word" || surface === "cad" || isExtSurface(surface)) {
+    if (isExtSurface(surface)) {
+      count = files.reduce((sum, f) => sum + num(f.unit_count), 0);
+    } else if (surface === "cad") {
       // DWG 开始后才统计文字；一张都没数出来时不报数。
       const counted = files.filter((f) => !cadCountsPending(f) && !isRisky(surface, f));
       if (!counted.length) return null;
@@ -1683,7 +1697,7 @@ function buildReadyNote(surface: Surface, st: SurfaceState): HTMLElement | null 
       count = files.reduce((sum, f) => sum + num(surface === "excel" ? f.text_cell_count : f.paragraph_count), 0);
     }
     // 「自动识别场景」关着时不说开始后会识别场景；源语言选定了就不说识别原文语言。
-    const smart = settings[`${surface}_smart_context`] !== false;
+    const smart = (isExtSurface(surface) ? extSettingsRecord(surface).smart_context : settings[`${surface}_smart_context`]) !== false;
     template = !smart
       ? t("读取完成，{0} 处待翻译；记忆库将优先复用已有译法。", "\u0000")
       : st.sourceLang === "auto"
@@ -1760,10 +1774,12 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     ];
   }
   if (isExtSurface(surface)) {
-    // 运行时注册的类型只有扫描接口共有的字段：文件数、大小、跳过项。
+    // 运行时注册的类型只有扫描接口共有的字段：文件数、适配器数出的单元数、大小、跳过项。
     const sizeKb = files.reduce((sum, f) => sum + num(f.size_kb), 0);
+    const units = files.reduce((sum, f) => sum + num(f.unit_count), 0);
     return [
       { label: t("文件"), value: String(files.length) },
+      { label: t("待翻译"), value: fmtNum(units), dim: units === 0 },
       { label: t("总大小"), value: formatSizeKb(sizeKb) },
       { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
     ];
@@ -2005,6 +2021,18 @@ function showOutsideCellModal(st: SurfaceState): void {
     body: lines.length ? lines : [t("没有检测到图片或文本框。")],
     actions: [{ label: t("关闭") }],
   });
+}
+
+/** 运行时注册的类型：适配器 scan 给的提示（整句，如「3 张图片中的文字未翻译」），和 Excel 的
+ *  「N 张图片」同一种标记；按整句翻译成界面语言，认不出的原样显示。没有提示时是一道短横。 */
+function buildScanWarningChips(file: FileItem): HTMLElement[] {
+  const warnings = Array.isArray(file.warnings) ? file.warnings.filter((item) => typeof item === "string" && item.trim()) : [];
+  if (!warnings.length) {
+    const dash = el("span", "dash");
+    dash.textContent = "—";
+    return [dash];
+  }
+  return warnings.map((warning) => createChip({ label: tx(warning), className: "oob" }));
 }
 
 /** 接入点 3 · 任务清单每行的「单元格外内容」标记。 */
@@ -2307,7 +2335,7 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
   } else if (surface === "cad") {
     row.append(th(t("文件")), th(t("格式")), th(t("文字实体"), true), th(t("待翻译"), true), th(t("状态")));
   } else if (isExtSurface(surface)) {
-    row.append(th(t("文件")), th(t("格式")), th(t("大小")), th(t("状态")));
+    row.append(th(t("文件")), th(t("格式")), th(t("待翻译"), true), th(t("提示")), th(t("状态")));
   } else {
     row.append(th(t("文件")), th(t("类型")), th(t("大小")), th(t("页数 / ​尺寸")), th(t("状态")));
   }
@@ -2371,9 +2399,11 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   } else if (isExtSurface(surface)) {
     const fmtCell = el("td");
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), false));
-    const sizeCell = el("td");
-    sizeCell.textContent = st.historyOnly ? "—" : formatSizeKb(file.size_kb);
-    row.append(fmtCell, sizeCell);
+    const unitCell = el("td", "num");
+    unitCell.textContent = st.historyOnly || typeof file.unit_count !== "number" ? "—" : fmtNum(file.unit_count);
+    const noteCell = el("td");
+    for (const chip of buildScanWarningChips(file)) noteCell.append(chip);
+    row.append(fmtCell, unitCell, noteCell);
   } else {
     const typeCell = el("td");
     typeCell.append(buildFmtBadge((file.format ?? file.source_type ?? "").toUpperCase(), false));
@@ -2760,9 +2790,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
 
   const outputMode = buildOutputModeField(surface, st, active);
   if (outputMode) scroll.append(outputMode);
-  // 运行时注册的类型没有补充要求：在「设置 · 翻译参数」里该类型的页签选，按 settings.extensions
-  // 里存的那一项发。
-  if (surface !== "pdf" && !isExtSurface(surface)) scroll.append(buildDomainField(surface, st, active));
+  // 运行时注册的类型的补充要求存在 settings.extensions[<id>].domain_preset，与「设置 · 翻译参数」里该类型的页签同一项。
+  if (surface !== "pdf") scroll.append(buildDomainField(surface, st, active));
 
   const advanced = buildAdvancedFold(surface, st, active);
   if (advanced) scroll.append(advanced);
@@ -2789,7 +2818,7 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   if (surface === "cad") {
     parts.push(cadChoice("display_mode", CAD_DISPLAY_MODES, "translation") === "translation" ? t("仅译文") : t("双语对照"));
   }
-  if (surface !== "pdf" && !isExtSurface(surface)) {
+  if (surface !== "pdf") {
     // 「无」单独挂在后面看不出指的是什么，写成「无补充要求」。
     parts.push(st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT ? st.domainPreset : t("无补充要求"));
   }
@@ -2827,7 +2856,7 @@ function buildOutputModeField(surface: Surface, st: SurfaceState, active: boolea
   return field;
 }
 
-function buildDomainField(surface: Exclude<BuiltinSurface, "pdf">, st: SurfaceState, active: boolean): HTMLElement {
+function buildDomainField(surface: Exclude<Surface, "pdf">, st: SurfaceState, active: boolean): HTMLElement {
   const field = createSelectField({
     label: t("补充要求"),
     // 「无」放在第一项：只发内置规则，不加任何补充要求。
@@ -2838,7 +2867,8 @@ function buildDomainField(surface: Exclude<BuiltinSurface, "pdf">, st: SurfaceSt
       const prev = st.domainPreset;
       st.domainPreset = value;
       rerender(surface);
-      void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, t("补充要求"));
+      const patch = isExtSurface(surface) ? extSettingsPatch(surface, "domain_preset", value) : { [`${surface}_domain_preset`]: value };
+      void persistSettingsOrRevert(surface, patch, () => { st.domainPreset = prev; }, t("补充要求"));
     },
   });
   // 即使当前选的是「无」也保留入口：进入设置后会落到「＋ 新增补充要求」，
@@ -2897,8 +2927,8 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
   }
 
   if (surface === "cad") content.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
-  // 输出位置是内置四页各自的设置项；运行时注册的类型按默认输出位置写。
-  if (!isExtSurface(surface)) content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
+  // 输出位置是各页自己的设置项（运行时注册的类型存在 settings.extensions[<id>]）。
+  content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
 
   const count = content.querySelectorAll(":scope > .swrow, :scope > .field").length;
   if (!count && !typeHelp) return null;
@@ -2974,7 +3004,7 @@ function rescanAfterScanInputChange(surface: Surface): void {
 }
 
 function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
-  const custom = settings[`${surface}_domain_custom_prompts`];
+  const custom = isExtSurface(surface) ? extSettingsRecord(surface).domain_custom_prompts : settings[`${surface}_domain_custom_prompts`];
   const customNames = custom && typeof custom === "object" && !Array.isArray(custom)
     ? Object.keys(custom as JsonObject)
     : [];
@@ -3001,7 +3031,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       rerender(surface);
       void persistSettingsOrRevert(
         surface,
-        nestedPatch(`${outputSettingPathPrefix(surface)}.use_custom_output_dir`, value),
+        outputSettingPatch(surface, "use_custom_output_dir", value),
         () => { st.useCustomOutputDir = prev; },
         t("输出位置"),
       );
@@ -3025,7 +3055,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       const prevDir = text(outputRecord(surface).custom_output_dir);
       void persistSettingsOrRevert(
         surface,
-        nestedPatch(`${outputSettingPathPrefix(surface)}.custom_output_dir`, st.customOutputDir),
+        outputSettingPatch(surface, "custom_output_dir", st.customOutputDir),
         () => { st.customOutputDir = prevDir; },
         t("自定义输出目录"),
       );
