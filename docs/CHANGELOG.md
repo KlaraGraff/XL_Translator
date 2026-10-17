@@ -50,6 +50,10 @@
 
   **New layout for the translation memory page**: The page used to open with a card crowded with buttons and a row of statistics cards above the table. A single top row now holds the language pair (one button swaps the direction), search, and "New entry / Import / Export / More"; "Clean up memory" and the memory settings moved into "More". The statistics cards are gone: counts are on the filter tabs, and advanced mode's monthly figures are one line at the end of the filter row. Edit and delete appear when the pointer is over a row. Features and results are unchanged.
 
+- **Word 段内格式：带制表符、换行、图片、脚注编号的段落也能保留**：以前段落里有制表符、软换行、行内图片或脚注编号时不加格式标记，整段译文套一种格式：「1.2⇥**施工范围**见附图」的加粗丢了；「第一行↵第二行重点（红字）」仅译文时整段变红、双语时红色丢了；句中的图片和脚注编号被挪到段尾。现在这些内容作为占位符随原文发给模型，写回时放回模型标出的位置、照抄原样，加粗、颜色和制表位都按原文保留；双语版式的译文行只复制制表符和换行，图片、脚注编号留在原文行。标记对不上时照旧按整段写回。另外，Word 输出保存后会核对图片、主题、嵌入对象等没改动的部件与原文件一致，不一致就不生成输出并报出部件名。
+
+  **Word in-paragraph formatting kept around tabs, line breaks, pictures and footnote numbers**: Paragraphs containing a tab, a soft line break, an inline picture or a footnote number used to be written back in a single format: the bold in "1.2⇥**Scope of works** see drawing" was lost; in "Line one↵line two (red)" the whole translation turned red in translation-only output and lost the red in bilingual output; pictures and footnote numbers in mid-sentence moved to the end of the paragraph. These items are now sent to the model as placeholders and put back exactly where the model places them, unchanged, so bold, colour and tab stops follow the original. In bilingual output the translation line copies only tabs and line breaks; pictures and footnote numbers stay on the original line. When the placeholders do not come back intact, the paragraph is written as before. Word output is also checked after saving: parts that were not meant to change (pictures, theme, embedded objects) must match the original file, otherwise no output is produced and the part is named.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
