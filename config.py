@@ -222,7 +222,12 @@ REVIEW_MARK_COLOR_DEFAULTS = {
 # 但不另设颜色、不多一个配色选项：沿用「需复核」那一种底色，只在复核清单里
 # 写明问题是「未采用设定译法」。
 REVIEW_MARK_TERM_NOT_APPLIED = "term_not_applied"
-REVIEW_MARK_COLOR_ALIASES = {REVIEW_MARK_TERM_NOT_APPLIED: REVIEW_MARK_UNRESOLVED}
+# 锁定行高时缩到最小字号仍放不下：要人去调行高或删减文字，同样沿用「需复核」底色。
+REVIEW_MARK_LOCKED_ROW_OVERFLOW = "locked_row_overflow"
+REVIEW_MARK_COLOR_ALIASES = {
+    REVIEW_MARK_TERM_NOT_APPLIED: REVIEW_MARK_UNRESOLVED,
+    REVIEW_MARK_LOCKED_ROW_OVERFLOW: REVIEW_MARK_UNRESOLVED,
+}
 # 分三色之前只有一个 word_review.highlight_color。这个值是当年的默认值，留在这里
 # 只当迁移哨兵用：旧配置里**没有 mark_colors**、而 highlight_color 又与它不同时，
 # 说明用户在单色时代自己调过色，那就把两种标记都涂成用户调的那个色。已经有
