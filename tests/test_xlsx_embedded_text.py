@@ -335,7 +335,10 @@ class EmbeddedTextTests(unittest.TestCase):
         review: list[dict[str, str]] = []
         output = self._write(review_positions=review, lock=True)
         self.assertIn("<xdr:row>1</xdr:row><xdr:rowOff>457200</xdr:rowOff></xdr:to>", _part(output, "xl/drawings/drawing1.xml"))
-        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
+        # D4 的双语在锁死的默认行高里缩到最小字号也放不下，单元格那条另外列出
+        self.assertEqual(
+            [item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW, "locked_row_overflow"]
+        )
         self.assertEqual(_row_heights(output), {})
 
     def test_raised_rows_stay_within_excel_limit(self) -> None:

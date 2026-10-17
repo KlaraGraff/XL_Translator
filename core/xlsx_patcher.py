@@ -41,6 +41,7 @@ from config import (
     PRINT_GUARD_LINE_HEIGHT_MULTIPLIER,
     REVIEW_MARK_COLOR_ALIASES,
     REVIEW_MARK_COLOR_DEFAULTS,
+    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
 )
 from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.opc_package import (
@@ -1563,6 +1564,7 @@ def _process_sheet(
                 font_color_argb: str | None = None
                 font_size: float | None = None
 
+                applied = False
                 if mark_kind:
                     applied, fill_argb, font_color_argb = _plan_review_mark(
                         styles,
@@ -1655,6 +1657,40 @@ def _process_sheet(
                                 f"[WARN] {entry.name}!{_column_letter(col_index)}{row_num} "
                                 f"缩至最小字号 {floor_size:.1f}pt 仍可能无法完全显示"
                             )
+                        # 缩到底仍放不下：要人去调行高或删减文字，进复核清单并标底色
+                        # （复核标记关闭时只留上面的日志，和其他复核类别一致）
+                        if reached_floor and review_enabled:
+                            coordinate = f"{_column_letter(col_index)}{row_num}"
+                            if mark_kind:
+                                # 已因别的原因标过：清单里再列一条，不重复涂色
+                                _record_review_position(
+                                    review_positions,
+                                    entry.name,
+                                    coordinate,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    applied,
+                                    bool(font_color_argb),
+                                )
+                            else:
+                                applied, fill_argb, font_color_argb = _plan_review_mark(
+                                    styles,
+                                    base_index,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    review_color_map=review_color_map,
+                                    fill_policy=fill_policy,
+                                )
+                                _record_review_position(
+                                    review_positions,
+                                    entry.name,
+                                    coordinate,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    applied,
+                                    bool(font_color_argb),
+                                )
+                                if applied:
+                                    outcome.review_marked += 1
+                                else:
+                                    outcome.review_skipped += 1
 
                     new_index = styles.resolve(
                         base_index,

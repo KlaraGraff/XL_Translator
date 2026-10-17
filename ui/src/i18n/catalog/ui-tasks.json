@@ -198,6 +198,7 @@
   "翻译记忆库写入失败": {"en": "Could not save to translation memory", "fr": "Échec de l'enregistrement dans la mémoire de traduction"},
   "超长单元格文本被截断": {"en": "Overlong cell text truncated", "fr": "Texte de cellule trop long tronqué"},
   "文本框放不下译文，已缩到最小字号": {"en": "Translation does not fit the text box even at the smallest font size", "fr": "La traduction ne tient pas dans la zone de texte, même à la plus petite taille de police"},
+  "行高已锁定，缩到最小字号仍放不下": {"en": "Row height is locked; text does not fit even at the smallest font size", "fr": "Hauteur de ligne verrouillée ; le texte ne tient pas, même à la plus petite taille de police"},
   "仅在此列出": {"en": "Listed here only", "fr": "Listé ici uniquement"},
   "文本框和批注里无法标底色，请根据本行定位复核。": {"en": "Text boxes and comments cannot be highlighted; use this row to locate the item and review it.", "fr": "Les zones de texte et les commentaires ne peuvent pas être surlignés ; utilisez cette ligne pour retrouver l'élément et le vérifier."},
   "接口所在的服务暂时不可用，请稍后重试，或在设置里换一条连接。": {"en": "The model service is temporarily unavailable. Try again later, or switch to another connection in Settings.", "fr": "Le service du modèle est momentanément indisponible. Réessayez plus tard ou choisissez une autre connexion dans les Paramètres."},

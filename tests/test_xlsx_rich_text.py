@@ -408,3 +408,82 @@ class ExcelRunnerRichTextTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LockedRowOverflowReviewTest(RichTextFixture):
+    """锁定行高时缩到最小字号仍放不下：普通格和富文本格都进复核清单并标「需复核」底色。"""
+
+    def _locked(self, value) -> Path:
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = value
+        ws.row_dimensions[1].height = 20
+        path = self.root / "locked.xlsx"
+        wb.save(path)
+        return path
+
+    def _run(self, value, *, translations, mark_review_items=True, review_marks=None):
+        positions: list[dict] = []
+        logs: list[str] = []
+        out = self._write(
+            self._locked(value),
+            translation_only=False,
+            translations=translations,
+            lock_row_height=True,
+            mark_review_items=mark_review_items,
+            review_marks=review_marks,
+            review_positions=positions,
+            log_callback=logs.append,
+        )
+        return out, positions, logs
+
+    def _fill(self, out: Path) -> str | None:
+        fill = load_workbook(out).active["A1"].fill
+        return fill.fgColor.rgb if fill.fill_type == "solid" else None
+
+    def test_plain_cell_that_still_overflows_is_marked_for_review(self) -> None:
+        out, positions, logs = self._run(
+            "第一行\n第二行\n第三行",
+            translations={"第一行\n第二行\n第三行": "Ligne une\nLigne deux\nLigne trois"},
+        )
+        self.assertEqual(
+            positions,
+            [{"worksheet": "Sheet", "cell": "A1", "category": "locked_row_overflow", "action": "marked_fill"}],
+        )
+        self.assertEqual(self._fill(out), "FFFCE4D6")
+        self.assertTrue(any("缩至最小字号" in line for line in logs), logs)
+
+    def test_rich_cell_that_still_overflows_is_marked_for_review(self) -> None:
+        value = CellRichText([TextBlock(_plain(), "第一行说明\n"), TextBlock(_red_bold(), "第二行重点")])
+        out, positions, _logs = self._run(
+            value,
+            translations={"第一行说明\n第二行重点": "Première ligne\nPoint clé de la deuxième ligne"},
+        )
+        self.assertEqual([item["category"] for item in positions], ["locked_row_overflow"])
+        self.assertEqual(self._fill(out), "FFFCE4D6")
+        # 片段格式照旧保留
+        self.assertIn(("第二行重点", True, "FFFF0000"), _blocks(out))
+
+    def test_fitting_cell_and_disabled_review_are_not_listed(self) -> None:
+        _out, positions, _logs = self._run("短", translations={"短": "Court"})
+        self.assertEqual(positions, [])
+        _out, positions, logs = self._run(
+            "第一行\n第二行\n第三行",
+            translations={"第一行\n第二行\n第三行": "Ligne une\nLigne deux\nLigne trois"},
+            mark_review_items=False,
+        )
+        self.assertEqual(positions, [])
+        self.assertTrue(any("缩至最小字号" in line for line in logs), logs)
+
+    def test_cell_already_marked_is_listed_again_without_second_fill(self) -> None:
+        from core.mixed_language import MIXED_MARK_UNRESOLVED
+
+        source = "第一行\n第二行\n第三行"
+        out, positions, _logs = self._run(
+            source,
+            translations={source: "Ligne une\nLigne deux\nLigne trois"},
+            review_marks={source: MIXED_MARK_UNRESOLVED},
+        )
+        self.assertEqual([item["category"] for item in positions], [MIXED_MARK_UNRESOLVED, "locked_row_overflow"])
+        self.assertEqual({item["action"] for item in positions}, {"marked_fill"})
+        self.assertEqual(self._fill(out), "FFFCE4D6")
