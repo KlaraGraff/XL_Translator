@@ -56,8 +56,8 @@
     "fr": "Déposez des fichiers ou un dossier, ou collez un chemin puis Entrée"
   },
   "支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过路径栏的「选择」选择文件或文件夹后将自动读取。源语言默认自动识别，PDF 和图片仅需选择目标语言。": {
-    "en": "Excel, Word, PDF / images and CAD drawings (DWG / DXF) are supported. Choose a file or folder with “Choose…” in the path bar and it is read automatically. The source language is detected automatically by default; for PDF and images, only the target language needs to be chosen.",
-    "fr": "Excel, Word, PDF / images et plans CAO (DWG / DXF) sont pris en charge. Choisissez un fichier ou un dossier avec « Choisir… » dans la barre de chemin : il est lu automatiquement. La langue source est détectée automatiquement par défaut ; pour les PDF et les images, il suffit de choisir la langue cible."
+    "en": "Excel, Word, PDF / images and CAD drawings (DWG / DXF) are supported. Choose a file or folder with “Choose” in the path bar and it is read automatically. The source language is detected automatically by default; for PDF and images, only the target language needs to be chosen.",
+    "fr": "Excel, Word, PDF / images et plans CAO (DWG / DXF) sont pris en charge. Choisissez un fichier ou un dossier avec « Choisir » dans la barre de chemin : il est lu automatiquement. La langue source est détectée automatiquement par défaut ; pour les PDF et les images, il suffit de choisir la langue cible."
   },
   "支持 {0}，也可以拖入整个文件夹，Translator 会找出其中全部可翻译的文件。": {
     "en": "Supports {0}. You can also drop a whole folder; Translator finds every translatable file in it.",
@@ -128,8 +128,8 @@
     "fr": "Lit tous les fichiers traduisibles du dossier et de ses sous-dossiers"
   },
   "选择…": {
-    "en": "Choose…",
-    "fr": "Choisir…"
+    "en": "Choose",
+    "fr": "Choisir"
   },
   "选择文件": {
     "en": "Choose files",
@@ -140,8 +140,8 @@
     "fr": "Choisir un dossier"
   },
   "通过路径栏的「选择」选择文件或文件夹，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。": {
-    "en": "Use “Choose…” in the path bar to select files or a folder, select the files to translate, review the options on the right, then click “Start translation”. Settings changed after starting apply only to the next task.",
-    "fr": "Avec « Choisir… » dans la barre de chemin, choisissez des fichiers ou un dossier, cochez ceux à traduire, vérifiez les options à droite, puis cliquez sur « Lancer la traduction ». Les réglages modifiés après le lancement ne s'appliquent qu'à la tâche suivante."
+    "en": "Use “Choose” in the path bar to select files or a folder, select the files to translate, review the options on the right, then click “Start translation”. Settings changed after starting apply only to the next task.",
+    "fr": "Avec « Choisir » dans la barre de chemin, choisissez des fichiers ou un dossier, cochez ceux à traduire, vérifiez les options à droite, puis cliquez sur « Lancer la traduction ». Les réglages modifiés après le lancement ne s'appliquent qu'à la tâche suivante."
   },
   "重新读取": {
     "en": "Read again",

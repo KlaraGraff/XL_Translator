@@ -64,7 +64,7 @@ import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { createTaskControlFoot, createTaskListPanel, createTaskLogLines, createTaskResultCard, createTaskRunBox, type TaskPipeStep } from "../task-panels";
 import { createTaskFeedbackButton } from "../task-feedback";
-import { normalizeUserPath } from "../path-input";
+import { normalizeUserPath, showPathWithMiddleEllipsis } from "../path-input";
 
 import {
   buildPdfRecoveryCard,
@@ -1448,6 +1448,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     onClick: () => openSourceMenu(pickBtn, surface, st),
   });
   bar.append(input, pickBtn, rescanBtn);
+  // 路径太长时省略中间，点进去编辑时是完整路径。
+  showPathWithMiddleEllipsis(input, () => st.sourcePath);
   return bar;
 }
 
@@ -2402,7 +2404,9 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     const unitCell = el("td", "num");
     unitCell.textContent = st.historyOnly || typeof file.unit_count !== "number" ? "—" : fmtNum(file.unit_count);
     const noteCell = el("td");
-    for (const chip of buildScanWarningChips(file)) noteCell.append(chip);
+    const notes = el("div", "scan-notes");
+    for (const chip of buildScanWarningChips(file)) notes.append(chip);
+    noteCell.append(notes);
     row.append(fmtCell, unitCell, noteCell);
   } else {
     const typeCell = el("td");
@@ -3061,6 +3065,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       );
     };
     input.addEventListener("change", saveCustomDir);
+    const relayoutDir = showPathWithMiddleEllipsis(input, () => st.customOutputDir);
     // 输入框后面跟一个「浏览」，在系统选择框里挑文件夹，不必手动粘贴路径。
     const browseBtn = createButton({
       label: t("浏览"),
@@ -3078,6 +3083,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
         if (typeof picked !== "string" || !picked.trim()) return;
         st.customOutputDir = picked;
         input.value = picked;
+        relayoutDir();
         saveCustomDir();
       })(),
     });

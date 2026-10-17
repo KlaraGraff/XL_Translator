@@ -872,6 +872,14 @@ table.review-tbl { table-layout: fixed; }
 }
 :root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: 1ms !important; transition-delay: 0ms !important; }
 
+/* 路径输入框（path-input.ts showPathWithMiddleEllipsis）：放不下时不在编辑的那一刻显示省略中间的
+ * 路径，画在输入框上面一层；输入框的值始终是完整路径，聚焦后上层隐藏，编辑与普通输入框无异。 */
+.path-field { position: relative; display: flex; align-items: center; flex: 1; min-width: 0; align-self: stretch; }
+.path-field > input { flex: 1; min-width: 0; }
+.path-shown { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: nowrap; pointer-events: none; visibility: hidden; }
+.path-field.is-shortened:not(:focus-within) > input { -webkit-text-fill-color: transparent; }
+.path-field.is-shortened:not(:focus-within) > .path-shown { visibility: visible; }
+
 /* ==========================================================================
  * 输入控件的聚焦态（状态层，必须留在文件最末）
  *
@@ -910,7 +918,7 @@ textarea:focus,
 .dropdown-btn > input.dropdown-value:focus,
 .lang-btn > input.val:focus,
 .tag-input input:focus,
-.src > input:focus {
+.src input:focus {
   box-shadow: none;
 }
 input, textarea { caret-color: var(--accent); }
