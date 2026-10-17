@@ -167,17 +167,21 @@ adapters/<id>/
 用户装进来的仍只能用标准库和 `translator_adapter`。
 
 - **协议**（`translator_adapter/`，只依赖标准库，不 import 应用；`ADAPTER_API_VERSION = 1`，以后只做加法）：
-  - `extract(path) -> list[TextUnit]`。`TextUnit` 的字段：`id`（文件内唯一，`write` 靠它放回译文）、
+  - `extract(path[, options]) -> list[TextUnit]`。`TextUnit` 的字段：`id`（文件内唯一，`write` 靠它放回译文）、
     `text`、`context`（给人看的位置，如「第 12 行」，写进需复核清单；空着时清单写 `id`）、`kind`
     （`paragraph`、`heading`、`list_item`、`table_cell` 等，目前只作记录）、`locked`（原样写回、不送模型，
     如代码块）、`protected`（`text` 里必须原样回来的片段，如行内代码、链接地址）、`marked`（段内格式标记：
     格式与主体不同的几截用 `<g1>…</g1>` 包住，去掉标记须与 `text` 一字不差，否则 `validate_units` 清空它；
     标记写法和校验与 Word 共用 `core/word_inline_marks.py`）。
-  - `scan(path) -> ScanItem(unit_count, warnings)`：扫描时显示的单元数；省略时按 `extract` 数未锁定的单元。
-  - `write(path, units, mode, out_path, options) -> OutputFile(path, review_count)`：`units` 是
+  - `scan(path[, options]) -> ScanItem(unit_count, warnings)`：扫描时显示的单元数；省略时按 `extract` 数未锁定的单元。
+    `scan`、`extract` 接受第二个参数时宿主传入与 `write` 相同的 `options`（`inspect.signature` 判断；子进程宿主随
+    JSON 请求带上），只收路径的旧适配器照旧调用。
+  - `write(path, units, mode, out_path, options) -> OutputFile(path, review_count, review_items)`：`units` 是
     `TranslatedUnit(id, text, translation, status, marked_translation)`（`translation` 与 `text` 相同表示保留原文；
     `marked_translation` 是带段内格式标记的译文，空表示按整段写法写回），`mode` 为
-    `translation_only` 或 `bilingual`，`options` 是本次任务的开关值；返回 `None` 视为已写到 `out_path`。
+    `translation_only` 或 `bilingual`，`options` 是本次任务的开关值加上 `target_lang`（`TARGET_LANG_OPTION_KEY`，与 `bilingual` 同为保留键）；
+    `review_items` 是写回时要人看的地方（`ReviewItem(reason, id, context)`），执行器逐条追加进需复核清单（保留译文），
+    该文件的需复核数取 `review_count` 与条目数中大的；返回 `None` 视为已写到 `out_path`。
   - 适配器不调模型、不碰记忆库、不读密钥、不联网。
 - **清单**（`core/format_adapter.py` 的 `AdapterManifest`，未知字段一律拒绝）：`id`（小写字母、数字、`_`、`-`，
   页面键为 `ext:<id>`，设置在 `settings.extensions[<id>]`）、`version`、`adapter_api_version`（须在

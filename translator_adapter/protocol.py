@@ -171,20 +171,56 @@ class TranslatedUnit:
 
 
 @dataclass
+class ReviewItem:
+    """One place ``write`` wants a person to look at, listed in the task's review list."""
+
+    #: Why, in a sentence a user understands (「竖排文本框中放入了西文」).
+    reason: str
+    #: The ``TextUnit.id`` it concerns; its source text is shown next to the reason.
+    id: str = ""
+    #: Where, for a person (「第 3 页 · 标题」); the unit's ``context`` when empty.
+    context: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"reason": self.reason, "id": self.id, "context": self.context}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ReviewItem:
+        data = _mapping(data, "ReviewItem")
+        return cls(reason=_text(data.get("reason")), id=_text(data.get("id")), context=_text(data.get("context")))
+
+
+@dataclass
 class OutputFile:
     """What ``write`` produced."""
 
     path: str
     #: Units the adapter itself marked for review while writing (usually 0).
+    #: With ``review_items`` the larger of the two counts.
     review_count: int = 0
+    #: What to review and why, one entry per place (``ReviewItem`` or a dict
+    #: with the same keys).  An entry without a reason is dropped.
+    review_items: list[ReviewItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": str(self.path), "review_count": int(self.review_count)}
+        return {
+            "path": str(self.path),
+            "review_count": int(self.review_count),
+            "review_items": [
+                (item if isinstance(item, ReviewItem) else ReviewItem.from_dict(item)).to_dict()
+                for item in self.review_items
+            ],
+        }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> OutputFile:
         data = _mapping(data, "OutputFile")
-        return cls(path=_text(data.get("path")), review_count=int(data.get("review_count") or 0))
+        items = [ReviewItem.from_dict(item) for item in data.get("review_items") or []]
+        return cls(
+            path=_text(data.get("path")),
+            review_count=int(data.get("review_count") or 0),
+            review_items=[item for item in items if item.reason.strip()],
+        )
 
 
 @dataclass

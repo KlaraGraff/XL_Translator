@@ -51,7 +51,7 @@ from loguru import logger
 from core.bilingual_writer import bilingual_output_name
 from core.document_profile import append_profile
 from core.file_progress import FileProgressReporter, file_progress_id
-from core.format_adapter import AdapterError, AdapterHost
+from core.format_adapter import TARGET_LANG_OPTION_KEY, AdapterError, AdapterHost
 from core.language_preflight import AUTO_SOURCE_LANG, preflight_file_source_languages
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.mixed_language import (
@@ -89,6 +89,7 @@ from translator_adapter import (
     STATUS_NEEDS_REVIEW,
     STATUS_TRANSLATED,
     STATUS_UNTRANSLATED,
+    OutputFile,
     TextUnit,
     TranslatedUnit,
 )
@@ -240,7 +241,8 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._target_lang = target_lang
         self._source_lang = str(source_lang or AUTO_SOURCE_LANG)
         self._mode = MODE_BILINGUAL if bilingual else MODE_TRANSLATION_ONLY
-        self._options = dict(options or {})
+        # 交给适配器的开关值，带上目标语言（写回时改语言属性、断行规则用）。
+        self._options = {**dict(options or {}), TARGET_LANG_OPTION_KEY: target_lang}
         self._key_overrides = dict(key_overrides or {})
         self._label = label
         self._pause_event = threading.Event()
@@ -412,7 +414,7 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._file_progress.emit(path, "active", "extract")
         self._progress(index, 0.0, _STAGE_READ, "正在读取")
         try:
-            units = self._host.extract(path)
+            units = self._host.extract(path, self._options)
         except AdapterError as exc:
             return self._failed(item, exc, fallback="无法读取此文件。")
         plan = self._plan(units)
@@ -488,7 +490,7 @@ class AdapterTaskRunner(BaseTaskRunner):
         except (AdapterError, OSError) as exc:
             self._forget_review(path)
             return self._failed(item, exc, fallback="无法写出此文件。")
-        review_count += max(0, int(output.review_count))
+        review_count += self._adapter_review(path, units, output)
         unfinished_count = sum(1 for record in ledger.records() if record.skip_reason == "stopped")
         result = self._file_result(
             item,
@@ -511,6 +513,26 @@ class AdapterTaskRunner(BaseTaskRunner):
         else:
             self._log("OK", f"{name}：已写出")
         return result
+
+    def _adapter_review(self, path: Path, units: list[TextUnit], output: OutputFile) -> int:
+        """``write`` 自己报的需复核：逐条进需复核清单（写进去的是译文）；返回条数。
+
+        只给了 ``review_count`` 的旧适配器照旧只计数；两样都给时取大的。
+        """
+        by_id = {unit.id: unit for unit in units}
+        for item in output.review_items:
+            unit = by_id.get(item.id)
+            where = item.context or (self._unit_label(unit) if unit is not None else "")
+            self._review.append(
+                _ReviewEntry(
+                    str(self._relative(path)),
+                    where,
+                    unit.text if unit is not None else "",
+                    item.reason,
+                    kept_source=False,
+                )
+            )
+        return max(0, int(output.review_count), len(output.review_items))
 
     def _forget_review(self, path: Path) -> None:
         relative = str(self._relative(path))

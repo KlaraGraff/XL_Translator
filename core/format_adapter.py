@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -47,7 +48,10 @@ BUNDLED_ADAPTERS_DIR = Path(__file__).resolve().parents[1] / "adapters"
 
 #: 「双语对照」开关的键：两种输出都支持的类型由应用统一加上这个开关，清单里不能再用。
 BILINGUAL_OPTION_KEY = "bilingual"
-RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY})
+#: 执行器交给适配器的 options 里带上目标语言（设置里的语言代码，如 "fr"）：写回时改语言
+#: 属性、断行规则要用。清单开关同样不能用这个键。
+TARGET_LANG_OPTION_KEY = "target_lang"
+RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY, TARGET_LANG_OPTION_KEY})
 
 #: 描述符和界面要求的三种界面语言。
 LANGUAGES = ("zh", "en", "fr")
@@ -336,9 +340,9 @@ class AdapterHost(Protocol):
 
     manifest: AdapterManifest
 
-    def scan(self, path: Path) -> ScanItem: ...
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem: ...
 
-    def extract(self, path: Path) -> list[TextUnit]: ...
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]: ...
 
     def write(
         self,
@@ -388,6 +392,14 @@ def _usable_marks(marked: str, text: str) -> bool:
     if marked == text or strip_marks(marked) != text or not marks_match(marked, marked):
         return False
     return len(_CLOSING_MARK_RE.findall(marked)) <= MAX_GROUPS_PER_UNIT
+
+
+def _takes_second_argument(function: Callable[..., Any]) -> bool:
+    try:
+        inspect.signature(function).bind("path", {})
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
@@ -455,14 +467,21 @@ class InProcessAdapterHost:
         except Exception as exc:
             raise AdapterError(f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__) from exc
 
-    def scan(self, path: Path) -> ScanItem:
+    def _call_with_options(self, name: str, path: Path, options: Mapping[str, Any] | None) -> Any:
+        # scan / extract 的第二个参数可选：写了 ``def extract(path, options=None)`` 的适配器拿到
+        # 开关值和目标语言（如关掉「翻译演讲者备注」时取字就跳过备注），只收路径的照旧。
+        if options is not None and _takes_second_argument(getattr(self._load(), name)):
+            return self._call(name, str(path), dict(options))
+        return self._call(name, str(path))
+
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem:
         if callable(getattr(self._load(), "scan", None)):
-            return _coerce(self._call("scan", str(path)), ScanItem, "scan")
-        units = self.extract(path)
+            return _coerce(self._call_with_options("scan", path, options), ScanItem, "scan")
+        units = self.extract(path, options)
         return ScanItem(unit_count=sum(1 for unit in units if not unit.locked))
 
-    def extract(self, path: Path) -> list[TextUnit]:
-        raw = self._call("extract", str(path))
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]:
+        raw = self._call_with_options("extract", path, options)
         if not isinstance(raw, (list, tuple)):
             raise AdapterError(f"extract 应返回 TextUnit 列表，实际是 {type(raw).__name__}")
         return validate_units([_coerce(item, TextUnit, "extract") for item in raw])
@@ -490,6 +509,7 @@ __all__ = [
     "BUNDLED_ADAPTERS_DIR",
     "MANIFEST_FILE",
     "RESERVED_OPTION_KEYS",
+    "TARGET_LANG_OPTION_KEY",
     "SUPPORTED_ADAPTER_API_VERSIONS",
     "AdapterCapabilities",
     "AdapterError",

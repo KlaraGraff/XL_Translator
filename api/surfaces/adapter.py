@@ -37,6 +37,7 @@ from core.adapter_runner import AdapterTaskRunner
 from core.format_adapter import (
     BILINGUAL_OPTION_KEY,
     BUNDLED_ADAPTERS_DIR,
+    TARGET_LANG_OPTION_KEY,
     AdapterError,
     AdapterHost,
     AdapterManifest,
@@ -47,7 +48,7 @@ from core.language_registry import get_target_lang_display
 from core.surface_settings import EXTENSION_PAGE_KEY, extension_settings
 from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
-from settings import AppSettings
+from settings import AppSettings, load_settings
 
 #: Where an adapter came from, shown on the 扩展 page: shipped with the app, or
 #: installed by the user (``api/extension_install_job.py``).
@@ -239,9 +240,13 @@ class AdapterSurface(Surface):
 
     def scan_sources(self, root: Path, request: Any) -> AdapterScanResult:
         result = AdapterScanResult(root=Path(root))
+        # 扫描也带上页面存的开关和目标语言：开关会改变要翻的内容（关掉备注就不数备注）。
+        settings = load_settings()
+        target_lang = str(getattr(request, "target_language", "") or "") or extension_settings(settings, self.key).target_lang
+        options = {**self.resolve_options(settings, None), TARGET_LANG_OPTION_KEY: target_lang}
         for item in self._items(root):
             try:
-                scanned = self.host.scan(item.path)
+                scanned = self.host.scan(item.path, options)
             except AdapterError as exc:
                 logger.warning(f"[{self.key}] 无法读取 {item.name}：{exc}")
                 result.skipped.append(
