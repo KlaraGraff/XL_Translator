@@ -6,6 +6,7 @@ import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { currentView, navigate, onNavigate, type ViewId } from "./router";
 import { t, localized } from "./i18n";
+import { ariaKeyShortcut, shortcutLabel } from "./platform";
 import { version as PACKAGE_VERSION } from "../package.json";
 
 interface SideItemDef {
@@ -22,11 +23,9 @@ const TRANSLATE_ITEMS: SideItemDef[] = localized(() => ([
 ]));
 
 const RESOURCE_ITEMS: SideItemDef[] = localized(() => ([
-  { id: "tasks", label: t("任务中心"), icon: "tasks" },
+  { id: "tasks", label: t("任务"), icon: "tasks" },
   { id: "library", label: t("记忆库"), icon: "book" },
-  { id: "plugins", label: t("插件"), icon: "spark" },
   { id: "extensions", label: t("扩展"), icon: "blocks" },
-  { id: "mcp", label: "MCP", icon: "link" }, // i18n-ignore 协议名，三种语言都写 MCP
 ]));
 
 const SYSTEM_ITEMS: SideItemDef[] = localized(() => ([
@@ -52,7 +51,7 @@ export interface TopbarConfig {
 }
 
 export interface TaskPillConfig {
-  /** 活动任务数；>0 时顶栏显示 live 态「N 个任务进行中」，0 时不显示（侧栏已有「任务中心」）。 */
+  /** 活动任务数；>0 时顶栏显示 live 态「N 个任务进行中」，0 时不显示（侧栏已有「任务」）。 */
   count: number;
 }
 
@@ -90,6 +89,7 @@ const toastSlots = new Map<string, HTMLDivElement>();
 // 侧栏里要跟着界面语言换的文字节点：各项按视图 id 记下来，「翻译」父项单独记，
 // relocalizeShell() 原地改文字，不重建侧栏（徽标、红点、选中态都不动）。
 const sideItemTextNodes = new Map<ViewId, Text>();
+let sideSearchText: HTMLSpanElement | null = null;
 let lastTaskPill: TaskPillConfig = { count: 0 };
 
 /** 侧栏「翻译」组里的一项：内置四种和运行时注册的类型都用它，整组按「扩展」页的设置排。 */
@@ -100,7 +100,7 @@ export interface TranslateSideItem {
   icon: IconName;
 }
 
-/** 「翻译」组的子项都插在它前面（资源区第一项「任务中心」）。 */
+/** 「翻译」组的子项都插在它前面（资源区第一项「任务」）。 */
 let translateAnchorEl: HTMLDivElement | null = null;
 let translateItems: { def: TranslateSideItem; el: HTMLDivElement }[] = [];
 
@@ -122,6 +122,28 @@ function buildSideItem(def: SideItemDef, sub = false): HTMLDivElement {
   return item;
 }
 
+/**
+ * 侧栏顶部的搜索入口。这里只派发 document 事件 "xl:cmdk"，搜索面板和键盘快捷键由
+ * 监听它的模块负责；快捷键文字按平台显示（Mac「⌘K」、Windows「Ctrl+K」），不随界面语言变。
+ */
+function buildSideSearch(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "side-search";
+  button.setAttribute("aria-keyshortcuts", ariaKeyShortcut("K"));
+  const label = document.createElement("span");
+  label.className = "lb";
+  label.textContent = t("搜索或输入路径");
+  sideSearchText = label;
+  const kbd = document.createElement("kbd");
+  kbd.textContent = shortcutLabel("K");
+  button.append(icon("search", { size: "sm" }), label, kbd);
+  button.addEventListener("click", () => {
+    document.dispatchEvent(new CustomEvent("xl:cmdk", { detail: { source: "side" } }));
+  });
+  return button;
+}
+
 /** 「翻译」分组的父项。阶段 1 还没有「翻译」入口页，点它进入组里的第一项（默认 Excel）。 */
 function buildTranslateGroup(): HTMLDivElement {
   const item = document.createElement("div");
@@ -137,6 +159,7 @@ function buildTranslateGroup(): HTMLDivElement {
 /** 界面语言换了以后，原地换掉外壳上的文字（侧栏、任务药丸）。模型药丸由调用方刷新。 */
 export function relocalizeShell(): void {
   if (translateGroupText) translateGroupText.data = t("翻译");
+  if (sideSearchText) sideSearchText.textContent = t("搜索或输入路径");
   for (const def of [...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label;
@@ -187,6 +210,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
   brandVersion.textContent = PACKAGE_VERSION;
   brand.append(brandMark, brandName, brandVersion);
   side.append(brand);
+  side.append(buildSideSearch());
 
   // 各项和滑动高亮块放在同一个定位容器里，高亮块按选中项的 offsetTop 移动。
   const nav = document.createElement("div");
@@ -336,7 +360,7 @@ function moveSideIndicator(): void {
   }
 }
 
-/** 更新任务中心侧栏徽标（活动任务数）。count <= 0 时隐藏徽标。 */
+/** 更新侧栏「任务」徽标（活动任务数）。count <= 0 时隐藏徽标。 */
 export function setTaskBadge(count: number): void {
   if (!taskBadgeEl) return;
   if (count > 0) {

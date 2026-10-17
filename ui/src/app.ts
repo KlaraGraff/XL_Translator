@@ -9,7 +9,7 @@ import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
 import { mountShell, relocalizeShell } from "./shell";
-import { mountRouter, navigate, onNavigate, registerView, remountCurrentView } from "./router";
+import { mountRouter, navigate, onNavigate, registerView, registerViewAlias, remountCurrentView } from "./router";
 import { isTauri } from "@tauri-apps/api/core";
 import { dispatchPaths } from "./drop-dispatch";
 import { dragEnded, dragOverAt, installDropGlow, resetDropGlow } from "./drop-glow";
@@ -30,13 +30,11 @@ import * as pdfView from "./views/pdf";
 import * as cadView from "./views/cad";
 import * as tasksView from "./views/tasks";
 import * as libraryView from "./views/library";
-import * as pluginsView from "./views/plugins";
-import * as extensionsPageView from "./views/extensions-page";
-import * as mcpView from "./views/mcp";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
 import * as feedbackView from "./views/feedback";
 import { extensionView } from "./views/extension";
+import * as extensionsHubView from "./views/extensions-hub";
 
 const THEME_STORAGE_KEY = "translator.theme";
 type ThemePreference = "light" | "dark" | "system";
@@ -227,12 +225,12 @@ function main(): void {
   registerView("cad", cadView);
   registerView("tasks", tasksView);
   registerView("library", libraryView);
-  registerView("plugins", pluginsView);
-  registerView("extensions", extensionsPageView);
-  registerView("mcp", mcpView);
   registerView("settings", settingsView);
   registerView("help", helpView);
   registerView("feedback", feedbackView);
+  registerView("extensions", extensionsHubView);
+  registerViewAlias("plugins", "extensions", { tab: "components" });
+  registerViewAlias("mcp", "extensions", { tab: "agents" });
 
   navigate("home");
   void installFileDrop();

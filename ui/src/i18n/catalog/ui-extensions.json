@@ -1,4 +1,7 @@
 {
+  "组件": {"en": "Components", "fr": "Composants"},
+  "智能体接入": {"en": "Agent access", "fr": "Accès des agents"},
+  "文件类型、可选组件与智能体接入都在这里管理": {"en": "File types, optional components and agent access are all managed here", "fr": "Types de fichiers, composants facultatifs et accès des agents se gèrent ici"},
   "设置侧栏里显示哪些翻译类型，以及它们的顺序": {"en": "Choose which translation types appear in the sidebar, and in what order", "fr": "Choisissez les types de traduction affichés dans la barre latérale et leur ordre"},
   "翻译类型": {"en": "Translation type", "fr": "Type de traduction"},
   "显示在侧栏": {"en": "Show in sidebar", "fr": "Barre latérale"},

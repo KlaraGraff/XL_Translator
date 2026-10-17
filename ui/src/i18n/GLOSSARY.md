@@ -38,6 +38,12 @@
 | 外观与语言 | Appearance & language | Apparence et langue |
 | 数据与维护 | Data & maintenance | Données et maintenance |
 | 模型配置 | Model settings | Configuration des modèles |
+| 任务 | Tasks | Tâches |
+| 扩展 | Extensions | Extensions |
+| 组件 | Components | Composants |
+| 智能体接入 | Agent access | Accès des agents |
+
+任务中心、插件是 V10.2 及以前的页面名，只在旧句子里保留。
 
 ## 常用词
 

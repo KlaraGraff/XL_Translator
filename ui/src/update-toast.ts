@@ -400,7 +400,7 @@ function renderAvailable(version: string): HTMLDivElement {
 
   const actions: HTMLElement[] = [toggle];
   if (releaseUrl) {
-    actions.push(linkButton(t("在 GitHub 查看"), () => void openExternalUrl(releaseUrl)));
+    actions.push(linkButton(t("项目主页"), () => void openExternalUrl(releaseUrl)));
   }
   actions.push(spacer());
   actions.push(selfUpdate
