@@ -18,6 +18,10 @@
 
   **Wording of notes on the result card**: The result card summary used to say "N notes to handle manually"; on Excel most notes are things already fixed automatically, so the green card read as if work remained. It now says "N notes, see the report" on every type; the colour is unchanged.
 
+- **反馈发送留下记录**：在线发送反馈原来只把结果显示在页面上，发不出去时 app.log 里什么也没有，事后查不到原因。现在每次发送都在 app.log 记下开始、成功（反馈编号）或失败（断在连接、上传还是等服务器回话，HTTP 状态码和中转站给的错误代码，或网络异常的类型和说明，已上传多少，耗时），以及是否经过代理；不记描述、邮箱、文件名和路径。打包阶段出的意外和没能在本机记下邮箱选择也会记一笔。
+
+  **Feedback sends leave a trace**: Sending feedback used to show its outcome only on the page; a failed send left nothing in app.log, so the cause could not be found afterwards. Every send now logs its start and its success (the feedback number) or failure (whether it broke while connecting, uploading or waiting for the server, the HTTP status and the relay's error code, or the network error's type and message, how much had been uploaded, elapsed time), plus whether a proxy was used. The description, email address, file names and paths are never logged. Unexpected errors while packaging, and failing to remember the email choice on this machine, are logged too.
+
 - **界面焕新：侧栏收成 7 项，插件、扩展、MCP 合成「扩展」一页**：侧栏「任务中心」改名「任务」；原来的「扩展」「插件」「MCP」三页合成一页「扩展」，分「文件类型」「组件」「智能体接入」三个页签，内容不变，原来的入口（如工作区的「打开插件」）都直接到对应页签；侧栏顶部新增「搜索或输入路径」入口（快捷键在 Mac 上写 ⌘K，Windows 上写 Ctrl+K，搜索面板随后提供）。更新提示卡片的「在 GitHub 查看」改为「项目主页」。
 
   **Interface refresh: a seven-item sidebar, and Plugins, Extensions and MCP merged into one Extensions page**: The sidebar's Task center is now called Tasks. The former Extensions, Plugins and MCP pages are one Extensions page with three tabs, File types, Components and Agent access, with the same content as before; existing links (such as Open plugins on a workspace) go straight to the matching tab. A "Search or enter a path" entry sits at the top of the sidebar (shown as ⌘K on Mac and Ctrl+K on Windows; the search panel follows in a later update). The update card's "View on GitHub" button now reads "Project page".
