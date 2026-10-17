@@ -59,7 +59,7 @@ from core.drawingml_marks import (
     write_paragraph,
 )
 from core.opc_package import OpcPackage, PackageVerificationError, rels_path, resolve_part
-from core.pptx_fit import FitIssue, fit_after_write
+from core.pptx_fit import LAYOUT_FIT, FitIssue, fit_after_write
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -979,12 +979,12 @@ def write_file(
     bilingual: bool = False,
     target_lang: str | None = None,
     translate_notes: bool = True,
-    fixed_layout: bool = False,
+    layout_mode: str = LAYOUT_FIT,
     fit: Callable[..., list] | None = None,
 ) -> WriteResult:
     """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。
 
-    ``fixed_layout``：所有框和表格的大小位置不动，放不下只缩字号（交给缩字那一步）。
+    ``layout_mode``：写回偏好，融合 / 保持字号 / 固定版面（见 ``core.pptx_fit``，交给缩字那一步）。
     """
     source = Path(source)
     out_path = Path(out_path)
@@ -1007,8 +1007,8 @@ def write_file(
                     continue
                 root = deck.root(scope.part)
                 if scope.kind != "notes":
-                    # 「固定版面」关着时不传这个参数，缩字那一步按原稿各框的自动调整设置走。
-                    extra = {"fixed_layout": True} if fixed_layout else {}
+                    # 默认的「融合」不传这个参数，缩字那一步按原稿各框的自动调整设置走。
+                    extra = {"layout_mode": layout_mode} if layout_mode != LAYOUT_FIT else {}
                     for issue in fit(package.read, scope.part, root, list(result.touched), **extra) or []:
                         target = getattr(issue, "target", None)
                         slot = next((item for item in slots if item.owner is target), None)

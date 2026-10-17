@@ -122,7 +122,7 @@ def test_notes_switch_reaches_write(tmp_path: Path) -> None:
     assert _texts(out, "ppt/notesSlides/notesSlide1.xml") == ["开场先介绍培训目的。", "FR 开场先介绍培训目的。"]
 
 
-def test_fixed_layout_switch_reaches_the_fit(tmp_path: Path) -> None:
+def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
     host = InProcessAdapterHost(PPTX_DIR)
     source = FIXTURES / "training.pptx"
     translated = [TranslatedUnit(unit.id, unit.text, f"FR {unit.text}") for unit in host.extract(source)]
@@ -132,12 +132,20 @@ def test_fixed_layout_switch_reaches_the_fit(tmp_path: Path) -> None:
         seen.append(kwargs)
         return []
 
+    cases = [
+        ({"fixed_layout": False}, {}),
+        ({"layout_mode": "fit"}, {}),
+        ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
+        ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
+        ({"fixed_layout": True}, {"layout_mode": "fixed"}),  # 早先的「固定版面」开关
+        ({"layout_mode": "keep_size", "fixed_layout": True}, {"layout_mode": "keep_size"}),
+        ({"layout_mode": "bogus"}, {}),
+    ]
     with patch("core.pptx_text.fit_after_write", fit):
-        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "off.pptx", {"fixed_layout": False})
-        assert seen and all(kwargs == {} for kwargs in seen)
-        seen.clear()
-        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "on.pptx", {"fixed_layout": True})
-        assert seen and all(kwargs == {"fixed_layout": True} for kwargs in seen)
+        for index, (options, expected) in enumerate(cases):
+            seen.clear()
+            host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / f"out{index}.pptx", options)
+            assert seen and all(kwargs == expected for kwargs in seen), options
 
 
 class PptxTaskTests(IsolatedAppDataTestCase):

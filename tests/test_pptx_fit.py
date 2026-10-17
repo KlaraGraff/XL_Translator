@@ -20,6 +20,9 @@ from core.font_metrics import FontLibrary
 from core.pptx_fit import (
     EMU_PER_PT,
     NORM_AUTOFIT_STEPS,
+    REASON_KEEP_COVERS,
+    REASON_KEEP_OFF_PAGE,
+    REASON_KEEP_OVERFLOW,
     REASON_OVERFLOW,
     FitIssue,
     _match_placeholder,
@@ -104,7 +107,7 @@ def _translate(root, translations, *, bilingual=False):
     return touched
 
 
-def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, fixed_layout=False):
+def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, layout_mode="fit"):
     """``edit`` 改的是原文那份（包里的部件和要写回的都改），模拟另一种原稿。"""
     name = f"ppt/slides/slide{slide}.xml"
     if edit is not None:
@@ -114,7 +117,7 @@ def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, fi
     root = etree.fromstring(parts[name])
     touched = _translate(root, french, bilingual=bilingual)
     issues = fit_after_write(parts.get, name, root, list(touched.values()), fonts=fonts,
-                             fixed_layout=fixed_layout)
+                             layout_mode=layout_mode)
     return root, touched, issues
 
 
@@ -164,7 +167,7 @@ def test_no_autofit_box_grows_into_blank_space_first(parts, french):
 
 def test_fixed_layout_shrinks_runs_and_keeps_every_box(parts, french):
     before = etree.fromstring(parts["ppt/slides/slide1.xml"])
-    root, touched, issues = _run(parts, french, 1, fixed_layout=True)
+    root, touched, issues = _run(parts, french, 1, layout_mode="fixed")
     sizes = _sizes(touched["noauto-free"])
     assert len(sizes) == 1 and 1080 <= sizes.pop() < 1800
     assert _ext(_shape(root, "noauto-free")) == _ext(_shape(before, "noauto-free"))
@@ -257,7 +260,7 @@ def test_unwrapped_label_widens_to_the_right(parts, french):
 
 def test_fixed_layout_keeps_auto_resize_box_and_shrinks(parts, french):
     before = etree.fromstring(parts["ppt/slides/slide3.xml"])
-    root, touched, _issues = _run(parts, french, 3, fixed_layout=True)
+    root, touched, _issues = _run(parts, french, 3, layout_mode="fixed")
     for name in ("spauto-free", "spauto-label"):
         assert _ext(_shape(root, name)) == _ext(_shape(before, name)), name
         assert max(_sizes(touched[name])) < 1800, name
@@ -297,12 +300,12 @@ def test_table_shrinks_as_a_whole_when_blocked(parts, french):
 
 def test_fixed_layout_table_shrinks_into_its_rows(parts, french):
     """固定版面不往下长；「外墙保温」译成两行，缩到 60% 也超出原行高 2 磅，进复核。"""
-    _root, touched, issues = _run(parts, french, 4, fixed_layout=True)
+    _root, touched, issues = _run(parts, french, 4, layout_mode="fixed")
     assert _sizes(touched["table"]) == {1050}
     assert [issue.target for issue in issues] == [touched["table"]]
     roomy = french | {"table": [text.replace("Isolation thermique des façades", "Isolation")
                                 for text in french["table"]]}
-    _root, touched, issues = _run(parts, roomy, 4, fixed_layout=True)
+    _root, touched, issues = _run(parts, roomy, 4, layout_mode="fixed")
     sizes = _sizes(touched["table"])
     assert len(sizes) == 1 and min(sizes) < 1800  # 整表缩进原来的行高里
     assert issues == []
@@ -325,6 +328,102 @@ def test_group_shapes_scale_with_group_and_never_grow(parts, french):
     for name in ("group-a", "group-b"):
         assert _ext(_shape(root, name)) == _ext(_shape(before, name))
     assert max(_sizes(touched["group-a"])) < 1800
+
+
+# ---------------------------------------------------------------- 保持字号
+
+
+def _reasons(root, issues) -> dict[str, str]:
+    names = {}
+    for issue in issues:
+        holder = issue.target if issue.target.tag == P + "graphicFrame" else issue.target.getparent()
+        names[holder.find("*/" + P + "cNvPr").get("name")] = issue.reason
+    return names
+
+
+def test_keep_size_grows_every_box_and_lists_what_it_covers(parts, french):
+    before = etree.fromstring(parts["ppt/slides/slide1.xml"])
+    root, touched, issues = _run(parts, french, 1, bilingual=True, layout_mode="keep_size")
+    for name in ("noauto-free", "noauto-blocked"):
+        assert _sizes(touched[name]) == {1800}, name
+        x0, y0, cx0, cy0 = _ext(_shape(before, name))
+        x1, y1, cx1, cy1 = _ext(_shape(root, name))
+        assert (x1, y1, cx1) == (x0, y0, cx0) and cy1 > cy0, name
+    assert _reasons(root, issues) == {"noauto-blocked": REASON_KEEP_COVERS}
+
+
+def test_keep_size_placeholder_drops_font_scale_and_may_leave_the_page(parts, french):
+    root, touched, issues = _run(parts, french, 2, bilingual=True, layout_mode="keep_size")
+    for name in ("title", "body"):
+        norm = touched[name].find(f"{A}bodyPr/{A}normAutofit")
+        assert norm is not None and dict(norm.attrib) == {}, name
+    reasons = _reasons(root, issues)
+    assert reasons.get("body") == REASON_KEEP_OFF_PAGE
+    assert set(reasons) <= {"title", "body"}
+
+
+def test_keep_size_table_and_groups(parts, french):
+    def block(root):
+        frame = root.find(f".//{P}graphicFrame")
+        off, ext = frame.find(f"{P}xfrm/{A}off"), frame.find(f"{P}xfrm/{A}ext")
+        _add_rect(root, int(off.get("x")), int(off.get("y")) + int(ext.get("cy")), int(ext.get("cx")), 914400)
+
+    root, touched, issues = _run(parts, french, 4, layout_mode="keep_size", edit=block)
+    assert _sizes(touched["table"]) == {1800}
+    assert _reasons(root, issues) == {"table": REASON_KEEP_COVERS}
+    root, touched, issues = _run(parts, french, 5, bilingual=True, layout_mode="keep_size")
+    assert _sizes(touched["group-a"]) == {1800}
+    assert set(_reasons(root, issues).values()) <= {REASON_KEEP_OVERFLOW}
+    assert _reasons(root, issues)  # 组合里的框不能加高，放不下就列出来
+
+
+def test_keep_size_label_widens_on_the_page(parts, french):
+    before = etree.fromstring(parts["ppt/slides/slide3.xml"])
+    root, touched, issues = _run(parts, french, 3, layout_mode="keep_size")
+    x0, y0, cx0, cy0 = _ext(_shape(before, "spauto-label"))
+    x1, y1, cx1, cy1 = _ext(_shape(root, "spauto-label"))
+    assert (x1, y1, cy1) == (x0, y0, cy0) and cx1 > cx0
+    assert _sizes(touched["spauto-label"]) == {1800}
+    assert "spauto-label" not in _reasons(root, issues)
+
+
+# ---------------------------------------------------------------- 智能换行
+
+
+def test_unwrapped_label_wraps_when_it_cannot_widen(parts, french):
+    """右边紧挨着别的形状、加宽不了：缩到 60% 一行也放不下，改成折行往下长，字号不变。"""
+    def hem_in(root):
+        x, y, cx, cy = _ext(_shape(root, "spauto-label"))
+        _add_rect(root, x + cx, y, 914400, cy)
+
+    before = etree.fromstring(parts["ppt/slides/slide3.xml"])
+    root, touched, issues = _run(parts, french, 3, edit=hem_in)
+    body_pr = touched["spauto-label"].find(A + "bodyPr")
+    assert body_pr.get("wrap") == "square"
+    x0, y0, cx0, cy0 = _ext(_shape(before, "spauto-label"))
+    x1, y1, cx1, cy1 = _ext(_shape(root, "spauto-label"))
+    assert (x1, y1, cx1) == (x0, y0, cx0) and cy1 > cy0
+    assert _sizes(touched["spauto-label"]) == {1800}
+    assert "spauto-label" not in _reasons(root, issues)
+
+
+def test_fixed_layout_wraps_a_tall_unwrapped_box_instead_of_shrinking_further(parts, french):
+    def taller(root):
+        _shape(root, "spauto-label").find(f"{P}spPr/{A}xfrm/{A}ext").set("cy", str(int(0.9 * 914400)))
+
+    before = etree.fromstring(parts["ppt/slides/slide3.xml"])
+    root, touched, issues = _run(parts, french, 3, edit=taller, layout_mode="fixed")
+    assert touched["spauto-label"].find(A + "bodyPr").get("wrap") == "square"
+    x0, y0, cx0, _cy0 = _ext(_shape(before, "spauto-label"))
+    assert _ext(_shape(root, "spauto-label")) == (x0, y0, cx0, int(0.9 * 914400))  # 框不动
+    assert min(_sizes(touched["spauto-label"])) > 1050
+    assert "spauto-label" not in _reasons(root, issues)
+
+
+def test_unwrapped_box_stays_unwrapped_when_wrapping_does_not_help(parts, french):
+    root, touched, issues = _run(parts, french, 3, layout_mode="fixed")
+    assert touched["spauto-label"].find(A + "bodyPr").get("wrap") == "none"
+    assert _reasons(root, issues)["spauto-label"] == REASON_OVERFLOW
 
 
 def test_vertical_box_untouched_and_rotated_box_listed(parts, french):
