@@ -33,6 +33,9 @@ type NavigateListener = (id: ViewId, params: ViewParams) => void;
 let mountContainer: HTMLElement | null = null;
 const registry = new Map<ViewId, View>();
 const listeners = new Set<NavigateListener>();
+/** 旧 id 的别名：navigate("plugins") 等于 navigate("extensions", { tab: "components" })，深链不坏。 */
+const aliases = new Map<ViewId, { id: ViewId; params: ViewParams }>();
+export function registerViewAlias(alias: ViewId, target: ViewId, params: ViewParams = {}): void { aliases.set(alias, { id: target, params }); }
 let current: { id: ViewId; params: ViewParams } | null = null;
 /** 正在淡出的旧页快照，和新页的进场动画；连续快速换页时先把上一轮的收掉。 */
 let leavingSnapshot: HTMLElement | null = null;
@@ -64,6 +67,8 @@ export function navigate(id: ViewId, params: ViewParams = {}): void {
   if (!mountContainer) {
     throw new Error("Router: mountRouter(container) must be called before navigate().");
   }
+  const alias = aliases.get(id);
+  if (alias) { params = { ...params, ...alias.params }; id = alias.id; }
   const view = registry.get(id);
   if (!view) {
     throw new Error(`Router: no view registered for "${id}".`);

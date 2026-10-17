@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, type OcrPluginStatus, type Pdf2DocxPluginStatus } from "../api-client";
-import { createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
+import { clearElement, createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
@@ -20,6 +20,8 @@ const OFFICIAL_OCR_URL = "https://github.com/tesseract-ocr/tesseract";
 const OFFICIAL_PDF2DOCX_URL = "https://github.com/ArtifexSoftware/pdf2docx";
 
 let mounted = false;
+/** 嵌在「扩展」页的「组件」页签里：顶栏由扩展页管，这里不设。 */
+let embedded = false;
 let rootEl: HTMLElement | null = null;
 let capability: CadCapabilityStatus | null = null;
 let errorText = "";
@@ -72,8 +74,9 @@ function statusTone(): "idle" | "ok" | "warn" | "danger" {
   return "warn";
 }
 
-export function mount(container: HTMLElement, _params: ViewParams): void {
+export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
+  embedded = params.embedded === true;
   rootEl = container;
   render();
   void refresh();
@@ -916,9 +919,9 @@ function actionButtons(): HTMLElement {
 
 function render(): void {
   if (!mounted || !rootEl) return;
-  setTopbar({ title: t("插件"), status: { label: statusLabel(), tone: statusTone() }, subtitle: t("连接翻译时用到的可选组件") });
-  rootEl.className = "content plugins-content";
-  rootEl.replaceChildren();
+  if (!embedded) setTopbar({ title: t("插件"), status: { label: statusLabel(), tone: statusTone() }, subtitle: t("连接翻译时用到的可选组件") });
+  rootEl.classList.add("plugins-content");
+  clearElement(rootEl);
 
   const column = document.createElement("div");
   column.className = "plugins-column";

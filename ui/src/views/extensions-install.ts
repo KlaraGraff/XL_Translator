@@ -18,7 +18,7 @@ import {
   type LocalizedText,
   type RegistryExtension,
 } from "../api-client";
-import { createButton, createCard, createEmptyState, createProgressBar, openModal, showToast } from "../components";
+import { clearElement, createButton, createCard, createEmptyState, createProgressBar, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { currentLocale, t, tx } from "../i18n";
 import { hasView, registerView, unregisterView } from "../router";
@@ -165,7 +165,7 @@ async function loadRegistry(force: boolean): Promise<void> {
 
 function renderAbout(): void {
   if (!aboutEl) return;
-  aboutEl.replaceChildren();
+  clearElement(aboutEl);
   const head = document.createElement("div");
   head.className = "tc-head";
   const title = document.createElement("b");
@@ -515,7 +515,7 @@ async function confirmUninstall(id: string, name: string): Promise<void> {
 function renderBrowse(): void {
   if (!browseEl) return;
   if (!browseListEl) {
-    browseEl.replaceChildren();
+    clearElement(browseEl);
     browseEl.append(browseHead());
     browseListEl = document.createElement("div");
     browseListEl.className = "ext-browse-body";
@@ -572,7 +572,7 @@ function matches(entry: RegistryExtension): boolean {
 
 function renderBrowseList(): void {
   if (!browseListEl) return;
-  browseListEl.replaceChildren();
+  clearElement(browseListEl);
   const entries = registry?.entries ?? [];
   if (registry?.stale && entries.length) {
     const stale = document.createElement("div");
