@@ -115,9 +115,11 @@ class TextTranslationService:
             text += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
         return text
 
-    def _engine_for(self, term_session: Any) -> Any:
+    def _engine_for(self, term_session: Any, engine: Any = None) -> Any:
         # 记忆库：本批出现的词条随批附上，翻完核对，未采用的重译（core.term_engine）。
-        return term_session.wrap(self.engine()) if term_session is not None else self.engine()
+        # 词条包在最外层，按原文（不带段内格式标记）查词、核对和重译，与 Word 一致。
+        inner = self.engine() if engine is None else engine
+        return term_session.wrap(inner) if term_session is not None else inner
 
     # ── 翻译 ──────────────────────────────────────────────────────────────
 
@@ -133,11 +135,13 @@ class TextTranslationService:
         should_stop: Callable[[], bool] | None = None,
         error_callback: Callable[[str], None] | None = None,
         request_callback: Callable[[Any], None] | None = None,
+        engine: Any = None,
     ) -> dict[str, str]:
         """分批翻译，返回 ``{原文: 译文}``。
 
         ``prompt`` 不给时用 ``system_prompt()``；``context`` 是「自动识别场景」的文档说明，
-        ``glossary`` 是必须遵守的固定术语，都接在提示词后面。
+        ``glossary`` 是必须遵守的固定术语，都接在提示词后面。``engine`` 是包在 ``engine()``
+        外面的一层（如段内格式标记的 ``InlineMarkEngine``），不给时直接用 ``engine()``。
 
         接口放弃的批次、停止时没发出去的批次，``translate_texts`` 按原文占位交回。那不是
         译文，这里把它们摘掉，调用方据此记为「未获得译文」、标需复核（CAD 与 PDF 原位替换）。
@@ -145,7 +149,7 @@ class TextTranslationService:
         stats = engine_dispatcher.TranslationBatchRunStats()
         results = engine_dispatcher.translate_texts(
             texts,
-            self._engine_for(term_session),
+            self._engine_for(term_session, engine),
             self.target_lang,
             self._prompt(prompt, glossary, context),
             self.rate.batch_items,

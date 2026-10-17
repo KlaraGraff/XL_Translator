@@ -10,6 +10,7 @@ reach the model.
 from __future__ import annotations
 
 import codecs
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -354,7 +355,24 @@ class _AsciiEngine(FakeEngine):
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
         self.calls.append(list(texts))
         self.prompts.append(system_prompt)
-        return {text: "\n".join("FR " + _NON_ASCII.sub("x", line) for line in text.split("\n")) for text in texts}
+        return {text: self._ascii(text) for text in texts}
+
+    @staticmethod
+    def _ascii(text: str) -> str:
+        return "\n".join("FR " + _NON_ASCII.sub("x", line) for line in text.split("\n"))
+
+    def chat(self, system, user):
+        # 仅译文模式下「中文 + 外文」的内容走结构化的那一路（core/mixed_language.py）。
+        try:
+            payload = json.loads(user)
+        except ValueError:
+            payload = None
+        if isinstance(payload, list) and payload and all(isinstance(item, dict) and "text" in item for item in payload):
+            self.calls.append([item["text"] for item in payload])
+            return json.dumps(
+                [{"id": item["id"], "action": "translate", "translation": self._ascii(item["text"])} for item in payload]
+            )
+        return super().chat(system, user)
 
 
 class TextTypeRunTests(IsolatedAppDataTestCase):
