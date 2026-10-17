@@ -58,11 +58,13 @@ def test_document_workspaces_show_scan_state_in_topbar_and_task_list():
     # Choosing a source from the picker scans straight away, on every surface.
     assert "await runScan(surface);" in source
     assert "scanBusy.add(surface);" in source
-    assert '扫描中…' in source
     update_topbar = source[source.index('function updateTopbar'):source.index('function runningStatusMeta')]
     assert 'scanBusy.has(surface)' in update_topbar
-    table_card = source[source.index('function buildTableCard'):source.index('function buildSkipNoticeRow')]
-    assert 'scanBusy.has(surface)' in table_card
+    assert 't("读取中")' in update_topbar
+    # 读取中主栏放骨架（统计块 + 列表两行），不再沿用上一次的统计和表格。
+    col_left = source[source.index('function buildColLeft'):source.index('function buildSrcBar')]
+    assert 'scanBusy.has(surface)' in col_left
+    assert 'buildScanSkeleton(surface, st)' in col_left
 
 
 def test_only_pausable_surfaces_get_a_pause_button():

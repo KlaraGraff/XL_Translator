@@ -1,11 +1,67 @@
 /*
- * 工作区页面专属样式 —— app.css 已经覆盖了样张定义的几乎全部组件类
- * （.srcbar/.stats/.tablecard/.tbl/.fmt/.runpanel/.prog-stage/.bar/.mon/.log/.filerow…），
- * 这里只补两类 app.css 没有、但 workspace.ts 用到的东西：
- *   1. .ws-note —— 运行中卡片/底部按钮下方的小字提示行（main.ts 里的 .note，
- *      样张里以纯 <p> 出现、没有单独命名类，这里给它一个明确类名）。
- *   2. .tc-head 在“扫描跳过”提示行里被复用时的图标间距微调。
+ * 工作区页面专属样式。版式（V10.3「流光」阶段 2）：
+ *   .ws        —— 主栏 .ws-main + 右栏 .ws-side（300px，左边一条发丝线）。
+ *   .ws-main   —— 路径栏 .src → 状态区（.drop 空 / 骨架 读取中 / .smart 待开始 / .runbox 进行中 /
+ *                 .res 已完成）→ 统计条 .sum → 文件列表 .tablecard。
+ *   .ws-side   —— 配方句 .recipe、四个控件、「高级」折叠，底部按钮 .rp-foot。
+ * 通用组件（.tbl/.fmt/.chip/.bar/.mon/.log/.filerow/.fold/.seg）在 app.css。
  */
+
+.ws {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  gap: 20px;
+}
+.ws-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  /* 聚焦光圈有 3px，滚动容器会把它裁掉，留出这点余量。 */
+  padding: 3px;
+  margin: -3px;
+}
+.ws-main > * {
+  flex: none;
+}
+/* 文件列表占满剩下的高度、表格在卡片里自己滚动（表头吸顶）；剩下的不够 200px 时整栏滚动。 */
+.ws-main > .tablecard,
+.ws-main > .drop {
+  flex: 1 1 0;
+  min-height: 200px;
+}
+.ws-side {
+  width: 300px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  padding-left: 20px;
+}
+.ws-side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 3px 3px 8px;
+  margin: -3px -3px 0;
+}
+/* 接近最小窗口（1080）时右栏收窄一点，把宽度让给文件表格，状态列不被挤出去。 */
+@media (max-width: 1199px) {
+  .ws-side { width: 268px; }
+}
+/* 窗口窄到放不下两栏时右栏折到主栏下面，整页上下滚动，不出现横向滚动条。 */
+@media (max-width: 999px) {
+  .ws { flex-direction: column; overflow-y: auto; }
+  .ws-main { overflow: visible; }
+  .ws-side { width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 16px 0 0; }
+  .ws-side-scroll { overflow: visible; }
+}
 
 .ws-note {
   font-size: 11.5px;
@@ -17,9 +73,363 @@
   flex: none;
 }
 
-/* 进度卡标题前的阶段名小标签（读取文件 / 翻译 / 调整行高 / 生成文件），四个翻译页一样。
-   不许折行：标题长了折的是后面的说明句，不是这个标签。 */
-.prog-stage .prog-step {
+/* ---------- 路径栏：一整个圆角输入框 ---------- */
+.src {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  padding: 0 5px 0 12px;
+  background: var(--surface);
+  color: var(--ink-3);
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
+}
+.src:focus-within > .ic {
+  color: var(--accent-ink);
+}
+.src > input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.src > input::placeholder {
+  color: var(--ink-3);
+  font-family: var(--font);
+}
+.src > input:disabled {
+  background: transparent;
+  color: var(--ink-3);
+}
+.src .btn.mini {
+  height: 30px;
+  border-radius: 7px;
+  flex: none;
+}
+
+/* ---------- 空：投放区 ---------- */
+.ws-main > .drop {
+  min-height: 260px;
+}
+.drop {
+  border: 1.5px dashed var(--line-2);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-3);
+  background: var(--surface);
+  transition: border-color var(--t-base) var(--ease-out);
+}
+.drop:hover {
+  border-color: var(--tint-line);
+}
+.drop .big {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--accent-ink);
+  margin-bottom: 4px;
+}
+.drop b {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.drop p {
+  font-size: 12.5px;
+  max-width: 380px;
+  line-height: 1.6;
+}
+.drop .acts {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ---------- 读取中：骨架 ---------- */
+.sk {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: ws-sk 1.2s linear infinite;
+  border-radius: 6px;
+}
+@keyframes ws-sk {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.sum .st b .sk {
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  vertical-align: middle;
+}
+.sk-rows {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sk-rows .sk {
+  height: 40px;
+}
+.sk-rows .sk + .sk {
+  opacity: .6;
+}
+
+/* ---------- 统计条 ---------- */
+.sum {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 6px;
+  background: var(--surface);
+}
+.sum .st {
+  padding: 2px 18px;
+  border-left: 1px solid var(--line);
+  min-width: 0;
+  white-space: nowrap;
+}
+.sum .st:first-child {
+  border-left: 0;
+}
+.sum .st b {
+  display: block;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.sum .st b.dash {
+  color: var(--ink-3);
+}
+.sum .st b.warn,
+.sum .st.attn b,
+.sum .st.attn span,
+.sum .st.attn small {
+  color: var(--warn);
+}
+.sum .st span {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.sum .st small {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: normal;
+  max-width: 180px;
+}
+.sum .qn {
+  align-self: center;
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+.sum .qn .ic {
+  color: var(--accent-ink);
+}
+.sum .qn.warn {
+  background: var(--warn-t);
+  color: var(--warn);
+}
+.sum .qn.warn .ic {
+  color: var(--warn);
+}
+/* 读取完成后统计格错落浮现，每格晚 28ms。 */
+.stag > * {
+  animation: ws-rise var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
+@keyframes ws-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 待开始 / 已完成的一行智能提示 ---------- */
+.smart {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.smart .ic {
+  color: var(--accent-ink);
+  margin-top: 2px;
+}
+.smart .k {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---------- 进行中：.runbox ---------- */
+.runbox {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 18px 20px 6px;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+}
+.runbox::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--glow), transparent);
+  background-size: 200% 100%;
+  animation: ws-flow 2.2s linear infinite;
+}
+.runbox.paused::before {
+  background: linear-gradient(90deg, transparent, var(--warn), transparent);
+  animation: none;
+}
+@keyframes ws-flow {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.pipe {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.step .pd {
+  width: 20px;
+  height: 20px;
+  border-radius: 99px;
+  border: 1.5px solid var(--line-2);
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  flex: none;
+  transition: background-color var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out);
+}
+.step .pd .ic {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
+}
+.step.is-done {
+  color: var(--ink-2);
+}
+.step.is-done .pd {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--surface);
+}
+.step.is-now {
+  color: var(--ink);
+  font-weight: 600;
+}
+.step.is-now .pd {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: ws-pulse 1.6s var(--ease-out) infinite;
+}
+.step.is-now .pd::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--on-accent);
+}
+@keyframes ws-pulse {
+  from { box-shadow: 0 0 0 0 var(--ring-soft); }
+  70% { box-shadow: 0 0 0 7px var(--surface-clear); }
+  to { box-shadow: 0 0 0 7px var(--surface-clear); }
+}
+.seglink {
+  flex: 1;
+  height: 1.5px;
+  min-width: 16px;
+  margin: 0 10px;
+  background: var(--line-2);
+  position: relative;
+  overflow: hidden;
+}
+.seglink.is-done {
+  background: var(--ok);
+}
+.seglink.is-now::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--accent), var(--glow));
+  transform: translateX(-100%);
+  animation: ws-slidein 1.4s var(--ease-out) infinite;
+}
+@keyframes ws-slidein {
+  to { transform: translateX(100%); }
+}
+.prog {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+.prog b {
+  font-size: 15px;
+  font-weight: 650;
+  min-width: 0;
+}
+.prog .pct {
+  margin-left: auto;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  line-height: 1;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.runbox.paused .prog .pct {
+  color: var(--warn);
+}
+/* 没有流水线时（CAD、扩展类型）标题前的阶段名小标签。不许折行：标题长了折的是后面的说明句。 */
+.prog .prog-step {
   display: inline-block;
   margin-right: 8px;
   padding: 1px 8px;
@@ -31,29 +441,199 @@
   white-space: nowrap;
   vertical-align: 1px;
 }
-.prog-stage .pct {
-  white-space: nowrap;
+.run-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.runbox .log-fold {
+  margin-top: 14px;
+}
+.log-body .log {
+  min-height: 76px;
+  max-height: 300px;
+}
+.log-body.shares .log {
+  max-height: 150px;
+}
+.log-files {
+  max-height: 184px;
+  overflow-y: auto;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.log-body.shares .log-files {
+  max-height: 120px;
+}
+.log-files .filerow:first-child {
+  border-top: 0;
 }
 
-/* 扫描统计格（Excel 固定五格）。app.css 的 auto-fit 在 1080 宽的窗口里排成 4 + 1，第 5 格
-   单独掉到第二排。这里按统计条自己的宽度决定：放得下就五格同排，放不下整齐地折成
-   3 + 2（六列网格，前三格各占 2 列、后两格各占 3 列），两排都铺满。 */
-.stats-wrap {
-  container-type: inline-size;
+/* ---------- 已完成：结果卡 ---------- */
+.res {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  border: 1px solid var(--ok-l);
+  background: var(--ok-t);
+  border-radius: var(--r-lg);
+  padding: 14px 18px;
+  position: relative;
 }
-.stats-wrap > .stats.five {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+.res .mk {
+  width: 34px;
+  height: 34px;
+  border-radius: 99px;
+  background: var(--ok);
+  color: var(--surface);
+  display: grid;
+  place-items: center;
+  flex: none;
+  animation: ws-pop var(--t-slow) var(--ease-spring) both;
 }
-@container (max-width: 620px) {
-  .stats-wrap > .stats.five {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-  .stats-wrap > .stats.five > .stat {
-    grid-column: span 2;
-  }
-  .stats-wrap > .stats.five > .stat:nth-child(n + 4) {
-    grid-column: span 3;
-  }
+.res .mk .ic {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.6;
+}
+.res:not(.warn):not(.fail) .mk .ic {
+  stroke-dasharray: 30;
+  stroke-dashoffset: 30;
+  animation: ws-draw .5s .15s var(--ease-out) forwards;
+}
+@keyframes ws-draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes ws-pop {
+  from { transform: scale(.4); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.res .tx {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding-right: 18px;
+}
+.res b {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.res .sub {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  margin-top: 1px;
+  overflow-wrap: anywhere;
+}
+.res .acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.res .acts .btn:not(.pri) {
+  background: var(--surface);
+}
+.res .res-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink-3);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.res .res-close:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+.res.warn {
+  border-color: var(--warn-l);
+  background: var(--warn-t);
+}
+.res.warn .mk {
+  background: var(--warn);
+}
+.res.fail {
+  border-color: var(--danger-l);
+  background: var(--danger-t);
+}
+.res.fail .mk {
+  background: var(--danger);
+}
+
+/* ---------- 右栏 ---------- */
+.recipe {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  background: var(--tint);
+  color: var(--ink);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin-bottom: 14px;
+  overflow-wrap: anywhere;
+}
+.recipe .ic {
+  color: var(--accent-ink);
+  margin-top: 2px;
+}
+.recipe b {
+  font-weight: 650;
+}
+.recipe .sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+.ws-side .field {
+  margin-bottom: 12px;
+}
+.ws-side .field label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ws-side .field label > .hint {
+  margin-left: 0;
+}
+.ws-side .field-link {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 400;
+}
+.ws-side .adv-fold {
+  margin-top: 4px;
+}
+.ws-side .adv .rp-sec:first-child {
+  margin-top: 4px;
+}
+.out-dir {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.out-dir .out-dir-input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+/* 任务进行中右栏锁定：控件半透明不可点，配方句照常（它说明了为什么锁着），「?」说明照样能看。 */
+.ws-side .dis .seg {
+  opacity: .45;
+  pointer-events: none;
 }
 
 /* 工作台文件清单（.ws-files）：文件名单行省略（悬停 title 看全名），其余各列——格式、

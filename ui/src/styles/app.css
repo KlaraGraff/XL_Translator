@@ -156,11 +156,6 @@ svg.ic.lg { width: 22px; height: 22px; }
 /* ========== 通用组件 ========== */
 /* 卡片在白色舞台上靠细线区分，不再垫阴影。 */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
-.col-l { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
-.col-r { width: 322px; flex: none; display: flex; flex-direction: column; }
-.srcbar { display: flex; gap: 8px; padding: 12px 14px; align-items: center; }
-.srcbar input { flex: 1; height: 34px; border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 0 12px; font: inherit; font-size: 13px; background: var(--surface); color: var(--ink); }
-.srcbar input::placeholder { color: var(--ink-3); }
 .btn { height: 34px; padding: 0 14px; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; justify-content: center; transition: background-color var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out); }
 .btn:hover { border-color: var(--line-2); background: var(--surface-2); }
 .btn:active:not(:disabled) { transform: scale(.985); }
@@ -172,6 +167,9 @@ svg.ic.lg { width: 22px; height: 22px; }
 .btn.dgr { background: transparent; border-color: var(--danger-l); color: var(--danger); }
 .btn.dgr:hover { background: var(--danger-t); }
 .btn.dgr-solid { background: var(--danger); border-color: transparent; color: #fff; font-weight: 600; }
+/* 幽灵按钮：路径栏里的「选择…」「重新读取」、列表工具区的「打开输出文件夹」，平时没有边框和底色。 */
+.btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
 .btn.big { height: 40px; width: 100%; font-size: 13.5px; border-radius: var(--r-md); }
 .btn.mini { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 7px; }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
@@ -222,9 +220,6 @@ table.review-tbl { table-layout: fixed; }
 .empty p { font-size: 12.5px; max-width: 300px; text-align: center; }
 
 /* ========== 右栏运行面板 ========== */
-.runpanel { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.rp-scroll { flex: 1; overflow: auto; padding: 16px 16px 6px; }
-.rp-title { font-size: 13px; font-weight: 650; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .rp-sec { font-size: 11px; font-weight: 650; letter-spacing: .1em; color: var(--ink-3); text-transform: uppercase; margin: 16px 0 8px; }
 .rp-sec:first-of-type { margin-top: 2px; }
 .rp-sec .hint { margin-left: 6px; letter-spacing: 0; text-transform: none; }
@@ -261,11 +256,21 @@ table.review-tbl { table-layout: fixed; }
  * 含义都查不到——这正是原生 title 在锁定态彻底失效的那个坑）。 */
 .dis .swrow, .dis .field { opacity: .45; pointer-events: none; }
 .dis .hint, .dis .swrow-hint { pointer-events: auto; }
-.fold { border: 1px solid var(--line); border-radius: var(--r-md); margin-top: 14px; overflow: hidden; }
-.fold-h { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 12.5px; font-weight: 600; background: var(--surface-2); cursor: pointer; color: var(--ink-2); }
-.fold-h svg { margin-left: auto; transition: transform var(--t-base) var(--ease-out); }
-.fold-b { padding: 11px 12px 4px; border-top: 1px solid var(--line); }
-.rp-foot { flex: none; padding: 13px 16px; border-top: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+/* 折叠块（「高级」「运行日志」）：上面一条发丝线，标题一行可点，右边小字说明和箭头。 */
+.fold { border-top: 1px solid var(--line); margin-top: 14px; }
+.fold-h { display: flex; align-items: center; gap: 8px; padding: 10px 0; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--ink-2); border-radius: 6px; transition: color var(--t-fast) var(--ease-out); }
+.fold-h:hover, .fold.open .fold-h { color: var(--ink); }
+.fold-h .fold-meta { font-weight: 400; color: var(--ink-3); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold-h svg { margin-left: auto; color: var(--ink-3); transition: transform var(--t-base) var(--ease-out); }
+.fold-b { padding: 2px 0 6px; }
+.rp-foot { flex: none; padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+/* 分段控件（双语对照 / 仅译文、源文件旁 / 自定义）：白色滑块滑到选中项下面。 */
+.seg { position: relative; display: flex; background: var(--surface-2); border-radius: var(--r-sm); padding: 3px; isolation: isolate; }
+.seg button { flex: 1; min-width: 0; height: 26px; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 12px; color: var(--ink-2); position: relative; z-index: 1; cursor: pointer; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color var(--t-fast) var(--ease-out); }
+.seg button.on { color: var(--ink); font-weight: 600; }
+.seg button:disabled { cursor: default; }
+.seg .thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 6px; background: var(--surface); box-shadow: var(--sh-sm), 0 0 0 1px var(--line); transition: transform var(--t-page) var(--ease-spring); }
+.seg.n3 .thumb { width: calc(33.333% - 2px); }
 .radio-row { display: flex; gap: 6px 14px; font-size: 12.5px; align-items: center; color: var(--ink); }
 /* 圆点和文字之间固定 6px：浏览器默认的 radio 外边距左右不对称，文字直接贴在圆点上。 */
 .radio-row label { display: inline-flex; align-items: center; gap: 6px; }
@@ -290,8 +295,12 @@ table.review-tbl { table-layout: fixed; }
 .prog-stage b { font-size: 14px; font-weight: 650; }
 .prog-stage span { color: var(--ink-2); font-size: 12.5px; }
 .prog-stage .pct { margin-left: auto; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--tint-ink); }
-.bar { height: 7px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--bar-end)); }
+.bar { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--glow)); transition: width .6s var(--ease-out); position: relative; overflow: hidden; }
+/* 进行中的条上一道光往右扫；不确定进度（.indet）本来就在动，不再叠加。 */
+.bar i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--sheen), transparent); transform: translateX(-100%); animation: bar-sheen 1.8s linear infinite; }
+.bar.indet i::after { content: none; }
+@keyframes bar-sheen { to { transform: translateX(100%); } }
 /* 不确定进度：解包安装拿不到字节数，用来回滑动的短条代替百分比。 */
 .bar.indet i { width: 34%; animation: bar-indet 1.35s ease-in-out infinite; }
 @keyframes bar-indet { from { margin-left: -34%; } to { margin-left: 100%; } }
@@ -301,8 +310,6 @@ table.review-tbl { table-layout: fixed; }
 .log .w { color: var(--warn); }
 .log .g { color: var(--ok); }
 .log .a { color: var(--tint-ink); }
-.task-log-panel .tc-head span { margin-left: auto; color: var(--ink-3); font-size: 11px; font-weight: 400; }
-.task-progress-panel .bar { margin: 10px 0 7px; }
 .filerow { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12.5px; }
 .filerow .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -460,13 +467,9 @@ table.review-tbl { table-layout: fixed; }
  * 外框 .dropdown-btn 只管边框和聚焦光圈。 */
 .dropdown { position: relative; min-width: 0; }
 .dropdown-btn { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--ink); font-size: 13px; padding: 0 3px 0 11px; cursor: text; text-align: left; transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out); }
-.dropdown-btn:hover { border-color: var(--ink-3); }
-.dropdown-btn.disabled { cursor: default; opacity: .6; }
-.dropdown-btn.disabled:hover { border-color: var(--line-2); }
-.dropdown[data-open="true"] .dropdown-btn, .dropdown-btn:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.dropdown-btn.disabled { cursor: default; }
 /* 带上 input 和 > ：右栏 .field input[type="text"] 那条规则（0,2,1）会给它套上自己的边框和高度。 */
 .dropdown-btn > input.dropdown-value { flex: 1; width: auto; min-width: 0; height: auto; align-self: stretch; border: 0; border-radius: 0; padding: 0; margin: 0; background: transparent; color: inherit; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: inherit; }
-.dropdown-value:focus { box-shadow: none; }
 .dropdown-value:disabled { color: inherit; opacity: 1; -webkit-text-fill-color: currentColor; }
 .dropdown-btn .opt-tag { flex: none; margin-left: 0; }
 .dropdown-caret, .lang-caret { flex: none; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--ink-3); padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out); }
@@ -510,12 +513,8 @@ table.review-tbl { table-layout: fixed; }
   font-size: 13px; padding: 0 3px 0 11px; cursor: text; text-align: left;
   transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
 }
-.lang-btn:hover { border-color: var(--ink-3); }
-.lang-btn.disabled { cursor: default; opacity: .6; }
-.lang-btn.disabled:hover { border-color: var(--line-2); }
-.lang[data-open="true"] .lang-btn, .lang-btn:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.lang-btn.disabled { cursor: default; }
 .lang-btn > input.val { flex: 1; width: auto; min-width: 0; height: auto; align-self: stretch; border: 0; border-radius: 0; padding: 0; margin: 0; background: transparent; color: inherit; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: inherit; }
-.lang-btn .val:focus { box-shadow: none; }
 .lang-btn .val::placeholder { color: var(--ink-3); }
 .lang-btn .val:disabled { color: inherit; opacity: 1; -webkit-text-fill-color: currentColor; }
 .lang-btn .code {
@@ -849,9 +848,7 @@ table.review-tbl { table-layout: fixed; }
 .rp-action-note { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
 /* 多值输入：一个名字一枚标签，输入框跟在最后一枚后面。外框长得和 .field 里的输入框一样。 */
 .tag-input { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); padding: 3px 5px; cursor: text; }
-.tag-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
 .tag-input input[type="text"] { flex: 1; min-width: 90px; width: auto; height: 24px; border: 0; padding: 0 4px; background: transparent; }
-.tag-input input:focus { box-shadow: none; }
 .tag { display: inline-flex; align-items: center; max-width: 100%; height: 22px; padding: 0 2px 0 8px; border-radius: 6px; background: var(--tint); color: var(--tint-ink); font-size: 12px; }
 .tag-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag-x { border: 0; background: none; color: inherit; opacity: .6; cursor: pointer; padding: 0 5px; font-size: 14px; line-height: 1; border-radius: 4px; }
@@ -894,12 +891,46 @@ table.review-tbl { table-layout: fixed; }
  * 后写的赢。放在文件开头的话 border-color 会被它们的静态边框色压掉（踩过一次：
  * 只剩外发光、边框不变色）。新增控件样式请写在这一段之前。
  * ========================================================================== */
+/* 输入框三档边：静止 1px --line-2，悬停 --line-3，聚焦主色边 + --ring-soft 外发光。外框式控件
+ * （可输入下拉、语言选择、路径栏、标签输入）由外框承担这一套，里面的输入框自己不再亮一圈——
+ * 以前聚焦时外框和里面的输入框各亮一圈，看上去是双层蓝框。 */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover:not(:disabled),
+textarea:hover:not(:disabled),
+.dropdown-btn:hover:not(.disabled),
+.lang-btn:hover:not(.disabled),
+.tag-input:hover,
+.src:hover:not(.disabled) {
+  border-color: var(--line-3);
+}
 input:focus,
 select:focus,
-textarea:focus {
+textarea:focus,
+.dropdown[data-open="true"] .dropdown-btn,
+.dropdown-btn:focus-within,
+.lang[data-open="true"] .lang-btn,
+.lang-btn:focus-within,
+.tag-input:focus-within,
+.src:focus-within {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--ring-soft);
+}
+.dropdown-btn > input.dropdown-value:focus,
+.lang-btn > input.val:focus,
+.tag-input input:focus,
+.src > input:focus {
+  box-shadow: none;
+}
+input, textarea { caret-color: var(--accent); }
+::selection { background: var(--sel); }
+/* 禁用：浅灰底、弱色字，不再整体半透明（半透明在深色下发脏）。 */
+input:not([type="checkbox"]):not([type="radio"]):disabled,
+textarea:disabled,
+.dropdown-btn.disabled,
+.lang-btn.disabled,
+.src.disabled {
+  background: var(--surface-2);
+  color: var(--ink-3);
 }
 
 /* 记忆库页：规则说明、筛选胶囊上的条数、高级模式开关；编辑窗口的采用方式。 */

@@ -35,7 +35,7 @@ const CARDS: HelpCardSpec[] = localized(() => ([
   {
     iconName: "doc-file",
     title: t("2. 选择文件与语言"),
-    body: t("支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过「浏览」选择文件或文件夹后将自动扫描。源语言默认自动识别，PDF 和图片仅需选择目标语言。"),
+    body: t("支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过路径栏的「选择」选择文件或文件夹后将自动读取。源语言默认自动识别，PDF 和图片仅需选择目标语言。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";

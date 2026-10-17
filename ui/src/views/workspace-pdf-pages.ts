@@ -621,10 +621,11 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   const card = el("div", "card pdf-review-card");
   card.classList.toggle("filter", ui.onlyBad);
   // 终态和上面的任务清单对半分高度（见 buildColLeft）；按内容撑高的话，展开几个文件
-  // 就会把任务清单压成只剩标题。
+  // 就会把任务清单压成只剩标题。运行中排在进度状态区下面，至少留几行表格的高度，
+  // 放不下时整个主栏滚动。
   card.style.cssText = snapshot.terminal
     ? "flex:1 1 0%;min-height:240px;display:flex;flex-direction:column;overflow:hidden"
-    : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
+    : "flex:3 1 0%;min-height:220px;display:flex;flex-direction:column;overflow:hidden";
   const head = el("div", "tc-head");
   const b = el("b");
   // 没开审核时这块只是逐页的生成结果，叫「逐页审核」会让人以为每页都审过了。

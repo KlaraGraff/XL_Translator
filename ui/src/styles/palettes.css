@@ -51,6 +51,9 @@
   --accent-ink: #1d4ed8;
   --glow: #38bdf8;
   --glow-soft: rgb(56 189 248 / 28%);
+  --line-3: #b5bfce;
+  --sel: rgb(37 99 235 / 20%);
+  --sheen: rgb(255 255 255 / 55%);
 }
 
 :root[data-palette="liuguang"][data-theme="dark"] {
@@ -88,6 +91,9 @@
   --accent-ink: #8cb0ff;
   --glow: #22d3ee;
   --glow-soft: rgb(34 211 238 / 20%);
+  --line-3: #3b4963;
+  --sel: rgb(77 132 245 / 40%);
+  --sheen: rgb(255 255 255 / 35%);
 }
 
 /* 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */
