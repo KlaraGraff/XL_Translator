@@ -14,10 +14,6 @@
 
   **Interface refresh (step three): Translate home page, drop to route, drop-area light**: The app now opens on a new Translate page (the Translate item in the sidebar). At the top is a drop area: drag in files or folders, or use Choose files / Choose folder; four type chips (with their supported extensions) go straight to each page. Below, Recent lists the last four tasks (click one to open it on the Tasks page), and Ready shows the document model, the PDF & image model, the translation memory's entry count and languages, extra instructions and the drawing converter. Dropping files or folders anywhere on the window counts them by extension and opens the page with the most matching files, reading them straight away (`~` temporary files and translation output folders inside a folder are skipped); if other types were included too, a note says which pages can take them. Already on a type page whose files are in the drop, the app stays on that page; if that page is translating, it asks you to drop again when it finishes; with nothing translatable, it says so and stays put. The drop areas on the home page and on each type page's empty state have a new light: the stretch of border nearest the pointer lights up, a faint glow and dot grid follow the pointer, and the icon tilts slightly; while dragging a file over it the border becomes a multicolour light that circles round, stopping on release. With the system's Reduce motion setting on, it lights up without moving.
 
-- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
-
-  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
-
 - **结果卡上的「提示」说法**：翻译完成后，结果卡小结里原来写「N 处提示需手动处理」，Excel 的提示多是已自动修好的内容，绿色卡片上挂着「需手动处理」读起来像还有事要做。现在改为「N 条提示，详见报告」，各类型通用，颜色不变。
 
   **Wording of notes on the result card**: The result card summary used to say "N notes to handle manually"; on Excel most notes are things already fixed automatically, so the green card read as if work remained. It now says "N notes, see the report" on every type; the colour is unchanged.
@@ -25,6 +21,10 @@
 - **反馈发送留下记录**：在线发送反馈原来只把结果显示在页面上，发不出去时 app.log 里什么也没有，事后查不到原因。现在每次发送都在 app.log 记下开始、成功（反馈编号）或失败（断在连接、上传还是等服务器回话，HTTP 状态码和中转站给的错误代码，或网络异常的类型和说明，已上传多少，耗时），以及是否经过代理；不记描述、邮箱、文件名和路径。打包阶段出的意外和没能在本机记下邮箱选择也会记一笔。
 
   **Feedback sends leave a trace**: Sending feedback used to show its outcome only on the page; a failed send left nothing in app.log, so the cause could not be found afterwards. Every send now logs its start and its success (the feedback number) or failure (whether it broke while connecting, uploading or waiting for the server, the HTTP status and the relay's error code, or the network error's type and message, how much had been uploaded, elapsed time), plus whether a proxy was used. The description, email address, file names and paths are never logged. Unexpected errors while packaging, and failing to remember the email choice on this machine, are logged too.
+
+- **界面焕新：反馈页两栏铺满**：反馈页左右两栏不再是两张卡片，直接铺满窗口，描述框和任务列表随窗口变高；任务列表改为一行一个任务（类型图标、文件名、类型 · 状态 · 日期），上方的搜索框随输入实时显示「匹配 N / M 条」；截图缩略图移到描述框下方。
+
+  **Interface refresh: full-height feedback page**: The feedback page's two columns are no longer two cards and now fill the window, with the description box and task list growing with it. The task list shows one task per line (type icon, file name, type · status · date), and the search box above it shows "N of M" as you type. Screenshot thumbnails move below the description box.
 
 ## V10.2.0
 

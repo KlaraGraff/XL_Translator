@@ -15,7 +15,7 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, ApiError } from "../api-client";
-import { createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
+import { clearElement, createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
 import { icon, type IconName } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
@@ -313,7 +313,7 @@ function render(): void {
   if (!mounted || !rootEl) return;
   setTopbar({ title: t("反馈"), subtitle: t("报告问题或提出建议，附带的日志只用于排查") });
   rootEl.className = "content feedback-content";
-  rootEl.replaceChildren();
+  clearElement(rootEl);
   const fill = document.createElement("div");
   fill.className = "feedback-fill";
   if (sentId) {
@@ -531,7 +531,7 @@ async function addImages(files: File[]): Promise<void> {
 function renderImages(): void {
   const el = imagesEl;
   if (!el) return;
-  el.replaceChildren();
+  clearElement(el);
   el.hidden = !draft.images.length;
   draft.images.forEach((image, index) => {
     const tile = document.createElement("div");
@@ -648,7 +648,8 @@ function kindOption(options: { checked: boolean; title: string; hint: string; co
 function renderKinds(): void {
   const el = kindsEl;
   if (el) {
-    el.replaceChildren(
+    clearElement(el);
+    el.append(
       kindOption({
         checked: draft.includeSystem,
         title: t("系统与版本信息"),
@@ -684,7 +685,7 @@ function renderKinds(): void {
 function renderOtherFiles(): void {
   const list = otherFilesEl;
   if (!list) return;
-  list.replaceChildren();
+  clearElement(list);
   for (const file of draft.files) {
     const row = document.createElement("div");
     row.className = "feedback-file";
@@ -789,7 +790,7 @@ function buildTaskToolbar(): HTMLElement {
 function renderTaskList(): void {
   const list = taskListEl;
   if (!list) return;
-  list.replaceChildren();
+  clearElement(list);
   if (!context && !contextError) {
     list.append(note(t("正在读取任务记录…")));
     return;
