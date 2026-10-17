@@ -78,6 +78,9 @@ _DEFAULT_INSETS = {"lIns": 91440, "rIns": 91440, "tIns": 45720, "bIns": 45720}
 _DEFAULT_SIZE = 1800
 
 REASON_DRAWING_NOT_SYNCED = "SmartArt 有文字未能同步到显示副本，在 PowerPoint 以外的软件里可能仍显示原文"
+REASON_TEXT_TOO_LONG = "SmartArt 译文比原文长很多，PowerPoint 会把字缩得很小或放不下，请检查"
+#: 译文放进框要缩到原文所需比例的这个倍数以下，就算「长很多」，列入需复核。
+LONG_TEXT_RATIO = 0.8
 
 
 def _has_letters(text: str) -> bool:
@@ -168,21 +171,24 @@ class DiagramText(GraphicText):
         result.parts[self.part] = _serialize(self.root)
         result.checks[self.part] = _verify_data
         if self.drawing is not None:
-            missed = self._write_drawing(written, context)
+            missed, too_long = self._write_drawing(written, context)
             result.parts[self.drawing_part] = _serialize(self.drawing)
             result.checks[self.drawing_part] = _verify_drawing
+            first = written[0][0].unit_id
             if missed:
-                result.review.append(ReviewItem(written[0][0].unit_id, self.owner_context, REASON_DRAWING_NOT_SYNCED))
+                result.review.append(ReviewItem(first, self.owner_context, REASON_DRAWING_NOT_SYNCED))
+            if too_long:
+                result.review.append(ReviewItem(first, self.owner_context, REASON_TEXT_TOO_LONG))
         return result
 
-    def _write_drawing(self, written: list[tuple[_Node, Translation]], context: _Context) -> bool:
-        """把译文写进排版结果；有带字的段落对不上时返回 True。"""
+    def _write_drawing(self, written: list[tuple[_Node, Translation]], context: _Context) -> tuple[bool, bool]:
+        """把译文写进排版结果；返回（有带字的段落对不上，译文比原文长很多）。"""
         by_text: dict[str, list[tuple[_Node, Translation]]] = {}
         for node, value in written:
             by_text.setdefault(node.marks.plain, []).append((node, value))
         untranslated = {node.marks.plain for node in self.nodes} - set(by_text)
         missed = False
-        changed: list[tuple[object, list[ParagraphMarks]]] = []
+        changed: list[tuple[object, list[ParagraphMetrics]]] = []
         for shape in self.drawing.iter(DSP_SP):
             body = shape.find(DSP_TX_BODY)
             if body is None:
@@ -190,6 +196,7 @@ class DiagramText(GraphicText):
             model_id = str(shape.get("modelId") or "")
             shown = self.shown.get(model_id, model_id)
             before = _paragraphs(body)
+            original = _metrics(body)
             touched = False
             for marks in before:
                 candidates = by_text.get(marks.plain)
@@ -210,9 +217,8 @@ class DiagramText(GraphicText):
                 else:
                     touched = True
             if touched:
-                changed.append((shape, before))
-        _shrink_drawing(self.drawing, changed)
-        return missed
+                changed.append((shape, original))
+        return missed, _shrink_drawing(self.drawing, changed)
 
 
 def _emu(value, default: int) -> int:
@@ -249,33 +255,40 @@ def _text_box(shape) -> tuple[float, float] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
-def _shrink_drawing(drawing, changed: list[tuple[object, list[ParagraphMarks]]]) -> None:
-    """译文放不下时，排版结果里所有带字形状的字号按同一比例缩小（下限 60%）。"""
+def _shrink_drawing(drawing, changed: list[tuple[object, list[ParagraphMetrics]]]) -> bool:
+    """译文放不下时，排版结果里所有带字形状的字号按同一比例缩小（下限 60%）。
+
+    返回译文是否比原文长很多：某个形状里译文要缩到原文所需比例的 ``LONG_TEXT_RATIO`` 以下，
+    或缩到下限仍放不下（PowerPoint 按内容重排时同样会把字缩得很小）。
+    """
     scale = 1.0
-    for shape, before in changed:
+    too_long = False
+    for shape, original in changed:
         box = _text_box(shape)
         body = shape.find(DSP_TX_BODY)
         if box is None or body is None:
             continue
         body_pr = body.find(f"{{{NS_A}}}bodyPr")
-        original = [ParagraphMetrics(marks.plain, 1) for marks in before]
-        needed, _fits = fitting_scale(
-            original,
-            _metrics(body),
-            width_pt=box[0],
-            height_pt=box[1],
-            wrap=body_pr is None or body_pr.get("wrap") != "none",
-            min_scale=MIN_SCALE,
-        )
+        fit = {
+            "width_pt": box[0],
+            "height_pt": box[1],
+            "wrap": body_pr is None or body_pr.get("wrap") != "none",
+        }
+        needed, fits = fitting_scale(original, _metrics(body), min_scale=MIN_SCALE, **fit)
+        # 原文本身要缩多少（原文就塞满了的框，译文缩到同样比例不算「长很多」）；按 0.05 一档往下找，
+        # 下限放到 0.05，免得原文本来就放不下时把比例算成 60%。
+        source, _source_fits = fitting_scale(original, original, min_scale=0.05, **fit)
+        too_long = too_long or not fits or needed < source * LONG_TEXT_RATIO
         scale = min(scale, needed)
     if scale >= 1.0:
-        return
+        return too_long
     for shape in drawing.iter(DSP_SP):
         body = shape.find(DSP_TX_BODY)
         if body is None or not _paragraphs(body):
             continue
         for item in body.iter(A_RPR, A_END_PARA_RPR):
             item.set("sz", str(max(100, round(_emu(item.get("sz"), _DEFAULT_SIZE) * scale))))
+    return too_long
 
 
 def diagram_text(deck: _Deck, slide: str, frame, owner_context: str) -> DiagramText | None:
@@ -348,4 +361,4 @@ def _verify_drawing(old: bytes, new: bytes) -> str:
     return text_problem("SmartArt", after)
 
 
-__all__ = ["REASON_DRAWING_NOT_SYNCED", "DiagramText", "diagram_text"]
+__all__ = ["REASON_DRAWING_NOT_SYNCED", "REASON_TEXT_TOO_LONG", "DiagramText", "diagram_text"]

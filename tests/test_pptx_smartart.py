@@ -13,7 +13,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from core.pptx_smartart import REASON_DRAWING_NOT_SYNCED
+from core.pptx_smartart import REASON_DRAWING_NOT_SYNCED, REASON_TEXT_TOO_LONG
 from core.pptx_text import Translation, extract_units, scan_file, write_file
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pptx"
@@ -117,7 +117,8 @@ def test_drawing_text_shrinks_together_when_it_does_not_fit(tmp_path: Path) -> N
 
 def test_bilingual_adds_the_translation_after_each_paragraph(tmp_path: Path) -> None:
     result, out = _write(tmp_path, bilingual=True)
-    assert result.review == []
+    # 每个圆里多了一段译文，字要缩得很小：列入复核。
+    assert [(item.context, item.reason) for item in result.review] == [("第 4 页 · SmartArt 流程", REASON_TEXT_TOO_LONG)]
     expected = [
         ["需求调研", "Étude des besoins"],
         ["方案设计", "Conception détaillée"],

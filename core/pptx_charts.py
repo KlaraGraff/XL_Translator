@@ -38,6 +38,7 @@ from lxml import etree
 
 from config import BILINGUAL_SEPARATOR
 from core import xlsx_patcher as xp
+from core.text_box_fit import ParagraphMetrics, widest_line
 from core.drawingml_marks import A_P, ParagraphMarks, paragraph_marks, read_pieces
 from core.opc_package import rels_path
 from core.pptx_text import (
@@ -97,6 +98,10 @@ _AXES = frozenset({_c("valAx"), _c("catAx"), _c("dateAx"), _c("serAx")})
 _VALUE_PARENTS = frozenset({_c("val"), _c("yVal"), _c("bubbleSize")})
 
 REASON_DATA_NOT_SYNCED = "图表的数据表未能同步改为译文，在 PowerPoint 里「编辑数据」后图表文字会变回原文"
+REASON_LABELS_TOO_LONG = "图表的类别名译文比原文长很多，坐标轴标签可能挤在一起或被隔一个显示，请检查"
+#: 一个图表的类别名，译文总宽度（按字宽估算，每行取最宽）超过原文的这个倍数就列入需复核。
+#: 中译法常见是 1.5～2 倍，坐标轴还排得下；再长 PowerPoint 就开始斜排、隔一个显示。
+LONG_LABELS_RATIO = 2.5
 
 _REF_RE = re.compile(
     r"^(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^'!\[\]()]+))!"
@@ -202,6 +207,7 @@ class _Label:
     #: 缓存里显示这段文字的 ``c:v``。
     values: list[object] = field(default_factory=list)
     cell: Cell | None = None
+    role: str = ""
     #: 链接到了单元格但对不上具体哪一格（联合区域、二维范围、外部引用）：数据表同步不了。
     unlinked: bool = False
 
@@ -287,7 +293,9 @@ class ChartText(GraphicText):
             label = groups.get(key)
             if label is None:
                 unit_id = key if isinstance(key, str) else next_id()
-                label = _Label(unit_id, f"{self.owner_context} · {role}", text, cell=cell, unlinked=linked and cell is None)
+                label = _Label(
+                    unit_id, f"{self.owner_context} · {role}", text, cell=cell, role=role, unlinked=linked and cell is None
+                )
                 groups[key] = label
                 self.labels.append(label)
             if text == label.text:
@@ -368,6 +376,7 @@ class ChartText(GraphicText):
         updates: dict[Cell, tuple[str, str]] = {}
         first_label = ""
         unlinked = False
+        widths = [0.0, 0.0]
         for label in self.labels:
             value = translations.get(label.unit_id)
             if not should_write(value, label.text):
@@ -381,6 +390,9 @@ class ChartText(GraphicText):
             if label.cell is not None:
                 updates[label.cell] = (label.text, text)
             unlinked = unlinked or label.unlinked
+            if label.role == "类别":
+                widths[0] += widest_line([ParagraphMetrics(label.text, 1)])
+                widths[1] += widest_line([ParagraphMetrics(text, 1)])
         if not changed:
             return result
         result.parts[self.part] = _serialize(self.root)
@@ -389,6 +401,8 @@ class ChartText(GraphicText):
             synced = self._sync_workbook(updates, result)
             if not synced or (unlinked and self.root.find(C_EXTERNAL_DATA) is not None):
                 result.review.append(ReviewItem(first_label, self.owner_context, REASON_DATA_NOT_SYNCED))
+            if widths[0] and widths[1] > widths[0] * LONG_LABELS_RATIO:
+                result.review.append(ReviewItem(first_label, self.owner_context, REASON_LABELS_TOO_LONG))
         return result
 
     def _sync_workbook(self, updates: dict[Cell, tuple[str, str]], result: GraphicWrite) -> bool:
@@ -641,4 +655,4 @@ def _bytes_file(data: bytes):
     return io.BytesIO(data)
 
 
-__all__ = ["REASON_DATA_NOT_SYNCED", "ChartText", "chart_text", "patch_workbook"]
+__all__ = ["REASON_DATA_NOT_SYNCED", "REASON_LABELS_TOO_LONG", "ChartText", "chart_text", "patch_workbook"]

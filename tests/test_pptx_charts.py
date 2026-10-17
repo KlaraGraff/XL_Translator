@@ -17,7 +17,7 @@ import openpyxl
 import pytest
 from lxml import etree
 
-from core.pptx_charts import REASON_DATA_NOT_SYNCED, _parse_range, patch_workbook
+from core.pptx_charts import REASON_DATA_NOT_SYNCED, REASON_LABELS_TOO_LONG, _parse_range, patch_workbook
 from core.pptx_text import Translation, extract_units, scan_file, write_file
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pptx"
@@ -140,7 +140,8 @@ def test_multi_level_categories_reach_the_right_cells(tmp_path: Path) -> None:
 
 def test_bilingual_writes_source_line_break_translation(tmp_path: Path) -> None:
     result, out = _write(tmp_path, bilingual=True)
-    assert result.review == []
+    # 只有第 4 页的 SmartArt（双语时字要缩很小）列入复核，图表没有。
+    assert [item.context for item in result.review] == ["第 4 页 · SmartArt 流程"]
     values = _cached(out, "chart3.xml")
     assert "人工费\nMain-d’œuvre" in values
     assert _workbook(out, "chart3.xml").active["A2"].value == "人工费\nMain-d’œuvre"
@@ -180,6 +181,18 @@ def test_newer_chart_types_are_counted_not_translated(tmp_path: Path) -> None:
     )
     assert scan_file(source).warnings == ["1 个图表中的文字未翻译"]
     assert not [unit for unit in extract_units(source) if "chart3" in unit.id]
+
+
+def test_much_longer_category_names_are_listed(tmp_path: Path) -> None:
+    long = {"人工费": "Main-d’œuvre directe et indirecte", "材料费": "Matériaux et fournitures", "机械费": "Engins de chantier"}
+    translations = {
+        unit.id: Translation(long.get(unit.text, FRENCH.get(unit.text, f"FR {unit.text}")))
+        for unit in extract_units(GRAPHICS)
+    }
+    result = write_file(GRAPHICS, tmp_path / "long.pptx", translations, target_lang="fr")
+    assert [(item.context, item.reason) for item in result.review if "Chart" in item.context] == [
+        ("第 3 页 · Chart 2", REASON_LABELS_TOO_LONG)
+    ]
 
 
 def test_chart_without_embedded_workbook_is_listed_for_review(tmp_path: Path) -> None:

@@ -202,7 +202,8 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             messages = self._run(FrenchEngine(), [path], options={"bilingual": bilingual})
             done = next(message for message in messages if isinstance(message, DoneMsg))
             result = done.file_results[0]
-            assert result["status"] == "completed", result
+            # 双语时 SmartArt 每个圆多一段译文、字缩得很小，列入复核。
+            assert result["status"] == ("needs_review" if bilingual else "completed"), result
             out = Path(result["output_path"])
             with zipfile.ZipFile(out) as package:
                 cache = [v.text for v in etree.fromstring(package.read("ppt/charts/chart1.xml")).iter(f"{{{C}}}v")]
