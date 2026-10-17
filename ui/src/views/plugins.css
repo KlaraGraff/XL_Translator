@@ -19,3 +19,13 @@
 .oda-terms-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 2px; }
 .oda-terms-links .linklike { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--tint-ink); cursor: pointer; }
 .oda-terms-links .linklike svg { width: 12px; height: 12px; }
+
+/* 从别的页「安装 ↗ 组件」跳过来：目标卡片描一圈强调色，停一会儿再淡掉。 */
+.plugins-column .card.plugins-focus { animation: plugins-focus 2.4s ease-out; }
+@keyframes plugins-focus {
+  0%, 55% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--ring-soft); }
+  100% { box-shadow: 0 0 0 2px transparent, 0 0 0 6px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plugins-column .card.plugins-focus { animation: none; box-shadow: 0 0 0 2px var(--accent); }
+}
