@@ -102,7 +102,7 @@
   font-size: 12px;
   font-weight: 600;
 }
-.prompt-optimization-column.result label { color: var(--accent); }
+.prompt-optimization-column.result label { color: var(--accent-ink); }
 .prompt-optimization-column .btn { align-self: flex-start; }
 .prompt-optimization-actions {
   display: flex;
@@ -183,7 +183,9 @@
 
 /* 外观与语言 → 配色方案：五个方案排成一行（窄窗口自动换行），每个选项上方是方案自己的色样。
    色样颜色由 settings.ts 按方案的 swatch 写在行内样式里，与当前页面的配色无关。 */
-.pal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+/* 六套方案：宽窗口一行六个，窄一些两行三个，不出现 5 + 1 那种落单的一格。 */
+.pal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 1360px) { .pal-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 .pal-opt { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px 11px; cursor: pointer; background: var(--surface); min-width: 0; }
 .pal-opt:hover { border-color: var(--line-2); }
 .pal-opt:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }

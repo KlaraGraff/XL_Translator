@@ -365,7 +365,11 @@ tr.hid {
 .selrow .dropdown.compact .dropdown-btn {
   min-height: 28px;
   font-size: 12px;
-  padding: 0 6px 0 9px;
+  padding: 0 2px 0 9px;
+}
+.selrow .dropdown.compact .dropdown-caret {
+  width: 22px;
+  height: 22px;
 }
 .selrow-fixed {
   margin-left: auto;

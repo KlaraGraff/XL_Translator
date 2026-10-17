@@ -6,7 +6,7 @@
  *   - 主色仍是蓝紫，只为对比度微调了明度；深色主题的主色另外降了饱和度（2026-10 走查）。
  *   - 两套主题的正文、次要文字（--ink-3）和状态色对卡片底色的对比度都 ≥ 4.5。
  * 改色值时请保持上面这条对比度底线；--ink-3 用在大量 10.5–12px 小字上。
- * 这里是配色方案「暖调纸感」，也是没有 data-palette 时的兜底；默认的「素雅灰」
+ * 这里是配色方案「暖调纸感」，也是没有 data-palette 时的兜底；默认的「流光」
  * 和其余可选方案在 palettes.css。
  *
  * 均为字面量色值，没有用 color-mix()：目标运行时含 macOS Monterey 的 WKWebView
@@ -56,13 +56,34 @@
   --bar-end: #7d8cff;
   --surface-clear: rgb(246 245 241 / 0%);
 
+  /* 主色当文字用时的颜色、「进行中」的青色光与它的淡色（投放区光斑）。「流光」方案单独给值，
+     其余方案没有专门的一档，就沿用主色和进度条终点色。var() 在 <html> 上解析，所以各方案
+     改了 --accent / --bar-end，这里自动跟着变。 */
+  --accent-ink: var(--accent);
+  --glow: var(--bar-end);
+  --glow-soft: var(--ring-soft);
+  /* 第三档表面色（悬停、骨架屏、进度条底槽）。旧方案没有这一档，用 --ground-2 兜底。 */
+  --surface-3: var(--ground-2);
+
   --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
   --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
   --sh-lg: 0 2px 4px rgb(24 34 66 / 6%), 0 24px 48px -22px rgb(30 45 90 / 30%);
 
-  --r-lg: 15px;
-  --r-md: 12px;
-  --r-sm: 9px;
+  --r-xl: 16px;
+  --r-lg: 14px;
+  --r-md: 10px;
+  --r-sm: 8px;
+
+  /* 动效（V10.3「流光」）：所有过渡只引用这几档，视图里不写死时长。
+     page 是页面切换的总长（旧页离场 110ms + 新页进场 240ms 部分重叠）；spring 只用于位移
+     小于 40px 的元素（导航高亮块、分段控件滑块）。「减少动效」时 app.css 统一压到 1ms。 */
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-page: 260ms;
+  --t-slow: 420ms;
+  --ease-out: cubic-bezier(.2, 0, 0, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(.3, 1.25, .5, 1);
 
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;

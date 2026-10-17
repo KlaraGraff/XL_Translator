@@ -2869,7 +2869,7 @@ function buildRouteRow(opts: {
     onChange: opts.onChange,
   });
   if (opts.wide) dropdown.root.classList.add("wide");
-  dropdown.button.setAttribute("aria-label", opts.label);
+  dropdown.input.setAttribute("aria-label", opts.label);
   row.append(dropdown.root);
   return row;
 }

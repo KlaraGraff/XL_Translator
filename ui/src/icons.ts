@@ -36,6 +36,7 @@ export const ICON_NAMES = [
   "lock",
   "blocks",
   "link",
+  "trans",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -186,6 +187,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 两个环扣在一起：侧栏「MCP」（让智能体接入）。
     body: '<path d="M10 13.5a4 4 0 0 0 6 .4l2.6-2.6a4 4 0 0 0-5.7-5.7l-1.4 1.4"/><path d="M14 10.5a4 4 0 0 0-6-.4l-2.6 2.6a4 4 0 0 0 5.7 5.7l1.4-1.4"/>',
+  },
+  trans: {
+    viewBox: "0 0 24 24",
+    // 「文」加「A」：侧栏「翻译」分组的父项（流光外壳）。
+    body: '<path d="M4 6h8M8 4v2M6.5 6c0 4 2.3 7 5.5 9M11.5 6c-.6 3.5-3 6.5-6.5 8.5"/><path d="m12.5 20 4-9 4 9M14 17h5"/>',
   },
 };
 
