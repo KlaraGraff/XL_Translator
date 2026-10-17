@@ -323,6 +323,10 @@ export function mountShell(root: HTMLElement): ShellHandle {
   onNavigate((id) => {
     highlightSideItem(id);
   });
+  // 设置 / 帮助 / 反馈贴在侧栏底部：窗口拉高拉低时它们会移位，高亮块要跟着直接到位（不滑）。
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => moveSideIndicator(true)).observe(nav);
+  }
 
   // 初始默认药丸态，避免视图忘记调用 setTaskPill/setModelPill 时顶栏空着。
   setTaskPill({ count: 0 });
@@ -341,10 +345,10 @@ function highlightSideItem(id: ViewId): void {
 
 /**
  * 把滑动高亮块移到当前选中项上。第一次定位（启动时）不做动画：先放到位，下一帧才加上
- * 带过渡的 .ready，否则启动时高亮块会从侧栏顶端滑下来。当前页没有对应的侧栏项（例如
+ * 带过渡的 .ready，否则启动时高亮块会从侧栏顶端滑下来。instant 为 true 时（窗口尺寸变化）直接到位。当前页没有对应的侧栏项（例如
  * 已在「扩展」页隐藏的翻译类型）时高亮块淡出。
  */
-function moveSideIndicator(): void {
+function moveSideIndicator(instant = false): void {
   const ind = sideIndicatorEl;
   if (!ind || !sideNavEl) return;
   const on = sideNavEl.querySelector<HTMLDivElement>(".side-item.on");
@@ -353,8 +357,13 @@ function moveSideIndicator(): void {
     return;
   }
   ind.style.opacity = "1";
+  if (instant) ind.style.transition = "none";
   ind.style.height = `${on.offsetHeight}px`;
   ind.style.transform = `translateY(${on.offsetTop}px)`;
+  if (instant) {
+    void ind.offsetHeight; // 先按无过渡落位，再还原过渡
+    ind.style.transition = "";
+  }
   if (!ind.classList.contains("ready")) {
     requestAnimationFrame(() => requestAnimationFrame(() => ind.classList.add("ready")));
   }
