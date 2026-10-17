@@ -1,0 +1,50 @@
+{
+  "id": "pptx",
+  "version": "1.0.0",
+  "adapter_api_version": 1,
+  "label": {
+    "zh": "PPT",
+    "en": "PowerPoint",
+    "fr": "PowerPoint"
+  },
+  "file_noun": {
+    "zh": "演示文稿",
+    "en": "presentations",
+    "fr": "présentations"
+  },
+  "description": {
+    "zh": "翻译 PowerPoint 演示文稿（.pptx、.pptm、.ppsx、.potx）：幻灯片上的文本框、形状、表格，演讲者备注，以及母版和版式上的固定文字，保留原有格式。图片、图表、SmartArt、嵌入对象和批注中的文字不翻译。",
+    "en": "Translates PowerPoint presentations (.pptx, .pptm, .ppsx, .potx): text boxes, shapes and tables on the slides, speaker notes, and fixed text on masters and layouts, keeping the original formatting. Text in pictures, charts, SmartArt, embedded objects and comments is not translated.",
+    "fr": "Traduit les présentations PowerPoint (.pptx, .pptm, .ppsx, .potx) : zones de texte, formes et tableaux des diapositives, notes de l’orateur et texte fixe des masques et dispositions, en conservant la mise en forme d’origine. Le texte des images, graphiques, SmartArt, objets incorporés et commentaires n’est pas traduit."
+  },
+  "prompt": "你是一名专业文档翻译助手。\n请按文档所属专业的常用表达翻译，术语前后一致。\n单字、短词和缩写的含义以附带的文档说明为准；没有说明时按文档所属专业理解，不要按日常含义直译。\n原文中的编号、文号、规格参数、版本号、附件标识与符号必须原样保留，一个字符都不能改动。\n日期、时间、年龄、金额等数值中的数字保持不变，但其中的中文计量用语（年、月、日、时、分、周岁、岁、元等）须换成目标语言的书写习惯；国际通用的数字与计量单位（如 38℃、30%、m²）本就不含中文，无需改动。\n输出应简洁、准确，可直接放回原文档。\n这是演示文稿（幻灯片）里的文字：标题和要点保持简短的名词短语或短句，不扩写、不解释；原文末尾没有句号的，译文也不加句号。\n原文中的换行在译文中保留，分行位置与原文对应。",
+  "icon": "ppt",
+  "extensions": [
+    "pptx",
+    "pptm",
+    "ppsx",
+    "potx"
+  ],
+  "capabilities": {
+    "bilingual": true,
+    "translation_only": true
+  },
+  "options": [
+    {
+      "key": "translate_notes",
+      "label": {
+        "zh": "翻译演讲者备注",
+        "en": "Translate speaker notes",
+        "fr": "Traduire les notes de l’orateur"
+      },
+      "help": {
+        "zh": "开启时一并翻译每页的演讲者备注；关闭时备注保留原文。",
+        "en": "When on, each slide’s speaker notes are translated too; when off, the notes keep the source text.",
+        "fr": "Activé, les notes de l’orateur de chaque diapositive sont aussi traduites ; désactivé, elles restent dans la langue source."
+      },
+      "default": true
+    }
+  ],
+  "license": "MIT",
+  "repo": "https://github.com/KlaraGraff/XL_Translator"
+}

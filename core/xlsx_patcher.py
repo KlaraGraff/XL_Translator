@@ -27,7 +27,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from config import (
     REVIEW_MARK_COLOR_DEFAULTS,
 )
 from core.mixed_language import MIXED_MARK_UNRESOLVED
+from core.opc_package import OpcPackage, clone_zipinfo, relative_part, rels_path, resolve_part
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 
 # ── 命名空间 ──────────────────────────────────────────────────────────────────
@@ -172,112 +172,13 @@ def _split_coordinate(coordinate: str) -> tuple[int, int] | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# zip 包：只重写改动过的部件
+# zip 包：只重写改动过的部件（与 PPT 共用，见 core/opc_package.py）
 # ══════════════════════════════════════════════════════════════════════════════
-class _Package:
-    """打开 .xlsx 的 zip 包，记录改写/新增/删除，保存时其余条目原字节照抄。"""
-
-    def __init__(self, path: Path):
-        self._path = Path(path)
-        self._zip = zipfile.ZipFile(self._path, "r")
-        self._infos = {info.filename: info for info in self._zip.infolist()}
-        self._order = [info.filename for info in self._zip.infolist()]
-        self._overrides: dict[str, bytes] = {}
-        self._added: list[str] = []
-        self._removed: set[str] = set()
-
-    def __enter__(self) -> "_Package":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def has(self, name: str) -> bool:
-        if name in self._removed:
-            return False
-        return name in self._overrides or name in self._infos
-
-    def read(self, name: str) -> bytes | None:
-        if name in self._overrides:
-            return self._overrides[name]
-        if name in self._removed or name not in self._infos:
-            return None
-        return self._zip.read(name)
-
-    def write(self, name: str, data: bytes) -> None:
-        self._removed.discard(name)
-        if name not in self._infos and name not in self._overrides:
-            self._added.append(name)
-        self._overrides[name] = data
-
-    def remove(self, name: str) -> None:
-        self._overrides.pop(name, None)
-        if name in self._added:
-            self._added.remove(name)
-        self._removed.add(name)
-
-    def close(self) -> None:
-        self._zip.close()
-
-    def save(self) -> None:
-        """把包写到临时文件再整体替换，避免半成品覆盖原文件。"""
-        temp_path = self._path.with_name(self._path.name + ".patching")
-        try:
-            with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
-                for name in self._order:
-                    if name in self._removed:
-                        continue
-                    source_info = self._infos[name]
-                    if name in self._overrides:
-                        target.writestr(
-                            _clone_zipinfo(source_info), self._overrides[name]
-                        )
-                    else:
-                        target.writestr(
-                            _clone_zipinfo(source_info), self._zip.read(name)
-                        )
-                for name in self._added:
-                    if name in self._removed:
-                        continue
-                    target.writestr(
-                        zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)),
-                        self._overrides[name],
-                        zipfile.ZIP_DEFLATED,
-                    )
-        except BaseException:
-            # 半成品 zip 不能留在磁盘上，它和成品同名只差一个后缀。
-            temp_path.unlink(missing_ok=True)
-            raise
-        self._zip.close()
-        os.replace(temp_path, self._path)
-
-
-def _clone_zipinfo(source: zipfile.ZipInfo) -> zipfile.ZipInfo:
-    info = zipfile.ZipInfo(source.filename, date_time=source.date_time)
-    info.compress_type = source.compress_type
-    info.external_attr = source.external_attr
-    info.internal_attr = source.internal_attr
-    info.create_system = source.create_system
-    return info
-
-
-def _resolve_part(base_part: str, target: str) -> str:
-    """把关系里的相对 Target 解析成包内绝对部件名（不带前导斜杠）。"""
-    target = str(target or "")
-    if target.startswith("/"):
-        return target[1:]
-    base_dir = os.path.dirname(base_part)
-    return os.path.normpath(os.path.join(base_dir, target)).replace(os.sep, "/")
-
-
-def _relative_part(base_part: str, target_part: str) -> str:
-    base_dir = os.path.dirname(base_part) or "."
-    return os.path.relpath(target_part, base_dir).replace(os.sep, "/")
-
-
-def _rels_path(part: str) -> str:
-    directory, name = os.path.split(part)
-    return f"{directory}/_rels/{name}.rels" if directory else f"_rels/{name}.rels"
+_Package = OpcPackage
+_clone_zipinfo = clone_zipinfo
+_resolve_part = resolve_part
+_relative_part = relative_part
+_rels_path = rels_path
 
 
 def _next_free_part(package: _Package, part: str) -> str:
