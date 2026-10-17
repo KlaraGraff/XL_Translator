@@ -59,6 +59,7 @@ from core.drawingml_marks import (
     write_paragraph,
 )
 from core.opc_package import OpcPackage, PackageVerificationError, rels_path, resolve_part
+from core.pptx_fit import FitIssue, fit_after_write
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -152,29 +153,6 @@ _RESIDUAL_RE = re.compile(r"</?\s*g\s*\d+\s*>|⟦\s*\d+\s*⟧", re.IGNORECASE)
 
 class PptxError(ValueError):
     """读不了或写不出这个文件；消息是给用户看的一句话。"""
-
-
-# ── 缩字（包 3 合并时换成 ``from core.pptx_fit import FitIssue, fit_after_write``）────
-
-
-@dataclass
-class FitIssue:
-    """缩到下限仍放不下的一个框：``target`` 是 ``touched`` 里的那个元素。"""
-
-    target: object
-    reason: str
-
-
-def fit_after_write(
-    read_part: Callable[[str], bytes | None],
-    part_name: str,
-    root: object,
-    touched: list[object],
-    *,
-    fixed_layout: bool = False,
-) -> list[FitIssue]:
-    """占位：放不下自动缩小由 ``core/pptx_fit.py`` 提供，合并前什么都不做。"""
-    return []
 
 
 # ── 读包 ────────────────────────────────────────────────────────────────────
