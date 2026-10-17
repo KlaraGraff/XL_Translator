@@ -273,8 +273,9 @@
 .sum .qn.warn .ic {
   color: var(--warn);
 }
-/* 读取完成后统计格错落浮现，每格晚 28ms。 */
-.stag > * {
+/* 读取完成后统计格错落浮现，每格晚 28ms。只认统计格这一处：以前写成全局的 .stag > *，
+   设置页用途卡也带 .stag，进页浮现播完、.enter 摘掉后这条又接着播一遍，右侧整排卡片闪第二下。 */
+.sum.stag > * {
   animation: ws-rise var(--t-slow) var(--ease-out) both;
   animation-delay: calc(var(--i, 0) * 28ms);
 }

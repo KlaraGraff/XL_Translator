@@ -865,6 +865,12 @@ table.review-tbl { table-layout: fixed; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @keyframes modal-in { from { opacity: 0; transform: scale(.97) translateY(6px); } to { opacity: 1; transform: none; } }
 
+/* 换主题或配色的那一小会儿（motion.ts withColorFade）：颜色类属性一起过渡，不一帧跳变。
+   只在允许动效时才挂这个类，所以不用再管减少动效。 */
+:root.color-fade, :root.color-fade *, :root.color-fade *::before, :root.color-fade *::after {
+  transition: background-color var(--t-page) var(--ease-out), border-color var(--t-page) var(--ease-out), color var(--t-page) var(--ease-out), fill var(--t-page) var(--ease-out), stroke var(--t-page) var(--ease-out), box-shadow var(--t-page) var(--ease-out), outline-color var(--t-page) var(--ease-out) !important;
+}
+
 /* 减少动效：系统「减弱动态效果」或 <html data-motion="reduced">。所有动画和过渡压到 1ms，
    只剩最终状态；循环动画只跑一次就停。 */
 @media (prefers-reduced-motion: reduce) {
