@@ -24,10 +24,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import platform
 import re
 import threading
+import time
+import traceback
+import urllib.request
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -40,7 +44,7 @@ import httpx
 
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
 from core import diagnostics
-from core.task_logger import redact_absolute_paths
+from core.task_logger import app_event_logger, redact_absolute_paths
 import settings as settings_module
 
 FEEDBACK_CATEGORIES = ("problem", "suggestion", "other")
@@ -82,11 +86,16 @@ _DROPPED_TASK_KEYS = {"logs", "source_label", "local_operations", "model_snapsho
 
 
 class FeedbackError(ValueError):
-    """A request the user can fix (or route around by saving a ZIP)."""
+    """A request the user can fix (or route around by saving a ZIP).
 
-    def __init__(self, message: str, *, reason: str) -> None:
+    ``log_detail`` is what app.log gets about a failed send (stage, HTTP
+    status, exception); it never carries the user's text, address or files.
+    """
+
+    def __init__(self, message: str, *, reason: str, log_detail: str = "") -> None:
         super().__init__(message)
         self.reason = reason
+        self.log_detail = log_detail
 
 
 @dataclass
@@ -454,17 +463,37 @@ def start_send(draft: FeedbackDraft, *, settings: Any) -> dict[str, Any]:
     relay are raised here, before anything is uploaded. The upload itself runs
     on a thread so the page can show how many bytes have actually gone out.
     """
+    job_id = uuid.uuid4().hex
+    tag = job_id[:8]
+    started_at = time.monotonic()
+    # 只记数量和有没有填邮箱；描述、邮箱、文件名一概不进日志。
+    _log(
+        logging.INFO,
+        f"反馈发送开始 | 发送={tag} | 版本={APP_VERSION} | 类型={draft.category} | "
+        f"任务日志={len(draft.task_records)} | 文件={len(draft.file_paths)} | 截图={len(draft.images)} | "
+        f"系统信息={'是' if draft.include_system else '否'} | 邮箱={'已填' if draft.contact.strip() else '未填'}",
+    )
     endpoint = feedback_endpoint()
-    if not endpoint:
-        raise FeedbackError("此版本尚未开通在线发送，请保存为 ZIP。", reason="not_configured")
-    data, payload = build_package(draft, settings=settings)
+    try:
+        if not endpoint:
+            raise FeedbackError("此版本尚未开通在线发送，请保存为 ZIP。", reason="not_configured")
+        data, payload = build_package(draft, settings=settings)
+    except FeedbackError as exc:
+        _log(logging.WARNING, f"反馈发送未开始 | 发送={tag} | 阶段=打包 | 原因={exc.reason} | {_elapsed(started_at)}")
+        raise
+    except Exception as exc:
+        _log(logging.ERROR, f"反馈发送未开始 | 发送={tag} | 阶段=打包 | 异常={_error_text(exc)} | {_elapsed(started_at)}")
+        raise
     meta = {
         **payload,
         "platform": diagnostics._runtime_platform_label(),
         "package_bytes": len(data),
     }
-    job_id = uuid.uuid4().hex
-    job = _SendJob(total=len(data))
+    _log(
+        logging.INFO,
+        f"反馈开始上传 | 发送={tag} | 包大小={_size_text(len(data))} | 代理={_proxy_label(endpoint)} | {_elapsed(started_at)}",
+    )
+    job = _SendJob(total=len(data), tag=tag, started_at=started_at)
     with _jobs_lock:
         finished = [key for key, item in _jobs.items() if item.state != "uploading"]
         for key in finished[: max(0, len(finished) - _KEEP_FINISHED_JOBS)]:
@@ -489,6 +518,9 @@ def send_status(job_id: str) -> dict[str, Any] | None:
 @dataclass
 class _SendJob:
     total: int
+    # 日志里串起同一次发送的几行（job_id 的前 8 位），以及从点「发送」算起的耗时。
+    tag: str = ""
+    started_at: float = 0.0
     sent: int = 0
     # uploading → done / error
     state: str = "uploading"
@@ -517,16 +549,32 @@ def _run_send_job(job: _SendJob, endpoint: str, data: bytes, meta: dict[str, Any
         with _jobs_lock:
             job.sent = sent
 
+    def failed(detail: str) -> None:
+        with _jobs_lock:
+            sent = job.sent
+        _log(
+            logging.WARNING,
+            f"反馈发送失败 | 发送={job.tag} | {detail} | 已上传={_size_text(sent)}/{_size_text(job.total)} | "
+            f"{_elapsed(job.started_at)}",
+        )
+
     try:
         reference = _upload(endpoint, data, meta, on_progress=progress)
     except FeedbackError as exc:
+        failed(f"原因={exc.reason} | {exc.log_detail or '阶段=未知'}")
         with _jobs_lock:
             job.state, job.message, job.reason = "error", str(exc), exc.reason
-    except Exception:  # noqa: BLE001 - 线程里的意外不能让界面一直停在「正在上传」
+    except Exception as exc:  # noqa: BLE001 - 线程里的意外不能让界面一直停在「正在上传」
+        failed(f"原因=server | 阶段=程序内部 | 异常={_error_text(exc)}")
         with _jobs_lock:
             job.state, job.reason = "error", "server"
             job.message = "反馈服务暂时不可用，请稍后重试，或保存为 ZIP。"
     else:
+        _log(
+            logging.INFO,
+            f"反馈发送成功 | 发送={job.tag} | 编号={_safe_token(reference, 40)} | 包大小={_size_text(job.total)} | "
+            f"{_elapsed(job.started_at)}",
+        )
         # 先记邮箱再报完成：界面看到「已发送」时，下一条反馈已经能带上它。
         remember_email(contact)
         with _jobs_lock:
@@ -579,8 +627,8 @@ def remember_email(contact: str) -> None:
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, path)
-    except OSError:
-        pass
+    except OSError as exc:
+        _log(logging.WARNING, f"反馈已发出，但没能在本机记下邮箱选择 | 异常={_error_text(exc)}")
 
 
 class _CountingReader(io.BytesIO):
@@ -613,22 +661,141 @@ def _upload(
                 files={"package": (package_filename(), package, "application/zip")},
                 headers={"User-Agent": f"{APP_UPDATE_USER_AGENT}/{APP_VERSION}"},
             )
-    except httpx.TimeoutException as exc:
-        raise FeedbackError("发送超时，请检查网络后重试，或保存为 ZIP。", reason="network") from exc
     except httpx.HTTPError as exc:
-        raise FeedbackError("无法连接反馈服务，请检查网络后重试，或保存为 ZIP。", reason="network") from exc
-    if response.status_code == 413:
-        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large")
-    if response.status_code == 429:
-        raise FeedbackError("发送过于频繁，请稍后重试，或保存为 ZIP。", reason="rate_limited")
+        # 断在哪一步：连不上、传到一半、还是传完了等不到服务器回话。
+        uploaded = package.tell() >= len(data) if isinstance(package, _CountingReader) else None
+        raise FeedbackError(
+            "发送超时，请检查网络后重试，或保存为 ZIP。"
+            if isinstance(exc, httpx.TimeoutException)
+            else "无法连接反馈服务，请检查网络后重试，或保存为 ZIP。",
+            reason="network",
+            log_detail=f"阶段={_network_stage(exc, uploaded)} | 异常={_error_text(exc)}",
+        ) from exc
     try:
         body = response.json()
     except ValueError:
         body = {}
+    detail = f"阶段=服务器返回 | {_response_text(response, body)}"
+    if response.status_code == 413:
+        raise FeedbackError("附件总大小超过 50 MB，请只附上必要的文件。", reason="too_large", log_detail=detail)
+    if response.status_code == 429:
+        raise FeedbackError("发送过于频繁，请稍后重试，或保存为 ZIP。", reason="rate_limited", log_detail=detail)
     reference = str(body.get("id") or "") if isinstance(body, dict) else ""
     if response.status_code != 200 or not reference:
-        raise FeedbackError("反馈服务暂时不可用，请稍后重试，或保存为 ZIP。", reason="server")
+        raise FeedbackError("反馈服务暂时不可用，请稍后重试，或保存为 ZIP。", reason="server", log_detail=detail)
     return reference
+
+
+# ── app.log：每次发送留下开始、成功或失败，只记排查用得上、又不涉及隐私的信息 ──────────
+
+
+def _log(level: int, message: str) -> None:
+    try:
+        app_event_logger("feedback").log(level, message)
+    except Exception:  # noqa: BLE001 - 写不了日志也不能挡住发送
+        pass
+
+
+def _elapsed(started_at: float) -> str:
+    return f"耗时={time.monotonic() - started_at:.1f}s"
+
+
+def _size_text(size: int) -> str:
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / 1024 / 1024:.1f} MB"
+
+
+def _safe_token(value: Any, limit: int) -> str:
+    """Relay-side codes (FB 编号、error 字段) are short identifiers; keep only that shape."""
+    return re.sub(r"[^A-Za-z0-9_.:-]", "", str(value or ""))[:limit] or "-"
+
+
+_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|(?:api[_ -]?key|token|password)\s*[:=]\s*)[^\s,;]+")
+_CREDENTIALS_IN_URL_RE = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@")
+
+
+def _error_text(exc: BaseException) -> str:
+    """Exception type, a cleaned message and where it was raised.
+
+    httpx wraps the socket / TLS error, so the chained causes are listed too:
+    「ConnectError ← SSLCertVerificationError」 says far more than either alone.
+    Absolute paths, document file names and anything that looks like a
+    credential are removed; the message is cut short.
+    """
+    names: list[str] = []
+    current: BaseException | None = exc
+    for _depth in range(6):
+        if current is None:
+            break
+        # httpx 和 httpcore 的异常同名，连着一样的只记一次。
+        if not names or names[-1] != type(current).__name__:
+            names.append(type(current).__name__)
+        current = current.__cause__ or current.__context__
+    message = _CREDENTIALS_IN_URL_RE.sub(r"\1", str(exc))
+    message = _SECRET_RE.sub("[redacted]", message)
+    message = _FILE_NAME_RE.sub("[文件名]", redact_absolute_paths(message))
+    message = " ".join(message.split())[:300]
+    text = " ← ".join(names) + (f": {message}" if message else "")
+    # 程序内部的意外才需要知道断在哪一行；网络错误的位置总在 httpx 里，没有信息量。
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ and not isinstance(exc, httpx.HTTPError) else []
+    if frames:
+        text += f" @ {Path(frames[-1].filename).name}:{frames[-1].lineno}"
+    return text
+
+
+def _network_stage(exc: httpx.HTTPError, uploaded: bool | None = None) -> str:
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError)):
+        return "连接"
+    if uploaded is not None:
+        return "等待服务器确认" if uploaded else "上传"
+    if isinstance(exc, (httpx.WriteError, httpx.WriteTimeout)):
+        return "上传"
+    if isinstance(exc, (httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError)):
+        return "等待服务器确认"
+    return "网络"
+
+
+def _response_text(response: httpx.Response, body: Any) -> str:
+    """Status, the relay's own error code, or what kind of page answered instead."""
+    parts = [f"HTTP={response.status_code}"]
+    if isinstance(body, dict) and body.get("error"):
+        parts.append(f"服务器错误={_safe_token(body.get('error'), 40)}")
+    elif not isinstance(body, dict) or not body:
+        # 不是中转站的 JSON：多半是代理、网关或拦截页答的话，记下内容类型就能看出来。
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+        parts.append(f"非中转站应答={_safe_token(content_type, 60)}")
+    location = response.headers.get("location")
+    if location:
+        parts.append(f"跳转到={_safe_token(httpx.URL(location).host, 80) if '://' in location else '相对地址'}")
+    if response.headers.get("server"):
+        parts.append(f"应答方={_safe_token(response.headers['server'], 40)}")
+    return " | ".join(parts)
+
+
+def _proxy_label(endpoint: str) -> str:
+    """Whether httpx will go through a proxy (it reads the same settings), without its address."""
+    try:
+        proxies = urllib.request.getproxies()
+        host = httpx.URL(endpoint).host
+    except Exception:  # noqa: BLE001 - 只是为了日志
+        return "未知"
+    url = proxies.get("https") or proxies.get("all") or ""
+    if not url:
+        return "无"
+    # httpx 按 NO_PROXY 绕开代理的规则（精确或后缀匹配，「*」为全部）。
+    excluded = [item.strip().lstrip("*").lstrip(".") for item in proxies.get("no", "").split(",")]
+    if proxies.get("no", "").strip() == "*" or any(
+        item and (host == item or host.endswith(f".{item}")) for item in excluded
+    ):
+        return "无（不走代理）"
+    scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
+    try:
+        proxy_host = httpx.URL(url if "://" in url else f"http://{url}").host
+    except Exception:  # noqa: BLE001
+        proxy_host = ""
+    where = "本机" if proxy_host in {"127.0.0.1", "localhost", "::1"} else "其他机器"
+    return f"有（{_safe_token(scheme, 10)}，{where}）"
 
 
 def _open_client() -> httpx.Client:
