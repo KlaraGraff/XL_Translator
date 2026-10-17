@@ -5,6 +5,7 @@
 export const ICON_NAMES = [
   "excel",
   "word",
+  "ppt",
   "pdf",
   "cad",
   "convert",
@@ -53,6 +54,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   word: {
     viewBox: "0 0 24 24",
     body: '<path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5M7.5 13h7M7.5 16.5h5"/>',
+  },
+  ppt: {
+    viewBox: "0 0 24 24",
+    // A projection board on a stand with three bars: a slide deck, distinct from the folded-sheet documents.
+    body: '<rect x="3.5" y="4" width="17" height="12" rx="2.5"/><path d="M12 16v4M8.5 20h7M8 12.5V10.5M12 12.5V8M16 12.5V9.5"/>',
   },
   pdf: {
     viewBox: "0 0 24 24",
