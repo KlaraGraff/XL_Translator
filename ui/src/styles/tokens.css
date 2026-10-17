@@ -56,7 +56,7 @@
   --bar-end: #7d8cff;
   --surface-clear: rgb(246 245 241 / 0%);
 
-  /* 主色当文字用时的颜色、「进行中」的青色光与它的淡色（投放区光斑）。「流光」方案单独给值，
+  /* 主色当文字用时的颜色、「进行中」的青色光与它的淡色（投放区边光）。「流光」方案单独给值，
      其余方案没有专门的一档，就沿用主色和进度条终点色。var() 在 <html> 上解析，所以各方案
      改了 --accent / --bar-end，这里自动跟着变。 */
   --accent-ink: var(--accent);
@@ -64,6 +64,12 @@
   --glow-soft: var(--ring-soft);
   /* 第三档表面色（悬停、骨架屏、进度条底槽）。旧方案没有这一档，用 --ground-2 兜底。 */
   --surface-3: var(--ground-2);
+  /* 输入框的三档边：静止 --line-2、悬停 --line-3、聚焦主色；输入框里选中文字的底色 --sel；
+     进度条上扫过的那道光 --sheen。旧方案没有专门的一档：--line-3 取比 --line-2 深一档的同色相，
+     --sel 沿用聚焦光圈色。 */
+  --line-3: #b3aea2;
+  --sel: var(--ring-soft);
+  --sheen: rgb(255 255 255 / 55%);
 
   --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
   --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
@@ -128,6 +134,8 @@
 
   --bar-end: #7d8cff;
   --surface-clear: rgb(42 41 38 / 0%);
+  --line-3: #67635d;
+  --sheen: rgb(255 255 255 / 35%);
 
   --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);

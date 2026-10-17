@@ -118,7 +118,7 @@ export function createPill(options: PillOptions): HTMLSpanElement {
 // button
 // ---------------------------------------------------------------------------
 
-export type ButtonVariant = "default" | "primary" | "danger" | "danger-solid";
+export type ButtonVariant = "default" | "primary" | "danger" | "danger-solid" | "ghost";
 export type ButtonSize = "default" | "big" | "mini";
 
 export interface ButtonOptions {
@@ -136,6 +136,7 @@ const BUTTON_VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary: "pri",
   danger: "dgr",
   "danger-solid": "dgr-solid",
+  ghost: "ghost",
 };
 
 const BUTTON_SIZE_CLASS: Record<ButtonSize, string> = {
@@ -144,7 +145,7 @@ const BUTTON_SIZE_CLASS: Record<ButtonSize, string> = {
   mini: "mini",
 };
 
-/** .btn 按钮（含 .pri / .dgr / .dgr-solid / .big / .mini 变体）。 */
+/** .btn 按钮（含 .pri / .dgr / .dgr-solid / .ghost / .big / .mini 变体）。 */
 export function createButton(options: ButtonOptions): HTMLButtonElement {
   const classes = ["btn"];
   const variantClass = BUTTON_VARIANT_CLASS[options.variant ?? "default"];
@@ -711,6 +712,58 @@ function comboKeyHints(className: string, lead?: HTMLElement): HTMLDivElement {
 }
 
 /**
+ * 可输入下拉的聚焦规则（V10.3，像浏览器地址栏）：聚焦时不整段选中，光标停在末尾；
+ * 第一下键入、粘贴或输入法组字先清空原值再写入，第一下退格 / 删除清空整段并展开全部选项。
+ * 以前聚焦就整段高亮，看上去像出了错，想改一个字也得先点一下取消选中。
+ * 另外只认组件自己派发的 change（带 data-commit）：浏览器失焦时补发的原生 change 即便值已经
+ * 还原也会到，页面正在整体重建时收到会再重建一次。
+ */
+function armFreshTyping(input: HTMLInputElement): void {
+  input.addEventListener("focus", () => {
+    input.dataset.fresh = "1";
+    requestAnimationFrame(() => {
+      if (document.activeElement !== input || !input.dataset.fresh) return;
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    });
+  });
+  input.addEventListener("beforeinput", (event) => {
+    if (!input.dataset.fresh) return;
+    delete input.dataset.fresh;
+    input.value = "";
+    if (event.inputType.startsWith("delete")) {
+      event.preventDefault();
+      input.dispatchEvent(new Event("input"));
+    }
+  });
+  input.addEventListener("compositionstart", () => {
+    if (!input.dataset.fresh) return;
+    delete input.dataset.fresh;
+    input.value = "";
+  });
+  input.addEventListener("input", () => {
+    delete input.dataset.fresh;
+  });
+  input.addEventListener("blur", () => {
+    delete input.dataset.fresh;
+  });
+  input.addEventListener("change", (event) => {
+    if (!input.dataset.commit) event.stopImmediatePropagation();
+  });
+}
+
+/** 失焦时的「按打的字确认」推到下一轮做。整页重建时正被移除的输入框也会收到 blur，就地选中
+ *  会触发 onChange 再重建一次，浏览器报「moved in a 'blur' event handler」；输入框这时已经
+ *  不在页面上，只收起列表、不改值。焦点又回到输入框（点了展开按钮）时什么都不做。 */
+function deferBlurCommit(input: HTMLInputElement, commit: () => void, close: () => void): void {
+  window.setTimeout(() => {
+    if (document.activeElement === input) return;
+    if (!input.isConnected) close();
+    else commit();
+  }, 0);
+}
+
+/**
  * 可输入的下拉（V10.3）。框本身是一个输入框：点进去或按 ↓ 展开全部选项并高亮当前项；
  * 直接打字就按名称、说明和取值筛选，命中片段高亮；↑↓ 移动、↵ 选中、Esc 还原；Tab 或点到
  * 别处时，打的字与某一项完全相同或只剩一项匹配就选中它，否则还原成原来的值。
@@ -908,23 +961,15 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
     paint();
   }
 
-  // 鼠标点进来时全选文字：focus 里直接 select() 会被随后的 mouseup 取消，所以挡掉那一次 mouseup。
-  let selectOnMouseUp = false;
-  input.addEventListener("focus", () => {
-    open();
-    input.select();
-    selectOnMouseUp = true;
-  });
-  input.addEventListener("mouseup", (event) => {
-    if (selectOnMouseUp) event.preventDefault();
-    selectOnMouseUp = false;
-  });
+  armFreshTyping(input);
+  input.addEventListener("focus", () => open());
   input.addEventListener("click", () => {
     if (!menu) open();
   });
   input.addEventListener("blur", () => {
-    selectOnMouseUp = false;
-    if (menu) commitTyped();
+    deferBlurCommit(input, () => {
+      if (menu) commitTyped();
+    }, close);
   });
   input.addEventListener("input", () => {
     filtering = true;
@@ -1367,23 +1412,13 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
     window.addEventListener("resize", close);
   };
 
-  // 鼠标点进来时全选文字：focus 里直接 select() 会被随后的 mouseup 取消，所以挡掉那一次 mouseup。
-  let selectOnMouseUp = false;
-  input.addEventListener("focus", () => {
-    openPopover();
-    input.select();
-    selectOnMouseUp = true;
-  });
-  input.addEventListener("mouseup", (event) => {
-    if (selectOnMouseUp) event.preventDefault();
-    selectOnMouseUp = false;
-  });
+  armFreshTyping(input);
+  input.addEventListener("focus", () => openPopover());
   input.addEventListener("click", () => {
     if (!popover) openPopover();
   });
   input.addEventListener("blur", () => {
-    selectOnMouseUp = false;
-    popover?.commit();
+    deferBlurCommit(input, () => popover?.commit(), () => popover?.close());
   });
   input.addEventListener("input", () => {
     filtering = true;
@@ -1447,6 +1482,8 @@ export function createLanguageField(options: LanguageFieldOptions): LanguageFiel
 
 export interface FoldOptions {
   title: string;
+  /** 标题右边的一句灰色小字（「实时」「3 项 · 已按常用场景设好」）。 */
+  meta?: string;
   content: HTMLElement;
   open?: boolean;
   /** 用户点击开合时回调。开合状态是元素局部的，重建即丢；调用方想让它跨重绘粘住，靠这个回调把状态收走。 */
@@ -1463,6 +1500,7 @@ export function createFold(options: FoldOptions): FoldHandle {
   const root = el("div", { className: "fold" });
   const header = el("div", { className: "fold-h" });
   header.append(document.createTextNode(options.title));
+  if (options.meta) header.append(el("span", { className: "fold-meta", text: options.meta }));
   const chevron = icon("chev", { size: "sm" });
   header.append(chevron);
   const body = el("div", { className: "fold-b" });
@@ -1470,20 +1508,81 @@ export function createFold(options: FoldOptions): FoldHandle {
 
   let open = Boolean(options.open);
   const applyState = () => {
-    header.style.color = open ? "var(--tint-ink)" : "";
+    root.classList.toggle("open", open);
+    header.setAttribute("aria-expanded", String(open));
     chevron.style.transform = open ? "rotate(180deg)" : "";
     body.style.display = open ? "" : "none";
   };
   applyState();
 
-  header.addEventListener("click", () => {
+  header.setAttribute("role", "button");
+  header.tabIndex = 0;
+  const toggle = () => {
     open = !open;
     applyState();
     options.onToggle?.(open);
+  };
+  header.addEventListener("click", toggle);
+  header.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggle();
   });
 
   root.append(header, body);
   return { root, setOpen: (next: boolean) => { open = next; applyState(); } };
+}
+
+// ---------------------------------------------------------------------------
+// segmented control（分段控件：双语对照 / 仅译文、源文件旁 / 自定义）
+// ---------------------------------------------------------------------------
+
+export interface SegmentedOption {
+  value: string;
+  label: string;
+}
+
+export interface SegmentedOptions {
+  options: SegmentedOption[];
+  value: string;
+  disabled?: boolean;
+  ariaLabel?: string;
+  onChange?: (value: string) => void;
+}
+
+/** .seg：两三个互斥选项排成一条，白色滑块（.thumb）滑到选中项下面。 */
+export function createSegmented(options: SegmentedOptions): HTMLDivElement {
+  const root = el("div", { className: `seg n${options.options.length}` });
+  root.setAttribute("role", "radiogroup");
+  if (options.ariaLabel) root.setAttribute("aria-label", options.ariaLabel);
+  const thumb = el("span", { className: "thumb" });
+  thumb.setAttribute("aria-hidden", "true");
+  root.append(thumb);
+  let current = options.value;
+  const buttons = options.options.map((option) => {
+    const button = el("button", { text: option.label });
+    button.type = "button";
+    button.setAttribute("role", "radio");
+    button.disabled = Boolean(options.disabled);
+    button.addEventListener("click", () => {
+      if (option.value === current) return;
+      current = option.value;
+      paint();
+      options.onChange?.(option.value);
+    });
+    root.append(button);
+    return button;
+  });
+  const paint = () => {
+    const index = Math.max(0, options.options.findIndex((option) => option.value === current));
+    thumb.style.transform = `translateX(${index * 100}%)`;
+    buttons.forEach((button, i) => {
+      button.classList.toggle("on", i === index);
+      button.setAttribute("aria-checked", String(i === index));
+    });
+  };
+  paint();
+  return root;
 }
 
 // ---------------------------------------------------------------------------

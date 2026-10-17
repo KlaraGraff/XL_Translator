@@ -1,0 +1,158 @@
+{
+  "{0} 个旧版 .xls，开始时选择转换方式": {
+    "en": "{0} legacy .xls — choose how to convert when you start",
+    "fr": "{0} .xls ancien(s) — choisissez la conversion au lancement"
+  },
+  "{0} 项 · 已按常用场景设好": {
+    "en": "{0} items · preset for common cases",
+    "fr": "{0} réglages · valeurs courantes"
+  },
+  "也可以拖入整个文件夹，Translator 会找出其中全部可翻译的文件。": {
+    "en": "You can also drop a whole folder; Translator finds every translatable file in it.",
+    "fr": "Vous pouvez aussi déposer un dossier entier ; Translator y trouve tous les fichiers traduisibles."
+  },
+  "任务进行中，设置已锁定": {
+    "en": "Task in progress — settings are locked",
+    "fr": "Tâche en cours — réglages verrouillés"
+  },
+  "再翻译一次": {
+    "en": "Translate again",
+    "fr": "Retraduire"
+  },
+  "双语对照": {
+    "en": "Bilingual",
+    "fr": "Bilingue"
+  },
+  "可多选，只读取并翻译选中的文件": {
+    "en": "Select one or more; only the chosen files are read and translated",
+    "fr": "Sélection multiple possible ; seuls les fichiers choisis sont lus et traduits"
+  },
+  "打开输出文件夹": {
+    "en": "Open output folder",
+    "fr": "Ouvrir le dossier de sortie"
+  },
+  "拖入 CAD 图纸": {
+    "en": "Drop CAD drawings here",
+    "fr": "Déposez des plans CAO ici"
+  },
+  "拖入 Excel 表格": {
+    "en": "Drop Excel workbooks here",
+    "fr": "Déposez des classeurs Excel ici"
+  },
+  "拖入 PDF 或图片": {
+    "en": "Drop PDFs or images here",
+    "fr": "Déposez des PDF ou des images ici"
+  },
+  "拖入 Word 文档": {
+    "en": "Drop Word documents here",
+    "fr": "Déposez des documents Word ici"
+  },
+  "拖入{0}": {
+    "en": "Drop {0} here",
+    "fr": "Déposez {0} ici"
+  },
+  "拖入文件或文件夹，或粘贴路径后回车": {
+    "en": "Drop files or a folder, or paste a path and press Enter",
+    "fr": "Déposez des fichiers ou un dossier, ou collez un chemin puis Entrée"
+  },
+  "支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过路径栏的「选择」选择文件或文件夹后将自动读取。源语言默认自动识别，PDF 和图片仅需选择目标语言。": {
+    "en": "Excel, Word, PDF / images and CAD drawings (DWG / DXF) are supported. Choose a file or folder with “Choose…” in the path bar and it is read automatically. The source language is detected automatically by default; for PDF and images, only the target language needs to be chosen.",
+    "fr": "Excel, Word, PDF / images et plans CAO (DWG / DXF) sont pris en charge. Choisissez un fichier ou un dossier avec « Choisir… » dans la barre de chemin : il est lu automatiquement. La langue source est détectée automatiquement par défaut ; pour les PDF et les images, il suffit de choisir la langue cible."
+  },
+  "支持 {0}，也可以拖入整个文件夹，Translator 会找出其中全部可翻译的文件。": {
+    "en": "Supports {0}. You can also drop a whole folder; Translator finds every translatable file in it.",
+    "fr": "Formats pris en charge : {0}. Vous pouvez aussi déposer un dossier entier ; Translator y trouve tous les fichiers traduisibles."
+  },
+  "无补充要求": {
+    "en": "No extra instructions",
+    "fr": "Sans consignes supplémentaires"
+  },
+  "未找到上次停止时写出的文件，请点击「重新读取」后重试。": {
+    "en": "Could not find the files written when the task stopped. Click “Read again” and try again.",
+    "fr": "Impossible de trouver les fichiers écrits lors de l'arrêt. Cliquez sur « Relire » puis réessayez."
+  },
+  "来源路径": {
+    "en": "Source path",
+    "fr": "Chemin source"
+  },
+  "查看报告": {
+    "en": "View report",
+    "fr": "Voir le rapport"
+  },
+  "正在读取…": {
+    "en": "Reading…",
+    "fr": "Lecture…"
+  },
+  "正在读取当前路径，完成后方可选择新来源。": {
+    "en": "Reading the current path. Choose a new source once it is done.",
+    "fr": "Lecture du chemin actuel en cours. Choisissez une nouvelle source une fois terminée."
+  },
+  "此历史任务未保留来源路径。结果仍可查看；如需重新翻译，请先选择来源并读取。": {
+    "en": "This past task did not keep its source path. Results can still be viewed; to translate again, choose a source and read it first.",
+    "fr": "Cette tâche passée n'a pas conservé le chemin de sa source. Les résultats restent consultables ; pour retraduire, choisissez d'abord une source et lisez-la."
+  },
+  "源文件旁": {
+    "en": "Next to source",
+    "fr": "À côté de la source"
+  },
+  "相同内容只翻译一次": {
+    "en": "Identical text is translated once",
+    "fr": "Un texte identique n'est traduit qu'une fois"
+  },
+  "译成{0}": {
+    "en": "Into {0}",
+    "fr": "Vers {0}"
+  },
+  "读取中": {
+    "en": "Reading",
+    "fr": "Lecture"
+  },
+  "读取完成，{0} 处待翻译；记忆库将优先复用已有译法。": {
+    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first.",
+    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes."
+  },
+  "读取完成，{0} 处待翻译；记忆库将优先复用已有译法，开始后自动识别文档场景。": {
+    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first, and the document's context is detected once you start.",
+    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document est détecté au lancement."
+  },
+  "读取完成，{0} 处待翻译；记忆库将优先复用已有译法，开始后自动识别文档场景与原文语言。": {
+    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first, and the document's context and source language are detected once you start.",
+    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document ainsi que la langue source sont détectés au lancement."
+  },
+  "读取完成，{0} 页待翻译。": {
+    "en": "Read complete: {0} pages to translate.",
+    "fr": "Lecture terminée : {0} pages à traduire."
+  },
+  "读取文件夹及其子文件夹中的全部可翻译文件": {
+    "en": "Reads every translatable file in the folder and its subfolders",
+    "fr": "Lit tous les fichiers traduisibles du dossier et de ses sous-dossiers"
+  },
+  "选择…": {
+    "en": "Choose…",
+    "fr": "Choisir…"
+  },
+  "选择文件": {
+    "en": "Choose files",
+    "fr": "Choisir des fichiers"
+  },
+  "选择文件夹": {
+    "en": "Choose folder",
+    "fr": "Choisir un dossier"
+  },
+  "通过路径栏的「选择」选择文件或文件夹，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。": {
+    "en": "Use “Choose…” in the path bar to select files or a folder, select the files to translate, review the options on the right, then click “Start translation”. Settings changed after starting apply only to the next task.",
+    "fr": "Avec « Choisir… » dans la barre de chemin, choisissez des fichiers ou un dossier, cochez ceux à traduire, vérifiez les options à droite, puis cliquez sur « Lancer la traduction ». Les réglages modifiés après le lancement ne s'appliquent qu'à la tâche suivante."
+  },
+  "重新读取": {
+    "en": "Read again",
+    "fr": "Relire"
+  },
+  "高级": {
+    "en": "Advanced",
+    "fr": "Avancé"
+  },
+  "默认值已按本机设置与上次任务准备好，可直接开始": {
+    "en": "Defaults come from your settings and last task — ready to start",
+    "fr": "Valeurs par défaut issues de vos réglages et de la dernière tâche — prêt à lancer"
+  }
+}
