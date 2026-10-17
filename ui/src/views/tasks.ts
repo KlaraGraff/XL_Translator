@@ -908,6 +908,9 @@ let fastPollTimer: number | null = null;
 /** 下一次 renderList 要不要让任务行错落浮现：只在进页、切筛选、输入搜索时置上，
  *  用一次就清掉。4 秒轮询和 SSE 事件触发的重绘不带它，否则列表每 4 秒闪一次。 */
 let listStagger = false;
+/** 这一轮浮现开始的时刻。进页后紧跟着的那次 refreshRegistry 会在动画播到一半时重建全部行，
+ *  直接去掉 stag 会让行瞬间跳到终态；浮现还没播完时带上已过去的时长，让新行接着播。 */
+let staggerStartedAt = 0;
 
 let connectPromise: Promise<ApiClient> | null = null;
 
@@ -1670,9 +1673,16 @@ function renderCard(id: string, index: number): HTMLButtonElement {
 function renderList(): void {
   if (!rowsEl) return;
   clearElement(rowsEl);
-  rowsEl.classList.toggle("stag", listStagger && motionAllowed());
-  listStagger = false;
   const ids = visibleOrder();
+  const now = performance.now();
+  if (listStagger) staggerStartedAt = now;
+  listStagger = false;
+  // 浮现总时长 = 最后一行的延迟 + 一段 --t-slow（420ms）。
+  const elapsed = now - staggerStartedAt;
+  const staggering = staggerStartedAt > 0 && elapsed < ids.length * 28 + 420 && motionAllowed();
+  rowsEl.classList.toggle("stag", staggering);
+  rowsEl.style.setProperty("--tk-elapsed", staggering ? `${Math.round(elapsed)}ms` : "0ms");
+  if (!staggering) staggerStartedAt = 0;
   if (!ids.length && normalizeSearch(searchQuery)) {
     const empty = createEmptyState({
       title: t("没有符合条件的任务"),
