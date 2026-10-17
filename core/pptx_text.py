@@ -311,6 +311,8 @@ class _Slot:
     shape_id: str = ""
     #: ``mc:Fallback`` 里同一段文字的副本，写回时同步。
     mirrors: list[ParagraphMarks] = field(default_factory=list)
+    #: ``mc:Fallback`` 里对应的 ``owner``（有副本时）：缩字改过的字号、大小随后同步过去。
+    twin_owner: object | None = None
 
     @property
     def paragraph(self):
@@ -626,6 +628,7 @@ class _Walker:
                     bulleted=_bulleted(paragraph, shape, scope),
                     shape_id=_shape_id(shape),
                     mirrors=mirrors[number - 1],
+                    twin_owner=twin.find(P_TX_BODY) if mirrors[number - 1] else None,
                 )
             )
 
@@ -677,6 +680,7 @@ class _Walker:
                             owner=frame,
                             owner_context=f"{scope.label} · {name}",
                             mirrors=mirrors[number - 1],
+                            twin_owner=twin if mirrors[number - 1] else None,
                         )
                     )
 
@@ -1037,6 +1041,8 @@ def write_file(
                                 reason=str(getattr(issue, "reason", "") or "缩到下限仍放不下"),
                             )
                         )
+                    for owner, twin in result.twins.items():
+                        _sync_fit(_fit_host(owner), _fit_host(twin))
                 checks[scope.part] = _part_check(root, result)
                 package.write(scope.part, _serialize(root))
             try:
@@ -1058,6 +1064,8 @@ class _PartResult:
     touched: list[object]
     #: 改过的文字框写完后应有的段数。
     paragraphs: dict[object, int]
+    #: ``touched`` 里的元素 → ``mc:Fallback`` 里对应的那个（写了同样的文字）。
+    twins: dict[object, object] = field(default_factory=dict)
 
 
 def _write_part(
@@ -1072,6 +1080,7 @@ def _write_part(
     paragraphs: dict[object, int] = {}
     inserted: dict[str, set[object]] = {}
     reviewed: set[object] = set()
+    twins: dict[object, object] = {}
 
     def count(paragraph) -> None:
         body = paragraph.getparent()
@@ -1097,6 +1106,8 @@ def _write_part(
         if context.bilingual and slot.shape_id:
             inserted.setdefault(slot.shape_id, set()).add(slot.paragraph)
         touched[slot.owner] = None
+        if slot.mirrors and slot.twin_owner is not None:
+            twins[slot.owner] = slot.twin_owner
         if context.western and slot.vertical in _VERTICAL_REVIEW and slot.owner not in reviewed:
             reviewed.add(slot.owner)
             review.append(ReviewItem(slot.unit_id, slot.owner_context, REASON_VERTICAL))
@@ -1114,7 +1125,62 @@ def _write_part(
         for body in paragraphs:
             for paragraph in body.findall(A_P):
                 paragraph.attrib.pop(_TRANSLATION_FLAG, None)
-    return _PartResult(touched=list(touched), paragraphs=paragraphs)
+    return _PartResult(touched=list(touched), paragraphs=paragraphs, twins=twins)
+
+
+#: 缩字可能改的属性：字号、自动调整比例、位置大小、表格列宽行高。
+_FIT_ATTRS = {
+    A_RPR: ("sz",),
+    A_END_PARA_RPR: ("sz",),
+    _a("defRPr"): ("sz",),
+    _a("normAutofit"): ("fontScale", "lnSpcReduction"),
+    _a("off"): ("x", "y"),
+    _a("ext"): ("cx", "cy"),
+    _a("gridCol"): ("w",),
+    _a("tr"): ("h",),
+}
+_AUTOFIT_TAGS = frozenset({_a("noAutofit"), _a("normAutofit"), _a("spAutoFit")})
+
+
+def _fit_host(owner):
+    """缩字改动所在的形状：文字框的父形状，表格就是 ``p:graphicFrame`` 本身。"""
+    return owner.getparent() if owner.tag == P_TX_BODY else owner
+
+
+def _sync_fit(source, target) -> None:
+    """把缩字在 ``mc:Choice`` 形状上改的字号、自动调整、位置大小抄到 ``mc:Fallback`` 里对应的形状。
+
+    两边结构一样的地方逐个元素抄 ``_FIT_ATTRS`` 里的属性；``a:bodyPr`` 的自动调整方式整个换成
+    Choice 那份。结构不一样的子树不碰（Fallback 本来就可以和 Choice 不同）。
+    """
+    if source.tag != target.tag:
+        return
+    for key in _FIT_ATTRS.get(source.tag, ()):
+        value = source.get(key)
+        if value is not None:
+            target.set(key, value)
+    source_children = [child for child in source if isinstance(child.tag, str)]
+    target_children = [child for child in target if isinstance(child.tag, str)]
+    if source.tag == _a("bodyPr"):
+        fit = next((child for child in source_children if child.tag in _AUTOFIT_TAGS), None)
+        old = [child for child in target_children if child.tag in _AUTOFIT_TAGS]
+        if fit is not None and not (len(old) == 1 and old[0].tag == fit.tag):
+            for child in old:
+                target.remove(child)
+            # 规范顺序里自动调整排在 prstTxWarp 后面、scene3d 等前面。
+            later = next(
+                (child for child in target if isinstance(child.tag, str) and child.tag != _a("prstTxWarp")), None
+            )
+            if later is not None:
+                later.addprevious(deepcopy(fit))
+            else:
+                target.append(deepcopy(fit))
+            target_children = [child for child in target if isinstance(child.tag, str)]
+            source_children = [child for child in source if isinstance(child.tag, str)]
+    if [child.tag for child in source_children] != [child.tag for child in target_children]:
+        return
+    for source_child, target_child in zip(source_children, target_children):
+        _sync_fit(source_child, target_child)
 
 
 # ── 保存后验收 ──────────────────────────────────────────────────────────────
@@ -1143,7 +1209,7 @@ def _iter_bodies(root) -> Iterator[object]:
 def _part_check(root, result: _PartResult) -> _PartCheck:
     shapes = {shape: index for index, shape in enumerate(_iter_shapes(root))}
     movable: set[int] = set()
-    for element in result.touched:
+    for element in (*result.touched, *result.twins.values()):
         node = element
         while node is not None:
             if node in shapes:

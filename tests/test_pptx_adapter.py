@@ -70,7 +70,10 @@ def test_manifest() -> None:
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
     assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
-    assert [(option.key, option.default) for option in manifest.options] == [("translate_notes", True)]
+    assert [(option.key, option.default) for option in manifest.options] == [
+        ("translate_notes", True),
+        ("fixed_layout", False),
+    ]
     # The PPT rules come on top of the app's own, which must stay word for word.
     assert manifest.prompt.startswith(CORE_TRANSLATION_PROMPT + "\n")
     assert "不扩写" in manifest.prompt and "不加句号" in manifest.prompt
@@ -117,6 +120,24 @@ def test_notes_switch_reaches_write(tmp_path: Path) -> None:
     out = tmp_path / "bilingual.pptx"
     host.write(source, translated, MODE_BILINGUAL, out, {"target_lang": "fr"})
     assert _texts(out, "ppt/notesSlides/notesSlide1.xml") == ["开场先介绍培训目的。", "FR 开场先介绍培训目的。"]
+
+
+def test_fixed_layout_switch_reaches_the_fit(tmp_path: Path) -> None:
+    host = InProcessAdapterHost(PPTX_DIR)
+    source = FIXTURES / "training.pptx"
+    translated = [TranslatedUnit(unit.id, unit.text, f"FR {unit.text}") for unit in host.extract(source)]
+    seen: list[dict[str, Any]] = []
+
+    def fit(read_part, part_name, root, touched, **kwargs):
+        seen.append(kwargs)
+        return []
+
+    with patch("core.pptx_text.fit_after_write", fit):
+        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "off.pptx", {"fixed_layout": False})
+        assert seen and all(kwargs == {} for kwargs in seen)
+        seen.clear()
+        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "on.pptx", {"fixed_layout": True})
+        assert seen and all(kwargs == {"fixed_layout": True} for kwargs in seen)
 
 
 class PptxTaskTests(IsolatedAppDataTestCase):
@@ -191,7 +212,7 @@ def test_the_page_is_registered_with_the_app() -> None:
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
         assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
-        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes"]
+        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
         if not already:
             unregister_surface(key)

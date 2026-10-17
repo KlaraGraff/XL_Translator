@@ -245,6 +245,32 @@ def test_alternate_content_fallback_follows_the_choice(tmp_path: Path) -> None:
     assert [_text(p) for p in _paragraphs(choice)] == [_text(p) for p in _paragraphs(fallback)] == ["FR 兼容内容里的文字"]
 
 
+def test_what_the_fit_changes_on_the_choice_reaches_the_fallback(tmp_path: Path) -> None:
+    def shrink(_read_part, part_name, _root, touched):
+        for body in touched:
+            words = "".join(t.text or "" for t in body.iter(f"{{{NS['a']}}}t"))
+            if part_name != "ppt/slides/slide7.xml" or not words.startswith("FR 兼容"):
+                continue
+            body_pr = body.find("a:bodyPr", NS)
+            for child in list(body_pr):
+                body_pr.remove(child)
+            etree.SubElement(body_pr, f"{{{NS['a']}}}normAutofit", fontScale="62500", lnSpcReduction="20000")
+            for rpr in body.iter(f"{{{NS['a']}}}rPr"):
+                rpr.set("sz", "1100")
+            ext = body.getparent().find("p:spPr/a:xfrm/a:ext", NS)
+            ext.set("cy", str(int(ext.get("cy")) + 254000))
+        return []
+
+    _result, out = _write(tmp_path, fit=shrink)
+    slide = _xml(out, "ppt/slides/slide7.xml")
+    choice, fallback = (slide.find(f".//mc:{name}/p:sp", NS) for name in ("Choice", "Fallback"))
+    for shape in (choice, fallback):
+        assert shape.find("p:txBody/a:bodyPr/a:normAutofit", NS).attrib == {"fontScale": "62500", "lnSpcReduction": "20000"}
+        assert {rpr.get("sz") for rpr in shape.iter(f"{{{NS['a']}}}rPr")} == {"1100"}
+    sizes = [shape.find("p:spPr/a:xfrm/a:ext", NS).attrib for shape in (choice, fallback)]
+    assert sizes[0] == sizes[1]
+
+
 def test_cjk_targets_keep_line_breaking_and_get_their_language(tmp_path: Path) -> None:
     units = extract_units(MIXED)
     out = tmp_path / "zh.pptx"

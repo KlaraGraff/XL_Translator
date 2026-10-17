@@ -12,6 +12,8 @@ adapter it may import app modules.
   the translation as its own paragraph right after the source, in the same box.
 - ``translate_notes`` (on by default) decides whether speaker notes are
   translated; switched off, the notes keep the source text.
+- ``fixed_layout`` (off by default) keeps every text box and table where and
+  as large as it is when fitting the translation; only the font shrinks.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, T
 NOTES_OPTION = "translate_notes"
 #: The target language the app passes along with the switches (``lang`` of the written text).
 TARGET_LANG_OPTION = "target_lang"
-#: 「固定版面」: boxes and tables keep their size and place, text only shrinks.
-#: Not on the page yet (waits on the product call); honoured when passed.
+#: 「固定版面」 (off by default): boxes and tables keep their size and place,
+#: text that does not fit only gets smaller.
 FIXED_LAYOUT_OPTION = "fixed_layout"
 
 _TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}

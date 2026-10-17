@@ -43,6 +43,20 @@
         "fr": "Activé, les notes de l’orateur de chaque diapositive sont aussi traduites ; désactivé, elles restent dans la langue source."
       },
       "default": true
+    },
+    {
+      "key": "fixed_layout",
+      "label": {
+        "zh": "固定版面",
+        "en": "Keep layout fixed",
+        "fr": "Mise en page figée"
+      },
+      "help": {
+        "zh": "打开后不改动任何文本框和表格的大小、位置，放不下只缩小字号，缩到 60% 仍放不下的列入需复核清单。适合公司模板、表单等版面不能动的文件。",
+        "en": "When on, no text box or table is resized or moved: text that does not fit only gets a smaller font, and anything that still does not fit at 60% is listed for review. Suits company templates, forms and other files whose layout must not change.",
+        "fr": "Activé, aucune zone de texte ni aucun tableau n’est redimensionné ou déplacé : le texte qui ne tient pas est seulement réduit, et ce qui ne tient toujours pas à 60 % est listé pour vérification. Adapté aux modèles d’entreprise, formulaires et autres fichiers dont la mise en page ne doit pas bouger."
+      },
+      "default": false
     }
   ],
   "license": "MIT",
