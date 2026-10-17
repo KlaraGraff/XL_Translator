@@ -1,0 +1,17 @@
+{
+  "搜索": {"en": "Search", "fr": "Rechercher"},
+  "搜索页面、任务、词条，或输入文件路径直接开始翻译": {"en": "Search pages, tasks and entries, or type a file path to start translating", "fr": "Rechercher des pages, des tâches ou des entrées, ou saisir un chemin de fichier pour lancer la traduction"},
+  "页面": {"en": "Pages", "fr": "Pages"},
+  "词条": {"en": "Entries", "fr": "Entrées"},
+  "路径": {"en": "Path", "fr": "Chemin"},
+  "开始翻译 {0}": {"en": "Translate {0}", "fr": "Traduire {0}"},
+  "按类型进入对应工作区并读取": {"en": "Opens the matching workspace and reads it", "fr": "Ouvre l'espace de travail correspondant et le lit"},
+  "扩展 · 文件类型": {"en": "Extensions · File types", "fr": "Extensions · Types de fichiers"},
+  "扩展 · 组件": {"en": "Extensions · Components", "fr": "Extensions · Composants"},
+  "扩展 · 智能体接入": {"en": "Extensions · Agent access", "fr": "Extensions · Accès des agents"},
+  "设置 · {0}": {"en": "Settings · {0}", "fr": "Paramètres · {0}"},
+  "↑↓ 选择": {"en": "↑↓ Select", "fr": "↑↓ Sélectionner"},
+  "↵ 打开": {"en": "↵ Open", "fr": "↵ Ouvrir"},
+  "输入路径回车即可开始翻译": {"en": "Type a path and press Enter to start translating", "fr": "Saisissez un chemin puis Entrée pour lancer la traduction"},
+  "没有匹配的内容": {"en": "Nothing matches", "fr": "Aucun résultat"}
+}

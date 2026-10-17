@@ -1,0 +1,27 @@
+/* 全局搜索面板（cmdk.ts）。挂在 body 上，全窗遮罩；z-index 在菜单（210）和 toast（300）之间，
+ * 回车后 dispatchPaths 的提示能盖在还没淡出的面板上。遮罩色沿用 app.css .overlay 的字面量。 */
+.cmdk { position: fixed; inset: 0; z-index: 240; display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 0; background: rgb(10 14 26 / 45%); }
+.cmdk .box { width: min(620px, 100%); max-height: calc(88vh - 24px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-lg); overflow: hidden; }
+.cmdk .in { flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 50px; border-bottom: 1px solid var(--line); }
+.cmdk .in .ic { flex: none; color: var(--ink-3); }
+/* 面板本身就是焦点语境，输入框不再套光圈：压过 app.css 的全局 input:hover / input:focus。 */
+.cmdk .in input.cmdk-q,
+.cmdk .in input.cmdk-q:hover,
+.cmdk .in input.cmdk-q:focus,
+.cmdk .in input.cmdk-q:focus-visible { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; outline: none; font-size: 15px; color: var(--ink); caret-color: var(--accent); }
+.cmdk .in input.cmdk-q::placeholder { color: var(--ink-3); opacity: 1; }
+.cmdk .in kbd { flex: none; font-family: var(--font); font-size: 10.5px; line-height: 1.5; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink-3); }
+.cmdk .ls { flex: 1; min-height: 0; max-height: 380px; overflow: auto; padding: 6px; overscroll-behavior: contain; }
+.cmdk .ck-grp { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--ink-3); padding: 8px 10px 4px; text-transform: uppercase; }
+.cmdk .it { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; text-align: left; color: var(--ink); cursor: pointer; }
+.cmdk .it:hover { background: var(--surface-2); }
+.cmdk .it .ic { flex: none; color: var(--ink-3); }
+.cmdk .it .lb { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmdk .it .lb code { font-family: var(--mono); font-size: 12px; }
+.cmdk .it .sub { flex: 0 3 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
+.cmdk .it mark { background: transparent; color: var(--accent-ink); font-weight: 700; }
+.cmdk .it.on { background: var(--tint); color: var(--tint-ink); }
+.cmdk .it.on .ic, .cmdk .it.on .sub, .cmdk .it.on mark { color: var(--tint-ink); }
+.cmdk .it:focus-visible { outline: none; }
+.cmdk .ck-empty { padding: 18px; text-align: center; font-size: 13px; color: var(--ink-3); }
+.cmdk .ck-keys { flex: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-3); }
