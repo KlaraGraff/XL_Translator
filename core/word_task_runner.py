@@ -53,6 +53,7 @@ from core.document_profile import (
     request_document_profile,
 )
 from core.document_terms import make_term_picker
+from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.term_session import TaskTermSession
 from core.language_registry import (
     build_lang_pair,
@@ -1617,6 +1618,18 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
             )
 
+            # ── 关键信息核对（0 API，与 Excel 同一份规则）：放在所有改写之后、
+            # TM 写入之前；对不上的只标需复核，不改译文、不进记忆库。
+            self._check_key_info(
+                term_session,
+                global_translations=global_translations,
+                source_lang=source_lang,
+                review_marks=review_marks,
+                quality_issues=quality_issues,
+                segment_locations=segment_locations,
+                no_tm_sources=recovery_review_sources,
+            )
+
             # ── TM 写入（从 API 返回后挪到这里，与 Excel 同一条规矩）：必须
             # 存「文件最终译文」——序号修复、修复阶梯、标题归一都改完之后的
             # 版本；仍带残留的配对由 sanitize_tm_pairs 在入库口拦下。停止信号
@@ -2809,6 +2822,31 @@ class WordTaskRunner(BaseTaskRunner):
                     severity="needs_review",
                 )
         term_session.log_not_applied()
+
+    def _check_key_info(
+        self,
+        term_session: TaskTermSession,
+        *,
+        global_translations: dict[str, str],
+        source_lang: str,
+        review_marks: dict[str, str],
+        quality_issues: list[dict],
+        segment_locations: dict[str, list[dict]],
+        no_tm_sources: set[str],
+    ) -> None:
+        """证件号、日期、人名与原文对不上的段落：标记需复核、逐位置写明原因、不进记忆库。"""
+        found = term_session.check_key_info(global_translations, source_lang=source_lang)
+        for source in found:
+            no_tm_sources.add(source)
+            _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+            _add_quality_issues(
+                quality_issues,
+                segment_locations,
+                [source],
+                problem=KEY_INFO_PROBLEM,
+                status=term_session.key_info_detail(source),
+                severity="needs_review",
+            )
 
     def _store_final_translations_in_tm(
         self,

@@ -52,6 +52,7 @@ from core.bilingual_writer import bilingual_output_name
 from core.document_profile import append_profile
 from core.file_progress import FileProgressReporter, file_progress_id
 from core.format_adapter import TARGET_LANG_OPTION_KEY, AdapterError, AdapterHost
+from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.language_preflight import AUTO_SOURCE_LANG, preflight_file_source_languages
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.mixed_language import (
@@ -104,6 +105,7 @@ REASON_UNTRANSLATED = "未获得译文"
 REASON_RESIDUAL = "译文中仍有原文"
 REASON_PROTECTED = "译文未原样保留代码或链接等内容，已保留原文"
 REASON_TERM = "未采用设定译法"
+REASON_KEY_INFO = KEY_INFO_PROBLEM
 # 仅译文模式下夹杂多种语言的内容（与 Excel、Word 同一套判据，见模块说明）。
 REASON_MIXED_KEPT = "已含两种语言的内容未能翻成目标语言"
 REASON_MIXED_LEFTOVER = "译文中仍夹带未翻译的外文"
@@ -772,6 +774,11 @@ class AdapterTaskRunner(BaseTaskRunner):
                 if text in translations:
                     detail = str(session.not_applied_detail(text) or "").strip()
                     reasons[text] = f"{REASON_TERM}：{detail}" if detail else REASON_TERM
+            # 证件号、日期、人名与原文对不上的：保留译文、计入需复核，不改、不重译。
+            final = {text: translations[text] for text in texts if text in translations}
+            for text in session.check_key_info(final, source_lang=self._source_lang):
+                note = f"{REASON_KEY_INFO}：{session.key_info_detail(text)}"
+                reasons[text] = f"{reasons[text]}；{note}" if text in reasons else note
             self._term_memory.close(
                 session,
                 {text: translations[text] for text in remaining if text in translations},
@@ -964,6 +971,7 @@ class AdapterTaskRunner(BaseTaskRunner):
 
 
 __all__ = [
+    "REASON_KEY_INFO",
     "REASON_PROTECTED",
     "REASON_RESIDUAL",
     "REASON_TERM",

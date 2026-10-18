@@ -224,9 +224,12 @@ REVIEW_MARK_COLOR_DEFAULTS = {
 REVIEW_MARK_TERM_NOT_APPLIED = "term_not_applied"
 # 锁定行高时缩到最小字号仍放不下：要人去调行高或删减文字，同样沿用「需复核」底色。
 REVIEW_MARK_LOCKED_ROW_OVERFLOW = "locked_row_overflow"
+# 译文里的证件号、日期或人名与原文对不上（core/key_info_check.py），同样沿用「需复核」底色。
+REVIEW_MARK_KEY_INFO = "key_info"
 REVIEW_MARK_COLOR_ALIASES = {
     REVIEW_MARK_TERM_NOT_APPLIED: REVIEW_MARK_UNRESOLVED,
     REVIEW_MARK_LOCKED_ROW_OVERFLOW: REVIEW_MARK_UNRESOLVED,
+    REVIEW_MARK_KEY_INFO: REVIEW_MARK_UNRESOLVED,
 }
 # 分三色之前只有一个 word_review.highlight_color。这个值是当年的默认值，留在这里
 # 只当迁移哨兵用：旧配置里**没有 mark_colors**、而 highlight_color 又与它不同时，
