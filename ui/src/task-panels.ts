@@ -1,6 +1,7 @@
 import { createButton, createProgressBar, type StatusTone } from "./components";
 import { t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
+import { entranceElapsed } from "./motion";
 
 /** Shared visual building blocks for every translator task surface. */
 export type TaskPanelState = "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
@@ -214,7 +215,13 @@ export interface TaskResultOptions {
   tone?: "ok" | "warn" | "fail";
   actions?: HTMLElement[];
   onClose?: () => void;
+  /** 结果卡左边那个勾的弹出只播一次：slot 是卡片所在的位置，identity 是这张卡说的那次结果。
+   *  不给就每次创建都播（整块重画时会再弹一次）。见 motion.ts entranceElapsed。 */
+  entrance?: { slot: string; identity: string };
 }
+
+/** 勾弹出（--t-slow）加上勾线描出来（.15s 起、.5s）的总时长，同 workspace.css .res .mk。 */
+const RESULT_MARK_MS = 650;
 
 /** .res：已完成的状态区。左边勾（或感叹号）、结论和一句小结，右边是后续动作。 */
 export function createTaskResultCard(options: TaskResultOptions): HTMLElement {
@@ -224,6 +231,11 @@ export function createTaskResultCard(options: TaskResultOptions): HTMLElement {
   card.setAttribute("role", "status");
   const mark = document.createElement("span");
   mark.className = "mk";
+  if (options.entrance) {
+    const elapsed = entranceElapsed(options.entrance.slot, options.entrance.identity, RESULT_MARK_MS);
+    if (elapsed === null) card.classList.add("settled");
+    else card.style.setProperty("--res-elapsed", `${Math.round(elapsed)}ms`);
+  }
   mark.append(icon(tone === "ok" ? "check" : "warn"));
   const body = document.createElement("div");
   body.className = "tx";

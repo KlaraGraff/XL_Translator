@@ -14,6 +14,42 @@ export function clearElement(el: HTMLElement): void {
   }
 }
 
+/**
+ * 按 key 把 parent 的子节点换成 next，同 key 的旧节点原地留着：只把新节点的 class、style、title
+ * 和内容搬进去，节点本身不离开文档，鼠标停在上面的悬停态、正在播的动画都不会断。整块重建时
+ * 悬停的那一行会先变回普通底色再淡回悬停色，事件一密就一闪一闪。
+ * 留下的是旧节点和它当初绑的监听器：只用在监听器只认 key（如任务 id）的地方。
+ */
+export function patchKeyedChildren(parent: HTMLElement, next: HTMLElement[], keyOf: (node: HTMLElement) => string | undefined): void {
+  const existing = new Map<string, HTMLElement>();
+  for (const child of Array.from(parent.children)) {
+    const key = child instanceof HTMLElement ? keyOf(child) : undefined;
+    if (key !== undefined && !existing.has(key)) existing.set(key, child as HTMLElement);
+    else child.remove();
+  }
+  next.forEach((fresh, index) => {
+    const key = keyOf(fresh);
+    const old = key === undefined ? undefined : existing.get(key);
+    let node = fresh;
+    if (old && old.tagName === fresh.tagName) {
+      existing.delete(key!);
+      node = old;
+      if (old.outerHTML !== fresh.outerHTML) {
+        old.className = fresh.className;
+        old.style.cssText = fresh.style.cssText;
+        old.title = fresh.title;
+        if (old.innerHTML !== fresh.innerHTML) {
+          clearElement(old);
+          while (fresh.firstChild) old.append(fresh.firstChild);
+        }
+      }
+    }
+    const at = parent.children[index];
+    if (at !== node) parent.insertBefore(node, at ?? null);
+  });
+  existing.forEach((node) => node.remove());
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   options: { className?: string; text?: string; attrs?: Record<string, string> } = {},

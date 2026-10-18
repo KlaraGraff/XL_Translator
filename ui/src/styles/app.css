@@ -858,6 +858,9 @@ table.review-tbl { table-layout: fixed; }
 
 /* 换页时旧页的快照（router.ts），淡出后移除；只是一层画面，不接收任何操作。 */
 .route-leaving { z-index: 1; }
+/* 快照是克隆出来的新节点，上面的进场动画会从头再播一遍：刚离开的那页在淡出的 110ms 里
+   列表又从下往上浮一次，像是闪了一下。快照只该是离开那一刻的画面，所有动画定在播完的样子。 */
+.route-leaving, .route-leaving *, .route-leaving *::before, .route-leaving *::after { animation-delay: -60s !important; animation-play-state: paused !important; }
 
 /* 浮层（下拉、菜单、语言选择）出现时从按钮方向轻轻落下。 */
 .menu, .lang-pop { animation: pop-in 160ms var(--ease-out); }

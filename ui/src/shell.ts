@@ -91,6 +91,11 @@ const toastSlots = new Map<string, HTMLDivElement>();
 const sideItemTextNodes = new Map<ViewId, Text>();
 let sideSearchText: HTMLSpanElement | null = null;
 let lastTaskPill: TaskPillConfig = { count: 0 };
+// 顶栏三处上次画的是什么。任务页每 4 秒巡检、运行中的任务每来一个事件都会再设一遍，内容没变时
+// 不重建：重建会让呼吸点、闪烁灯从头播，鼠标停在药丸上时悬停态也会断一下。
+let topbarStatusKey = "";
+let taskPillKey = "";
+let modelPillKey = "";
 
 /** 侧栏「翻译」组里的一项：内置四种和运行时注册的类型都用它，整组按「扩展」页的设置排。 */
 export interface TranslateSideItem {
@@ -409,9 +414,11 @@ export function toastStackSlot(name: string): HTMLDivElement {
 export function setTopbar(config: TopbarConfig): void {
   if (!topbarTitleEl || !topbarStatusHost || !topbarSubEl) return;
   topbarTitleEl.textContent = config.title;
-  topbarStatusHost.innerHTML = "";
-  if (config.status) {
-    topbarStatusHost.append(createStatus(config.status));
+  const statusKey = config.status ? `${config.status.tone}|${config.status.label}` : "";
+  if (statusKey !== topbarStatusKey || topbarStatusHost.childElementCount !== (config.status ? 1 : 0)) {
+    topbarStatusKey = statusKey;
+    topbarStatusHost.innerHTML = "";
+    if (config.status) topbarStatusHost.append(createStatus(config.status));
   }
   topbarSubEl.textContent = config.subtitle ?? "";
   // 英法文副标题常比中文长：一行放不下时省略，悬停看全文。
@@ -422,17 +429,23 @@ export function setTopbar(config: TopbarConfig): void {
 export function setTaskPill(config: TaskPillConfig): void {
   lastTaskPill = config;
   if (!taskPillHost) return;
+  const label = config.count > 0 ? t("{0} 个任务进行中", config.count) : "";
+  if (label === taskPillKey && taskPillHost.childElementCount === (label ? 1 : 0)) return;
+  taskPillKey = label;
   taskPillHost.innerHTML = "";
-  if (config.count <= 0) return;
+  if (!label) return;
   // 从「N 个任务进行中」进来，用户要看的就是正在跑的那个，而不是上次选中的旧结果。
   taskPillHost.append(
-    createPill({ label: t("{0} 个任务进行中", config.count), live: true, onClick: () => navigate("tasks", { focus: "active" }) }),
+    createPill({ label, live: true, onClick: () => navigate("tasks", { focus: "active" }) }),
   );
 }
 
 /** 更新顶栏右侧「当前模型」药丸。 */
 export function setModelPill(config: ModelPillConfig): void {
   if (!modelPillHost) return;
+  const key = `${config.tone ?? "ok"}|${config.role ?? ""}|${config.label}`;
+  if (key === modelPillKey && modelPillHost.childElementCount) return;
+  modelPillKey = key;
   modelPillHost.innerHTML = "";
   const dotColor = PILL_TONE_COLOR[config.tone ?? "ok"];
   modelPillHost.append(

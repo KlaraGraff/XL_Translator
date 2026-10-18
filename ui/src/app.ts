@@ -7,7 +7,7 @@ import "./styles/tokens.css";
 import "./styles/palettes.css";
 import "./styles/app.css";
 
-import { withColorFade } from "./motion";
+import { installLoopingAnimationSync, withColorFade } from "./motion";
 import { injectIconSprite } from "./icons";
 import { mountShell, relocalizeShell } from "./shell";
 import { mountRouter, navigate, onNavigate, registerView, registerViewAlias, remountCurrentView } from "./router";
@@ -205,6 +205,7 @@ function main(): void {
   document.documentElement.lang = localeTag();
   initTheme();
   injectIconSprite();
+  installLoopingAnimationSync();
 
   const root = document.querySelector<HTMLDivElement>("#app");
   if (!root) {

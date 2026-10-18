@@ -132,6 +132,9 @@ async function fillRecent(rows: HTMLElement, generation: number): Promise<void> 
       .filter((task) => !["cleaner", "tm_clean"].includes(task.surface))
       .slice(0, 4);
     rows.textContent = "";
+    // 只有进页后的第一次填充浮现；本批文件开始、结束时的重取不再整列重浮。
+    rows.classList.toggle("stag", !rows.dataset.filled);
+    rows.dataset.filled = "1";
     if (!tasks.length) {
       rows.append(el("div", "empty", t("还没有翻译任务。拖入文件开始第一次翻译。")));
       return;
@@ -206,7 +209,8 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   page.append(hero);
   const grid = el("div", "hgrid");
   const recent = el("div", "hcol");
-  const rows = el("div", "rows stag");
+  // 「正在加载…」不浮现，等列表到了再浮一次：两样都浮就是进页连闪两下。
+  const rows = el("div", "rows");
   rows.append(el("div", "empty", t("正在加载…")));
   recent.append(sectionHead(t("最近"), t("全部任务"), () => navigate("tasks")), rows);
   const ready = el("div", "hcol");

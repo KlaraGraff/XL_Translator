@@ -6,6 +6,10 @@
 
   **Path bar button now reads "选择" / "Select"**: The button on the right of every translation page's path bar used to read "选择…", and the ellipsis made it look cut off. It now reads just "选择" (Select / Choisir) and still opens the same two choices.
 
+- **不再闪烁：任务页统计格、换页、顶栏、任务列表**：任务页选中一条已完成的任务后，右侧「图纸 / 已翻译文字 / 记忆库命中 / 调用模型次数」那一排每隔几秒闪一下；原因是任务页每 4 秒刷新一次时整块重建详情，统计格的浮现动画跟着重播。现在浮现只在进页或换到另一条任务时播一次，刷新回来的数据和上次一样时列表和详情都不重画。顺带通查全软件，一并修了同类问题：换页时刚离开的那一页在淡出途中又浮现一次（「翻译」页、任务页、帮助页离开时最明显）；任务进行中，顶栏「N 个任务进行中」的呼吸点、状态灯、进度框的流光和步骤圆点每来一次进度就从头播，看着一抽一抽；工作区完成后改一个选项，结果卡左边的勾又弹一次；「翻译」页「最近」先浮一次「正在加载…」再浮一次列表；任务进行中把鼠标停在任务列表的一行上，悬停底色一闪一闪。
+
+  **No more flicker: task stats, page switches, top bar, task list**: With a finished task selected on the Tasks page, the row of figures on the right (drawings, text translated, memory hits, model calls) flashed every few seconds, because the page's 4-second refresh rebuilt the whole detail panel and replayed the figures' fade-in. The fade-in now plays only when the page opens or another task is selected, and a refresh that brings back the same data no longer redraws the list or the detail. A sweep of the whole app fixed the same kind of problem elsewhere: the page being left faded in once more while fading out (most visible leaving Translate, Tasks or Help); while a task ran, the pulsing dot in "N tasks in progress", the status light, the progress sheen and the step dot restarted on every progress update and stuttered; changing an option on a finished workspace made the result card's check mark pop again; Recent on the Translate page faded in "Loading…" and then the list; and with the pointer resting on a row of the task list during a run, the hover highlight flickered.
+
 ## V10.3.0
 
 - **CAD 任务记录多一格「保留原文」**：CAD 页上的「待翻译」是开始前数出的候选条数，任务记录里的「已翻译文字」是真正改动了的条数，两者差的是模型确认已经是目标语言、或译文与原文相同而原样保留的文字。以前任务记录不列这部分，两个数差几十条时看着像数错了（实测一张图纸页面写待翻译 2185、任务记录写已翻译 2158）。现在任务记录在「已翻译文字」旁边列出「保留原文」（为 0 时不显示），每张图纸的翻译摘要也多一行；已翻译加保留原文之外剩下的，是未获得译文、已列入需复核的文字。
