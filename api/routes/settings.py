@@ -37,6 +37,7 @@ from core.model_roles import (
 )
 from settings import (
     AppSettings,
+    ExtensionSettings,
     carry_settings_baseline,
     load_settings,
     save_settings,
@@ -182,6 +183,18 @@ def register(app: FastAPI) -> None:
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return load_settings().model_dump(mode="json")
+
+    @app.get("/api/settings/defaults")
+    def get_settings_defaults() -> dict[str, Any]:
+        """出厂默认值：翻译页右栏据此说明当前是「采用应用默认值」还是「采用上次使用的设置」。
+
+        ``app`` 与 GET /api/settings 同形；``extension`` 是运行时注册类型那一份
+        （``extensions[<id>]``）的默认值。只读，不碰磁盘上的设置。
+        """
+        return {
+            "app": AppSettings().model_dump(mode="json"),
+            "extension": ExtensionSettings().model_dump(mode="json"),
+        }
 
     @app.get("/api/settings/rate")
     def get_rate_settings() -> dict[str, Any]:

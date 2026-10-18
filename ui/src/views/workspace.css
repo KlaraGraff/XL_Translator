@@ -614,9 +614,16 @@
 .recipe b {
   font-weight: 650;
 }
+.recipe > div {
+  flex: 1;
+  min-width: 0;
+}
+/* 设置来源单独一行，与配方句文字对齐，上面一条细线分开。 */
 .recipe .sub {
   display: block;
-  margin-top: 2px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
   color: var(--ink-2);
   font-size: 11.5px;
 }
