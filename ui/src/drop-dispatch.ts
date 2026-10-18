@@ -1,7 +1,8 @@
 // 拖入即分配（界面焕新阶段 2）：拖进窗口、或在「翻译」入口页选中的文件和文件夹，按扩展名数一数，
-// 每一类交给各自的类型页读取（文件夹整个交给每一页，各页只挑自己认的文件），人进入个数最多的
-// 那一页；其他几页在后台读取，每一页上方都说一句同一批还有哪几类，点一下切过去。
-// 已经在某个类型页上、而拖入的东西里有这一页认的文件时，人留在当前页，等同于填进路径栏后回车。
+// 每一类交给各自的类型页读取（文件夹整个交给每一页，各页只挑自己认的文件）。
+// 只有一类时人进入那一页；已经在某个类型页上、而拖入的只有这一页认的文件时，人留在当前页，
+// 等同于填进路径栏后回车。混了几类时各页都在后台读取，人回到「翻译」页，那里的「本批文件」
+// 卡片列出每一类、各页的设置，一个按钮全部开始，结果写进同一个输出文件夹（home-batch.ts）。
 
 import { currentView, navigate, type ViewId } from "./router";
 import { showToast } from "./components";
@@ -115,17 +116,23 @@ export async function dispatchPaths(paths: string[]): Promise<void> {
     return;
   }
   const others = candidateSurfaces().filter((surface) => surface !== target && buckets.has(surface));
-  // 先登记这一批，各页一挂上去（读取中也算）就能说同一批还有什么。
-  setDispatchBatch([target, ...others].map((surface) => ({ surface, ...buckets.get(surface)! })));
-  if (here !== target) navigate(target);
+  // 先登记这一批，「翻译」页的卡片和各页的提示条一挂上去（读取中也算）就能说同一批还有什么。
+  // 「本批文件」卡片按侧栏的顺序列（Excel、Word、PDF、CAD、扩展类型），不按个数。
+  setDispatchBatch(candidateSurfaces().filter((surface) => buckets.has(surface)).map((surface) => ({ surface, ...buckets.get(surface)! })));
+  const mixed = others.length > 0;
+  if (mixed) {
+    if (here !== "home") navigate("home");
+  } else if (here !== target) {
+    navigate(target);
+  }
   const results = await Promise.all([
-    openSourcePaths(target, buckets.get(target)!.paths),
+    openSourcePaths(target, buckets.get(target)!.paths, { background: mixed }),
     ...others.map((surface) => openSourcePaths(surface, buckets.get(surface)!.paths, { background: true })),
   ]);
-  if (!results[0]) dropFromDispatchBatch(target);
   // 正在翻译的页不换来源：拿出这一批，并说一句哪几页没放进去。
-  const busy = others.filter((_, index) => !results[index + 1]);
+  const busy = [target, ...others].filter((_, index) => !results[index]);
   for (const surface of busy) dropFromDispatchBatch(surface);
+  if (!mixed) return;
   if (busy.length) {
     showToast({
       message: t("{0} 正在翻译，这一类文件没有放入，完成后再拖入一次即可。", busy.map((surface) => surfaceLabel(surface)).join(" / ")),

@@ -18,6 +18,7 @@ from settings import (
     load_settings,
 )
 from api.schemas import (
+    BatchStartRequest,
     ClassifySourcesRequest,
     ScanRequest,
     PdfPageActionRequest,
@@ -165,6 +166,16 @@ def register(app: FastAPI) -> None:
             selected_paths=request.selected_paths,
             options=_task_options(request),
             confirmation_token=request.confirmation_token,
+        )
+
+    @app.post("/api/tasks/batch", status_code=202)
+    def start_batch(request: BatchStartRequest) -> dict[str, Any]:
+        return app.state.task_manager.start_batch(
+            [
+                (item.surface, item.source_path, item.selected_paths, _task_options(item))
+                for item in request.items
+            ],
+            allow_shared=request.allow_shared,
         )
 
     @app.get("/api/tasks")

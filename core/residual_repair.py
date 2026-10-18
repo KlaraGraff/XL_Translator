@@ -4,7 +4,8 @@
 
 分工：
 - 本模块负责 prompt 构造、回复解析、验收判定与阶梯编排，全部纯函数可测；
-- 传输层（engine.chat 的并发、限流、停止信号）由调用方以回调注入；
+- 传输层（engine.chat 的并发、限流、停止信号）由调用方以回调注入；调用方给了任务的
+  限流器时，每个修补请求先在限流器里排到位再发（与正文翻译共用同一份并发额度）；
 - diff 受限验收器 surgical_repair_ok 在 core/residual_classifier 中（P1 已落地）。
 
 阶梯（按残留类别路由，验收不过绝不覆盖原译文）：
@@ -23,6 +24,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from core.api_scheduler import API_REQUEST_CATEGORY_RECOVERY
 from core.prompt_cache import carry_meter
 from core.residual_classifier import (
     CATEGORY_CN_DATE_UNIT,
@@ -34,6 +36,7 @@ from core.residual_classifier import (
     missing_number_tokens,
     surgical_repair_ok,
 )
+from core.word_batching import estimate_api_request_weight
 from engines.base_engine import get_target_lang_name, strip_markdown_json
 
 # 判断拒收理由是不是给人看的中文句子（residual_classifier 的验收器返回英文）。
@@ -318,6 +321,7 @@ def run_repair_ladder(
     should_stop=None,
     on_progress=None,
     max_workers: int = 1,
+    api_scheduler=None,
 ) -> RepairLadderResult:
     """
     对一批残留单元（带 source_text / target_text 属性）跑修复阶梯，
@@ -330,6 +334,8 @@ def run_repair_ladder(
     - 停止：should_stop() 为真时还没开跑的单元原样进 remaining；
     - 并发：max_workers 个单元同时修（调用方传翻译的并发设置）；停止和
       熔断在每个单元开跑前检查，已经发出的请求照常收回；
+    - 限流：给了 api_scheduler 时每个请求先占一个槽位。同一条连接上还有别的任务
+      在翻正文时（「翻译」页一起开始的几类），修补请求不另算并发，总数仍封顶；
     - on_progress(done, total)：每修完一个单元回调一次（只数真正返回的），
       供界面报进度。
 
@@ -355,10 +361,17 @@ def run_repair_ladder(
     # 每个单元的结局，按输入下标存：_STOPPED / _BREAKER / RepairOutcome。
     outcomes: list = [None] * len(queue)
 
+    def scheduled_send(system: str, user: str):
+        if api_scheduler is None:
+            return send(system, user)
+        weight = estimate_api_request_weight([user], system)
+        with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY, should_stop=should_stop):
+            return send(system, user)
+
     def guarded_send(system: str, user: str):
         nonlocal consecutive_failures
         try:
-            reply = send(system, user)
+            reply = scheduled_send(system, user)
         except Exception as send_exc:
             logger.debug(f"残留修复请求失败：{send_exc!r}")
             with lock:

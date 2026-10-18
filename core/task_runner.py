@@ -321,6 +321,7 @@ class TaskRunner(BaseTaskRunner):
         untranslated_only: bool = False,
         connection_chain: tuple[str, ...] | list[str] | None = None,
         resume_output_dir: str | None = None,
+        batch_output_dir: str | None = None,
     ):
         self._files       = file_items
         self._settings    = settings
@@ -332,6 +333,8 @@ class TaskRunner(BaseTaskRunner):
         self._untranslated_only = bool(untranslated_only)
         # 只读：上次输出目录，补译时用它的双语产物做底稿。绝不写入。
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
+        # 同一批任务共用的输出文件夹；设了就不再新建自己的。
+        self._batch_output_dir = Path(batch_output_dir) if batch_output_dir else None
         # 一格里有几种格式时：整格纯文本 → 带 <g1>…</g1> 标记的原文（core/xlsx_rich_text.py）；
         # 翻译时由 InlineMarkEngine 换上，写回时按标记分片段
         self._marked_sources: dict[str, str] = {}
@@ -529,7 +532,7 @@ class TaskRunner(BaseTaskRunner):
                 if output_dir_error is not None:
                     raise ValueError(output_dir_error)
 
-            output_dir = bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
+            output_dir = self._batch_output_dir or bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.debug(f"输出目录初始化失败原始错误：{e!r}")
@@ -1089,6 +1092,7 @@ class TaskRunner(BaseTaskRunner):
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
                 repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
                 document_note=document_profile,
+                api_scheduler=shared_scheduler,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -2983,6 +2987,7 @@ class TaskRunner(BaseTaskRunner):
         excel_review_marks: dict[str, str],
         repair_concurrency: int = 1,
         document_note: str = "",
+        api_scheduler=None,
     ) -> ResidualPassResult:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；改得了的直接改词典，改不了的标记复核。"""
         residual_result = run_residual_pass(
@@ -3048,6 +3053,7 @@ class TaskRunner(BaseTaskRunner):
                 should_stop=self._stop_event.is_set,
                 on_progress=_on_repair_progress,
                 max_workers=repair_concurrency,
+                api_scheduler=api_scheduler,
             )
             if ladder.over_cap_count:
                 self._log(

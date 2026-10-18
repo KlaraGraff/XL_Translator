@@ -342,7 +342,11 @@ class AdapterSurface(Surface):
             host=self.host,
             service=service,
             source_root=request.source_root,
-            output_dir=bilingual_writer.build_output_dir(request.source_root, custom_output_dir or None),
+            output_dir=(
+                Path(request.options.batch_output_dir)
+                if request.options.batch_output_dir
+                else bilingual_writer.build_output_dir(request.source_root, custom_output_dir or None)
+            ),
             target_lang=settings.target_lang,
             source_lang=request.source_lang,
             bilingual=self.write_bilingual(options),
