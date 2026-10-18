@@ -499,9 +499,21 @@
     "en": "Excludes plain numbers, codes and text already in the target language",
     "fr": "Hors nombres seuls, codes et texte déjà dans la langue cible"
   },
-  "需转换工具": {
-    "en": "Need converter",
-    "fr": "Convertisseur requis"
+  "需转换的 DWG": {
+    "en": "DWG to convert",
+    "fr": "DWG à convertir"
+  },
+  "转换工具已就绪": {
+    "en": "Converter ready",
+    "fr": "Convertisseur prêt"
+  },
+  "尚未连接转换工具": {
+    "en": "Converter not connected",
+    "fr": "Convertisseur non connecté"
+  },
+  "安装 ↗ 转换工具": {
+    "en": "Install ↗ Converter",
+    "fr": "Installer ↗ Convertisseur"
   },
   "跳过项": {
     "en": "Skipped",
