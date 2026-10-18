@@ -90,11 +90,18 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   focusKey = focus === "oda" || focus === "ocr" || focus === "pdf" ? focus : null;
   focusStart = performance.now();
   render();
-  const target = focusKey ? container.querySelector<HTMLElement>(`[data-component="${focusKey}"]`) : null;
-  if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "center", behavior: motionAllowed() ? "smooth" : "auto" }));
-  void refresh();
-  void refreshOcr();
-  void refreshWord();
+  const loads = Promise.allSettled([refresh(), refreshOcr(), refreshWord()]);
+  const key = focusKey;
+  if (!key) return;
+  // 三次检测回来各整页重绘一次，卡片节点会换掉、高度也会变：每次都按 key 重新找，
+  // 先滚一次让它尽快露出来，检测全部回来、版面定下之后再对准一次。
+  const scrollToFocus = (): void => {
+    if (!mounted || rootEl !== container) return;
+    container.querySelector<HTMLElement>(`[data-component="${key}"]`)
+      ?.scrollIntoView({ block: "center", behavior: motionAllowed() ? "smooth" : "auto" });
+  };
+  requestAnimationFrame(scrollToFocus);
+  void loads.then(() => requestAnimationFrame(scrollToFocus));
 }
 
 export function unmount(): void {
