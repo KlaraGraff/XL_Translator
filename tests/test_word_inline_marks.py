@@ -456,6 +456,24 @@ class PlaceMarksTests(unittest.TestCase):
                              [("编号\t名称甲", "编号<x1/>名称<g1>甲</g1>", "No Désignation x")])
         self.assertEqual(placed["编号\t名称甲"][1], "No<x1/>Désignation <g1>x</g1>")
 
+    def test_picture_with_a_stray_space_before_punctuation_keeps_its_place_and_the_bold(self) -> None:
+        """模型在图片占位符前后多写了空格（「figure <x1/>, 」）：图片和加粗照样按回答写回。"""
+        source, marked = "如图所示，严禁堆放。", "如图<x1/>所示，<g1>严禁</g1>堆放。"
+        translation = "Comme indiqué sur la figure, strictement interdit de stocker."
+        for answer in ("Comme indiqué sur la figure <x1/>, <g1>strictement interdit</g1> de stocker.",
+                       "Comme indiqué sur la figure<x1/> , <g1>strictement interdit</g1> de stocker.",
+                       "Comme indiqué sur la figure <x1/> , <g1>strictement interdit</g1> de stocker."):
+            placed = place_marks(_ChatEngine(json.dumps([answer], ensure_ascii=False)), [(source, marked, translation)])
+            self.assertEqual(placed[source][1], "Comme indiqué sur la figure<x1/>, <g1>strictement interdit</g1> de stocker.")
+        # 定稿冒号前有空格的照留：「Note<x1/> : 」
+        placed = place_marks(_ChatEngine('["<g1>Note</g1> <x1/>: unités en mm."]'),
+                             [("注图：单位毫米。", "<g1>注</g1>图<x1/>：单位毫米。", "Note : unités en mm.")])
+        self.assertEqual(placed["注图：单位毫米。"][1], "<g1>Note</g1><x1/> : unités en mm.")
+        # 改了字的照样不收
+        placed = place_marks(_ChatEngine('["Comme indiqué sur la figure <x1/>, il est <g1>strictement interdit</g1> de stocker."]'),
+                             [(source, marked, translation)])
+        self.assertEqual(placed, {})
+
     def test_bad_reply_and_engines_without_chat_place_nothing(self) -> None:
         self.assertEqual(place_marks(_ChatEngine("not json"), self.ITEMS), {})
 
