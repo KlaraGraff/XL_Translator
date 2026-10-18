@@ -1685,8 +1685,10 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     event.preventDefault();
     void runScan(surface);
   });
+  // 「选择」和下拉键盘提示（↑↓ 选择）共用一条词条，英法那里是小写，按钮上首字母大写。
+  const pickLabel = t("选择");
   const pickBtn = createButton({
-    label: t("选择…"),
+    label: pickLabel.charAt(0).toUpperCase() + pickLabel.slice(1),
     icon: "doc-file",
     variant: "ghost",
     size: "mini",
