@@ -32,7 +32,7 @@
     （固定行距一起缩），每档 5%，最低 60%（``text_box_fit.MIN_SCALE``）。
   - 表格：PowerPoint 的表格不吃自动调整，行会跟着字撑高，所以同样先长进下方空白；放不下
     再整张表一起缩字号，保持字号统一。
-  - 加高、加宽都和旁边的形状、页边留出 ``gap_mm``（默认 2 毫米，页面上可选），不紧挨着；
+  - 加高、加宽都和旁边的形状、页边留出 ``gap_pt``（默认 6 磅，约 2 毫米，页面上可选），不紧挨着；
     原稿里本来就比这更近的方向不再长。
 
 以上是默认的「融合」。页面上的写回偏好（``layout_mode``）另有两种：
@@ -87,9 +87,8 @@ LAYOUT_FIT = "fit"
 LAYOUT_KEEP_SIZE = "keep_size"
 LAYOUT_FIXED = "fixed"
 LAYOUT_MODES = (LAYOUT_FIT, LAYOUT_KEEP_SIZE, LAYOUT_FIXED)
-#: 融合模式加高、加宽时，与旁边的形状和页边至少留的距离（毫米），页面上可选。
-DEFAULT_GAP_MM = 2.0
-EMU_PER_MM = 36000
+#: 融合模式加高、加宽时，与旁边的形状和页边至少留的距离（磅），页面上可选。
+DEFAULT_GAP_PT = 6.0
 
 #: ``FitIssue.reason``：缩到下限、往下方空白处加高也放不下。
 REASON_OVERFLOW = f"缩到 {round(MIN_SCALE * 100)}% 仍放不下"
@@ -165,7 +164,7 @@ def fit_after_write(
     touched: Iterable,
     *,
     layout_mode: str = LAYOUT_FIT,
-    gap_mm: float = DEFAULT_GAP_MM,
+    gap_pt: float = DEFAULT_GAP_PT,
     fonts: FontLibrary | None = None,
 ) -> list[FitIssue]:
     """按译文调整 ``touched`` 里各框的字号或大小，就地改 ``root``；返回放不下的框。
@@ -174,8 +173,8 @@ def fit_after_write(
     ``presentation.xml``；``part_name`` 本身还没写回时读到的是原文）。只改 ``touched``
     里的形状。备注页等不是幻灯片、版式、母版的部件直接返回空列表。
     ``layout_mode``：``"fit"`` 融合（先加高再缩字），``"keep_size"`` 保持字号（只加高），
-    ``"fixed"`` 固定版面（只缩字）；认不得的按融合。``gap_mm``：融合模式加高、加宽时与旁边的
-    形状和页边至少留的距离；原稿里本来就比这更近的方向不再长。
+    ``"fixed"`` 固定版面（只缩字）；认不得的按融合。``gap_pt``：融合模式加高、加宽时与旁边的
+    形状和页边至少留的距离（磅）；原稿里本来就比这更近的方向不再长。
     """
     if not _FITTABLE_PART.match(part_name or ""):
         return []
@@ -184,7 +183,7 @@ def fit_after_write(
         return []
     ctx = _PartContext(read_part, part_name, root, fonts or default_library())
     ctx.layout_mode = layout_mode if layout_mode in LAYOUT_MODES else LAYOUT_FIT
-    ctx.gap = max(0.0, float(gap_mm)) * EMU_PER_MM
+    ctx.gap = max(0.0, float(gap_pt)) * EMU_PER_PT
     issues: list[FitIssue] = []
     done: set = set()
     for element in elements:
@@ -348,7 +347,7 @@ class _PartContext:
         self.fonts = fonts
         #: 写回偏好，见 ``LAYOUT_MODES``。
         self.layout_mode = LAYOUT_FIT
-        self.gap = DEFAULT_GAP_MM * EMU_PER_MM
+        self.gap = DEFAULT_GAP_PT * EMU_PER_PT
         self._parsed: dict[str, Any] = {}
         self.measurer = _Measurer(fonts)
 

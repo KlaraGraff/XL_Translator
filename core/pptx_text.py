@@ -63,7 +63,7 @@ from core.drawingml_marks import (
     write_paragraph,
 )
 from core.opc_package import OpcPackage, PackageVerificationError, rels_path, resolve_part
-from core.pptx_fit import DEFAULT_GAP_MM, LAYOUT_FIT, FitIssue, fit_after_write
+from core.pptx_fit import DEFAULT_GAP_PT, LAYOUT_FIT, FitIssue, fit_after_write
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -1036,13 +1036,13 @@ def write_file(
     target_lang: str | None = None,
     translate_notes: bool = True,
     layout_mode: str = LAYOUT_FIT,
-    gap_mm: float = DEFAULT_GAP_MM,
+    gap_pt: float = DEFAULT_GAP_PT,
     fit: Callable[..., list] | None = None,
 ) -> WriteResult:
     """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。
 
-    ``layout_mode``：写回偏好，融合 / 保持字号 / 固定版面；``gap_mm``：融合模式加高、加宽时与
-    旁边的形状和页边留的距离（都见 ``core.pptx_fit``，交给缩字那一步）。
+    ``layout_mode``：写回偏好，融合 / 保持字号 / 固定版面；``gap_pt``：融合模式加高、加宽时与
+    旁边的形状和页边留的距离，单位磅（都见 ``core.pptx_fit``，交给缩字那一步）。
     """
     source = Path(source)
     out_path = Path(out_path)
@@ -1074,8 +1074,8 @@ def write_file(
                 if scope.kind != "notes":
                     # 默认值不传（「融合」、默认间距），缩字那一步按自己的默认走。
                     extra: dict[str, Any] = {"layout_mode": layout_mode} if layout_mode != LAYOUT_FIT else {}
-                    if gap_mm != DEFAULT_GAP_MM:
-                        extra["gap_mm"] = gap_mm
+                    if gap_pt != DEFAULT_GAP_PT:
+                        extra["gap_pt"] = gap_pt
                     for issue in fit(package.read, scope.part, root, list(result.touched), **extra) or []:
                         target = getattr(issue, "target", None)
                         slot = next((item for item in slots if item.owner is target), None)

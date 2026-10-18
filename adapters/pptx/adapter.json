@@ -98,11 +98,11 @@
         "fr": "Espace avec le contenu voisin"
       },
       "help": {
-        "zh": "写回偏好为「融合」时，文本框和表格加高、加宽后与下方或旁边的其他内容、页面边缘至少留出的距离，以免紧挨在一起。原稿里本来就比这更近的方向不再加高或加宽，改为缩小字号。默认 2 毫米。「保持字号」「固定版面」不受影响。",
-        "en": "With the Balanced layout preference, the least distance a text box or table keeps from other content below or beside it and from the slide edges when it grows, so they do not touch. In a direction where the original is already closer than this, the box does not grow and the font shrinks instead. 2 mm by default. Keep font size and Keep layout fixed are not affected.",
-        "fr": "Avec la préférence Équilibré, distance minimale qu’une zone de texte ou un tableau garde avec les autres éléments en dessous ou à côté et avec les bords de la diapositive quand il s’agrandit, pour qu’ils ne se touchent pas. Dans une direction où l’original est déjà plus proche, la zone ne s’agrandit pas et le texte est réduit à la place. 2 mm par défaut. Taille conservée et Mise en page figée ne sont pas concernées."
+        "zh": "写回偏好为「融合」时，文本框和表格加高、加宽后与下方或旁边的其他内容、页面边缘至少留出的距离，以免紧挨在一起。原稿里本来就比这更近的方向不再加高或加宽，改为缩小字号。单位「磅」与 PowerPoint 的字号、段落间距相同，6 磅约 2 毫米，默认 6 磅。「保持字号」「固定版面」不受影响。",
+        "en": "With the Balanced layout preference, the least distance a text box or table keeps from other content below or beside it and from the slide edges when it grows, so they do not touch. In a direction where the original is already closer than this, the box does not grow and the font shrinks instead. Points are the unit PowerPoint uses for font size and paragraph spacing; 6 pt is about 2 mm and is the default. Keep font size and Keep layout fixed are not affected.",
+        "fr": "Avec la préférence Équilibré, distance minimale qu’une zone de texte ou un tableau garde avec les autres éléments en dessous ou à côté et avec les bords de la diapositive quand il s’agrandit, pour qu’ils ne se touchent pas. Dans une direction où l’original est déjà plus proche, la zone ne s’agrandit pas et le texte est réduit à la place. Le point est l’unité de PowerPoint pour la taille de police et l’espacement des paragraphes ; 6 pt font environ 2 mm, valeur par défaut. Taille conservée et Mise en page figée ne sont pas concernées."
       },
-      "default": "mm2",
+      "default": "pt6",
       "choices": [
         {
           "value": "none",
@@ -113,27 +113,27 @@
           }
         },
         {
-          "value": "mm1",
+          "value": "pt3",
           "label": {
-            "zh": "1 毫米",
-            "en": "1 mm",
-            "fr": "1 mm"
+            "zh": "3 磅",
+            "en": "3 pt",
+            "fr": "3 pt"
           }
         },
         {
-          "value": "mm2",
+          "value": "pt6",
           "label": {
-            "zh": "2 毫米",
-            "en": "2 mm",
-            "fr": "2 mm"
+            "zh": "6 磅",
+            "en": "6 pt",
+            "fr": "6 pt"
           }
         },
         {
-          "value": "mm4",
+          "value": "pt12",
           "label": {
-            "zh": "4 毫米",
-            "en": "4 mm",
-            "fr": "4 mm"
+            "zh": "12 磅",
+            "en": "12 pt",
+            "fr": "12 pt"
           }
         }
       ]

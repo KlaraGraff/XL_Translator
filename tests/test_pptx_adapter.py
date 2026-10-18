@@ -80,7 +80,7 @@ def test_manifest() -> None:
     assert [(option.key, option.kind, option.default) for option in manifest.options] == [
         ("translate_notes", "toggle", True),
         ("layout_mode", "choice", "fit"),
-        ("spacing", "choice", "mm2"),
+        ("spacing", "choice", "pt6"),
     ]
     # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（融合在前，是默认）。
     assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
@@ -148,9 +148,9 @@ def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
         ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
         ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
         ({"layout_mode": "bogus"}, {}),
-        ({"spacing": "mm2"}, {}),
-        ({"spacing": "mm4"}, {"gap_mm": 4.0}),
-        ({"spacing": "none", "layout_mode": "keep_size"}, {"gap_mm": 0.0, "layout_mode": "keep_size"}),
+        ({"spacing": "pt6"}, {}),
+        ({"spacing": "pt12"}, {"gap_pt": 12.0}),
+        ({"spacing": "none", "layout_mode": "keep_size"}, {"gap_pt": 0.0, "layout_mode": "keep_size"}),
         ({"spacing": "bogus"}, {}),
     ]
     with patch("core.pptx_text.fit_after_write", fit):

@@ -18,7 +18,7 @@ adapter it may import app modules.
   ``keep_size`` keeps the font size and only grows, ``fixed`` keeps every box
   and table where and as large as it is and only shrinks.
 - ``spacing`` is how far a box or table grown under ``fit`` stays from the
-  shapes around it and the slide edges (``mm2``, 2 mm, by default).
+  shapes around it and the slide edges (``pt6``, 6 pt or about 2 mm, by default).
 - Old .ppt / .pps files are first converted to a temporary .pptx
   (``core/ppt_converter.py``: the local PowerPoint, else LibreOffice).  Reading,
   extracting and writing one file share that copy, so it is converted once;
@@ -35,7 +35,7 @@ from typing import Any
 
 from core.format_adapter import AdapterError
 from core.ppt_converter import PptConversionCache, PptConversionError, converted_name, is_legacy_ppt
-from core.pptx_fit import DEFAULT_GAP_MM, LAYOUT_FIT, LAYOUT_MODES
+from core.pptx_fit import DEFAULT_GAP_PT, LAYOUT_FIT, LAYOUT_MODES
 from core.pptx_text import PptxError, Translation, extract_units, scan_file, write_file
 from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, TranslatedUnit
 
@@ -44,9 +44,9 @@ NOTES_OPTION = "translate_notes"
 TARGET_LANG_OPTION = "target_lang"
 #: 写回偏好: 融合 ``fit`` (default) / 保持字号 ``keep_size`` / 固定版面 ``fixed``.
 LAYOUT_OPTION = "layout_mode"
-#: 与周围内容的间距：选项值 → 毫米。
+#: 与周围内容的间距：选项值 → 磅（PowerPoint 字号、段落间距的单位）。
 SPACING_OPTION = "spacing"
-SPACING_MM = {"none": 0.0, "mm1": 1.0, "mm2": 2.0, "mm4": 4.0}
+SPACING_PT = {"none": 0.0, "pt3": 3.0, "pt6": 6.0, "pt12": 12.0}
 
 _TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}
 _OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
@@ -62,8 +62,8 @@ def _layout_mode(options: Mapping[str, Any] | None) -> str:
     return mode if mode in LAYOUT_MODES else LAYOUT_FIT
 
 
-def _gap_mm(options: Mapping[str, Any] | None) -> float:
-    return SPACING_MM.get(str((options or {}).get(SPACING_OPTION) or ""), DEFAULT_GAP_MM)
+def _gap_pt(options: Mapping[str, Any] | None) -> float:
+    return SPACING_PT.get(str((options or {}).get(SPACING_OPTION) or ""), DEFAULT_GAP_PT)
 
 
 def _notes(options: Mapping[str, Any] | None) -> bool:
@@ -152,7 +152,7 @@ def write(
             target_lang=str((options or {}).get(TARGET_LANG_OPTION) or "") or None,
             translate_notes=_notes(options),
             layout_mode=_layout_mode(options),
-            gap_mm=_gap_mm(options),
+            gap_pt=_gap_pt(options),
         )
     except PptxError as exc:
         raise AdapterError(str(exc)) from exc
