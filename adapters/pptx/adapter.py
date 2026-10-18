@@ -42,7 +42,7 @@ from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, T
 NOTES_OPTION = "translate_notes"
 #: The target language the app passes along with the switches (``lang`` of the written text).
 TARGET_LANG_OPTION = "target_lang"
-#: 写回偏好: 优先保持字号 ``fit`` (default) / 始终保持字号 ``keep_size`` / 固定版面 ``fixed``.
+#: 写回偏好: 自适应排版 ``fit`` (default) / 保持字号 ``keep_size`` / 固定版面 ``fixed``.
 LAYOUT_OPTION = "layout_mode"
 #: 与周围内容的间距：用户输入的数字连单位（如 ``2pt``、``1.5mm``）；各单位折成多少磅。
 SPACING_OPTION = "spacing"

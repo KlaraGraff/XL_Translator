@@ -35,15 +35,15 @@
   - 加高、加宽都和旁边的形状、页边留出 ``gap_pt``（默认 2 磅，页面上可填），不紧挨着；
     原稿里本来就比这更近的方向不再长。
 
-以上是默认的「优先保持字号」。页面上的写回偏好（``layout_mode``）另有两种：
+以上是默认的「自适应排版」。页面上的写回偏好（``layout_mode``）另有两种：
 
-  - 「始终保持字号」（``keep_size``）：字号一律不动，框和表格按需要往下长，不管下面有没有东西；
+  - 「保持字号」（``keep_size``）：字号一律不动，框和表格按需要往下长，不管下面有没有东西；
     长了以后盖住别的形状或超出页面的进复核清单。
   - 「固定版面」（``fixed``）：所有框和表格的位置大小都不动，只缩字：溢出缩排的框照档位缩，
     其余的框和表格缩 ``sz``。
 
 「不换行」的框加宽、缩到下限都放不下时智能换行：改成在框宽内折行（``wrap="square"``），
-除非折行后往下冒出的比一行往旁边冒出的还多（始终保持字号模式一律折行）。
+除非折行后往下冒出的比一行往旁边冒出的还多（保持字号模式一律折行）。
 缩到下限仍放不下的返回 ``FitIssue``，进需复核清单。
 竖排（``eaVert`` 等）和艺术字变形的框不动（竖排由包 2 列入复核）。
 
@@ -82,17 +82,17 @@ REL_THEME = f"{NS_R}/theme"
 REL_OFFICE_DOCUMENT = f"{NS_R}/officeDocument"
 REL_TABLE_STYLES = f"{NS_R}/tableStyles"
 
-#: 写回偏好（页面上的三选一）：优先保持字号（默认）、始终保持字号、固定版面。
+#: 写回偏好（页面上的三选一）：自适应排版（默认）、保持字号、固定版面。
 LAYOUT_FIT = "fit"
 LAYOUT_KEEP_SIZE = "keep_size"
 LAYOUT_FIXED = "fixed"
 LAYOUT_MODES = (LAYOUT_FIT, LAYOUT_KEEP_SIZE, LAYOUT_FIXED)
-#: 优先保持字号模式加高、加宽时，与旁边的形状和页边至少留的距离（磅），页面上可填。
+#: 自适应排版模式加高、加宽时，与旁边的形状和页边至少留的距离（磅），页面上可填。
 DEFAULT_GAP_PT = 2.0
 
 #: ``FitIssue.reason``：缩到下限、往下方空白处加高也放不下。
 REASON_OVERFLOW = f"缩到 {round(MIN_SCALE * 100)}% 仍放不下"
-#: 「始终保持字号」：框加高后盖住了别的形状 / 超出页面 / 框不能加高（组合、旋转、竖排、多栏）。
+#: 「保持字号」：框加高后盖住了别的形状 / 超出页面 / 框不能加高（组合、旋转、竖排、多栏）。
 REASON_KEEP_COVERS = "字号不变，加高后盖住了其他内容"
 REASON_KEEP_OFF_PAGE = "字号不变，加高后超出页面"
 REASON_KEEP_OVERFLOW = "字号不变，这个框不能加高，文字超出框"
@@ -172,8 +172,8 @@ def fit_after_write(
     ``read_part(name)`` 读包里任意部件的当前字节（版式、母版、主题、关系文件、
     ``presentation.xml``；``part_name`` 本身还没写回时读到的是原文）。只改 ``touched``
     里的形状。备注页等不是幻灯片、版式、母版的部件直接返回空列表。
-    ``layout_mode``：``"fit"`` 优先保持字号（先加高再缩字），``"keep_size"`` 始终保持字号（只加高），
-    ``"fixed"`` 固定版面（只缩字）；认不得的按优先保持字号。``gap_pt``：优先保持字号模式加高、加宽时与旁边的
+    ``layout_mode``：``"fit"`` 自适应排版（先加高再缩字），``"keep_size"`` 保持字号（只加高），
+    ``"fixed"`` 固定版面（只缩字）；认不得的按自适应排版。``gap_pt``：自适应排版模式加高、加宽时与旁边的
     形状和页边至少留的距离（磅）；原稿里本来就比这更近的方向不再长。
     """
     if not _FITTABLE_PART.match(part_name or ""):
@@ -1330,7 +1330,7 @@ def _fit_shape(ctx: _PartContext, tx_body) -> str | None:
     if unwrapped is None:
         return attempt(False, apply=True)[0]
     # 「不换行」的框加宽、缩到最小都放不下时智能换行（CAD 同一做法）：改成在框宽内折行。
-    # 折行后往下冒出的比一行往旁边冒出的还多时保留一行；始终保持字号模式一律折行（至少不横着出页）。
+    # 折行后往下冒出的比一行往旁边冒出的还多时保留一行；保持字号模式一律折行（至少不横着出页）。
     # 折行后仍没完全放下的照样进复核。
     wrapped, wrapped_over = attempt(True, apply=False)
     if wrapped is None or ctx.layout_mode == LAYOUT_KEEP_SIZE or wrapped_over < unwrapped_over:
@@ -1433,7 +1433,7 @@ def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_
 
 def _keep_size(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h, *, wrap: bool, movable: bool,
                tolerated_h: float, apply: bool) -> str | None:
-    """「始终保持字号」：字号不动，框按需要往下长（不换行的先在页面内按对齐加宽），不管下面有没有东西。
+    """「保持字号」：字号不动，框按需要往下长（不换行的先在页面内按对齐加宽），不管下面有没有东西。
 
     放得下返回 None；长了以后盖住别的形状或超出页面、或者框不能加高（组合、旋转、竖排、
     多栏）时返回原因，进复核清单。
@@ -1539,7 +1539,7 @@ def _fit_table(ctx: _PartContext, frame) -> str | None:
     # 表格的行跟着字撑高，和「根据文字调整形状大小」一个意思：先长进下方空白（不出页面、
     # 不压到别的形状），放不下再整张表一起缩字号，保持字号统一。「固定版面」时不长，
     # 缩到原来的行高里（PowerPoint 照样会撑高放不下的行，所以缩不下的进复核）。
-    # 「始终保持字号」时字号不动，行照样撑高，长出来的部分盖住别的形状或出页面的进复核。
+    # 「保持字号」时字号不动，行照样撑高，长出来的部分盖住别的形状或出页面的进复核。
     rows = sum(heights)
     original = ctx.original_shapes.get(_shape_id(frame) or "")
     original_tbl = original.find(f".//{_a('tbl')}") if original is not None else None

@@ -98,7 +98,7 @@ def test_manifest() -> None:
         ("layout_mode", "choice", "fit"),
         ("spacing", "number", 2),
     ]
-    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（优先保持字号在前，是默认）。
+    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（自适应排版在前，是默认）。
     assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
     # The PPT rules come on top of the app's own, which must stay word for word.
     assert manifest.prompt.startswith(CORE_TRANSLATION_PROMPT + "\n")
@@ -312,8 +312,8 @@ def test_the_page_is_registered_with_the_app() -> None:
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode", "spacing"]
         layout = descriptor["options"][2]
         assert layout["kind"] == "choice" and layout["default"] == "fit"
-        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["优先保持字号", "始终保持字号", "固定版面"]
-        # 间距是输入的数字，默认 2 磅，只在「优先保持字号」时出现。
+        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["自适应排版", "保持字号", "固定版面"]
+        # 间距是输入的数字，默认 2 磅，只在「自适应排版」时出现。
         spacing = descriptor["options"][3]
         assert spacing["kind"] == "number" and spacing["default"] == 2 and spacing["min"] == 0
         assert [unit["value"] for unit in spacing["units"]] == ["pt", "mm", "cm"] and spacing["unit"] == "pt"

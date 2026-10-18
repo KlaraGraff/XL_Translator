@@ -57,26 +57,26 @@
         "fr": "Préférence de mise en page"
       },
       "help": {
-        "zh": "译文比原文长、放不下时的处理方式。优先保持字号（默认）：文本框和表格先往下方空白处加高，碰到其他内容或页边再缩小字号。始终保持字号：字号不变，文本框和表格按需要加高，盖住其他内容或超出页面的列入需复核，适合译完后自行拆页的文件。固定版面：文本框和表格的大小、位置都不变，只缩小字号，适合公司模板、表单。字号最小缩到 60%，仍放不下的列入需复核。设为不换行的文字放不下时改为在框内换行。",
-        "en": "What to do when a translation is longer than its box. Keep font size where possible (default): text boxes and tables first grow down into free space and the font shrinks only when they reach other content or the slide edge. Always keep font size: the font never shrinks and boxes and tables grow as far as needed; any that end up covering other content or running off the slide are listed for review. Suits files you will split into more slides yourself. Keep layout fixed: no text box or table is resized or moved and only the font shrinks. Suits company templates and forms. The font shrinks to 60% at most; anything that still does not fit is listed for review. Text set not to wrap starts wrapping inside its box when it would not fit otherwise.",
-        "fr": "Que faire quand une traduction est plus longue que sa zone. Taille conservée si possible (par défaut) : les zones de texte et les tableaux s’agrandissent d’abord vers le bas dans l’espace libre, et le texte n’est réduit qu’en atteignant un autre élément ou le bord de la diapositive. Taille toujours conservée : la taille du texte ne change jamais et les zones et tableaux s’agrandissent autant que nécessaire ; ceux qui finissent par recouvrir d’autres éléments ou dépasser de la diapositive sont listés pour vérification. Adapté aux fichiers que vous scinderez vous-même en plusieurs diapositives. Mise en page figée : aucune zone de texte ni aucun tableau n’est redimensionné ou déplacé, seul le texte est réduit. Adapté aux modèles d’entreprise et aux formulaires. Le texte est réduit jusqu’à 60 % au plus ; ce qui ne tient toujours pas est listé pour vérification. Le texte sans retour à la ligne passe à la ligne dans sa zone quand il ne tiendrait pas autrement."
+        "zh": "译文比原文长、放不下时的处理方式。自适应排版（默认）：文本框和表格先往下方空白处加高，碰到其他内容或页边再缩小字号。保持字号：字号不变，文本框和表格按需要加高，盖住其他内容或超出页面的列入需复核，适合译完后自行拆页的文件。固定版面：文本框和表格的大小、位置都不变，只缩小字号，适合公司模板、表单。字号最小缩到 60%，仍放不下的列入需复核。设为不换行的文字放不下时改为在框内换行。",
+        "en": "What to do when a translation is longer than its box. Adaptive layout (default): text boxes and tables first grow down into free space and the font shrinks only when they reach other content or the slide edge. Keep font size: the font never shrinks and boxes and tables grow as far as needed; any that end up covering other content or running off the slide are listed for review. Suits files you will split into more slides yourself. Keep layout fixed: no text box or table is resized or moved and only the font shrinks. Suits company templates and forms. The font shrinks to 60% at most; anything that still does not fit is listed for review. Text set not to wrap starts wrapping inside its box when it would not fit otherwise.",
+        "fr": "Que faire quand une traduction est plus longue que sa zone. Mise en page adaptative (par défaut) : les zones de texte et les tableaux s’agrandissent d’abord vers le bas dans l’espace libre, et le texte n’est réduit qu’en atteignant un autre élément ou le bord de la diapositive. Taille conservée : la taille du texte ne change jamais et les zones et tableaux s’agrandissent autant que nécessaire ; ceux qui finissent par recouvrir d’autres éléments ou dépasser de la diapositive sont listés pour vérification. Adapté aux fichiers que vous scinderez vous-même en plusieurs diapositives. Mise en page figée : aucune zone de texte ni aucun tableau n’est redimensionné ou déplacé, seul le texte est réduit. Adapté aux modèles d’entreprise et aux formulaires. Le texte est réduit jusqu’à 60 % au plus ; ce qui ne tient toujours pas est listé pour vérification. Le texte sans retour à la ligne passe à la ligne dans sa zone quand il ne tiendrait pas autrement."
       },
       "default": "fit",
       "choices": [
         {
           "value": "fit",
           "label": {
-            "zh": "优先保持字号",
-            "en": "Keep font size where possible",
-            "fr": "Taille conservée si possible"
+            "zh": "自适应排版",
+            "en": "Adaptive layout",
+            "fr": "Mise en page adaptative"
           }
         },
         {
           "value": "keep_size",
           "label": {
-            "zh": "始终保持字号",
-            "en": "Always keep font size",
-            "fr": "Taille toujours conservée"
+            "zh": "保持字号",
+            "en": "Keep font size",
+            "fr": "Taille conservée"
           }
         },
         {

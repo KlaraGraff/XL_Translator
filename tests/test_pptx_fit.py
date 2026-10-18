@@ -330,7 +330,7 @@ def test_group_shapes_scale_with_group_and_never_grow(parts, french):
     assert max(_sizes(touched["group-a"])) < 1800
 
 
-# ---------------------------------------------------------------- 始终保持字号
+# ---------------------------------------------------------------- 保持字号
 
 
 def _reasons(root, issues) -> dict[str, str]:
@@ -454,7 +454,7 @@ def test_label_stays_on_one_line_when_wrapping_spills_more(parts, french):
 
 
 def test_grown_boxes_keep_the_chosen_gap(parts, french):
-    """优先保持字号：往下长的框停在下方形状上沿往上 gap 处（默认 2 磅）；gap 为 0 时可以贴上去。"""
+    """自适应排版：往下长的框停在下方形状上沿往上 gap 处（默认 2 磅）；gap 为 0 时可以贴上去。"""
     obstacle = _ext(_shape(etree.fromstring(parts["ppt/slides/slide3.xml"]), "Rectangle 5"))
     default_root, _touched, _issues = _run(parts, french, 3, bilingual=True)
     x, y, cx, cy = _ext(_shape(default_root, "spauto-near"))
