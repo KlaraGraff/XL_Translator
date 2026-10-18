@@ -1,5 +1,11 @@
 # Translator 版本更新日志
 
+## 未发布
+
+- **路径栏按钮写全「选择文件或文件夹」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，看起来像文字没显示完整；现在写全为「选择文件或文件夹」（英文 Choose files or a folder，法文 Choisir des fichiers ou un dossier），点开仍是「选择文件 / 选择文件夹」两项。窗口较窄时让出宽度的是路径框（路径中间省略），按钮文字始终完整。快速开始第 3 步的说明同步改为新名称。
+
+  **Path bar button now reads "Choose files or a folder"**: The button on the right of every translation page's path bar used to read "选择…" / "Choose", which looked cut off. It now reads in full in all three languages and still opens the same two choices. In narrow windows the path field gives up the width (middle ellipsis), never the button label. Quick start step 3 uses the new name.
+
 ## V10.3.0
 
 - **CAD 任务记录多一格「保留原文」**：CAD 页上的「待翻译」是开始前数出的候选条数，任务记录里的「已翻译文字」是真正改动了的条数，两者差的是模型确认已经是目标语言、或译文与原文相同而原样保留的文字。以前任务记录不列这部分，两个数差几十条时看着像数错了（实测一张图纸页面写待翻译 2185、任务记录写已翻译 2158）。现在任务记录在「已翻译文字」旁边列出「保留原文」（为 0 时不显示），每张图纸的翻译摘要也多一行；已翻译加保留原文之外剩下的，是未获得译文、已列入需复核的文字。
