@@ -1,6 +1,6 @@
 # Translator 版本更新日志
 
-## 未发布
+## V10.3.0
 
 - **CAD 任务记录多一格「保留原文」**：CAD 页上的「待翻译」是开始前数出的候选条数，任务记录里的「已翻译文字」是真正改动了的条数，两者差的是模型确认已经是目标语言、或译文与原文相同而原样保留的文字。以前任务记录不列这部分，两个数差几十条时看着像数错了（实测一张图纸页面写待翻译 2185、任务记录写已翻译 2158）。现在任务记录在「已翻译文字」旁边列出「保留原文」（为 0 时不显示），每张图纸的翻译摘要也多一行；已翻译加保留原文之外剩下的，是未获得译文、已列入需复核的文字。
 
@@ -117,6 +117,10 @@
 - **「设置 → 外观与语言」里「界面语言」移到第二项，紧跟在「主题」下面**：以前要越过两排配色才能找到「界面语言」；现在顺序是主题、界面语言、配色、动效、自定义语言。
 
   **In Settings → Appearance & language, Interface language is now second, right below Theme**: It used to sit below the two rows of palettes; the order is now Theme, Interface language, Palette, Motion, Custom languages.
+
+- **从 PDF 页点「安装 ↗ 组件」后，矮窗口里也能看到要装的组件卡片**：跳到「扩展 → 组件」后，组件检测回来会整页重绘，卡片被挤到可视区下方、面板不再滚动。现在检测全部回来后再对准一次，卡片完整露出（#153）。
+
+  **After clicking Install ↗ components on the PDF page, the component card is visible even in a short window**: Extensions → Components redraws once the component checks return, which pushed the card below the visible area without scrolling. The panel now scrolls to the card again after all checks return, so it is fully shown (#153).
 
 ## V10.2.0
 
