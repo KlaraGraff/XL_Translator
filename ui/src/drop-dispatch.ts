@@ -1,16 +1,19 @@
 // 拖入即分配（界面焕新阶段 2）：拖进窗口、或在「翻译」入口页选中的文件和文件夹，按扩展名数一数，
-// 进入个数最多的那个类型页，并只把那一类交给它读取；其他类型若有，提示一句去哪一页处理。
-// 已经在某个类型页上、而拖入的东西里有这一页认的文件时，就交给当前页，等同于填进路径栏后回车。
+// 每一类交给各自的类型页读取（文件夹整个交给每一页，各页只挑自己认的文件），人进入个数最多的
+// 那一页；其他几页在后台读取，每一页上方都说一句同一批还有哪几类，点一下切过去。
+// 已经在某个类型页上、而拖入的东西里有这一页认的文件时，人留在当前页，等同于填进路径栏后回车。
 
 import { currentView, navigate, type ViewId } from "./router";
 import { showToast } from "./components";
-import { currentLocale, t } from "./i18n";
+import { t } from "./i18n";
 import { isExtSurface, surfaceDescriptors } from "./surface-descriptors";
 import {
-  fileNounPhrase,
+  dropFromDispatchBatch,
   getClient,
   openSourcePaths,
+  setDispatchBatch,
   surfaceFileExtensions,
+  surfaceLabel,
   type Surface,
 } from "./views/workspace";
 
@@ -111,15 +114,22 @@ export async function dispatchPaths(paths: string[]): Promise<void> {
     showToast({ message: t("没有可翻译的文件。"), error: true });
     return;
   }
+  const others = candidateSurfaces().filter((surface) => surface !== target && buckets.has(surface));
+  // 先登记这一批，各页一挂上去（读取中也算）就能说同一批还有什么。
+  setDispatchBatch([target, ...others].map((surface) => ({ surface, ...buckets.get(surface)! })));
   if (here !== target) navigate(target);
-  const opened = await openSourcePaths(target, buckets.get(target)!.paths);
-  if (!opened) return;
-  const others = candidateSurfaces()
-    .filter((surface) => surface !== target && buckets.has(surface))
-    .map((surface) => fileNounPhrase(surface, buckets.get(surface)!.count));
-  if (others.length) {
+  const results = await Promise.all([
+    openSourcePaths(target, buckets.get(target)!.paths),
+    ...others.map((surface) => openSourcePaths(surface, buckets.get(surface)!.paths, { background: true })),
+  ]);
+  if (!results[0]) dropFromDispatchBatch(target);
+  // 正在翻译的页不换来源：拿出这一批，并说一句哪几页没放进去。
+  const busy = others.filter((_, index) => !results[index + 1]);
+  for (const surface of busy) dropFromDispatchBatch(surface);
+  if (busy.length) {
     showToast({
-      message: t("另有 {0}，可到对应页面处理。", others.join(currentLocale() === "zh" ? "、" : ", ")),
+      message: t("{0} 正在翻译，这一类文件没有放入，完成后再拖入一次即可。", busy.map((surface) => surfaceLabel(surface)).join(" / ")),
+      error: true,
       duration: 6000,
     });
   }
