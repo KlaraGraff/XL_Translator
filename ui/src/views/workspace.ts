@@ -805,11 +805,14 @@ async function ensureBootstrap(): Promise<void> {
   if (!bootstrapPromise) {
     const attempt = (async () => {
       const c = await getClient();
-      const [settingsPayload, languagesPayload] = await Promise.all([
+      const [settingsPayload, languagesPayload, defaultsPayload] = await Promise.all([
         c.request<JsonObject>("/api/settings"),
         c.request<{ source_options: LanguageOption[]; target_options: LanguageOption[] }>("/api/languages"),
+        // 取不到只是右栏少一行「采用应用默认值 / 上次使用的设置」，不拖垮整页。
+        c.request<{ app: JsonObject; extension: JsonObject }>("/api/settings/defaults").catch(() => null),
       ]);
       settings = settingsPayload;
+      settingsDefaults = defaultsPayload;
       loadAdvancedSeen();
       languageOptions = { source: languagesPayload.source_options ?? [], target: languagesPayload.target_options ?? [] };
       applySettingsToStates();
@@ -1014,6 +1017,51 @@ function readOutputPath(surface: Surface, key: string): unknown {
 async function persistSettings(patch: JsonObject): Promise<void> {
   const c = await getClient();
   settings = await c.request<JsonObject>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+  // 配方句下面那行按存好的设置说「应用默认值」还是「上次使用的设置」，存完重算一次。
+  for (const [surface, st] of states) refreshRecipe(surface, st);
+}
+
+/** 出厂默认值（GET /api/settings/defaults）：app 是整份设置，extension 是运行时注册类型的那一份。 */
+let settingsDefaults: { app: JsonObject; extension: JsonObject } | null = null;
+
+/** 内置页右栏里能改的设置，按 `<页面>_<后缀>` 存；PDF 页的设置在 settings.pdf 一处。 */
+const PAGE_SETTING_SUFFIXES = ["source_lang", "target_lang", "domain_preset", "smart_context", "output", "review", "conversion"];
+/** 运行时注册类型的设置里，右栏能改的几项。 */
+const EXT_PAGE_SETTING_KEYS = ["source_lang", "target_lang", "domain_preset", "smart_context", "options", "use_custom_output_dir", "custom_output_dir"];
+/** settings.pdf 里不在 PDF 页右栏、而在「设置 · 翻译参数」里改的几项（重试、并发）。 */
+const PDF_NON_PAGE_KEY = /retry|concurrency/;
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as JsonObject;
+  const right = b as JsonObject;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+
+function withoutPdfNonPageKeys(value: unknown): JsonObject {
+  return Object.fromEntries(Object.entries(record(value)).filter(([key]) => !PDF_NON_PAGE_KEY.test(key)));
+}
+
+/** 这一页右栏的设置是否都还是出厂默认值；取不到默认值时为 null。 */
+function pageUsesDefaults(surface: Surface): boolean | null {
+  if (!settingsDefaults) return null;
+  if (isExtSurface(surface)) {
+    // 没存过这一类型时 settings.extensions 里没有它，各项都按默认值算。
+    const saved = extSettingsRecord(surface);
+    const base = record(settingsDefaults.extension);
+    return EXT_PAGE_SETTING_KEYS.every((key) => !hasOwn(saved, key) || sameJson(saved[key], base[key]));
+  }
+  const base = record(settingsDefaults.app);
+  if (surface === "pdf") {
+    return sameJson(withoutPdfNonPageKeys(settings.pdf), withoutPdfNonPageKeys(base.pdf))
+      && sameJson(settings.pdf_output, base.pdf_output);
+  }
+  return PAGE_SETTING_SUFFIXES
+    .map((suffix) => `${surface}_${suffix}`)
+    .filter((key) => hasOwn(base, key))
+    .every((key) => sameJson(settings[key], base[key]));
 }
 
 /** 开关/领域/输出目录这几处设置都是「先改界面再落盘」，落盘发射后不管：PUT 失败时
@@ -3121,9 +3169,12 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     parts.push(st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT ? st.domainPreset : t("无补充要求"));
   }
   for (const part of parts) body.append(document.createTextNode(` · ${part}`));
-  const sub = el("span", "sub");
-  sub.textContent = active ? t("任务进行中，设置已锁定") : t("默认值已按本机设置与上次任务准备好，可直接开始");
-  body.append(sub);
+  const fromDefaults = pageUsesDefaults(surface);
+  if (active || fromDefaults !== null) {
+    const sub = el("span", "sub");
+    sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("采用应用默认值") : t("采用上次使用的设置");
+    body.append(sub);
+  }
   box.append(body);
   return box;
 }

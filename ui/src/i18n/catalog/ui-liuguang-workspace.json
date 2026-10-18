@@ -151,8 +151,12 @@
     "en": "Advanced",
     "fr": "Avancé"
   },
-  "默认值已按本机设置与上次任务准备好，可直接开始": {
-    "en": "Defaults come from your settings and last task — ready to start",
-    "fr": "Valeurs par défaut issues de vos réglages et de la dernière tâche — prêt à lancer"
+  "采用应用默认值": {
+    "en": "Using the app defaults",
+    "fr": "Valeurs par défaut de l'application"
+  },
+  "采用上次使用的设置": {
+    "en": "Using your last settings",
+    "fr": "Derniers réglages utilisés"
   }
 }
