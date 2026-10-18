@@ -13,6 +13,7 @@ import { hasView, navigate } from "../router";
 import { setTopbar, setTaskBadge, setTaskPill } from "../shell";
 import {
   clearElement,
+  patchKeyedChildren,
   closeMenu,
   createChip,
   createButton,
@@ -34,7 +35,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { currentLocale, localeTag, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
-import { motionAllowed } from "../motion";
+import { entranceElapsed, motionAllowed } from "../motion";
 import "./tasks.css";
 
 // ---------------------------------------------------------------------------
@@ -914,9 +915,10 @@ let fastPollTimer: number | null = null;
 /** 下一次 renderList 要不要让任务行错落浮现：只在进页、切筛选、输入搜索时置上，
  *  用一次就清掉。4 秒轮询和 SSE 事件触发的重绘不带它，否则列表每 4 秒闪一次。 */
 let listStagger = false;
-/** 这一轮浮现开始的时刻。进页后紧跟着的那次 refreshRegistry 会在动画播到一半时重建全部行，
- *  直接去掉 stag 会让行瞬间跳到终态；浮现还没播完时带上已过去的时长，让新行接着播。 */
+/** 这一轮浮现开始的时刻；超过浮现总时长后摘掉 stag，之后新冒出来的行不再浮。 */
 let staggerStartedAt = 0;
+/** 第几次进任务页：拼进统计格浮现的 identity，每次进页播一次。 */
+let mountCount = 0;
 
 let connectPromise: Promise<ApiClient> | null = null;
 
@@ -1173,11 +1175,18 @@ function handleEvent(taskId: string, event: SseEvent): void {
   touch(taskId);
 }
 
+/** 登记册里所有会画到页面上的状态，用来判断一次巡检有没有带来变化。 */
+function registrySignature(): string {
+  return JSON.stringify(order.map((id) => tasks.get(id)));
+}
+
 async function refreshRegistry(): Promise<void> {
   try {
     const client = await getClient();
     const payload = await client.listTasks();
     const combined = [...(Array.isArray(payload.active) ? payload.active : []), ...(Array.isArray(payload.recent) ? payload.recent : [])];
+    const before = registrySignature();
+    const selectedBefore = selectedId;
     for (const task of combined) {
       // upsert 返回 null 表示这条记录已经被用户删掉（墓碑命中），这次快照只是在途的旧成像，
       // 不能让它复活，更不能给它挂事件流监听。
@@ -1188,6 +1197,8 @@ async function refreshRegistry(): Promise<void> {
     // 最后一条记录、列表进入空态之后，12 秒后的这次巡检会把选中项挪到一条看不见的任务上：
     // 左边列表空空如也，右边详情却显示着另一条任务的内容。
     if (!selectedId) selectedId = visibleOrder()[0] ?? null;
+    // 快照跟上次一模一样就不重建列表和详情：整块重建会打断悬停、选中的文字和正在播的动画。
+    if (selectedId === selectedBefore && registrySignature() === before) return;
     touch();
   } catch {
     // sidecar 尚未就绪或临时不可达；下一次巡检自然会重试，这里不打扰用户。
@@ -1678,17 +1689,21 @@ function renderCard(id: string, index: number): HTMLButtonElement {
 
 function renderList(): void {
   if (!rowsEl) return;
-  clearElement(rowsEl);
   const ids = visibleOrder();
   const now = performance.now();
-  if (listStagger) staggerStartedAt = now;
+  // 进页、切筛选、搜索：整列重建，从头错落浮现。其余重画（4 秒巡检、事件流）沿用原来的行节点，
+  // 只改变了的内容；浮现还没播完的行接着播，新冒出来的一行自己浮上来。
+  if (listStagger) {
+    staggerStartedAt = now;
+    clearElement(rowsEl);
+  }
   listStagger = false;
   // 浮现总时长 = 最后一行的延迟 + 一段 --t-slow（420ms）。
   const elapsed = now - staggerStartedAt;
   const staggering = staggerStartedAt > 0 && elapsed < ids.length * 28 + 420 && motionAllowed();
   rowsEl.classList.toggle("stag", staggering);
-  rowsEl.style.setProperty("--tk-elapsed", staggering ? `${Math.round(elapsed)}ms` : "0ms");
   if (!staggering) staggerStartedAt = 0;
+  if (!ids.length) clearElement(rowsEl);
   if (!ids.length && normalizeSearch(searchQuery)) {
     const empty = createEmptyState({
       title: t("没有符合条件的任务"),
@@ -1712,7 +1727,8 @@ function renderList(): void {
     rowsEl.append(empty);
     return;
   }
-  ids.forEach((id, index) => rowsEl!.append(renderCard(id, index)));
+  // 行上的点击只认任务 id，旧行节点可以原地沿用（见 patchKeyedChildren）。
+  patchKeyedChildren(rowsEl, ids.map((id, index) => renderCard(id, index)), (node) => node.dataset.taskId);
 }
 
 function buildActionButton(reference: { label: string; path: string; reveal: boolean }): HTMLButtonElement {
@@ -1924,7 +1940,14 @@ function renderDetail(): void {
   const kpis = richKpiRows(task);
   if (kpis.length) {
     const grid = document.createElement("div");
-    grid.className = motionAllowed() ? "kpis stag" : "kpis";
+    grid.className = "kpis";
+    // 浮现只在进页、换到另一条任务时播一次。4 秒轮询和事件流都会整块重建详情，以前每次重建
+    // 都重新挂上 stag，统计格每隔几秒闪一下；还没播完时带上已过去的时长接着播。
+    const elapsed = entranceElapsed("tasks-kpis", `${mountCount}:${task.task_id}`, kpis.length * 28 + 420);
+    if (elapsed !== null && motionAllowed()) {
+      grid.classList.add("stag");
+      grid.style.setProperty("--tk-elapsed", `${Math.round(elapsed)}ms`);
+    }
     kpis.forEach(([label, value], index) => {
       const tile = document.createElement("div");
       tile.className = WARN_KPI_LABELS.has(label) && value > 0 ? "kpi warn" : "kpi";
@@ -2131,6 +2154,7 @@ function focusRunningTask(): void {
 
 export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
+  mountCount += 1;
   // 诊断记录可能在两次进入之间生成或被清理掉，每次进来重新问。
   diagnosticAvailability.clear();
   if (typeof params.taskId === "string") selectedId = params.taskId;

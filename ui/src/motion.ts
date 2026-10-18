@@ -52,3 +52,48 @@ export function withColorFade(change: () => void): void {
   }
   change();
 }
+
+// ---------------------------------------------------------------------------
+// 整块重画时不重播动画
+// ---------------------------------------------------------------------------
+// 各页刷新（轮询、事件流、改一个选项）大多是清空后整块重建。新节点上的 CSS 动画会从头播：
+// 进场浮现再浮一次（任务页统计格每 4 秒闪一下），循环动画（呼吸点、流光条、骨架）
+// 每重建一次就跳回第一帧，事件密的时候看着一抽一抽。下面两样分别管这两类。
+
+const entrances = new Map<string, { identity: string; started: number }>();
+
+/**
+ * 进场动画只在「换了一样东西」时播。slot 是页面上的一个位置（如任务详情的统计格），identity 是
+ * 此刻放在那儿的东西（如任务 id，进页时把挂载序号拼进去就能每次进页重播一次）。
+ * 返回动画已经播了多少毫秒：0 表示刚开始；重画时还没播完，新节点用它接着播（负的 animation-delay）；
+ * 已经播完返回 null，这次重画不该再播。
+ */
+export function entranceElapsed(slot: string, identity: string, totalMs: number): number | null {
+  const now = performance.now();
+  const seen = entrances.get(slot);
+  if (!seen || seen.identity !== identity) {
+    entrances.set(slot, { identity, started: now });
+    return 0;
+  }
+  const elapsed = now - seen.started;
+  return elapsed < totalMs ? elapsed : null;
+}
+
+/**
+ * 让所有循环 CSS 动画都对齐到同一条时间线（startTime = 0）：重建出来的新节点接着旧节点的相位播，
+ * 看不出被换过。各自的 animation-delay（错落）不受影响。MutationObserver 在本轮任务结束、
+ * 下一帧绘制之前回调，新节点第一帧就已经对齐。
+ * 不支持 getAnimations 的运行时（Safari 13.1 之前）什么都不做，动画照旧从头播。
+ */
+export function installLoopingAnimationSync(): void {
+  if (typeof document.getAnimations !== "function" || typeof MutationObserver !== "function") return;
+  new MutationObserver(() => {
+    for (const animation of document.getAnimations()) {
+      // 只管 CSS 的循环动画；Web Animations 播的过渡（换页、滑块）有自己的起点。
+      // 暂停着的（animation-play-state: paused，如换页快照）不碰：设了起点会让它重新跑起来。
+      if (!("animationName" in animation) || animation.startTime === 0 || animation.playState === "paused") continue;
+      const iterations = animation.effect?.getTiming().iterations;
+      if (iterations === Infinity) animation.startTime = 0;
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+}

@@ -1537,6 +1537,8 @@ function buildResultCard(surface: Surface, st: SurfaceState): HTMLElement {
       st.showBanner = false;
       rerender(surface);
     },
+    // 进这一页播一次；之后事件、改选项引起的整页重画不再弹。
+    entrance: { slot: `ws-result:${surface}`, identity: `${mountTokens.get(surface) ?? 0}:${st.lastTaskId ?? ""}` },
   });
 }
 

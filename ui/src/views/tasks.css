@@ -274,7 +274,8 @@
 }
 
 /* ---------- 错落浮现：进页、切筛选、搜索时每行晚 28ms ---------- */
-/* 浮现途中赶上一次轮询重绘时，新建的行带着 --tk-elapsed 接着播，不从头再来一遍。 */
+/* 列表的行重画时原地沿用，不会重播；详情统计格是整块重建的，浮现途中赶上一次重建时，
+   新建的格子带着 --tk-elapsed 接着播，不从头再来一遍。 */
 .content.tasks .stag > * {
   animation: tk-rise var(--t-slow) var(--ease-out) both;
   animation-delay: calc(var(--i, 0) * 28ms - var(--tk-elapsed, 0ms));

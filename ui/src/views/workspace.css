@@ -517,6 +517,7 @@
   place-items: center;
   flex: none;
   animation: ws-pop var(--t-slow) var(--ease-spring) both;
+  animation-delay: calc(0ms - var(--res-elapsed, 0ms));
 }
 .res .mk .ic {
   width: 18px;
@@ -527,6 +528,15 @@
   stroke-dasharray: 30;
   stroke-dashoffset: 30;
   animation: ws-draw .5s .15s var(--ease-out) forwards;
+  animation-delay: calc(150ms - var(--res-elapsed, 0ms));
+}
+/* 这张结果卡的勾已经弹过（整页重画出来的新卡）：直接是播完的样子，不再弹一次。 */
+.res.settled .mk {
+  animation: none;
+}
+.res.settled:not(.warn):not(.fail) .mk .ic {
+  animation: none;
+  stroke-dashoffset: 0;
 }
 @keyframes ws-draw {
   to { stroke-dashoffset: 0; }
