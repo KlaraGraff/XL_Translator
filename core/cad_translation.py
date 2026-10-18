@@ -611,6 +611,9 @@ class CadTranslationStats:
     ai_translated: int = 0
     untranslated: int = 0
     changed: int = 0
+    # 待翻译里没改动、原样保留的文字条数：模型确认已是目标语言，或双语时译文与原文相同。
+    # 页面上的「待翻译」= changed + kept_units + 没拿到译文的条数，任务记录靠它对上那个数。
+    kept_units: int = 0
     replacement_characters: int = 0
     # 超长等确实处理不了的文字；会让文件进入"需复核"。
     unsupported_entities: int = 0
@@ -2233,6 +2236,9 @@ class CadTranslationPipeline:
                 if not unit.runs and unit.plain_text in written:
                     changed_unit = fully = True
                 if not changed_unit:
+                    pending = [run.text for run in unit.runs if _has_translatable_content(run.text)] or [unit.plain_text]
+                    if all(text in kept_texts or text in unchanged for text in pending):
+                        stats.kept_units += 1
                     continue
                 stats.changed += 1
                 start = _entity_start(records, unit.record_indices[0])
@@ -2493,6 +2499,7 @@ class CadTranslationPipeline:
             summary_lines = [
                 f"# CAD 翻译摘要：{source.name}", "",
                 f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
+                f"- 保留原文（已是目标语言或译文与原文相同）：{stats.kept_units} 处",
                 f"- 未完成：{len(unresolved)} 处", f"- 未采用记忆库设定译法：{len(term_review)} 处",
                 f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
                 f"- 缩到最小比例仍会压到旁边文字或伸出图框：{stats.layout_unresolved} 处", "",

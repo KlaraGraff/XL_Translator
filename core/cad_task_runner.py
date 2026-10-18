@@ -505,6 +505,7 @@ class CadTaskRunner(BaseTaskRunner):
         results: list[dict[str, Any]] = []
         issues: list[dict[str, Any]] = []
         translated_count = 0
+        kept_count = 0
         memory_hits = 0
         api_calls = 0
         failed_files = False
@@ -680,6 +681,7 @@ class CadTaskRunner(BaseTaskRunner):
                     continue
                 stats = result.stats
                 translated_count += stats.changed
+                kept_count += getattr(stats, "kept_units", 0)
                 memory_hits += stats.memory_hits
                 api_calls += stats.ai_translated
                 file_result = {
@@ -703,6 +705,7 @@ class CadTaskRunner(BaseTaskRunner):
                     "stats": {
                         "candidate_entities": stats.candidate_entities,
                         "changed": stats.changed,
+                        "kept_units": getattr(stats, "kept_units", 0),
                         "memory_hits": stats.memory_hits,
                         "glossary_hits": stats.glossary_hits,
                         "ai_translated": stats.ai_translated,
@@ -795,7 +798,7 @@ class CadTaskRunner(BaseTaskRunner):
                         tm_hit_count=memory_hits,
                         api_call_count=api_calls,
                         issues=issues,
-                        kpi={"translated_entities": translated_count, "file_count": len(results)},
+                        kpi={"translated_entities": translated_count, "kept_entities": kept_count, "file_count": len(results)},
                         terms=self._finish_terms(),
                     )
                 )
