@@ -1372,6 +1372,15 @@ function restoreKeptFocus(container: HTMLElement, kept: { name: string; start: n
 export function rerender(surface: Surface): void {
   const st = stateOf(surface);
   st.renderer?.();
+  for (const listener of changeListeners) listener(surface);
+}
+
+/** 页面之外也要跟着变的地方（「翻译」页的本批文件卡片）在这里登记；返回取消登记的函数。 */
+const changeListeners = new Set<(surface: Surface) => void>();
+
+export function onWorkspaceChange(listener: (surface: Surface) => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
 }
 
 function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void {
@@ -1843,6 +1852,11 @@ interface DispatchBatch {
   counts: Map<Surface, number>;
   /** 分配时交给每一页的来源；这一页之后换了来源，这一页就不再算在这一批里。 */
   sources: Map<Surface, string>;
+  /** 拖入的那个文件夹（拖入多个时取共同的上级），卡片标题上写它的名字。 */
+  root: string;
+  /** 「全部开始」之后：这一批共用的输出文件夹和各页的任务。 */
+  outputDir: string;
+  taskIds: Map<Surface, string>;
 }
 
 let dispatchBatch: DispatchBatch | null = null;
@@ -1854,6 +1868,9 @@ export function setDispatchBatch(batch: { surface: Surface; count: number; paths
     ? {
         counts: new Map(batch.map((item) => [item.surface, item.count])),
         sources: new Map(batch.map((item) => [item.surface, normalizeUserPath(sourcePathFor(item.paths))])),
+        root: normalizeUserPath(sourcePathFor([...new Set(batch.flatMap((item) => item.paths))])),
+        outputDir: "",
+        taskIds: new Map(),
       }
     : null;
   for (const surface of new Set([...(previous?.counts.keys() ?? []), ...(dispatchBatch?.counts.keys() ?? [])])) rerender(surface);
@@ -1874,6 +1891,114 @@ function dispatchBatchMembers(): Surface[] {
   if (!dispatchBatch) return [];
   const batch = dispatchBatch;
   return [...batch.counts.keys()].filter((surface) => normalizeUserPath(stateOf(surface).sourcePath) === batch.sources.get(surface));
+}
+
+/** 卡片上的「×」和页面提示条上的「×」：这一批不再提示。 */
+export function clearDispatchBatch(): void {
+  const shown = dispatchBatch ? [...dispatchBatch.counts.keys()] : [];
+  dispatchBatch = null;
+  for (const member of shown) rerender(member);
+}
+
+export interface BatchRow {
+  surface: Surface;
+  /** 这一页读到的文件数（分配时数的）。 */
+  found: number;
+  /** 「全部开始」会交出去的文件数；0 表示这一类这次不参与。 */
+  count: number;
+  phase: "reading" | "ready" | "skip" | "running" | "finished";
+  /** 这一行右侧那颗状态的字和颜色。 */
+  label: string;
+  tone: "ok" | "warn" | "tint" | "mute" | "dgr";
+  /** 补一句为什么（不参与的原因、要先处理的事）；没有时为空。 */
+  note: string;
+  /** 这句话是要人处理的事（橙色），不只是说明。 */
+  noteWarn: boolean;
+  percent: number;
+}
+
+export interface BatchView {
+  root: string;
+  outputDir: string;
+  rows: BatchRow[];
+}
+
+/** 「翻译」页本批文件卡片要画的东西；没有混合拖入的一批时为 null。 */
+export function dispatchBatchView(): BatchView | null {
+  if (!dispatchBatch) return null;
+  const batch = dispatchBatch;
+  // 已经开始的那几页即使后来换了来源，卡片也照样报它们的结果；没开始的按页面现状算。
+  const members = [...batch.counts.keys()].filter((surface) => batch.taskIds.has(surface) || dispatchBatchMembers().includes(surface));
+  if (!members.length) return null;
+  return { root: batch.root, outputDir: batch.outputDir, rows: members.map((surface) => batchRow(surface, batch)) };
+}
+
+/** 这一页这次会交出去的文件：勾选的那些；CAD 没连上转换工具时 DWG 开不了工，先拿掉。 */
+function batchSelection(surface: Surface, st: SurfaceState): FileItem[] {
+  return st.files.filter((f) => st.selected.has(f.path) && !isRisky(surface, f));
+}
+
+function batchRow(surface: Surface, batch: DispatchBatch): BatchRow {
+  const st = stateOf(surface);
+  const found = batch.counts.get(surface) ?? 0;
+  const row: BatchRow = { surface, found, count: 0, phase: "skip", label: "", tone: "mute", note: "", noteWarn: false, percent: 0 };
+  const taskId = batch.taskIds.get(surface);
+  const local = st.task;
+  if (taskId) {
+    if (local && local.task.task_id === taskId && !local.task.terminal) {
+      const meta = runningStatusMeta(local.task.state);
+      return { ...row, phase: "running", label: `${meta.label} ${Math.round(local.percent)}%`, tone: "tint", percent: local.percent };
+    }
+    if (local && local.task.task_id === taskId && st.bannerInfo) {
+      const info = st.bannerInfo;
+      return { ...row, phase: "finished", label: info.statusLabel, tone: info.tone === "fail" ? "dgr" : info.tone === "warn" ? "warn" : "ok", percent: 100 };
+    }
+    return { ...row, phase: "finished", label: t("已开始"), tone: "mute" };
+  }
+  if (local && !local.task.terminal) return { ...row, label: t("正在翻译"), tone: "warn", note: t("这一类已有任务在进行，本次不包含。") };
+  if (scanBusy.has(surface)) return { ...row, phase: "reading", label: t("读取中"), tone: "tint" };
+  if (!st.files.length) return { ...row, label: t("未读取到文件"), tone: "mute" };
+  if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
+    return { ...row, label: t("需先设置"), tone: "warn", note: t("源语言与目标语言相同，请到这一页重新选择。"), noteWarn: true };
+  }
+  const selection = batchSelection(surface, st);
+  const blocked = st.files.filter((f) => st.selected.has(f.path) && isRisky(surface, f)).length;
+  if (!selection.length) {
+    if (blocked) return { ...row, label: t("需先设置"), tone: "warn", note: t("{0} 个 DWG 需先连接图纸转换工具。", blocked), noteWarn: true };
+    return { ...row, label: t("未勾选文件"), tone: "mute" };
+  }
+  return {
+    ...row,
+    phase: "ready",
+    count: selection.length,
+    label: t("待开始"),
+    tone: "ok",
+    note: blocked ? t("{0} 个 DWG 需先连接图纸转换工具，本次只翻译 DXF。", blocked) : "",
+    noteWarn: blocked > 0,
+  };
+}
+
+/** 「全部开始」里这一页的请求：和本页「开始翻译」同一份设置（在这一页上选了「接着上次继续」
+ *  也照样带上，上次的结果只用来读，新结果写进这一批的输出文件夹）。输出位置由后端统一定，
+ *  这一页的自选输出位置不起作用。 */
+export function batchStartPayload(surface: Surface): JsonObject {
+  const st = stateOf(surface);
+  const payload = buildPayload(surface, st);
+  payload.selected_paths = batchSelection(surface, st).map((f) => normalizeUserPath(f.path));
+  return payload;
+}
+
+/** 后端建好了这一批的任务：接到各页上，卡片开始报进度。 */
+export function adoptBatchTasks(outputDir: string, tasks: TaskStatus[]): void {
+  if (dispatchBatch) {
+    dispatchBatch.outputDir = outputDir;
+    for (const task of tasks) dispatchBatch.taskIds.set(task.surface as Surface, task.task_id);
+  }
+  for (const task of tasks) adoptStartedTask(task.surface as Surface, task);
+}
+
+export function openOutputFolder(path: string): void {
+  void openTaskLocalFile(path, true);
 }
 
 function buildDispatchNote(surface: Surface): HTMLElement | null {
@@ -1900,13 +2025,14 @@ function buildDispatchNote(surface: Surface): HTMLElement | null {
   close.type = "button";
   close.textContent = "×";
   close.setAttribute("aria-label", t("不再提示"));
-  close.addEventListener("click", () => {
-    const shown = dispatchBatch ? [...dispatchBatch.counts.keys()] : [];
-    dispatchBatch = null;
-    for (const member of shown) rerender(member);
-  });
+  close.addEventListener("click", clearDispatchBatch);
+  // 回「翻译」页的本批文件卡片：在那里一键全部开始。
+  const back = el("button", "resume-link");
+  back.type = "button";
+  back.textContent = t("返回本批文件");
+  back.addEventListener("click", () => navigate("home"));
   const acts = el("div", "acts");
-  acts.append(close);
+  acts.append(back, close);
   bar.append(words, acts);
   return bar;
 }
@@ -3153,9 +3279,25 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   box.append(icon("spark", { size: "sm" }));
   const body = el("div");
   const lead = el("b");
-  const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
-  lead.textContent = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
+  const recipe = recipeParts(surface, st);
+  lead.textContent = recipe.lead;
   body.append(lead);
+  for (const part of recipe.parts) body.append(document.createTextNode(` · ${part}`));
+  // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
+  const fromDefaults = pageUsesDefaults(surface);
+  if (active || fromDefaults !== null) {
+    const sub = el("span", "sub");
+    sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("本页设置均为应用默认值") : t("本页设置沿用上次的选择");
+    body.append(sub);
+  }
+  box.append(body);
+  return box;
+}
+
+/** 配方句的内容：语言一段加粗，其余几项用「·」接在后面。「翻译」页的本批文件卡片也用这一句。 */
+function recipeParts(surface: Surface, st: SurfaceState): { lead: string; parts: string[] } {
+  const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
+  const lead = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
   const parts: string[] = [];
   if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("自动组合") : t("整页图像翻译"));
   if (surfaceToggles(surface).some((toggle) => toggle.key === "translationOnly")) {
@@ -3168,16 +3310,12 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     // 「无」单独挂在后面看不出指的是什么，写成「无补充要求」。
     parts.push(st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT ? st.domainPreset : t("无补充要求"));
   }
-  for (const part of parts) body.append(document.createTextNode(` · ${part}`));
-  // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
-  const fromDefaults = pageUsesDefaults(surface);
-  if (active || fromDefaults !== null) {
-    const sub = el("span", "sub");
-    sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("本页设置均为应用默认值") : t("本页设置沿用上次的选择");
-    body.append(sub);
-  }
-  box.append(body);
-  return box;
+  return { lead, parts };
+}
+
+export function surfaceRecipeSummary(surface: Surface): string {
+  const recipe = recipeParts(surface, stateOf(surface));
+  return [recipe.lead, ...recipe.parts].join(" · ");
 }
 
 /** 语言改了不必整页重绘（语言选择器自己已经更新了），只把配方句换成新的。 */
@@ -4711,8 +4849,8 @@ function showTaskRiskModal(surface: Surface, st: SurfaceState, payload: JsonObje
     // 运行时容量」——这些是实现细节，读的人只需要知道三件事：共用什么、可能出什么事、
     // 自己的设置会不会被改。
     body: [
-      t("此任务将与正在运行的任务共用同一条 API 连接。两个任务各自按设定速度发送请求，服务端收到的是两者叠加的请求量。"),
-      t("因此处理可能变慢或需要排队，个别文件可能超时失败；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低本次任务的发送速度，设置中的速度不会被修改。"),
+      t("此任务将与正在运行的任务共用同一条 API 连接。两个任务轮流使用这条连接，同时发出的请求总数不超过两者中较高的那项设置。"),
+      t("因此两个任务都会比单独运行时慢；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低发送速度，设置中的速度不会被修改。"),
       t("如不急于处理，建议待前一个任务完成后再开始。"),
     ],
     actions: [
@@ -4740,22 +4878,28 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     const c = await getClient();
     const body = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;
     const task = await c.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify(body) });
-    submitFailures.delete(surface);
-    focusTask(surface, task);
-    noteTaskStarted(task);
-    st.showBanner = false;
-    st.fileOutcomes = new Map();
-    st.cadResumeDir = "";
-    initFileStages(st);
-    rerender(surface);
-    watchTask(surface);
-    if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
+    adoptStartedTask(surface, task);
   } catch (error) {
     noteStartFailure(surface, error);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);
   }
+}
+
+/** 任务建好之后接到这一页上：进度、逐文件状态、事件订阅。本页开始和「翻译」页一起开始都走这里。 */
+export function adoptStartedTask(surface: Surface, task: TaskStatus): void {
+  const st = stateOf(surface);
+  submitFailures.delete(surface);
+  focusTask(surface, task);
+  noteTaskStarted(task);
+  st.showBanner = false;
+  st.fileOutcomes = new Map();
+  st.cadResumeDir = "";
+  initFileStages(st);
+  rerender(surface);
+  watchTask(surface);
+  if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
 }
 
 function focusTask(surface: Surface, task: TaskStatus): void {

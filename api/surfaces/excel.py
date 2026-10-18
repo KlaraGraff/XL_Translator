@@ -113,4 +113,5 @@ class ExcelSurface(Surface):
             untranslated_only=request.options.untranslated_only,
             connection_chain=tuple(request.connection_chains.get("translation") or ()),
             resume_output_dir=request.options.resume_output_dir,
+            batch_output_dir=request.options.batch_output_dir,
         )

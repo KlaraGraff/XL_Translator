@@ -123,4 +123,5 @@ class WordSurface(Surface):
             allow_doc_fallback=options.allow_doc_fallback,
             api_scheduler=request.api_schedulers.get("translation"),
             resume_output_dir=options.resume_output_dir,
+            batch_output_dir=options.batch_output_dir,
         )

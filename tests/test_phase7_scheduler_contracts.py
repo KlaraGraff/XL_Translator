@@ -219,8 +219,9 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         self.assertIsNotNone(word_group)
         assert excel_group is not None
         assert word_group is not None
-        self.assertEqual(excel_group.snapshot().capacity, 5)
-        self.assertEqual(word_group.snapshot().capacity, 5)
+        # 共用一条连接时总并发取两者中较大的（2 和 3 → 3），不相加。
+        self.assertEqual(excel_group.snapshot().capacity, 3)
+        self.assertEqual(word_group.snapshot().capacity, 3)
 
     def test_risk_view_explains_shared_capacity_without_exposing_key_material(self) -> None:
         registry = TaskResourceRegistry()
@@ -244,7 +245,7 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         group = shared_groups[0]
         self.assertEqual(group["active_capacity"], 2)
         self.assertEqual(group["candidate_capacity"], 3)
-        self.assertEqual(group["total_potential_capacity"], 5)
+        self.assertEqual(group["total_potential_capacity"], 3)
         self.assertNotIn("api_key", repr(risk).lower())
         self.assertNotIn("secret", repr(risk).lower())
 
@@ -268,7 +269,7 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         group = risk["shared_groups"][0]
         self.assertEqual(group["active_capacity"], 5)
         self.assertEqual(group["candidate_capacity"], 2)
-        self.assertEqual(group["total_potential_capacity"], 7)
+        self.assertEqual(group["total_potential_capacity"], 5)
 
     def test_tm_cleaning_is_a_fourth_type_and_participates_in_shared_budget(self) -> None:
         registry = TaskResourceRegistry()
@@ -300,7 +301,7 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         group = translation.lease.scheduler_for(SHARED_TEXT_CONNECTION)
         self.assertIsNotNone(group)
         assert group is not None
-        self.assertEqual(group.snapshot().capacity, 3)
+        self.assertEqual(group.snapshot().capacity, 2)
 
     def test_a_shared_group_backs_off_in_a_few_steps_not_one_at_a_time(self) -> None:
         """A big group must reach its floor in a handful of reductions.
@@ -355,11 +356,11 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         self.assertIsNotNone(second_scheduler)
         assert first_scheduler is not None
         assert second_scheduler is not None
-        self.assertEqual(first_scheduler.snapshot().capacity, 5)
+        self.assertEqual(first_scheduler.snapshot().capacity, 3)
 
         decision = first_scheduler.register_concurrency_limit_hit(None)
         self.assertEqual(decision.action, API_CONCURRENCY_ACTION_REDUCED)
-        self.assertLess(decision.current_capacity, 5)
+        self.assertLess(decision.current_capacity, 3)
         self.assertEqual(second_scheduler.snapshot().capacity, decision.current_capacity)
 
         # A different key/base URL is not affected by this group's temporary

@@ -217,3 +217,136 @@
 @media (max-width: 999px) {
   .hgrid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 「本批文件」卡片（views/home-batch.ts）：混合文件夹拖入后出现在投放区上面。
+ * 每类一行：名称与个数、这一页的设置（只读）、状态、去设置；底下一行说输出到哪、一个按钮全部开始。 */
+.bc-slot:empty {
+  display: none;
+}
+.batch-card {
+  border: 1px solid var(--tint-line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 12px 16px 14px;
+  animation: home-rise var(--t-slow) var(--ease-out) both;
+}
+.bc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.bc-head > svg {
+  color: var(--tint-ink);
+}
+.bc-head b {
+  font-weight: 650;
+}
+.bc-from {
+  color: var(--ink-3);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bc-x {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.bc-row {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 0.9fr) minmax(0, 2fr) auto auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 9px 2px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink);
+}
+.bc-row > svg {
+  color: var(--ink-3);
+}
+.bc-nm {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.bc-nm b {
+  font-weight: 600;
+}
+.bc-ct,
+.bc-set {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.bc-recipe {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.bc-set {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.bc-note {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.bc-note.warn {
+  color: var(--warn);
+}
+.bc-go {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.bc-row .chip {
+  white-space: nowrap;
+}
+.bc-bar {
+  grid-column: 2 / -1;
+  height: 3px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin-top: 6px;
+}
+.bc-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--glow));
+  transition: width var(--t-slow) var(--ease-out);
+}
+.bc-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.bc-out {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.bc-foot .btn {
+  flex: none;
+}

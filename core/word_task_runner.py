@@ -366,6 +366,7 @@ class WordTaskRunner(BaseTaskRunner):
         allow_doc_fallback: bool = False,
         resume_output_dir: str | None = None,
         term_file_paths: list[Path] | None = None,
+        batch_output_dir: str | None = None,
     ):
         self._files = file_items
         # 记忆库词条「只在…中生效」按这些路径判断；PDF 转 Word 传原 PDF，不传时按要翻译的文件。
@@ -386,6 +387,8 @@ class WordTaskRunner(BaseTaskRunner):
         self._marked_sources: dict[str, str] = {}
         self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
+        # 同一批任务共用的输出文件夹；设了就不再新建自己的。
+        self._batch_output_dir = Path(batch_output_dir) if batch_output_dir else None
         self._queue: queue.Queue = queue.Queue()
         self._file_progress = FileProgressReporter(
             self._queue, self._files, self._source_root
@@ -809,7 +812,7 @@ class WordTaskRunner(BaseTaskRunner):
                 output_error = get_custom_output_dir_error(custom_output_dir)
                 if output_error is not None:
                     raise ValueError(output_error)
-            output_dir = build_word_output_dir(root_for_output, custom_output_dir)
+            output_dir = self._batch_output_dir or build_word_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             logger.debug(f"Word 输出目录初始化失败原始错误：{exc!r}")
@@ -1607,6 +1610,7 @@ class WordTaskRunner(BaseTaskRunner):
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
                 repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
                 document_note=document_profile,
+                api_scheduler=api_scheduler,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -2564,6 +2568,7 @@ class WordTaskRunner(BaseTaskRunner):
         target_lang,
         repair_concurrency=1,
         document_note="",
+        api_scheduler=None,
     ) -> tuple[ResidualPassResult, list[ResidualUnitReport]]:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；仍修不上的记入待复核。返回体检结果与仍待复核的单元。"""
         residual_result = run_residual_pass(
@@ -2623,6 +2628,7 @@ class WordTaskRunner(BaseTaskRunner):
                 should_stop=self.stop_requested,
                 on_progress=_on_repair_progress,
                 max_workers=repair_concurrency,
+                api_scheduler=api_scheduler,
             )
             if ladder.over_cap_count:
                 self._log(

@@ -190,6 +190,7 @@ class PdfSurface(Surface):
             api_scheduler=request.api_schedulers.get("image"),
             review_api_scheduler=request.api_schedulers.get("pdf_review"),
             resume_output_dir=request.options.resume_output_dir,
+            batch_output_dir=request.options.batch_output_dir,
             profile_requester=profile_requester,
             profile_concurrency=profile_concurrency,
             inplace_hooks=inplace_hooks,

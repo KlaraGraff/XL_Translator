@@ -583,7 +583,10 @@
     "en": "DWG files need the converter to be read and written; DXF files are not affected and can be translated directly. Once it is connected, return here and scan again.",
     "fr": "Les fichiers DWG ont besoin du convertisseur pour être lus et écrits ; les fichiers DXF ne sont pas concernés et peuvent être traduits directement. Une fois connecté, revenez ici et relancez l'analyse."
   },
-  "打开组件": {"en": "Open Components", "fr": "Ouvrir les composants"},
+  "打开组件": {
+    "en": "Open Components",
+    "fr": "Ouvrir les composants"
+  },
   "将从上次停止的位置继续": {
     "en": "Will continue from where the last run stopped",
     "fr": "Reprise à l'endroit où la dernière exécution s'est arrêtée"
@@ -1240,7 +1243,10 @@
     "en": "The selection includes {0} DWG {0|drawing|drawings}. DWG files must be converted to DXF with the converter before they can be translated and written back.",
     "fr": "La sélection contient {0} {0|plan|plans} DWG. Les fichiers DWG doivent être convertis en DXF par le convertisseur avant de pouvoir être traduits et réécrits."
   },
-  "可在「扩展 → 组件」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。": {"en": "Connect the drawing converter in Extensions → Components and scan again, or deselect these DWG files and translate only the DXF files.", "fr": "Connectez le convertisseur de plans dans Extensions → Composants puis relancez l'analyse, ou décochez ces DWG pour ne traduire que les DXF."},
+  "可在「扩展 → 组件」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。": {
+    "en": "Connect the drawing converter in Extensions → Components and scan again, or deselect these DWG files and translate only the DXF files.",
+    "fr": "Connectez le convertisseur de plans dans Extensions → Composants puis relancez l'analyse, ou décochez ces DWG pour ne traduire que les DXF."
+  },
   "取消": {
     "en": "Cancel",
     "fr": "Annuler"
@@ -1329,13 +1335,13 @@
     "en": "Shares a connection with a running task",
     "fr": "Connexion partagée avec une tâche en cours"
   },
-  "此任务将与正在运行的任务共用同一条 API 连接。两个任务各自按设定速度发送请求，服务端收到的是两者叠加的请求量。": {
-    "en": "This task will use the same API connection as a task that is already running. Each sends requests at its own pace, so the service receives the combined load.",
-    "fr": "Cette tâche utilisera la même connexion API qu'une tâche déjà en cours. Chacune envoie ses requêtes à son rythme, et le service reçoit donc la charge cumulée."
+  "此任务将与正在运行的任务共用同一条 API 连接。两个任务轮流使用这条连接，同时发出的请求总数不超过两者中较高的那项设置。": {
+    "en": "This task will use the same API connection as a task that is already running. The two take turns on the connection, and the total number of simultaneous requests stays within the higher of their two settings.",
+    "fr": "Cette tâche utilisera la même connexion API qu'une tâche déjà en cours. Les deux l'utilisent à tour de rôle, et le nombre total de requêtes simultanées ne dépasse pas le plus élevé de leurs deux réglages."
   },
-  "因此处理可能变慢或需要排队，个别文件可能超时失败；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低本次任务的发送速度，设置中的速度不会被修改。": {
-    "en": "Processing may slow down or queue, and some files may time out. If this connection is billed by usage, both tasks incur costs at the same time. If the service limits requests, this task slows down automatically; the speed in your settings is not changed.",
-    "fr": "Le traitement peut ralentir ou être mis en file d'attente, et certains fichiers peuvent expirer. Si cette connexion est facturée à l'usage, les deux tâches génèrent des frais en même temps. Si le service limite les requêtes, cette tâche ralentit automatiquement ; la vitesse définie dans vos réglages n'est pas modifiée."
+  "因此两个任务都会比单独运行时慢；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低发送速度，设置中的速度不会被修改。": {
+    "en": "Both tasks will therefore run slower than on their own. If this connection is billed by usage, both incur costs at the same time. If the service limits requests, sending slows down automatically; the speed in your settings is not changed.",
+    "fr": "Les deux tâches seront donc plus lentes que seules. Si cette connexion est facturée à l'usage, les deux génèrent des frais en même temps. Si le service limite les requêtes, l'envoi ralentit automatiquement ; la vitesse définie dans vos réglages n'est pas modifiée."
   },
   "如不急于处理，建议待前一个任务完成后再开始。": {
     "en": "If it is not urgent, it is safest to wait for the other task to finish.",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import threading
 import time
@@ -13,7 +14,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from core import diagnostics, tm_manager
+from core import bilingual_writer, diagnostics, tm_manager
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
@@ -104,6 +105,8 @@ class ApiTask:
     # moment the task ends, and its schedulers stop working with it.
     group_capacities: dict[object, int] = field(default_factory=dict)
     task_snapshot: dict[str, object] = field(default_factory=dict)
+    # 「翻译」页一键开始的一批任务共用的输出文件夹；单独开始的任务为空。
+    batch_output_dir: str = ""
     file_progress: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Used only to match runner results before sanitization; never serialized.
     file_sources: dict[str, str] = field(default_factory=dict)
@@ -331,6 +334,108 @@ class TranslationTaskManager:
             expected_revision = int(risk["revision"])
         return self._start_prepared(prepared, expected_revision=expected_revision)
 
+    def start_batch(
+        self,
+        items: list[tuple[TaskSurface, str, list[str], TaskOptions]],
+        *,
+        allow_shared: bool = False,
+    ) -> dict[str, Any]:
+        """「翻译」页拖入混合文件夹后的「全部开始」：几种类型一起开始，写进同一个输出文件夹。
+
+        每种类型的设置都是它自己页面上的（请求里各带各的），这里只做三件事：开始前看一眼
+        会不会和这一批之外正在跑的任务共用连接（要确认）；建一个共用的输出文件夹；逐个
+        准备并开始——逐个是为了「分散到不同连接」打开时，后开始的能看到前面已经占了哪条。
+        同一批内部共用连接不再问：同一条连接上的总并发由调度器封顶（见 FairApiGroupScheduler）。
+        某一类没能开始不影响其他类，结果里列出原因。
+        """
+        if not items:
+            raise TaskInputError("没有要开始的翻译。")
+        seen: set[str] = set()
+        for surface, _, _, _ in items:
+            key = get_surface(surface).key
+            if key in seen:
+                raise TaskInputError("同一批里同一种类型只能有一个任务。")
+            seen.add(key)
+        roots: list[Path] = []
+        for surface, source_path, _, _ in items:
+            normalized = str(normalize_user_path(str(source_path or "")) or "").strip()
+            if not normalized:
+                raise TaskInputError("请先选择要翻译的文件或文件夹。")
+            source = Path(normalized).expanduser().resolve()
+            roots.append(source if source.is_dir() else source.parent)
+        external_owners: list[str] = []
+        for surface, _, _, options in items:
+            spec = get_surface(surface)
+            settings = self._settings_loader().model_copy(deep=True)
+            activate_translation_surface(settings, spec.key)
+            _apply_target_lang(settings, spec, options.target_lang)
+            context = task_api_context_for_page(
+                settings, spec.page_key, busy_connection_ids=self._busy_connection_ids()
+            )
+            risk = self._registry.scheduling_risk(
+                task_type=spec.key,
+                group_capacities=dict(getattr(context, "group_concurrency", {}) or {}),
+            )
+            if bool(risk["surface_busy"]):
+                raise TaskConflictError(
+                    "同类翻译已有任务正在进行，请待其结束后再开始。", reason="surface_busy"
+                )
+            for shared in risk["shared_groups"]:
+                external_owners.extend(str(key) for key in shared.get("active_owner_keys") or ())
+        if external_owners and not allow_shared:
+            with self._lock:
+                labels = sorted(
+                    {
+                        get_surface(task.surface).owner_label(task.task_snapshot)
+                        for key, task in self._tasks.items()
+                        if key in set(external_owners)
+                    }
+                )
+            return {"requires_confirmation": True, "shared_with": labels}
+
+        common = Path(os.path.commonpath([str(root) for root in roots]))
+        output_dir = bilingual_writer.build_output_dir(common)
+        output_dir.mkdir(parents=True, exist_ok=False)
+        started: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        for surface, source_path, selected_paths, options in items:
+            try:
+                prepared = self._prepare_task(
+                    surface=surface,
+                    source_path=source_path,
+                    selected_paths=selected_paths,
+                    options=replace(options, batch_output_dir=str(output_dir)),
+                )
+                started.append(self._start_prepared(prepared, expected_revision=None))
+            except (TaskInputError, TaskConflictError) as exc:
+                failed.append(
+                    {
+                        "surface": get_surface(surface).key,
+                        "message": str(exc),
+                        "reason": str(getattr(exc, "reason", "") or ""),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - 一类出意外不拖累其他类
+                logger.exception(f"[批量] {surface} 未能开始")
+                failed.append(
+                    {
+                        "surface": get_surface(surface).key,
+                        "message": user_facing_reason(exc, fallback="任务因意外问题未能启动，请重试。"),
+                        "reason": "",
+                    }
+                )
+        if not started:
+            try:
+                output_dir.rmdir()
+            except OSError:
+                pass
+        return {
+            "requires_confirmation": False,
+            "output_dir": str(output_dir) if started else "",
+            "tasks": started,
+            "failed": failed,
+        }
+
     def _prepare_task(
         self,
         *,
@@ -355,6 +460,12 @@ class TranslationTaskManager:
         }
         if any(option_paths[key] != getattr(selected_options, key) for key in option_paths):
             selected_options = replace(selected_options, **option_paths)
+        if selected_options.batch_output_dir:
+            # 只认批量接口建的那个文件夹：已存在、名字带「_翻译输出_」。不让请求把结果写到任意目录。
+            batch_dir = Path(str(normalize_user_path(selected_options.batch_output_dir))).expanduser().resolve()
+            if not batch_dir.is_dir() or GENERATED_OUTPUT_DIR_MARKER not in batch_dir.name:
+                raise TaskInputError("这一批的输出文件夹不可用，请重新开始。")
+            selected_options = replace(selected_options, batch_output_dir=str(batch_dir))
         settings = self._settings_loader().model_copy(deep=True)
         activate_translation_surface(settings, normalized_surface)
 
@@ -622,6 +733,7 @@ class TranslationTaskManager:
                 role_groups=prepared.role_groups,
                 group_capacities=dict(prepared.group_capacities),
                 task_snapshot=prepared.task_snapshot,
+                batch_output_dir=str(prepared.options.batch_output_dir or ""),
             )
             source = Path(prepared.source_path)
             source_root = source if source.is_dir() else source.parent
@@ -675,6 +787,15 @@ class TranslationTaskManager:
                     # Terminal flag and terminal event must be visible together.
                     self._append_event(task, "error", task.result)
             raise
+
+    def _batch_dir_in_use(self, task: ApiTask) -> bool:
+        if not task.batch_output_dir:
+            return False
+        with self._lock:
+            return any(
+                other is not task and not other.terminal and other.batch_output_dir == task.batch_output_dir
+                for other in self._tasks.values()
+            )
 
     def _build_clean_runner(self, **kwargs: Any) -> Runner:
         return TmCleaningTaskRunner(**kwargs)
@@ -1771,8 +1892,9 @@ class TranslationTaskManager:
             if task.terminal:
                 return
             result = self._complete_file_progress(task, result, state)
-            if state in {"error", "stopped"}:
-                # 完成态不动：PDF 完成后还能单页重跑，会往同一个目录里写。
+            if state in {"error", "stopped"} and not self._batch_dir_in_use(task):
+                # 完成态不动：PDF 完成后还能单页重跑，会往同一个目录里写。同一批里别的
+                # 任务还在往这个文件夹写时也不动（它可能还没写出第一个文件）。
                 result = _drop_empty_output_dir(result)
             task.state = state
             task.result = _sanitize_task_data(result)

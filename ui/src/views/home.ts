@@ -1,7 +1,8 @@
 // 「翻译」入口页（界面焕新阶段 2）：把文件交给 Translator，按类型自动进入对应工作区。
 // 上面一块投放区（拖入或选择文件 / 文件夹，类型芯片直达各页），下面两栏：最近 4 条任务、
 // 已就绪（模型、记忆库、补充要求、图纸转换工具）。下面两栏的数据都取现有接口，取不到的写「—」，
-// 不挡页面先画出来。拖入的分配在 drop-dispatch.ts，投放区的光在 drop-glow.ts。
+// 不挡页面先画出来。拖入的分配在 drop-dispatch.ts，投放区的光在 drop-glow.ts；
+// 拖入混合文件夹后最上面多一张「本批文件」卡片（home-batch.ts）。
 
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ViewParams } from "../router";
@@ -15,14 +16,16 @@ import { dispatchPaths } from "../drop-dispatch";
 import { installDropGlow } from "../drop-glow";
 import { applyModelPillFromRoles, modelRoleSummary } from "../model-pill";
 import { visibleTypeKeys } from "../surface-descriptors";
-import { surfaceFileExtensions, surfaceIcon, surfaceLabel, type Surface } from "./workspace";
+import { onWorkspaceChange, stateOf, surfaceFileExtensions, surfaceIcon, surfaceLabel, type Surface } from "./workspace";
 import { redactedText } from "./workspace-util";
 import { taskRowSummary } from "./tasks";
+import { createBatchCard } from "./home-batch";
 import "./home.css";
 
 const BUILTIN_TYPES: Surface[] = ["excel", "word", "pdf", "cad"];
 let mountGeneration = 0;
 let client: ApiClient | null = null;
+let disposeListeners: (() => void) | null = null;
 
 async function getClient(): Promise<ApiClient> {
   if (!client) {
@@ -194,6 +197,10 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   setTopbar({ title: t("翻译"), subtitle: t("把文件交给 Translator，按类型自动进入对应工作区") });
   const page = el("div", "home");
   container.append(page);
+  disposeListeners?.();
+  const batchCard = createBatchCard();
+  disposeListeners = batchCard.dispose;
+  page.append(batchCard.node);
 
   let hero = buildHero(BUILTIN_TYPES);
   page.append(hero);
@@ -219,6 +226,20 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   grid.append(recent, ready);
   page.append(grid);
   void fillRecent(rows, generation);
+  // 本批文件在这一页上开始、结束时，「最近」跟着换；进度事件本身不重取。
+  const seen = new Map<Surface, string>();
+  const offRecent = onWorkspaceChange((surface) => {
+    const task = stateOf(surface).task?.task;
+    const mark = task ? `${task.task_id}:${task.terminal}` : "";
+    if ((seen.get(surface) ?? "") === mark) return;
+    seen.set(surface, mark);
+    if (task) void fillRecent(rows, generation);
+  });
+  const disposeCard = disposeListeners;
+  disposeListeners = () => {
+    disposeCard?.();
+    offRecent();
+  };
   void fillReady({ text: slots.text.val, image: slots.image.val, tm: slots.tm.val, domain: slots.domain.val, oda: slots.oda.val }, generation);
 
   // 先按内置四种画出来，拿到设置后按「扩展」页的显示设置换成实际的类型芯片。
@@ -237,4 +258,6 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
 
 export function unmount(): void {
   mountGeneration += 1;
+  disposeListeners?.();
+  disposeListeners = null;
 }

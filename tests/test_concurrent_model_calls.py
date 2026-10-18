@@ -89,6 +89,44 @@ class RepairLadderConcurrencyTests(unittest.TestCase):
         self.assertEqual(progress, [(1, 2), (2, 2)])
         self.assertEqual(result.remaining, [])
 
+    def test_repairs_wait_for_the_task_scheduler(self) -> None:
+        # 「翻译」页一起开始的几类共用一条连接：修补请求也要占限流器的槽位，
+        # 不然 A 在补译、B 在翻正文时，同时发出的请求会超过设定。
+        from core.api_scheduler import API_REQUEST_CATEGORY_RECOVERY, WeightedApiScheduler
+
+        scheduler = WeightedApiScheduler(1)
+        units = [
+            SimpleNamespace(
+                source_text=f"本工程{label}号楼采用整体浇筑工艺施工。",
+                target_text=f"本工程{label}号楼采用整体浇筑工艺 pour la construction.",
+            )
+            for label in "一二三"
+        ]
+        lock = threading.Lock()
+        inflight = {"now": 0, "max": 0}
+        categories: list[str] = []
+        original_slot = scheduler.slot
+
+        def slot(weight, *, category, should_stop=None):
+            categories.append(category)
+            return original_slot(weight, category=category, should_stop=should_stop)
+
+        scheduler.slot = slot  # type: ignore[method-assign]
+
+        def send(_system: str, _user: str) -> str:
+            with lock:
+                inflight["now"] += 1
+                inflight["max"] = max(inflight["max"], inflight["now"])
+            time.sleep(0.02)
+            with lock:
+                inflight["now"] -= 1
+            return '{"repaired": "Ce projet utilise un procede de coulage integral pour la construction."}'
+
+        result = run_repair_ladder(units, target_lang="fr", send=send, max_workers=3, api_scheduler=scheduler)
+        self.assertEqual(len(result.accepted), 3)
+        self.assertEqual(inflight["max"], 1)
+        self.assertEqual(set(categories), {API_REQUEST_CATEGORY_RECOVERY})
+
 
 class ExcelWordLanguageCheckTests(IsolatedAppDataTestCase):
     def test_excel_checks_files_and_reads_document_together(self) -> None:

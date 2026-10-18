@@ -80,6 +80,9 @@ class TaskOptions:
     lang_pair: str | None = None
     # 「接着上次继续」时上一次任务的输出目录；runner 只读它，不往里写。
     resume_output_dir: str | None = None
+    # 「翻译」页一键开始的一批任务共用的输出文件夹（批量接口建好后填进来）。设了它，
+    # runner 不再自己新建「…_翻译输出_时间」，几种类型的结果写进同一个文件夹。
+    batch_output_dir: str | None = None
     # CAD-only task settings. These are deliberately separate from the
     # document output suffix settings: CAD always creates a sibling output
     # file/directory and never exposes a filename-suffix option.
