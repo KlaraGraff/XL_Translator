@@ -29,7 +29,7 @@
 | `description` | 建议 | 页面「?」里的说明，三种语言；提交到扩展列表时必须有 |
 | `prompt` | 否 | 这种文件的内置规则（最长 4000 字），省略时用 Translator 通用的那份；用户可在「设置 → 翻译参数」里改写 |
 | `capabilities` | 否 | `{"translation_only": true, "bilingual": true}`，至少一种；两种都支持时页面有「双语对照」开关 |
-| `options` | 否 | 页面上的开关：`{"key", "label", "help", "default"}`；`bilingual`、`target_lang` 由应用提供，不能用作 key |
+| `options` | 否 | 页面上的选项。开关：`{"key", "label", "help", "default"}`，`default` 为 `true`/`false`；多选一：再加 `"kind": "choice"` 和 `"choices": [{"value", "label"}, …]`（至少两项），`default` 为其中一项的 `value`，不写时取第一项，适配器收到的是选中项的 `value`。输入数字：`"kind": "number"`，`default` 为数字，可加 `min`、`max`（不写 `min` 时不小于 0）；再加 `"units": [{"value", "label"}, …]` 时输入框旁边多一个单位下拉，`unit` 是默认单位（不写时取第一项），适配器收到 `"2pt"`、`"1.5mm"` 这样数字连单位的字符串，不带 `units` 时收到数字。任何选项都可加 `"show_when": {"前面某个选项的 key": [取值, …]}`：只在那个选项取这些值时显示，缩进画在它下面（值不显示时照样发给适配器，按需忽略）。`bilingual`、`target_lang` 由应用提供，不能用作 key |
 | `icon`、`license`、`repo`、`min_app_version` | 否 | 图标名、许可证、项目主页、需要的最低 Translator 版本 |
 | `visible_by_default`、`sidebar_after` | 否 | 只对随 Translator 提供的类型生效：没在「扩展」页拨过时也显示在侧栏、默认顺序里紧跟哪个类型（如 `word`）。装进来的扩展写了也不起作用（装上时本来就显示在侧栏） |
 
@@ -46,8 +46,8 @@ def scan(path: str, options: dict | None = None) -> ScanItem: ...  # 可省，�
 ```
 
 - `extract` 按阅读顺序返回 `TextUnit(id, text, context, kind, locked, protected, marked)`。`id` 在文件内唯一，同一个文件每次取出的 `id` 相同；`context` 是给人看的位置（如「第 12 行」），写进需复核清单。整段不该翻译的设 `locked=True`；段内必须原样保留的片段（占位符、行内代码、链接地址）放进 `protected`。
-- `write` 只读 `path`，写到 `out_path`。`units` 是 `TranslatedUnit(id, text, translation, status, marked_translation)`，没译成的和锁定的 `translation` 就是原文。`mode` 是 `translation_only` 或 `bilingual`，`options` 是本次任务的开关值，另带 `target_lang`（目标语言代码，如 `fr`），写回时改语言属性、断行规则可以用它。文字以外的内容（结构、编码、换行符）尽量逐字节保留。
-- `scan`、`extract` 的第二个参数 `options` 可省：写了的，拿到与 `write` 相同的开关值和 `target_lang`（例如开关关掉的内容在取字时就设 `locked=True`，不送去翻译）；只收 `path` 的照旧调用。
+- `write` 只读 `path`，写到 `out_path`。`units` 是 `TranslatedUnit(id, text, translation, status, marked_translation)`，没译成的和锁定的 `translation` 就是原文。`mode` 是 `translation_only` 或 `bilingual`，`options` 是本次任务的选项值（开关为 `true`/`false`，多选一为选中项的 `value`），另带 `target_lang`（目标语言代码，如 `fr`），写回时改语言属性、断行规则可以用它。文字以外的内容（结构、编码、换行符）尽量逐字节保留。
+- `scan`、`extract` 的第二个参数 `options` 可省：写了的，拿到与 `write` 相同的选项值和 `target_lang`（例如开关关掉的内容在取字时就设 `locked=True`，不送去翻译）；只收 `path` 的照旧调用。
 - 写回时发现需要人看的地方（放不下、竖排里放了西文），放进 `OutputFile.review_items`：每项 `ReviewItem(reason, id, context)`（或同样键的 dict），`reason` 是给人看的原因，`id` 是相关单元（需复核清单里显示它的原文），`context` 是位置（省略时用该单元的 `context`）。这些条目逐条进需复核清单；只给 `review_count` 的照旧只计数，两样都给时取大的。
 - 段内格式（可选）：一段里有几截格式和主体不同（加粗、斜体、链接）时，把这几截用成对的 `<g1>…</g1>`、`<g2>…</g2>` 包住放进 `marked`，去掉标记必须与 `text` 一字不差，标记不能嵌套、不能跨行，一段最多 12 对；不满足时 Translator 按没有标记处理。模型会把标记放到译文对应的位置，`write` 拿到的 `marked_translation` 是带标记的译文（去掉标记就是 `translation`），按标记把每截写回原来的格式；它为空时（标记没能完整回来）把 `translation` 整段按主体格式写回。没有段内格式的段落 `marked` 留空。
 - 时限：`scan` 每个文件 30 秒，`extract`、`write` 每个文件 120 秒。超时或进程崩溃时只有这个文件失败。

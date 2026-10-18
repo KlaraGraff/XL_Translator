@@ -25,6 +25,7 @@ from api.task_contracts import (
     TaskOptions,
 )
 from core.api_config_check import check_translation_api_config
+from core.format_adapter import format_number_value, parse_number_value
 from settings import AppSettings
 
 
@@ -39,8 +40,16 @@ PHASE_WRITE: LocalizedText = {"zh": "生成文件", "en": "Generating files", "f
 
 
 @dataclass(frozen=True)
+class ChoiceDef:
+    """One entry of a ``"choice"`` option, or one unit of a ``"number"``: the value sent and its name."""
+
+    value: str
+    label: LocalizedText
+
+
+@dataclass(frozen=True)
 class OptionDef:
-    """One switch a page shows under 运行设置, declared instead of hand-built.
+    """One option a page shows under 运行设置, declared instead of hand-built.
 
     The four built-in pages still draw their switches from the front end's own
     tables and declare none; a page registered at run time has no such table,
@@ -49,19 +58,61 @@ class OptionDef:
 
     key: str
     label: LocalizedText
-    default: bool = False
+    #: ``bool`` for a toggle, one of ``choices``' values for a choice, a number for a number.
+    default: bool | int | float | str = False
     help: LocalizedText = field(default_factory=dict)
-    #: Only ``"toggle"`` for now.
-    kind: Literal["toggle"] = "toggle"
+    #: ``"toggle"`` is a switch; ``"choice"`` picks one of ``choices``; ``"number"`` is typed in,
+    #: with a unit picked from ``units`` next to it when there are any.
+    kind: Literal["toggle", "choice", "number"] = "toggle"
+    choices: tuple[ChoiceDef, ...] = ()
+    minimum: float | None = None
+    maximum: float | None = None
+    units: tuple[ChoiceDef, ...] = ()
+    #: The unit ``default`` is in.
+    unit: str = ""
+    #: Shown only while every listed option has one of the listed values (drawn under it).
+    show_when: Mapping[str, tuple[bool | str, ...]] = field(default_factory=dict)
 
     def describe(self) -> dict[str, Any]:
-        return {
+        described: dict[str, Any] = {
             "key": self.key,
             "kind": self.kind,
             "label": dict(self.label),
             "help": dict(self.help),
             "default": self.default,
         }
+        if self.kind == "choice":
+            described["choices"] = [{"value": choice.value, "label": dict(choice.label)} for choice in self.choices]
+        if self.kind == "number":
+            described["min"] = self.minimum
+            described["max"] = self.maximum
+            described["units"] = [{"value": unit.value, "label": dict(unit.label)} for unit in self.units]
+            described["unit"] = self.unit
+        if self.show_when:
+            described["show_when"] = {key: list(values) for key, values in self.show_when.items()}
+        return described
+
+    def coerce(self, value: Any) -> bool | int | float | str:
+        """A saved or requested value as this option takes it.
+
+        An unknown choice, or a number that can't be read or has a unit not listed, falls back to
+        the default; a number out of range is clamped.  A number with units comes out as ``"2pt"``
+        (number then unit; no unit given means the default one), one without as a float.
+        """
+        if self.kind == "choice":
+            text = str(value)
+            return text if any(choice.value == text for choice in self.choices) else self.default
+        if self.kind == "number":
+            parsed = parse_number_value(value)
+            if parsed is None or (parsed[1] and parsed[1] not in {unit.value for unit in self.units}):
+                parsed = (float(self.default), "")
+            number = max(parsed[0], self.minimum or 0.0)
+            if self.maximum is not None:
+                number = min(number, self.maximum)
+            if not self.units:
+                return number
+            return format_number_value(number, parsed[1] or self.unit)
+        return bool(value)
 
 
 def suffixes(values: Iterable[str]) -> tuple[str, ...]:

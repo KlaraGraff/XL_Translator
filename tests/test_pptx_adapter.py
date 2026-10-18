@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from lxml import etree
 
 from api.surfaces import all_surfaces, get_surface, unregister_surface
@@ -26,6 +27,7 @@ from cli.adapter_commands import check_adapter
 from config import CORE_TRANSLATION_PROMPT
 from core import tm_manager
 from core.format_adapter import BUNDLED_ADAPTERS_DIR, AdapterError, InProcessAdapterHost, load_manifest
+from core.pptx_fit import LAYOUT_MODES
 from core.task_runner_messages import DoneMsg
 from settings import AppSettings, ExtensionSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
@@ -91,10 +93,13 @@ def test_manifest() -> None:
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
     assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx", "ppt", "pps"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
-    assert [(option.key, option.default) for option in manifest.options] == [
-        ("translate_notes", True),
-        ("fixed_layout", False),
+    assert [(option.key, option.kind, option.default) for option in manifest.options] == [
+        ("translate_notes", "toggle", True),
+        ("layout_mode", "choice", "fit"),
+        ("spacing", "number", 2),
     ]
+    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（自适应排版在前，是默认）。
+    assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
     # The PPT rules come on top of the app's own, which must stay word for word.
     assert manifest.prompt.startswith(CORE_TRANSLATION_PROMPT + "\n")
     assert "不扩写" in manifest.prompt and "不加句号" in manifest.prompt
@@ -143,7 +148,7 @@ def test_notes_switch_reaches_write(tmp_path: Path) -> None:
     assert _texts(out, "ppt/notesSlides/notesSlide1.xml") == ["开场先介绍培训目的。", "FR 开场先介绍培训目的。"]
 
 
-def test_fixed_layout_switch_reaches_the_fit(tmp_path: Path) -> None:
+def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
     host = InProcessAdapterHost(PPTX_DIR)
     source = FIXTURES / "training.pptx"
     translated = [TranslatedUnit(unit.id, unit.text, f"FR {unit.text}") for unit in host.extract(source)]
@@ -153,12 +158,24 @@ def test_fixed_layout_switch_reaches_the_fit(tmp_path: Path) -> None:
         seen.append(kwargs)
         return []
 
+    cases = [
+        ({}, {}),
+        ({"layout_mode": "fit"}, {}),
+        ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
+        ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
+        ({"layout_mode": "bogus"}, {}),
+        ({"spacing": "2pt"}, {}),
+        ({"spacing": "12pt"}, {"gap_pt": 12.0}),
+        ({"spacing": "2.54cm"}, {"gap_pt": pytest.approx(72.0)}),
+        ({"spacing": "0mm", "layout_mode": "keep_size"}, {"gap_pt": 0.0, "layout_mode": "keep_size"}),
+        ({"spacing": "5in"}, {}),
+        ({"spacing": "bogus"}, {}),
+    ]
     with patch("core.pptx_text.fit_after_write", fit):
-        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "off.pptx", {"fixed_layout": False})
-        assert seen and all(kwargs == {} for kwargs in seen)
-        seen.clear()
-        host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / "on.pptx", {"fixed_layout": True})
-        assert seen and all(kwargs == {"fixed_layout": True} for kwargs in seen)
+        for index, (options, expected) in enumerate(cases):
+            seen.clear()
+            host.write(source, translated, MODE_TRANSLATION_ONLY, tmp_path / f"out{index}.pptx", options)
+            assert seen and all(kwargs == expected for kwargs in seen), options
 
 
 class PptxTaskTests(IsolatedAppDataTestCase):
@@ -189,6 +206,23 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             )
             runner.start()
             return _drain(runner, timeout=60)
+
+    def test_the_layout_preference_of_the_task_reaches_the_fit(self) -> None:
+        path = self.source / "讲义.pptx"
+        shutil.copyfile(FIXTURES / "training.pptx", path)
+        seen: list[dict[str, Any]] = []
+
+        def fit(read_part, part_name, root, touched, **kwargs):
+            seen.append(kwargs)
+            return []
+
+        with patch("core.pptx_text.fit_after_write", fit):
+            for options, expected in (({}, {}), ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"})):
+                seen.clear()
+                messages = self._run(FrenchEngine(), [path], options=options)
+                done = next(message for message in messages if isinstance(message, DoneMsg))
+                assert done.file_results[0]["status"] == "completed", done.file_results
+                assert seen and all(kwargs == expected for kwargs in seen), (options, seen)
 
     def test_a_whole_task_writes_a_translated_deck(self) -> None:
         path = self.source / "项目进展汇报.pptx"
@@ -272,8 +306,19 @@ def test_the_page_is_registered_with_the_app() -> None:
         descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
+        # 分包说明：「PPT」默认显示在侧栏，排在 Word 后面。
+        assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
         assert descriptor["extensions"] == ["potx", "pps", "ppsx", "ppt", "pptm", "pptx"]
-        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
+        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode", "spacing"]
+        layout = descriptor["options"][2]
+        assert layout["kind"] == "choice" and layout["default"] == "fit"
+        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["自适应排版", "保持字号", "固定版面"]
+        # 间距是输入的数字，默认 2 磅，只在「自适应排版」时出现。
+        spacing = descriptor["options"][3]
+        assert spacing["kind"] == "number" and spacing["default"] == 2 and spacing["min"] == 0
+        assert [unit["value"] for unit in spacing["units"]] == ["pt", "mm", "cm"] and spacing["unit"] == "pt"
+        assert [unit["label"]["zh"] for unit in spacing["units"]] == ["磅", "毫米", "厘米"]
+        assert spacing["show_when"] == {"layout_mode": ["fit"]}
     finally:
         if not already:
             unregister_surface(key)

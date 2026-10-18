@@ -152,9 +152,11 @@ class RuntimeSurfaceRouteTests(IsolatedAppDataTestCase):
                 if item["capabilities"].get("requires_source", True) and item["extensions"]
             ]
             assert "excel" in keys and SAMPLE_KEY in keys and "tm_clean" not in keys
-            # Extension types are off by default, so switching the four built-ins off leaves nothing.
+            # Extension types are off by default except the bundled PPT, so switching the four
+            # built-ins and PPT off leaves nothing.
             refused = client.put(
-                "/api/settings", json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False}}}
+                "/api/settings",
+                json={"translation_types": {"visible": {"excel": False, "word": False, "pdf": False, "cad": False, "ext:pptx": False}}},
             )
             shown = client.put("/api/settings", json={"translation_types": {"order": [SAMPLE_KEY], "visible": {SAMPLE_KEY: True}}})
             kept = client.put(

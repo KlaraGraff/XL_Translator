@@ -13,8 +13,12 @@ adapter it may import app modules.
   the translation as its own paragraph right after the source, in the same box.
 - ``translate_notes`` (on by default) decides whether speaker notes are
   translated; switched off, the notes keep the source text.
-- ``fixed_layout`` (off by default) keeps every text box and table where and
-  as large as it is when fitting the translation; only the font shrinks.
+- ``layout_mode`` (写回偏好) decides how text that does not fit is handled:
+  ``fit`` (default) grows boxes into free space first and then shrinks,
+  ``keep_size`` keeps the font size and only grows, ``fixed`` keeps every box
+  and table where and as large as it is and only shrinks.
+- ``spacing`` is how far a box or table grown under ``fit`` stays from the
+  shapes around it and the slide edges (a number the user types with a unit, ``2pt`` by default).
 - Old .ppt / .pps files are first converted to a temporary .pptx
   (``core/ppt_converter.py``: the local PowerPoint, else LibreOffice).  Reading,
   extracting and writing one file share that copy, so it is converted once;
@@ -29,17 +33,20 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
-from core.format_adapter import AdapterError
+from core.format_adapter import AdapterError, parse_number_value
 from core.ppt_converter import PptConversionCache, PptConversionError, converted_name, is_legacy_ppt
+from core.pptx_fit import DEFAULT_GAP_PT, LAYOUT_FIT, LAYOUT_MODES
 from core.pptx_text import PptxError, Translation, extract_units, scan_file, write_file
 from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, TranslatedUnit
 
 NOTES_OPTION = "translate_notes"
 #: The target language the app passes along with the switches (``lang`` of the written text).
 TARGET_LANG_OPTION = "target_lang"
-#: 「固定版面」 (off by default): boxes and tables keep their size and place,
-#: text that does not fit only gets smaller.
-FIXED_LAYOUT_OPTION = "fixed_layout"
+#: 写回偏好: 自适应排版 ``fit`` (default) / 保持字号 ``keep_size`` / 固定版面 ``fixed``.
+LAYOUT_OPTION = "layout_mode"
+#: 与周围内容的间距：用户输入的数字连单位（如 ``2pt``、``1.5mm``）；各单位折成多少磅。
+SPACING_OPTION = "spacing"
+PT_PER_UNIT = {"pt": 1.0, "mm": 72 / 25.4, "cm": 72 / 2.54}
 
 _TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}
 _OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
@@ -48,6 +55,19 @@ _OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
 #: 读过却没翻译的，应用退出时删掉。
 _LEGACY = PptConversionCache()
 atexit.register(_LEGACY.cleanup)
+
+
+def _layout_mode(options: Mapping[str, Any] | None) -> str:
+    mode = str((options or {}).get(LAYOUT_OPTION) or "")
+    return mode if mode in LAYOUT_MODES else LAYOUT_FIT
+
+
+def _gap_pt(options: Mapping[str, Any] | None) -> float:
+    parsed = parse_number_value((options or {}).get(SPACING_OPTION))
+    if parsed is None or (parsed[1] and parsed[1] not in PT_PER_UNIT):
+        return DEFAULT_GAP_PT
+    number, unit = parsed
+    return number * PT_PER_UNIT[unit or "pt"]
 
 
 def _notes(options: Mapping[str, Any] | None) -> bool:
@@ -135,7 +155,8 @@ def write(
             bilingual=mode == MODE_BILINGUAL,
             target_lang=str((options or {}).get(TARGET_LANG_OPTION) or "") or None,
             translate_notes=_notes(options),
-            fixed_layout=bool((options or {}).get(FIXED_LAYOUT_OPTION, False)),
+            layout_mode=_layout_mode(options),
+            gap_pt=_gap_pt(options),
         )
     except PptxError as exc:
         raise AdapterError(str(exc)) from exc
