@@ -2383,8 +2383,9 @@ function renderAppearancePage(host: HTMLElement): void {
   }
   themeBody.append(seg);
   host.append(themeCard);
-  renderPaletteCard(host);
+  // 界面语言紧跟主题（maple 指定）：两项都是一排三选一，配色的大网格放在它们后面。
   renderLanguageCard(host);
+  renderPaletteCard(host);
   renderMotionRow(host);
 
   const addBtn = createButton({

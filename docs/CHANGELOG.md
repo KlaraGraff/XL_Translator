@@ -110,6 +110,10 @@
 
   **The Advanced options on each translation page are open the first time, and the line above says where the values come from**: The Advanced section on the right lists what can be adjusted on that page, but it always started folded, so new users did not see the options unless they opened it. Each translation page now opens it the first time you visit and folds it on later visits; if you open or fold it yourself, it stays that way until you quit the app. After an upgrade, pages you have already used (they remember your last source folder) count as visited and start folded; pages you have never used, including the new PowerPoint page, still open it the first time. The line at the top of the panel used to say "Defaults come from your settings and last task — ready to start" even when there was no last task; it now says "This page uses the app defaults" while the page's settings are all factory values, and "This page keeps your last choices" once any of them has been changed, on its own line, aligned with the text above and separated by a thin divider.
 
+- **「设置 → 外观与语言」里「界面语言」移到第二项，紧跟在「主题」下面**：以前要越过两排配色才能找到「界面语言」；现在顺序是主题、界面语言、配色、动效、自定义语言。
+
+  **In Settings → Appearance & language, Interface language is now second, right below Theme**: It used to sit below the two rows of palettes; the order is now Theme, Interface language, Palette, Motion, Custom languages.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
