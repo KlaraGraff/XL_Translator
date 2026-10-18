@@ -7,6 +7,7 @@ itself is faked here except in the last test, which runs the real LibreOffice.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -88,6 +89,24 @@ def test_read_extract_write_share_one_conversion(tmp_path: Path) -> None:
         # The temporary copy goes once the translation is written; the source stays.
         assert not conversions.outputs[0].exists()
         assert source.exists()
+    finally:
+        host._patcher.stop()  # type: ignore[attr-defined]
+
+
+def test_task_reuses_the_reading_conversion_after_the_file_was_touched(tmp_path: Path) -> None:
+    # 读取后文件的修改时间被碰过（同步盘、杀毒软件），内容没变：开始翻译不再拉起 PowerPoint。
+    conversions = FakeConversions(FIXTURES / "training.pptx")
+    host = _host_with(conversions)
+    try:
+        source = _legacy(tmp_path)
+        host.scan(source)
+        stat = source.stat()
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+        host.scan(source)
+        units = host.extract(source)
+        host.write(source, [], MODE_TRANSLATION_ONLY, tmp_path / "讲义_法文.ppt", {"target_lang": "fr"})
+        assert len(conversions.calls) == 1
+        assert len(units) > 0
     finally:
         host._patcher.stop()  # type: ignore[attr-defined]
 
