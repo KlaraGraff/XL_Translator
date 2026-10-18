@@ -1,6 +1,6 @@
 # Translator 版本更新日志
 
-## 未发布
+## V10.3.0
 
 - **路径栏按钮改为「选择」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，省略号让它看起来像文字没显示完整；现在去掉省略号，只写「选择」（英文 Select，法文 Choisir），点开仍是「选择文件 / 选择文件夹」两项。
 
@@ -13,8 +13,6 @@
 - **翻译进行中进度区不再闪烁**：翻译进行时，翻译页的进度框（边上的流动光带、流水线上正在进行那一步的圆点、进度条上的光泽）和任务页列表里那一行的状态灯、进度条，每来一次进度就整块换一遍，动画跟着从头播；鼠标停在「停止」按钮上时悬停色也会断一下再淡回来。现在这些地方原地更新，只改进度条宽度和文字，节点不换，动画连续、悬停色不断，进度条宽度也会平滑过渡。输入框、下拉框等可交互部分仍按原方式刷新，行为不变
 
   **Progress area no longer flickers while translating**: During a run, the progress box on translation pages (the flowing edge, the dot on the current step, the shine on the progress bar) and the status light and progress bar in the Tasks list were rebuilt on every progress update, so their animations restarted, and hovering over Stop briefly lost its hover colour. They now update in place: only the bar width and the text change, so animations stay continuous, the hover colour holds, and the bar width eases smoothly. Inputs, dropdowns and other interactive parts refresh exactly as before.
-
-## V10.3.0
 
 - **CAD 任务记录多一格「保留原文」**：CAD 页上的「待翻译」是开始前数出的候选条数，任务记录里的「已翻译文字」是真正改动了的条数，两者差的是模型确认已经是目标语言、或译文与原文相同而原样保留的文字。以前任务记录不列这部分，两个数差几十条时看着像数错了（实测一张图纸页面写待翻译 2185、任务记录写已翻译 2158）。现在任务记录在「已翻译文字」旁边列出「保留原文」（为 0 时不显示），每张图纸的翻译摘要也多一行；已翻译加保留原文之外剩下的，是未获得译文、已列入需复核的文字。
 
