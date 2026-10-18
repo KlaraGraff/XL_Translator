@@ -3169,14 +3169,14 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     parts.push(st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT ? st.domainPreset : t("无补充要求"));
   }
   for (const part of parts) body.append(document.createTextNode(` · ${part}`));
-  box.append(body);
-  // 设置从哪来：单独一行、上面一条细线贯穿整张卡片，不跟在配方句后面显得半截。
+  // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
   const fromDefaults = pageUsesDefaults(surface);
   if (active || fromDefaults !== null) {
     const sub = el("span", "sub");
     sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("本页设置均为应用默认值") : t("本页设置沿用上次的选择");
-    box.append(sub);
+    body.append(sub);
   }
+  box.append(body);
   return box;
 }
 
