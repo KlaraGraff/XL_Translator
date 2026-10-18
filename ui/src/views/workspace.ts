@@ -527,8 +527,11 @@ interface SurfaceState {
   /** 本机是否装了 LibreOffice（扫描时探测一次）。只用来切换兼容转换弹窗的文案——
    *  装了之后兼容转换也能保留公式/样式，不再是「必然变纯数值」。 */
   libreofficeAvailable: boolean;
-  /** 右栏「高级」折叠块的开合（默认收起）。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。 */
+  /** 右栏「高级」折叠块的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。
+   *  每次进入这一页时按 enterAdvancedFold 重新定：第一次进入展开，之后收起。 */
   advancedOpen: boolean;
+  /** 本次启动里用户亲手开合过「高级」：之后进出这一页都照用户留下的样子，不再按默认收起。 */
+  advancedTouched: boolean;
   /** 进行中状态区里「运行日志」的开合（默认展开），同样要跨重绘记住。 */
   logOpen: boolean;
   /** 本次扫描检测到的历史产物；没有检测结果时为 null。每次扫描整体重置。 */
@@ -609,6 +612,7 @@ function freshState(surface: Surface): SurfaceState {
     allowDocFallback: false,
     libreofficeAvailable: false,
     advancedOpen: false,
+    advancedTouched: false,
     logOpen: true,
     resumeInfo: null,
     resumeDecision: null,
@@ -801,11 +805,15 @@ async function ensureBootstrap(): Promise<void> {
   if (!bootstrapPromise) {
     const attempt = (async () => {
       const c = await getClient();
-      const [settingsPayload, languagesPayload] = await Promise.all([
+      const [settingsPayload, languagesPayload, defaultsPayload] = await Promise.all([
         c.request<JsonObject>("/api/settings"),
         c.request<{ source_options: LanguageOption[]; target_options: LanguageOption[] }>("/api/languages"),
+        // 取不到只是右栏少一行「采用应用默认值 / 上次使用的设置」，不拖垮整页。
+        c.request<{ app: JsonObject; extension: JsonObject }>("/api/settings/defaults").catch(() => null),
       ]);
       settings = settingsPayload;
+      settingsDefaults = defaultsPayload;
+      loadAdvancedSeen();
       languageOptions = { source: languagesPayload.source_options ?? [], target: languagesPayload.target_options ?? [] };
       applySettingsToStates();
     })();
@@ -820,6 +828,54 @@ async function ensureBootstrap(): Promise<void> {
     bootstrapPromise = attempt;
   }
   await bootstrapPromise;
+}
+
+// 右栏「高级」：每个翻译页第一次进入时展开，让人一眼看到有哪些可调的；之后每次进入默认收起。
+// 「进过哪几页」只记在本机 localStorage（同「动效」偏好），不写后端设置。
+// 升级上来的老用户：第一次跑这一版时，设置里记着上次来源目录的内置页算已经进过，
+// 不会一升级就几页全部展开；从没用过的页（包括新加的类型）照样第一次展开。
+const ADVANCED_SEEN_STORAGE_KEY = "translator.advancedSeen";
+let advancedSeen: Set<string> | null = null;
+
+/** 读出「进过哪几页」。必须在拿到设置之后、任何来源目录写盘之前调第一次（见 ensureBootstrap）。 */
+function loadAdvancedSeen(): Set<string> {
+  if (advancedSeen) return advancedSeen;
+  let stored: unknown = null;
+  try {
+    const raw = window.localStorage.getItem(ADVANCED_SEEN_STORAGE_KEY);
+    stored = raw === null ? null : JSON.parse(raw);
+  } catch {
+    stored = null;
+  }
+  if (Array.isArray(stored)) {
+    advancedSeen = new Set(stored.filter((item): item is string => typeof item === "string"));
+  } else {
+    const used = (["excel", "word", "pdf", "cad"] as BuiltinSurface[])
+      .filter((surface) => normalizeUserPath(text(settings[`last_${surface}_source_folder`])));
+    advancedSeen = new Set(used);
+    saveAdvancedSeen(advancedSeen);
+  }
+  return advancedSeen;
+}
+
+function saveAdvancedSeen(seen: Set<string>): void {
+  try {
+    window.localStorage.setItem(ADVANCED_SEEN_STORAGE_KEY, JSON.stringify([...seen]));
+  } catch {
+    // 存不下（隐私模式、配额满）只影响下次启动会不会再展开一次，不打断页面。
+  }
+}
+
+/** 进入一页时定「高级」开不开：第一次进展开；之后收起，除非本次启动里用户自己开合过。 */
+function enterAdvancedFold(surface: Surface, st: SurfaceState): void {
+  const seen = loadAdvancedSeen();
+  if (!seen.has(surface)) {
+    seen.add(surface);
+    saveAdvancedSeen(seen);
+    st.advancedOpen = true;
+  } else if (!st.advancedTouched) {
+    st.advancedOpen = false;
+  }
 }
 
 /** 丢掉已缓存的引导结果，下一次 ensureBootstrap 重新拉设置与语言目录。 */
@@ -961,6 +1017,51 @@ function readOutputPath(surface: Surface, key: string): unknown {
 async function persistSettings(patch: JsonObject): Promise<void> {
   const c = await getClient();
   settings = await c.request<JsonObject>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+  // 配方句下面那行按存好的设置说「应用默认值」还是「上次使用的设置」，存完重算一次。
+  for (const [surface, st] of states) refreshRecipe(surface, st);
+}
+
+/** 出厂默认值（GET /api/settings/defaults）：app 是整份设置，extension 是运行时注册类型的那一份。 */
+let settingsDefaults: { app: JsonObject; extension: JsonObject } | null = null;
+
+/** 内置页右栏里能改的设置，按 `<页面>_<后缀>` 存；PDF 页的设置在 settings.pdf 一处。 */
+const PAGE_SETTING_SUFFIXES = ["source_lang", "target_lang", "domain_preset", "smart_context", "output", "review", "conversion"];
+/** 运行时注册类型的设置里，右栏能改的几项。 */
+const EXT_PAGE_SETTING_KEYS = ["source_lang", "target_lang", "domain_preset", "smart_context", "options", "use_custom_output_dir", "custom_output_dir"];
+/** settings.pdf 里不在 PDF 页右栏、而在「设置 · 翻译参数」里改的几项（重试、并发）。 */
+const PDF_NON_PAGE_KEY = /retry|concurrency/;
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as JsonObject;
+  const right = b as JsonObject;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+
+function withoutPdfNonPageKeys(value: unknown): JsonObject {
+  return Object.fromEntries(Object.entries(record(value)).filter(([key]) => !PDF_NON_PAGE_KEY.test(key)));
+}
+
+/** 这一页右栏的设置是否都还是出厂默认值；取不到默认值时为 null。 */
+function pageUsesDefaults(surface: Surface): boolean | null {
+  if (!settingsDefaults) return null;
+  if (isExtSurface(surface)) {
+    // 没存过这一类型时 settings.extensions 里没有它，各项都按默认值算。
+    const saved = extSettingsRecord(surface);
+    const base = record(settingsDefaults.extension);
+    return EXT_PAGE_SETTING_KEYS.every((key) => !hasOwn(saved, key) || sameJson(saved[key], base[key]));
+  }
+  const base = record(settingsDefaults.app);
+  if (surface === "pdf") {
+    return sameJson(withoutPdfNonPageKeys(settings.pdf), withoutPdfNonPageKeys(base.pdf))
+      && sameJson(settings.pdf_output, base.pdf_output);
+  }
+  return PAGE_SETTING_SUFFIXES
+    .map((suffix) => `${surface}_${suffix}`)
+    .filter((key) => hasOwn(base, key))
+    .every((key) => sameJson(settings[key], base[key]));
 }
 
 /** 开关/领域/输出目录这几处设置都是「先改界面再落盘」，落盘发射后不管：PUT 失败时
@@ -1004,6 +1105,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   ensureBootstrap()
     .then(() => {
       if (!isCurrent()) return;
+      enterAdvancedFold(surface, st);
       return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
     })
     .then(() => {
@@ -3181,9 +3283,13 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   lead.textContent = recipe.lead;
   body.append(lead);
   for (const part of recipe.parts) body.append(document.createTextNode(` · ${part}`));
-  const sub = el("span", "sub");
-  sub.textContent = active ? t("任务进行中，设置已锁定") : t("默认值已按本机设置与上次任务准备好，可直接开始");
-  body.append(sub);
+  // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
+  const fromDefaults = pageUsesDefaults(surface);
+  if (active || fromDefaults !== null) {
+    const sub = el("span", "sub");
+    sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("本页设置均为应用默认值") : t("本页设置沿用上次的选择");
+    body.append(sub);
+  }
   box.append(body);
   return box;
 }
@@ -3391,7 +3497,10 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     meta: t("{0} 项 · 已按常用场景设好", count),
     content,
     open: st.advancedOpen || (resumeAuto && !active),
-    onToggle: (open) => { st.advancedOpen = open; },
+    onToggle: (open) => {
+      st.advancedOpen = open;
+      st.advancedTouched = true;
+    },
   });
   fold.root.classList.add("adv-fold");
   return fold.root;
