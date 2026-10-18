@@ -11,6 +11,10 @@
    重译一次（该处含义确实不同时可不用），仍没用上就算了：不再重译、不标需复核，只记下
    各处采用了没有（:meth:`TermRunStats.document_usage`）。
 
+译成中文时还有一件：本批原文里有称谓后的拼音人名（Monsieur YU YUNCHONG）时，附一句
+「按原文拼写保留，不要写成汉字」——仅凭拼音定不了汉字（:mod:`core.key_info_check`）。
+记忆库里给这个名字设定过译法的不提醒，照设定译法走。
+
 调度、拆批、限流和失败重发仍由 ``engine_dispatcher`` / ``word_batching`` 负责：
 包装器只是它们眼里的一个普通引擎。
 """
@@ -24,6 +28,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from core.key_info_check import name_hint_block, pinyin_names
 from core.language_preflight import TranslationLanguageResult
 from core.prompt_cache import append_batch_block
 from core.tm_terms import (
@@ -227,9 +232,13 @@ class TermAwareEngine(TranslationEngine):
         include_scene: bool = True,
         stats: TermRunStats | None = None,
         log: Callable[[str, str], None] | None = None,
+        name_hints: bool = False,
+        fixed_names: Sequence[str] = (),
     ) -> None:
         self._engine = engine
         self._index = index
+        self._name_hints = name_hints
+        self._fixed_names = tuple(fixed_names)
         self._target_lang = target_lang
         self._target_name = get_target_lang_name(target_lang)
         self._retry_attempts = max(0, min(MAX_TERM_RETRY_ATTEMPTS, int(retry_attempts)))
@@ -261,6 +270,7 @@ class TermAwareEngine(TranslationEngine):
         system_prompt: str,
         source_lang: str = "zh",
     ) -> dict[str, str]:
+        system_prompt = self._with_name_hint(texts, system_prompt)
         hits = self._scan(texts)
         if not any(hits):
             return self.inner.translate_batch(texts, target_lang, system_prompt, source_lang=source_lang)
@@ -299,6 +309,7 @@ class TermAwareEngine(TranslationEngine):
         system_prompt: str,
         source_lang: str = "auto",
     ) -> list[TranslationLanguageResult]:
+        system_prompt = self._with_name_hint(texts, system_prompt)
         hits = self._scan(texts)
         if not any(hits):
             return self.inner.translate_batch_with_sources(
@@ -345,6 +356,13 @@ class TermAwareEngine(TranslationEngine):
 
     def _scan(self, texts: Sequence[str]) -> list[list[TermHit]]:
         return [self._index.scan(text, include_scene=self._include_scene) for text in texts]
+
+    def _with_name_hint(self, texts: Sequence[str], system_prompt: str) -> str:
+        if not self._name_hints:
+            return system_prompt
+        names = [name for text in texts for name in pinyin_names(text, fixed_names=self._fixed_names)]
+        block = name_hint_block(names)
+        return _append_block(system_prompt, block) if block else system_prompt
 
     def _block(self, hits_per_text: Sequence[Sequence[TermHit]]) -> str:
         return build_prompt_block(hits_per_text, self._target_name)

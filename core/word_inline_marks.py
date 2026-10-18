@@ -774,10 +774,57 @@ def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple
         if not isinstance(answers, list) or len(answers) != len(batch):
             continue
         for (source, marked, translation, _seeded, texts), answer in zip(batch, answers):
-            if (
-                isinstance(answer, str)
-                and same_text(strip_marks(answer, texts), translation)
-                and marks_match(marked, answer)
-            ):
-                placed[source] = (marked, answer)
+            if not isinstance(answer, str) or not marks_match(marked, answer):
+                continue
+            for candidate in (_settle_object_gaps(answer, translation, texts), answer):
+                if same_text(strip_marks(candidate, texts), translation):
+                    placed[source] = (marked, candidate)
+                    break
     return placed
+
+
+# 补标记时模型在脚注编号、图片这类不占字符的占位符两边多写或少写了空格：「béton<x1/>doit」
+# 「figure <x1/>, strictement」。去掉占位符后空格和定稿对不上，整段退回写法会把编号、图片
+# 挪到段尾、局部格式也丢掉。
+_OBJECT_PAD_RE = re.compile(r" *(<\s*x\s*(\d+)\s*/\s*>) *", re.IGNORECASE)
+
+
+def _settle_object_gaps(answer: str, translation: str, texts: dict[int, str]) -> str:
+    """先去掉不占字符的占位符两边的空格，再对照定稿译文：定稿在占位符的位置有空格的，在
+    占位符后面补一个（「figure<x1/>, 」「béton<x1/> doit」）。对不上就原样返回，是否采用
+    仍由 same_text 和定稿比对决定。"""
+    zero = {slot for slot, text in texts.items() if text == ""}
+    if not zero:
+        return answer
+    tight = _OBJECT_PAD_RE.sub(lambda match: match.group(1) if int(match.group(2)) in zero else match.group(0), answer)
+    parts: list[str] = []
+    boundaries: dict[int, int] = {}  # 纯文本里的位置 → tight 里占位符的结尾
+    length = cursor = 0
+    for match in _ANY_MARK_RE.finditer(tight):
+        parts.append(tight[cursor:match.start()])
+        length += match.start() - cursor
+        cursor = match.end()
+        if match.group(3) is None:
+            continue
+        slot = int(match.group(3))
+        if slot in zero:
+            boundaries.setdefault(length, match.end())
+        else:
+            parts.append(texts.get(slot, ""))
+            length += len(texts.get(slot, ""))
+    parts.append(tight[cursor:])
+    plain, target = "".join(parts), str(translation or "")
+    i = len(plain) - len(plain.lstrip())
+    j = len(target) - len(target.lstrip())
+    inserts = []
+    while i < len(plain) and j < len(target):
+        if plain[i] == target[j] or (plain[i].isspace() and target[j].isspace()):
+            i, j = i + 1, j + 1
+        elif target[j] == " " and i in boundaries and boundaries[i] not in inserts:
+            inserts.append(boundaries[i])
+            j += 1
+        else:
+            return answer
+    for index in reversed(inserts):
+        tight = tight[:index] + " " + tight[index:]
+    return tight

@@ -113,16 +113,24 @@ def _is_output_or_hidden(part: str) -> bool:
     return part.startswith(".") or part.endswith("_翻译输出") or "_翻译输出_" in part
 
 
+def _is_office_lock_file(filename: str) -> bool:
+    # Office 打开文件时在旁边放一个 165 字节的「~$原名」，扩展名和原文件一样。
+    # 当成 .ppt 去转换，PowerPoint 会对着它卡上两分钟。
+    return filename.startswith("~$")
+
+
 def list_files(root: Path, extensions: tuple[str, ...]) -> list[tuple[Path, str]]:
     """``(path, relative_path)`` of every file under ``root`` with one of ``extensions``.
 
     Earlier translation output folders and hidden folders are left out, so a
-    second run never picks up the first run's results.
+    second run never picks up the first run's results; so are the ``~$`` lock
+    files Office keeps next to an open document.
     """
     root = Path(root)
     wanted = {f".{suffix}" for suffix in extensions}
     if root.is_file():
-        return [(root, root.name)] if root.suffix.lower() in wanted else []
+        keep = root.suffix.lower() in wanted and not _is_office_lock_file(root.name)
+        return [(root, root.name)] if keep else []
     if not root.is_dir():
         return []
     found: list[tuple[Path, str]] = []
@@ -130,7 +138,7 @@ def list_files(root: Path, extensions: tuple[str, ...]) -> list[tuple[Path, str]
         subdirectories[:] = sorted(name for name in subdirectories if not _is_output_or_hidden(name))
         for filename in sorted(filenames):
             path = Path(directory) / filename
-            if filename.startswith(".") or path.suffix.lower() not in wanted:
+            if filename.startswith(".") or _is_office_lock_file(filename) or path.suffix.lower() not in wanted:
                 continue
             found.append((path, str(path.relative_to(root))))
     return found

@@ -48,6 +48,9 @@ class FrenchEngine(FakeEngine):
         return {text: french(text) for text in texts}
 
 
+C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+
+
 def french(text: str) -> str:
     # Inline formatting marks (<g1>…</g1>) do not come back: the app then places
     # them itself or writes the paragraph whole, so the words match the plain text.
@@ -86,7 +89,7 @@ def test_manifest() -> None:
     assert manifest.key == "ext:pptx"
     assert manifest.label == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
     assert manifest.file_noun == {"zh": "演示文稿", "en": "presentations", "fr": "présentations"}
-    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx"]
+    assert manifest.extensions == ["pptx", "pptm", "ppsx", "potx", "ppt", "pps"]
     assert manifest.capabilities.bilingual and manifest.capabilities.translation_only
     assert [(option.key, option.default) for option in manifest.options] == [
         ("translate_notes", True),
@@ -225,6 +228,24 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             assert bold == ["注意："] * (copies - 1) + ["Attention :"], (options, bold)
             assert linked == ["项目网站"] * (copies - 1) + ["le site du projet"], (options, linked)
 
+    def test_charts_and_smartart_are_translated_in_a_task(self) -> None:
+        path = self.source / "季度产值.pptx"
+        shutil.copyfile(FIXTURES / "graphics.pptx", path)
+        for bilingual in (False, True):
+            messages = self._run(FrenchEngine(), [path], options={"bilingual": bilingual})
+            done = next(message for message in messages if isinstance(message, DoneMsg))
+            result = done.file_results[0]
+            # 双语时 SmartArt 每个圆多一段译文、字缩得很小，列入复核。
+            assert result["status"] == ("needs_review" if bilingual else "completed"), result
+            out = Path(result["output_path"])
+            with zipfile.ZipFile(out) as package:
+                cache = [v.text for v in etree.fromstring(package.read("ppt/charts/chart1.xml")).iter(f"{{{C}}}v")]
+            quarter = f"第一季度\n{french('第一季度')}" if bilingual else french("第一季度")
+            assert quarter in cache
+            drawing = _texts(out, "ppt/diagrams/drawing1.xml")
+            assert french("需求调研") in drawing
+            assert ("需求调研" in drawing) is bilingual
+
     def test_bilingual_option_writes_both(self) -> None:
         path = self.source / "讲义.pptx"
         shutil.copyfile(FIXTURES / "training.pptx", path)
@@ -251,7 +272,7 @@ def test_the_page_is_registered_with_the_app() -> None:
         descriptor = get_surface(key).describe()
         assert descriptor["label"] == {"zh": "PPT", "en": "PowerPoint", "fr": "PowerPoint"}
         assert descriptor["icon"] == "ppt"
-        assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
+        assert descriptor["extensions"] == ["potx", "pps", "ppsx", "ppt", "pptm", "pptx"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "fixed_layout"]
     finally:
         if not already:

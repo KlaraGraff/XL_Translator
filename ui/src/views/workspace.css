@@ -249,6 +249,22 @@
   white-space: normal;
   max-width: 180px;
 }
+/* 统计格里的跳转（「安装 ↗ 转换工具」）：小字一行，蓝色。 */
+.sum .st .st-link {
+  display: block;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--tint-ink);
+  cursor: pointer;
+}
+.sum .st .st-link:hover {
+  text-decoration: underline;
+}
 .sum .qn {
   align-self: center;
   margin-left: auto;
@@ -273,8 +289,9 @@
 .sum .qn.warn .ic {
   color: var(--warn);
 }
-/* 读取完成后统计格错落浮现，每格晚 28ms。 */
-.stag > * {
+/* 读取完成后统计格错落浮现，每格晚 28ms。只认统计格这一处：以前写成全局的 .stag > *，
+   设置页用途卡也带 .stag，进页浮现播完、.enter 摘掉后这条又接着播一遍，右侧整排卡片闪第二下。 */
+.sum.stag > * {
   animation: ws-rise var(--t-slow) var(--ease-out) both;
   animation-delay: calc(var(--i, 0) * 28ms);
 }
@@ -655,6 +672,32 @@
 }
 .tbl.ws-files th {
   white-space: nowrap;
+}
+/* 吸顶表头和上面那条（「全部统计」提示条）之间不能留缝：WebKit 里 border-collapse:collapse
+   的吸顶格会往下错开几像素，滚动时下面的行从缝里一闪而过。改成 separate（只有横线，外观不变），
+   表头底线画成内阴影跟着表头走；表头压在行上面（勾选框、格式徽标自己有定位，会盖过没有
+   z-index 的表头）；再往上补一条同色的边，哪怕仍差一两像素也看不到下面的行。 */
+.tbl.ws-files {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.tbl.ws-files th {
+  z-index: 2;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+.tbl.ws-files th::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 8px;
+  background: var(--surface);
+}
+/* 数字列表头和其他表头同色（.tbl .num 给数字格的 ink-2 不该落到表头上）。 */
+.tbl.ws-files th.num {
+  color: var(--ink-3);
 }
 @media (max-width: 1250px) {
   /* 窄窗口里长表头折成两行（只在表头文字里的零宽空格处折），省下的宽度留给状态列。 */

@@ -618,6 +618,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   shape_text_overflow: "文本框放不下译文，已缩到最小字号", // i18n-ignore 参与复核判断与合并，显示时 tx()
   locked_row_overflow: "行高已锁定，缩到最小字号仍放不下", // i18n-ignore 参与复核判断与合并，显示时 tx()
   term_not_applied: "未采用设定译法", // i18n-ignore 参与复核判断与合并，显示时 tx()
+  key_info: "关键信息需核对", // i18n-ignore 参与复核判断与合并，显示时 tx()
 };
 
 /** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`；文本框和

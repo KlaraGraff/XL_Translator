@@ -15,7 +15,10 @@
 - 一个 ``a:p`` 一个单元。``a:br`` 在文字里写成换行；页码、日期这类自动字段（``a:fld``）的
   文字算在原文里、列为受保护片段，写回时放回原来的字段元素。段内格式用 ``<gN>`` 标记
   （``core/drawingml_marks.py``，与 Word 同一套）。
-- 图片、嵌入对象、图表、SmartArt、批注里的文字不翻，扫描时报数。
+- 每页形状之后、备注之前是这一页的图表和 SmartArt（``core/pptx_charts.py``、
+  ``core/pptx_smartart.py``，各自的部件里取字和写回）。
+- 图片、嵌入对象、批注里的文字不翻，扫描时报数；认不出的图表（Office 2016 起的瀑布图、
+  旭日图等新图表）和缺部件的 SmartArt 也报数。
 
 **写回**
 
@@ -29,8 +32,8 @@
 - 竖排文本框里写进西文的列入需复核。
 - 每个改过文字的部件写回后调一次 ``fit_after_write``（放不下时缩字，``core/pptx_fit.py``）。
 - 保存后验收：包里的条目和原来一样、没改的部件逐字节相同、改过的部件能解析、形状数
-  不变、没动过的形状位置尺寸不变、段数符合预期、没有残留标记。不通过就删掉输出文件、
-  报这个文件失败，不留半成品。
+  不变、没动过的形状位置尺寸不变、段数符合预期、没有残留标记（图表和 SmartArt 的部件
+  各按自己的规则核对）。不通过就删掉输出文件、报这个文件失败，不留半成品。
 """
 
 from __future__ import annotations
@@ -325,9 +328,11 @@ class _Scope:
 
     part: str
     label: str
-    kind: str  # slide / notes / layout / master
+    kind: str  # slide / notes / layout / master / graphic
     layout: object | None = None
     master: object | None = None
+    #: 图表或 SmartArt（``kind == "graphic"``）：自己取字、写回、核对，不走段落槽位。
+    graphic: GraphicText | None = None
 
 
 def _ph(shape) -> tuple[str, str] | None:
@@ -530,6 +535,8 @@ class _Walker:
 
     def parts(self) -> Iterator[tuple[_Scope, list[_Slot]]]:
         deck = self.deck
+        #: 已经取过的图表、SmartArt 部件（同一个部件被两页引用时只取一次）。
+        seen: set[str] = set()
         for number, slide in enumerate(deck.slides, start=1):
             layout_part = next(iter(deck.related(slide, REL_SLIDE_LAYOUT)), "")
             master_part = next(iter(deck.related(layout_part, REL_SLIDE_MASTER)), "") if layout_part else ""
@@ -541,6 +548,7 @@ class _Walker:
                 master=deck.root(master_part) if master_part else None,
             )
             yield scope, self._slots(scope)
+            yield from self._graphics(scope, seen)
             if self.include_notes:
                 for notes in deck.related(slide, REL_NOTES_SLIDE)[:1]:
                     yield _Scope(notes, f"第 {number} 页备注", "notes"), self._notes_slots(notes, f"第 {number} 页备注")
@@ -568,6 +576,21 @@ class _Walker:
         counter = [0]
         self._walk(tree, None, scope, slots, counter)
         return slots
+
+    def _graphics(self, scope: _Scope, seen: set[str]) -> Iterator[tuple[_Scope, list[_Slot]]]:
+        """这一页上的图表和 SmartArt，按形状顺序。"""
+        root = self.deck.root(scope.part)
+        tree = root.find(f"{_p('cSld')}/{_p('spTree')}") if root is not None else None
+        if tree is None:
+            return
+        for shape in _all_shapes(tree):
+            if shape.tag != P_GRAPHIC_FRAME:
+                continue
+            graphic = graphic_text(self.deck, scope.part, shape, self._owner_context(shape, scope))
+            if graphic is None or graphic.part in seen:
+                continue
+            seen.add(graphic.part)
+            yield _Scope(graphic.part, scope.label, "graphic", graphic=graphic), []
 
     def _next_id(self, scope: _Scope, counter: list[int]) -> str:
         counter[0] += 1
@@ -741,14 +764,19 @@ class PptxUnit:
 
 
 def _protected(marks: ParagraphMarks) -> list[str]:
-    text = marks.plain
+    found = protected_text(marks.plain)
+    found.extend(piece.text.strip() for piece in marks.pieces if piece.is_field and piece.text.strip())
+    return [item for item in dict.fromkeys(found) if item in marks.plain]
+
+
+def protected_text(text: str) -> list[str]:
+    """文字里要原样保留的网址和邮箱。"""
     found: list[str] = []
     for match in _URL_RE.finditer(text):
         value = match.group(0).rstrip(_URL_TRAILING)
         if value:
             found.append(value)
     found.extend(match.group(0) for match in _EMAIL_RE.finditer(text))
-    found.extend(piece.text.strip() for piece in marks.pieces if piece.is_field and piece.text.strip())
     return [item for item in dict.fromkeys(found) if item in text]
 
 
@@ -757,7 +785,9 @@ def extract_units(path: str | Path, *, translate_notes: bool = True) -> list[Ppt
     with _open(Path(path)) as package:
         deck = _Deck(package)
         units: list[PptxUnit] = []
-        for _scope, slots in _Walker(deck, include_notes=translate_notes).parts():
+        for scope, slots in _Walker(deck, include_notes=translate_notes).parts():
+            if scope.graphic is not None:
+                units.extend(scope.graphic.units())
             for slot in slots:
                 units.append(
                     PptxUnit(
@@ -779,12 +809,14 @@ class PptxScan:
 
 
 def scan_file(path: str | Path, *, translate_notes: bool = True) -> PptxScan:
-    """单元数，和不翻的内容（图片、嵌入对象、图表、SmartArt、批注）各有几处。"""
+    """单元数，和不翻的内容（图片、嵌入对象、认不出的图表和 SmartArt、批注）各有几处。"""
     with _open(Path(path)) as package:
         deck = _Deck(package)
         count = 0
-        for _scope, slots in _Walker(deck, include_notes=translate_notes).parts():
+        for scope, slots in _Walker(deck, include_notes=translate_notes).parts():
             count += len(slots)
+            if scope.graphic is not None:
+                count += len(scope.graphic.units())
         pictures = objects = charts = diagrams = comments = 0
         for slide in deck.slides:
             root = deck.root(slide)
@@ -796,8 +828,9 @@ def scan_file(path: str | Path, *, translate_notes: bool = True) -> PptxScan:
                     elif shape.tag == P_GRAPHIC_FRAME:
                         uri = _graphic_uri(shape)
                         objects += uri == URI_OLE
-                        charts += uri in (URI_CHART, URI_CHART_EX)
-                        diagrams += uri == URI_DIAGRAM
+                        if uri in (URI_CHART, URI_CHART_EX, URI_DIAGRAM) and graphic_text(deck, slide, shape, "") is None:
+                            charts += uri != URI_DIAGRAM
+                            diagrams += uri == URI_DIAGRAM
             for rel in deck.rels(slide):
                 if rel.external or rel.type not in (REL_COMMENTS, REL_MODERN_COMMENTS):
                     continue
@@ -921,6 +954,28 @@ class _Context:
     bilingual: bool
 
 
+def write_translated_paragraph(marks: ParagraphMarks, value: Translation, context: _Context) -> object:
+    """按模式写一段：仅译文改写原段；双语对照在原段后插一段译文（不带项目符号）。
+
+    图表和 SmartArt 的段落也走这里。返回写了译文的那个 ``a:p``；双语对照复制原段失败时
+    返回 None（原段不动）。
+    """
+    if not context.bilingual:
+        _write_one(marks, value, context)
+        return marks.paragraph
+    copy = _translation_copy(marks)
+    if copy is None:
+        return None
+    _write_one(copy, value, context)
+    _as_translation_paragraph(copy.paragraph, bulleted=False)
+    return copy.paragraph
+
+
+def should_write(value: Translation | None, source: str) -> bool:
+    """这个单元有没有要写回的译文（没有译文、译文为空或和原文一样时不写）。"""
+    return value is not None and value.text != source and bool(value.text.strip())
+
+
 def _write_one(marks: ParagraphMarks, value: Translation, context: _Context) -> None:
     written = write_paragraph(marks, value.text, value.marked)
     if context.lang:
@@ -1019,11 +1074,18 @@ def write_file(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, out_path)
     review: list[ReviewItem] = []
-    checks: dict[str, _PartCheck] = {}
+    checks: dict[str, _PartCheck | PartVerifier] = {}
     try:
         with _open(out_path) as package:
             deck = _Deck(package)
             for scope, slots in _Walker(deck, include_notes=translate_notes).parts():
+                if scope.graphic is not None:
+                    written = scope.graphic.write(translations, context)
+                    review.extend(written.review)
+                    for name, data in written.parts.items():
+                        package.write(name, data)
+                    checks.update(written.checks)
+                    continue
                 result = _write_part(scope, slots, translations, context, review)
                 if result is None:
                     continue
@@ -1089,7 +1151,7 @@ def _write_part(
 
     for slot in slots:
         value = translations.get(slot.unit_id)
-        if value is None or value.text == slot.marks.plain or not value.text.strip():
+        if not should_write(value, slot.marks.plain):
             continue
         for marks in (slot.marks, *slot.mirrors):
             count(marks.paragraph)
@@ -1183,6 +1245,69 @@ def _sync_fit(source, target) -> None:
         _sync_fit(source_child, target_child)
 
 
+# ── 图表与 SmartArt 的接入点 ────────────────────────────────────────────────
+
+#: 不在形状树里的部件（图表、SmartArt、图表的内嵌工作簿）写完后怎么核对：
+#: ``(原字节, 新字节) -> 问题说明``，没问题返回空串。
+PartVerifier = Callable[[bytes, bytes], str]
+
+
+@dataclass
+class GraphicWrite:
+    """一个图表或 SmartArt 写回的结果：改过的部件、各自怎么核对、需复核的地方。"""
+
+    parts: dict[str, bytes] = field(default_factory=dict)
+    checks: dict[str, PartVerifier] = field(default_factory=dict)
+    review: list[ReviewItem] = field(default_factory=list)
+
+
+class GraphicText:
+    """图表、SmartArt 这类有自己部件的形状：取字和写回走同一份解析，单元 id 对得上。"""
+
+    #: 主部件名（单元 id 的前缀；同一部件只取一次）。
+    part: str
+
+    def units(self) -> list[PptxUnit]:
+        raise NotImplementedError
+
+    def write(self, translations: Mapping[str, Translation], context: _Context) -> GraphicWrite:
+        raise NotImplementedError
+
+
+def graphic_text(deck: _Deck, slide: str, frame, owner_context: str) -> GraphicText | None:
+    """幻灯片上一个 ``p:graphicFrame`` 对应的图表或 SmartArt；不是、认不出或缺部件时返回 None。"""
+    uri = _graphic_uri(frame)
+    if uri == URI_CHART:
+        from core.pptx_charts import chart_text
+
+        return chart_text(deck, slide, frame, owner_context)
+    if uri == URI_DIAGRAM:
+        from core.pptx_smartart import diagram_text
+
+        return diagram_text(deck, slide, frame, owner_context)
+    return None
+
+
+def text_problem(name: str, root) -> str:
+    """改过的部件里段落结构是否正常、有没有临时记号和残留的格式标记。"""
+    for paragraph in root.iter(A_P):
+        children = [child for child in paragraph if isinstance(child.tag, str)]
+        if any(child.tag == A_PPR for child in children[1:]) or any(
+            child.tag == A_END_PARA_RPR for child in children[:-1]
+        ):
+            return f"{name} 的段落结构不对"
+        if paragraph.get(_TRANSLATION_FLAG) is not None:
+            return f"{name} 留有临时记号"
+    for text in root.iter(A_T):
+        if text.text and has_residual_marks(text.text):
+            return "译文里残留了格式标记"
+    return ""
+
+
+def has_residual_marks(text: str) -> bool:
+    return bool(_RESIDUAL_RE.search(text) or has_marks(text))
+
+
 # ── 保存后验收 ──────────────────────────────────────────────────────────────
 
 
@@ -1232,7 +1357,7 @@ def _xfrm(shape) -> bytes:
     return b""
 
 
-def _first_problem(source: Path, output: Path, checks: Mapping[str, _PartCheck]) -> str:
+def _first_problem(source: Path, output: Path, checks: Mapping[str, _PartCheck | PartVerifier]) -> str:
     """重新打开写好的文件逐项核对；有问题返回一句说明，没问题返回空串。"""
     try:
         with zipfile.ZipFile(source) as before, zipfile.ZipFile(output) as after:
@@ -1245,6 +1370,11 @@ def _first_problem(source: Path, output: Path, checks: Mapping[str, _PartCheck])
                 if check is None:
                     if info.CRC != before_infos[name].CRC:
                         return f"未改动的部件 {name} 内容变了"
+                    continue
+                if not isinstance(check, _PartCheck):
+                    problem = check(before.read(name), after.read(name))
+                    if problem:
+                        return problem
                     continue
                 try:
                     old_root = _parse(before.read(name))
@@ -1271,24 +1401,16 @@ def _part_problem(name: str, old_root, new_root, check: _PartCheck) -> str:
     for index, total in check.paragraphs.items():
         if index >= len(bodies) or len(bodies[index].findall(A_P)) != total:
             return f"{name} 的段落数不对"
-    for paragraph in new_root.iter(A_P):
-        children = [child for child in paragraph if isinstance(child.tag, str)]
-        if any(child.tag == A_PPR for child in children[1:]) or any(
-            child.tag == A_END_PARA_RPR for child in children[:-1]
-        ):
-            return f"{name} 的段落结构不对"
-        if paragraph.get(_TRANSLATION_FLAG) is not None:
-            return f"{name} 留有临时记号"
-    for text in new_root.iter(A_T):
-        if text.text and (_RESIDUAL_RE.search(text.text) or has_marks(text.text)):
-            return "译文里残留了格式标记"
-    return ""
+    return text_problem(name, new_root)
 
 
 __all__ = [
     "REASON_VERTICAL",
     "TARGET_LANG_TAGS",
     "FitIssue",
+    "GraphicText",
+    "GraphicWrite",
+    "PartVerifier",
     "PptxError",
     "PptxScan",
     "PptxUnit",
@@ -1297,7 +1419,12 @@ __all__ = [
     "WriteResult",
     "extract_units",
     "fit_after_write",
+    "graphic_text",
     "lang_tag",
+    "protected_text",
     "scan_file",
+    "should_write",
+    "text_problem",
     "write_file",
+    "write_translated_paragraph",
 ]

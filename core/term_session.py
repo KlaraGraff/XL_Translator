@@ -10,7 +10,9 @@
    翻完核对（见 :mod:`core.term_engine`）；
 4. :meth:`TaskTermSession.auto_save_short_words` 在「自动识别场景」下把短词在新场景
    里的译法存成带备注的新词条，并把大多数位置都采用了的统一用词按「自动保存」存下；
-5. :meth:`TaskTermSession.finish` 记下词条使用次数，返回任务详情里「记忆库」一节。
+5. :meth:`TaskTermSession.finish` 记下词条使用次数，返回任务详情里「记忆库」一节；
+6. :meth:`TaskTermSession.check_key_info` 在译文定稿后核对证件号、日期、人名
+   （:mod:`core.key_info_check`），对不上的由任务流程标记需复核。
 
 Excel、Word 的任务流程直接用 :class:`TaskTermSession`；CAD 图纸和 PDF 原位替换
 这类一份文件接一份处理的路径用 :class:`DocumentTermMemory`（每份文件一个会话，
@@ -36,6 +38,7 @@ from core.document_terms import (
     document_char_count,
     find_recurring_terms,
 )
+from core.key_info_check import KeyInfoIssue, check_key_info, review_detail
 from core.term_engine import TermAwareEngine, TermRunStats
 from core.tm_terms import (
     USAGE_ALWAYS,
@@ -106,6 +109,8 @@ class TaskTermSession:
         self._text_pairs: dict[str, set[str]] = {}
         # 过期的整段自动词条 {id: 旧译文}：重译结果入库前删掉（retire_stale_entries）。
         self._stale_entries: dict[int, str] = {}
+        # 关键信息对不上的 {原文: 对不上的几处}（check_key_info）。
+        self.key_info_review: dict[str, list[KeyInfoIssue]] = {}
 
     # ── 整段 ──────────────────────────────────────────────────────────────
 
@@ -334,7 +339,10 @@ class TaskTermSession:
     # ── 批次 ──────────────────────────────────────────────────────────────
 
     def wrap(self, engine: TranslationEngine) -> TranslationEngine:
-        if self.index is None or not self.index.entries:
+        # 译成中文时即使记忆库里没有词条也包一层：原文里有拼音人名时随批提醒原样保留。
+        name_hints = str(self.target_lang or "").lower().startswith("zh")
+        has_entries = self.index is not None and bool(self.index.entries)
+        if not has_entries and not name_hints:
             return engine
         from core.engine_dispatcher import is_local_engine_name
 
@@ -343,13 +351,71 @@ class TaskTermSession:
         )
         return TermAwareEngine(
             engine,
-            self.index,
+            self.index if self.index is not None else TermIndex(()),
             target_lang=self.target_lang,
             retry_attempts=int(getattr(self._tm, "term_retry_attempts", 2)),
             batch_budget=int(getattr(self._tm, "term_batch_budget", 20)),
             include_scene=include_scene,
             stats=self.stats,
+            name_hints=name_hints,
+            fixed_names=self.fixed_names(),
         )
+
+    def fixed_names(self) -> list[str]:
+        """记忆库里设定过译法的原文（手动维护或「始终采用」）：人名的汉字写法以它为准。"""
+        if self.index is None:
+            return []
+        return [
+            entry.source
+            for entry in self.index.entries
+            if entry.origin == "manual" or entry.usage == USAGE_ALWAYS
+        ]
+
+    # ── 关键信息 ──────────────────────────────────────────────────────────
+
+    def check_key_info(
+        self,
+        translations: Mapping[str, str],
+        *,
+        source_lang: str = "",
+        skip: Iterable[str] = (),
+    ) -> dict[str, list[KeyInfoIssue]]:
+        """译文定稿后核对证件号、日期、人名，返回对不上的 {原文: 对不上的几处}。
+
+        只判断、不改译文；``skip`` 是已另有复核记录（保留了原文等）的原文。结果累加在
+        :attr:`key_info_review` 里，同一份会话可以分几次核对；复核说明用
+        :meth:`key_info_detail`。
+        """
+        skipped = set(skip)
+        fixed = self.fixed_names()
+        found: dict[str, list[KeyInfoIssue]] = {}
+        for source, translation in translations.items():
+            if source in skipped or not translation or translation == source:
+                continue
+            try:
+                issues = check_key_info(
+                    source,
+                    translation,
+                    source_lang=source_lang,
+                    target_lang=self.target_lang,
+                    fixed_names=fixed,
+                )
+            except Exception as exc:  # noqa: BLE001 - a check never fails a translated file
+                logger.warning(f"关键信息核对出错，跳过这一段：{exc!r}")
+                continue
+            if issues:
+                found[source] = issues
+        if found:
+            self.key_info_review.update(found)
+            self._log(
+                "WARN",
+                f"有 {len(found)} 处译文中的证件号、日期或人名与原文对不上，已在输出文件中标记需复核，且不保存到记忆库",
+            )
+        return found
+
+    def key_info_detail(self, text: str) -> str:
+        """复核清单「处理」一栏：这段译文哪几处与原文对不上。"""
+        return review_detail(self.key_info_review.get(text, ()))
 
     def not_applied_texts(self) -> set[str]:
         return self.stats.not_applied_texts()
@@ -403,7 +469,7 @@ class TaskTermSession:
         if not self.will_auto_save():
             return
         assert self.index is not None
-        skipped = self.not_applied_texts()
+        skipped = self.not_applied_texts() | set(self.key_info_review)
         picked: list[tuple[str, str, str]] = []
         for text, translation in translations.items():
             if text in skipped or not is_context_sensitive(text):
