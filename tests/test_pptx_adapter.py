@@ -48,6 +48,9 @@ class FrenchEngine(FakeEngine):
         return {text: french(text) for text in texts}
 
 
+C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+
+
 def french(text: str) -> str:
     # Inline formatting marks (<g1>…</g1>) do not come back: the app then places
     # them itself or writes the paragraph whole, so the words match the plain text.
@@ -191,6 +194,24 @@ class PptxTaskTests(IsolatedAppDataTestCase):
             ("第 7 页 · TextBox 1", "竖排文本框，译文可能需要改为横排")
         ]
         assert result["status"] == "needs_review" and result["review_count"] == 1, result
+
+    def test_charts_and_smartart_are_translated_in_a_task(self) -> None:
+        path = self.source / "季度产值.pptx"
+        shutil.copyfile(FIXTURES / "graphics.pptx", path)
+        for bilingual in (False, True):
+            messages = self._run(FrenchEngine(), [path], options={"bilingual": bilingual})
+            done = next(message for message in messages if isinstance(message, DoneMsg))
+            result = done.file_results[0]
+            # 双语时 SmartArt 每个圆多一段译文、字缩得很小，列入复核。
+            assert result["status"] == ("needs_review" if bilingual else "completed"), result
+            out = Path(result["output_path"])
+            with zipfile.ZipFile(out) as package:
+                cache = [v.text for v in etree.fromstring(package.read("ppt/charts/chart1.xml")).iter(f"{{{C}}}v")]
+            quarter = f"第一季度\n{french('第一季度')}" if bilingual else french("第一季度")
+            assert quarter in cache
+            drawing = _texts(out, "ppt/diagrams/drawing1.xml")
+            assert french("需求调研") in drawing
+            assert ("需求调研" in drawing) is bilingual
 
     def test_bilingual_option_writes_both(self) -> None:
         path = self.source / "讲义.pptx"
