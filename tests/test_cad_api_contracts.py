@@ -231,3 +231,28 @@ def test_cad_task_options_reach_the_pipeline(tmp_path, monkeypatch):
     assert options.locked_blocks == ("TK*", "签名栏") and options.locked_layers == ()
     assert options.translation_font == "compatible"
     assert runner._dxf_cache.root == tmp_path / "app-data" / "cache" / "cad-dxf-v1"
+
+
+def test_cad_task_skips_target_language_like_the_scan_even_without_untranslated_only(tmp_path, monkeypatch):
+    # 本机实测：直接调 /api/tasks 不带 untranslated_only 时，E、K、AS、N 这类单字母标签
+    # 全被送去翻译，任务记录「已翻译文字」比页面上的「待翻译」多出六百多条。
+    monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
+    settings = AppSettings()
+    manager = TranslationTaskManager(settings_loader=lambda: settings)
+    source = tmp_path / "sample.dxf"
+    source.write_text(_dxf_text(), encoding="utf-8")
+    with (
+        patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
+        patch("core.engine_dispatcher.build_role_engine", return_value=object()),
+        patch("core.engine_dispatcher.get_system_prompt", return_value="CAD prompt"),
+    ):
+        runner = manager._build_runner(
+            surface="cad",
+            files=[SimpleNamespace(path=source, name=source.name, format="dxf")],
+            settings=settings,
+            source_root=tmp_path,
+            options=TaskOptions(untranslated_only=False),
+            source_lang="auto",
+            key_overrides={},
+        )
+    assert runner._options.skip_target_language is True

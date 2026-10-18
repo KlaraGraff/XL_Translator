@@ -482,7 +482,10 @@ class CadSurface(Surface):
             options=CadPipelineOptions(
                 source_lang=source_lang,
                 target_lang=settings.target_lang,
-                skip_target_language=options.untranslated_only,
+                # 已是目标语言的文字一律不送翻译，和扫描时「待翻译」的口径一致。以前跟着请求里的
+                # untranslated_only 走，请求没带这个字段（直接调接口）时整批编号、单字母标签都会
+                # 送去翻译，任务记录的数比页面上的「待翻译」多出几百条。
+                skip_target_language=True,
                 keep_work_dxf=options.cad_keep_work_dxf,
                 include_block_text=options.cad_include_block_text,
                 verify_roundtrip=options.cad_verify_roundtrip,

@@ -216,3 +216,20 @@ def test_bilingual_same_as_source_counts_as_kept(tmp_path: Path):
     ).translate_file(source, tmp_path / "plan_en.dxf", options=options)
     assert (result.stats.changed, result.stats.kept_units, result.unresolved) == (1, 1, [])
     assert scanned.candidate_count == 2
+
+
+def test_translation_equal_to_source_is_kept_not_translated(tmp_path: Path):
+    # 本机实测：633 条单字母、编号标签（E→E、AS→AS）记成了「已翻译文字」。
+    # 译文与原文相同的，仅译文模式下照常写回，但计入「保留原文」。
+    source = tmp_path / "plan.dxf"
+    source.write_text(_dxf("钢板", "E", "AS", "N"), encoding="utf-8")
+    options = CadPipelineOptions(target_lang="en", skip_target_language=False)
+    scanned = scan_cad_file(source, options=options)
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {text: "Steel plate" if text == "钢板" else text for text in texts},
+    ).translate_file(source, tmp_path / "plan_en.dxf", options=options)
+    assert (result.stats.changed, result.stats.kept_units, result.unresolved) == (1, 3, [])
+    assert scanned.candidate_count == result.stats.changed + result.stats.kept_units
+    summary = result.summary.read_text(encoding="utf-8")
+    assert "已翻译文字：1 处" in summary and "| AS | AS | 译文与原文相同 |" in summary
