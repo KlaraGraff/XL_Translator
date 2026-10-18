@@ -1629,7 +1629,7 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
   return col;
 }
 
-/** 路径栏：一整个圆角输入框，左边文件夹图标，框内右侧「选择」和「重新读取」。
+/** 路径栏：一整个圆角输入框，左边文件夹图标，框内右侧「选择文件或文件夹」和「重新读取」。
  *  任务进行中整条禁用；回车 = 重新读取。 */
 function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
   const bar = el("div", active ? "src disabled" : "src");
@@ -1684,7 +1684,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     void runScan(surface);
   });
   const pickBtn = createButton({
-    label: t("选择…"),
+    label: t("选择文件或文件夹"),
     icon: "doc-file",
     variant: "ghost",
     size: "mini",
@@ -1797,7 +1797,7 @@ function parentDirOf(path: string): string {
 
 /**
  * 打开系统选择框。Tauri 的 dialog 插件把「选目录」和「选文件」做成两个互斥模式
- * （directory:true 时 filters 直接被忽略），所以这里由「选择」菜单或投放区的两个按钮先定模式再调用；
+ * （directory:true 时 filters 直接被忽略），所以这里由「选择文件或文件夹」菜单或投放区的两个按钮先定模式再调用；
  * 后端 scan 两种路径都支持，单文件走 Path.is_file() 分支；选文件时可以一次挑多个，
  * 后端按每个路径各扫一次再合并成一份清单。
  */

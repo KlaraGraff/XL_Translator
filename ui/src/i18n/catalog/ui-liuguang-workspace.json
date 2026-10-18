@@ -127,9 +127,9 @@
     "en": "Reads every translatable file in the folder and its subfolders",
     "fr": "Lit tous les fichiers traduisibles du dossier et de ses sous-dossiers"
   },
-  "选择…": {
-    "en": "Choose",
-    "fr": "Choisir"
+  "选择文件或文件夹": {
+    "en": "Choose files or a folder",
+    "fr": "Choisir des fichiers ou un dossier"
   },
   "选择文件": {
     "en": "Choose files",
@@ -139,9 +139,9 @@
     "en": "Choose folder",
     "fr": "Choisir un dossier"
   },
-  "通过路径栏的「选择」选择文件或文件夹，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。": {
-    "en": "Use “Choose” in the path bar to select files or a folder, select the files to translate, review the options on the right, then click “Start translation”. Settings changed after starting apply only to the next task.",
-    "fr": "Avec « Choisir » dans la barre de chemin, choisissez des fichiers ou un dossier, cochez ceux à traduire, vérifiez les options à droite, puis cliquez sur « Lancer la traduction ». Les réglages modifiés après le lancement ne s'appliquent qu'à la tâche suivante."
+  "点击路径栏右侧的「选择文件或文件夹」，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。": {
+    "en": "Click “Choose files or a folder” on the right of the path bar, select the files to translate, review the options on the right, then click “Start translation”. Settings changed after starting apply only to the next task.",
+    "fr": "Cliquez sur « Choisir des fichiers ou un dossier » à droite de la barre de chemin, cochez les fichiers à traduire, vérifiez les options à droite, puis cliquez sur « Lancer la traduction ». Les réglages modifiés après le lancement ne s'appliquent qu'à la tâche suivante."
   },
   "重新读取": {
     "en": "Read again",
