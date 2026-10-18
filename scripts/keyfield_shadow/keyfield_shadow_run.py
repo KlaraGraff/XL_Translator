@@ -1,9 +1,13 @@
-"""用真实历史译文实测关键信息核对规则会报多少处（只读、只统计，不改任何数据）。
+"""用真实历史译文实测关键信息核对（core/key_info_check.py）会报多少处（只读、只统计，不改任何数据）。
+
+上线新的核对规则之前，先用这个脚本在用户自己的记忆库和文件上量一遍误报。
 
 用法（在仓库根目录）：
     ./.venv/bin/python3 scripts/keyfield_shadow/keyfield_shadow_run.py \
         --db "$HOME/Library/Application Support/Translator/tm.db" \
         [--find 'FARESSI|FARISSI|YUNCHONG'] [--docx 原文.docx 译文.docx]
+
+samples/ 里是两份编造的租赁合同样张（法文、中文），可以先翻一遍再拿来跑。
 
 记忆库先整份复制到输出目录再读，原库不动、应用开着也没关系。
 结果写在 .runtime/self-tests/contract-keyfield-shadow/（report.md、findings.jsonl），
@@ -20,8 +24,15 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import keyfield_check as k
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from core import key_info_check as k  # noqa: E402 - 从仓库根目录导入
+
+RULE_NAMES = {
+    k.KIND_ID: "证件号",
+    k.KIND_DATE: "日期",
+    k.KIND_NAME_SPELLING: "人名拼写",
+    k.KIND_PINYIN_NAME: "拼音人名",
+}
 
 EXAMPLES_PER_RULE = 40
 
@@ -48,14 +59,15 @@ def _copy_db(db: Path, out: Path) -> Path:
 
 def _applicability(source: str, source_lang: str) -> list[str]:
     tags = []
-    if k.ID_RE.search(k.nfkc(source)):
+    cleaned = k._clean(source)
+    if k._ID_RE.search(cleaned):
         tags.append("含编号")
-    if k.complete_dates(source, source_lang):
+    if k._complete_dates(cleaned, source_lang):
         tags.append("含完整日期")
     names = k.titled_names(source)
     if names:
         tags.append("含称谓人名")
-        if any(k.chinese_pinyin_name(n) for n in names):
+        if any(k.pinyin_name_parts(n) is not None for n in names):
             tags.append("含拼音人名")
     return tags
 
@@ -66,23 +78,26 @@ def run_pairs(pairs, memory_names, findings_out, stats):
         for tag in _applicability(source, source_lang):
             stats["applicable"][tag] += 1
         try:
-            found = k.check_all(source, target, source_lang, target_lang, memory_names)
+            found = k.check_key_info(
+                source, target, source_lang=source_lang, target_lang=target_lang, fixed_names=memory_names
+            )
         except Exception as exc:  # noqa: BLE001 - 一条坏数据不能中断整次实测，记下来即可
             stats["errors"].append(f"{row_id}: {exc!r}")
             continue
         for item in found:
-            stats["hits"][item.rule] += 1
+            rule = RULE_NAMES.get(item.kind, item.kind)
+            stats["hits"][rule] += 1
             record = {
                 "id": row_id,
                 "lang_pair": label,
-                "rule": item.rule,
+                "rule": rule,
                 "message": item.message,
                 "source": _short(source),
                 "target": _short(target),
             }
             findings_out.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if len(stats["examples"][item.rule]) < EXAMPLES_PER_RULE:
-                stats["examples"][item.rule].append(record)
+            if len(stats["examples"][rule]) < EXAMPLES_PER_RULE:
+                stats["examples"][rule].append(record)
 
 
 def tm_pairs(db_copy: Path):
@@ -94,11 +109,11 @@ def tm_pairs(db_copy: Path):
         f"SELECT id, source_text, target_text, lang_pair, {usage_col} FROM tm_entries"
     ).fetchall()
     conn.close()
-    memory_names = {
-        str(r["source_text"]).strip(): str(r["target_text"])
+    memory_names = [
+        str(r["source_text"]).strip()
         for r in rows
-        if r["usage"] == "always" and k.chinese_pinyin_name(str(r["source_text"]).strip())
-    }
+        if r["usage"] == "always" and k.pinyin_name_parts(str(r["source_text"]).strip()) is not None
+    ]
     pairs = []
     for r in rows:
         source_lang, target_lang = _langs(r["lang_pair"])
@@ -180,7 +195,7 @@ def main() -> int:
             else:
                 pairs = [(f"docx{pair_index}:{i + 1}", label, s_, t_, source_lang, target_lang)
                          for i, (s_, t_) in enumerate(aligned)]
-                run_pairs(pairs, {}, findings_out, stats)
+                run_pairs(pairs, [], findings_out, stats)
             if args.find:
                 pattern = re.compile(args.find, re.IGNORECASE)
                 for side, paras in (("原文", src_paras), ("译文", out_paras)):
