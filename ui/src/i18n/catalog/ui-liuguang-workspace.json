@@ -151,12 +151,12 @@
     "en": "Advanced",
     "fr": "Avancé"
   },
-  "采用应用默认值": {
-    "en": "Using the app defaults",
-    "fr": "Valeurs par défaut de l'application"
+  "本页设置均为应用默认值": {
+    "en": "This page uses the app defaults",
+    "fr": "Cette page utilise les réglages par défaut"
   },
-  "采用上次使用的设置": {
-    "en": "Using your last settings",
-    "fr": "Derniers réglages utilisés"
+  "本页设置沿用上次的选择": {
+    "en": "This page keeps your last choices",
+    "fr": "Cette page reprend vos derniers choix"
   }
 }

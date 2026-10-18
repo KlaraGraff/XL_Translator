@@ -596,6 +596,7 @@
 /* ---------- 右栏 ---------- */
 .recipe {
   display: flex;
+  flex-wrap: wrap;
   gap: 9px;
   align-items: flex-start;
   background: var(--tint);
@@ -614,9 +615,16 @@
 .recipe b {
   font-weight: 650;
 }
+.recipe > div {
+  flex: 1;
+  min-width: 0;
+}
+/* 设置来源占卡片整行，上面一条细线，与配方句分开。 */
 .recipe .sub {
-  display: block;
-  margin-top: 2px;
+  flex-basis: 100%;
+  margin-top: -2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
   color: var(--ink-2);
   font-size: 11.5px;
 }
