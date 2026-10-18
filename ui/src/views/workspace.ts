@@ -62,6 +62,7 @@ import { stopConfirmBody, taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
+import { markMorphBoundary, morphNode } from "../morph";
 import { createTaskControlFoot, createTaskListPanel, createTaskLogLines, createTaskResultCard, createTaskRunBox, type TaskPipeStep } from "../task-panels";
 import { createTaskFeedbackButton } from "../task-feedback";
 import { normalizeUserPath, showPathWithMiddleEllipsis } from "../path-input";
@@ -1333,8 +1334,6 @@ function renderInto(container: HTMLElement, surface: Surface): void {
   const logScroll = captureLogScroll(container);
   const keptScrolls = captureKeptScrolls(container);
   const keptFocus = captureKeptFocus(container);
-  while (container.firstChild) container.removeChild(container.firstChild);
-  container.removeAttribute("style");
   const st = stateOf(surface);
   const active = Boolean(st.task && !st.task.task.terminal);
 
@@ -1343,9 +1342,19 @@ function renderInto(container: HTMLElement, surface: Surface): void {
   // 主栏从上到下：路径栏 → 状态区（空 / 读取中 / 待开始 / 进行中 / 已完成）→ 统计条 → 智能提示
   // → 文件列表；右栏是配方句、四个控件和「高级」。完成结果不再是横跨两栏的横幅，而是主栏
   // 状态区里的结果卡，右栏位置不随任务结束上下跳。
-  const ws = el("div", "ws");
+  const ws = markMorphBoundary(el("div", "ws"));
   ws.append(buildColLeft(surface, st, active), buildColRight(surface, st, active));
-  container.append(ws);
+  // 已经画着这一页时原地更新（morph.ts）：进度框、进度条、流水线、「停止」按钮这些节点留着，
+  // 只改宽度和文字，流光动画不从头播，鼠标停在按钮上的悬停色也不断。带监听器的部分照旧换新的。
+  const current = container.firstElementChild;
+  if (container.childNodes.length === 1 && current instanceof HTMLElement && current.classList.contains("ws")) {
+    container.removeAttribute("style");
+    morphNode(current, ws);
+  } else {
+    while (container.firstChild) container.removeChild(container.firstChild);
+    container.removeAttribute("style");
+    container.append(ws);
+  }
   restoreLogScroll(container, logScroll);
   restoreKeptScrolls(container, keptScrolls);
   restoreKeptFocus(container, keptFocus);
@@ -1547,7 +1556,7 @@ function buildResultCard(surface: Surface, st: SurfaceState): HTMLElement {
 // ---------------------------------------------------------------------------
 
 function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
-  const col = el("div", "ws-main");
+  const col = markMorphBoundary(el("div", "ws-main"));
   col.dataset.keepScroll = "ws-main";
   const local = st.task;
   col.append(buildSrcBar(surface, st, active));
@@ -3205,7 +3214,7 @@ function buildLogBody(local: LocalTask, sharesHeight = false): HTMLElement {
 function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
   // 只有「运行中」才锁定右栏。未读取不是锁定理由：这些设置是长期设置，
   // 用户本来就该在挑文件之前先把它们调好。
-  const side = el("aside", active ? "ws-side locked" : "ws-side");
+  const side = markMorphBoundary(el("aside", active ? "ws-side locked" : "ws-side"));
   const scroll = el("div", active ? "ws-side-scroll dis" : "ws-side-scroll");
   scroll.dataset.keepScroll = "run-settings";
   scroll.append(buildRecipe(surface, st, active));

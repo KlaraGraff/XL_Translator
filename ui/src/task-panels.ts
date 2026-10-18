@@ -2,6 +2,7 @@ import { createButton, createProgressBar, type StatusTone } from "./components";
 import { t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
 import { entranceElapsed } from "./motion";
+import { markMorphBoundary } from "./morph";
 
 /** Shared visual building blocks for every translator task surface. */
 export type TaskPanelState = "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
@@ -28,7 +29,7 @@ export interface TaskRunBoxOptions {
 
 /** .runbox：进行中的状态区。流水线、阶段文字 + 百分比、进度条、监控芯片，最后是运行日志。 */
 export function createTaskRunBox(options: TaskRunBoxOptions): HTMLElement {
-  const box = document.createElement("div");
+  const box = markMorphBoundary(document.createElement("div"));
   const paused = options.state === "paused" || options.state === "pausing";
   box.className = paused ? "runbox paused" : "runbox";
   if (options.steps?.length) box.append(createPipeline(options.steps));
@@ -168,7 +169,7 @@ export interface TaskControlFootOptions {
 }
 
 export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElement {
-  const foot = document.createElement("div");
+  const foot = markMorphBoundary(document.createElement("div"));
   foot.className = "rp-foot";
   if (!options.active) {
     foot.append(createButton({
@@ -177,15 +178,16 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
       variant: options.idle.variant ?? "primary",
       size: "big",
       disabled: options.idle.disabled,
+      reusable: true,
       onClick: options.idle.onClick,
     }));
     return foot;
   }
   const active = options.active;
   if (active.paused) {
-    foot.append(createButton({ label: t("继续翻译"), icon: "play", variant: "primary", size: "big", onClick: active.onResume }));
+    foot.append(createButton({ label: t("继续翻译"), icon: "play", variant: "primary", size: "big", reusable: true, onClick: active.onResume }));
     if (active.finishPaused) {
-      foot.append(createButton({ label: active.finishPaused.label, icon: "stop", size: "big", onClick: active.finishPaused.onClick }));
+      foot.append(createButton({ label: active.finishPaused.label, icon: "stop", size: "big", reusable: true, onClick: active.finishPaused.onClick }));
       if (active.finishPaused.note) {
         const note = document.createElement("div");
         note.className = "ws-note";
@@ -195,16 +197,16 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
       }
     } else {
       // 没有「结束任务」的（CAD）暂停后也要能停：后端 stop() 会先放开暂停再停下。
-      foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
+      foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", reusable: true, onClick: active.onStop }));
     }
     return foot;
   }
   if (active.pausing) {
-    foot.append(createButton({ label: t("正在暂停…"), icon: "pause", size: "big", disabled: true, onClick: () => undefined }));
+    foot.append(createButton({ label: t("正在暂停…"), icon: "pause", size: "big", disabled: true, reusable: true, onClick: () => undefined }));
   } else if (active.onPause) {
-    foot.append(createButton({ label: active.pauseLabel ?? t("暂停"), icon: "pause", size: "big", onClick: active.onPause }));
+    foot.append(createButton({ label: active.pauseLabel ?? t("暂停"), icon: "pause", size: "big", reusable: true, onClick: active.onPause }));
   }
-  foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
+  foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", reusable: true, onClick: active.onStop }));
   return foot;
 }
 

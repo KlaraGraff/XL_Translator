@@ -6,6 +6,7 @@
 import { fmtNum, t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
 import { EASE_SPRING, T_PAGE, motionAllowed } from "./motion";
+import { morphChildren, setReusableClick, syncAttributes } from "./morph";
 
 /** 清空一个元素的子节点；不用 replaceChildren（Safari 15.1 不支持）。 */
 export function clearElement(el: HTMLElement): void {
@@ -15,9 +16,9 @@ export function clearElement(el: HTMLElement): void {
 }
 
 /**
- * 按 key 把 parent 的子节点换成 next，同 key 的旧节点原地留着：只把新节点的 class、style、title
- * 和内容搬进去，节点本身不离开文档，鼠标停在上面的悬停态、正在播的动画都不会断。整块重建时
- * 悬停的那一行会先变回普通底色再淡回悬停色，事件一密就一闪一闪。
+ * 按 key 把 parent 的子节点换成 next，同 key 的旧节点原地留着：属性和内容按 morph.ts 的规则原地
+ * 更新（行里的状态灯、进度条只改宽度和文字，节点不换），节点不离开文档，鼠标停在上面的悬停态、
+ * 正在播的动画都不会断。整块重建时悬停的那一行会先变回普通底色再淡回悬停色，事件一密就一闪一闪。
  * 留下的是旧节点和它当初绑的监听器：只用在监听器只认 key（如任务 id）的地方。
  */
 export function patchKeyedChildren(parent: HTMLElement, next: HTMLElement[], keyOf: (node: HTMLElement) => string | undefined): void {
@@ -35,13 +36,8 @@ export function patchKeyedChildren(parent: HTMLElement, next: HTMLElement[], key
       existing.delete(key!);
       node = old;
       if (old.outerHTML !== fresh.outerHTML) {
-        old.className = fresh.className;
-        old.style.cssText = fresh.style.cssText;
-        old.title = fresh.title;
-        if (old.innerHTML !== fresh.innerHTML) {
-          clearElement(old);
-          while (fresh.firstChild) old.append(fresh.firstChild);
-        }
+        syncAttributes(old, fresh);
+        morphChildren(old, fresh);
       }
     }
     const at = parent.children[index];
@@ -166,6 +162,9 @@ export interface ButtonOptions {
   disabled?: boolean;
   title?: string;
   onClick?: (event: MouseEvent) => void;
+  /** 整块原地更新（morph.ts）时可以留旧按钮、换上新的 onClick：onClick 只认任务状态，
+   *  不抓这次新建的任何节点（例如不拿按钮本身去定位菜单）。 */
+  reusable?: boolean;
 }
 
 const BUTTON_VARIANT_CLASS: Record<ButtonVariant, string> = {
@@ -202,7 +201,8 @@ export function createButton(options: ButtonOptions): HTMLButtonElement {
   }
   button.disabled = Boolean(options.disabled);
   if (options.onClick) {
-    button.addEventListener("click", options.onClick);
+    if (options.reusable) setReusableClick(button, options.onClick);
+    else button.addEventListener("click", options.onClick);
   }
   return button;
 }
