@@ -2,9 +2,9 @@
 
 ## 未发布
 
-- **路径栏按钮写全「选择文件或文件夹」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，看起来像文字没显示完整；现在写全为「选择文件或文件夹」（英文 Choose files or a folder，法文 Choisir des fichiers ou un dossier），点开仍是「选择文件 / 选择文件夹」两项。窗口较窄时让出宽度的是路径框（路径中间省略），按钮文字始终完整。快速开始第 3 步的说明同步改为新名称。
+- **路径栏按钮改为「选择」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，省略号让它看起来像文字没显示完整；现在去掉省略号，只写「选择」（英文 Select，法文 Choisir），点开仍是「选择文件 / 选择文件夹」两项。
 
-  **Path bar button now reads "Choose files or a folder"**: The button on the right of every translation page's path bar used to read "选择…" / "Choose", which looked cut off. It now reads in full in all three languages and still opens the same two choices. In narrow windows the path field gives up the width (middle ellipsis), never the button label. Quick start step 3 uses the new name.
+  **Path bar button now reads "选择" / "Select"**: The button on the right of every translation page's path bar used to read "选择…", and the ellipsis made it look cut off. It now reads just "选择" (Select / Choisir) and still opens the same two choices.
 
 ## V10.3.0
 
