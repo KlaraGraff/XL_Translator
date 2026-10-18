@@ -527,8 +527,11 @@ interface SurfaceState {
   /** 本机是否装了 LibreOffice（扫描时探测一次）。只用来切换兼容转换弹窗的文案——
    *  装了之后兼容转换也能保留公式/样式，不再是「必然变纯数值」。 */
   libreofficeAvailable: boolean;
-  /** 右栏「高级」折叠块的开合（默认收起）。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。 */
+  /** 右栏「高级」折叠块的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。
+   *  每次进入这一页时按 enterAdvancedFold 重新定：第一次进入展开，之后收起。 */
   advancedOpen: boolean;
+  /** 本次启动里用户亲手开合过「高级」：之后进出这一页都照用户留下的样子，不再按默认收起。 */
+  advancedTouched: boolean;
   /** 进行中状态区里「运行日志」的开合（默认展开），同样要跨重绘记住。 */
   logOpen: boolean;
   /** 本次扫描检测到的历史产物；没有检测结果时为 null。每次扫描整体重置。 */
@@ -609,6 +612,7 @@ function freshState(surface: Surface): SurfaceState {
     allowDocFallback: false,
     libreofficeAvailable: false,
     advancedOpen: false,
+    advancedTouched: false,
     logOpen: true,
     resumeInfo: null,
     resumeDecision: null,
@@ -806,6 +810,7 @@ async function ensureBootstrap(): Promise<void> {
         c.request<{ source_options: LanguageOption[]; target_options: LanguageOption[] }>("/api/languages"),
       ]);
       settings = settingsPayload;
+      loadAdvancedSeen();
       languageOptions = { source: languagesPayload.source_options ?? [], target: languagesPayload.target_options ?? [] };
       applySettingsToStates();
     })();
@@ -820,6 +825,54 @@ async function ensureBootstrap(): Promise<void> {
     bootstrapPromise = attempt;
   }
   await bootstrapPromise;
+}
+
+// 右栏「高级」：每个翻译页第一次进入时展开，让人一眼看到有哪些可调的；之后每次进入默认收起。
+// 「进过哪几页」只记在本机 localStorage（同「动效」偏好），不写后端设置。
+// 升级上来的老用户：第一次跑这一版时，设置里记着上次来源目录的内置页算已经进过，
+// 不会一升级就几页全部展开；从没用过的页（包括新加的类型）照样第一次展开。
+const ADVANCED_SEEN_STORAGE_KEY = "translator.advancedSeen";
+let advancedSeen: Set<string> | null = null;
+
+/** 读出「进过哪几页」。必须在拿到设置之后、任何来源目录写盘之前调第一次（见 ensureBootstrap）。 */
+function loadAdvancedSeen(): Set<string> {
+  if (advancedSeen) return advancedSeen;
+  let stored: unknown = null;
+  try {
+    const raw = window.localStorage.getItem(ADVANCED_SEEN_STORAGE_KEY);
+    stored = raw === null ? null : JSON.parse(raw);
+  } catch {
+    stored = null;
+  }
+  if (Array.isArray(stored)) {
+    advancedSeen = new Set(stored.filter((item): item is string => typeof item === "string"));
+  } else {
+    const used = (["excel", "word", "pdf", "cad"] as BuiltinSurface[])
+      .filter((surface) => normalizeUserPath(text(settings[`last_${surface}_source_folder`])));
+    advancedSeen = new Set(used);
+    saveAdvancedSeen(advancedSeen);
+  }
+  return advancedSeen;
+}
+
+function saveAdvancedSeen(seen: Set<string>): void {
+  try {
+    window.localStorage.setItem(ADVANCED_SEEN_STORAGE_KEY, JSON.stringify([...seen]));
+  } catch {
+    // 存不下（隐私模式、配额满）只影响下次启动会不会再展开一次，不打断页面。
+  }
+}
+
+/** 进入一页时定「高级」开不开：第一次进展开；之后收起，除非本次启动里用户自己开合过。 */
+function enterAdvancedFold(surface: Surface, st: SurfaceState): void {
+  const seen = loadAdvancedSeen();
+  if (!seen.has(surface)) {
+    seen.add(surface);
+    saveAdvancedSeen(seen);
+    st.advancedOpen = true;
+  } else if (!st.advancedTouched) {
+    st.advancedOpen = false;
+  }
 }
 
 /** 丢掉已缓存的引导结果，下一次 ensureBootstrap 重新拉设置与语言目录。 */
@@ -1004,6 +1057,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   ensureBootstrap()
     .then(() => {
       if (!isCurrent()) return;
+      enterAdvancedFold(surface, st);
       return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
     })
     .then(() => {
@@ -3253,7 +3307,10 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     meta: t("{0} 项 · 已按常用场景设好", count),
     content,
     open: st.advancedOpen || (resumeAuto && !active),
-    onToggle: (open) => { st.advancedOpen = open; },
+    onToggle: (open) => {
+      st.advancedOpen = open;
+      st.advancedTouched = true;
+    },
   });
   fold.root.classList.add("adv-fold");
   return fold.root;

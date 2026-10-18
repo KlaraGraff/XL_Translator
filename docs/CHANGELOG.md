@@ -102,6 +102,10 @@
 
   **Numbers with 万 or 亿 converted correctly are no longer reverted to the source**: The model correctly translated "总建筑面积 12 万平方米" as "120 000 m²", but the number check only looked for the 12 of the source, decided a number was missing and put the whole paragraph back in Chinese, while a translation that copied "12万 m²" passed. The 12 万 of the source now also counts as kept when the translation writes 120 000 (or 120,000); a wrong conversion is still caught. The built-in translation rules add one line: when the target language does not count in 万 or 亿 (English, French), such numbers are written out in full and no 万 or 亿 is left. In PowerPoint and other extension types, a translation that still contains 万 or 亿 is listed for review (Excel and Word keep their note in the report). The French drop area on extension pages gets its article: "Déposez des présentations ici".
 
+- **各翻译页的「高级」设置第一次进入时展开**：右栏「高级」里列着这一页能调的选项，原来一律折叠，新用户不点开就不知道还有哪些可调。现在每个翻译页第一次进入时展开，之后再进入默认收起；同一次打开软件里自己展开或收起过的，照自己留下的样子。升级上来的用户，用过的页（记着上次的来源文件夹）按已看过处理，直接收起；从没用过的页（包括新加的 PPT 页）第一次进入同样展开。
+
+  **The Advanced options on each translation page are open the first time**: The Advanced section on the right lists what can be adjusted on that page, but it always started folded, so new users did not see the options unless they opened it. Each translation page now opens it the first time you visit and folds it on later visits; if you open or fold it yourself, it stays that way until you quit the app. After an upgrade, pages you have already used (they remember your last source folder) count as visited and start folded; pages you have never used, including the new PowerPoint page, still open it the first time.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
