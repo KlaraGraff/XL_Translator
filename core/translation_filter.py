@@ -37,6 +37,8 @@ _KANA_OR_HANGUL_RE = re.compile(
 # 「含汉字」不等于「已经是中文」——「工事契約書」这类纯汉字标题是待译原文。
 _HAN_SHARING_SOURCE_LANGS = frozenset({"ja", "ko"})
 _SEMANTIC_NUMBER_RE = re.compile(r"[-+]?" + NUMBER_TOKEN_PATTERN + r"(?:\s*[万亿])?")
+_MAGNITUDE_AFTER_RE = re.compile(r"\s*([万亿])")
+_MAGNITUDES = {"万": Decimal(10000), "亿": Decimal(100000000)}
 VALIDATION_STATUS_PASS = "pass"
 VALIDATION_STATUS_FAIL = "fail"
 VALIDATION_STATUS_SOFT_PASS_REVIEW = "soft_pass_review"
@@ -108,16 +110,22 @@ def _check_numbers_intact(original: str, translated: str) -> bool:
     return not _missing_number_tokens(original, translated)
 
 
-def _find_number_tokens(text: str) -> list[_NumberToken]:
+def _find_number_tokens(text: str, *, with_magnitude: bool = False) -> list[_NumberToken]:
+    """``with_magnitude``：原文里紧跟「万」「亿」的数，译文写成换算后的整数也算保留
+    （12 万 → 120 000）；照抄 12 也仍算，那个没译的「万」由残留体检管。"""
     tokens: list[_NumberToken] = []
     source = str(text or "")
     for match in NUMBER_TOKEN_RE.finditer(source):
         token = match.group(0)
         weak = _is_weak_embedded_noise_number(source, match.start(), match.end())
+        group = number_group_readings(token)
+        magnitude = _MAGNITUDE_AFTER_RE.match(source, match.end()) if with_magnitude else None
+        if magnitude:
+            group = _also_scaled(group, _MAGNITUDES[magnitude.group(1)])
         tokens.append(
             _NumberToken(
                 token=token,
-                group=number_group_readings(token),
+                group=group,
                 fragment=(
                     _weak_number_context_fragment(source, match.start(), match.end())
                     if weak
@@ -137,7 +145,7 @@ def _missing_number_tokens(
 ) -> list[_NumberToken]:
     source_tokens = [
         token
-        for token in _find_number_tokens(original)
+        for token in _find_number_tokens(original, with_magnitude=True)
         if not (skip_weak_source and token.weak)
     ]
     if not source_tokens:
@@ -243,6 +251,14 @@ def _numeric_part_end(text: str, start: int, end: int) -> int:
     while cursor > start and source[cursor - 1].isspace():
         cursor -= 1
     return cursor
+
+
+def _also_scaled(group: NumberGroup, factor: Decimal) -> NumberGroup:
+    """读法组再加上乘以倍率后的读法；倍率只作用于最后一段（见 _semantic_number_group）。"""
+    parts = tuple(group.parts)
+    if parts:
+        parts = parts[:-1] + (parts[-1] | _scaled_number_keys(parts[-1], factor),)
+    return NumberGroup(token=group.token, whole=group.whole | _scaled_number_keys(group.whole, factor), parts=parts)
 
 
 def _scaled_number_keys(keys, factor: Decimal) -> frozenset:

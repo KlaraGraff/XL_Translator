@@ -42,6 +42,9 @@ _PRESENTATION = (
 )
 
 
+OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
 def _write_pptx(path: Path, *, presentation: str = _PRESENTATION, rels: str = _ROOT_RELS) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
@@ -69,7 +72,7 @@ class _Workspace(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         self.root = Path(self._temp.name)
         self.source = self.root / "汇报.ppt"
-        self.source.write_bytes(b"legacy powerpoint payload")
+        self.source.write_bytes(OLE + b"legacy powerpoint payload")
 
     def tearDown(self) -> None:
         self._temp.cleanup()
@@ -172,6 +175,33 @@ class ConversionOrderTests(_Workspace):
             convert_ppt_to_pptx(self.root / "gone.ppt")
         self.assertIn("文件不存在", str(caught.exception))
 
+    def test_office_lock_file_never_reaches_powerpoint(self) -> None:
+        # PowerPoint 开着「汇报.ppt」时旁边的「~$汇报.ppt」：165 字节，不是演示文稿。
+        # 交给 PowerPoint 它会对着它等两分钟（AppleEvent timed out -1712）。
+        lock = self.root / "~$汇报.ppt"
+        lock.write_bytes(b"\x0bmaple" + b"\x00" * 159)
+        calls: list[Path] = []
+
+        def native(path: Path) -> Path:
+            calls.append(path)
+            raise AssertionError("PowerPoint must not be asked")
+
+        with self.converters(native, native):
+            with self.assertRaises(PptConversionError) as caught:
+                convert_ppt_to_pptx(lock)
+        self.assertEqual(calls, [])
+        self.assertIn("不是有效的 PowerPoint 文件", str(caught.exception))
+
+    def test_renamed_pptx_still_goes_to_powerpoint(self) -> None:
+        renamed = _write_pptx(self.root / "其实是新版.ppt")
+
+        def native(path: Path) -> Path:
+            return _write_pptx(self.root / "converted.pptx")
+
+        with self.converters(native, _missing("本机未找到 LibreOffice。")):
+            result = convert_ppt_to_pptx(renamed)
+        self.assertEqual(result.method, "PowerPoint")
+
     def test_native_powerpoint_unsupported_platform_is_missing_not_failure(self) -> None:
         with patch.object(ppt_converter.platform, "system", return_value="Linux"):
             with self.assertRaises(ppt_converter._ToolMissing):
@@ -225,7 +255,7 @@ class CacheTests(_Workspace):
         calls, converter = self._counting()
         cache = PptConversionCache(converter)
         cache.convert(self.source)
-        self.source.write_bytes(b"legacy powerpoint payload, edited")
+        self.source.write_bytes(OLE + b"legacy powerpoint payload, edited")
         cache.convert(self.source)
         self.assertEqual(len(calls), 2)
 
@@ -245,7 +275,7 @@ class CacheTests(_Workspace):
         cache = PptConversionCache(converter)
         first = cache.convert(self.source)
         stat = self.source.stat()
-        self.source.write_bytes(b"legacy powerpoint PAYLOAD")
+        self.source.write_bytes(OLE + b"legacy powerpoint PAYLOAD")
         os.utime(self.source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
         second = cache.convert(self.source)
         self.assertEqual(len(calls), 2)

@@ -102,8 +102,9 @@ from core.document_profile import (
     is_context_sensitive,
     request_document_profile,
 )
-from config import REVIEW_MARK_TERM_NOT_APPLIED
+from config import REVIEW_MARK_KEY_INFO, REVIEW_MARK_TERM_NOT_APPLIED
 from core.document_terms import make_term_picker
+from core.key_info_check import review_summary
 from core.term_session import TaskTermSession
 from core import tm_manager
 from core.xlsx_embedded_text import KIND_SHAPE, EmbeddedTextOptions, collect_embedded_units
@@ -252,6 +253,7 @@ AUTOFIT_MONITOR_POLL_SECONDS = 0.5
 # 「语义校验接受」在 9.3.1 整类删除，见 MixedLanguageResult.mark_kind。
 _EXCEL_REVIEW_MARK_PRIORITY = {
     REVIEW_MARK_TERM_NOT_APPLIED: 10,
+    REVIEW_MARK_KEY_INFO: 15,
     MIXED_MARK_UNRESOLVED: 20,
     MIXED_MARK_FOREIGN_NOISE: 30,
 }
@@ -1094,6 +1096,16 @@ class TaskRunner(BaseTaskRunner):
             heading_majority = self._normalize_heading_style(
                 global_translations=global_translations,
                 target_lang=target_lang,
+                quality_issues=quality_issues,
+            )
+
+            # ── 关键信息核对（0 API）：放在所有改写之后、TM 写入之前，核对的是
+            # 交付文件里的最终译文；对不上的只标需复核，不改译文、不进记忆库。
+            self._check_key_info(
+                term_session,
+                global_translations=global_translations,
+                source_lang=source_lang,
+                excel_review_marks=excel_review_marks,
                 quality_issues=quality_issues,
             )
 
@@ -3246,6 +3258,31 @@ class TaskRunner(BaseTaskRunner):
                 )
         return heading_majority
 
+    def _check_key_info(
+        self,
+        term_session: TaskTermSession,
+        *,
+        global_translations: dict[str, str],
+        source_lang: str,
+        excel_review_marks: dict[str, str],
+        quality_issues: list[dict],
+    ) -> None:
+        """证件号、日期、人名与原文对不上的格子标需复核，原因汇总成复核清单里的一行。"""
+        found = term_session.check_key_info(global_translations, source_lang=source_lang)
+        if not found:
+            return
+        for source in found:
+            _set_excel_review_mark(excel_review_marks, source, REVIEW_MARK_KEY_INFO)
+        quality_issues.append(
+            {
+                "type": REVIEW_MARK_KEY_INFO,
+                "severity": "needs_review",
+                "count": len(found),
+                "message": review_summary(found),
+                "sources": [_build_excel_source_excerpt(source) for source in found],
+            }
+        )
+
     def _store_final_translations_in_tm(
         self,
         *,
@@ -3559,10 +3596,13 @@ class TaskRunner(BaseTaskRunner):
         """不自动存进记忆库的译文。
 
         - 「自动识别场景」下离开上下文就会译错的短词（带备注的场景译法另行保存）；
-        - 没有采用记忆库设定译法的译文：已标记需复核，存进去就成了下次的「旧译法」。
+        - 没有采用记忆库设定译法的译文：已标记需复核，存进去就成了下次的「旧译法」；
+        - 证件号、日期、人名与原文对不上的译文：同样已标记需复核。
         """
         session = getattr(self, "_term_session", None)
-        if session is not None and source_text in session.not_applied_texts():
+        if session is not None and (
+            source_text in session.not_applied_texts() or source_text in session.key_info_review
+        ):
             return True
         return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 

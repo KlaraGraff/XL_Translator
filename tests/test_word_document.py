@@ -1294,6 +1294,7 @@ class WordDocumentTests(unittest.TestCase):
             "to VND 30,000,000."
         )
 
+        # 严格校验也认「2000万 = 20,000,000」（此前判缺数字，只靠恢复校验救回）。
         self.assertTrue(
             validate_translation(
                 source,
@@ -1301,7 +1302,7 @@ class WordDocumentTests(unittest.TestCase):
                 target_lang="en",
                 source_lang="zh",
                 profile=VALIDATION_PROFILE_STRICT,
-            ).is_fail
+            ).is_pass
         )
 
         recovery = validate_translation(

@@ -1,0 +1,239 @@
+"""用真实历史译文实测关键信息核对（core/key_info_check.py）会报多少处（只读、只统计，不改任何数据）。
+
+上线新的核对规则之前，先用这个脚本在用户自己的记忆库和文件上量一遍误报。
+
+用法（在仓库根目录）：
+    ./.venv/bin/python3 scripts/keyfield_shadow/keyfield_shadow_run.py \
+        --db "$HOME/Library/Application Support/Translator/tm.db" \
+        [--find 'FARESSI|FARISSI|YUNCHONG'] [--docx 原文.docx 译文.docx]
+
+samples/ 里是两份编造的租赁合同样张（法文、中文），可以先翻一遍再拿来跑。
+
+记忆库先整份复制到输出目录再读，原库不动、应用开着也没关系。
+结果写在 .runtime/self-tests/contract-keyfield-shadow/（report.md、findings.jsonl），
+屏幕上只打印汇总。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import sqlite3
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from core import key_info_check as k  # noqa: E402 - 从仓库根目录导入
+
+RULE_NAMES = {
+    k.KIND_ID: "证件号",
+    k.KIND_DATE: "日期",
+    k.KIND_NAME_SPELLING: "人名拼写",
+    k.KIND_PINYIN_NAME: "拼音人名",
+}
+
+EXAMPLES_PER_RULE = 40
+
+
+def _short(text: str, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _langs(lang_pair: str) -> tuple[str, str]:
+    source, _, target = str(lang_pair or "").partition("-")
+    return source.lower() or "zh", target.lower()
+
+
+def _copy_db(db: Path, out: Path) -> Path:
+    snapshot = out / "tm_snapshot"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-wal", "-shm"):
+        src = Path(str(db) + suffix)
+        if src.exists():
+            shutil.copy2(src, snapshot / (db.name + suffix))
+    return snapshot / db.name
+
+
+def _applicability(source: str, source_lang: str) -> list[str]:
+    tags = []
+    cleaned = k._clean(source)
+    if k._ID_RE.search(cleaned):
+        tags.append("含编号")
+    if k._complete_dates(cleaned, source_lang):
+        tags.append("含完整日期")
+    names = k.titled_names(source)
+    if names:
+        tags.append("含称谓人名")
+        if any(k.pinyin_name_parts(n) is not None for n in names):
+            tags.append("含拼音人名")
+    return tags
+
+
+def run_pairs(pairs, memory_names, findings_out, stats):
+    for row_id, label, source, target, source_lang, target_lang in pairs:
+        stats["rows"][label] += 1
+        for tag in _applicability(source, source_lang):
+            stats["applicable"][tag] += 1
+        try:
+            found = k.check_key_info(
+                source, target, source_lang=source_lang, target_lang=target_lang, fixed_names=memory_names
+            )
+        except Exception as exc:  # noqa: BLE001 - 一条坏数据不能中断整次实测，记下来即可
+            stats["errors"].append(f"{row_id}: {exc!r}")
+            continue
+        for item in found:
+            rule = RULE_NAMES.get(item.kind, item.kind)
+            stats["hits"][rule] += 1
+            record = {
+                "id": row_id,
+                "lang_pair": label,
+                "rule": rule,
+                "message": item.message,
+                "source": _short(source),
+                "target": _short(target),
+            }
+            findings_out.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if len(stats["examples"][rule]) < EXAMPLES_PER_RULE:
+                stats["examples"][rule].append(record)
+
+
+def tm_pairs(db_copy: Path):
+    conn = sqlite3.connect(str(db_copy))
+    conn.row_factory = sqlite3.Row
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tm_entries)")}
+    usage_col = "usage" if "usage" in columns else "'' AS usage"
+    rows = conn.execute(
+        f"SELECT id, source_text, target_text, lang_pair, {usage_col} FROM tm_entries"
+    ).fetchall()
+    conn.close()
+    memory_names = [
+        str(r["source_text"]).strip()
+        for r in rows
+        if r["usage"] == "always" and k.pinyin_name_parts(str(r["source_text"]).strip()) is not None
+    ]
+    pairs = []
+    for r in rows:
+        source_lang, target_lang = _langs(r["lang_pair"])
+        pairs.append((f"tm:{r['id']}", r["lang_pair"], str(r["source_text"]), str(r["target_text"]),
+                      source_lang, target_lang))
+    return pairs, memory_names, rows
+
+
+def docx_paragraphs(path: Path) -> list[str]:
+    from docx import Document
+
+    doc = Document(str(path))
+    texts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                texts.extend(p.text for p in cell.paragraphs)
+    return [t for t in texts if t.strip()]
+
+
+def _align_docx(src_paras: list[str], out_paras: list[str]) -> list[tuple[str, str]] | None:
+    """仅译文：段数相同，逐段对应。双语：每段原文后面跟一段译文，或译文段以原文开头。"""
+    if len(src_paras) == len(out_paras):
+        pairs = []
+        for source, output in zip(src_paras, out_paras):
+            if output.strip().startswith(source.strip()) and output.strip() != source.strip():
+                output = output.strip()[len(source.strip()):]  # 同段双语：去掉前面的原文
+            pairs.append((source, output))
+        return pairs
+    if len(out_paras) == 2 * len(src_paras) and all(
+        out_paras[2 * i].strip() == src.strip() for i, src in enumerate(src_paras)
+    ):
+        return [(src, out_paras[2 * i + 1]) for i, src in enumerate(src_paras)]
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", type=Path)
+    parser.add_argument("--find", default="")
+    parser.add_argument("--docx", nargs=2, type=Path, metavar=("SOURCE", "OUTPUT"), action="append",
+                        help="原文与译文 .docx，可重复给多对（例如同一份原文翻了几次）")
+    parser.add_argument("--docx-langs", default="fr-zh")
+    parser.add_argument("--out", type=Path, default=Path(".runtime/self-tests/contract-keyfield-shadow"))
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    stats = {
+        "rows": Counter(),
+        "applicable": Counter(),
+        "hits": Counter(),
+        "examples": defaultdict(list),
+        "errors": [],
+    }
+    found_lines: list[str] = []
+    with (args.out / "findings.jsonl").open("w", encoding="utf-8") as findings_out:
+        if args.db:
+            db_copy = _copy_db(args.db.expanduser(), args.out)
+            pairs, memory_names, rows = tm_pairs(db_copy)
+            run_pairs(pairs, memory_names, findings_out, stats)
+            if args.find:
+                pattern = re.compile(args.find, re.IGNORECASE)
+                for r in rows:
+                    if pattern.search(str(r["source_text"])) or pattern.search(str(r["target_text"])):
+                        found_lines.append(
+                            f"- tm:{r['id']} [{r['lang_pair']}] 原文：{_short(r['source_text'], 160)} ／ "
+                            f"译文：{_short(r['target_text'], 160)}"
+                        )
+        for pair_index, (source_doc, output_doc) in enumerate(args.docx or [], 1):
+            src_paras = docx_paragraphs(source_doc)
+            out_paras = docx_paragraphs(output_doc)
+            source_lang, target_lang = _langs(args.docx_langs)
+            aligned = _align_docx(src_paras, out_paras)
+            label = f"docx{pair_index}:{args.docx_langs}"
+            if aligned is None:
+                stats["errors"].append(
+                    f"{output_doc.name}：段落对不齐（原文 {len(src_paras)} 段，译文 {len(out_paras)} 段），未逐段比对"
+                )
+            else:
+                pairs = [(f"docx{pair_index}:{i + 1}", label, s_, t_, source_lang, target_lang)
+                         for i, (s_, t_) in enumerate(aligned)]
+                run_pairs(pairs, [], findings_out, stats)
+            if args.find:
+                pattern = re.compile(args.find, re.IGNORECASE)
+                for side, paras in (("原文", src_paras), ("译文", out_paras)):
+                    for i, text in enumerate(paras, 1):
+                        for m in pattern.finditer(text):
+                            begin = max(0, m.start() - 30)
+                            found_lines.append(
+                                f"- docx{pair_index} {side} 第 {i} 段：…{_short(text[begin:m.end() + 30], 100)}…"
+                            )
+
+    lines = ["# 关键信息核对实测", ""]
+    lines.append("## 读了多少条")
+    for label, count in sorted(stats["rows"].items()):
+        lines.append(f"- {label}: {count}")
+    lines.append("")
+    lines.append("## 规则用得上的条数（原文里有这类内容）")
+    for tag in ("含编号", "含完整日期", "含称谓人名", "含拼音人名"):
+        lines.append(f"- {tag}: {stats['applicable'][tag]}")
+    lines.append("")
+    lines.append("## 每条规则报了几处")
+    for rule in ("证件号", "日期", "人名拼写", "拼音人名"):
+        lines.append(f"- {rule}: {stats['hits'][rule]}")
+    for rule, examples in stats["examples"].items():
+        lines.append("")
+        lines.append(f"### {rule}（前 {len(examples)} 例）")
+        for ex in examples:
+            lines.append(f"- {ex['id']} [{ex['lang_pair']}] {ex['message']}")
+            lines.append(f"  - 原文：{ex['source']}")
+            lines.append(f"  - 译文：{ex['target']}")
+    if found_lines:
+        lines += ["", "## 按 --find 找到的条目", *found_lines[:40]]
+    if stats["errors"]:
+        lines += ["", "## 出错", *[f"- {e}" for e in stats["errors"][:20]]]
+    report = "\n".join(lines) + "\n"
+    (args.out / "report.md").write_text(report, encoding="utf-8")
+    print(report)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -142,6 +142,7 @@ CORE_TRANSLATION_PROMPT = (
     "单字、短词和缩写的含义以附带的文档说明为准；没有说明时按文档所属专业理解，不要按日常含义直译。\n"
     "原文中的编号、文号、规格参数、版本号、附件标识与符号必须原样保留，一个字符都不能改动。\n"
     "日期、时间、年龄、金额等数值中的数字保持不变，但其中的中文计量用语（年、月、日、时、分、周岁、岁、元等）须换成目标语言的书写习惯；国际通用的数字与计量单位（如 38℃、30%、m²）本就不含中文，无需改动。\n"
+    "目标语言不用「万」「亿」计数时（如英文、法文），带「万」「亿」的数须换算成完整的数值（如 12 万 → 120 000），译文里不留「万」「亿」。\n"
     "输出应简洁、准确，可直接放回原文档。"
 )
 # 用户补充要求接在内置规则后面时的引导语：补充要求不能推翻上面的底线。
@@ -224,9 +225,12 @@ REVIEW_MARK_COLOR_DEFAULTS = {
 REVIEW_MARK_TERM_NOT_APPLIED = "term_not_applied"
 # 锁定行高时缩到最小字号仍放不下：要人去调行高或删减文字，同样沿用「需复核」底色。
 REVIEW_MARK_LOCKED_ROW_OVERFLOW = "locked_row_overflow"
+# 译文里的证件号、日期或人名与原文对不上（core/key_info_check.py），同样沿用「需复核」底色。
+REVIEW_MARK_KEY_INFO = "key_info"
 REVIEW_MARK_COLOR_ALIASES = {
     REVIEW_MARK_TERM_NOT_APPLIED: REVIEW_MARK_UNRESOLVED,
     REVIEW_MARK_LOCKED_ROW_OVERFLOW: REVIEW_MARK_UNRESOLVED,
+    REVIEW_MARK_KEY_INFO: REVIEW_MARK_UNRESOLVED,
 }
 # 分三色之前只有一个 word_review.highlight_color。这个值是当年的默认值，留在这里
 # 只当迁移哨兵用：旧配置里**没有 mark_colors**、而 highlight_color 又与它不同时，

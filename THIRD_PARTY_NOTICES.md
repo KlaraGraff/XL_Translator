@@ -6,6 +6,7 @@ Translator 自己的代码按 [LICENSE](LICENSE)（MIT）发布。下面这些�
 | 组件 | 用途 | 许可 | 源码 |
 | --- | --- | --- | --- |
 | Tesseract 词表（core/pdf_vector/lexicon） | 原位替换判断识别出的词是否成词 | Apache-2.0 | https://github.com/tesseract-ocr/tessdata_fast |
+| pypinyin 汉字读音表（core/pinyin_readings.py，由 pypinyin 0.55.0 的 pinyin_dict 生成） | 核对译文里人名的汉字和原文拼音是否对得上 | MIT | https://github.com/mozillazg/python-pinyin |
 
 ## 不随程序分发的可选组件
 
