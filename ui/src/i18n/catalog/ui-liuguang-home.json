@@ -15,9 +15,13 @@
     "en": "All tasks",
     "fr": "Toutes les tâches"
   },
-  "另有 {0}，可到对应页面处理。": {
-    "en": "Also found {0}; open the matching page to translate them.",
-    "fr": "Également trouvé : {0} ; ouvrez la page correspondante pour les traduire."
+  "同一批文件还有 {0}，已在对应页面读取。": {
+    "en": "The same batch also has {0}, already loaded on their own pages.",
+    "fr": "Le même lot contient aussi {0}, déjà chargés sur leurs pages respectives."
+  },
+  "{0} 正在翻译，这一类文件没有放入，完成后再拖入一次即可。": {
+    "en": "{0} is still translating, so those files were not added. Drop them again once it finishes.",
+    "fr": "{0} est en cours de traduction : ces fichiers n'ont pas été ajoutés. Déposez-les à nouveau une fois la traduction terminée."
   },
   "可翻译的文件": {
     "en": "Translatable files",
