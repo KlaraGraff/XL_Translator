@@ -786,12 +786,14 @@ class AdapterTaskRunner(BaseTaskRunner):
             )
 
         # 残留体检：序号前缀之类能确定修好的直接改，改不了的保留译文、计入需复核。
+        # 只留了「万」「亿」的（12万 m²）Excel、Word 记一条提示放行；这里没有那份报告，
+        # 一并计入需复核，免得译文里的中文无人知道。
         residual = run_residual_pass(
             [(text, translations[text]) for text in texts if text in translations],
             target_lang=self._target_lang,
         )
         translations.update(residual.fixes)
-        for report_item in residual.needs_review:
+        for report_item in (*residual.needs_review, *residual.released_notes):
             reasons.setdefault(report_item.source_text, REASON_RESIDUAL)
         if residual.auto_fixed:
             self._log("INFO", f"{path.name}：残留序号已自动修复 {len(residual.auto_fixed)} 段")

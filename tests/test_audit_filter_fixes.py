@@ -261,6 +261,24 @@ class NumberWritingSystemTests(unittest.TestCase):
         )
         self.assertFalse(result.is_fail)
 
+    def test_wan_and_yi_written_out_pass_the_strict_check(self) -> None:
+        # 本机真实模型把「12 万平方米」正确译成 120 000 m²，严格校验却判缺数字 12、
+        # 整段退回原文；留着「12万」的错译反倒通过。
+        source = "本项目位于卡萨布兰卡，总建筑面积 12 万平方米。"
+        for target, lang in (
+            ("Le projet est situé à Casablanca, sur une surface totale de 120 000 m².", "fr"),
+            ("Le projet est situé à Casablanca, sur une surface totale de 120\u202f000 m².", "fr"),
+            ("The project is in Casablanca, with a total floor area of 120,000 m².", "en"),
+        ):
+            self.assertFalse(validate_translation(source, target, target_lang=lang).is_fail, target)
+        self.assertFalse(
+            validate_translation("投资 3.5 亿元", "Investissement de 350 000 000 MAD", target_lang="fr").is_fail
+        )
+        self.assertFalse(validate_translation("合同总价3万元", "Montant total : 30 000 yuans", target_lang="fr").is_fail)
+        # 换算错了仍判缺数字。
+        result = validate_translation(source, "Surface totale de 1 200 000 m² à Casablanca.", target_lang="fr")
+        self.assertIn("missing_number", [issue.code for issue in result.issues])
+
     def test_canonical_keys_keep_both_readings_of_an_ambiguous_token(self) -> None:
         # 1,500 在英文里是 1500、在法文里是 1.5：两种读法都保留，比对时任一命中即可。
         self.assertEqual(canonical_number_keys("1,500"), frozenset({"1500", "1.5"}))
