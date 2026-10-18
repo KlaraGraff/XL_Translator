@@ -118,6 +118,10 @@
 
   **In Settings → Appearance & language, Interface language is now second, right below Theme**: It used to sit below the two rows of palettes; the order is now Theme, Interface language, Palette, Motion, Custom languages.
 
+- **从 PDF 页点「安装 ↗ 组件」后，矮窗口里也能看到要装的组件卡片**：跳到「扩展 → 组件」后，组件检测回来会整页重绘，卡片被挤到可视区下方、面板不再滚动。现在检测全部回来后再对准一次，卡片完整露出（#153）。
+
+  **After clicking Install ↗ components on the PDF page, the component card is visible even in a short window**: Extensions → Components redraws once the component checks return, which pushed the card below the visible area without scrolling. The panel now scrolls to the card again after all checks return, so it is fully shown (#153).
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。
