@@ -17,3 +17,38 @@ export function motionAllowed(): boolean {
   if (reducedQuery?.matches) return false;
   return typeof Element.prototype.animate === "function";
 }
+
+/** 同 tokens.css 的 --ease-spring：滑块、高亮块这类「滑到位」的位移用它。 */
+export const EASE_SPRING = "cubic-bezier(.3, 1.25, .5, 1)";
+/** 同 tokens.css 的 --t-page。 */
+export const T_PAGE = 260;
+
+/**
+ * 页内换内容时新内容的进场：从下方几像素淡入。旧内容已经被同步换掉，这里只管新的。
+ * "page" 与 router.ts 换页同参（设置页左栏换子页），"panel" 与「扩展」页换页签同参
+ * （页签、用途卡这类页内切换）。减少动效时什么都不做。
+ */
+export function riseIn(targets: Element | Element[], level: "page" | "panel" = "panel"): Animation[] {
+  if (!motionAllowed()) return [];
+  const [distance, duration] = level === "page" ? [8, 240] : [6, 160];
+  return (Array.isArray(targets) ? targets : [targets]).map((target) => target.animate(
+    [{ opacity: 0, transform: `translateY(${distance}px)` }, { opacity: 1, transform: "none" }],
+    { duration, easing: EASE_OUT },
+  ));
+}
+
+let colorFadeTimer = 0;
+
+/**
+ * 换主题或配色：颜色在 --t-page 里过渡过去，不是一帧跳变。<html class="color-fade"> 只挂这一小会儿，
+ * 期间 app.css 让所有元素只过渡颜色类属性（位移类的动画走 Web Animations，不受影响）。
+ */
+export function withColorFade(change: () => void): void {
+  if (motionAllowed()) {
+    const root = document.documentElement;
+    root.classList.add("color-fade");
+    window.clearTimeout(colorFadeTimer);
+    colorFadeTimer = window.setTimeout(() => root.classList.remove("color-fade"), T_PAGE + 60);
+  }
+  change();
+}

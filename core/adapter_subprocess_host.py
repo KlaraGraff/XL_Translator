@@ -137,15 +137,15 @@ class SubprocessAdapterHost:
             f"扩展进程异常退出（代码 {completed.returncode}）" + (f"：{tail[0][:_STDERR_LINE_CHARS]}" if tail[0] else "")
         )
 
-    def scan(self, path: Path) -> ScanItem:
-        result = self._call("scan", {"path": str(path)}, self.scan_timeout)
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem:
+        result = self._call("scan", _path_request(path, options), self.scan_timeout)
         try:
             return ScanItem.from_dict(result)
         except (TypeError, ValueError) as exc:
             raise AdapterError(f"scan 返回值不合约定：{exc}") from exc
 
-    def extract(self, path: Path) -> list[TextUnit]:
-        result = self._call("extract", {"path": str(path)}, self.file_timeout)
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]:
+        result = self._call("extract", _path_request(path, options), self.file_timeout)
         if not isinstance(result, list):
             raise AdapterError(f"extract 应返回 TextUnit 列表，实际是 {type(result).__name__}")
         try:
@@ -178,6 +178,13 @@ class SubprocessAdapterHost:
             raise AdapterError(f"write 返回值不合约定：{exc}") from exc
 
 
+def _path_request(path: Path, options: Mapping[str, Any] | None) -> dict[str, Any]:
+    request: dict[str, Any] = {"path": str(path)}
+    if options is not None:
+        request["options"] = dict(options)
+    return request
+
+
 # ── 子进程这一侧 ──────────────────────────────────────────────────────────────
 
 
@@ -186,10 +193,12 @@ def _run_action(directory: Path, action: str, request: Mapping[str, Any]) -> Any
     sys.path.insert(0, str(directory))
     host = InProcessAdapterHost(directory)
     path = Path(str(request.get("path") or ""))
+    options = request.get("options")
+    options = dict(options) if isinstance(options, Mapping) else None
     if action == "scan":
-        return host.scan(path).to_dict()
+        return host.scan(path, options).to_dict()
     if action == "extract":
-        return [unit.to_dict() for unit in host.extract(path)]
+        return [unit.to_dict() for unit in host.extract(path, options)]
     units = [TranslatedUnit.from_dict(item) for item in request.get("units") or []]
     return host.write(
         path,

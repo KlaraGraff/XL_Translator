@@ -163,7 +163,11 @@ class TaskGroupScheduler:
 class FairApiGroupScheduler:
     """One connection-group budget shared fairly among active tasks.
 
-    The capacity is the sum of the frozen per-task throughput values.  A
+    The capacity is the largest of the frozen per-task throughput values, not
+    their sum: several tasks on one connection must not multiply the request
+    rate the user set for any single one of them (two types at 30 each used to
+    send 60 at once and get rate-limited).  Each task still never exceeds its
+    own value; when one finishes, the others take over its share.  A
     simple task FIFO sits in front of the weighted capacity check, so a busy
     task cannot continuously re-acquire slots ahead of another task waiting on
     the same API connection.  429 feedback changes only this in-memory group.
@@ -339,7 +343,7 @@ class FairApiGroupScheduler:
     def _reset_capacity_locked(self) -> None:
         # A membership change creates a new runtime group.  Resetting here is
         # deliberate: a 429 reduction must not leak into a later task group.
-        total = max(1, sum(self._task_capacities.values()))
+        total = max(1, max(self._task_capacities.values(), default=1))
         self.capacity = max(total, self._active_total_weight)
         self.initial_capacity = total
         self._adaptive_capacity_levels = build_adaptive_capacity_levels(total)
@@ -527,15 +531,16 @@ class TaskResourceRegistry:
                 ]
                 if not participants:
                     continue
-                active_capacity = sum(item.capacity_for(resource) for item in participants)
+                # 同一条连接上的总并发取各任务里最大的那个（见 FairApiGroupScheduler）。
+                active_capacity = max(item.capacity_for(resource) for item in participants)
+                candidate = max(1, int(candidate_capacity or 1))
                 shared.append(
                     {
                         "resource": resource,
                         "active_owner_keys": [item.owner_key for item in participants],
                         "active_capacity": active_capacity,
-                        "candidate_capacity": max(1, int(candidate_capacity or 1)),
-                        "total_potential_capacity": active_capacity
-                        + max(1, int(candidate_capacity or 1)),
+                        "candidate_capacity": candidate,
+                        "total_potential_capacity": max(active_capacity, candidate),
                     }
                 )
             return {

@@ -21,6 +21,16 @@
 ``TextUnit.protected`` 里的片段（行内代码、链接地址）翻译前换成 ``⟦1⟧`` 这样的标记，
 翻译后换回；标记没有原样回来的单元保留原文并计入需复核，保证这些片段一个字符不变。
 
+段内格式（``TextUnit.marked``，``<g1>…</g1>``）与 Word 共用 ``core/word_inline_marks.py``：
+``InlineMarkEngine`` 包住引擎，把带标记的原文发出去、收回带标记的译文；记忆库命中的、
+仅译文模式下另走一路翻的、标记没完整回来的、体检改过的，定稿后用 ``place_marks`` 让模型只补
+标记。补不上的 ``marked_translation`` 留空，适配器按整段写法写回。校验、记忆库和复核只看纯文本。
+
+仅译文模式下，原文是中文时，已经夹着外文的内容（「土石方工程合计 Total of Earthworks」）
+与 Excel、Word 同一套规则单独翻（``core/mixed_language.py``）：整体翻成目标语言、不用记忆库；
+模型认为原文已有双语的再整体翻一遍，仍翻不出的保留原文、计入需复核；译文里仍夹着没翻的外文的
+保留译文、计入需复核。双语对照模式不分流，照常翻译。
+
 执行器不认识任何具体格式；暂停在文件之间和两批请求之间生效，停止时已拿到的译文照常写出。
 """
 
@@ -39,10 +49,24 @@ from typing import Any
 from loguru import logger
 
 from core.bilingual_writer import bilingual_output_name
+from core.document_profile import append_profile
 from core.file_progress import FileProgressReporter, file_progress_id
-from core.format_adapter import AdapterError, AdapterHost
+from core.format_adapter import TARGET_LANG_OPTION_KEY, AdapterError, AdapterHost
+from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.language_preflight import AUTO_SOURCE_LANG, preflight_file_source_languages
 from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.mixed_language import (
+    DEFAULT_MIXED_MAX_BATCH_CHARS,
+    MIXED_ACTION_EXISTING_BILINGUAL,
+    MIXED_ACTION_FOREIGN_NOISE,
+    MIXED_ACTION_TRANSLATE,
+    MIXED_ACTION_UNCERTAIN,
+    MixedLanguageResult,
+    MixedLanguageRunStats,
+    collapse_echoed_repeat,
+    split_mixed_language_sources,
+    translate_mixed_language_texts,
+)
 from core.request_log import BatchRequestLog
 from core.request_progress import BATCH_EVENT_DONE
 from core.residual_pipeline import run_residual_pass
@@ -56,6 +80,7 @@ from core.unit_ledger import (
     STATE_SKIPPED,
     UnitLedger,
 )
+from core.word_inline_marks import PLACE_MARKS_BATCH, InlineMarkEngine, place_marks, strip_marks
 from engines.base_engine import engine_supports_chat
 from translator_adapter import (
     MODE_BILINGUAL,
@@ -65,6 +90,7 @@ from translator_adapter import (
     STATUS_NEEDS_REVIEW,
     STATUS_TRANSLATED,
     STATUS_UNTRANSLATED,
+    OutputFile,
     TextUnit,
     TranslatedUnit,
 )
@@ -79,6 +105,12 @@ REASON_UNTRANSLATED = "未获得译文"
 REASON_RESIDUAL = "译文中仍有原文"
 REASON_PROTECTED = "译文未原样保留代码或链接等内容，已保留原文"
 REASON_TERM = "未采用设定译法"
+REASON_KEY_INFO = KEY_INFO_PROBLEM
+# 仅译文模式下夹杂多种语言的内容（与 Excel、Word 同一套判据，见模块说明）。
+REASON_MIXED_KEPT = "已含两种语言的内容未能翻成目标语言"
+REASON_MIXED_LEFTOVER = "译文中仍夹带未翻译的外文"
+REASON_MIXED_NOISE = "原文疑似夹杂错误外文"
+REASON_MIXED_UNCERTAIN = "夹杂多种语言的内容未能确认"
 
 #: 停止时还没送出的单元（不是失败，不进需复核清单，计入「部分翻译」）。
 _UNFINISHED = "停止时尚未翻译"
@@ -138,6 +170,26 @@ class _Plan:
     sent: dict[str, str] = field(default_factory=dict)
     #: 单元 id → 第 i 个标记对应的原片段。
     masks: dict[str, list[str]] = field(default_factory=dict)
+    #: 单元 id → 带段内格式标记、送去翻译的原文（受保护片段同样换成了 ``⟦i⟧``）。
+    marked: dict[str, str] = field(default_factory=dict)
+    #: 送去翻译的纯文本 → 带标记的版本（``InlineMarkEngine`` 按它换）；同一句话格式不同时取第一个。
+    mark_sources: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class _Translated:
+    """一个文件的翻译结果，都按送去翻译的文字记。"""
+
+    #: → 译文（定稿，不带格式标记）。
+    translations: dict[str, str] = field(default_factory=dict)
+    #: → 来源：memory / model。
+    origins: dict[str, str] = field(default_factory=dict)
+    #: → 复核原因（有译文的保留译文，没有的保留原文）。
+    reasons: dict[str, str] = field(default_factory=dict)
+    #: 停止时还没翻的。
+    unfinished: set[str] = field(default_factory=set)
+    #: 包了段内格式标记的引擎（这个文件有带标记的单元时）；``marked_translations`` 是模型带回的标记。
+    mark_engine: InlineMarkEngine | None = None
 
 
 @dataclass
@@ -191,7 +243,8 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._target_lang = target_lang
         self._source_lang = str(source_lang or AUTO_SOURCE_LANG)
         self._mode = MODE_BILINGUAL if bilingual else MODE_TRANSLATION_ONLY
-        self._options = dict(options or {})
+        # 交给适配器的开关值，带上目标语言（写回时改语言属性、断行规则用）。
+        self._options = {**dict(options or {}), TARGET_LANG_OPTION_KEY: target_lang}
         self._key_overrides = dict(key_overrides or {})
         self._label = label
         self._pause_event = threading.Event()
@@ -363,14 +416,20 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._file_progress.emit(path, "active", "extract")
         self._progress(index, 0.0, _STAGE_READ, "正在读取")
         try:
-            units = self._host.extract(path)
+            units = self._host.extract(path, self._options)
         except AdapterError as exc:
             return self._failed(item, exc, fallback="无法读取此文件。")
         plan = self._plan(units)
         self._log("INFO", f"{name}：共 {len(units)} 段，需要翻译 {len(plan.sent)} 段")
         self._progress(index, _EXTRACT_SHARE, _STAGE_READ, "读取完成")
 
-        translations, origins, reasons, unfinished = self._translate(index, item, plan)
+        translated = self._translate(index, item, plan)
+        translations, origins, reasons, unfinished = (
+            translated.translations,
+            translated.origins,
+            translated.reasons,
+            translated.unfinished,
+        )
 
         ledger = UnitLedger()
         written: list[TranslatedUnit] = []
@@ -416,6 +475,7 @@ class AdapterTaskRunner(BaseTaskRunner):
             status = STATUS_MEMORY if origins.get(sent) == "memory" else STATUS_TRANSLATED
             written.append(TranslatedUnit(unit.id, unit.text, value, status))
         assert not ledger.unresolved(), "every unit must have a final state"
+        self._attach_marks(plan, written, translated)
 
         if self._stop_event.is_set() and not any(unit.changed for unit in written):
             # 一处译文都没拿到就停了：不写一份和原文一样的文件。
@@ -432,7 +492,7 @@ class AdapterTaskRunner(BaseTaskRunner):
         except (AdapterError, OSError) as exc:
             self._forget_review(path)
             return self._failed(item, exc, fallback="无法写出此文件。")
-        review_count += max(0, int(output.review_count))
+        review_count += self._adapter_review(path, units, output)
         unfinished_count = sum(1 for record in ledger.records() if record.skip_reason == "stopped")
         result = self._file_result(
             item,
@@ -456,6 +516,26 @@ class AdapterTaskRunner(BaseTaskRunner):
             self._log("OK", f"{name}：已写出")
         return result
 
+    def _adapter_review(self, path: Path, units: list[TextUnit], output: OutputFile) -> int:
+        """``write`` 自己报的需复核：逐条进需复核清单（写进去的是译文）；返回条数。
+
+        只给了 ``review_count`` 的旧适配器照旧只计数；两样都给时取大的。
+        """
+        by_id = {unit.id: unit for unit in units}
+        for item in output.review_items:
+            unit = by_id.get(item.id)
+            where = item.context or (self._unit_label(unit) if unit is not None else "")
+            self._review.append(
+                _ReviewEntry(
+                    str(self._relative(path)),
+                    where,
+                    unit.text if unit is not None else "",
+                    item.reason,
+                    kept_source=False,
+                )
+            )
+        return max(0, int(output.review_count), len(output.review_items))
+
     def _forget_review(self, path: Path) -> None:
         relative = str(self._relative(path))
         self._review = [entry for entry in self._review if entry.file != relative]
@@ -469,6 +549,52 @@ class AdapterTaskRunner(BaseTaskRunner):
         result = self._file_result(item, status="failed", success=False, error=message)
         self._file_progress.emit(path, "failed", "done", result=result, force=True)
         return result
+
+    def _attach_marks(self, plan: _Plan, written: list[TranslatedUnit], translated: _Translated) -> None:
+        """给带段内格式的单元填 ``marked_translation``。
+
+        模型带回、去掉标记与定稿一字不差的直接用；其余（记忆库命中、另走一路翻的、标记没完整
+        回来的、体检改过的）让模型只补标记（``place_marks``，与 Word 同一个），补不上的留空。
+        保留原文的单元就是带标记的原文。
+        """
+        if not plan.marked:
+            return
+        by_id = {unit.id: unit for unit in plan.units}
+        known = translated.mark_engine.marked_translations if translated.mark_engine is not None else {}
+        missing: list[tuple[str, str, str]] = []
+        for unit in written:
+            marked_sent = plan.marked.get(unit.id)
+            if marked_sent is None:
+                continue
+            source = by_id[unit.id]
+            if unit.translation == unit.text:
+                unit.marked_translation = source.marked
+                continue
+            entry = known.get(plan.sent[unit.id])
+            candidate = None
+            if entry is not None and entry[0] == marked_sent:
+                masks = plan.masks.get(unit.id)
+                candidate = unmask_protected(entry[1], masks) if masks else entry[1]
+            if candidate is not None and strip_marks(candidate).strip() == unit.translation:
+                unit.marked_translation = candidate.strip()
+            else:
+                missing.append((unit.id, source.marked, unit.translation))
+        if not missing or self._stop_event.is_set():
+            return
+        engine = self._service.engine()
+        if engine_supports_chat(engine):
+            with self._api_calls_lock:
+                self._api_calls += -(-len(missing) // PLACE_MARKS_BATCH)
+        placed = place_marks(
+            engine,
+            missing,
+            should_stop=self._stop_event.is_set,
+            log=lambda message: logger.info(f"[{self._label or '扩展'}] {message}"),
+        )
+        for unit in written:
+            if unit.id in placed:
+                unit.marked_translation = placed[unit.id][1]
+        logger.info(f"[{self._label or '扩展'}] 段内格式：补标记 {len(placed)}/{len(missing)} 处")
 
     @staticmethod
     def _unit_label(unit: TextUnit) -> str:
@@ -484,6 +610,12 @@ class AdapterTaskRunner(BaseTaskRunner):
             plan.sent[unit.id] = masked
             if found:
                 plan.masks[unit.id] = found
+            if unit.marked and strip_marks(unit.marked) == unit.text:
+                # 受保护片段跨在格式标记两边时换不成同样的 ⟦i⟧，这一段就不带标记。
+                marked, marked_found = mask_protected(unit.marked, unit.protected)
+                if marked_found == found and strip_marks(marked) == masked:
+                    plan.marked[unit.id] = marked
+                    plan.mark_sources.setdefault(masked, marked)
         return plan
 
     def _lang_pairs(self, index: int, item: Any, texts: list[str]) -> list[str] | None:
@@ -514,17 +646,14 @@ class AdapterTaskRunner(BaseTaskRunner):
             self._log("WARN", f"{path.name}：未能识别原文语言，记忆库按常见原文语言查找")
         return None
 
-    def _translate(
-        self, index: int, item: Any, plan: _Plan
-    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], set[str]]:
-        """返回（送去翻译的文字 → 译文, → 来源 memory/model, → 复核原因, 停止时没翻的文字）。"""
+    def _translate(self, index: int, item: Any, plan: _Plan) -> _Translated:
+        """记忆库 + 模型翻译 + 体检，结果按送去翻译的文字记。"""
         path = Path(item.path)
         texts = list(dict.fromkeys(plan.sent.values()))
-        translations: dict[str, str] = {}
-        origins: dict[str, str] = {}
-        reasons: dict[str, str] = {}
+        result = _Translated()
+        translations, origins, reasons = result.translations, result.origins, result.reasons
         if not texts:
-            return translations, origins, reasons, set()
+            return result
         service = self._service
         lang_pairs = self._lang_pairs(index, item, texts)
 
@@ -535,11 +664,18 @@ class AdapterTaskRunner(BaseTaskRunner):
             with self._api_calls_lock:
                 self._api_calls += 1
 
+        # 仅译文模式下夹杂多种语言的内容单独翻，不用记忆库（与 Excel、Word 相同）。
+        mixed = self._mixed_texts(path, texts)
+        if mixed:
+            self._log("INFO", f"有 {len(mixed)} 处内容夹杂多种语言，会单独翻译，不使用记忆库。")
+        mixed_set = set(mixed)
+        normal_texts = [text for text in texts if text not in mixed_set]
+
         self._file_progress.emit(path, "active", "translate", completed=0, total=len(texts))
         session = None
         if self._term_memory is not None:
             session = self._term_memory.open(
-                texts,
+                normal_texts,
                 profile=profile,
                 file_path=path,
                 location=path.name,
@@ -547,89 +683,216 @@ class AdapterTaskRunner(BaseTaskRunner):
                 log=self._log,
             )
             for text, value in session.hits.items():
-                if value and text in texts:
+                if value and text in normal_texts:
                     translations[text] = value
                     origins[text] = "memory"
         if translations:
             self._tm_hits += len(translations)
             self._log("INFO", f"{path.name}：记忆库已有译文 {len(translations)} 段")
 
-        remaining = [text for text in texts if text not in translations]
+        remaining = [text for text in normal_texts if text not in translations]
         already = len(translations)
         echoed: set[str] = set()
 
-        def report(done: int, total: int) -> None:
-            fraction = (already + done) / max(1, len(texts))
-            self._file_progress.emit(path, "active", "translate", completed=already + done, total=len(texts))
-            self._progress(index, _EXTRACT_SHARE + _TRANSLATE_SHARE * fraction, _STAGE_TRANSLATE, "正在翻译")
-            # 批次回调跑在提交批次的线程里：在这里等着就不会再发出新的一批请求。
-            self._wait_if_paused()
+        def report_from(offset: int):
+            def report(done: int, total: int) -> None:
+                completed = min(len(texts), already + offset + done)
+                self._file_progress.emit(path, "active", "translate", completed=completed, total=len(texts))
+                fraction = completed / max(1, len(texts))
+                self._progress(index, _EXTRACT_SHARE + _TRANSLATE_SHARE * fraction, _STAGE_TRANSLATE, "正在翻译")
+                # 批次回调跑在提交批次的线程里：在这里等着就不会再发出新的一批请求。
+                self._wait_if_paused()
+
+            return report
 
         def on_error(message: str) -> None:
             self._log("ERROR" if "未能翻译" in message else "WARN", f"{path.name}：{message}")
 
-        if remaining and not self._stop_event.is_set():
-            request_log = BatchRequestLog(self._log, unit="段", subject="内容", thread_name="adapter-translate-wait-log")
+        # 带段内格式的原文换成带标记的版本发出；没有这样的单元时不包。
+        if plan.mark_sources:
+            result.mark_engine = InlineMarkEngine(service.engine(), plan.mark_sources)
+        prompt = service.system_prompt()
+        if plan.masks:
+            prompt = f"{prompt}\n{_PROTECT_HINT}"
+        request_log = BatchRequestLog(self._log, unit="段", subject="内容", thread_name="adapter-translate-wait-log")
 
-            def on_request(event: Any) -> None:
-                request_log.on_event(event)
-                self._count_requests(event)
+        def on_request(event: Any) -> None:
+            request_log.on_event(event)
+            self._count_requests(event)
 
-            prompt = service.system_prompt()
-            if plan.masks:
-                prompt = f"{prompt}\n{_PROTECT_HINT}"
-            with request_log:
-                model = service.translate(
-                    remaining,
-                    prompt=prompt,
-                    context=profile,
-                    term_session=session,
-                    progress=report,
-                    should_stop=self._stop_event.is_set,
-                    error_callback=on_error,
-                    request_callback=on_request,
+        def model_translate(batch: list[str], offset: int) -> dict[str, str]:
+            return service.translate(
+                batch,
+                prompt=prompt,
+                context=profile,
+                term_session=session,
+                progress=report_from(offset),
+                should_stop=self._stop_event.is_set,
+                error_callback=on_error,
+                request_callback=on_request,
+                engine=result.mark_engine,
+            )
+
+        with request_log:
+            if remaining and not self._stop_event.is_set():
+                model = model_translate(remaining, 0)
+                for text in remaining:
+                    value = str(model.get(text) or "").strip()
+                    if not value:
+                        continue
+                    if self._echoes_source(path, text, value):
+                        echoed.add(text)
+                        continue
+                    translations[text] = value
+                    origins[text] = "model"
+                if echoed:
+                    self._log("WARN", f"{path.name}：{len(echoed)} 段模型返回的译文与原文相同，已保留原文并标记需复核")
+            if mixed and not self._stop_event.is_set():
+                self._translate_mixed(
+                    mixed,
+                    result,
+                    prompt=append_profile(prompt, profile),
+                    progress=report_from(len(remaining)),
+                    on_error=on_error,
+                    retranslate=lambda batch: model_translate(batch, len(remaining)),
                 )
-            for text in remaining:
-                value = str(model.get(text) or "").strip()
-                if not value:
-                    continue
-                if self._echoes_source(path, text, value):
-                    echoed.add(text)
-                    continue
-                translations[text] = value
-                origins[text] = "model"
-            if echoed:
-                self._log("WARN", f"{path.name}：{len(echoed)} 段模型返回的译文与原文相同，已保留原文并标记需复核")
         unfinished = (
-            {text for text in remaining if text not in translations and text not in echoed}
+            {
+                text
+                for text in [*remaining, *mixed]
+                if text not in translations and text not in echoed and text not in reasons
+            }
             if self._stop_event.is_set()
             else set()
         )
+        result.unfinished = unfinished
 
         # 记忆库：未采用「始终采用」词条设定译法的（已重译仍不符）保留译文、计入需复核；
-        # 「自动识别场景」下模型新译的短词自动保存。
+        # 「自动识别场景」下模型新译的短词自动保存。夹杂多种语言的不存。
         if session is not None:
             for text in session.not_applied_texts():
                 if text in translations:
                     detail = str(session.not_applied_detail(text) or "").strip()
                     reasons[text] = f"{REASON_TERM}：{detail}" if detail else REASON_TERM
+            # 证件号、日期、人名与原文对不上的：保留译文、计入需复核，不改、不重译。
+            final = {text: translations[text] for text in texts if text in translations}
+            for text in session.check_key_info(final, source_lang=self._source_lang):
+                note = f"{REASON_KEY_INFO}：{session.key_info_detail(text)}"
+                reasons[text] = f"{reasons[text]}；{note}" if text in reasons else note
             self._term_memory.close(
                 session,
                 {text: translations[text] for text in remaining if text in translations},
-                counts=Counter(plan.sent.values()),
+                counts=Counter(text for text in plan.sent.values() if text not in mixed_set),
             )
 
         # 残留体检：序号前缀之类能确定修好的直接改，改不了的保留译文、计入需复核。
+        # 只留了「万」「亿」的（12万 m²）Excel、Word 记一条提示放行；这里没有那份报告，
+        # 一并计入需复核，免得译文里的中文无人知道。
         residual = run_residual_pass(
             [(text, translations[text]) for text in texts if text in translations],
             target_lang=self._target_lang,
         )
         translations.update(residual.fixes)
-        for report_item in residual.needs_review:
+        for report_item in (*residual.needs_review, *residual.released_notes):
             reasons.setdefault(report_item.source_text, REASON_RESIDUAL)
         if residual.auto_fixed:
             self._log("INFO", f"{path.name}：残留序号已自动修复 {len(residual.auto_fixed)} 段")
-        return translations, origins, reasons, unfinished
+        return result
+
+    # ── 仅译文：夹杂多种语言的内容 ─────────────────────────────────────────
+
+    def _mixed_texts(self, path: Path, texts: list[str]) -> list[str]:
+        """仅译文模式下要单独翻的「中文 + 外文」内容。
+
+        判据与 Excel、Word 相同（``split_mixed_language_sources``，只认原文为中文）；原文语言为
+        「自动识别」时看这个文件的预检结果里有没有中文。双语对照模式、引擎不能按结构化 JSON
+        回答时不分流。
+        """
+        if self._mode != MODE_TRANSLATION_ONLY or not texts:
+            return []
+        if self._source_lang != AUTO_SOURCE_LANG:
+            candidates = [self._source_lang]
+        else:
+            candidates = self._languages.get(path.name) or []
+        if not any(_lang_base(lang) == "zh" for lang in candidates):
+            return []
+        if not engine_supports_chat(self._service.engine()):
+            return []
+        _normal, mixed = split_mixed_language_sources(texts, target_lang=self._target_lang, source_lang="zh")
+        return mixed
+
+    def _translate_mixed(
+        self,
+        mixed: list[str],
+        result: _Translated,
+        *,
+        prompt: str,
+        progress: Any,
+        on_error: Any,
+        retranslate: Any,
+    ) -> None:
+        service = self._service
+        stats = MixedLanguageRunStats()
+        outcomes: dict[str, MixedLanguageResult] = translate_mixed_language_texts(
+            mixed,
+            engine=service.engine(),
+            target_lang=self._target_lang,
+            system_prompt=prompt,
+            source_lang="zh",
+            concurrency=service.rate.concurrency,
+            max_items_per_batch=service.rate.batch_items,
+            max_chars_per_batch=max(DEFAULT_MIXED_MAX_BATCH_CHARS, service.rate.batch_chars),
+            retry_attempts=service.rate.item_retry,
+            progress_callback=progress,
+            error_callback=on_error,
+            should_stop=self._stop_event.is_set,
+            api_scheduler=service.api_scheduler,
+            stats=stats,
+            translation_only=True,
+        )
+        with self._api_calls_lock:
+            self._api_calls += stats.mixed_batch_count + stats.retry_count
+        stopped = self._stop_event.is_set()
+        kept_bilingual: list[str] = []
+        leftover = 0
+        for text in mixed:
+            outcome = outcomes.get(text)
+            if outcome is None or (stopped and outcome.note in ("stopped", "missing_result")):
+                continue  # 停止时没发出去：不算复核，计入「停止时尚未翻译」
+            if outcome.action == MIXED_ACTION_EXISTING_BILINGUAL:
+                kept_bilingual.append(text)
+            elif outcome.action in (MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE) and outcome.translation.strip():
+                result.translations[text] = outcome.translation.strip()
+                result.origins[text] = "model"
+                if outcome.action == MIXED_ACTION_FOREIGN_NOISE:
+                    result.reasons[text] = REASON_MIXED_NOISE
+                elif outcome.leftover:
+                    result.reasons[text] = REASON_MIXED_LEFTOVER
+                    leftover += 1
+            else:
+                result.reasons[text] = REASON_MIXED_UNCERTAIN
+        if leftover:
+            self._log("WARN", f"仅输出译文：{leftover} 处译文中仍夹带未翻译的外文，已标记需复核。")
+        if kept_bilingual and not self._stop_event.is_set():
+            # 输出只留译文时，原样保留「中文 + 外文」，用户看到的就是没翻（反馈 FB-20261013-UVW95F）：
+            # 整段当普通内容再翻一遍。
+            self._log("INFO", f"仅输出译文：{len(kept_bilingual)} 处已含两种语言的内容改为整体翻成目标语言。")
+            again = retranslate(kept_bilingual)
+            for text in kept_bilingual:
+                value = collapse_echoed_repeat(str(again.get(text) or "").strip(), text)
+                if value and not _same_text(value, text):
+                    result.translations[text] = value
+                    result.origins[text] = "model"
+                elif value or not self._stop_event.is_set():
+                    result.reasons[text] = REASON_MIXED_KEPT
+        self._log(
+            "INFO",
+            f"夹杂多种语言的内容 {stats.input_count} 处："
+            f"已有双语 {stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)} 处，"
+            f"原文疑似有误 {stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)} 处，"
+            f"待人工确认 {stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)} 处，"
+            f"复查后采用 {stats.semantic_accepted_count} 处",
+        )
 
     def _echoes_source(self, path: Path, text: str, value: str) -> bool:
         """模型原样还回了原文（质量校验把译文退回原文时也是这样）：原文是要翻的源语言文字就不算译文。
@@ -710,6 +973,7 @@ class AdapterTaskRunner(BaseTaskRunner):
 
 
 __all__ = [
+    "REASON_KEY_INFO",
     "REASON_PROTECTED",
     "REASON_RESIDUAL",
     "REASON_TERM",

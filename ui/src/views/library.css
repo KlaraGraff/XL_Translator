@@ -1,0 +1,139 @@
+/* 记忆库视图（views/library.ts）。版式照「流光」原型的 .lib：
+ *   .lib-top（语言对 · 搜索 · 按钮组）→ .lib-filters（页签 · 规则一句话 · 高级模式统计）
+ *   → .lib-recent（最近使用的语言对）→ .lib-notice（清洗状态 / 冲突，有内容才出现）
+ *   → .lib-scroll（表格，自己滚动）→ .lib-foot（已选 · 选择全部 · 批量删除 | 分页）。
+ * 共享的 .tbl / .tk-filters .f / .linklike / .ck / .empty / .menu / .modal 不在这里改，
+ * 本页的差异都写成 .lib 作用域规则。不用 :has()、color-mix()、CSS 嵌套（Safari 15.1）。 */
+
+.lib { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- 顶部工具行 ---- */
+.lib-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.lib-top .acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.lib-top .btn { white-space: nowrap; }
+.lib-more .ic { margin-right: -3px; }
+
+/* 语言对组合控件：两个可搜索语言选择器夹一个交换按钮，整框一个边、一个聚焦光。 */
+.lib .pair {
+  display: inline-flex; align-items: stretch; height: 32px; flex: none;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
+}
+.lib .pair:hover { border-color: var(--line-3); }
+.lib .pair:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+/* 两个选择器定宽：长语言名省略显示，展开后浮层里是全名。 */
+.lib .pair .lang { display: flex; flex: none; width: 112px; }
+.lib .pair .lang-btn { border: 0; border-radius: 0; min-width: 0; width: 100%; height: 30px; padding-right: 8px; font-size: 12.5px; background: transparent; }
+/* 组合控件里不放下拉箭头（点进输入框就展开），把宽度留给语言名。 */
+.lib .pair .lang-caret { display: none; }
+/* 权重压过 app.css 末尾的 .lang-btn:focus-within / .lang[data-open] .lang-btn：内层不再亮第二圈。 */
+.lib .pair .lang-btn:focus-within,
+.lib .pair .lang[data-open="true"] .lang-btn { box-shadow: none; }
+.lib .pair .swap {
+  flex: none; width: 28px; display: grid; place-items: center; padding: 0;
+  border: 0; border-left: 1px solid var(--line); border-right: 1px solid var(--line);
+  background: transparent; color: var(--ink-3); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.lib .pair .swap:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+.lib .pair .swap:disabled { cursor: default; opacity: .45; }
+.lib .pair .swap:focus-visible { outline-offset: -2px; }
+
+/* 搜索胶囊。悬停 / 聚焦 / 选区沿用 app.css 末尾的输入框三档边，这里不另写焦点色。 */
+.lib-search { position: relative; flex: 1 1 150px; min-width: 140px; max-width: 320px; display: flex; align-items: center; }
+.lib-search .ic { position: absolute; left: 10px; color: var(--ink-3); pointer-events: none; }
+.lib-search input {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 99px;
+  background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 12px 0 31px;
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
+}
+.lib-search input::placeholder { color: var(--ink-3); }
+.lib-search input::-webkit-search-cancel-button,
+.lib-search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+
+/* ---- 筛选行 ---- */
+.lib-filters { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; }
+.lib-rule { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+.lib-meta { margin-left: auto; font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lib-meta .attn { color: var(--warn); font-weight: 600; }
+
+.lib-recent[hidden] { display: none; }
+.lib-recent { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.lib-recent-label { font-size: 12px; color: var(--ink-3); margin-right: 2px; }
+
+/* ---- 清洗状态 / 冲突（有内容才出现） ---- */
+.lib-notice { display: flex; flex-direction: column; gap: 8px; }
+.lib-notice[hidden] { display: none; }
+.lib-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lib-state:empty, .lib-conflict-host:empty { display: none; }
+.lib-conflict-host { display: flex; flex-direction: column; gap: 8px; }
+.lib-conflict-msg { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lib-conflicts { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.lib-conflicts-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 12.5px; }
+.lib-conflicts-head strong { font-weight: 600; }
+.lib-conflict { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.lib-conflict .info { flex: 1; min-width: 0; }
+.lib-conflict .info small { display: block; color: var(--ink-3); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* ---- 表格 ---- */
+.lib-scroll {
+  flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
+}
+.lib-scroll > .tbl { flex: none; }
+.lib .tbl th { text-transform: none; letter-spacing: 0; z-index: 1; }
+.lib .tbl td.lib-src { font-weight: 550; }
+.lib .tbl td.num { white-space: nowrap; }
+.lib .tbl th[data-col="source"], .lib .tbl th[data-col="target"] { min-width: 120px; }
+.lib .tbl th[data-col="updated"], .lib .tbl th[data-col="uses"] { text-align: right; }
+.lib .tbl td.note { color: var(--ink-2); }
+.lib .tbl td.dim { color: var(--ink-3); }
+.lib .tbl th.acts-col { width: 72px; }
+.lib .tbl td.acts-cell { padding-top: 0; padding-bottom: 0; }
+.lib .tbl tbody tr:last-child td { border-bottom: 0; }
+
+/* 行内操作：悬停或键盘聚焦到这一行时出现。 */
+.lib .rowacts { display: flex; gap: 4px; justify-content: flex-end; opacity: 0; transition: opacity var(--t-fast) var(--ease-out); }
+.lib tr:hover .rowacts,
+.lib tr:focus-within .rowacts { opacity: 1; }
+.lib .rowacts .btn { width: 28px; padding: 0; }
+.lib .rowacts .btn.del { color: var(--danger); }
+.lib .rowacts .btn.del:hover:not(:disabled) { background: var(--danger-t); color: var(--danger); }
+
+/* 数据变化后那一次渲染：行依次浮现。减少动效时 app.css 全局压成 1ms。 */
+.lib tbody.stag tr { animation: lib-rise var(--t-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 28ms); }
+@keyframes lib-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 加载骨架：三行渐变条。 */
+.lib-sk-list { display: flex; flex-direction: column; gap: 14px; padding: 18px 16px; }
+.lib-sk {
+  height: 14px; border-radius: 6px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%; animation: lib-sk 1.2s linear infinite;
+}
+.lib-sk:nth-child(2) { width: 82%; }
+.lib-sk:nth-child(3) { width: 64%; }
+@keyframes lib-sk { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* ---- 底栏 ---- */
+.lib-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
+.lib-foot .sel { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lib-foot .linklike { white-space: nowrap; }
+.lib-foot .pg-ctl { margin-left: auto; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.lib-foot .num { font-variant-numeric: tabular-nums; color: var(--ink-2); padding: 0 2px; }
+.lib-foot .pg-ctl .btn { width: 28px; padding: 0; font-size: 15px; }
+.lib-foot .lib-page-size { flex: none; width: 116px; }
+
+/* ---- 从 app.css 搬来：右上角「记忆库设置」浮层、编辑窗口的高级区块 ---- */
+.tm-settings-pop { width: 320px; max-width: calc(100vw - 16px); padding: 6px 14px 10px; }
+.tm-settings-group { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.tm-settings-foot { margin: 6px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
+.tm-settings-foot .resume-link { font-size: 11.5px; margin-left: 6px; }
+.tm-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; line-height: 1.5; }
+.tm-adv { border-top: 1px dashed var(--line-2); padding-top: 12px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+.tm-adv-label { font-size: 11.5px; font-weight: 600; color: var(--ink-2); }
+.tm-opt { display: flex; gap: 9px; align-items: flex-start; padding: 5px 0; cursor: pointer; }
+.tm-opt input { accent-color: var(--accent); margin: 2px 0 0; flex: none; }
+.tm-opt b { font-size: 12.5px; font-weight: 600; }
+.tm-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }

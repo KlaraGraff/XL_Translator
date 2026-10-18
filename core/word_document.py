@@ -33,6 +33,7 @@ from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
     MIXED_MARK_UNRESOLVED,
 )
+from core.ooxml_package_check import PackagePartsChanged, changed_untouched_parts
 from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
@@ -41,8 +42,8 @@ from core.word_inline_marks import (
     cell_marks,
     iter_new_runs,
     paragraph_marks,
-    parse_marked,
     replace_paragraph_content,
+    same_text,
     strip_marks,
 )
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
@@ -468,7 +469,7 @@ def extract_word_segments(
                 kind="paragraph",
                 location=f"body.paragraph[{index}]",
                 section_path=_format_section_path(section_stack),
-                marked_source=marks.marked_text if marks is not None and marks.groups else "",
+                marked_source=marks.marked_text if marks is not None and marks.is_marked else "",
             )
         )
 
@@ -1005,8 +1006,38 @@ def _element_has_visible_text(element) -> bool:
     return any((node.text or "").strip() for node in element.iter(qn("w:t")))
 
 
+# 翻译会改的部件：正文、页眉页脚、脚注尾注、批注，以及样式（译文语言）、编号（展开
+# 自动编号）、文档设置。其余部件（图片、主题、字体、嵌入对象……）必须原样照抄
+_WORD_TEXT_PART_TYPES = (
+    "document.main+xml",
+    "document.macroEnabled.main+xml",
+    "template.main+xml",
+    "template.macroEnabledTemplate.main+xml",
+    "header+xml",
+    "footer+xml",
+    "footnotes+xml",
+    "endnotes+xml",
+    "comments+xml",
+    "styles+xml",
+    "numbering+xml",
+    "settings+xml",
+)
+
+
+def _check_untouched_parts(source_path, staged_path: Path) -> None:
+    """保存后核对：没改的部件和原文件一致，不一致就报出部件名（输出不替换）。"""
+    changed = changed_untouched_parts(
+        source_path, staged_path, lambda _name, content_type: content_type.endswith(_WORD_TEXT_PART_TYPES)
+    )
+    if changed:
+        raise PackagePartsChanged(changed)
+
+
 def _atomic_docx_writer(write_fn):
     """Keep the previous output intact until a complete DOCX can be opened.
+
+    打开得了还不够：没改的部件（图片、主题、嵌入对象……）也必须和原文件一致，见
+    core/ooxml_package_check.py。
 
     The staging directory lives beside the destination so ``os.replace`` is
     atomic on the same filesystem.  TemporaryDirectory removes the working
@@ -1025,6 +1056,7 @@ def _atomic_docx_writer(write_fn):
             staged_path = write_fn(**staged_kwargs)
             final_path = output_dir / staged_path.name
             Document(str(staged_path))
+            _check_untouched_parts(kwargs["source_path"], staged_path)
             os.replace(staged_path, final_path)
         if log_callback is not None:
             for message in staged_logs:
@@ -1193,9 +1225,9 @@ def write_bilingual_docx(
         translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
         marks = paragraph_marks(paragraph) if marked_translations and source in marked_translations else None
         marked = _usable_marked_pieces(marks, (marked_translations or {}).get(source), resolved.text)
-        pieces = parse_marked(marked, marks.groups) if marked else None
+        # 段首的空白和占位内容（制表符、图片）由 pieces_for 按原样接回，不再另加 leading_prefix
+        pieces = marks.pieces_for(marked) if marked else None
         if pieces:
-            pieces = _with_prefix(pieces, leading_prefix)
             marked_write_count += 1
         if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
             if pieces:
@@ -1242,7 +1274,7 @@ def write_bilingual_docx(
                 target_lang=target_lang,
             )
             if pieces:
-                _rewrite_translation_paragraph(translation_paragraph, pieces, marks.groups, target_lang=target_lang)
+                _rewrite_translation_paragraph(translation_paragraph, pieces, marks, target_lang=target_lang)
             if review_mark:
                 _apply_paragraph_review_mark(
                     translation_paragraph,
@@ -1287,7 +1319,7 @@ def write_bilingual_docx(
             translation_paragraph = _append_translation_to_cell(cell, resolved.text, target_lang=target_lang)
             only = cell_mark.paragraphs[0]
             _rewrite_translation_paragraph(
-                translation_paragraph, parse_marked(cell_marked, only.groups), only.groups, target_lang=target_lang
+                translation_paragraph, only.pieces_for(cell_marked), only, target_lang=target_lang
             )
             marked_write_count += 1
         elif resolved.replace_only or output_translation_only:
@@ -1711,43 +1743,51 @@ def _cell_text_paragraphs(cell: _Cell) -> list[Paragraph]:
 
 
 def _usable_marked_pieces(marks, entry, text: str):
-    """翻译时发出的带标记原文和这一处对得上、译文去掉标记后就是最终译文时，返回拆好的
-    译文；否则 None（按整段写法写回）。复查、修数字等后续步骤改过译文的，也会对不上。"""
-    if marks is None or entry is None or not marks.groups:
+    """翻译时发出的带标记原文和这一处对得上、译文去掉标记后就是最终译文时（只差空白也算：
+    记忆库里的译文常把制表符存成空格），返回带标记的译文；否则 None（按整段写法写回）。
+    复查、修数字等后续步骤改过译文的，也会对不上。"""
+    if marks is None or entry is None or not marks.is_marked:
         return None
     sent, translation = entry
-    if marks.marked_text != sent or strip_marks(translation).strip() != str(text or "").strip():
+    if marks.marked_text != sent:
+        return None
+    if not same_text(strip_marks(translation, marks.placeholder_texts), text):
         return None
     return translation
 
 
-def _write_marked_runs(paragraph: Paragraph, pieces, groups, base_rpr, *, target_lang: str) -> None:
-    nodes = build_run_nodes(pieces, groups, base_rpr)
+def _write_marked_runs(
+    paragraph: Paragraph, pieces, groups, base_rpr, *, target_lang: str, keep_objects: bool = True
+) -> None:
+    nodes = build_run_nodes(pieces, groups, base_rpr, keep_objects=keep_objects)
     replace_paragraph_content(paragraph, nodes)
     for run in iter_new_runs(nodes):
         _set_latin_run_font(Run(run, paragraph), target_lang=target_lang)
 
 
-def _with_prefix(pieces, prefix: str):
-    if not prefix or (pieces and pieces[0][0].startswith(prefix)):
-        return pieces
-    return [(prefix, None), *pieces]
-
-
-def _rewrite_translation_paragraph(paragraph: Paragraph, pieces, groups, *, target_lang: str) -> None:
-    """双语版式新插的译文段：主体沿用刚生成的那个 run 的格式，标记那几截用原文格式。"""
-    base = paragraph.runs[0]._r.find(qn("w:rPr")) if paragraph.runs else None
-    _write_marked_runs(paragraph, pieces, groups, base, target_lang=target_lang)
+def _rewrite_translation_paragraph(paragraph: Paragraph, pieces, marks, *, target_lang: str) -> None:
+    """双语版式新插的译文段：主体用原文主体那截的格式（原文主体没有直接格式时沿用刚生成的
+    那个 run 的格式），标记那几截用原文格式。刚生成的 run 只继承全段一致的格式，「第一行↵
+    第二行重点（红）」这种主体是红字的段，译文主体就不红了。图片、脚注编号留在原文段里，
+    译文段只复制制表符、换行。"""
+    if not pieces:
+        return
+    base = marks.base_rpr
+    if base is None and paragraph.runs:
+        base = paragraph.runs[0]._r.find(qn("w:rPr"))
+    _write_marked_runs(paragraph, pieces, marks.groups, base, target_lang=target_lang, keep_objects=False)
 
 
 def _replace_cell_text_marked(cell: _Cell, translation: str, marks, *, target_lang: str) -> None:
     """单元格逐段写回：译文一行对一段（翻译时已核对过行数和每行的标记）。"""
     for paragraph, paragraph_mark, line in zip(_cell_text_paragraphs(cell), marks.paragraphs, translation.split("\n")):
-        pieces = parse_marked(line, paragraph_mark.groups) if paragraph_mark.groups else None
+        pieces = paragraph_mark.pieces_for(line) if paragraph_mark.is_marked else None
         if pieces:
             _write_marked_runs(paragraph, pieces, paragraph_mark.groups, paragraph_mark.base_rpr, target_lang=target_lang)
         else:
-            _replace_paragraph_text(paragraph, strip_marks(line), target_lang=target_lang)
+            _replace_paragraph_text(
+                paragraph, strip_marks(line, paragraph_mark.placeholder_texts), target_lang=target_lang
+            )
 
 
 def _cell_source_text(cell: _Cell) -> str:

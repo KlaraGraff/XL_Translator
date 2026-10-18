@@ -92,6 +92,13 @@ class TextUnit:
     #: Substrings of ``text`` that must come back unchanged (inline code, link
     #: addresses).  The app hides them from the model and puts them back.
     protected: list[str] = field(default_factory=list)
+    #: ``text`` with the stretches whose formatting differs from the rest of the
+    #: unit wrapped in paired marks, ``<g1>…</g1>``, ``<g2>…</g2>`` (bold, italic,
+    #: a link …); empty when the unit has one look.  Removing the marks must give
+    #: ``text`` exactly, otherwise the app ignores it.  The model places the marks
+    #: in its translation and ``write`` gets it back as
+    #: ``TranslatedUnit.marked_translation``.  Same marks as the app's Word pages.
+    marked: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +108,7 @@ class TextUnit:
             "kind": self.kind,
             "locked": bool(self.locked),
             "protected": list(self.protected),
+            "marked": self.marked,
         }
 
     @classmethod
@@ -113,6 +121,7 @@ class TextUnit:
             kind=_text(data.get("kind")) or "paragraph",
             locked=bool(data.get("locked", False)),
             protected=_texts(data.get("protected")),
+            marked=_text(data.get("marked")),
         )
 
 
@@ -127,6 +136,11 @@ class TranslatedUnit:
     translation: str
     #: One of ``STATUSES``.
     status: str = STATUS_TRANSLATED
+    #: ``translation`` with the marks of ``TextUnit.marked`` in place, every pair
+    #: present exactly once; removing them gives ``translation``.  Empty when the
+    #: unit had no marks or they did not come back whole: write ``translation``
+    #: in the unit's main formatting then.
+    marked_translation: str = ""
 
     @property
     def changed(self) -> bool:
@@ -134,7 +148,13 @@ class TranslatedUnit:
         return self.translation != self.text
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "text": self.text, "translation": self.translation, "status": self.status}
+        return {
+            "id": self.id,
+            "text": self.text,
+            "translation": self.translation,
+            "status": self.status,
+            "marked_translation": self.marked_translation,
+        }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> TranslatedUnit:
@@ -146,7 +166,28 @@ class TranslatedUnit:
             text=text,
             translation=text if translation is None else _text(translation),
             status=_text(data.get("status")) or STATUS_TRANSLATED,
+            marked_translation=_text(data.get("marked_translation")),
         )
+
+
+@dataclass
+class ReviewItem:
+    """One place ``write`` wants a person to look at, listed in the task's review list."""
+
+    #: Why, in a sentence a user understands (「竖排文本框中放入了西文」).
+    reason: str
+    #: The ``TextUnit.id`` it concerns; its source text is shown next to the reason.
+    id: str = ""
+    #: Where, for a person (「第 3 页 · 标题」); the unit's ``context`` when empty.
+    context: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"reason": self.reason, "id": self.id, "context": self.context}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ReviewItem:
+        data = _mapping(data, "ReviewItem")
+        return cls(reason=_text(data.get("reason")), id=_text(data.get("id")), context=_text(data.get("context")))
 
 
 @dataclass
@@ -155,15 +196,31 @@ class OutputFile:
 
     path: str
     #: Units the adapter itself marked for review while writing (usually 0).
+    #: With ``review_items`` the larger of the two counts.
     review_count: int = 0
+    #: What to review and why, one entry per place (``ReviewItem`` or a dict
+    #: with the same keys).  An entry without a reason is dropped.
+    review_items: list[ReviewItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": str(self.path), "review_count": int(self.review_count)}
+        return {
+            "path": str(self.path),
+            "review_count": int(self.review_count),
+            "review_items": [
+                (item if isinstance(item, ReviewItem) else ReviewItem.from_dict(item)).to_dict()
+                for item in self.review_items
+            ],
+        }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> OutputFile:
         data = _mapping(data, "OutputFile")
-        return cls(path=_text(data.get("path")), review_count=int(data.get("review_count") or 0))
+        items = [ReviewItem.from_dict(item) for item in data.get("review_items") or []]
+        return cls(
+            path=_text(data.get("path")),
+            review_count=int(data.get("review_count") or 0),
+            review_items=[item for item in items if item.reason.strip()],
+        )
 
 
 @dataclass

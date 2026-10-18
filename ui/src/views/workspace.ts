@@ -64,7 +64,7 @@ import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 import { createTaskControlFoot, createTaskListPanel, createTaskLogLines, createTaskResultCard, createTaskRunBox, type TaskPipeStep } from "../task-panels";
 import { createTaskFeedbackButton } from "../task-feedback";
-import { normalizeUserPath } from "../path-input";
+import { normalizeUserPath, showPathWithMiddleEllipsis } from "../path-input";
 
 import {
   buildPdfRecoveryCard,
@@ -123,6 +123,9 @@ type FileItem = JsonObject & {
   shape_text_count?: number | null;
   comment_count?: number | null;
   anchor_frozen_count?: number;
+  /** 运行时注册的类型：适配器 scan 数出的单元数，和给用户看的整句提示（「3 张图片中的文字未翻译」）。 */
+  unit_count?: number | null;
+  warnings?: string[];
 };
 
 type ScanSkippedItem = { path?: string; relative_path?: string; name?: string; reason?: string };
@@ -169,6 +172,33 @@ interface PreviousOutput {
 }
 
 type TogglePathKind = "none" | "flat" | "output";
+
+/** 运行时注册的类型在「高级」里的多选一（描述符 options 里 kind 为 "choice" 的项）。 */
+interface ChoiceDef {
+  key: string;
+  label: string;
+  hint: string;
+  default: string;
+  choices: Array<{ value: string; label: string }>;
+}
+
+/** 运行时注册的类型在「高级」里让人输入的数字（kind 为 "number"），有单位时旁边带单位下拉。 */
+interface NumberDef {
+  key: string;
+  label: string;
+  hint: string;
+  default: number;
+  min: number;
+  max: number | null;
+  /** 为空时不带单位，值按数字发出；否则按「数字连单位」的文字发出，如 "2pt"。 */
+  units: Array<{ value: string; label: string }>;
+  unit: string;
+}
+
+interface NumberValue {
+  value: number;
+  unit: string;
+}
 
 interface ToggleDef {
   key: string;
@@ -317,6 +347,87 @@ function surfaceToggles(surface: Surface): ToggleDef[] {
     }));
 }
 
+/** 运行设置里的多选一，只有运行时注册的类型有；和开关一样不落盘，值随开始任务的请求发出。 */
+function surfaceChoices(surface: Surface): ChoiceDef[] {
+  if (!isExtSurface(surface)) return [];
+  return (surfaceDescriptor(surface)?.options ?? [])
+    .filter((option) => option.kind === "choice" && (option.choices ?? []).length > 0)
+    .map((option) => {
+      const choices = (option.choices ?? []).map((choice) => ({ value: choice.value, label: localizedText(choice.label, choice.value) }));
+      const fallback = choices[0].value;
+      return {
+        key: option.key,
+        label: localizedText(option.label, option.key),
+        hint: localizedText(option.help),
+        default: choices.some((choice) => choice.value === option.default) ? String(option.default) : fallback,
+        choices,
+      };
+    });
+}
+
+/** 运行设置里让人输入的数字，同样只有运行时注册的类型有、不落盘，值随开始任务的请求发出。 */
+function surfaceNumbers(surface: Surface): NumberDef[] {
+  if (!isExtSurface(surface)) return [];
+  return (surfaceDescriptor(surface)?.options ?? [])
+    .filter((option) => option.kind === "number")
+    .map((option) => {
+      const units = (option.units ?? []).map((unit) => ({ value: unit.value, label: localizedText(unit.label, unit.value) }));
+      return {
+        key: option.key,
+        label: localizedText(option.label, option.key),
+        hint: localizedText(option.help),
+        default: typeof option.default === "number" ? option.default : 0,
+        min: typeof option.min === "number" ? option.min : 0,
+        max: typeof option.max === "number" ? option.max : null,
+        units,
+        unit: units.some((unit) => unit.value === option.unit) ? String(option.unit) : units[0]?.value ?? "",
+      };
+    });
+}
+
+/** 运行时注册的类型里从属于别的选项的（描述符 show_when）：所依的选项现在的值都在列出的值里、
+ *  它们自己也显示着时才显示。内置页面没有描述符选项，一律显示。 */
+function extOptionShown(surface: Surface, st: SurfaceState, key: string, seen: Set<string> = new Set()): boolean {
+  if (!isExtSurface(surface) || seen.has(key)) return true;
+  const options = surfaceDescriptor(surface)?.options ?? [];
+  const option = options.find((item) => item.key === key);
+  if (!option?.show_when) return true;
+  seen.add(key);
+  return Object.entries(option.show_when).every(([parentKey, wanted]) => {
+    const parent = options.find((item) => item.key === parentKey);
+    if (!parent) return true;
+    const current = parent.kind === "toggle"
+      ? st.toggles.get(parentKey) ?? Boolean(parent.default)
+      : st.choices.get(parentKey) ?? String(parent.default);
+    return wanted.includes(current) && extOptionShown(surface, st, parentKey, seen);
+  });
+}
+
+/** 从属的选项挪到所依的选项正下方（同一个上级的按清单顺序往下排），加 opt-sub 缩进显示。 */
+function nestDependentOptions(surface: Surface, rows: Map<string, HTMLElement>): void {
+  if (!isExtSurface(surface)) return;
+  const lastUnder = new Map<string, HTMLElement>();
+  for (const option of surfaceDescriptor(surface)?.options ?? []) {
+    const parentKey = Object.keys(option.show_when ?? {})[0];
+    const row = rows.get(option.key);
+    const anchor = parentKey ? lastUnder.get(parentKey) ?? rows.get(parentKey) : undefined;
+    if (!row || !anchor) continue;
+    row.classList.add("opt-sub");
+    anchor.after(row);
+    lastUnder.set(parentKey, row);
+  }
+}
+
+/** 数字显示和发出时最多保留三位小数，不带多余的 0（2、1.5）。 */
+function formatOptionNumber(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
+}
+
+function numberOptionValue(def: NumberDef, current: NumberValue | undefined): number | string {
+  const value = current?.value ?? def.default;
+  return def.units.length ? `${formatOptionNumber(value)}${current?.unit ?? def.unit}` : value;
+}
+
 // ---------------------------------------------------------------------------
 // 每个 surface 的本地状态（模块级，跨 mount/unmount 存活，与 tasks.ts 的后台徽标循环
 // 各自独立——见文件尾「架构偏离说明」）。
@@ -386,6 +497,10 @@ interface SurfaceState {
   scanSummary: JsonObject;
   selected: Set<string>;
   toggles: Map<string, boolean>;
+  /** 运行时注册的类型的多选一（见 surfaceChoices），键是选项的 key。 */
+  choices: Map<string, string>;
+  /** 运行时注册的类型让人输入的数字（见 surfaceNumbers），键是选项的 key。 */
+  numbers: Map<string, NumberValue>;
   targetLang: string;
   sourceLang: string;
   domainPreset: string;
@@ -412,8 +527,11 @@ interface SurfaceState {
   /** 本机是否装了 LibreOffice（扫描时探测一次）。只用来切换兼容转换弹窗的文案——
    *  装了之后兼容转换也能保留公式/样式，不再是「必然变纯数值」。 */
   libreofficeAvailable: boolean;
-  /** 右栏「高级」折叠块的开合（默认收起）。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。 */
+  /** 右栏「高级」折叠块的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚展开就被收回去。
+   *  每次进入这一页时按 enterAdvancedFold 重新定：第一次进入展开，之后收起。 */
   advancedOpen: boolean;
+  /** 本次启动里用户亲手开合过「高级」：之后进出这一页都照用户留下的样子，不再按默认收起。 */
+  advancedTouched: boolean;
   /** 进行中状态区里「运行日志」的开合（默认展开），同样要跨重绘记住。 */
   logOpen: boolean;
   /** 本次扫描检测到的历史产物；没有检测结果时为 null。每次扫描整体重置。 */
@@ -425,6 +543,9 @@ interface SurfaceState {
   resumeDetectedLang: string;
   /** 提示条上的「×」：本次扫描内不再出现这条提示（重新弹窗也不恢复）。 */
   resumeNoticeDismissed: boolean;
+  /** 在后台读取（拖入混合文件夹时分到这一页、人不在这一页）时检测到上次的结果：
+   *  续译弹窗等人进到这一页再弹，不在别的页面上突然冒出来。 */
+  resumePromptPending: boolean;
   /** 进入续译前「仅补译未翻译内容」开关的原值，「改为全部重译」时还原回去。 */
   resumeToggleRestore: boolean | null;
   renderer: (() => void) | null;
@@ -456,6 +577,14 @@ function freshToggles(surface: Surface): Map<string, boolean> {
   return map;
 }
 
+function freshChoices(surface: Surface): Map<string, string> {
+  return new Map(surfaceChoices(surface).map((choice) => [choice.key, choice.default]));
+}
+
+function freshNumbers(surface: Surface): Map<string, NumberValue> {
+  return new Map(surfaceNumbers(surface).map((number) => [number.key, { value: number.default, unit: number.unit }]));
+}
+
 function freshState(surface: Surface): SurfaceState {
   return {
     sourcePath: "",
@@ -465,6 +594,8 @@ function freshState(surface: Surface): SurfaceState {
     scanSummary: {},
     selected: new Set(),
     toggles: freshToggles(surface),
+    choices: freshChoices(surface),
+    numbers: freshNumbers(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: NO_EXTRA_PROMPT,
@@ -481,11 +612,13 @@ function freshState(surface: Surface): SurfaceState {
     allowDocFallback: false,
     libreofficeAvailable: false,
     advancedOpen: false,
+    advancedTouched: false,
     logOpen: true,
     resumeInfo: null,
     resumeDecision: null,
     resumeDetectedLang: "",
     resumeNoticeDismissed: false,
+    resumePromptPending: false,
     resumeToggleRestore: null,
     renderer: null,
     cadCapability: null,
@@ -672,11 +805,15 @@ async function ensureBootstrap(): Promise<void> {
   if (!bootstrapPromise) {
     const attempt = (async () => {
       const c = await getClient();
-      const [settingsPayload, languagesPayload] = await Promise.all([
+      const [settingsPayload, languagesPayload, defaultsPayload] = await Promise.all([
         c.request<JsonObject>("/api/settings"),
         c.request<{ source_options: LanguageOption[]; target_options: LanguageOption[] }>("/api/languages"),
+        // 取不到只是右栏少一行「采用应用默认值 / 上次使用的设置」，不拖垮整页。
+        c.request<{ app: JsonObject; extension: JsonObject }>("/api/settings/defaults").catch(() => null),
       ]);
       settings = settingsPayload;
+      settingsDefaults = defaultsPayload;
+      loadAdvancedSeen();
       languageOptions = { source: languagesPayload.source_options ?? [], target: languagesPayload.target_options ?? [] };
       applySettingsToStates();
     })();
@@ -691,6 +828,54 @@ async function ensureBootstrap(): Promise<void> {
     bootstrapPromise = attempt;
   }
   await bootstrapPromise;
+}
+
+// 右栏「高级」：每个翻译页第一次进入时展开，让人一眼看到有哪些可调的；之后每次进入默认收起。
+// 「进过哪几页」只记在本机 localStorage（同「动效」偏好），不写后端设置。
+// 升级上来的老用户：第一次跑这一版时，设置里记着上次来源目录的内置页算已经进过，
+// 不会一升级就几页全部展开；从没用过的页（包括新加的类型）照样第一次展开。
+const ADVANCED_SEEN_STORAGE_KEY = "translator.advancedSeen";
+let advancedSeen: Set<string> | null = null;
+
+/** 读出「进过哪几页」。必须在拿到设置之后、任何来源目录写盘之前调第一次（见 ensureBootstrap）。 */
+function loadAdvancedSeen(): Set<string> {
+  if (advancedSeen) return advancedSeen;
+  let stored: unknown = null;
+  try {
+    const raw = window.localStorage.getItem(ADVANCED_SEEN_STORAGE_KEY);
+    stored = raw === null ? null : JSON.parse(raw);
+  } catch {
+    stored = null;
+  }
+  if (Array.isArray(stored)) {
+    advancedSeen = new Set(stored.filter((item): item is string => typeof item === "string"));
+  } else {
+    const used = (["excel", "word", "pdf", "cad"] as BuiltinSurface[])
+      .filter((surface) => normalizeUserPath(text(settings[`last_${surface}_source_folder`])));
+    advancedSeen = new Set(used);
+    saveAdvancedSeen(advancedSeen);
+  }
+  return advancedSeen;
+}
+
+function saveAdvancedSeen(seen: Set<string>): void {
+  try {
+    window.localStorage.setItem(ADVANCED_SEEN_STORAGE_KEY, JSON.stringify([...seen]));
+  } catch {
+    // 存不下（隐私模式、配额满）只影响下次启动会不会再展开一次，不打断页面。
+  }
+}
+
+/** 进入一页时定「高级」开不开：第一次进展开；之后收起，除非本次启动里用户自己开合过。 */
+function enterAdvancedFold(surface: Surface, st: SurfaceState): void {
+  const seen = loadAdvancedSeen();
+  if (!seen.has(surface)) {
+    seen.add(surface);
+    saveAdvancedSeen(seen);
+    st.advancedOpen = true;
+  } else if (!st.advancedTouched) {
+    st.advancedOpen = false;
+  }
 }
 
 /** 丢掉已缓存的引导结果，下一次 ensureBootstrap 重新拉设置与语言目录。 */
@@ -768,12 +953,14 @@ function extSettingsPatch(surface: ExtSurface, name: string, value: unknown): Js
   return { extensions: { [surface.slice("ext:".length)]: { [name]: value } } };
 }
 
-/** 没存过时与后端 ExtensionSettings 的默认值一致：译成英文、自动识别源语言、补充要求「无」。 */
+/** 没存过时与后端 ExtensionSettings 的默认值一致：译成英文、自动识别源语言、补充要求「无」、写在来源文件夹里。 */
 function applyExtSettings(surface: ExtSurface, st: SurfaceState): void {
   const saved = extSettingsRecord(surface);
   st.targetLang = text(saved.target_lang, "en");
   st.sourceLang = text(saved.source_lang, "auto");
   st.domainPreset = text(saved.domain_preset, NO_EXTRA_PROMPT);
+  st.useCustomOutputDir = Boolean(saved.use_custom_output_dir);
+  st.customOutputDir = text(saved.custom_output_dir);
 }
 
 /** 运行时注册的类型的目标语言、源语言和补充要求也能在「设置 · 翻译参数」里该类型的页签改，
@@ -806,6 +993,8 @@ function readPath(obj: JsonObject, path: string): unknown {
 
 /** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output、cad_output 没有。 */
 function outputRecord(surface: Surface): JsonObject {
+  // 运行时注册的类型的输出位置与其他设置一起放在 settings.extensions[<id>]。
+  if (isExtSurface(surface)) return extSettingsRecord(surface);
   if (surface === "pdf" || surface === "cad") return record(settings[`${surface}_output`]);
   const isolated = record(settings[`${surface}_output`]);
   return Object.keys(isolated).length ? isolated : record(settings.output);
@@ -816,6 +1005,11 @@ function outputSettingPathPrefix(surface: Surface): string {
   return hasOwn(settings, `${surface}_output`) ? `${surface}_output` : "output";
 }
 
+/** 写输出位置的一项（use_custom_output_dir / custom_output_dir）的补丁。 */
+function outputSettingPatch(surface: Surface, name: string, value: unknown): JsonObject {
+  return isExtSurface(surface) ? extSettingsPatch(surface, name, value) : nestedPatch(`${outputSettingPathPrefix(surface)}.${name}`, value);
+}
+
 function readOutputPath(surface: Surface, key: string): unknown {
   return outputRecord(surface)[key];
 }
@@ -823,6 +1017,51 @@ function readOutputPath(surface: Surface, key: string): unknown {
 async function persistSettings(patch: JsonObject): Promise<void> {
   const c = await getClient();
   settings = await c.request<JsonObject>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+  // 配方句下面那行按存好的设置说「应用默认值」还是「上次使用的设置」，存完重算一次。
+  for (const [surface, st] of states) refreshRecipe(surface, st);
+}
+
+/** 出厂默认值（GET /api/settings/defaults）：app 是整份设置，extension 是运行时注册类型的那一份。 */
+let settingsDefaults: { app: JsonObject; extension: JsonObject } | null = null;
+
+/** 内置页右栏里能改的设置，按 `<页面>_<后缀>` 存；PDF 页的设置在 settings.pdf 一处。 */
+const PAGE_SETTING_SUFFIXES = ["source_lang", "target_lang", "domain_preset", "smart_context", "output", "review", "conversion"];
+/** 运行时注册类型的设置里，右栏能改的几项。 */
+const EXT_PAGE_SETTING_KEYS = ["source_lang", "target_lang", "domain_preset", "smart_context", "options", "use_custom_output_dir", "custom_output_dir"];
+/** settings.pdf 里不在 PDF 页右栏、而在「设置 · 翻译参数」里改的几项（重试、并发）。 */
+const PDF_NON_PAGE_KEY = /retry|concurrency/;
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as JsonObject;
+  const right = b as JsonObject;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+
+function withoutPdfNonPageKeys(value: unknown): JsonObject {
+  return Object.fromEntries(Object.entries(record(value)).filter(([key]) => !PDF_NON_PAGE_KEY.test(key)));
+}
+
+/** 这一页右栏的设置是否都还是出厂默认值；取不到默认值时为 null。 */
+function pageUsesDefaults(surface: Surface): boolean | null {
+  if (!settingsDefaults) return null;
+  if (isExtSurface(surface)) {
+    // 没存过这一类型时 settings.extensions 里没有它，各项都按默认值算。
+    const saved = extSettingsRecord(surface);
+    const base = record(settingsDefaults.extension);
+    return EXT_PAGE_SETTING_KEYS.every((key) => !hasOwn(saved, key) || sameJson(saved[key], base[key]));
+  }
+  const base = record(settingsDefaults.app);
+  if (surface === "pdf") {
+    return sameJson(withoutPdfNonPageKeys(settings.pdf), withoutPdfNonPageKeys(base.pdf))
+      && sameJson(settings.pdf_output, base.pdf_output);
+  }
+  return PAGE_SETTING_SUFFIXES
+    .map((suffix) => `${surface}_${suffix}`)
+    .filter((key) => hasOwn(base, key))
+    .every((key) => sameJson(settings[key], base[key]));
 }
 
 /** 开关/领域/输出目录这几处设置都是「先改界面再落盘」，落盘发射后不管：PUT 失败时
@@ -866,6 +1105,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   ensureBootstrap()
     .then(() => {
       if (!isCurrent()) return;
+      enterAdvancedFold(surface, st);
       return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
     })
     .then(() => {
@@ -884,6 +1124,11 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       // 用户可能刚在插件页连好转换工具再切回来，所以每次挂载都重新查一次。
       if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
+      // 后台读取时攒下的续译弹窗：人到了这一页才弹（读取还没完的话，读完时 runScan 自己弹）。
+      if (st.resumePromptPending && !scanBusy.has(surface)) {
+        st.resumePromptPending = false;
+        if (st.resumeInfo) void showResumeModal(surface, st);
+      }
     })
     .catch((error) => {
       if (!isCurrent()) return;
@@ -1127,6 +1372,15 @@ function restoreKeptFocus(container: HTMLElement, kept: { name: string; start: n
 export function rerender(surface: Surface): void {
   const st = stateOf(surface);
   st.renderer?.();
+  for (const listener of changeListeners) listener(surface);
+}
+
+/** 页面之外也要跟着变的地方（「翻译」页的本批文件卡片）在这里登记；返回取消登记的函数。 */
+const changeListeners = new Set<(surface: Surface) => void>();
+
+export function onWorkspaceChange(listener: (surface: Surface) => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
 }
 
 function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void {
@@ -1317,6 +1571,9 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     note.textContent = t("此历史任务未保留来源路径。结果仍可查看；如需重新翻译，请先选择来源并读取。");
     col.append(note);
   }
+  // 拖入的是混合文件夹时，读取中、读取后都在最上面说同一批的其他类型去了哪。
+  const dispatchNote = buildDispatchNote(surface);
+  if (dispatchNote) col.append(dispatchNote);
   if (scanBusy.has(surface)) {
     col.append(...buildScanSkeleton(surface, st));
     return col;
@@ -1436,6 +1693,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     onClick: () => openSourceMenu(pickBtn, surface, st),
   });
   bar.append(input, pickBtn, rescanBtn);
+  // 路径太长时省略中间，点进去编辑时是完整路径。
+  showPathWithMiddleEllipsis(input, () => st.sourcePath);
   return bar;
 }
 
@@ -1562,9 +1821,10 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
 
 /**
  * 从别处交过来的路径（拖入、「翻译」入口页分配）：等同于填进路径栏后回车。这一页正有任务
- * 在跑时不替换来源，提示一句并返回 false。调用方先 navigate 到这一页再调。
+ * 在跑时不替换来源，返回 false（前台时提示一句）。前台调用方先 navigate 到这一页再调；
+ * background 为真时人不在这一页：照样读取，但不弹「已扫描到」的提示，续译弹窗等人进来再弹。
  */
-export async function openSourcePaths(surface: Surface, paths: string[]): Promise<boolean> {
+export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean } = {}): Promise<boolean> {
   const list = paths.filter((item) => item.trim().length > 0);
   if (!list.length) return false;
   const st = stateOf(surface);
@@ -1576,23 +1836,224 @@ export async function openSourcePaths(surface: Surface, paths: string[]): Promis
     // 初始化失败时页面自己会报错；这里照常往下走，读取会再报一次具体原因。
   }
   if (st.task && !st.task.task.terminal) {
-    showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
+    if (!options.background) showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
     return false;
   }
-  await applySourcePaths(surface, list);
+  await applySourcePaths(surface, list, options.background);
   return true;
 }
 
-async function applySourcePaths(surface: Surface, pickedList: string[]): Promise<void> {
+// ---------------------------------------------------------------------------
+// 拖入混合文件夹：各类型分到各自页面后，每一页上都说一句同一批还有哪几类，点一下切过去。
+// ---------------------------------------------------------------------------
+
+interface DispatchBatch {
+  /** 分到的每一页 → 这一页拿到的文件数。 */
+  counts: Map<Surface, number>;
+  /** 分配时交给每一页的来源；这一页之后换了来源，这一页就不再算在这一批里。 */
+  sources: Map<Surface, string>;
+  /** 拖入的那个文件夹（拖入多个时取共同的上级），卡片标题上写它的名字。 */
+  root: string;
+  /** 「全部开始」之后：这一批共用的输出文件夹和各页的任务。 */
+  outputDir: string;
+  taskIds: Map<Surface, string>;
+}
+
+let dispatchBatch: DispatchBatch | null = null;
+
+/** drop-dispatch 分完之后登记这一批（只有一类时不登记）；之前那一批的提示一并清掉。 */
+export function setDispatchBatch(batch: { surface: Surface; count: number; paths: string[] }[]): void {
+  const previous = dispatchBatch;
+  dispatchBatch = batch.length > 1
+    ? {
+        counts: new Map(batch.map((item) => [item.surface, item.count])),
+        sources: new Map(batch.map((item) => [item.surface, normalizeUserPath(sourcePathFor(item.paths))])),
+        root: normalizeUserPath(sourcePathFor([...new Set(batch.flatMap((item) => item.paths))])),
+        outputDir: "",
+        taskIds: new Map(),
+      }
+    : null;
+  for (const surface of new Set([...(previous?.counts.keys() ?? []), ...(dispatchBatch?.counts.keys() ?? [])])) rerender(surface);
+}
+
+/** 这一页没接住（正在翻译）：从这一批里拿掉，别的页面不再说它「已放到对应页面」。 */
+export function dropFromDispatchBatch(surface: Surface): void {
+  if (!dispatchBatch) return;
+  dispatchBatch.counts.delete(surface);
+  dispatchBatch.sources.delete(surface);
+  const rest = [...dispatchBatch.counts.keys()];
+  if (rest.length < 2) dispatchBatch = null;
+  for (const other of rest) rerender(other);
+}
+
+/** 这一批里还算数的页面：来源没被换掉的。 */
+function dispatchBatchMembers(): Surface[] {
+  if (!dispatchBatch) return [];
+  const batch = dispatchBatch;
+  return [...batch.counts.keys()].filter((surface) => normalizeUserPath(stateOf(surface).sourcePath) === batch.sources.get(surface));
+}
+
+/** 卡片上的「×」和页面提示条上的「×」：这一批不再提示。 */
+export function clearDispatchBatch(): void {
+  const shown = dispatchBatch ? [...dispatchBatch.counts.keys()] : [];
+  dispatchBatch = null;
+  for (const member of shown) rerender(member);
+}
+
+export interface BatchRow {
+  surface: Surface;
+  /** 这一页读到的文件数（分配时数的）。 */
+  found: number;
+  /** 「全部开始」会交出去的文件数；0 表示这一类这次不参与。 */
+  count: number;
+  phase: "reading" | "ready" | "skip" | "running" | "finished";
+  /** 这一行右侧那颗状态的字和颜色。 */
+  label: string;
+  tone: "ok" | "warn" | "tint" | "mute" | "dgr";
+  /** 补一句为什么（不参与的原因、要先处理的事）；没有时为空。 */
+  note: string;
+  /** 这句话是要人处理的事（橙色），不只是说明。 */
+  noteWarn: boolean;
+  percent: number;
+}
+
+export interface BatchView {
+  root: string;
+  outputDir: string;
+  rows: BatchRow[];
+}
+
+/** 「翻译」页本批文件卡片要画的东西；没有混合拖入的一批时为 null。 */
+export function dispatchBatchView(): BatchView | null {
+  if (!dispatchBatch) return null;
+  const batch = dispatchBatch;
+  // 已经开始的那几页即使后来换了来源，卡片也照样报它们的结果；没开始的按页面现状算。
+  const members = [...batch.counts.keys()].filter((surface) => batch.taskIds.has(surface) || dispatchBatchMembers().includes(surface));
+  if (!members.length) return null;
+  return { root: batch.root, outputDir: batch.outputDir, rows: members.map((surface) => batchRow(surface, batch)) };
+}
+
+/** 这一页这次会交出去的文件：勾选的那些；CAD 没连上转换工具时 DWG 开不了工，先拿掉。 */
+function batchSelection(surface: Surface, st: SurfaceState): FileItem[] {
+  return st.files.filter((f) => st.selected.has(f.path) && !isRisky(surface, f));
+}
+
+function batchRow(surface: Surface, batch: DispatchBatch): BatchRow {
+  const st = stateOf(surface);
+  const found = batch.counts.get(surface) ?? 0;
+  const row: BatchRow = { surface, found, count: 0, phase: "skip", label: "", tone: "mute", note: "", noteWarn: false, percent: 0 };
+  const taskId = batch.taskIds.get(surface);
+  const local = st.task;
+  if (taskId) {
+    if (local && local.task.task_id === taskId && !local.task.terminal) {
+      const meta = runningStatusMeta(local.task.state);
+      return { ...row, phase: "running", label: `${meta.label} ${Math.round(local.percent)}%`, tone: "tint", percent: local.percent };
+    }
+    if (local && local.task.task_id === taskId && st.bannerInfo) {
+      const info = st.bannerInfo;
+      return { ...row, phase: "finished", label: info.statusLabel, tone: info.tone === "fail" ? "dgr" : info.tone === "warn" ? "warn" : "ok", percent: 100 };
+    }
+    return { ...row, phase: "finished", label: t("已开始"), tone: "mute" };
+  }
+  if (local && !local.task.terminal) return { ...row, label: t("正在翻译"), tone: "warn", note: t("这一类已有任务在进行，本次不包含。") };
+  if (scanBusy.has(surface)) return { ...row, phase: "reading", label: t("读取中"), tone: "tint" };
+  if (!st.files.length) return { ...row, label: t("未读取到文件"), tone: "mute" };
+  if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
+    return { ...row, label: t("需先设置"), tone: "warn", note: t("源语言与目标语言相同，请到这一页重新选择。"), noteWarn: true };
+  }
+  const selection = batchSelection(surface, st);
+  const blocked = st.files.filter((f) => st.selected.has(f.path) && isRisky(surface, f)).length;
+  if (!selection.length) {
+    if (blocked) return { ...row, label: t("需先设置"), tone: "warn", note: t("{0} 个 DWG 需先连接图纸转换工具。", blocked), noteWarn: true };
+    return { ...row, label: t("未勾选文件"), tone: "mute" };
+  }
+  return {
+    ...row,
+    phase: "ready",
+    count: selection.length,
+    label: t("待开始"),
+    tone: "ok",
+    note: blocked ? t("{0} 个 DWG 需先连接图纸转换工具，本次只翻译 DXF。", blocked) : "",
+    noteWarn: blocked > 0,
+  };
+}
+
+/** 「全部开始」里这一页的请求：和本页「开始翻译」同一份设置（在这一页上选了「接着上次继续」
+ *  也照样带上，上次的结果只用来读，新结果写进这一批的输出文件夹）。输出位置由后端统一定，
+ *  这一页的自选输出位置不起作用。 */
+export function batchStartPayload(surface: Surface): JsonObject {
+  const st = stateOf(surface);
+  const payload = buildPayload(surface, st);
+  payload.selected_paths = batchSelection(surface, st).map((f) => normalizeUserPath(f.path));
+  return payload;
+}
+
+/** 后端建好了这一批的任务：接到各页上，卡片开始报进度。 */
+export function adoptBatchTasks(outputDir: string, tasks: TaskStatus[]): void {
+  if (dispatchBatch) {
+    dispatchBatch.outputDir = outputDir;
+    for (const task of tasks) dispatchBatch.taskIds.set(task.surface as Surface, task.task_id);
+  }
+  for (const task of tasks) adoptStartedTask(task.surface as Surface, task);
+}
+
+export function openOutputFolder(path: string): void {
+  void openTaskLocalFile(path, true);
+}
+
+function buildDispatchNote(surface: Surface): HTMLElement | null {
+  const members = dispatchBatchMembers();
+  if (!members.includes(surface)) return null;
+  const others = members.filter((other) => other !== surface);
+  if (!others.length) return null;
+  const bar = el("div", "resume-dismiss dispatch-note");
+  bar.append(icon("spark", { size: "sm" }));
+  const words = el("span");
+  const [before, after = ""] = t("同一批文件还有 {0}，已在对应页面读取。", "\u0000").split("\u0000");
+  words.append(document.createTextNode(before));
+  others.forEach((other, index) => {
+    if (index) words.append(document.createTextNode(currentLocale() === "zh" ? "、" : ", "));
+    const go = el("button", "resume-link");
+    go.type = "button";
+    go.textContent = fileNounPhrase(other, dispatchBatch?.counts.get(other) ?? 0);
+    go.title = surfacePageTitle(other);
+    go.addEventListener("click", () => navigate(other));
+    words.append(go);
+  });
+  words.append(document.createTextNode(after));
+  const close = el("button", "resume-link mute");
+  close.type = "button";
+  close.textContent = "×";
+  close.setAttribute("aria-label", t("不再提示"));
+  close.addEventListener("click", clearDispatchBatch);
+  // 回「翻译」页的本批文件卡片：在那里一键全部开始。
+  const back = el("button", "resume-link");
+  back.type = "button";
+  back.textContent = t("返回本批文件");
+  back.addEventListener("click", () => navigate("home"));
+  const acts = el("div", "acts");
+  acts.append(back, close);
+  bar.append(words, acts);
+  return bar;
+}
+
+/** 多选时任务的来源记它们共同的上级目录，单选就是它自己（与 applySourcePaths 一致）。 */
+export function sourcePathFor(pickedList: string[]): string {
+  return pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
+}
+
+async function applySourcePaths(surface: Surface, pickedList: string[], background = false): Promise<void> {
   const st = stateOf(surface);
   clearWorkspaceInput(surface);
   // 多选时 sourcePath 记它们共同的上级目录：任务启动要用它重扫，selected_paths 再收窄
   // 回这几个文件；清单和统计仍然只显示选中的这几份（扫描只扫这几个路径）。
   st.sourcePaths = pickedList.length > 1 ? pickedList : [];
-  const displayPath = pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
+  const displayPath = sourcePathFor(pickedList);
   // 先落地到界面（含解锁「扫描」），再去写设置：记住上次目录失败不该把刚选好的路径丢掉。
   st.sourcePath = displayPath;
   rerender(surface);
+  // 这一页换了来源，同一批其他页上的分配提示就不该再提它。
+  if (dispatchBatch?.counts.has(surface)) for (const other of dispatchBatch.counts.keys()) if (other !== surface) rerender(other);
   try {
     await persistLastSourceFolder(surface, displayPath);
   } catch (error) {
@@ -1600,7 +2061,7 @@ async function applySourcePaths(surface: Surface, pickedList: string[]): Promise
   }
   // 选完路径就直接读取，不用用户再点一次——手输/粘贴路径的场景不走这个函数，
   // 不受影响。复用 runScan 本身，扫描失败的提示和点按钮时完全一样。
-  await runScan(surface);
+  await runScan(surface, undefined, background);
 }
 
 interface StatCell {
@@ -1614,6 +2075,8 @@ interface StatCell {
   dim?: boolean;
   /** 数字下面的一行小字（样张 .stat .sub）。 */
   sub?: string;
+  /** 小字下面的蓝色跳转（缺组件时直达安装页）。 */
+  link?: { label: string; onClick: () => void };
 }
 
 /** 读取完成后统计条错落浮现一次；之后勾选文件、改开关引起的重绘不再重播。 */
@@ -1637,6 +2100,13 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
       const sub = el("small");
       sub.textContent = stat.sub;
       cell.append(sub);
+    }
+    if (stat.link) {
+      const go = el("button", "st-link");
+      go.type = "button";
+      go.textContent = stat.link.label;
+      go.addEventListener("click", stat.link.onClick);
+      cell.append(go);
     }
     sum.append(cell);
   }
@@ -1673,8 +2143,10 @@ function buildReadyNote(surface: Surface, st: SurfaceState): HTMLElement | null 
   if (surface === "pdf") {
     count = files.reduce((sum, f) => sum + num(f.page_count), 0);
     template = t("读取完成，{0} 页待翻译。", "\u0000");
-  } else if (surface === "excel" || surface === "word" || surface === "cad") {
-    if (surface === "cad") {
+  } else if (surface === "excel" || surface === "word" || surface === "cad" || isExtSurface(surface)) {
+    if (isExtSurface(surface)) {
+      count = files.reduce((sum, f) => sum + num(f.unit_count), 0);
+    } else if (surface === "cad") {
       // DWG 开始后才统计文字；一张都没数出来时不报数。
       const counted = files.filter((f) => !cadCountsPending(f) && !isRisky(surface, f));
       if (!counted.length) return null;
@@ -1683,7 +2155,7 @@ function buildReadyNote(surface: Surface, st: SurfaceState): HTMLElement | null 
       count = files.reduce((sum, f) => sum + num(surface === "excel" ? f.text_cell_count : f.paragraph_count), 0);
     }
     // 「自动识别场景」关着时不说开始后会识别场景；源语言选定了就不说识别原文语言。
-    const smart = settings[`${surface}_smart_context`] !== false;
+    const smart = (isExtSurface(surface) ? extSettingsRecord(surface).smart_context : settings[`${surface}_smart_context`]) !== false;
     template = !smart
       ? t("读取完成，{0} 处待翻译；记忆库将优先复用已有译法。", "\u0000")
       : st.sourceLang === "auto"
@@ -1735,13 +2207,18 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   }
   if (surface === "cad") {
     // 合计只加扫描时数出来的（DXF）；DWG 开始后才统计，另起一行小字说明还有几张没算进来。
-    // 没连转换工具的 DWG 归「需转换工具」那一格，不算进「开始后统计」。
+    // 没连转换工具的 DWG 开不了工，不算进「开始后统计」；DWG 总数在「需转换的 DWG」那一格。
     const counted = files.filter((f) => !cadCountsPending(f));
     const pending = files.filter((f) => cadCountsPending(f) && !isRisky(surface, f)).length;
     const texts = counted.reduce((sum, f) => sum + num(f.text_count), 0);
     const candidates = counted.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
-    const blocked = files.filter((f) => isRisky(surface, f)).length;
     const noneCounted = counted.length === 0;
+    // DWG 每次翻译都要经转换工具读写，装好了也一样要转；这一格数的是 DWG 本身，
+    // 小字说转换工具的状态。没连上时给一个直达「扩展 → 组件」的蓝色链接。
+    const dwg = files.filter((f) => f.format === "dwg").length;
+    const converterKnown = Boolean(st.cadCapability);
+    const converterReady = cadConverterReady(st);
+    const missing = dwg > 0 && converterKnown && !converterReady;
     const pendingNote = pending
       ? noneCounted
         ? t("{0} 张 DWG 开始后统计", pending)
@@ -1756,14 +2233,23 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
         dim: noneCounted,
         sub: texts > candidates ? t("不含纯数字、编号和已是目标语言的文字") : undefined,
       },
-      { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
+      {
+        label: t("需转换的 DWG"),
+        value: String(dwg),
+        warn: missing,
+        dim: dwg === 0,
+        sub: dwg === 0 || !converterKnown ? undefined : converterReady ? t("转换工具已就绪") : t("尚未连接转换工具"),
+        link: missing ? { label: t("安装 ↗ 转换工具"), onClick: () => navigate("plugins", { focus: "oda" }) } : undefined,
+      },
     ];
   }
   if (isExtSurface(surface)) {
-    // 运行时注册的类型只有扫描接口共有的字段：文件数、大小、跳过项。
+    // 运行时注册的类型只有扫描接口共有的字段：文件数、适配器数出的单元数、大小、跳过项。
     const sizeKb = files.reduce((sum, f) => sum + num(f.size_kb), 0);
+    const units = files.reduce((sum, f) => sum + num(f.unit_count), 0);
     return [
       { label: t("文件"), value: String(files.length) },
+      { label: t("待翻译"), value: fmtNum(units), dim: units === 0 },
       { label: t("总大小"), value: formatSizeKb(sizeKb) },
       { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
     ];
@@ -2005,6 +2491,18 @@ function showOutsideCellModal(st: SurfaceState): void {
     body: lines.length ? lines : [t("没有检测到图片或文本框。")],
     actions: [{ label: t("关闭") }],
   });
+}
+
+/** 运行时注册的类型：适配器 scan 给的提示（整句，如「3 张图片中的文字未翻译」），和 Excel 的
+ *  「N 张图片」同一种标记；按整句翻译成界面语言，认不出的原样显示。没有提示时是一道短横。 */
+function buildScanWarningChips(file: FileItem): HTMLElement[] {
+  const warnings = Array.isArray(file.warnings) ? file.warnings.filter((item) => typeof item === "string" && item.trim()) : [];
+  if (!warnings.length) {
+    const dash = el("span", "dash");
+    dash.textContent = "—";
+    return [dash];
+  }
+  return warnings.map((warning) => createChip({ label: tx(warning), className: "oob" }));
 }
 
 /** 接入点 3 · 任务清单每行的「单元格外内容」标记。 */
@@ -2307,7 +2805,7 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
   } else if (surface === "cad") {
     row.append(th(t("文件")), th(t("格式")), th(t("文字实体"), true), th(t("待翻译"), true), th(t("状态")));
   } else if (isExtSurface(surface)) {
-    row.append(th(t("文件")), th(t("格式")), th(t("大小")), th(t("状态")));
+    row.append(th(t("文件")), th(t("格式")), th(t("待翻译"), true), th(t("提示")), th(t("状态")));
   } else {
     row.append(th(t("文件")), th(t("类型")), th(t("大小")), th(t("页数 / ​尺寸")), th(t("状态")));
   }
@@ -2371,9 +2869,13 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   } else if (isExtSurface(surface)) {
     const fmtCell = el("td");
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), false));
-    const sizeCell = el("td");
-    sizeCell.textContent = st.historyOnly ? "—" : formatSizeKb(file.size_kb);
-    row.append(fmtCell, sizeCell);
+    const unitCell = el("td", "num");
+    unitCell.textContent = st.historyOnly || typeof file.unit_count !== "number" ? "—" : fmtNum(file.unit_count);
+    const noteCell = el("td");
+    const notes = el("div", "scan-notes");
+    for (const chip of buildScanWarningChips(file)) notes.append(chip);
+    noteCell.append(notes);
+    row.append(fmtCell, unitCell, noteCell);
   } else {
     const typeCell = el("td");
     typeCell.append(buildFmtBadge((file.format ?? file.source_type ?? "").toUpperCase(), false));
@@ -2760,9 +3262,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
 
   const outputMode = buildOutputModeField(surface, st, active);
   if (outputMode) scroll.append(outputMode);
-  // 运行时注册的类型没有补充要求：在「设置 · 翻译参数」里该类型的页签选，按 settings.extensions
-  // 里存的那一项发。
-  if (surface !== "pdf" && !isExtSurface(surface)) scroll.append(buildDomainField(surface, st, active));
+  // 运行时注册的类型的补充要求存在 settings.extensions[<id>].domain_preset，与「设置 · 翻译参数」里该类型的页签同一项。
+  if (surface !== "pdf") scroll.append(buildDomainField(surface, st, active));
 
   const advanced = buildAdvancedFold(surface, st, active);
   if (advanced) scroll.append(advanced);
@@ -2778,9 +3279,25 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   box.append(icon("spark", { size: "sm" }));
   const body = el("div");
   const lead = el("b");
-  const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
-  lead.textContent = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
+  const recipe = recipeParts(surface, st);
+  lead.textContent = recipe.lead;
   body.append(lead);
+  for (const part of recipe.parts) body.append(document.createTextNode(` · ${part}`));
+  // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
+  const fromDefaults = pageUsesDefaults(surface);
+  if (active || fromDefaults !== null) {
+    const sub = el("span", "sub");
+    sub.textContent = active ? t("任务进行中，设置已锁定") : fromDefaults ? t("本页设置均为应用默认值") : t("本页设置沿用上次的选择");
+    body.append(sub);
+  }
+  box.append(body);
+  return box;
+}
+
+/** 配方句的内容：语言一段加粗，其余几项用「·」接在后面。「翻译」页的本批文件卡片也用这一句。 */
+function recipeParts(surface: Surface, st: SurfaceState): { lead: string; parts: string[] } {
+  const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
+  const lead = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
   const parts: string[] = [];
   if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("自动组合") : t("整页图像翻译"));
   if (surfaceToggles(surface).some((toggle) => toggle.key === "translationOnly")) {
@@ -2789,16 +3306,16 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   if (surface === "cad") {
     parts.push(cadChoice("display_mode", CAD_DISPLAY_MODES, "translation") === "translation" ? t("仅译文") : t("双语对照"));
   }
-  if (surface !== "pdf" && !isExtSurface(surface)) {
+  if (surface !== "pdf") {
     // 「无」单独挂在后面看不出指的是什么，写成「无补充要求」。
     parts.push(st.domainPreset && st.domainPreset !== NO_EXTRA_PROMPT ? st.domainPreset : t("无补充要求"));
   }
-  for (const part of parts) body.append(document.createTextNode(` · ${part}`));
-  const sub = el("span", "sub");
-  sub.textContent = active ? t("任务进行中，设置已锁定") : t("默认值已按本机设置与上次任务准备好，可直接开始");
-  body.append(sub);
-  box.append(body);
-  return box;
+  return { lead, parts };
+}
+
+export function surfaceRecipeSummary(surface: Surface): string {
+  const recipe = recipeParts(surface, stateOf(surface));
+  return [recipe.lead, ...recipe.parts].join(" · ");
 }
 
 /** 语言改了不必整页重绘（语言选择器自己已经更新了），只把配方句换成新的。 */
@@ -2827,7 +3344,7 @@ function buildOutputModeField(surface: Surface, st: SurfaceState, active: boolea
   return field;
 }
 
-function buildDomainField(surface: Exclude<BuiltinSurface, "pdf">, st: SurfaceState, active: boolean): HTMLElement {
+function buildDomainField(surface: Exclude<Surface, "pdf">, st: SurfaceState, active: boolean): HTMLElement {
   const field = createSelectField({
     label: t("补充要求"),
     // 「无」放在第一项：只发内置规则，不加任何补充要求。
@@ -2838,7 +3355,8 @@ function buildDomainField(surface: Exclude<BuiltinSurface, "pdf">, st: SurfaceSt
       const prev = st.domainPreset;
       st.domainPreset = value;
       rerender(surface);
-      void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, t("补充要求"));
+      const patch = isExtSurface(surface) ? extSettingsPatch(surface, "domain_preset", value) : { [`${surface}_domain_preset`]: value };
+      void persistSettingsOrRevert(surface, patch, () => { st.domainPreset = prev; }, t("补充要求"));
     },
   });
   // 即使当前选的是「无」也保留入口：进入设置后会落到「＋ 新增补充要求」，
@@ -2852,6 +3370,49 @@ function buildDomainField(surface: Exclude<BuiltinSurface, "pdf">, st: SurfaceSt
   }));
   field.root.querySelector("label")?.append(link);
   return field.root;
+}
+
+/** 数字输入框，有单位时右边接一个单位下拉。打的字认不出就还原成原来的值，越界的贴着边界
+ *  夹住（和设置页的 numberField 一样）；逗号当小数点。只改状态，不重画：开始翻译时现读。 */
+function buildNumberField(def: NumberDef, st: SurfaceState, active: boolean): HTMLElement {
+  const current = (): NumberValue => st.numbers.get(def.key) ?? { value: def.default, unit: def.unit };
+  const row = el("div", "num-unit");
+  const input = el("input", "num-unit-value");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.autocomplete = "off";
+  input.value = formatOptionNumber(current().value);
+  input.disabled = active;
+  input.setAttribute("aria-label", def.label);
+  input.addEventListener("change", () => {
+    const typed = input.value.trim().replace(",", ".");
+    const parsed = Number(typed);
+    if (!typed || !Number.isFinite(parsed)) {
+      input.value = formatOptionNumber(current().value);
+      return;
+    }
+    let value = Math.max(def.min, parsed);
+    if (def.max !== null) value = Math.min(def.max, value);
+    value = Math.round(value * 1000) / 1000;
+    input.value = formatOptionNumber(value);
+    st.numbers.set(def.key, { ...current(), value });
+  });
+  row.append(input);
+  if (def.units.length) {
+    const unit = createDropdown({
+      options: def.units,
+      value: current().unit,
+      disabled: active,
+      // className 还会拼成菜单的类名，只能是一个词。
+      className: "unit",
+      onChange: (value) => st.numbers.set(def.key, { ...current(), unit: value }),
+    });
+    unit.input.setAttribute("aria-label", def.label);
+    row.append(unit.root);
+  }
+  const field = createField(def.label, row);
+  if (def.hint) field.querySelector("label")?.append(createHintBadge(def.hint));
+  return field;
 }
 
 /** 「高级」折叠块（默认收起）：其余开关、CAD 的写回与锁定、输出位置。只是收起来，一项都不删。 */
@@ -2868,6 +3429,8 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
   }
 
   const resumeAuto = Boolean(activeResumeDir(st));
+  // 运行时注册的类型的各选项画出来的那一行，从属的选项最后挪到所依的选项下面（nestDependentOptions）。
+  const optionRows = new Map<string, HTMLElement>();
   for (const toggle of surfaceToggles(surface)) {
     // 「仅显示译文」提到上面做成了「输出」分段控件。
     if (toggle.key === "translationOnly") continue;
@@ -2875,6 +3438,7 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     if (surface === "cad" && toggle.key === "cadFitLayout") continue;
     // 原位替换、自动组合有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
     if (toggle.key === "skipOversizedPages" && st.pdfRoute === "auto") continue;
+    if (!extOptionShown(surface, st, toggle.key)) continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
     // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
     // 角标说明，想全译走横幅上的「改为全部重译」。
@@ -2894,11 +3458,36 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
       row.insertBefore(badge, row.querySelector(".sw"));
     }
     content.append(row);
+    optionRows.set(toggle.key, row);
   }
 
+  for (const choice of surfaceChoices(surface)) {
+    if (!extOptionShown(surface, st, choice.key)) continue;
+    const field = createSelectField({
+      label: choice.label,
+      hint: choice.hint,
+      options: choice.choices,
+      value: st.choices.get(choice.key) ?? choice.default,
+      disabled: active,
+      onChange: (value) => {
+        st.choices.set(choice.key, value);
+        rerender(surface);
+      },
+    }).root;
+    content.append(field);
+    optionRows.set(choice.key, field);
+  }
+  for (const number of surfaceNumbers(surface)) {
+    if (!extOptionShown(surface, st, number.key)) continue;
+    const field = buildNumberField(number, st, active);
+    content.append(field);
+    optionRows.set(number.key, field);
+  }
+  nestDependentOptions(surface, optionRows);
+
   if (surface === "cad") content.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
-  // 输出位置是内置四页各自的设置项；运行时注册的类型按默认输出位置写。
-  if (!isExtSurface(surface)) content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
+  // 输出位置是各页自己的设置项（运行时注册的类型存在 settings.extensions[<id>]）。
+  content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
 
   const count = content.querySelectorAll(":scope > .swrow, :scope > .field").length;
   if (!count && !typeHelp) return null;
@@ -2908,7 +3497,10 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     meta: t("{0} 项 · 已按常用场景设好", count),
     content,
     open: st.advancedOpen || (resumeAuto && !active),
-    onToggle: (open) => { st.advancedOpen = open; },
+    onToggle: (open) => {
+      st.advancedOpen = open;
+      st.advancedTouched = true;
+    },
   });
   fold.root.classList.add("adv-fold");
   return fold.root;
@@ -2974,7 +3566,7 @@ function rescanAfterScanInputChange(surface: Surface): void {
 }
 
 function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
-  const custom = settings[`${surface}_domain_custom_prompts`];
+  const custom = isExtSurface(surface) ? extSettingsRecord(surface).domain_custom_prompts : settings[`${surface}_domain_custom_prompts`];
   const customNames = custom && typeof custom === "object" && !Array.isArray(custom)
     ? Object.keys(custom as JsonObject)
     : [];
@@ -3001,7 +3593,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       rerender(surface);
       void persistSettingsOrRevert(
         surface,
-        nestedPatch(`${outputSettingPathPrefix(surface)}.use_custom_output_dir`, value),
+        outputSettingPatch(surface, "use_custom_output_dir", value),
         () => { st.useCustomOutputDir = prev; },
         t("输出位置"),
       );
@@ -3025,12 +3617,13 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       const prevDir = text(outputRecord(surface).custom_output_dir);
       void persistSettingsOrRevert(
         surface,
-        nestedPatch(`${outputSettingPathPrefix(surface)}.custom_output_dir`, st.customOutputDir),
+        outputSettingPatch(surface, "custom_output_dir", st.customOutputDir),
         () => { st.customOutputDir = prevDir; },
         t("自定义输出目录"),
       );
     };
     input.addEventListener("change", saveCustomDir);
+    const relayoutDir = showPathWithMiddleEllipsis(input, () => st.customOutputDir);
     // 输入框后面跟一个「浏览」，在系统选择框里挑文件夹，不必手动粘贴路径。
     const browseBtn = createButton({
       label: t("浏览"),
@@ -3048,6 +3641,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
         if (typeof picked !== "string" || !picked.trim()) return;
         st.customOutputDir = picked;
         input.value = picked;
+        relayoutDir();
         saveCustomDir();
       })(),
     });
@@ -3816,13 +4410,14 @@ function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObje
 }
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
-async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
+async function runScan(surface: Surface, preferredResumeDir?: string, background = false): Promise<void> {
   const st = stateOf(surface);
   const path = normalizeUserPath(st.sourcePath);
   if (!path) return;
   st.sourcePath = path;
   if (st.task && !st.task.task.terminal) return;
   clearWorkspaceInput(surface);
+  st.resumePromptPending = false;
   const token = nextToken(scanTokens, surface);
   scanBusy.add(surface);
   if (surface === "cad") cancelCadInspection(st);
@@ -3876,9 +4471,15 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
         : (skipCount > 0
           ? t("已扫描到 {0} 个 {1} 文件，跳过 {2} 个。", items.length, surfaceLabel(surface), skipCount)
           : t("已扫描到 {0} 个 {1} 文件。", items.length, surfaceLabel(surface)));
-    showToast({ message: toastMessage });
+    // 后台读取（人在别的页面）：读到多少由那一页上的分配提示说，不另弹提示；续译弹窗等人进来。
+    // 读取期间人已经切到这一页的，照常弹。
+    const here = st.renderer !== null;
+    if (!background || here) showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
-    if (st.resumeInfo) void showResumeModal(surface, st);
+    if (st.resumeInfo) {
+      if (here || !background) void showResumeModal(surface, st);
+      else st.resumePromptPending = true;
+    }
     if (surface === "cad") autoCountCadAfterScan(st, token);
   } catch (error) {
     if (token !== scanTokens.get(surface)) return;
@@ -3980,9 +4581,11 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   if (isExtSurface(surface)) {
-    payload.options = Object.fromEntries(
-      surfaceToggles(surface).map((toggle) => [toggle.key, st.toggles.get(toggle.key) ?? toggle.default]),
-    );
+    payload.options = Object.fromEntries([
+      ...surfaceToggles(surface).map((toggle) => [toggle.key, st.toggles.get(toggle.key) ?? toggle.default]),
+      ...surfaceChoices(surface).map((choice) => [choice.key, st.choices.get(choice.key) ?? choice.default]),
+      ...surfaceNumbers(surface).map((number) => [number.key, numberOptionValue(number, st.numbers.get(number.key))]),
+    ]);
   }
   if (surface === "cad") {
     // 已经是目标语言的文字不再送翻译——与扫描时「待翻译」的口径一致。
@@ -4246,8 +4849,8 @@ function showTaskRiskModal(surface: Surface, st: SurfaceState, payload: JsonObje
     // 运行时容量」——这些是实现细节，读的人只需要知道三件事：共用什么、可能出什么事、
     // 自己的设置会不会被改。
     body: [
-      t("此任务将与正在运行的任务共用同一条 API 连接。两个任务各自按设定速度发送请求，服务端收到的是两者叠加的请求量。"),
-      t("因此处理可能变慢或需要排队，个别文件可能超时失败；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低本次任务的发送速度，设置中的速度不会被修改。"),
+      t("此任务将与正在运行的任务共用同一条 API 连接。两个任务轮流使用这条连接，同时发出的请求总数不超过两者中较高的那项设置。"),
+      t("因此两个任务都会比单独运行时慢；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低发送速度，设置中的速度不会被修改。"),
       t("如不急于处理，建议待前一个任务完成后再开始。"),
     ],
     actions: [
@@ -4275,22 +4878,28 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     const c = await getClient();
     const body = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;
     const task = await c.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify(body) });
-    submitFailures.delete(surface);
-    focusTask(surface, task);
-    noteTaskStarted(task);
-    st.showBanner = false;
-    st.fileOutcomes = new Map();
-    st.cadResumeDir = "";
-    initFileStages(st);
-    rerender(surface);
-    watchTask(surface);
-    if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
+    adoptStartedTask(surface, task);
   } catch (error) {
     noteStartFailure(surface, error);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);
   }
+}
+
+/** 任务建好之后接到这一页上：进度、逐文件状态、事件订阅。本页开始和「翻译」页一起开始都走这里。 */
+export function adoptStartedTask(surface: Surface, task: TaskStatus): void {
+  const st = stateOf(surface);
+  submitFailures.delete(surface);
+  focusTask(surface, task);
+  noteTaskStarted(task);
+  st.showBanner = false;
+  st.fileOutcomes = new Map();
+  st.cadResumeDir = "";
+  initFileStages(st);
+  rerender(surface);
+  watchTask(surface);
+  if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
 }
 
 function focusTask(surface: Surface, task: TaskStatus): void {

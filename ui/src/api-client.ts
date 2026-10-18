@@ -146,10 +146,28 @@ export type SurfaceDescriptor = {
   };
   /** 各阶段名，与进度权重一一对应；按整体百分比报进度的页面（CAD）为空。 */
   phases: LocalizedText[];
-  /** 运行设置里的开关；内置页面为空。 */
-  options: Array<{ key: string; kind: "toggle"; label: LocalizedText; help: LocalizedText; default: boolean }>;
+  /** 运行设置里的选项；内置页面为空。开关（toggle）的 default 是布尔值；多选一（choice）的 default
+   *  是 choices 里某一项的 value；数字（number）的 default 是数字，单位是 unit（units 为空时不带单位）。 */
+  options: Array<{
+    key: string;
+    kind: "toggle" | "choice" | "number";
+    label: LocalizedText;
+    help: LocalizedText;
+    default: boolean | string | number;
+    choices?: Array<{ value: string; label: LocalizedText }>;
+    min?: number | null;
+    max?: number | null;
+    units?: Array<{ value: string; label: LocalizedText }>;
+    unit?: string;
+    /** 从属于前面的选项：那些选项取列出的值时才显示，画在它下面。 */
+    show_when?: Record<string, Array<boolean | string>>;
+  }>;
   /** 由格式适配器生成的类型才有（api/surfaces/adapter.py）：来自清单的 id、版本和来源。 */
   adapter?: { id: string; version: string; origin: "bundled" | "installed"; license: string; repo: string };
+  /** 格式适配器生成的类型才有：没在「扩展」页拨过时是否显示在侧栏（随应用提供、清单要求的才为 true）。 */
+  visible_by_default?: boolean;
+  /** 格式适配器生成的类型才有：侧栏默认顺序里紧跟在哪个类型后面（如 "word"）；空表示排在最后。 */
+  sidebar_after?: string;
 };
 
 /** 「添加扩展…」检查一个文件夹或 zip 的结果（POST /api/extensions/preview），确认弹窗照它画。 */

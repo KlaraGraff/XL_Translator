@@ -376,7 +376,11 @@ class CadSurface(Surface):
         configured_output_dir = options.cad_output_dir
         if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
             configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
-        output_dir = bilingual_writer.build_output_dir(request.source_root, configured_output_dir)
+        output_dir = (
+            Path(options.batch_output_dir)
+            if options.batch_output_dir
+            else bilingual_writer.build_output_dir(request.source_root, configured_output_dir)
+        )
         # 引擎、提示词、分批请求和记忆库的接线在 core/text_translation_service.py，与 PDF「原位
         # 替换」共用。速率与重试按「翻译参数 → CAD」（core/surface_rate.py）。
         service = TextTranslationService(

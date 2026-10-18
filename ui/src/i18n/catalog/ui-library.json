@@ -205,5 +205,22 @@
   "重新查看快速开始": {"en": "View Quick start again", "fr": "Revoir le Démarrage rapide"},
   "检查更新": {"en": "Check for updates", "fr": "Rechercher des mises à jour"},
   "帮助": {"en": "Help", "fr": "Aide"},
-  "快速开始清单与常见问题": {"en": "Quick start checklist and FAQ", "fr": "Liste de démarrage rapide et questions fréquentes"}
+  "快速开始清单与常见问题": {"en": "Quick start checklist and FAQ", "fr": "Liste de démarrage rapide et questions fréquentes"},
+  "翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法": {"en": "Translations saved here are reused first for Excel, Word and CAD drawings", "fr": "Les traductions enregistrées ici sont réutilisées en priorité pour Excel, Word et les plans CAO"},
+  "交换语言方向": {"en": "Swap languages", "fr": "Inverser les langues"},
+  "自定义目标语言不能交换": {"en": "A custom target language can't be swapped", "fr": "Une langue cible personnalisée ne peut pas être inversée"},
+  "当前语言对没有可清洗的词条": {"en": "This language pair has no entries to clean up", "fr": "Cette paire de langues n'a aucune entrée à nettoyer"},
+  "手动维护的词条始终按设定译法翻译；自动保存的仅供模型参考，按备注里的场景选用。": {"en": "Manual entries are always translated as set; auto-saved entries are only a reference for the model and are applied according to the context in their note.", "fr": "Les entrées manuelles sont toujours traduites selon la traduction définie ; les entrées automatiques servent seulement de référence au modèle et s'appliquent selon le contexte indiqué dans leur note."},
+  "本月使用 {0} 次 · 未采用设定译法 {1} 处": {"en": "Used {0} {0|time|times} this month · {1} {1|place|places} not translated as set", "fr": "Utilisée {0} fois ce mois-ci · {1} {1|endroit|endroits} sans la traduction définie"},
+  "上一页": {"en": "Previous page", "fr": "Page précédente"},
+  "下一页": {"en": "Next page", "fr": "Page suivante"},
+  "编辑词条": {"en": "Edit entry", "fr": "Modifier l'entrée"},
+  "选择 {0}": {"en": "Select {0}", "fr": "Sélectionner {0}"},
+  "手动维护的词条始终按设定译法翻译，在句中出现时同样采用。": {"en": "Manual entries are always translated as set, including inside sentences.", "fr": "Les entrées manuelles sont toujours traduites selon la traduction définie, y compris dans les phrases."},
+  "备注（适用场景，可留空）": {"en": "Note (context, optional)", "fr": "Note (contexte, facultative)"},
+  "例如：基坑支护": {"en": "e.g. 基坑支护", "fr": "par ex. 基坑支护"},
+  "例如：foundation pit support": {"en": "e.g. foundation pit support", "fr": "par ex. soutènement de fouille"},
+  "例如：基坑验收": {"en": "e.g. foundation pit acceptance", "fr": "par ex. réception de la fouille"},
+  "删除词条「{0}」？": {"en": "Delete entry “{0}”?", "fr": "Supprimer l'entrée « {0} » ?"},
+  "删除后，之后翻译时不再采用这条译法；已生成的文件不受影响。此操作不能撤销。": {"en": "Later translations will no longer use this translation; files already generated are not affected. This cannot be undone.", "fr": "Les traductions suivantes n'utiliseront plus cette traduction ; les fichiers déjà générés ne sont pas modifiés. Cette action est irréversible."}
 }

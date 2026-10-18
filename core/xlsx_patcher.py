@@ -27,7 +27,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,9 +41,19 @@ from config import (
     PRINT_GUARD_LINE_HEIGHT_MULTIPLIER,
     REVIEW_MARK_COLOR_ALIASES,
     REVIEW_MARK_COLOR_DEFAULTS,
+    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
 )
 from core.mixed_language import MIXED_MARK_UNRESOLVED
+from core.opc_package import (
+    OpcPackage,
+    PackageVerificationError,  # noqa: F401  调用方和测试仍从这里取
+    clone_zipinfo,
+    relative_part,
+    rels_path,
+    resolve_part,
+)
 from core.translation_protocol import extract_replace_translation, is_replace_translation
+from core.xlsx_rich_text import plan_rich_runs, restyle_runs, rich_cell, string_item_runs, write_rich_inline
 
 # ── 命名空间 ──────────────────────────────────────────────────────────────────
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -172,112 +181,18 @@ def _split_coordinate(coordinate: str) -> tuple[int, int] | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# zip 包：只重写改动过的部件
+# zip 包：只重写改动过的部件（与 PPT 共用，见 core/opc_package.py）
 # ══════════════════════════════════════════════════════════════════════════════
-class _Package:
+class _Package(OpcPackage):
     """打开 .xlsx 的 zip 包，记录改写/新增/删除，保存时其余条目原字节照抄。"""
 
-    def __init__(self, path: Path):
-        self._path = Path(path)
-        self._zip = zipfile.ZipFile(self._path, "r")
-        self._infos = {info.filename: info for info in self._zip.infolist()}
-        self._order = [info.filename for info in self._zip.infolist()]
-        self._overrides: dict[str, bytes] = {}
-        self._added: list[str] = []
-        self._removed: set[str] = set()
-
-    def __enter__(self) -> "_Package":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def has(self, name: str) -> bool:
-        if name in self._removed:
-            return False
-        return name in self._overrides or name in self._infos
-
-    def read(self, name: str) -> bytes | None:
-        if name in self._overrides:
-            return self._overrides[name]
-        if name in self._removed or name not in self._infos:
-            return None
-        return self._zip.read(name)
-
-    def write(self, name: str, data: bytes) -> None:
-        self._removed.discard(name)
-        if name not in self._infos and name not in self._overrides:
-            self._added.append(name)
-        self._overrides[name] = data
-
-    def remove(self, name: str) -> None:
-        self._overrides.pop(name, None)
-        if name in self._added:
-            self._added.remove(name)
-        self._removed.add(name)
-
-    def close(self) -> None:
-        self._zip.close()
-
-    def save(self) -> None:
-        """把包写到临时文件再整体替换，避免半成品覆盖原文件。"""
-        temp_path = self._path.with_name(self._path.name + ".patching")
-        try:
-            with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
-                for name in self._order:
-                    if name in self._removed:
-                        continue
-                    source_info = self._infos[name]
-                    if name in self._overrides:
-                        target.writestr(
-                            _clone_zipinfo(source_info), self._overrides[name]
-                        )
-                    else:
-                        target.writestr(
-                            _clone_zipinfo(source_info), self._zip.read(name)
-                        )
-                for name in self._added:
-                    if name in self._removed:
-                        continue
-                    target.writestr(
-                        zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)),
-                        self._overrides[name],
-                        zipfile.ZIP_DEFLATED,
-                    )
-        except BaseException:
-            # 半成品 zip 不能留在磁盘上，它和成品同名只差一个后缀。
-            temp_path.unlink(missing_ok=True)
-            raise
-        self._zip.close()
-        os.replace(temp_path, self._path)
+    kind = "Excel"
 
 
-def _clone_zipinfo(source: zipfile.ZipInfo) -> zipfile.ZipInfo:
-    info = zipfile.ZipInfo(source.filename, date_time=source.date_time)
-    info.compress_type = source.compress_type
-    info.external_attr = source.external_attr
-    info.internal_attr = source.internal_attr
-    info.create_system = source.create_system
-    return info
-
-
-def _resolve_part(base_part: str, target: str) -> str:
-    """把关系里的相对 Target 解析成包内绝对部件名（不带前导斜杠）。"""
-    target = str(target or "")
-    if target.startswith("/"):
-        return target[1:]
-    base_dir = os.path.dirname(base_part)
-    return os.path.normpath(os.path.join(base_dir, target)).replace(os.sep, "/")
-
-
-def _relative_part(base_part: str, target_part: str) -> str:
-    base_dir = os.path.dirname(base_part) or "."
-    return os.path.relpath(target_part, base_dir).replace(os.sep, "/")
-
-
-def _rels_path(part: str) -> str:
-    directory, name = os.path.split(part)
-    return f"{directory}/_rels/{name}.rels" if directory else f"_rels/{name}.rels"
+_clone_zipinfo = clone_zipinfo
+_resolve_part = resolve_part
+_relative_part = relative_part
+_rels_path = rels_path
 
 
 def _next_free_part(package: _Package, part: str) -> str:
@@ -831,11 +746,15 @@ def _text_of_string_item(element) -> str:
 
 
 def _load_shared_strings(package: _Package, part: str) -> list[str]:
+    return [_text_of_string_item(si) for si in _load_shared_items(package, part)]
+
+
+def _load_shared_items(package: _Package, part: str) -> list:
+    """共享字符串表的 ``<si>`` 元素（只读，富文本单元格写回时照抄其中的片段）。"""
     data = package.read(part)
     if data is None:
         return []
-    root = _parse(data)
-    return [_text_of_string_item(si) for si in root if _local(si) == "si"]
+    return [si for si in _parse(data) if _local(si) == "si"]
 
 
 def _cell_formula(cell):
@@ -942,8 +861,8 @@ def sanitize_cell_text(text: str) -> tuple[str, int, int]:
     return kept + CELL_TRUNCATION_MARK, removed, dropped
 
 
-def _set_cell_inline_text(cell, text: str) -> bool:
-    """把单元格改写成 inlineStr。返回是否删掉了公式。"""
+def _clear_cell_value(cell) -> bool:
+    """删掉单元格的值、内联字符串和公式。返回是否删掉了公式。"""
     removed_formula = False
     for child in list(cell):
         tag = _local(child)
@@ -951,6 +870,27 @@ def _set_cell_inline_text(cell, text: str) -> bool:
             if tag == "f":
                 removed_formula = True
             cell.remove(child)
+    return removed_formula
+
+
+def _cell_string_item(cell, shared_items: list):
+    """非公式文本格的 ``<si>`` / ``<is>``；不是这两种返回 None。"""
+    if _cell_formula(cell) is not None:
+        return None
+    cell_type = cell.get("t", "n")
+    if cell_type == "inlineStr":
+        return cell.find(_m("is"))
+    if cell_type == "s":
+        try:
+            return shared_items[int(_cell_v_text(cell) or "")]
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _set_cell_inline_text(cell, text: str) -> bool:
+    """把单元格改写成 inlineStr。返回是否删掉了公式。"""
+    removed_formula = _clear_cell_value(cell)
     cell.set("t", "inlineStr")
     inline = etree.SubElement(cell, _m("is"))
     text_el = etree.SubElement(inline, _m("t"))
@@ -1489,6 +1429,9 @@ class _SheetOutcome:
     truncated_positions: list[str] = field(default_factory=list)
     # 有译文在手、但因为是错误值而按原样保留的单元格坐标。
     error_positions: list[str] = field(default_factory=list)
+    # 按片段写回的富文本格；其中译文也按标记分了片段的
+    rich_cells: int = 0
+    marked_cells: int = 0
 
 
 def _process_sheet(
@@ -1510,6 +1453,8 @@ def _process_sheet(
     allowed_coordinates: set[str] | None = None,
     external_autofit_planned: bool = False,
     min_row_heights: dict[int, float] | None = None,
+    shared_items: list | None = None,
+    marked_translations: dict[str, tuple[str, str]] | None = None,
 ) -> _SheetOutcome:
     data = package.read(entry.part)
     if data is None:
@@ -1619,6 +1564,7 @@ def _process_sheet(
                 font_color_argb: str | None = None
                 font_size: float | None = None
 
+                applied = False
                 if mark_kind:
                     applied, fill_argb, font_color_argb = _plan_review_mark(
                         styles,
@@ -1657,7 +1603,34 @@ def _process_sheet(
                                 f"[WARN] {entry.name}!{coordinate} 原文加译文超过 Excel 单元格上限 {MAX_CELL_TEXT_LEN} 字，"
                                 f"已截去 {truncated} 字（否则 Excel 会将整个文件视为已损坏）"
                             )
-                    if _set_cell_inline_text(cell, new_text):
+                    # 富文本格（一格里有几种格式）：按片段写，原文照抄、译文按标记分片段
+                    rich = (
+                        rich_cell(string_item_runs(_cell_string_item(cell, shared_items or [])))
+                        if not truncated
+                        else None
+                    )
+                    rich_plan = (
+                        plan_rich_runs(
+                            rich,
+                            cell_text=new_text,
+                            source_text=source_text,
+                            separator=BILINGUAL_SEPARATOR,
+                            bilingual=(
+                                not output_translation_only
+                                and new_text.startswith(source_text + BILINGUAL_SEPARATOR)
+                            ),
+                            marked_entry=(marked_translations or {}).get(rich.plain_text),
+                        )
+                        if rich is not None
+                        else None
+                    )
+                    if rich_plan is not None:
+                        if _clear_cell_value(cell):
+                            outcome.removed_formula = True
+                        write_rich_inline(cell, rich_plan[0])
+                        outcome.rich_cells += 1
+                        outcome.marked_cells += int(rich_plan[1])
+                    elif _set_cell_inline_text(cell, new_text):
                         outcome.removed_formula = True
                     final_text = new_text
                     dirty = True
@@ -1684,6 +1657,40 @@ def _process_sheet(
                                 f"[WARN] {entry.name}!{_column_letter(col_index)}{row_num} "
                                 f"缩至最小字号 {floor_size:.1f}pt 仍可能无法完全显示"
                             )
+                        # 缩到底仍放不下：要人去调行高或删减文字，进复核清单并标底色
+                        # （复核标记关闭时只留上面的日志，和其他复核类别一致）
+                        if reached_floor and review_enabled:
+                            coordinate = f"{_column_letter(col_index)}{row_num}"
+                            if mark_kind:
+                                # 已因别的原因标过：清单里再列一条，不重复涂色
+                                _record_review_position(
+                                    review_positions,
+                                    entry.name,
+                                    coordinate,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    applied,
+                                    bool(font_color_argb),
+                                )
+                            else:
+                                applied, fill_argb, font_color_argb = _plan_review_mark(
+                                    styles,
+                                    base_index,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    review_color_map=review_color_map,
+                                    fill_policy=fill_policy,
+                                )
+                                _record_review_position(
+                                    review_positions,
+                                    entry.name,
+                                    coordinate,
+                                    REVIEW_MARK_LOCKED_ROW_OVERFLOW,
+                                    applied,
+                                    bool(font_color_argb),
+                                )
+                                if applied:
+                                    outcome.review_marked += 1
+                                else:
+                                    outcome.review_skipped += 1
 
                     new_index = styles.resolve(
                         base_index,
@@ -1693,6 +1700,13 @@ def _process_sheet(
                         font_size=font_size,
                     )
                     _set_cell_style_index(cell, new_index)
+                    if rich_plan is not None and (font_size is not None or font_color_argb):
+                        base_size = styles.font_size(base_index)
+                        restyle_runs(
+                            cell.find(_m("is")),
+                            size_ratio=(font_size / base_size) if font_size is not None and base_size else None,
+                            font_color_argb=font_color_argb,
+                        )
                 elif fill_argb or font_color_argb:
                     new_index = styles.resolve(
                         base_index,
@@ -2441,6 +2455,7 @@ def write_bilingual_workbook(
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
     embedded_text=None,
+    marked_translations: dict[str, tuple[str, str]] | None = None,
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
 
@@ -2470,6 +2485,11 @@ def write_bilingual_workbook(
     ``embedded_text``：``core.xlsx_embedded_text.EmbeddedTextOptions``，翻译文本框和
     批注；None 表示不动它们（旧行为）。写入数记进 ``stats["shape_paragraphs"]`` /
     ``stats["comments"]`` / ``stats["shrunk_shapes"]`` / ``stats["grown_shapes"]`` / ``stats["row_grown_shapes"]`` / ``stats["overflow_shapes"]``。
+
+    ``marked_translations``：整格纯文本 → (发出的带标记原文, 带标记的译文)，见
+    core/xlsx_rich_text.py。富文本格的原文片段在双语模式里总是照抄；译文和这里对得上的
+    按标记分片段写，对不上的写成一个片段。按片段写的格数记进 ``stats["rich_cells"]`` /
+    ``stats["marked_cells"]``。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -2520,7 +2540,7 @@ def write_bilingual_workbook(
             )
         styles = _Styles(styles_data)
 
-        shared_strings = _load_shared_strings(
+        shared_items = _load_shared_items(
             package,
             _resolve_workbook_child_part(
                 workbook_part,
@@ -2529,6 +2549,7 @@ def write_bilingual_workbook(
                 "xl/sharedStrings.xml",
             ),
         )
+        shared_strings = [_text_of_string_item(si) for si in shared_items]
         entries = _load_sheet_entries(
             package, workbook_root, workbook_part, workbook_rels_root
         )
@@ -2593,6 +2614,8 @@ def write_bilingual_workbook(
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
         total_mutated_cells = 0
         total_anchor_frozen = 0
+        total_rich_cells = 0
+        total_marked_cells = 0
         truncated_positions: list[str] = []
         error_positions: list[str] = []
         for entry in entries:
@@ -2621,8 +2644,12 @@ def write_bilingual_workbook(
                 min_row_heights=(
                     embedded_stats.row_heights.get(entry.part) if embedded_stats is not None else None
                 ),
+                shared_items=shared_items,
+                marked_translations=marked_translations,
             )
             removed_formula = removed_formula or outcome.removed_formula
+            total_rich_cells += outcome.rich_cells
+            total_marked_cells += outcome.marked_cells
             total_mutated_cells += outcome.mutated_cells
             total_anchor_frozen += outcome.anchor_frozen_count
             truncated_positions.extend(outcome.truncated_positions)
@@ -2687,6 +2714,8 @@ def write_bilingual_workbook(
             stats["anchor_frozen_count"] = total_anchor_frozen
             stats["truncated_cells"] = len(truncated_positions)
             stats["truncated_positions"] = truncated_positions
+            stats["rich_cells"] = total_rich_cells
+            stats["marked_cells"] = total_marked_cells
             if embedded_stats is not None:
                 stats["shape_paragraphs"] = embedded_stats.shape_paragraphs
                 stats["comments"] = embedded_stats.comments

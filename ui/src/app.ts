@@ -7,6 +7,7 @@ import "./styles/tokens.css";
 import "./styles/palettes.css";
 import "./styles/app.css";
 
+import { withColorFade } from "./motion";
 import { injectIconSprite } from "./icons";
 import { mountShell, relocalizeShell } from "./shell";
 import { mountRouter, navigate, onNavigate, registerView, registerViewAlias, remountCurrentView } from "./router";
@@ -64,10 +65,11 @@ function applyTheme(preference: ThemePreference): void {
  */
 function initTheme(): void {
   applyTheme(readStoredThemePreference());
+  settingsView.applyStoredMotionPreference();
   initPalettes();
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (readStoredThemePreference() === "system") {
-      applyTheme("system");
+      withColorFade(() => applyTheme("system"));
     }
   });
 }

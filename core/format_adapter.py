@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -47,15 +48,26 @@ BUNDLED_ADAPTERS_DIR = Path(__file__).resolve().parents[1] / "adapters"
 
 #: 「双语对照」开关的键：两种输出都支持的类型由应用统一加上这个开关，清单里不能再用。
 BILINGUAL_OPTION_KEY = "bilingual"
-RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY})
+#: 执行器交给适配器的 options 里带上目标语言（设置里的语言代码，如 "fr"）：写回时改语言
+#: 属性、断行规则要用。清单开关同样不能用这个键。
+TARGET_LANG_OPTION_KEY = "target_lang"
+RESERVED_OPTION_KEYS = frozenset({BILINGUAL_OPTION_KEY, TARGET_LANG_OPTION_KEY})
 
 #: 描述符和界面要求的三种界面语言。
 LANGUAGES = ("zh", "en", "fr")
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+#: pydantic 把字符串当布尔值时认的写法（开关的 default 以前按它转）。
+_LAX_BOOLS = {
+    **dict.fromkeys(("1", "on", "t", "true", "y", "yes"), True),
+    **dict.fromkeys(("0", "off", "f", "false", "n", "no"), False),
+}
+#: 数字选项的值：数字后面可跟单位，如 ``2pt``、``1.5mm``、``3``。
+_NUMBER_VALUE_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?|[.,]\d+)\s*([a-z][a-z0-9_]*)?\s*$")
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
+_CLOSING_MARK_RE = re.compile(r"<\s*/\s*g\s*\d+\s*>", re.IGNORECASE)
 #: 清单里内置规则的长度上限：比应用通用的那份长得多就该拆成补充要求了。
 _PROMPT_MAX_CHARS = 4000
 
@@ -79,6 +91,27 @@ def _three_languages(value: Any, field: str, *, required: bool = True) -> dict[s
     return {lang: text for lang, text in texts.items() if text}
 
 
+def parse_number_value(value: Any) -> tuple[float, str] | None:
+    """数字选项的值拆成（数字, 单位）：``"2pt"`` → ``(2.0, "pt")``，``3`` → ``(3.0, "")``。
+
+    逗号当小数点（``"1,5mm"``）。负数、布尔值和认不出的写法返回 ``None``。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return (float(value), "") if value >= 0 and value == value and value != float("inf") else None
+    match = _NUMBER_VALUE_RE.match(str(value or "").lower())
+    if match is None:
+        return None
+    return float(match.group(1).replace(",", ".")), match.group(2) or ""
+
+
+def format_number_value(number: float, unit: str = "") -> str:
+    """``parse_number_value`` 的反过来：``(2.0, "pt")`` → ``"2pt"``，最多三位小数。"""
+    text = f"{round(float(number), 3):.3f}".rstrip("0").rstrip(".")
+    return f"{text}{unit}"
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     parts = re.findall(r"\d+", str(value or ""))
     if not parts:
@@ -86,16 +119,53 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts[:4])
 
 
+class AdapterChoice(BaseModel):
+    """「选择」类选项里的一项：传给适配器的值，和界面上显示的名字。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
+    label: dict[str, str]
+
+    @field_validator("value")
+    @classmethod
+    def _value(cls, value: str) -> str:
+        if not _OPTION_KEY_RE.match(value):
+            raise ValueError("选项值只能用小写字母、数字和下划线，以字母开头")
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _label(cls, value: Any) -> dict[str, str]:
+        return _three_languages(value, "label")
+
+
 class AdapterOption(BaseModel):
-    """清单里的一个开关；字段与描述符的 ``OptionDef`` 一致。"""
+    """清单里的一个选项；字段与描述符的 ``OptionDef`` 一致。
+
+    ``kind`` 为 ``"toggle"``（默认）是开关，``default`` 是布尔值；为 ``"choice"`` 是多选一，
+    ``choices`` 列出各项，``default`` 是其中一项的 ``value``（不写时取第一项）；为 ``"number"``
+    是让用户输入的数字，``default`` 是数字，``min``/``max`` 可选；再写 ``units`` 时旁边多一个
+    单位下拉，``unit`` 是默认单位（不写时取第一项），交给适配器的值是 ``"2pt"`` 这样数字连单位
+    的字符串（见 ``parse_number_value``），不写 ``units`` 时就是数字。
+
+    ``show_when`` 让一个选项从属于前面的开关或多选一：``{"layout_mode": ["fit"]}`` 表示只有
+    「layout_mode」选了 fit 时才显示，界面上缩进画在它下面。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     key: str
-    kind: Literal["toggle"] = "toggle"
+    kind: Literal["toggle", "choice", "number"] = "toggle"
     label: dict[str, str]
     help: dict[str, str] = Field(default_factory=dict)
-    default: bool = False
+    default: bool | int | float | str = False
+    choices: list[AdapterChoice] = Field(default_factory=list)
+    min: float | None = None
+    max: float | None = None
+    units: list[AdapterChoice] = Field(default_factory=list)
+    unit: str = ""
+    show_when: dict[str, list[bool | str]] = Field(default_factory=dict)
 
     @field_validator("key")
     @classmethod
@@ -115,6 +185,66 @@ class AdapterOption(BaseModel):
     @classmethod
     def _help(cls, value: Any) -> dict[str, str]:
         return _three_languages(value or {}, "help", required=False)
+
+    @field_validator("show_when", mode="before")
+    @classmethod
+    def _show_when(cls, value: Any) -> Any:
+        # 只有一个值时可以不写成列表：{"layout_mode": "fit"}。
+        if isinstance(value, Mapping):
+            return {key: item if isinstance(item, list) else [item] for key, item in value.items()}
+        return value
+
+    @model_validator(mode="after")
+    def _kind(self) -> AdapterOption:
+        if self.kind != "number" and (self.units or self.unit or self.min is not None or self.max is not None):
+            raise ValueError(f"选项 {self.key} 不是数字（\"kind\": \"number\"），不能有 min、max、units、unit")
+        if self.kind == "number":
+            return self._number()
+        if self.kind == "toggle":
+            if self.choices:
+                raise ValueError(f"开关 {self.key} 不能有 choices（多选一请写 \"kind\": \"choice\"）")
+            if isinstance(self.default, str):
+                # 以前 default 只收布尔值，"true"、"0" 这类字符串照 pydantic 的规矩转过；照旧收。
+                self.default = _LAX_BOOLS.get(self.default.strip().lower(), self.default)
+            if not isinstance(self.default, bool):
+                raise ValueError(f"开关 {self.key} 的 default 只能是 true 或 false")
+            return self
+        values = [choice.value for choice in self.choices]
+        if len(values) < 2:
+            raise ValueError(f"选项 {self.key} 至少要有两项 choices")
+        if len(set(values)) != len(values):
+            raise ValueError(f"选项 {self.key} 的 choices 里 value 重复")
+        if self.default is False:
+            self.default = values[0]
+        if self.default not in values:
+            raise ValueError(f"选项 {self.key} 的 default 应为 choices 里的一个 value：{', '.join(values)}")
+        return self
+
+    def _number(self) -> AdapterOption:
+        if self.choices:
+            raise ValueError(f"数字选项 {self.key} 不能有 choices（单位写在 units 里）")
+        if isinstance(self.default, bool) or not isinstance(self.default, (int, float)):
+            raise ValueError(f"数字选项 {self.key} 的 default 应为数字")
+        if self.min is not None and self.min < 0:
+            raise ValueError(f"数字选项 {self.key} 的 min 不能小于 0")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"数字选项 {self.key} 的 min 大于 max")
+        low = 0.0 if self.min is None else self.min
+        high = float("inf") if self.max is None else self.max
+        if not low <= self.default <= high:
+            raise ValueError(f"数字选项 {self.key} 的 default 不在 min、max 之间")
+        values = [unit.value for unit in self.units]
+        if len(set(values)) != len(values):
+            raise ValueError(f"数字选项 {self.key} 的 units 里 value 重复")
+        if not values:
+            if self.unit:
+                raise ValueError(f"数字选项 {self.key} 没有 units，不能写 unit")
+            return self
+        if not self.unit:
+            self.unit = values[0]
+        if self.unit not in values:
+            raise ValueError(f"数字选项 {self.key} 的 unit 应为 units 里的一个 value：{', '.join(values)}")
+        return self
 
 
 class AdapterCapabilities(BaseModel):
@@ -157,6 +287,11 @@ class AdapterManifest(BaseModel):
     repo: str = ""
     #: 需要的最低应用版本；空表示不限。
     min_app_version: str = ""
+    #: 只对随应用提供的类型生效：没在「扩展」页拨过时也显示在侧栏（像内置四种一样）。
+    #: 用户装进来的扩展写了也按不显示处理——它们装上时本来就打开了（``api/extension_install_job.py``）。
+    visible_by_default: bool = False
+    #: 只对随应用提供的类型生效：侧栏默认顺序里紧跟在哪个类型后面（如 ``word``）；空表示排在最后。
+    sidebar_after: str = ""
 
     @field_validator("id")
     @classmethod
@@ -227,6 +362,24 @@ class AdapterManifest(BaseModel):
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ValueError(f"开关的 key 重复：{', '.join(duplicates)}")
+        for index, option in enumerate(value):
+            earlier = {item.key: item for item in value[:index]}
+            for key, wanted in option.show_when.items():
+                parent = earlier.get(key)
+                if parent is None or parent.kind == "number":
+                    raise ValueError(f"选项 {option.key} 的 show_when 要写在它前面的开关或多选一：{key!r}")
+                allowed: list[bool | str] = [True, False] if parent.kind == "toggle" else [c.value for c in parent.choices]
+                if not wanted or any(item not in allowed or type(item) is not type(allowed[0]) for item in wanted):
+                    shown = "true、false" if parent.kind == "toggle" else "、".join(str(item) for item in allowed)
+                    raise ValueError(f"选项 {option.key} 的 show_when 里 {key} 的值应为：{shown}")
+        return value
+
+    @field_validator("sidebar_after")
+    @classmethod
+    def _sidebar_after(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value and not re.match(r"^(?:ext:)?[a-z0-9][a-z0-9_-]{0,39}$", value):
+            raise ValueError("sidebar_after 应是一个类型键，如 word 或 ext:text")
         return value
 
     @field_validator("min_app_version")
@@ -322,9 +475,9 @@ class AdapterHost(Protocol):
 
     manifest: AdapterManifest
 
-    def scan(self, path: Path) -> ScanItem: ...
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem: ...
 
-    def extract(self, path: Path) -> list[TextUnit]: ...
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]: ...
 
     def write(
         self,
@@ -352,7 +505,8 @@ def _coerce(value: Any, cls: type[_T], what: str) -> _T:
 
 
 def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUnit]:
-    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段。"""
+    """单元 id 非空且在文件内唯一；``protected`` 只留原文里确实出现的片段；``marked``
+    去掉标记后须与原文一字不差、标记成对不嵌套，否则按没有标记处理（与 Word 同一套校验）。"""
     seen: set[str] = set()
     for unit in units:
         if not unit.id:
@@ -361,7 +515,26 @@ def validate_units(units: list[TextUnit], what: str = "extract") -> list[TextUni
             raise AdapterError(f"{what} 返回的单元 id 重复：{unit.id!r}")
         seen.add(unit.id)
         unit.protected = [fragment for fragment in dict.fromkeys(unit.protected) if fragment and fragment in unit.text]
+        if unit.marked and not _usable_marks(unit.marked, unit.text):
+            unit.marked = ""
     return units
+
+
+def _usable_marks(marked: str, text: str) -> bool:
+    # 只有带标记的单元才用到；word_inline_marks 带着 python-docx，不在模块顶部导入。
+    from core.word_inline_marks import MAX_GROUPS_PER_UNIT, marks_match, strip_marks
+
+    if marked == text or strip_marks(marked) != text or not marks_match(marked, marked):
+        return False
+    return len(_CLOSING_MARK_RE.findall(marked)) <= MAX_GROUPS_PER_UNIT
+
+
+def _takes_second_argument(function: Callable[..., Any]) -> bool:
+    try:
+        inspect.signature(function).bind("path", {})
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
@@ -429,14 +602,21 @@ class InProcessAdapterHost:
         except Exception as exc:
             raise AdapterError(f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__) from exc
 
-    def scan(self, path: Path) -> ScanItem:
+    def _call_with_options(self, name: str, path: Path, options: Mapping[str, Any] | None) -> Any:
+        # scan / extract 的第二个参数可选：写了 ``def extract(path, options=None)`` 的适配器拿到
+        # 开关值和目标语言（如关掉「翻译演讲者备注」时取字就跳过备注），只收路径的照旧。
+        if options is not None and _takes_second_argument(getattr(self._load(), name)):
+            return self._call(name, str(path), dict(options))
+        return self._call(name, str(path))
+
+    def scan(self, path: Path, options: Mapping[str, Any] | None = None) -> ScanItem:
         if callable(getattr(self._load(), "scan", None)):
-            return _coerce(self._call("scan", str(path)), ScanItem, "scan")
-        units = self.extract(path)
+            return _coerce(self._call_with_options("scan", path, options), ScanItem, "scan")
+        units = self.extract(path, options)
         return ScanItem(unit_count=sum(1 for unit in units if not unit.locked))
 
-    def extract(self, path: Path) -> list[TextUnit]:
-        raw = self._call("extract", str(path))
+    def extract(self, path: Path, options: Mapping[str, Any] | None = None) -> list[TextUnit]:
+        raw = self._call_with_options("extract", path, options)
         if not isinstance(raw, (list, tuple)):
             raise AdapterError(f"extract 应返回 TextUnit 列表，实际是 {type(raw).__name__}")
         return validate_units([_coerce(item, TextUnit, "extract") for item in raw])
@@ -464,8 +644,10 @@ __all__ = [
     "BUNDLED_ADAPTERS_DIR",
     "MANIFEST_FILE",
     "RESERVED_OPTION_KEYS",
+    "TARGET_LANG_OPTION_KEY",
     "SUPPORTED_ADAPTER_API_VERSIONS",
     "AdapterCapabilities",
+    "AdapterChoice",
     "AdapterError",
     "AdapterHost",
     "AdapterManifest",
@@ -473,7 +655,9 @@ __all__ = [
     "AdapterOption",
     "InProcessAdapterHost",
     "discover_adapters",
+    "format_number_value",
     "load_manifest",
     "parse_manifest",
+    "parse_number_value",
     "validate_units",
 ]

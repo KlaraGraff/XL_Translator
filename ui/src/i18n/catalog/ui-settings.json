@@ -1650,5 +1650,85 @@
   "本文档统一用词同样核对：未采用时随第一次重新翻译一并改正，仍未采用的不再重译，也不标记。": {
     "en": "Harmonized terms are checked too: where one is not used, it is corrected in the first retranslation; if it is still not used, there is no further retranslation and no mark.",
     "fr": "Les termes harmonisés sont aussi vérifiés : s'ils ne sont pas utilisés, ils sont corrigés lors de la première retraduction ; s'ils ne le sont toujours pas, il n'y a ni nouvelle retraduction ni marquage."
+  },
+  "模型、翻译参数、外观与数据": {
+    "en": "Models, translation options, appearance and data",
+    "fr": "Modèles, options de traduction, apparence et données"
+  },
+  "「流光」是新的默认配色；原有方案保留，可随时换回。": {
+    "en": "“Liuguang” is the new default palette; the earlier palettes are still available.",
+    "fr": "« Liuguang » est la nouvelle palette par défaut ; les palettes précédentes restent disponibles."
+  },
+  "减少": {
+    "en": "Reduced",
+    "fr": "Réduites"
+  },
+  "完整": {
+    "en": "Full",
+    "fr": "Complètes"
+  },
+  "动效": {
+    "en": "Motion",
+    "fr": "Animations"
+  },
+  "选择「减少」后，页面切换与面板展开不再使用过渡动画；系统开启「减弱动态效果」时自动生效。": {
+    "en": "With “Reduced”, page changes and panels open without transition animations. The system “Reduce motion” setting always applies.",
+    "fr": "Avec « Réduites », les changements de page et l'ouverture des panneaux se font sans animation de transition. Le réglage système « Réduire les animations » s'applique toujours."
+  },
+  "发现新版本时，左侧「设置」上将显示红点；关闭后仅在手动检查时联网查询新版本。": {
+    "en": "When a new version is found, a red dot appears on “Settings” in the sidebar. When off, new versions are only looked up when you check manually.",
+    "fr": "Lorsqu'une nouvelle version est trouvée, un point rouge s'affiche sur « Paramètres » dans la barre latérale. Désactivé, les nouvelles versions ne sont recherchées que lors d'une vérification manuelle."
+  },
+  "启动时后台检查更新": {
+    "en": "Check for updates in the background at startup",
+    "fr": "Rechercher les mises à jour en arrière-plan au démarrage"
+  },
+  "只读": {
+    "en": "Read-only",
+    "fr": "Lecture seule"
+  },
+  "可修改": {
+    "en": "Editable",
+    "fr": "Modifiables"
+  },
+  "打开": {
+    "en": "Open",
+    "fr": "Ouvrir"
+  },
+  "打开目录": {
+    "en": "Open folder",
+    "fr": "Ouvrir le dossier"
+  },
+  "按文件类型设置；记忆库对所有类型生效。": {
+    "en": "Set per file type; translation memory applies to all types.",
+    "fr": "Réglages par type de fichier ; la mémoire de traduction s'applique à tous les types."
+  },
+  "数据位置": {
+    "en": "Data location",
+    "fr": "Emplacement des données"
+  },
+  "设置、密钥、记忆库与任务记录保存在本机的应用数据目录；数据格式升级前会自动备份旧文件。": {
+    "en": "Settings, keys, translation memory and task history are stored in this computer's app data folder. Old files are backed up automatically before a data format upgrade.",
+    "fr": "Les paramètres, les clés, la mémoire de traduction et l'historique des tâches sont enregistrés dans le dossier de données de l'application sur cet ordinateur. Les anciens fichiers sont sauvegardés automatiquement avant une mise à niveau du format des données."
+  },
+  "本类型选项": {
+    "en": "Options for this type",
+    "fr": "Options de ce type"
+  },
+  "自定义语言": {
+    "en": "Custom languages",
+    "fr": "Langues personnalisées"
+  },
+  "跟随系统时，浅色与深色各用自己选定的配色。": {
+    "en": "When following the system, light and dark mode each use the palette chosen for them.",
+    "fr": "Lorsque l'apparence suit le système, les modes clair et sombre utilisent chacun la palette choisie pour eux."
+  },
+  "配色": {
+    "en": "Palette",
+    "fr": "Palette"
+  },
+  "修改后自动保存。": {
+    "en": "Changes are saved automatically.",
+    "fr": "Les modifications sont enregistrées automatiquement."
   }
 }

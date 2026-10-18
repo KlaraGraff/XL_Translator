@@ -37,6 +37,7 @@ from core.model_roles import (
 )
 from settings import (
     AppSettings,
+    ExtensionSettings,
     carry_settings_baseline,
     load_settings,
     save_settings,
@@ -183,6 +184,18 @@ def register(app: FastAPI) -> None:
     def get_settings() -> dict[str, Any]:
         return load_settings().model_dump(mode="json")
 
+    @app.get("/api/settings/defaults")
+    def get_settings_defaults() -> dict[str, Any]:
+        """出厂默认值：翻译页右栏据此说明当前是「采用应用默认值」还是「采用上次使用的设置」。
+
+        ``app`` 与 GET /api/settings 同形；``extension`` 是运行时注册类型那一份
+        （``extensions[<id>]``）的默认值。只读，不碰磁盘上的设置。
+        """
+        return {
+            "app": AppSettings().model_dump(mode="json"),
+            "extension": ExtensionSettings().model_dump(mode="json"),
+        }
+
     @app.get("/api/settings/rate")
     def get_rate_settings() -> dict[str, Any]:
         """「翻译参数」各页签的速率与重试：已存值、默认值、可填范围和当前实际用的值。
@@ -266,8 +279,8 @@ def _reject_all_types_hidden(settings: AppSettings) -> None:
     """「扩展」页至少要留一种翻译类型在侧栏；界面也拦，这里防直接调接口的。"""
     table = settings.translation_types
     # 侧栏「翻译」组里的类型：要选文件的那些（记忆库清洗不在侧栏）。
-    keys = [surface.key for surface in all_surfaces() if surface.requires_source and surface.file_extensions]
-    if keys and not any(table.shows(key) for key in keys):
+    surfaces = [surface for surface in all_surfaces() if surface.requires_source and surface.file_extensions]
+    if surfaces and not any(table.shows(surface.key, visible_by_default=surface.visible_by_default) for surface in surfaces):
         raise HTTPException(422, "至少保留一种翻译类型显示在侧栏。")
 
 

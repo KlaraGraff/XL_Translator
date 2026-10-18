@@ -154,5 +154,9 @@
   "适用于 Excel、Word、PDF、CAD 和扩展类型": {
     "en": "Applies to Excel, Word, PDF, CAD and extension types",
     "fr": "S'applique à Excel, Word, PDF, CAO et aux types d'extension"
+  },
+  "按文件类型设置同时发送的请求数、每批大小与重试次数。": {
+    "en": "Set, per file type, how many requests are sent at once, the batch size and the number of retries.",
+    "fr": "Réglez, par type de fichier, le nombre de requêtes simultanées, la taille des lots et le nombre de nouvelles tentatives."
   }
 }

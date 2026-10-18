@@ -1,0 +1,16 @@
+{
+  "关键信息需核对": {"en": "Key information to check", "fr": "Informations clés à vérifier"},
+  "关键信息需核对：{0}": {"en": "Key information to check: {0}", "fr": "Informations clés à vérifier : {0}"},
+  "编号 {0} 在译文中写成了 {1}": {"en": "The number {0} is written as {1} in the translation", "fr": "Le numéro {0} est écrit {1} dans la traduction"},
+  "编号 {0} 在译文中缺少字母部分": {"en": "The letters of the number {0} are missing in the translation", "fr": "Les lettres du numéro {0} manquent dans la traduction"},
+  "日期与原文不符：原文为 {0}，译文为 {1}": {"en": "The date differs from the source: {0} in the source, {1} in the translation", "fr": "La date diffère de l'original : {0} dans l'original, {1} dans la traduction"},
+  "日期与原文不符：原文为 {0}": {"en": "The date differs from the source: {0} in the source", "fr": "La date diffère de l'original : {0} dans l'original"},
+  "人名拼写与原文不符：原文为 {0}，译文写成 {1}": {"en": "The spelling of a name differs from the source: {0} in the source, written {1} in the translation", "fr": "L'orthographe d'un nom diffère de l'original : {0} dans l'original, écrit {1} dans la traduction"},
+  "原文人名 {0} 只有拼音，译文中的「{1}」是推测的汉字": {"en": "The name {0} is only in pinyin in the source; the Chinese characters “{1}” in the translation are a guess", "fr": "Le nom {0} n'est qu'en pinyin dans l'original ; les caractères chinois « {1} » de la traduction sont une supposition"},
+  "原文人名 {0} 只有拼音，译文中的「{1}」与拼音读音不符": {"en": "The name {0} is only in pinyin in the source; the Chinese characters “{1}” in the translation do not match its pinyin", "fr": "Le nom {0} n'est qu'en pinyin dans l'original ; les caractères chinois « {1} » de la traduction ne correspondent pas à son pinyin"},
+  "请对照原文核对。": {"en": "Please check against the source.", "fr": "Vérifiez par rapport à l'original."},
+  "如需固定人名的汉字写法，可在记忆库中为该人名设定译法。": {"en": "To fix how a name is written in Chinese characters, set a translation for it in the translation memory.", "fr": "Pour fixer l'écriture d'un nom en caractères chinois, définissez sa traduction dans la mémoire de traduction."},
+  "有 {0} 条译文中的证件号、日期或人名与原文对不上，已标记需复核：{1}": {"en": "{0} {0|translation has|translations have} ID numbers, dates or names that differ from the source, marked for review: {1}", "fr": "{0} {0|traduction contient|traductions contiennent} des numéros, dates ou noms différents de l'original, {0|marquée|marquées} à vérifier : {1}"},
+  "另有 {0} 处": {"en": "{0} more", "fr": "{0} de plus"},
+  "有 {0} 处译文中的证件号、日期或人名与原文对不上，已在输出文件中标记需复核，且不保存到记忆库": {"en": "{0} {0|translation has|translations have} ID numbers, dates or names that differ from the source. {0|It is|They are} marked for review in the output file and not saved to the translation memory", "fr": "{0} {0|traduction contient|traductions contiennent} des numéros, dates ou noms différents de l'original. {0|Elle est marquée|Elles sont marquées} à vérifier dans le fichier de sortie et {0|n'est|ne sont} pas {0|enregistrée|enregistrées} dans la mémoire de traduction"}
+}

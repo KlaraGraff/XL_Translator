@@ -8,7 +8,6 @@ import { PALETTES, applyPalettes, palettesFromAppearance, storePalettes, type Pa
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import {
-  createCard,
   createChip,
   createButton,
   createField,
@@ -16,6 +15,8 @@ import {
   createDropdown,
   createLanguageField,
   createSwitch,
+  createSegmented,
+  createFold,
   createHintBadge,
   createEmptyState,
   createBanner,
@@ -35,6 +36,7 @@ import { icon, type IconName } from "../icons";
 import { ApiClient, ApiError } from "../api-client";
 import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
+import { motionAllowed, riseIn, withColorFade } from "../motion";
 import { applyModelPillFromRoles, setModelPillSettingsRole } from "../model-pill";
 import { renderReleaseNotes, releaseNotesLineCount } from "../markdown";
 // 更新的状态和动作都在 update-controller：顶部的更新提示卡片和这一页显示的是同一件事，
@@ -57,7 +59,6 @@ import {
 } from "../update-controller";
 import { version as PACKAGE_VERSION } from "../../package.json";
 import {
-  bundleCard,
   exportDiagnostics,
   exportDocumentConfig,
   importDocumentConfig,
@@ -372,7 +373,9 @@ export async function ensureConnected(): Promise<void> {
 
 let bodyHost: HTMLElement | null = null;
 let bannerHost: HTMLElement | null = null;
-let navEls: Map<SettingsPage, HTMLDivElement> | null = null;
+let navEls: Map<SettingsPage, HTMLButtonElement> | null = null;
+// 左栏选中项下面那块会滑的淡蓝底，和应用侧栏的 .side-ind 同一种。
+let navIndicator: HTMLElement | null = null;
 let currentPage: SettingsPage = "models";
 export let mountToken = 0;
 let dataHealth: DataHealthPayload | null = null;
@@ -451,16 +454,30 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
   setTopbar({
     title: t("设置"),
-    subtitle: t("管理模型、参数、外观与数据"),
+    subtitle: t("模型、翻译参数、外观与数据"),
   });
 
   const nav = document.createElement("div");
   nav.className = "set-nav";
-  const navMap = new Map<SettingsPage, HTMLDivElement>();
+  nav.setAttribute("role", "tablist");
+  nav.setAttribute("aria-orientation", "vertical");
+  const indicator = document.createElement("span");
+  indicator.className = "set-ind";
+  indicator.setAttribute("aria-hidden", "true");
+  nav.append(indicator);
+  navIndicator = indicator;
+  const navMap = new Map<SettingsPage, HTMLButtonElement>();
   for (const item of NAV_ITEMS) {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = "si";
-    el.append(icon(item.icon), document.createTextNode(item.label));
+    el.setAttribute("role", "tab");
+    const label = document.createElement("span");
+    label.className = "si-lb";
+    label.textContent = item.label;
+    // 法文的子页名较长，196px 放不下时省略，悬停看全名。
+    label.title = item.label;
+    el.append(icon(item.icon), label);
     el.addEventListener("click", () => {
       if (currentPage === item.id) return;
       currentPage = item.id;
@@ -489,18 +506,22 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   const banner = document.createElement("div");
   bannerHost = banner;
 
+  // 左 196px 子导航 + 右侧按节排列的正文（流光原型 .set）。版式在 settings.css 的 .set-row。
   const row = document.createElement("div");
-  row.style.display = "flex";
-  row.style.gap = "16px";
-  row.style.flex = "1";
-  row.style.minHeight = "0";
+  row.className = "set-row";
   row.append(nav, body);
 
   container.append(banner, row);
   highlightNav();
+  // 挂上以后才量得到各项位置；第一次放到位不带过渡（不然会从顶端滑下来），下一帧才加 .ready。
+  requestAnimationFrame(() => {
+    if (navIndicator !== indicator) return;
+    moveNavIndicator();
+    if (motionAllowed()) requestAnimationFrame(() => indicator.classList.add("ready"));
+  });
 
   clearElement(body);
-  body.append(createCard([createEmptyState({ title: t("正在加载设置…"), icon: "gear" })]));
+  body.append(createEmptyState({ title: t("正在加载设置…"), icon: "gear" }));
 
   // 更新状态是共享的：顶部卡片上按的「更新」会一路改到这一页要显示的东西（下载进度、
   // 装好等重启、失败）。订阅着重画，才不会出现「卡片在下载、这一页还写着有可用更新」。
@@ -538,6 +559,8 @@ export function unmount(): void {
   bodyHost = null;
   bannerHost = null;
   navEls = null;
+  navIndicator = null;
+  renderedPage = null;
   setModelPillSettingsRole(null);
   unsubscribeUpdates?.();
   unsubscribeUpdates = null;
@@ -555,7 +578,31 @@ function highlightNav(): void {
   if (!navEls) return;
   for (const [id, el] of navEls) {
     el.classList.toggle("on", id === currentPage);
+    el.setAttribute("aria-selected", String(id === currentPage));
   }
+  moveNavIndicator();
+}
+
+function moveNavIndicator(): void {
+  const on = navEls?.get(currentPage);
+  if (!navIndicator || !on) return;
+  navIndicator.style.transform = `translateY(${on.offsetTop}px)`;
+  navIndicator.style.height = `${on.offsetHeight}px`;
+  navIndicator.style.opacity = "1";
+}
+
+/**
+ * 页签、用途卡换了以后整页会重画：页签那一节原地不动，只让它下面换掉的内容浮现
+ * （同「扩展」页换页签）。带 .rise-skip 的节（翻译参数里不跟页签走的记忆库）也不动。
+ */
+export function riseBelow(anchorSelector: string): void {
+  const anchor = bodyHost?.querySelector(anchorSelector);
+  if (!anchor) return;
+  const below: Element[] = [];
+  for (let el = anchor.nextElementSibling; el; el = el.nextElementSibling) {
+    if (!el.classList.contains("rise-skip")) below.push(el);
+  }
+  riseIn(below);
 }
 
 async function bootstrap(token: number): Promise<void> {
@@ -571,9 +618,7 @@ async function bootstrap(token: number): Promise<void> {
     if (token !== mountToken) return;
     if (!bodyHost) return;
     clearElement(bodyHost);
-    bodyHost.append(createCard([
-      createEmptyState({ title: t("无法连接本地翻译引擎"), description: errorMessage(error), icon: "warn" }),
-    ]));
+    bodyHost.append(createEmptyState({ title: t("无法连接本地翻译引擎"), description: errorMessage(error), icon: "warn" }));
   }
 }
 
@@ -728,6 +773,7 @@ export function renderBody(): void {
   // 滚动位置不受控制，点「保存配置」后页面停在别处，连接列表那一行被顶部截掉一半。
   // 换了子页才回到顶部。
   const keepScroll = renderedPage === currentPage ? bodyHost.scrollTop : 0;
+  const pageChanged = renderedPage !== currentPage;
   clearElement(bodyHost);
   // 上一轮渲染留下的表单钩子指向的是已经被 clearElement 摘掉的 DOM。模型页会在下面
   // 重新接上；其他页面就该是空的，否则「获取模型列表」那条路径可能提交一份幽灵表单。
@@ -742,6 +788,9 @@ export function renderBody(): void {
   }
   renderedPage = currentPage;
   bodyHost.scrollTop = keepScroll;
+  // 换了子页，正文整块从下方淡入，和应用侧栏换页同一种；同一页里保存、测试后的重画不播，
+  // 否则每点一下都闪一遍。以前只有模型服务页的四张用途卡错落浮现，别的子页没有动画。
+  if (pageChanged) riseIn(bodyHost, "page");
 }
 
 // 模型表单里几个「点了按钮但没提交表单」的输入框——获取模型列表 / 测试连接这类操作
@@ -1140,6 +1189,87 @@ export function tcHead(title: string, tools: HTMLElement[] = []): HTMLDivElement
 }
 
 /**
+ * 设置页的一节（流光原型 .sec）：节与节之间只有一条发丝线，不再是一张张卡片。
+ * 有标题、说明或右上角按钮时画 .sh 头；body 是这一节的内容区，调用方往里放。
+ */
+export function sec(opts: { title?: string; desc?: string; actions?: HTMLElement[]; className?: string } = {}): { root: HTMLDivElement; body: HTMLDivElement } {
+  const root = document.createElement("div");
+  root.className = opts.className ? `sec ${opts.className}` : "sec";
+  if (opts.title || opts.desc || opts.actions?.length) {
+    const head = document.createElement("div");
+    head.className = "sh";
+    const copy = document.createElement("div");
+    copy.className = "sh-copy";
+    if (opts.title) {
+      const h3 = document.createElement("h3");
+      h3.textContent = opts.title;
+      copy.append(h3);
+    }
+    if (opts.desc) {
+      const desc = document.createElement("div");
+      desc.className = "desc";
+      desc.textContent = opts.desc;
+      copy.append(desc);
+    }
+    head.append(copy);
+    if (opts.actions?.length) {
+      const acts = document.createElement("div");
+      acts.className = "acts";
+      acts.append(...opts.actions);
+      head.append(acts);
+    }
+    root.append(head);
+  }
+  const body = document.createElement("div");
+  body.className = "sec-b";
+  root.append(body);
+  return { root, body };
+}
+
+/** 一行选项（流光原型 .opt-row）：左边标题和一句灰色说明，右边开关、分段或按钮。 */
+export function optRow(opts: { title: string; desc?: string; hint?: string; control: HTMLElement | HTMLElement[]; className?: string }): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = opts.className ? `opt-row ${opts.className}` : "opt-row";
+  const lb = document.createElement("div");
+  lb.className = "lb";
+  const title = document.createElement("span");
+  title.className = "lb-t";
+  title.textContent = opts.title;
+  if (opts.hint) title.append(hintBadge(opts.hint));
+  lb.append(title);
+  if (opts.desc) {
+    const small = document.createElement("small");
+    small.textContent = opts.desc;
+    lb.append(small);
+  }
+  const ctl = document.createElement("div");
+  ctl.className = "ctl";
+  ctl.append(...(Array.isArray(opts.control) ? opts.control : [opts.control]));
+  row.append(lb, ctl);
+  return row;
+}
+
+/** 一行灰色说明小字（「修改后自动保存。」这类）。 */
+export function secNote(textContent: string): HTMLParagraphElement {
+  const note = document.createElement("p");
+  note.className = "sec-note";
+  note.textContent = textContent;
+  return note;
+}
+
+// 折叠块的开合状态。这一页几乎每次保存都会整页重画，折叠块的局部状态一重建就丢；
+// 按 key 记在这里，用户展开的「内置规则」不会在改了一下补充要求后自己收起来。
+const foldOpen: Record<string, boolean> = {};
+
+export function settingsFold(key: string, opts: { title: string; meta?: string; content: HTMLElement; open?: boolean }): HTMLDivElement {
+  return createFold({
+    ...opts,
+    open: foldOpen[key] ?? Boolean(opts.open),
+    onToggle: (open) => { foldOpen[key] = open; },
+  }).root;
+}
+
+/**
  * 把「模型名称」输入框包成一个可下拉的组合框：输入框照旧可以随便打字，右侧箭头把候选
  * 展开成锚定菜单。候选优先用刚获取到的模型列表；还没获取时退回服务商的推荐型号，让这
  * 个箭头在新建连接的第一分钟就有东西可给——否则它只是个点了没反应的装饰。
@@ -1309,20 +1439,26 @@ function importPromptConfig(): void {
   }, t("提示词配置导入预览失败"));
 }
 
+// 页签下划线上一次停在哪：切页签会整页重画，新画出的下划线先放在旧位置，下一帧再滑到
+// 新页签下面，看起来就是同一条线滑过去的。
+let paramsTabUnderline: { left: number; top: number; width: number } | null = null;
+
 function renderParamsPage(host: HTMLElement): void {
-  // 配置包是整个「翻译参数」页的入口，放在页首，避免用户滚到页面底部才发现。
-  // 包内同时包含各页面参数、语言和领域提示词，因此这里也就是提示词的一键导入/导出。
-  host.append(bundleCard({
-    title: t("翻译参数配置导入与导出"),
-    description: t("一键备份或导入 Excel、Word、PDF、CAD 和扩展类型的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。"),
-    buttons: [
-      createButton({ label: t("导出配置"), size: "mini", onClick: () => void exportDocumentConfig() }),
-      createButton({ label: t("导入配置"), size: "mini", onClick: () => importDocumentConfig() }),
+  // 导入导出是整个「翻译参数」页的入口，放在页首，避免用户滚到页面底部才发现。
+  // 配置包同时包含各页面参数、语言和领域提示词，因此这里也就是提示词的一键导入/导出。
+  const bundleTitle = t("一键备份或导入 Excel、Word、PDF、CAD 和扩展类型的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。");
+  const head = sec({
+    title: t("翻译参数"),
+    desc: t("按文件类型设置；记忆库对所有类型生效。"),
+    actions: [
+      createButton({ label: t("导出配置"), icon: "upload", size: "mini", title: bundleTitle, onClick: () => void exportDocumentConfig() }),
+      createButton({ label: t("导入配置"), icon: "down", size: "mini", title: bundleTitle, onClick: () => importDocumentConfig() }),
     ],
-  }));
-  const card = createCard([]);
+    className: "params-head",
+  });
   const tabs = document.createElement("div");
   tabs.className = "tabs";
+  tabs.setAttribute("role", "tablist");
   // 页签：内置四种和每个运行时注册的类型各一个，顺序同「扩展」页。描述符一般在启动时就拉好了；
   // 还没拉到时先画内置四种，拉到后重画。
   if (!surfaceDescriptors().length) {
@@ -1336,28 +1472,36 @@ function renderParamsPage(host: HTMLElement): void {
     return key in BUILTIN_TAB_LABELS ? [{ id: key as ParamsSurface, label: BUILTIN_TAB_LABELS[key] }] : [];
   });
   if (!tabDefs.some((def) => def.id === paramsTab)) paramsTab = tabDefs[0]?.id ?? "excel";
+  let activeTab: HTMLButtonElement | null = null;
   for (const def of tabDefs) {
-    const tab = document.createElement("div");
+    const tab = document.createElement("button");
+    tab.type = "button";
     tab.className = def.id === paramsTab ? "tab on" : "tab";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(def.id === paramsTab));
     tab.textContent = def.label;
+    if (def.id === paramsTab) activeTab = tab;
     tab.addEventListener("click", () => {
       if (paramsTab === def.id) return;
       paramsTab = def.id;
       renderBody();
+      riseBelow(".params-head");
     });
     tabs.append(tab);
   }
-  card.append(tabs);
+  const underline = document.createElement("span");
+  underline.className = "ul";
+  underline.setAttribute("aria-hidden", "true");
+  tabs.append(underline);
+  head.body.append(tabs);
+  host.append(head.root);
+  placeTabUnderline(tabs, underline, activeTab);
 
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  body.style.gap = "12px";
-
+  // 本类型选项：只有这种文件类型自己有的项，没有就不画这一节。
+  const options = sec({ title: t("本类型选项") });
   if (paramsTab === "excel") {
     const review = excelReviewSettings();
-    body.append(selectField(
+    options.body.append(selectField(
       t("已有底色处理"), [
         { value: "skip", label: t("不覆盖已有底色") },
         { value: "red_font", label: t("保留底色并使用红字（默认）") },
@@ -1367,14 +1511,13 @@ function renderParamsPage(host: HTMLElement): void {
       (value) => void reRenderAfter(() => saveSettingPath("excel_review.existing_fill_policy", value)),
       { hint: t("单元格本身已有底色时，复核标记的处理方式。") },
     ).root);
-    body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
+    options.body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
       const colors = record(excelReviewSettings().mark_colors);
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
-    body.append(...renderRateSection("excel"));
   } else if (paramsTab === "word") {
     const review = wordReviewSettings();
-    body.append(selectField(
+    options.body.append(selectField(
       t("已有高亮处理"), [
         { value: "skip", label: t("不覆盖已有高亮") },
         { value: "red_underline", label: t("保留已有高亮并使用红字下划线（默认）") },
@@ -1384,28 +1527,17 @@ function renderParamsPage(host: HTMLElement): void {
       (value) => void reRenderAfter(() => saveSettingPath("word_review.existing_highlight_policy", value)),
       { hint: t("段落本身已有高亮时，复核标记的处理方式。") },
     ).root);
-    body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
+    options.body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
       const colors = record(wordReviewSettings().mark_colors);
       await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
-    body.append(...renderRateSection("word"));
-  } else if (paramsTab === "pdf") {
-    body.append(...renderRateSection("pdf"));
   } else if (paramsTab === "cad") {
-    // CAD 在这一页只有速率与重试，其余选项在 CAD 页右栏。
-    const note = document.createElement("p");
-    note.className = "note";
-    note.style.margin = "0";
-    note.style.fontSize = "12.5px";
-    note.style.color = "var(--ink-3)";
-    note.textContent = t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；提示词可以在下方设置。");
-    body.append(...renderRateSection("cad"), note);
+    // CAD 在这一页只有提示词、速率与重试，其余选项在 CAD 页右栏。
+    options.body.append(secNote(t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；提示词可以在下方设置。")));
   } else if (isExtSurface(paramsTab)) {
-    body.append(...renderExtParams(paramsTab));
+    options.body.append(...renderExtParams(paramsTab));
   }
-
-  card.append(body);
-  host.append(card);
+  if (options.body.childElementCount) host.append(options.root);
 
   if (paramsTab === "excel" || paramsTab === "word" || paramsTab === "cad" || isExtSurface(paramsTab)) {
     host.append(renderDomainPromptCard(paramsTab));
@@ -1413,11 +1545,54 @@ function renderParamsPage(host: HTMLElement): void {
     host.append(renderPdfPromptCard());
   }
 
+  if (isExtSurface(paramsTab)) {
+    host.append(sec({
+      title: t("速率与重试"),
+      desc: t("速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。"),
+    }).root);
+  } else {
+    const rate = renderRateSection(paramsTab);
+    const rateSec = sec({ title: t("速率与重试"), desc: t("按文件类型设置同时发送的请求数、每批大小与重试次数。"), actions: rate.actions });
+    rateSec.body.append(...rate.parts);
+    host.append(rateSec.root);
+  }
+
   // 记忆库对每种文件类型都生效，不跟着上面的页签切换。
-  host.append(renderTmParamsCard());
+  const tmCard = renderTmParamsCard();
+  tmCard.classList.add("rise-skip");
+  host.append(tmCard);
 }
 
-/** 运行时注册的类型的页签：目标语言和源语言；速率与重试只放一句说明（这类类型按文档翻译模型取默认值）。 */
+/** 把下划线放到当前页签下面；上一次的位置还在时先停在那里，再滑过来。 */
+function placeTabUnderline(tabs: HTMLElement, underline: HTMLElement, active: HTMLElement | null): void {
+  // 页签多到换行时，下划线跟着落到所在那一行的底边。
+  const target = () => (active ? { left: active.offsetLeft, top: active.offsetTop + active.offsetHeight - 1, width: active.offsetWidth } : null);
+  const apply = (pos: { left: number; top: number; width: number }) => {
+    underline.style.width = `${pos.width}px`;
+    underline.style.transform = `translate(${pos.left}px, ${pos.top}px)`;
+  };
+  requestAnimationFrame(() => {
+    if (!tabs.isConnected) return;
+    const next = target();
+    if (!next) return;
+    const previous = paramsTabUnderline;
+    paramsTabUnderline = next;
+    if (!previous || (previous.left === next.left && previous.top === next.top && previous.width === next.width)) {
+      underline.classList.add("still");
+      apply(next);
+      void underline.offsetWidth;
+      underline.classList.remove("still");
+      return;
+    }
+    underline.classList.add("still");
+    apply(previous);
+    void underline.offsetWidth;
+    underline.classList.remove("still");
+    apply(next);
+  });
+}
+
+/** 运行时注册的类型的页签：目标语言和源语言（速率与重试那一节只放一句说明，这类类型按文档翻译模型取默认值）。 */
 function renderExtParams(surface: ExtSurface): HTMLElement[] {
   const id = surface.slice("ext:".length);
   const saved = extParams(surface);
@@ -1449,14 +1624,6 @@ function renderExtParams(surface: ExtSurface): HTMLElement[] {
   source.root.querySelector("label")?.append(hintBadge(t("与「{0}」页右侧的源语言是同一项设置，在任一处修改均可。默认：自动识别。", label)));
   languages.append(target.root, source.root);
   parts.push(languages);
-
-  const note = document.createElement("p");
-  note.className = "note";
-  note.style.margin = "0";
-  note.style.fontSize = "12.5px";
-  note.style.color = "var(--ink-3)";
-  note.textContent = t("速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。");
-  parts.push(note);
   return parts;
 }
 
@@ -1507,11 +1674,6 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
 
 /** 「自动识别场景」开关行。保存失败时开关退回原状并提示。 */
 function smartContextRow(checked: boolean, note: string, persist: (checked: boolean) => Promise<unknown>): HTMLDivElement {
-  const row = document.createElement("div");
-  row.className = "field prompt-smart-row";
-  const head = document.createElement("div");
-  head.className = "swrow";
-  head.append(document.createTextNode(t("自动识别场景")));
   const sw = createSwitch({
     checked,
     onChange: (next) => {
@@ -1525,12 +1687,8 @@ function smartContextRow(checked: boolean, note: string, persist: (checked: bool
       );
     },
   });
-  head.append(sw);
-  const noteEl = document.createElement("p");
-  noteEl.className = "prompt-note";
-  noteEl.textContent = note;
-  row.append(head, noteEl);
-  return row;
+  sw.setAttribute("aria-label", t("自动识别场景"));
+  return optRow({ title: t("自动识别场景"), desc: note, control: sw, className: "prompt-smart-row" });
 }
 
 const PARAMS_SURFACE_LABELS: Record<"excel" | "word" | "pdf" | "cad", string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
@@ -1606,7 +1764,9 @@ function renderExtCoreRules(surface: ExtSurface, enqueueSave: (task: () => Promi
     }
     store(next, next ? t("已保存内置规则。") : t("已恢复默认内置规则。"));
   });
-  const field = fieldWithHint(t("内置规则"), area, t("每次翻译都会发送这些规则，补充要求接在它们后面。这种文件类型的内置规则可以修改；清空或点「恢复默认」即改回默认规则。返回格式（只回译文、条数与原文一致）另由程序固定附上。"));
+  const field = document.createElement("div");
+  field.className = "core-rules-box";
+  field.append(area);
   const foot = document.createElement("div");
   foot.className = "core-rules-foot";
   const note = document.createElement("span");
@@ -1617,7 +1777,7 @@ function renderExtCoreRules(surface: ExtSurface, enqueueSave: (task: () => Promi
     disabled: !saved,
     onClick: () => store("", t("已恢复默认内置规则。")),
   }));
-  field.append(foot);
+  field.append(foot, secNote(t("每次翻译都会发送这些规则，补充要求接在它们后面。这种文件类型的内置规则可以修改；清空或点「恢复默认」即改回默认规则。返回格式（只回译文、条数与原文一致）另由程序固定附上。")));
   return field;
 }
 
@@ -1632,12 +1792,7 @@ function promptCardHead(surface: ParamsSurface, tools: HTMLElement[] = []): HTML
 
 /** PDF 的提示词设置：PDF 只有「自动识别场景」一项可调，内置规则由程序按页面固定生成。 */
 function renderPdfPromptCard(): HTMLDivElement {
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  body.style.gap = "10px";
+  const { root: card, body } = sec({ className: "prompt-sec" });
   body.append(smartContextRow(
     pdfParamsSettings().smart_context !== false,
     t("开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。"),
@@ -1688,13 +1843,8 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     custom_prompts: { ...current.customPrompts },
   });
 
-  const card = createCard([]);
+  const { root: card, body } = sec({ className: "prompt-sec" });
   const tools: HTMLElement[] = [];
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  body.style.gap = "10px";
 
   // 失焦保存和开关、下拉的保存可能前后脚：排成一队，每一次都从上一次存完的 current 出发。
   let saveQueue: Promise<unknown> = Promise.resolve();
@@ -1714,13 +1864,21 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   ));
 
   // ② 内置规则：内置四种每次都发、谁也改不了，所以只给看，不给框；运行时注册的类型可以改。
+  // 规则正文很长又不常看，默认收起；标题右侧的灰字说明它能不能改。
   if (isExtSurface(surface)) {
-    body.append(renderExtCoreRules(surface, enqueueSave));
+    body.append(settingsFold(`core-rules:${surface}`, {
+      title: t("内置规则"),
+      meta: t("可修改"),
+      content: renderExtCoreRules(surface, enqueueSave),
+    }));
   } else {
     const coreBox = document.createElement("div");
     coreBox.className = "prompt-readonly";
     coreBox.textContent = corePrompt || t("内置规则读取失败，请稍后重新打开此页。");
-    body.append(fieldWithHint(t("内置规则"), coreBox, t("每次翻译都会发送这些规则，不能修改。补充要求写什么都只会追加在它们后面。返回格式（只回译文、条数与原文一致）另由程序固定附上。")));
+    const coreField = document.createElement("div");
+    coreField.className = "core-rules-box";
+    coreField.append(coreBox, secNote(t("每次翻译都会发送这些规则，不能修改。补充要求写什么都只会追加在它们后面。返回格式（只回译文、条数与原文一致）另由程序固定附上。")));
+    body.append(settingsFold("core-rules", { title: t("内置规则"), meta: t("只读"), content: coreField }));
   }
 
   // ③ 补充要求：用户自己的，可以有好几条，选一条用；只追加，不替换内置规则。
@@ -1751,14 +1909,18 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       if (value !== ADD_PROMPT_PRESET) selectExtra(value);
     },
   });
-  body.append(fieldWithHint(t("补充要求"), extraDropdown.root, t("可选。选一条自己写的补充要求，或选择「＋ 新增补充要求」新建一条。补充要求接在内置规则后面一起发送，只能追加要求，不能替换内置规则。")));
+  body.append(sectionLabel(t("补充要求")));
+  const extraGrid = document.createElement("div");
+  extraGrid.className = "grid2";
+  extraGrid.append(fieldWithHint(t("当前使用"), extraDropdown.root, t("可选。选一条自己写的补充要求，或选择「＋ 新增补充要求」新建一条。补充要求接在内置规则后面一起发送，只能追加要求，不能替换内置规则。")));
 
-  // 名称排在正文上面：先看清是哪一条、叫什么，再看具体内容。
+  // 名称和「当前使用」并排：先看清是哪一条、叫什么，再看具体内容。
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.placeholder = t("例如：电气图纸");
   const nameField = fieldWithHint(t("补充要求名称"), nameInput, t("名称可修改，不能与「无」、原来的场景名称或其他补充要求重复。"));
-  body.append(nameField);
+  extraGrid.append(nameField);
+  body.append(extraGrid);
 
   const promptArea = document.createElement("textarea");
   promptArea.className = "domain-prompt";
@@ -1767,17 +1929,25 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   const promptField = fieldWithHint(t("补充要求内容"), promptArea, undefined);
   body.append(promptField);
 
-  const refinementInput = document.createElement("textarea");
-  refinementInput.className = "domain-prompt prompt-refinement";
-  refinementInput.rows = 2;
-  refinementInput.placeholder = t("例如：保留电气专业术语，不要增加解释");
-  const refinementField = fieldWithHint(t("整理时的额外说明（可选）"), refinementInput, t("整理时，这些说明将一并发送给文档翻译模型。整理结果需经您确认后保存。"));
-  body.append(refinementField);
+  // 「整理」按钮那一行在正文下面，整理结果的对比区接在它后面（见下方 actionsRow）。
+  const actionsHost = document.createElement("div");
+  body.append(actionsHost);
 
   const optimizationCompare = document.createElement("div");
   optimizationCompare.className = "prompt-optimization-compare";
   optimizationCompare.style.display = "none";
   body.append(optimizationCompare);
+
+  // 整理时的额外说明不常用，收进默认关闭的「高级」。
+  const refinementInput = document.createElement("textarea");
+  refinementInput.className = "domain-prompt prompt-refinement";
+  refinementInput.rows = 2;
+  refinementInput.placeholder = t("例如：保留电气专业术语，不要增加解释");
+  const refinementField = settingsFold("prompt-advanced", {
+    title: t("高级"),
+    content: fieldWithHint(t("整理时的额外说明（可选）"), refinementInput, t("整理时，这些说明将一并发送给文档翻译模型。整理结果需经您确认后保存。")),
+  });
+  body.append(refinementField);
 
   let optimizationOriginal = "";
   let optimizationDraft = "";
@@ -1851,7 +2021,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const add = value === ADD_PROMPT_PRESET;
     clearOptimization();
     refinementInput.value = "";
-    refinementField.style.display = "none";
+    refinementField.style.display = none ? "none" : "";
     promptArea.value = none || add ? "" : extraTextFor(value);
     nameInput.value = add ? nextExtraName() : none ? "" : value;
     nameField.style.display = none ? "none" : "";
@@ -1953,7 +2123,6 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
         if (result.prompt) {
           optimizationOriginal = promptArea.value;
           optimizationDraft = result.prompt;
-          refinementField.style.display = "";
           renderOptimizationCompare();
           showToast({ message: t("模型已生成优化建议，请选择要采用的版本。") });
         }
@@ -1965,15 +2134,10 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     }),
   });
   updateEditor(selectedExtra);
-  const autoSaveNote = document.createElement("span");
-  autoSaveNote.textContent = t("选择和修改均自动保存。");
-  autoSaveNote.style.marginRight = "auto";
-  autoSaveNote.style.fontSize = "12px";
-  autoSaveNote.style.color = "var(--ink-3)";
-  autoSaveNote.style.alignSelf = "center";
+  const autoSaveNote = secNote(t("修改后自动保存。"));
   const actionsRow = fieldRow([autoSaveNote, optimizeBtn]);
-  actionsRow.style.justifyContent = "flex-end";
-  body.append(actionsRow);
+  actionsRow.classList.add("prompt-actions");
+  actionsHost.replaceWith(actionsRow);
 
   tools.push(
     createButton({ label: t("导出提示词"), size: "mini", onClick: () => void exportPromptConfig() }),
@@ -2046,10 +2210,7 @@ function paletteSwatch(palette: (typeof PALETTES)[number], mode: PaletteMode): H
 // 配色方案：浅色模式、深色模式各选一个，可以跨方案搭配。和主题分段控件同样的顺序——
 // 先切可见颜色给即时反馈，落盘成功后才写 localStorage，落盘失败就把颜色回滚。
 function renderPaletteCard(host: HTMLElement): void {
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.append(sectionLabel(t("配色方案")));
+  const { root: card, body } = sec({ title: t("配色"), desc: t("「流光」是新的默认配色；原有方案保留，可随时换回。") });
   const active = currentPalettePreference();
   const rows: { mode: PaletteMode; label: string }[] = [
     { mode: "light", label: t("浅色模式使用") },
@@ -2077,7 +2238,7 @@ function renderPaletteCard(host: HTMLElement): void {
         const previous = currentPalettePreference();
         if (palette.id === previous[row.mode]) return;
         const next: PaletteChoice = { ...previous, [row.mode]: palette.id };
-        applyPalettes(next);
+        withColorFade(() => applyPalettes(next));
         try {
           await persistSettings({
             appearance: { ...record(settings?.appearance), palette_light: next.light, palette_dark: next.dark },
@@ -2092,13 +2253,7 @@ function renderPaletteCard(host: HTMLElement): void {
     }
     body.append(rowLabel, grid);
   }
-  const note = document.createElement("div");
-  note.style.marginTop = "8px";
-  note.style.fontSize = "12px";
-  note.style.color = "var(--ink-3)";
-  note.textContent = t("界面处于浅色还是深色由上面的主题决定；两种模式可以选不同的方案，例如白天用素雅灰、晚上用琥珀护眼。");
-  body.append(note);
-  card.append(body);
+  body.append(secNote(t("界面处于浅色还是深色由上面的主题决定；两种模式可以选不同的方案，例如白天用素雅灰、晚上用琥珀护眼。")));
   host.append(card);
 }
 
@@ -2112,28 +2267,26 @@ function currentLanguagePreference(): Locale {
 // 选项名用各自语言的原名（中文 / English / Français），不跟着当前语言翻译——
 // 看不懂当前语言的人也要能找到自己的语言。
 function renderLanguageCard(host: HTMLElement): void {
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.append(sectionLabel(t("界面语言")));
-  const seg = document.createElement("div");
-  seg.className = "seg";
+  const { root: card, body } = sec({ title: t("界面语言"), desc: t("正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。") });
   const active = currentLanguagePreference();
   const hints: Record<Locale, string> = {
     zh: "界面、运行日志和提示显示为中文", // i18n-ignore 各语言用自己的原文
     en: "Interface, activity log and messages in English",
     fr: "Interface, journal d'activité et messages en français",
   };
-  for (const option of LOCALES) {
-    const segc = document.createElement("div");
-    segc.className = option.value === active ? "segc on" : "segc";
-    segc.lang = option.value;
-    const b = document.createElement("b");
-    b.textContent = option.label;
-    const span = document.createElement("span");
-    span.textContent = hints[option.value];
-    segc.append(b, span);
-    segc.addEventListener("click", () => {
+  const seg = createSegmented({
+    options: LOCALES.map((option) => ({ value: option.value, label: option.label })),
+    value: active,
+    ariaLabel: t("界面语言"),
+    motionKey: "appearance.language",
+  });
+  seg.classList.add("seg-narrow");
+  const buttons = Array.from(seg.querySelectorAll<HTMLButtonElement>("button"));
+  for (const [index, button] of buttons.entries()) {
+    const option = LOCALES[index];
+    button.lang = option.value;
+    button.title = hints[option.value];
+    button.addEventListener("click", () => {
       if (option.value === currentLanguagePreference() && option.value === currentLocale()) return;
       void reRenderAfter(async () => {
         await persistSettings({ appearance: { ...record(settings?.appearance), ui_language: option.value } });
@@ -2141,44 +2294,82 @@ function renderLanguageCard(host: HTMLElement): void {
         setLocale(option.value);
       });
     });
-    seg.append(segc);
   }
   body.append(seg);
-  const note = document.createElement("div");
-  note.style.marginTop = "8px";
-  note.style.fontSize = "12px";
-  note.style.color = "var(--ink-3)";
-  note.textContent = t("正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。");
-  body.append(note);
-  card.append(body);
   host.append(card);
 }
 
+// 动效：完整 / 减少。只存在本机（localStorage），不写后端设置：这是这台电脑上的观感偏好，
+// settings.py 没有这一项。选「减少」时 <html data-motion="reduced">，motion.ts 和 app.css 已认
+// 这个属性；系统的「减弱动态效果」不管这里怎么选都照样生效。
+const MOTION_STORAGE_KEY = "translator.motion";
+type MotionPreference = "full" | "reduced";
+
+function storedMotionPreference(): MotionPreference {
+  try {
+    return window.localStorage.getItem(MOTION_STORAGE_KEY) === "reduced" ? "reduced" : "full";
+  } catch {
+    return "full";
+  }
+}
+
+function applyMotionPreference(preference: MotionPreference): void {
+  if (preference === "reduced") document.documentElement.dataset.motion = "reduced";
+  else delete document.documentElement.dataset.motion;
+}
+
+/** 启动时按本机保存的动效偏好设置 <html data-motion>（app.ts 的 initTheme 调用）。 */
+export function applyStoredMotionPreference(): void {
+  applyMotionPreference(storedMotionPreference());
+}
+
+function renderMotionRow(host: HTMLElement): void {
+  const seg = createSegmented({
+    options: [
+      { value: "full", label: t("完整") },
+      { value: "reduced", label: t("减少") },
+    ],
+    value: storedMotionPreference(),
+    ariaLabel: t("动效"),
+    onChange: (value) => {
+      const next: MotionPreference = value === "reduced" ? "reduced" : "full";
+      applyMotionPreference(next);
+      try {
+        window.localStorage.setItem(MOTION_STORAGE_KEY, next);
+      } catch {
+        // 本机存不下时只在这次运行里生效，下次启动回到「完整」。
+      }
+    },
+  });
+  seg.classList.add("seg-motion");
+  const { root, body } = sec();
+  body.append(optRow({
+    title: t("动效"),
+    desc: t("选择「减少」后，页面切换与面板展开不再使用过渡动画；系统开启「减弱动态效果」时自动生效。"),
+    control: seg,
+  }));
+  host.append(root);
+}
+
 function renderAppearancePage(host: HTMLElement): void {
-  renderLanguageCard(host);
-  const themeCard = createCard([]);
-  const themeBody = document.createElement("div");
-  themeBody.style.padding = "14px 16px";
-  themeBody.append(sectionLabel(t("主题")));
-  const seg = document.createElement("div");
-  seg.className = "seg";
+  const { root: themeCard, body: themeBody } = sec({ title: t("主题"), desc: t("跟随系统时，浅色与深色各用自己选定的配色。") });
   const options: { value: ThemePreference; label: string; hint: string }[] = [
+    { value: "system", label: t("跟随系统"), hint: t("跟随系统的浅色 / 深色外观自动切换") },
     { value: "light", label: t("浅色"), hint: t("始终使用浅色界面") },
     { value: "dark", label: t("深色"), hint: t("始终使用深色界面") },
-    { value: "system", label: t("跟随系统"), hint: t("跟随系统的浅色 / 深色外观自动切换") },
   ];
   const active = currentThemePreference();
-  for (const option of options) {
-    const segc = document.createElement("div");
-    segc.className = option.value === active ? "segc on" : "segc";
-    const b = document.createElement("b");
-    b.textContent = option.label;
-    const span = document.createElement("span");
-    span.textContent = option.hint;
-    segc.append(b, span);
+  // 分段控件自己负责滑块和选中态；落盘、回滚和写 localStorage 挂在每个按钮上。
+  const seg = createSegmented({ options: options.map(({ value, label }) => ({ value, label })), value: active, ariaLabel: t("主题"), motionKey: "appearance.theme" });
+  seg.classList.add("seg-narrow");
+  const segButtons = Array.from(seg.querySelectorAll<HTMLButtonElement>("button"));
+  for (const [index, segc] of segButtons.entries()) {
+    const option = options[index];
+    segc.title = option.hint;
     segc.addEventListener("click", () => void reRenderAfter(async () => {
       const previous = currentThemePreference();
-      applyThemeVisual(option.value);
+      if (previous === option.value) return;
+      withColorFade(() => applyThemeVisual(option.value));
       try {
         await persistSettings({ appearance: { ...record(settings?.appearance), theme: option.value } });
       } catch (error) {
@@ -2189,41 +2380,40 @@ function renderAppearancePage(host: HTMLElement): void {
       }
       commitThemeToLocalStorage(option.value);
     }));
-    seg.append(segc);
   }
   themeBody.append(seg);
-  themeCard.append(themeBody);
   host.append(themeCard);
+  // 界面语言紧跟主题（maple 指定）：两项都是一排三选一，配色的大网格放在它们后面。
+  renderLanguageCard(host);
   renderPaletteCard(host);
+  renderMotionRow(host);
 
-  const langCard = createCard([]);
   const addBtn = createButton({
     label: t("新增自定义语言"), size: "mini", icon: "plus",
     onClick: () => openCustomLanguageModal(null),
   });
-  langCard.append(tcHead(t("自定义语言管理"), [addBtn]));
+  const { root: langCard, body: langBody } = sec({ title: t("自定义语言"), desc: t("自定义语言只能作为目标语言使用。"), actions: [addBtn] });
   const customLanguages = targetOptions.filter((option) => option.builtin === false);
   if (!customLanguages.length) {
-    langCard.append(createEmptyState({ title: t("尚无自定义目标语言"), description: t("自定义语言只能作为目标语言使用。"), icon: "book" }));
+    langBody.append(createEmptyState({ title: t("尚无自定义目标语言"), icon: "book" }));
   } else {
+    const list = document.createElement("div");
+    list.className = "conn-list";
     for (const option of customLanguages) {
-      const name = document.createElement("span");
-      name.style.flex = "1";
-      name.style.fontWeight = "600";
+      const name = document.createElement("b");
       name.textContent = option.display_name;
       const desc = document.createElement("span");
-      desc.style.color = "var(--ink-3)";
-      desc.style.fontSize = "12px";
+      desc.className = "conn-meta";
       desc.textContent = option.description || "";
-      const actions = document.createElement("span");
-      actions.style.display = "flex";
-      actions.style.gap = "6px";
+      const actions = document.createElement("div");
+      actions.className = "acts";
       actions.append(
-        createButton({ label: t("编辑"), size: "mini", onClick: () => openCustomLanguageModal(option) }),
+        createButton({ label: t("编辑"), size: "mini", variant: "ghost", onClick: () => openCustomLanguageModal(option) }),
         createButton({ label: t("删除"), size: "mini", variant: "danger", onClick: () => openCustomLanguageModal(option, true) }),
       );
-      langCard.append(connRow([name, desc, actions]));
+      list.append(connRow([name, desc, actions]));
     }
+    langBody.append(list);
   }
   host.append(langCard);
 }
@@ -2407,67 +2597,35 @@ function renderDataPage(host: HTMLElement): void {
   const appDataDir = text(overview?.app_data_dir, t("正在读取本地数据目录…"));
   const limits = record(overview?.limits);
 
-  const headerCard = createCard([]);
-  const headerBody = document.createElement("div");
-  headerBody.style.padding = "14px 16px";
-  headerBody.style.display = "flex";
-  headerBody.style.alignItems = "center";
-  headerBody.style.gap = "12px";
-  const headerText = document.createElement("div");
-  headerText.style.flex = "1";
-  headerText.style.minWidth = "0";
-  const span = document.createElement("div");
-  span.className = "rp-sec";
-  span.style.margin = "0 0 4px";
-  span.textContent = t("本地数据位置");
-  const path = document.createElement("p");
-  path.style.fontFamily = "var(--mono)";
-  path.style.fontSize = "12px";
-  path.style.color = "var(--ink-2)";
-  path.style.overflow = "hidden";
-  path.style.textOverflow = "ellipsis";
-  path.style.whiteSpace = "nowrap";
+  const location = sec({
+    title: t("数据位置"),
+    desc: t("设置、密钥、记忆库与任务记录保存在本机的应用数据目录；数据格式升级前会自动备份旧文件。"),
+    actions: [
+      createButton({ label: t("刷新"), size: "mini", icon: "restart", onClick: () => void reRenderAfter(async () => { await refreshMaintenance(); await refreshActiveTaskCount(); }) }),
+      createButton({ label: t("打开目录"), size: "mini", icon: "folder", onClick: () => void openAppDataDirectory() }),
+    ],
+  });
+  // 等宽块整段显示：Windows 上是很长的反斜杠路径，不省略、不横向滚动，放不下就折行。
+  const path = document.createElement("div");
+  path.className = "code";
   path.textContent = appDataDir;
-  headerText.append(span, path);
-  headerBody.append(headerText, fieldRow([
-    createButton({ label: t("刷新"), size: "mini", onClick: () => void reRenderAfter(async () => { await refreshMaintenance(); await refreshActiveTaskCount(); }) }),
-    createButton({ label: t("在文件夹中显示"), size: "mini", onClick: () => void openAppDataDirectory() }),
-  ]));
-  headerCard.append(headerBody);
-  host.append(headerCard);
+  location.body.append(path);
+  host.append(location.root);
 
   if (activeTaskCount > 0) {
-    const warnCard = createCard([], "danger-section");
-    const warnBody = document.createElement("div");
-    warnBody.style.padding = "12px 16px";
-    warnBody.style.display = "flex";
-    warnBody.style.gap = "8px";
-    warnBody.style.alignItems = "flex-start";
-    warnBody.append(icon("warn", { size: "sm" }));
-    const text_ = document.createElement("div");
-    const strong = document.createElement("strong");
-    strong.textContent = t("有 {0} 个任务正在运行", activeTaskCount);
-    const p = document.createElement("p");
-    p.style.margin = "2px 0 0";
-    p.style.fontSize = "12.5px";
-    p.style.color = "var(--ink-2)";
-    p.textContent = t("任务运行期间，无法清空任务记录、日志和诊断，也无法删除全部密钥或完整重置。请待任务结束后操作。");
-    text_.append(strong, p);
-    warnBody.append(text_);
-    warnCard.append(warnBody);
-    host.append(warnCard);
+    const warn = createBanner({
+      title: t("有 {0} 个任务正在运行", activeTaskCount),
+      subtitle: t("任务运行期间，无法清空任务记录、日志和诊断，也无法删除全部密钥或完整重置。请待任务结束后操作。"),
+      icon: "warn",
+      tone: "warn",
+    });
+    warn.classList.add("set-banner");
+    host.append(warn);
   }
 
   // 本地数据：以前这里一张「分类」卡、下面再一张「单类重置」卡，把任务记录、日志、密钥、
-  // 设置列了两遍，按钮一处叫「清理」一处叫「清空 / 重置」。现在只留这一张。
-  const overviewCard = createCard([tcHead(t("本地数据"))]);
-  const overviewDesc = document.createElement("p");
-  overviewDesc.className = "note";
-  overviewDesc.style.padding = "0 16px";
-  overviewDesc.style.fontSize = "12px";
-  overviewDesc.style.color = "var(--ink-3)";
-  overviewDesc.textContent = t("各项仅清理 Translator 自身保存的数据，不会删除源文件和翻译结果文件。");
-  overviewCard.append(overviewDesc);
+  // 设置列了两遍，按钮一处叫「清理」一处叫「清空 / 重置」。现在只留这一节，每类一行。
+  const local = sec({ title: t("本地数据"), desc: t("各项仅清理 Translator 自身保存的数据，不会删除源文件和翻译结果文件。") });
   const guarded = new Set(Array.isArray(maintenanceOverview?.activity_guarded_categories) ? maintenanceOverview.activity_guarded_categories as string[] : []);
   const categoryNotes: Record<string, string> = {
     settings: t("恢复默认设置，密钥和记忆库会保留"),
@@ -2475,21 +2633,11 @@ function renderDataPage(host: HTMLElement): void {
   };
   const categories = maintenanceCategories();
   if (!categories.length) {
-    overviewCard.append(createEmptyState({ title: t("尚未读取本地数据概览"), description: t("点击上方的「刷新」查看本地数据的位置和占用空间。"), icon: "folder" }));
+    local.body.append(createEmptyState({ title: t("尚未读取本地数据概览"), description: t("点击上方的「刷新」查看本地数据的位置和占用空间。"), icon: "folder" }));
   } else {
     for (const category of categories) {
-      const name = document.createElement("span");
-      name.style.flex = "1";
-      const b = document.createElement("b");
-      b.textContent = tx(category.label);
-      const small = document.createElement("small");
-      small.style.display = "block";
-      small.style.color = "var(--ink-3)";
-      small.style.fontSize = "11px";
       const count = category.id === "keys" ? record(category).key_count ?? category.count : category.count;
       const sizeText = `${formatBytes(category.size_bytes)}${count !== undefined ? ` · ${t("{0} 项", count)}` : ""}`;
-      small.textContent = categoryNotes[category.id] ? `${sizeText} · ${categoryNotes[category.id]}` : sizeText;
-      name.append(b, small);
       const action = category.contains_user_output
         ? createChip({ label: t("受保护"), tone: "mute" })
         : category.clearable
@@ -2499,24 +2647,19 @@ function renderDataPage(host: HTMLElement): void {
             onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory),
           })
           : createChip({ label: t("自动维护"), tone: "mute" });
-      overviewCard.append(connRow([name, action]));
+      local.body.append(optRow({
+        title: tx(category.label),
+        desc: categoryNotes[category.id] ? `${sizeText} · ${categoryNotes[category.id]}` : sizeText,
+        control: action,
+      }));
     }
   }
-  const quickStartName = document.createElement("span");
-  quickStartName.style.flex = "1";
-  const quickStartLabel = document.createElement("b");
-  quickStartLabel.textContent = t("快速开始");
-  const quickStartMeta = document.createElement("small");
-  quickStartMeta.style.display = "block";
-  quickStartMeta.style.color = "var(--ink-3)";
-  quickStartMeta.style.fontSize = "11px";
-  quickStartMeta.textContent = t("重新显示欢迎引导");
-  quickStartName.append(quickStartLabel, quickStartMeta);
-  overviewCard.append(connRow([
-    quickStartName,
-    createButton({ label: t("重新显示"), size: "mini", onClick: () => void showQuickStart() }),
-  ]));
-  host.append(overviewCard);
+  local.body.append(optRow({
+    title: t("快速开始"),
+    desc: t("重新显示欢迎引导"),
+    control: createButton({ label: t("重新显示"), size: "mini", onClick: () => void showQuickStart() }),
+  }));
+  host.append(local.root);
 
   // 留存边界
   const taskHistory = maintenanceCategory("task_history");
@@ -2524,13 +2667,7 @@ function renderDataPage(host: HTMLElement): void {
   const historyLimit = num(record(taskHistory).retention_limit, num(limits.task_history_max_records, 200));
   const logsLimit = record(record(logs).retention);
   const diagLimit = diagnosticsOverview ?? record(limits.diagnostics);
-  const limitsCard = createCard([]);
-  const limitsBody = document.createElement("div");
-  limitsBody.style.padding = "14px 16px";
-  limitsBody.style.display = "flex";
-  limitsBody.style.flexDirection = "column";
-  limitsBody.style.gap = "6px";
-  limitsBody.append(sectionLabel(t("自动保留上限")));
+  const retention = sec({ title: t("自动保留上限") });
   const limitRows: [string, string][] = [
     [t("任务记录"), t("最近 {0} 条", historyLimit)],
     [t("运行日志"), t("{0} 个 × {1}", num(logsLimit.max_files, 5), formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024))],
@@ -2538,51 +2675,33 @@ function renderDataPage(host: HTMLElement): void {
   ];
   for (const [label, value] of limitRows) {
     const row = document.createElement("div");
-    row.style.display = "flex";
-    row.style.justifyContent = "space-between";
-    row.style.fontSize = "12.5px";
+    row.className = "limit-row";
     const l = document.createElement("span");
-    l.style.color = "var(--ink-3)";
     l.textContent = label;
     const v = document.createElement("b");
     v.textContent = value;
     row.append(l, v);
-    limitsBody.append(row);
+    retention.body.append(row);
   }
-  limitsBody.append(
+  retention.body.append(
     processRetentionRow("succeeded", t("正常完成的过程文件")),
     processRetentionRow("failed", t("需复核或出错的过程文件")),
+    secNote(t("过程文件用于查看与修改译文、重新生成单页和排查问题。次数或体积任一达到上限时，从最早的开始清理；留空表示不设上限。最近一次和可续译的任务始终保留。")),
+    secNote(t("维护操作不会删除源文件、用户输出目录或已生成的翻译文件。")),
   );
-  const retentionNote = document.createElement("p");
-  retentionNote.className = "note";
-  retentionNote.style.fontSize = "12px";
-  retentionNote.style.color = "var(--ink-3)";
-  retentionNote.textContent = t("过程文件用于查看与修改译文、重新生成单页和排查问题。次数或体积任一达到上限时，从最早的开始清理；留空表示不设上限。最近一次和可续译的任务始终保留。");
-  limitsBody.append(retentionNote);
-  const note = document.createElement("p");
-  note.className = "note";
-  note.style.fontSize = "12px";
-  note.style.color = "var(--ink-3)";
-  note.textContent = t("维护操作不会删除源文件、用户输出目录或已生成的翻译文件。");
-  limitsBody.append(note);
-  limitsCard.append(limitsBody);
-  host.append(limitsCard);
+  host.append(retention.root);
 
   // 诊断
-  const diagCard = createCard([tcHead(t("诊断"), [
-    createButton({ label: t("导出全部诊断"), size: "mini", onClick: () => void exportDiagnostics("/api/diagnostics/history.zip", "translator-diagnostics.zip") }),
-    createButton({ label: t("清空诊断"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("diagnostics") }),
-  ])]);
-  const diagDesc = document.createElement("p");
-  diagDesc.className = "note";
-  diagDesc.style.padding = "0 16px";
-  diagDesc.style.fontSize = "12px";
-  diagDesc.style.color = "var(--ink-3)";
-  diagDesc.textContent = t("诊断仅记录版本、系统、任务进度、已隐去密钥的连接信息、计数和错误代码，不会自动上传。");
-  diagCard.append(diagDesc);
+  const diag = sec({
+    title: t("诊断"),
+    desc: t("诊断仅记录版本、系统、任务进度、已隐去密钥的连接信息、计数和错误代码，不会自动上传。"),
+    actions: [
+      createButton({ label: t("导出全部诊断"), size: "mini", onClick: () => void exportDiagnostics("/api/diagnostics/history.zip", "translator-diagnostics.zip") }),
+      createButton({ label: t("清空诊断"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("diagnostics") }),
+    ],
+  });
   const tableWrap = document.createElement("div");
-  tableWrap.style.overflowX = "auto";
-  tableWrap.style.padding = "8px 0 4px";
+  tableWrap.className = "diag-table";
   const table = document.createElement("table");
   table.className = "tbl";
   const thead = document.createElement("thead");
@@ -2635,29 +2754,16 @@ function renderDataPage(host: HTMLElement): void {
   }
   table.append(tbody);
   tableWrap.append(table);
-  diagCard.append(tableWrap);
-  host.append(diagCard);
-
+  diag.body.append(tableWrap);
+  host.append(diag.root);
 
   // 翻译记忆库
   const tm = maintenanceCategory("tm");
-  const tmCard = createCard([]);
-  const tmBody = document.createElement("div");
-  tmBody.style.padding = "14px 16px";
-  tmBody.style.display = "flex";
-  tmBody.style.flexDirection = "column";
-  tmBody.style.gap = "8px";
-  tmBody.append(sectionLabel(t("记忆库")));
-  const tmDesc = document.createElement("p");
-  tmDesc.className = "note";
-  tmDesc.style.fontSize = "12px";
-  tmDesc.style.color = "var(--ink-3)";
-  tmDesc.textContent = t("建议先导出备份再清空；此操作不会删除任何翻译结果。当前总占用：{0}。", tm ? formatBytes(tm.size_bytes) : "--");
-  tmBody.append(tmDesc);
-  tmBody.append(fieldRow([
-    createButton({ label: t("前往记忆库导出"), size: "mini", onClick: () => navigate("library") }),
-  ]));
-
+  const tmSec = sec({
+    title: t("记忆库"),
+    desc: t("建议先导出备份再清空；此操作不会删除任何翻译结果。当前总占用：{0}。", tm ? formatBytes(tm.size_bytes) : "--"),
+    actions: [createButton({ label: t("前往记忆库导出"), size: "mini", onClick: () => navigate("library") })],
+  });
   const tmPairOptions = tmPairCatalog?.recent ?? [];
   if (tmPairOptions.length) {
     if (!tmPairOptions.includes(selectedTmClearPair)) {
@@ -2670,8 +2776,11 @@ function renderDataPage(host: HTMLElement): void {
       (value) => { selectedTmClearPair = value; renderBody(); },
       { hint: t("候选来自最近使用过的语言对，与记忆库页面的「最近使用」一致。") },
     );
-    tmBody.append(pairSelect.root);
-    tmBody.append(fieldRow([
+    const pairGrid = document.createElement("div");
+    pairGrid.className = "grid2";
+    pairGrid.append(pairSelect.root);
+    tmSec.body.append(pairGrid);
+    tmSec.body.append(fieldRow([
       createButton({
         label: t("清空 {0}", tmPairLabel(selectedTmClearPair)), size: "mini", variant: "danger",
         disabled: activeTaskCount > 0,
@@ -2680,32 +2789,23 @@ function renderDataPage(host: HTMLElement): void {
       createButton({ label: t("清空全部记忆库"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   } else {
-    tmBody.append(fieldRow([
+    tmSec.body.append(fieldRow([
       createButton({ label: t("清空全部记忆库"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   }
-  tmCard.append(tmBody);
-  host.append(tmCard);
+  host.append(tmSec.root);
 
-  // 完整本地重置
-  const dangerCard = createCard([], "danger-section");
-  const dangerBody = document.createElement("div");
-  dangerBody.style.padding = "14px 16px";
-  dangerBody.style.display = "flex";
-  dangerBody.style.flexDirection = "column";
-  dangerBody.style.gap = "8px";
-  dangerBody.append(sectionLabel(t("完整本地重置")));
-  const dangerDesc = document.createElement("p");
-  dangerDesc.style.fontSize = "12.5px";
-  dangerDesc.style.color = "var(--ink-2)";
-  dangerDesc.textContent = t("仅删除 Translator 自身保存的数据，不会删除应用本身、源文件和翻译结果。完成后需重新打开应用。");
-  dangerBody.append(dangerDesc);
-  dangerBody.append(createButton({
-    label: t("完整重置"), variant: "danger-solid", disabled: activeTaskCount > 0,
+  // 完整本地重置：整节浅红底，和上面可以随手点的清理分开。
+  const danger = sec({
+    title: t("完整本地重置"),
+    desc: t("仅删除 Translator 自身保存的数据，不会删除应用本身、源文件和翻译结果。完成后需重新打开应用。"),
+    className: "danger-sec",
+  });
+  danger.body.append(fieldRow([createButton({
+    label: t("完整重置"), variant: "danger-solid", size: "mini", disabled: activeTaskCount > 0,
     onClick: () => requestMaintenanceClear("full_reset"),
-  }));
-  dangerCard.append(dangerBody);
-  host.append(dangerCard);
+  })]));
+  host.append(danger.root);
 }
 
 function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: string): void {
@@ -2865,49 +2965,45 @@ function renderAboutPage(host: HTMLElement): void {
   const paused = notificationsPaused();
   const ignored = ignoredVersion();
 
-  const card = createCard([]);
-  const body = document.createElement("div");
-  body.style.padding = "14px 16px";
-  body.style.display = "flex";
-  body.style.flexDirection = "column";
-  body.style.gap = "10px";
-  body.append(sectionLabel(t("版本")));
+  const { root: card, body } = sec({ title: t("版本"), className: "about-version" });
 
   if (snapshot.flow.phase === "ready") {
-    renderUpdateReady(body, { paused });
+    renderUpdateReady(body);
   } else if (snapshot.flow.phase === "downloading" || snapshot.flow.phase === "installing") {
     renderUpdateProgress(body);
   } else if (snapshot.result) {
     // 「正在检查」不在这里画：顶部的提示卡片已经在转圈了，这一页再来一个空态，
     // 同一件事说两遍，而且原来的内容会整块消失一下再回来。检查期间按钮禁用即可。
-    renderUpdateResult(body, { paused, ignored });
+    renderUpdateResult(body, { ignored });
   } else {
     renderUpdateUnchecked(body, { paused });
   }
-
-  card.append(body);
   host.append(card);
 
-  const licenseCard = createCard([]);
-  const licenseBody = document.createElement("div");
-  licenseBody.style.padding = "14px 16px";
-  licenseBody.style.display = "flex";
-  licenseBody.style.flexDirection = "column";
-  licenseBody.style.gap = "6px";
-  licenseBody.append(sectionLabel(t("开源许可")));
+  // 更新提醒：以前是版本区里一颗「暂停 / 恢复后台提醒」按钮，现在是一行开关。
+  // 更新装好之后到重启为止可能隔着一整天的工作，这一行在任何更新阶段都在。
+  const reminder = sec();
+  reminder.body.append(optRow({
+    title: t("启动时后台检查更新"),
+    desc: t("发现新版本时，左侧「设置」上将显示红点；关闭后仅在手动检查时联网查询新版本。"),
+    control: createPauseToggle(paused),
+  }));
+  host.append(reminder.root);
+
+  const { root: licenseCard, body: licenseBody } = sec({ title: t("开源许可") });
   const licenseText = document.createElement("p");
-  licenseText.style.fontSize = "12.5px";
-  licenseText.style.color = "var(--ink-2)";
+  licenseText.className = "license-name";
   licenseText.textContent = "MIT License";
-  const licenseNote = document.createElement("p");
-  licenseNote.className = "note";
-  licenseNote.style.fontSize = "12px";
-  licenseNote.style.color = "var(--ink-3)";
-  licenseNote.textContent = t("完整许可文本见项目仓库中的 LICENSE 文件。");
-  licenseBody.append(licenseText, licenseNote);
-  licenseCard.append(licenseBody);
+  licenseBody.append(licenseText, secNote(t("完整许可文本见项目仓库中的 LICENSE 文件。")));
+  licenseBody.append(optRow({
+    title: t("项目主页"),
+    desc: PROJECT_HOME.replace(/^https:\/\//, ""),
+    control: createButton({ label: t("打开"), size: "mini", variant: "ghost", icon: "ext", onClick: () => void openExternalUrl(PROJECT_HOME) }),
+  }));
   host.append(licenseCard);
 }
+
+const PROJECT_HOME = "https://github.com/KlaraGraff/XL_Translator";
 
 /** 屏①：还没有任何检查结果。进这一页不自动发起检查——启动时后台已经跑过一次了。 */
 function renderUpdateUnchecked(body: HTMLElement, options: { paused: boolean }): void {
@@ -2930,12 +3026,11 @@ function renderUpdateUnchecked(body: HTMLElement, options: { paused: boolean }):
       disabled: updateSnapshot().checking,
       onClick: () => void runUpdateCheck(),
     }),
-    createPauseToggle(options.paused),
   ]));
 }
 
 /** 屏②③⑥⑦：有检查结果时的四种落点。安装失败态叠加在这一层上。 */
-function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignored: string }): void {
+function renderUpdateResult(body: HTMLElement, options: { ignored: string }): void {
   const snapshot = updateSnapshot();
   const flow = snapshot.flow;
   const result = snapshot.result ?? {};
@@ -3055,9 +3150,6 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
       onClick: () => void ignoreVersion(latestVersion),
     }));
   }
-  if (!failed) {
-    actions.push(createPauseToggle(options.paused));
-  }
   if (releaseUrl) {
     actions.push(createButton({ label: t("查看 Release"), size: "mini", icon: "ext", onClick: () => void openExternalUrl(releaseUrl) }));
   }
@@ -3129,7 +3221,7 @@ function renderUpdateProgress(body: HTMLElement): void {
 }
 
 /** 屏⑤：装好了但不自动重启——翻译任务动辄几十分钟，替用户做这个决定的代价太大。 */
-function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
+function renderUpdateReady(body: HTMLElement): void {
   const snapshot = updateSnapshot();
   const flow = snapshot.flow;
   if (snapshot.readyCollapsed) {
@@ -3139,14 +3231,12 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
     note.className = "note";
     note.textContent = t("{0} 已安装完成，重启 Translator 后生效。", flow.version);
     body.append(note);
-    // 更新装好之后到重启为止可能隔着一整天的工作，这一页不能只剩一个重启按钮：
-    // 后台提醒的开关得一直够得着。
+    // 后台提醒的开关在下面「启动时后台检查更新」那一行，一直够得着。
     body.append(fieldRow([
       createButton({
         label: t("立即重启"), size: "mini", icon: "restart",
         onClick: () => void requestRestart(),
       }),
-      createPauseToggle(opts.paused),
     ]));
     return;
   }
@@ -3161,11 +3251,14 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
   }));
 }
 
+/** 「启动时后台检查更新」开关：开 = 后台提醒没有暂停。 */
 function createPauseToggle(paused: boolean): HTMLButtonElement {
-  return createButton({
-    label: paused ? t("恢复后台提醒") : t("暂停后台提醒"), size: "mini",
-    onClick: () => void setNotificationsPaused(!paused),
+  const sw = createSwitch({
+    checked: !paused,
+    onChange: (checked) => void setNotificationsPaused(!checked),
   });
+  sw.setAttribute("aria-label", t("启动时后台检查更新"));
+  return sw;
 }
 
 /** 一句人话 + 一行诊断码。诊断码没有时只留人话。 */

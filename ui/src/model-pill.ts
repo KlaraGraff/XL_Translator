@@ -27,25 +27,6 @@ function roleKeyForView(id: ViewId | undefined): string {
   return id === "pdf" ? "image" : "translation";
 }
 
-function effectiveRoleKey(roleKey: string): string {
-  const seen = new Set<string>();
-  let key = roleKey;
-  while (!seen.has(key)) {
-    seen.add(key);
-    const role = (lastRoles?.[key] ?? null) as RolePayload & { source_role?: unknown; connections?: unknown } | null;
-    const connections = Array.isArray(role?.connections) ? role.connections : [];
-    const primary = connections[0] as { connection_mode?: unknown; source_role?: unknown } | undefined;
-    const follows = String(primary?.connection_mode ?? "") === "follow" ? primary?.source_role : role?.source_role;
-    const next = typeof follows === "string" ? follows.trim() : "";
-    // source_role 不跟随时是哨兵值 "independent"，不是角色名。以前照着它去找一个叫
-    // independent 的角色，找不到就显示「未连接模型」——明明翻译一直在正常用模型。
-    // 只有真的指向角色表里另一个角色时才跟过去。
-    if (!next || next === key || !lastRoles || !(next in lastRoles)) break;
-    key = next;
-  }
-  return key;
-}
-
 // 角色表只在拿到时存一份，不是每次切视图都问后端要——applyModelPillFromRoles
 // 本来就是「用已有数据刷新」这条路，缓存才对得上这个设计，也不会因为频繁切页面
 // 打一堆没必要的请求。
@@ -81,7 +62,11 @@ function renderModelPill(): void {
 /** 某个角色（translation / image）当前生效的模型和测试状态，按缓存的角色表算。
  *  顶栏药丸和「翻译」入口页的「已就绪」用同一份说法。 */
 export function modelRoleSummary(roleKey: string): { label: string; tone: "ok" | "warn" | "idle" } {
-  const role = (lastRoles?.[effectiveRoleKey(roleKey)] ?? null) as RolePayload | null;
+  // 跟随另一用途时只借那边的服务商、地址和密钥，模型名是自己的（core/model_roles.py
+  // resolve_effective_model_config），后端给这个角色的 model 已经是它真正会用的那个。
+  // 以前顺着跟随关系去读被跟随用途的模型：记忆库清洗跟随文档翻译、另填了 gpt-6.1-sol，
+  // 药丸却显示文档翻译的 gpt-6-luna。
+  const role = (lastRoles?.[roleKey] ?? null) as RolePayload | null;
   const model = String(role?.model ?? "").trim();
   // 这个角色没配模型就老实说「未连接模型」，不能回退去显示别的角色——
   // 那正是徽章跟当前页面对不上的 bug 本身。

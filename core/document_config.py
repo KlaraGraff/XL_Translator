@@ -132,8 +132,8 @@ _LANGUAGE_FIELDS = frozenset(
 )
 
 # 侧栏里显示哪些类型、按什么顺序是这台电脑上的界面布局，不是翻译参数：导出不带，导入不动。
-# 内置四种的这两项（excel_pinned …）本来就不在任何一节里。
-_EXTENSION_LAYOUT_FIELDS = frozenset({"pinned", "order"})
+# 内置四种的这两项（excel_pinned …）本来就不在任何一节里。输出位置是本机路径，同样不带。
+_EXTENSION_LAYOUT_FIELDS = frozenset({"pinned", "order"}) | DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
 
 _PROMPT_MAP_FIELDS = frozenset(
     {

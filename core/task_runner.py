@@ -102,12 +102,16 @@ from core.document_profile import (
     is_context_sensitive,
     request_document_profile,
 )
-from config import REVIEW_MARK_TERM_NOT_APPLIED
+from config import REVIEW_MARK_KEY_INFO, REVIEW_MARK_TERM_NOT_APPLIED
 from core.document_terms import make_term_picker
+from core.key_info_check import review_summary
 from core.term_session import TaskTermSession
 from core import tm_manager
 from core.xlsx_embedded_text import KIND_SHAPE, EmbeddedTextOptions, collect_embedded_units
 from core.xlsx_patcher import is_generated_original_sheet_title
+from core.xlsx_rich_text import collect_marked_sources
+from core.word_inline_marks import InlineMarkEngine, place_marks, strip_marks
+from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.excel_automation import (
     create_excel_app,
     finalize_excel_thread,
@@ -249,6 +253,7 @@ AUTOFIT_MONITOR_POLL_SECONDS = 0.5
 # 「语义校验接受」在 9.3.1 整类删除，见 MixedLanguageResult.mark_kind。
 _EXCEL_REVIEW_MARK_PRIORITY = {
     REVIEW_MARK_TERM_NOT_APPLIED: 10,
+    REVIEW_MARK_KEY_INFO: 15,
     MIXED_MARK_UNRESOLVED: 20,
     MIXED_MARK_FOREIGN_NOISE: 30,
 }
@@ -316,6 +321,7 @@ class TaskRunner(BaseTaskRunner):
         untranslated_only: bool = False,
         connection_chain: tuple[str, ...] | list[str] | None = None,
         resume_output_dir: str | None = None,
+        batch_output_dir: str | None = None,
     ):
         self._files       = file_items
         self._settings    = settings
@@ -327,6 +333,12 @@ class TaskRunner(BaseTaskRunner):
         self._untranslated_only = bool(untranslated_only)
         # 只读：上次输出目录，补译时用它的双语产物做底稿。绝不写入。
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
+        # 同一批任务共用的输出文件夹；设了就不再新建自己的。
+        self._batch_output_dir = Path(batch_output_dir) if batch_output_dir else None
+        # 一格里有几种格式时：整格纯文本 → 带 <g1>…</g1> 标记的原文（core/xlsx_rich_text.py）；
+        # 翻译时由 InlineMarkEngine 换上，写回时按标记分片段
+        self._marked_sources: dict[str, str] = {}
+        self._inline_mark_engine: InlineMarkEngine | None = None
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
         # 本次任务的速率与重试；_run 里按任务实际用的连接重新取一次。
@@ -520,7 +532,7 @@ class TaskRunner(BaseTaskRunner):
                 if output_dir_error is not None:
                     raise ValueError(output_dir_error)
 
-            output_dir = bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
+            output_dir = self._batch_output_dir or bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.debug(f"输出目录初始化失败原始错误：{e!r}")
@@ -1029,7 +1041,7 @@ class TaskRunner(BaseTaskRunner):
                 auto_source_lang=auto_source_lang,
                 batch_size=batch_size,
                 concurrency=concurrency,
-                engine=term_session.wrap(engine),
+                engine=term_session.wrap(self._mark_engine(engine)),
                 excel_review_marks=excel_review_marks,
                 file_texts=file_texts,
                 global_unique_texts=global_unique_texts,
@@ -1080,6 +1092,7 @@ class TaskRunner(BaseTaskRunner):
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
                 repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
                 document_note=document_profile,
+                api_scheduler=shared_scheduler,
             )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
@@ -1087,6 +1100,16 @@ class TaskRunner(BaseTaskRunner):
             heading_majority = self._normalize_heading_style(
                 global_translations=global_translations,
                 target_lang=target_lang,
+                quality_issues=quality_issues,
+            )
+
+            # ── 关键信息核对（0 API）：放在所有改写之后、TM 写入之前，核对的是
+            # 交付文件里的最终译文；对不上的只标需复核，不改译文、不进记忆库。
+            self._check_key_info(
+                term_session,
+                global_translations=global_translations,
+                source_lang=source_lang,
+                excel_review_marks=excel_review_marks,
                 quality_issues=quality_issues,
             )
 
@@ -1124,6 +1147,10 @@ class TaskRunner(BaseTaskRunner):
                 counts=self._count_cell_occurrences(process_paths, short_words),
                 engine_name=engine.engine_name,
             )
+
+            # 限流时不再为补标记发请求：这些格的译文写成一个片段，原文格式照样保留
+            if not rate_limited:
+                self._place_missing_inline_marks(engine, global_translations)
 
             # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
             logger.info(f"阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
@@ -1697,6 +1724,49 @@ class TaskRunner(BaseTaskRunner):
                 continue
             # 译文与原文相同（含失败交回的原文）的格子由后面的汇总统一标需复核。
             api_translations[source] = collapse_echoed_repeat(translation, source)
+
+    def _mark_engine(self, engine):
+        """带局部格式的单元格换成带标记的原文发出；没有这类单元格时不包。"""
+        if not self._marked_sources:
+            return engine
+        self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
+        return self._inline_mark_engine
+
+    def _place_missing_inline_marks(self, engine, global_translations: dict[str, str]) -> None:
+        """带局部格式的单元格里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
+        语言、模型弄丢标记、修复改过），让模型只补标记。失败的译文写成一个片段。"""
+        if not self._marked_sources or self._stop_event.is_set():
+            return
+        if self._inline_mark_engine is None:
+            self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
+        known = self._inline_mark_engine.marked_translations
+        items = []
+        for source, marked in self._marked_sources.items():
+            value = global_translations.get(source)
+            if not value:
+                continue
+            translation = extract_replace_translation(value) if is_replace_translation(value) else value
+            translation = str(translation).strip()
+            if not translation or translation.lower() == source.lower():
+                continue
+            entry = known.get(source)
+            if entry is not None and strip_marks(entry[1]).strip() == translation:
+                continue
+            items.append((source, marked, translation))
+        if not items:
+            return
+        try:
+            placed = place_marks(
+                engine,
+                items,
+                should_stop=self.stop_requested,
+                log=lambda message: logger.info(message),
+            )
+        except Exception as exc:  # noqa: BLE001 - 补标记失败只是译文不分片段
+            logger.info(f"Excel 单元格局部格式补标记失败：{exc!r}")
+            return
+        known.update(placed)
+        logger.info(f"Excel 单元格局部格式：补标记 {len(placed)}/{len(items)} 处")
 
     def _translate_misses_via_api(
         self,
@@ -2508,6 +2578,10 @@ class TaskRunner(BaseTaskRunner):
                 )
                 return xls_file_count, total_sheet_count, raw_text_count
         text_set = set(texts)
+        # 补译的底稿是上次的双语产物，格里是原文加译文，不加标记
+        if coverage_plans[-1] is None and not self._untranslated_only:
+            for plain, marked in collect_marked_sources(process_path, text_set).items():
+                self._marked_sources.setdefault(plain, marked)
         text_set |= self._collect_embedded_texts(
             process_path,
             file_item.name,
@@ -2729,6 +2803,9 @@ class TaskRunner(BaseTaskRunner):
                     stats                = write_stats,
                     output_basename      = output_basename,
                     staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
+                    marked_translations  = (
+                        self._inline_mark_engine.marked_translations if self._inline_mark_engine else None
+                    ),
                 )
             shapes = int(write_stats.get("shape_paragraphs") or 0)
             comments = int(write_stats.get("comments") or 0)
@@ -2910,6 +2987,7 @@ class TaskRunner(BaseTaskRunner):
         excel_review_marks: dict[str, str],
         repair_concurrency: int = 1,
         document_note: str = "",
+        api_scheduler=None,
     ) -> ResidualPassResult:
         """残留中文体检 + 确定性序号修复 + 修复阶梯；改得了的直接改词典，改不了的标记复核。"""
         residual_result = run_residual_pass(
@@ -2975,6 +3053,7 @@ class TaskRunner(BaseTaskRunner):
                 should_stop=self._stop_event.is_set,
                 on_progress=_on_repair_progress,
                 max_workers=repair_concurrency,
+                api_scheduler=api_scheduler,
             )
             if ladder.over_cap_count:
                 self._log(
@@ -3184,6 +3263,31 @@ class TaskRunner(BaseTaskRunner):
                     }
                 )
         return heading_majority
+
+    def _check_key_info(
+        self,
+        term_session: TaskTermSession,
+        *,
+        global_translations: dict[str, str],
+        source_lang: str,
+        excel_review_marks: dict[str, str],
+        quality_issues: list[dict],
+    ) -> None:
+        """证件号、日期、人名与原文对不上的格子标需复核，原因汇总成复核清单里的一行。"""
+        found = term_session.check_key_info(global_translations, source_lang=source_lang)
+        if not found:
+            return
+        for source in found:
+            _set_excel_review_mark(excel_review_marks, source, REVIEW_MARK_KEY_INFO)
+        quality_issues.append(
+            {
+                "type": REVIEW_MARK_KEY_INFO,
+                "severity": "needs_review",
+                "count": len(found),
+                "message": review_summary(found),
+                "sources": [_build_excel_source_excerpt(source) for source in found],
+            }
+        )
 
     def _store_final_translations_in_tm(
         self,
@@ -3498,10 +3602,13 @@ class TaskRunner(BaseTaskRunner):
         """不自动存进记忆库的译文。
 
         - 「自动识别场景」下离开上下文就会译错的短词（带备注的场景译法另行保存）；
-        - 没有采用记忆库设定译法的译文：已标记需复核，存进去就成了下次的「旧译法」。
+        - 没有采用记忆库设定译法的译文：已标记需复核，存进去就成了下次的「旧译法」；
+        - 证件号、日期、人名与原文对不上的译文：同样已标记需复核。
         """
         session = getattr(self, "_term_session", None)
-        if session is not None and source_text in session.not_applied_texts():
+        if session is not None and (
+            source_text in session.not_applied_texts() or source_text in session.key_info_review
+        ):
             return True
         return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 

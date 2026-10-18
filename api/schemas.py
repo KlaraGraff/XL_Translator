@@ -143,6 +143,8 @@ class TaskStartRequest(BaseModel):
     # 「接着上次继续」：上一次任务的输出目录。runner 只读取它里面的既有译文，
     # 绝不往里写；本次输出仍然新建目录。
     resume_output_dir: str | None = None
+    # 同一批任务共用的输出文件夹，只由 POST /api/tasks/batch 填写（见 TaskOptions）。
+    batch_output_dir: str | None = None
     cad_output_dir: str | None = None
     cad_use_terminology: bool = True
     cad_keep_work_dxf: bool = False
@@ -202,6 +204,14 @@ class TaskStartRequest(BaseModel):
             raise ValueError("source_path is required for document tasks")
         return self
 
+
+
+class BatchStartRequest(BaseModel):
+    """「翻译」页的「全部开始」：每一项和 POST /api/tasks 的请求一样，各带各页的设置。"""
+
+    items: list[TaskStartRequest] = Field(min_length=1, max_length=16)
+    # 和这一批之外正在跑的任务共用连接时，用户已在弹窗里确认过。
+    allow_shared: bool = False
 
 class TmEntryPayload(BaseModel):
     source_text: str = Field(min_length=1)

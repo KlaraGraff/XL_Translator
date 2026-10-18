@@ -15,9 +15,13 @@
     "en": "All tasks",
     "fr": "Toutes les tâches"
   },
-  "另有 {0}，可到对应页面处理。": {
-    "en": "Also found {0}; open the matching page to translate them.",
-    "fr": "Également trouvé : {0} ; ouvrez la page correspondante pour les traduire."
+  "同一批文件还有 {0}，已在对应页面读取。": {
+    "en": "The same batch also has {0}, already loaded on their own pages.",
+    "fr": "Le même lot contient aussi {0}, déjà chargés sur leurs pages respectives."
+  },
+  "{0} 正在翻译，这一类文件没有放入，完成后再拖入一次即可。": {
+    "en": "{0} is still translating, so those files were not added. Drop them again once it finishes.",
+    "fr": "{0} est en cours de traduction : ces fichiers n'ont pas été ajoutés. Déposez-les à nouveau une fois la traduction terminée."
   },
   "可翻译的文件": {
     "en": "Translatable files",
@@ -50,5 +54,93 @@
   "还没有翻译任务。拖入文件开始第一次翻译。": {
     "en": "No translation tasks yet. Drop files to start your first one.",
     "fr": "Aucune tâche de traduction pour l'instant. Déposez des fichiers pour commencer."
+  },
+  "{0}：{1}": {
+    "en": "{0}: {1}",
+    "fr": "{0} : {1}"
+  },
+  "{0} 个 DWG 需先连接图纸转换工具。": {
+    "en": "{0} DWG {0|drawing needs|drawings need} the drawing converter first.",
+    "fr": "{0} {0|plan|plans} DWG {0|nécessite|nécessitent} d'abord le convertisseur de plans."
+  },
+  "{0} 个 DWG 需先连接图纸转换工具，本次只翻译 DXF。": {
+    "en": "{0} DWG {0|drawing needs|drawings need} the drawing converter first; only DXF files are translated this time.",
+    "fr": "{0} {0|plan|plans} DWG {0|nécessite|nécessitent} d'abord le convertisseur de plans ; seuls les fichiers DXF sont traduits cette fois."
+  },
+  "全部开始（{0} 个文件）": {
+    "en": "Start all ({0} files)",
+    "fr": "Tout lancer ({0} fichiers)"
+  },
+  "其余类型已开始。处理好上述问题后，可在对应页面单独开始。": {
+    "en": "The other types have started. Once the issues above are fixed, start them from their own pages.",
+    "fr": "Les autres types ont démarré. Une fois ces problèmes réglés, lancez-les depuis leur propre page."
+  },
+  "去设置 ↗": {
+    "en": "Settings ↗",
+    "fr": "Réglages ↗"
+  },
+  "各类文件按各自页面的设置翻译，结果统一写入「{0}」中新建的一个输出文件夹。": {
+    "en": "Each type is translated with its own page's settings. All results go into one new output folder inside “{0}”.",
+    "fr": "Chaque type est traduit avec les réglages de sa page. Tous les résultats sont écrits dans un même nouveau dossier de sortie, dans « {0} »."
+  },
+  "因此每个任务都会比单独运行时慢；如该连接按用量计费，几个任务将同时产生费用。如遇服务限速，程序将自动降低发送速度，设置中的速度不会被修改。": {
+    "en": "Each task will therefore run slower than on its own. If this connection is billed by usage, all of them incur costs at the same time. If the service limits requests, sending slows down automatically; the speed in your settings is not changed.",
+    "fr": "Chaque tâche sera donc plus lente que seule. Si cette connexion est facturée à l'usage, toutes génèrent des frais en même temps. Si le service limite les requêtes, l'envoi ralentit automatiquement ; la vitesse définie dans vos réglages n'est pas modifiée."
+  },
+  "已开始": {
+    "en": "Started",
+    "fr": "Démarré"
+  },
+  "待开始": {
+    "en": "Ready",
+    "fr": "Prêt"
+  },
+  "未勾选文件": {
+    "en": "No files selected",
+    "fr": "Aucun fichier coché"
+  },
+  "未读取到文件": {
+    "en": "No files found",
+    "fr": "Aucun fichier trouvé"
+  },
+  "本批文件": {
+    "en": "This batch",
+    "fr": "Ce lot"
+  },
+  "本批文件将与正在运行的「{0}」共用同一条 API 连接。几个任务轮流使用这条连接，同时发出的请求总数不超过其中最高的那项设置。": {
+    "en": "This batch will share an API connection with the running “{0}”. The tasks take turns on the connection, and the total number of simultaneous requests stays within the highest of their settings.",
+    "fr": "Ce lot partagera une connexion API avec « {0} » en cours. Les tâches utilisent la connexion à tour de rôle, et le nombre total de requêtes simultanées ne dépasse pas le plus élevé de leurs réglages."
+  },
+  "本批文件未能开始": {
+    "en": "This batch could not start",
+    "fr": "Ce lot n'a pas pu démarrer"
+  },
+  "查看 ↗": {
+    "en": "View ↗",
+    "fr": "Voir ↗"
+  },
+  "正在翻译": {
+    "en": "Translating",
+    "fr": "Traduction en cours"
+  },
+  "源语言与目标语言相同，请到这一页重新选择。": {
+    "en": "Source and target languages are the same. Change them on this type's page.",
+    "fr": "Les langues source et cible sont identiques. Modifiez-les sur la page de ce type."
+  },
+  "返回本批文件": {
+    "en": "Back to this batch",
+    "fr": "Retour au lot"
+  },
+  "这一类已有任务在进行，本次不包含。": {
+    "en": "A task of this type is already running, so it is not included.",
+    "fr": "Une tâche de ce type est déjà en cours ; elle n'est pas incluse."
+  },
+  "部分类型未能开始": {
+    "en": "Some types could not start",
+    "fr": "Certains types n'ont pas pu démarrer"
+  },
+  "需先设置": {
+    "en": "Needs attention",
+    "fr": "À régler"
   }
 }

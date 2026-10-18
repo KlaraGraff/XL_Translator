@@ -24,6 +24,7 @@ from api.surfaces.base import (
     PHASE_READ,
     PHASE_TRANSLATE,
     PHASE_WRITE,
+    ChoiceDef,
     OptionDef,
     RunnerRequest,
     Surface,
@@ -37,6 +38,7 @@ from core.adapter_runner import AdapterTaskRunner
 from core.format_adapter import (
     BILINGUAL_OPTION_KEY,
     BUNDLED_ADAPTERS_DIR,
+    TARGET_LANG_OPTION_KEY,
     AdapterError,
     AdapterHost,
     AdapterManifest,
@@ -47,7 +49,7 @@ from core.language_registry import get_target_lang_display
 from core.surface_settings import EXTENSION_PAGE_KEY, extension_settings
 from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
-from settings import AppSettings
+from settings import AppSettings, load_settings
 
 #: Where an adapter came from, shown on the 扩展 page: shipped with the app, or
 #: installed by the user (``api/extension_install_job.py``).
@@ -112,16 +114,24 @@ def _is_output_or_hidden(part: str) -> bool:
     return part.startswith(".") or part.endswith("_翻译输出") or "_翻译输出_" in part
 
 
+def _is_office_lock_file(filename: str) -> bool:
+    # Office 打开文件时在旁边放一个 165 字节的「~$原名」，扩展名和原文件一样。
+    # 当成 .ppt 去转换，PowerPoint 会对着它卡上两分钟。
+    return filename.startswith("~$")
+
+
 def list_files(root: Path, extensions: tuple[str, ...]) -> list[tuple[Path, str]]:
     """``(path, relative_path)`` of every file under ``root`` with one of ``extensions``.
 
     Earlier translation output folders and hidden folders are left out, so a
-    second run never picks up the first run's results.
+    second run never picks up the first run's results; so are the ``~$`` lock
+    files Office keeps next to an open document.
     """
     root = Path(root)
     wanted = {f".{suffix}" for suffix in extensions}
     if root.is_file():
-        return [(root, root.name)] if root.suffix.lower() in wanted else []
+        keep = root.suffix.lower() in wanted and not _is_office_lock_file(root.name)
+        return [(root, root.name)] if keep else []
     if not root.is_dir():
         return []
     found: list[tuple[Path, str]] = []
@@ -129,7 +139,7 @@ def list_files(root: Path, extensions: tuple[str, ...]) -> list[tuple[Path, str]
         subdirectories[:] = sorted(name for name in subdirectories if not _is_output_or_hidden(name))
         for filename in sorted(filenames):
             path = Path(directory) / filename
-            if filename.startswith(".") or path.suffix.lower() not in wanted:
+            if filename.startswith(".") or _is_office_lock_file(filename) or path.suffix.lower() not in wanted:
                 continue
             found.append((path, str(path.relative_to(root))))
     return found
@@ -170,9 +180,24 @@ class AdapterSurface(Surface):
         self.output_bilingual = manifest.capabilities.bilingual
         self.output_translation_only = manifest.capabilities.translation_only
         self.default_prompt = manifest.prompt
+        # 侧栏默认显示和默认位置只认随应用提供的类型；装进来的扩展写了也不算（装上时本来就打开了）。
+        self.visible_by_default = origin == "bundled" and manifest.visible_by_default
+        self.sidebar_after = manifest.sidebar_after if origin == "bundled" else ""
         both = self.output_bilingual and self.output_translation_only
         self.options = ((BILINGUAL_OPTION,) if both else ()) + tuple(
-            OptionDef(option.key, dict(option.label), default=option.default, help=dict(option.help))
+            OptionDef(
+                option.key,
+                dict(option.label),
+                default=option.default,
+                help=dict(option.help),
+                kind=option.kind,
+                choices=tuple(ChoiceDef(choice.value, dict(choice.label)) for choice in option.choices),
+                minimum=option.min,
+                maximum=option.max,
+                units=tuple(ChoiceDef(unit.value, dict(unit.label)) for unit in option.units),
+                unit=option.unit,
+                show_when={key: tuple(values) for key, values in option.show_when.items()},
+            )
             for option in manifest.options
         )
 
@@ -184,6 +209,9 @@ class AdapterSurface(Surface):
         if self.manifest.prompt:
             # 「翻译参数」里这个类型的内置规则默认值；没有时界面显示通用的那份。
             descriptor["prompt"] = self.manifest.prompt
+        # 侧栏：没在「扩展」页拨过时是否显示、默认顺序里紧跟哪个类型（界面 surface-descriptors.ts）。
+        descriptor["visible_by_default"] = self.visible_by_default
+        descriptor["sidebar_after"] = self.sidebar_after
         descriptor["adapter"] = {
             "id": self.manifest.id,
             "version": self.manifest.version,
@@ -193,18 +221,18 @@ class AdapterSurface(Surface):
         }
         return descriptor
 
-    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool]:
-        """Switch values for a task: descriptor default ← saved on the page ← the request."""
+    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool | int | float | str]:
+        """Option values for a task: descriptor default ← saved on the page ← the request."""
         saved = dict(extension_settings(settings, self.key).options) if settings is not None else {}
         requested = dict((options.options if options is not None else None) or {})
-        resolved: dict[str, bool] = {}
+        resolved: dict[str, bool | int | float | str] = {}
         for option in self.options:
             value: Any = option.default
             if option.key in saved:
                 value = saved[option.key]
             if option.key in requested:
                 value = requested[option.key]
-            resolved[option.key] = bool(value)
+            resolved[option.key] = option.coerce(value)
         return resolved
 
     # ── scan ─────────────────────────────────────────────────────────────
@@ -233,9 +261,13 @@ class AdapterSurface(Surface):
 
     def scan_sources(self, root: Path, request: Any) -> AdapterScanResult:
         result = AdapterScanResult(root=Path(root))
+        # 扫描也带上页面存的开关和目标语言：开关会改变要翻的内容（关掉备注就不数备注）。
+        settings = load_settings()
+        target_lang = str(getattr(request, "target_language", "") or "") or extension_settings(settings, self.key).target_lang
+        options = {**self.resolve_options(settings, None), TARGET_LANG_OPTION_KEY: target_lang}
         for item in self._items(root):
             try:
-                scanned = self.host.scan(item.path)
+                scanned = self.host.scan(item.path, options)
             except AdapterError as exc:
                 logger.warning(f"[{self.key}] 无法读取 {item.name}：{exc}")
                 result.skipped.append(
@@ -260,6 +292,11 @@ class AdapterSurface(Surface):
             raise TaskInputError(f"没有可翻译的{self.file_noun.get('zh', '文件')}。")
         require_target_lang(settings.target_lang, self.display_label.get("zh", self.key))
         require_translation_model(settings)
+        saved = extension_settings(settings, self.key)
+        if saved.use_custom_output_dir:
+            output_error = bilingual_writer.get_custom_output_dir_error(saved.custom_output_dir)
+            if output_error:
+                raise TaskInputError(output_error)
 
     def snapshot(self, *, settings: AppSettings, files: list[Any], options: TaskOptions) -> dict[str, object]:
         return {
@@ -289,7 +326,7 @@ class AdapterSurface(Surface):
     def owner_label(self, snapshot: dict[str, object]) -> str:
         return f"{self.label} → {get_target_lang_display(str(snapshot.get('target_lang') or ''))}"
 
-    def write_bilingual(self, options: dict[str, bool]) -> bool:
+    def write_bilingual(self, options: dict[str, Any]) -> bool:
         """Write source + translation: the 双语对照 switch, or the only output the adapter has."""
         if self.output_bilingual and self.output_translation_only:
             return bool(options.get(BILINGUAL_OPTION_KEY, False))
@@ -311,12 +348,18 @@ class AdapterSurface(Surface):
             marked_in="review_list",
             default_prompt=self.default_prompt,
         )
+        saved = extension_settings(settings, self.key)
+        custom_output_dir = saved.custom_output_dir.strip() if saved.use_custom_output_dir else ""
         return AdapterTaskRunner(
             request.files,
             host=self.host,
             service=service,
             source_root=request.source_root,
-            output_dir=bilingual_writer.build_output_dir(request.source_root),
+            output_dir=(
+                Path(request.options.batch_output_dir)
+                if request.options.batch_output_dir
+                else bilingual_writer.build_output_dir(request.source_root, custom_output_dir or None)
+            ),
             target_lang=settings.target_lang,
             source_lang=request.source_lang,
             bilingual=self.write_bilingual(options),

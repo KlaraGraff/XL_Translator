@@ -1274,6 +1274,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         api_scheduler: WeightedApiScheduler | None = None,
         review_api_scheduler: WeightedApiScheduler | None = None,
         resume_output_dir: str | None = None,
+        batch_output_dir: str | None = None,
         profile_requester: Callable[[list[str], Callable[[str, str], None]], str] | None = None,
         profile_concurrency: int = 1,
         inplace_hooks: Any = None,
@@ -1294,6 +1295,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._source_root = Path(source_root) if source_root else None
         # 「接着上次继续」选中的历史输出目录。只读：本次任务写的永远是自己的新目录。
         self._resume_output_dir = str(resume_output_dir).strip() if resume_output_dir else ""
+        # 同一批任务共用的输出文件夹；设了就不再新建自己的。
+        self._batch_output_dir = Path(batch_output_dir) if batch_output_dir else None
         self._image_client = image_client or OpenAICompatibleImageGenerationClient()
         self._review_client = review_client or OpenAICompatiblePdfReviewClient()
         self._key_overrides = dict(key_overrides or {})
@@ -2742,7 +2745,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
 
         try:
-            output_dir = build_pdf_output_dir(root_for_output, custom_output_dir)
+            output_dir = self._batch_output_dir or build_pdf_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             app_managed = is_app_managed_pdf_output_dir(output_dir)
             self._process_artifacts = ProcessArtifacts.create(

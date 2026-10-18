@@ -177,11 +177,7 @@ svg.ic.lg { width: 22px; height: 22px; }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
 .btn.big { height: 40px; width: 100%; font-size: 13.5px; border-radius: var(--r-md); }
 .btn.mini { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 7px; }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 15px; }
-.stat b { display: block; font-size: 21px; font-weight: 650; letter-spacing: -.3px; margin-top: 2px; }
-.stat span { font-size: 11.5px; color: var(--ink-2); }
-.stat.dim b { color: var(--ink-3); }
+/* 记忆库页样式已移至 views/library.css */
 .tablecard { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .tc-head { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
 .tc-head b { color: var(--ink); font-weight: 650; font-size: 14px; white-space: nowrap; }
@@ -494,7 +490,7 @@ table.review-tbl { table-layout: fixed; }
 .dropdown-menu[data-placement="above"] { transform-origin: bottom center; }
 .dropdown-menu[data-placement="below"] { transform-origin: top center; }
 .rf-history-select { min-width: 180px; }
-.tm-page-size { min-width: 84px; }
+/* 记忆库页样式已移至 views/library.css */
 
 /* ========== 可搜索语言选择器 ==========
  * 迁移自 docs/mockups/2026-08-06_lang-picker-focus-excel-notice.html 第 ② 节。
@@ -596,16 +592,7 @@ table.review-tbl { table-layout: fixed; }
  * 除类名外，配色、尺寸、间距、结构与样张逐条对齐，颜色全部走 tokens.css，无 color-mix()。
  */
 
-/* A · 扫描统计格。样张比现在多出第 5 格；.stats 原本是写死的 4 列，五格时换成样张
-   那套自适应列宽。最小列宽取 112px 而不是样张的 148px：样张的陈列台是整页宽（1120），
-   应用里这一行只占左栏（常见 700 上下），按 148px 算只排得下 4 列，第 5 格会孤零零
-   掉到第二行。112px 保证常见宽度下五格同排，窗口再窄才折行。 */
-.stats.five { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
-.stat .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
-/* 有内容才变黄：确认为 0 或「数不出来」时保持中性色，不制造无谓的警示。 */
-.stat.attn { background: var(--warn-t); border-color: var(--warn-l); }
-.stat.attn span, .stat.attn b { color: var(--warn); }
-.stat.attn .sub { color: var(--warn); opacity: .85; }
+/* 记忆库页样式已移至 views/library.css */
 /* 「—」「0 / 0」这类无信息量的取值压成弱色，别和真实数字抢注意力。 */
 .dash { color: var(--ink-3); }
 
@@ -878,12 +865,26 @@ table.review-tbl { table-layout: fixed; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @keyframes modal-in { from { opacity: 0; transform: scale(.97) translateY(6px); } to { opacity: 1; transform: none; } }
 
+/* 换主题或配色的那一小会儿（motion.ts withColorFade）：颜色类属性一起过渡，不一帧跳变。
+   只在允许动效时才挂这个类，所以不用再管减少动效。 */
+:root.color-fade, :root.color-fade *, :root.color-fade *::before, :root.color-fade *::after {
+  transition: background-color var(--t-page) var(--ease-out), border-color var(--t-page) var(--ease-out), color var(--t-page) var(--ease-out), fill var(--t-page) var(--ease-out), stroke var(--t-page) var(--ease-out), box-shadow var(--t-page) var(--ease-out), outline-color var(--t-page) var(--ease-out) !important;
+}
+
 /* 减少动效：系统「减弱动态效果」或 <html data-motion="reduced">。所有动画和过渡压到 1ms，
    只剩最终状态；循环动画只跑一次就停。 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: 1ms !important; transition-delay: 0ms !important; }
 }
 :root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: 1ms !important; transition-delay: 0ms !important; }
+
+/* 路径输入框（path-input.ts showPathWithMiddleEllipsis）：放不下时不在编辑的那一刻显示省略中间的
+ * 路径，画在输入框上面一层；输入框的值始终是完整路径，聚焦后上层隐藏，编辑与普通输入框无异。 */
+.path-field { position: relative; display: flex; align-items: center; flex: 1; min-width: 0; align-self: stretch; }
+.path-field > input { flex: 1; min-width: 0; }
+.path-shown { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: nowrap; pointer-events: none; visibility: hidden; }
+.path-field.is-shortened:not(:focus-within) > input { -webkit-text-fill-color: transparent; }
+.path-field.is-shortened:not(:focus-within) > .path-shown { visibility: visible; }
 
 /* ==========================================================================
  * 输入控件的聚焦态（状态层，必须留在文件最末）
@@ -923,7 +924,7 @@ textarea:focus,
 .dropdown-btn > input.dropdown-value:focus,
 .lang-btn > input.val:focus,
 .tag-input input:focus,
-.src > input:focus {
+.src input:focus {
   box-shadow: none;
 }
 input, textarea { caret-color: var(--accent); }
@@ -938,27 +939,12 @@ textarea:disabled,
   color: var(--ink-3);
 }
 
-/* 记忆库页：规则说明、筛选胶囊上的条数、高级模式开关；编辑窗口的采用方式。 */
-.stats.three { grid-template-columns: repeat(3, 1fr); }
+/* 筛选胶囊上的条数（记忆库页与任务页共用）。记忆库页私有样式已移至 views/library.css。 */
 .tk-filters.wrap { flex-wrap: wrap; }
 button.f { font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
 .tk-filters .f b { font-weight: 600; color: var(--ink-3); }
 .tk-filters .f.on b { color: var(--tint-ink); }
-.tm-rule { display: flex; gap: 6px 24px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
-.tm-rule b { color: var(--ink); font-weight: 600; }
-/* 记忆库页右上角「设置」浮层（views/library.ts toggleTmSettings）：开关行 + 底部指引。 */
-.tm-settings-pop { width: 320px; max-width: calc(100vw - 16px); padding: 6px 14px 10px; }
-.tm-settings-group { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
-.tm-settings-foot { margin: 6px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
-.tm-settings-foot .resume-link { font-size: 11.5px; margin-left: 6px; }
-.tm-note { color: var(--ink-2); }
-.tm-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; line-height: 1.5; }
-.tm-adv { border-top: 1px dashed var(--line-2); padding-top: 12px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
-.tm-adv-label { font-size: 11.5px; font-weight: 600; color: var(--ink-2); }
-.tm-opt { display: flex; gap: 9px; align-items: flex-start; padding: 5px 0; cursor: pointer; }
-.tm-opt input { accent-color: var(--accent); margin: 2px 0 0; flex: none; }
-.tm-opt b { font-size: 12.5px; font-weight: 600; }
-.tm-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+/* 记忆库页样式已移至 views/library.css */
 
 /* 任务详情「记忆库」一节（views/task-terms.ts）。 */
 .tm-report { margin: 4px 0 14px; }
