@@ -5,6 +5,7 @@
 
 import { fmtNum, t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
+import { EASE_SPRING, T_PAGE, motionAllowed } from "./motion";
 
 /** 清空一个元素的子节点；不用 replaceChildren（Safari 15.1 不支持）。 */
 export function clearElement(el: HTMLElement): void {
@@ -1548,7 +1549,13 @@ export interface SegmentedOptions {
   disabled?: boolean;
   ariaLabel?: string;
   onChange?: (value: string) => void;
+  /** 点了以后整页会重画、换成一个新控件的（设置页大多如此）：给个稳定的名字，新控件接着把滑块滑完，
+   *  不会在重画那一刻跳到终点。 */
+  motionKey?: string;
 }
+
+// 滑块正在滑的那一段，按 motionKey 记：重画出来的新控件读到它就从同一时刻接着播。
+const segSlides = new Map<string, { from: number; to: number; count: number; started: number }>();
 
 /** .seg：两三个互斥选项排成一条，白色滑块（.thumb）滑到选中项下面。 */
 export function createSegmented(options: SegmentedOptions): HTMLDivElement {
@@ -1566,23 +1573,40 @@ export function createSegmented(options: SegmentedOptions): HTMLDivElement {
     button.disabled = Boolean(options.disabled);
     button.addEventListener("click", () => {
       if (option.value === current) return;
+      const from = indexOf(current);
       current = option.value;
-      paint();
+      // 先记下这一段再通知：onChange 里常常同步重画，新控件创建时就要读到它。
+      if (options.motionKey) segSlides.set(options.motionKey, { from, to: indexOf(current), count: options.options.length, started: performance.now() });
+      paint(from, 0);
       options.onChange?.(option.value);
     });
     root.append(button);
     return button;
   });
-  const paint = () => {
-    const index = Math.max(0, options.options.findIndex((option) => option.value === current));
-    thumb.style.transform = `translateX(${index * 100}%)`;
+  // 位移用 Web Animations 播：换主题时 app.css 的 .color-fade 会临时把所有 CSS 过渡改成只管颜色，
+  // 靠 .thumb 的 CSS 过渡滑块就会直接跳过去。
+  const paint = (from?: number, elapsed = 0) => {
+    const index = indexOf(current);
+    const to = `translateX(${index * 100}%)`;
+    thumb.style.transform = to;
+    if (from !== undefined && from !== index && motionAllowed()) {
+      const slide = thumb.animate([{ transform: `translateX(${from * 100}%)` }, { transform: to }], { duration: T_PAGE, easing: EASE_SPRING });
+      slide.currentTime = elapsed;
+    }
     buttons.forEach((button, i) => {
       button.classList.toggle("on", i === index);
       button.setAttribute("aria-checked", String(i === index));
     });
   };
-  paint();
+  const slide = options.motionKey ? segSlides.get(options.motionKey) : undefined;
+  const elapsed = slide ? performance.now() - slide.started : Infinity;
+  if (slide && elapsed < T_PAGE && slide.to === indexOf(current) && slide.count === options.options.length) paint(slide.from, elapsed);
+  else paint();
   return root;
+
+  function indexOf(value: string): number {
+    return Math.max(0, options.options.findIndex((option) => option.value === value));
+  }
 }
 
 // ---------------------------------------------------------------------------

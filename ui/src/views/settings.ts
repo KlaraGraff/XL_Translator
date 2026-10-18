@@ -36,6 +36,7 @@ import { icon, type IconName } from "../icons";
 import { ApiClient, ApiError } from "../api-client";
 import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
+import { motionAllowed, riseIn, withColorFade } from "../motion";
 import { applyModelPillFromRoles, setModelPillSettingsRole } from "../model-pill";
 import { renderReleaseNotes, releaseNotesLineCount } from "../markdown";
 // 更新的状态和动作都在 update-controller：顶部的更新提示卡片和这一页显示的是同一件事，
@@ -373,6 +374,8 @@ export async function ensureConnected(): Promise<void> {
 let bodyHost: HTMLElement | null = null;
 let bannerHost: HTMLElement | null = null;
 let navEls: Map<SettingsPage, HTMLButtonElement> | null = null;
+// 左栏选中项下面那块会滑的淡蓝底，和应用侧栏的 .side-ind 同一种。
+let navIndicator: HTMLElement | null = null;
 let currentPage: SettingsPage = "models";
 export let mountToken = 0;
 let dataHealth: DataHealthPayload | null = null;
@@ -458,6 +461,11 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   nav.className = "set-nav";
   nav.setAttribute("role", "tablist");
   nav.setAttribute("aria-orientation", "vertical");
+  const indicator = document.createElement("span");
+  indicator.className = "set-ind";
+  indicator.setAttribute("aria-hidden", "true");
+  nav.append(indicator);
+  navIndicator = indicator;
   const navMap = new Map<SettingsPage, HTMLButtonElement>();
   for (const item of NAV_ITEMS) {
     const el = document.createElement("button");
@@ -505,6 +513,12 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
   container.append(banner, row);
   highlightNav();
+  // 挂上以后才量得到各项位置；第一次放到位不带过渡（不然会从顶端滑下来），下一帧才加 .ready。
+  requestAnimationFrame(() => {
+    if (navIndicator !== indicator) return;
+    moveNavIndicator();
+    if (motionAllowed()) requestAnimationFrame(() => indicator.classList.add("ready"));
+  });
 
   clearElement(body);
   body.append(createEmptyState({ title: t("正在加载设置…"), icon: "gear" }));
@@ -545,6 +559,7 @@ export function unmount(): void {
   bodyHost = null;
   bannerHost = null;
   navEls = null;
+  navIndicator = null;
   renderedPage = null;
   setModelPillSettingsRole(null);
   unsubscribeUpdates?.();
@@ -565,6 +580,29 @@ function highlightNav(): void {
     el.classList.toggle("on", id === currentPage);
     el.setAttribute("aria-selected", String(id === currentPage));
   }
+  moveNavIndicator();
+}
+
+function moveNavIndicator(): void {
+  const on = navEls?.get(currentPage);
+  if (!navIndicator || !on) return;
+  navIndicator.style.transform = `translateY(${on.offsetTop}px)`;
+  navIndicator.style.height = `${on.offsetHeight}px`;
+  navIndicator.style.opacity = "1";
+}
+
+/**
+ * 页签、用途卡换了以后整页会重画：页签那一节原地不动，只让它下面换掉的内容浮现
+ * （同「扩展」页换页签）。带 .rise-skip 的节（翻译参数里不跟页签走的记忆库）也不动。
+ */
+export function riseBelow(anchorSelector: string): void {
+  const anchor = bodyHost?.querySelector(anchorSelector);
+  if (!anchor) return;
+  const below: Element[] = [];
+  for (let el = anchor.nextElementSibling; el; el = el.nextElementSibling) {
+    if (!el.classList.contains("rise-skip")) below.push(el);
+  }
+  riseIn(below);
 }
 
 async function bootstrap(token: number): Promise<void> {
@@ -728,7 +766,6 @@ async function loadAndRenderPage(token: number): Promise<void> {
 
 // 上一次 renderBody 画的是哪个子页，用来判断这次重画要不要保留滚动位置。
 let renderedPage: SettingsPage | null = null;
-let enterTimer = 0;
 
 export function renderBody(): void {
   if (!bodyHost) return;
@@ -736,13 +773,7 @@ export function renderBody(): void {
   // 滚动位置不受控制，点「保存配置」后页面停在别处，连接列表那一行被顶部截掉一半。
   // 换了子页才回到顶部。
   const keepScroll = renderedPage === currentPage ? bodyHost.scrollTop : 0;
-  // 换了子页才播一次错落浮现；同一页里保存后的重画不再播，否则每点一下卡片都闪一遍。
-  if (renderedPage !== currentPage) {
-    const host = bodyHost;
-    host.classList.add("enter");
-    window.clearTimeout(enterTimer);
-    enterTimer = window.setTimeout(() => host.classList.remove("enter"), 700);
-  }
+  const pageChanged = renderedPage !== currentPage;
   clearElement(bodyHost);
   // 上一轮渲染留下的表单钩子指向的是已经被 clearElement 摘掉的 DOM。模型页会在下面
   // 重新接上；其他页面就该是空的，否则「获取模型列表」那条路径可能提交一份幽灵表单。
@@ -757,6 +788,9 @@ export function renderBody(): void {
   }
   renderedPage = currentPage;
   bodyHost.scrollTop = keepScroll;
+  // 换了子页，正文整块从下方淡入，和应用侧栏换页同一种；同一页里保存、测试后的重画不播，
+  // 否则每点一下都闪一遍。以前只有模型服务页的四张用途卡错落浮现，别的子页没有动画。
+  if (pageChanged) riseIn(bodyHost, "page");
 }
 
 // 模型表单里几个「点了按钮但没提交表单」的输入框——获取模型列表 / 测试连接这类操作
@@ -1451,6 +1485,7 @@ function renderParamsPage(host: HTMLElement): void {
       if (paramsTab === def.id) return;
       paramsTab = def.id;
       renderBody();
+      riseBelow(".params-head");
     });
     tabs.append(tab);
   }
@@ -1523,7 +1558,9 @@ function renderParamsPage(host: HTMLElement): void {
   }
 
   // 记忆库对每种文件类型都生效，不跟着上面的页签切换。
-  host.append(renderTmParamsCard());
+  const tmCard = renderTmParamsCard();
+  tmCard.classList.add("rise-skip");
+  host.append(tmCard);
 }
 
 /** 把下划线放到当前页签下面；上一次的位置还在时先停在那里，再滑过来。 */
@@ -2201,7 +2238,7 @@ function renderPaletteCard(host: HTMLElement): void {
         const previous = currentPalettePreference();
         if (palette.id === previous[row.mode]) return;
         const next: PaletteChoice = { ...previous, [row.mode]: palette.id };
-        applyPalettes(next);
+        withColorFade(() => applyPalettes(next));
         try {
           await persistSettings({
             appearance: { ...record(settings?.appearance), palette_light: next.light, palette_dark: next.dark },
@@ -2241,6 +2278,7 @@ function renderLanguageCard(host: HTMLElement): void {
     options: LOCALES.map((option) => ({ value: option.value, label: option.label })),
     value: active,
     ariaLabel: t("界面语言"),
+    motionKey: "appearance.language",
   });
   seg.classList.add("seg-narrow");
   const buttons = Array.from(seg.querySelectorAll<HTMLButtonElement>("button"));
@@ -2322,7 +2360,7 @@ function renderAppearancePage(host: HTMLElement): void {
   ];
   const active = currentThemePreference();
   // 分段控件自己负责滑块和选中态；落盘、回滚和写 localStorage 挂在每个按钮上。
-  const seg = createSegmented({ options: options.map(({ value, label }) => ({ value, label })), value: active, ariaLabel: t("主题") });
+  const seg = createSegmented({ options: options.map(({ value, label }) => ({ value, label })), value: active, ariaLabel: t("主题"), motionKey: "appearance.theme" });
   seg.classList.add("seg-narrow");
   const segButtons = Array.from(seg.querySelectorAll<HTMLButtonElement>("button"));
   for (const [index, segc] of segButtons.entries()) {
@@ -2331,7 +2369,7 @@ function renderAppearancePage(host: HTMLElement): void {
     segc.addEventListener("click", () => void reRenderAfter(async () => {
       const previous = currentThemePreference();
       if (previous === option.value) return;
-      applyThemeVisual(option.value);
+      withColorFade(() => applyThemeVisual(option.value));
       try {
         await persistSettings({ appearance: { ...record(settings?.appearance), theme: option.value } });
       } catch (error) {
