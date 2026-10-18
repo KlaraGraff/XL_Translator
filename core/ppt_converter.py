@@ -171,6 +171,10 @@ def convert_ppt_to_pptx(
         raise PptConversionError(f"不是旧版 .ppt 文件：{source_path.name}")
     if not source_path.is_file():
         raise PptConversionError("文件不存在或已被移动，请重新选择来源。")
+    if not _looks_like_presentation(source_path):
+        # 不是演示文稿（Office 的「~$」锁文件、改了扩展名的别的文件）：交给 PowerPoint
+        # 它会对着打不开的文件等上两分钟，LibreOffice 也只会报错。
+        raise PptConversionError("这不是有效的 PowerPoint 文件，可能已损坏或只是临时文件。")
 
     attempts: list[tuple[str, str, Converter]] = []
     if prefer_native_powerpoint:
@@ -220,6 +224,19 @@ def convert_ppt_to_pptx(
     else:
         message = "旧版文件转换失败（" + "；".join(errors) + "）。" + SAVE_AS_PPTX_HINT
     raise PptConversionError(message, attempts=errors)
+
+
+#: 旧版 .ppt / .pps 是 OLE 复合文档；改了扩展名的 .pptx 是 zip，PowerPoint 也能打开。
+_PRESENTATION_SIGNATURES = (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", b"PK\x03\x04")
+
+
+def _looks_like_presentation(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(8)
+    except OSError:
+        return False
+    return any(head.startswith(signature) for signature in _PRESENTATION_SIGNATURES)
 
 
 # ── 本机 PowerPoint ─────────────────────────────────────────────────────
