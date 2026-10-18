@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from lxml import etree
 
@@ -62,6 +63,7 @@ from core.drawingml_marks import (
     write_paragraph,
 )
 from core.opc_package import OpcPackage, PackageVerificationError, rels_path, resolve_part
+from core.pptx_fit import DEFAULT_GAP_PT, LAYOUT_FIT, FitIssue, fit_after_write
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -155,29 +157,6 @@ _RESIDUAL_RE = re.compile(r"</?\s*g\s*\d+\s*>|⟦\s*\d+\s*⟧", re.IGNORECASE)
 
 class PptxError(ValueError):
     """读不了或写不出这个文件；消息是给用户看的一句话。"""
-
-
-# ── 缩字（包 3 合并时换成 ``from core.pptx_fit import FitIssue, fit_after_write``）────
-
-
-@dataclass
-class FitIssue:
-    """缩到下限仍放不下的一个框：``target`` 是 ``touched`` 里的那个元素。"""
-
-    target: object
-    reason: str
-
-
-def fit_after_write(
-    read_part: Callable[[str], bytes | None],
-    part_name: str,
-    root: object,
-    touched: list[object],
-    *,
-    fixed_layout: bool = False,
-) -> list[FitIssue]:
-    """占位：放不下自动缩小由 ``core/pptx_fit.py`` 提供，合并前什么都不做。"""
-    return []
 
 
 # ── 读包 ────────────────────────────────────────────────────────────────────
@@ -1056,12 +1035,14 @@ def write_file(
     bilingual: bool = False,
     target_lang: str | None = None,
     translate_notes: bool = True,
-    fixed_layout: bool = False,
+    layout_mode: str = LAYOUT_FIT,
+    gap_pt: float = DEFAULT_GAP_PT,
     fit: Callable[..., list] | None = None,
 ) -> WriteResult:
     """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。
 
-    ``fixed_layout``：所有框和表格的大小位置不动，放不下只缩字号（交给缩字那一步）。
+    ``layout_mode``：写回偏好，自适应排版 / 保持字号 / 固定版面；``gap_pt``：自适应排版模式加高、加宽时与
+    旁边的形状和页边留的距离，单位磅（都见 ``core.pptx_fit``，交给缩字那一步）。
     """
     source = Path(source)
     out_path = Path(out_path)
@@ -1091,8 +1072,10 @@ def write_file(
                     continue
                 root = deck.root(scope.part)
                 if scope.kind != "notes":
-                    # 「固定版面」关着时不传这个参数，缩字那一步按原稿各框的自动调整设置走。
-                    extra = {"fixed_layout": True} if fixed_layout else {}
+                    # 默认值不传（「自适应排版」、默认间距），缩字那一步按自己的默认走。
+                    extra: dict[str, Any] = {"layout_mode": layout_mode} if layout_mode != LAYOUT_FIT else {}
+                    if gap_pt != DEFAULT_GAP_PT:
+                        extra["gap_pt"] = gap_pt
                     for issue in fit(package.read, scope.part, root, list(result.touched), **extra) or []:
                         target = getattr(issue, "target", None)
                         slot = next((item for item in slots if item.owner is target), None)

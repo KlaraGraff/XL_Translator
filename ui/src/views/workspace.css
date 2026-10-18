@@ -993,6 +993,12 @@ tr.hid {
 .selrow .dropdown.compact.wide {
   width: 168px;
 }
+/* 「高级」里的数字 + 单位：输入框占满，单位下拉固定宽，两者同高（.dropdown-btn 是 34px）。 */
+.num-unit { display: flex; gap: 8px; align-items: stretch; }
+.field .num-unit > input.num-unit-value { flex: 1; min-width: 0; width: auto; height: 34px; font-size: 13px; padding: 0 11px; }
+.num-unit > .dropdown.unit { flex: none; width: 96px; }
+/* 从属于上一项的选项（描述符 show_when）：缩进，左边一道竖线接着上面那一项，表示它是那一项的细项。 */
+.adv > .opt-sub { margin-left: 6px; padding-left: 12px; border-left: 2px solid var(--line-2); }
 .selrow .dropdown.compact .dropdown-btn {
   min-height: 28px;
   font-size: 12px;
