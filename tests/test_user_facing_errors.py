@@ -43,6 +43,12 @@ class HumanizeErrorTests(unittest.TestCase):
         self.assertIn("系统设置", sentence)
         self.assertNotIn("占用", sentence)
 
+    def test_apple_event_timeout_is_office_not_the_model(self) -> None:
+        raw = "execution error: Microsoft PowerPoint got an error: AppleEvent timed out. (-1712)"
+        sentence = humanize_error(raw)
+        self.assertTrue(sentence.startswith("本机 Office 长时间没有响应"), sentence)
+        self.assertNotIn("模型", sentence)
+
     def test_dns_failure_reads_as_no_network(self) -> None:
         raw = "[Errno 8] nodename nor servname provided, or not known"
         self.assertTrue(humanize_error(raw).startswith("无法连接网络"))

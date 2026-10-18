@@ -7,6 +7,7 @@ itself is faked here except in the last test, which runs the real LibreOffice.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from api.surfaces.adapter import AdapterSurface
+from api.surfaces.adapter import AdapterSurface, list_files
 from core.format_adapter import AdapterError, InProcessAdapterHost
 from core.ppt_converter import (
     FIDELITY_COMPATIBILITY,
@@ -92,6 +93,24 @@ def test_read_extract_write_share_one_conversion(tmp_path: Path) -> None:
         host._patcher.stop()  # type: ignore[attr-defined]
 
 
+def test_task_reuses_the_reading_conversion_after_the_file_was_touched(tmp_path: Path) -> None:
+    # 读取后文件的修改时间被碰过（同步盘、杀毒软件），内容没变：开始翻译不再拉起 PowerPoint。
+    conversions = FakeConversions(FIXTURES / "training.pptx")
+    host = _host_with(conversions)
+    try:
+        source = _legacy(tmp_path)
+        host.scan(source)
+        stat = source.stat()
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+        host.scan(source)
+        units = host.extract(source)
+        host.write(source, [], MODE_TRANSLATION_ONLY, tmp_path / "讲义_法文.ppt", {"target_lang": "fr"})
+        assert len(conversions.calls) == 1
+        assert len(units) > 0
+    finally:
+        host._patcher.stop()  # type: ignore[attr-defined]
+
+
 def test_libreoffice_conversion_says_layout_may_differ(tmp_path: Path) -> None:
     host = _host_with(FakeConversions(FIXTURES / "training.pptx", method="LibreOffice"))
     try:
@@ -129,6 +148,17 @@ def test_failed_conversion_is_a_readable_error_and_retried_next_time(tmp_path: P
         assert len(conversions.calls) == 2
     finally:
         host._patcher.stop()  # type: ignore[attr-defined]
+
+
+def test_office_lock_files_are_not_listed(tmp_path: Path) -> None:
+    # PowerPoint 开着「讲义.ppt」时同目录里有「~$讲义.ppt」；读取文件夹或直接选中它都不列出。
+    source = _legacy(tmp_path)
+    lock = tmp_path / "~$讲义.ppt"
+    lock.write_bytes(b"\x0bmaple" + b"\x00" * 159)
+    (tmp_path / "~$讲义.pptx").write_bytes(b"\x0bmaple" + b"\x00" * 159)
+    extensions = ("pptx", "ppt")
+    assert [path for path, _relative in list_files(tmp_path, extensions)] == [source]
+    assert list_files(lock, extensions) == []
 
 
 def test_new_format_files_never_touch_the_converter(tmp_path: Path) -> None:

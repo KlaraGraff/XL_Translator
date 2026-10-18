@@ -15,16 +15,19 @@ PPT 翻译只认 .pptx 这一种结构（core/pptx_text.py 直接改 OOXML）；
 结果说明（``PptConversionResult.note``），用户能看到。
 
 一个任务里同一个文件只转一次：扫描、翻译、写出都经 ``PptConversionCache``，
-任务结束时由它删掉临时文件。
+任务结束时由它删掉临时文件。PowerPoint 打开的是原文件的临时副本，原文件本身不被
+打开、不被改动；用户正开着同一份演示文稿时也不会被关掉。
 """
 
 from __future__ import annotations
 
+import hashlib
 import platform
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -50,6 +53,8 @@ MSO_FALSE = 0
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 
 POWERPOINT_CONVERSION_TIMEOUT_SECONDS = 180
+#: Mac 上转换完退出 PowerPoint 后，等它真正退出的最长时间。
+POWERPOINT_EXIT_WAIT_SECONDS = 15
 LIBREOFFICE_PPT_CONVERSION_TIMEOUT_SECONDS = 180
 MACOS_POWERPOINT_APP = Path("/Applications/Microsoft PowerPoint.app")
 
@@ -166,6 +171,10 @@ def convert_ppt_to_pptx(
         raise PptConversionError(f"不是旧版 .ppt 文件：{source_path.name}")
     if not source_path.is_file():
         raise PptConversionError("文件不存在或已被移动，请重新选择来源。")
+    if not _looks_like_presentation(source_path):
+        # 不是演示文稿（Office 的「~$」锁文件、改了扩展名的别的文件）：交给 PowerPoint
+        # 它会对着打不开的文件等上两分钟，LibreOffice 也只会报错。
+        raise PptConversionError("这不是有效的 PowerPoint 文件，可能已损坏或只是临时文件。")
 
     attempts: list[tuple[str, str, Converter]] = []
     if prefer_native_powerpoint:
@@ -217,7 +226,24 @@ def convert_ppt_to_pptx(
     raise PptConversionError(message, attempts=errors)
 
 
+#: 旧版 .ppt / .pps 是 OLE 复合文档；改了扩展名的 .pptx 是 zip，PowerPoint 也能打开。
+_PRESENTATION_SIGNATURES = (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", b"PK\x03\x04")
+
+
+def _looks_like_presentation(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(8)
+    except OSError:
+        return False
+    return any(head.startswith(signature) for signature in _PRESENTATION_SIGNATURES)
+
+
 # ── 本机 PowerPoint ─────────────────────────────────────────────────────
+
+
+#: PowerPoint 只有一个实例，两次转换同时进行会互相关掉对方的文档、抢着退出。
+_POWERPOINT_LOCK = threading.Lock()
 
 
 def convert_with_native_powerpoint(ppt_path: str | Path) -> Path:
@@ -229,14 +255,22 @@ def convert_with_native_powerpoint(ppt_path: str | Path) -> Path:
     if not available:
         raise _ToolMissing(reason)
     output_path = _temp_pptx_path(source_path)
+    # 打开的是副本：原文件不被 PowerPoint 碰到（修改时间不变，读取时转的这份任务里
+    # 接着用）；用户在 PowerPoint 里开着同一份文件时，关掉的也只是副本。副本和产物放在
+    # 同一个临时目录里，Mac 上 PowerPoint 能写这里，也就能读这里。
+    copy_path = output_path.with_name(f"{output_path.stem}_source{source_path.suffix.lower()}")
     try:
-        if system == "Windows":
-            _convert_with_windows_powerpoint(source_path, output_path)
-        else:
-            _convert_with_macos_powerpoint(source_path, output_path)
+        shutil.copyfile(source_path, copy_path)
+        with _POWERPOINT_LOCK:
+            if system == "Windows":
+                _convert_with_windows_powerpoint(copy_path, output_path)
+            else:
+                _convert_with_macos_powerpoint(copy_path, output_path)
     except Exception:
         _discard(output_path)
         raise
+    finally:
+        _discard(copy_path)
     return output_path
 
 
@@ -309,34 +343,57 @@ def _safe_count(app: object) -> int:
 
 
 # 和 Word 的 AppleScript 同样的结构：路径在 tell 之外转成 POSIX file，保存失败也要
-# 关掉文档，否则它留在 PowerPoint 里，下一次转同名文件会出错。PowerPoint 本来没开
-# 的才退出，免得关掉用户正在用的窗口。
+# 关掉文档，否则它留在 PowerPoint 里，下一次转同名文件会出错。退出的条件和 Windows
+# 一致：PowerPoint 本来没开，或开着但一份演示文稿都没有、关掉副本后也没有，才退出；
+# 用户开着文件时绝不退出。退出了就输出 quit，调用方等它真正退出后才返回——否则紧接
+# 着的下一次转换会把正在退出的 PowerPoint 当成用户开着的，转完不退、留下空窗口。
 _MACOS_POWERPOINT_SCRIPT = """
 on run argv
     set inputFile to POSIX file (item 1 of argv)
     set outputFile to POSIX file (item 2 of argv)
     set wasRunning to application "Microsoft PowerPoint" is running
+    set saveFailed to false
+    set saveMessage to ""
+    set saveNumber to 0
+    set shouldQuit to not wasRunning
     tell application "Microsoft PowerPoint"
+        set openBefore to 0
+        if wasRunning then
+            try
+                set openBefore to count of presentations
+            on error
+                set openBefore to 1
+            end try
+        end if
         open inputFile
         set thePresentation to active presentation
         try
             save thePresentation in outputFile as save as Open XML presentation
         on error errMsg number errNum
-            try
-                close thePresentation saving no
-            end try
-            if not wasRunning then quit saving no
-            error errMsg number errNum
+            set saveFailed to true
+            set saveMessage to errMsg
+            set saveNumber to errNum
         end try
-        close thePresentation saving no
-        if not wasRunning then quit saving no
+        try
+            close thePresentation saving no
+        end try
+        if openBefore is 0 then
+            try
+                if (count of presentations) is 0 then set shouldQuit to true
+            end try
+        end if
+        if shouldQuit then quit saving no
     end tell
+    if saveFailed then error saveMessage number saveNumber
+    if shouldQuit then return "quit"
+    return "kept"
 end run
 """
 
 
 def _convert_with_macos_powerpoint(source_path: Path, output_path: Path) -> None:
     osascript_path = shutil.which("osascript") or "/usr/bin/osascript"
+    was_running = _macos_powerpoint_running()
     try:
         result = subprocess.run(
             [osascript_path, "-e", _MACOS_POWERPOINT_SCRIPT, str(source_path.resolve()), str(output_path)],
@@ -349,10 +406,34 @@ def _convert_with_macos_powerpoint(source_path: Path, output_path: Path) -> None
         raise PptConversionError(
             f"PowerPoint 转换超时（{POWERPOINT_CONVERSION_TIMEOUT_SECONDS} 秒），文件可能设置了打开密码。"
         ) from exc
+    quit_requested = (result.stdout or "").strip().endswith("quit")
+    if quit_requested or (result.returncode != 0 and not was_running):
+        # 保存失败时脚本在报错前也会让它拉起的 PowerPoint 退出。
+        _wait_for_macos_powerpoint_exit()
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         logger.debug(f"PowerPoint AppleScript 返回码 {result.returncode}：{detail or '（无输出）'}")
         raise PptConversionError(humanize_error(detail, fallback="PowerPoint 未能完成本次转换。"))
+
+
+def _macos_powerpoint_running() -> bool:
+    pgrep_path = shutil.which("pgrep") or "/usr/bin/pgrep"
+    try:
+        result = subprocess.run(
+            [pgrep_path, "-x", "Microsoft PowerPoint"], capture_output=True, check=False, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _wait_for_macos_powerpoint_exit() -> None:
+    deadline = time.monotonic() + POWERPOINT_EXIT_WAIT_SECONDS
+    while _macos_powerpoint_running():
+        if time.monotonic() >= deadline:
+            logger.info(f"PowerPoint 在 {POWERPOINT_EXIT_WAIT_SECONDS} 秒内没有退出")
+            return
+        time.sleep(0.25)
 
 
 # ── LibreOffice ────────────────────────────────────────────────────────
@@ -458,9 +539,19 @@ def _main_part_name(rels_xml: bytes) -> str | None:
 # ── 一个任务里只转一次 ─────────────────────────────────────────────────
 
 
-class PptConversionCache:
-    """同一个任务里，同一个文件（路径、大小、修改时间都没变）只转一次。
+@dataclass
+class _CacheEntry:
+    size: int
+    mtime_ns: int
+    digest: str
+    outcome: PptConversionResult | PptConversionError
 
+
+class PptConversionCache:
+    """同一个文件只转一次：读取时转的那份，开始翻译时取字、写出接着用。
+
+    按文件路径记；文件的大小和修改时间没变就直接用，变了再比内容（SHA-256）——同步盘、
+    杀毒软件只碰了修改时间时内容没变，不该再拉起一遍 PowerPoint；内容真变了才重转。
     失败也记住：没有 PowerPoint 的机器上，扫描已经失败过一次的文件，翻译时不必再
     拉起一遍 LibreOffice 等它再失败。用完调 ``cleanup()``（或用 with）删掉临时文件。
     """
@@ -468,38 +559,43 @@ class PptConversionCache:
     def __init__(self, converter: Callable[[Path], PptConversionResult] | None = None) -> None:
         self._converter = converter or convert_ppt_to_pptx
         self._lock = threading.Lock()
-        self._entries: dict[tuple[str, int, int], PptConversionResult | PptConversionError] = {}
+        self._entries: dict[str, _CacheEntry] = {}
 
     def convert(self, path: str | Path) -> PptConversionResult:
         source = Path(path)
-        key = self._key(source)
+        key, size, mtime_ns = self._stat(source)
         with self._lock:
             entry = self._entries.get(key)
+            if entry is not None and (entry.size, entry.mtime_ns) != (size, mtime_ns):
+                if entry.size == size and _file_digest(source) == entry.digest:
+                    entry.mtime_ns = mtime_ns
+                else:
+                    logger.info(f"旧版 PPT 内容有变化，重新转换：{source.name}")
+                    self._drop(key)
+                    entry = None
             if entry is None:
+                digest = _file_digest(source)
                 try:
-                    entry = self._converter(source)
+                    outcome: PptConversionResult | PptConversionError = self._converter(source)
                 except PptConversionError as exc:
-                    entry = exc
+                    outcome = exc
+                entry = _CacheEntry(size, mtime_ns, digest, outcome)
                 self._entries[key] = entry
-        if isinstance(entry, PptConversionError):
-            raise entry
-        return entry
+            else:
+                logger.debug(f"旧版 PPT 沿用已转换的副本：{source.name}")
+        if isinstance(entry.outcome, PptConversionError):
+            raise entry.outcome
+        return entry.outcome
 
     def release(self, path: str | Path) -> None:
         """这个文件用完了（写出后，或转换失败要让下次重试）：忘掉它，删掉临时文件。"""
-        resolved = str(Path(path).resolve())
         with self._lock:
-            for key in [key for key in self._entries if key[0] == resolved]:
-                entry = self._entries.pop(key)
-                if isinstance(entry, PptConversionResult):
-                    _discard(entry.path)
+            self._drop(str(Path(path).resolve()))
 
     def cleanup(self) -> None:
         with self._lock:
-            for entry in self._entries.values():
-                if isinstance(entry, PptConversionResult):
-                    _discard(entry.path)
-            self._entries.clear()
+            for key in list(self._entries):
+                self._drop(key)
 
     def __enter__(self) -> Self:
         return self
@@ -507,8 +603,13 @@ class PptConversionCache:
     def __exit__(self, *_exc: object) -> None:
         self.cleanup()
 
+    def _drop(self, key: str) -> None:
+        entry = self._entries.pop(key, None)
+        if entry is not None and isinstance(entry.outcome, PptConversionResult):
+            _discard(entry.outcome.path)
+
     @staticmethod
-    def _key(source: Path) -> tuple[str, int, int]:
+    def _stat(source: Path) -> tuple[str, int, int]:
         try:
             stat = source.stat()
         except OSError as exc:
@@ -523,6 +624,17 @@ def _temp_pptx_path(original: Path) -> Path:
     temp_dir = Path(tempfile.gettempdir()) / "xl_translator_temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir / f"{original.stem}_{uuid.uuid4().hex[:8]}.pptx"
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise PptConversionError("文件不存在或已被移动，请重新选择来源。") from exc
+    return digest.hexdigest()
 
 
 def _discard(path: Path) -> None:

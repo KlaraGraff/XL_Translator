@@ -428,6 +428,9 @@ interface SurfaceState {
   resumeDetectedLang: string;
   /** 提示条上的「×」：本次扫描内不再出现这条提示（重新弹窗也不恢复）。 */
   resumeNoticeDismissed: boolean;
+  /** 在后台读取（拖入混合文件夹时分到这一页、人不在这一页）时检测到上次的结果：
+   *  续译弹窗等人进到这一页再弹，不在别的页面上突然冒出来。 */
+  resumePromptPending: boolean;
   /** 进入续译前「仅补译未翻译内容」开关的原值，「改为全部重译」时还原回去。 */
   resumeToggleRestore: boolean | null;
   renderer: (() => void) | null;
@@ -489,6 +492,7 @@ function freshState(surface: Surface): SurfaceState {
     resumeDecision: null,
     resumeDetectedLang: "",
     resumeNoticeDismissed: false,
+    resumePromptPending: false,
     resumeToggleRestore: null,
     renderer: null,
     cadCapability: null,
@@ -896,6 +900,11 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       // 用户可能刚在插件页连好转换工具再切回来，所以每次挂载都重新查一次。
       if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
+      // 后台读取时攒下的续译弹窗：人到了这一页才弹（读取还没完的话，读完时 runScan 自己弹）。
+      if (st.resumePromptPending && !scanBusy.has(surface)) {
+        st.resumePromptPending = false;
+        if (st.resumeInfo) void showResumeModal(surface, st);
+      }
     })
     .catch((error) => {
       if (!isCurrent()) return;
@@ -1329,6 +1338,9 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     note.textContent = t("此历史任务未保留来源路径。结果仍可查看；如需重新翻译，请先选择来源并读取。");
     col.append(note);
   }
+  // 拖入的是混合文件夹时，读取中、读取后都在最上面说同一批的其他类型去了哪。
+  const dispatchNote = buildDispatchNote(surface);
+  if (dispatchNote) col.append(dispatchNote);
   if (scanBusy.has(surface)) {
     col.append(...buildScanSkeleton(surface, st));
     return col;
@@ -1576,9 +1588,10 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
 
 /**
  * 从别处交过来的路径（拖入、「翻译」入口页分配）：等同于填进路径栏后回车。这一页正有任务
- * 在跑时不替换来源，提示一句并返回 false。调用方先 navigate 到这一页再调。
+ * 在跑时不替换来源，返回 false（前台时提示一句）。前台调用方先 navigate 到这一页再调；
+ * background 为真时人不在这一页：照样读取，但不弹「已扫描到」的提示，续译弹窗等人进来再弹。
  */
-export async function openSourcePaths(surface: Surface, paths: string[]): Promise<boolean> {
+export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean } = {}): Promise<boolean> {
   const list = paths.filter((item) => item.trim().length > 0);
   if (!list.length) return false;
   const st = stateOf(surface);
@@ -1590,23 +1603,107 @@ export async function openSourcePaths(surface: Surface, paths: string[]): Promis
     // 初始化失败时页面自己会报错；这里照常往下走，读取会再报一次具体原因。
   }
   if (st.task && !st.task.task.terminal) {
-    showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
+    if (!options.background) showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
     return false;
   }
-  await applySourcePaths(surface, list);
+  await applySourcePaths(surface, list, options.background);
   return true;
 }
 
-async function applySourcePaths(surface: Surface, pickedList: string[]): Promise<void> {
+// ---------------------------------------------------------------------------
+// 拖入混合文件夹：各类型分到各自页面后，每一页上都说一句同一批还有哪几类，点一下切过去。
+// ---------------------------------------------------------------------------
+
+interface DispatchBatch {
+  /** 分到的每一页 → 这一页拿到的文件数。 */
+  counts: Map<Surface, number>;
+  /** 分配时交给每一页的来源；这一页之后换了来源，这一页就不再算在这一批里。 */
+  sources: Map<Surface, string>;
+}
+
+let dispatchBatch: DispatchBatch | null = null;
+
+/** drop-dispatch 分完之后登记这一批（只有一类时不登记）；之前那一批的提示一并清掉。 */
+export function setDispatchBatch(batch: { surface: Surface; count: number; paths: string[] }[]): void {
+  const previous = dispatchBatch;
+  dispatchBatch = batch.length > 1
+    ? {
+        counts: new Map(batch.map((item) => [item.surface, item.count])),
+        sources: new Map(batch.map((item) => [item.surface, normalizeUserPath(sourcePathFor(item.paths))])),
+      }
+    : null;
+  for (const surface of new Set([...(previous?.counts.keys() ?? []), ...(dispatchBatch?.counts.keys() ?? [])])) rerender(surface);
+}
+
+/** 这一页没接住（正在翻译）：从这一批里拿掉，别的页面不再说它「已放到对应页面」。 */
+export function dropFromDispatchBatch(surface: Surface): void {
+  if (!dispatchBatch) return;
+  dispatchBatch.counts.delete(surface);
+  dispatchBatch.sources.delete(surface);
+  const rest = [...dispatchBatch.counts.keys()];
+  if (rest.length < 2) dispatchBatch = null;
+  for (const other of rest) rerender(other);
+}
+
+/** 这一批里还算数的页面：来源没被换掉的。 */
+function dispatchBatchMembers(): Surface[] {
+  if (!dispatchBatch) return [];
+  const batch = dispatchBatch;
+  return [...batch.counts.keys()].filter((surface) => normalizeUserPath(stateOf(surface).sourcePath) === batch.sources.get(surface));
+}
+
+function buildDispatchNote(surface: Surface): HTMLElement | null {
+  const members = dispatchBatchMembers();
+  if (!members.includes(surface)) return null;
+  const others = members.filter((other) => other !== surface);
+  if (!others.length) return null;
+  const bar = el("div", "resume-dismiss dispatch-note");
+  bar.append(icon("spark", { size: "sm" }));
+  const words = el("span");
+  const [before, after = ""] = t("同一批文件还有 {0}，已在对应页面读取。", "\u0000").split("\u0000");
+  words.append(document.createTextNode(before));
+  others.forEach((other, index) => {
+    if (index) words.append(document.createTextNode(currentLocale() === "zh" ? "、" : ", "));
+    const go = el("button", "resume-link");
+    go.type = "button";
+    go.textContent = fileNounPhrase(other, dispatchBatch?.counts.get(other) ?? 0);
+    go.title = surfacePageTitle(other);
+    go.addEventListener("click", () => navigate(other));
+    words.append(go);
+  });
+  words.append(document.createTextNode(after));
+  const close = el("button", "resume-link mute");
+  close.type = "button";
+  close.textContent = "×";
+  close.setAttribute("aria-label", t("不再提示"));
+  close.addEventListener("click", () => {
+    const shown = dispatchBatch ? [...dispatchBatch.counts.keys()] : [];
+    dispatchBatch = null;
+    for (const member of shown) rerender(member);
+  });
+  const acts = el("div", "acts");
+  acts.append(close);
+  bar.append(words, acts);
+  return bar;
+}
+
+/** 多选时任务的来源记它们共同的上级目录，单选就是它自己（与 applySourcePaths 一致）。 */
+export function sourcePathFor(pickedList: string[]): string {
+  return pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
+}
+
+async function applySourcePaths(surface: Surface, pickedList: string[], background = false): Promise<void> {
   const st = stateOf(surface);
   clearWorkspaceInput(surface);
   // 多选时 sourcePath 记它们共同的上级目录：任务启动要用它重扫，selected_paths 再收窄
   // 回这几个文件；清单和统计仍然只显示选中的这几份（扫描只扫这几个路径）。
   st.sourcePaths = pickedList.length > 1 ? pickedList : [];
-  const displayPath = pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
+  const displayPath = sourcePathFor(pickedList);
   // 先落地到界面（含解锁「扫描」），再去写设置：记住上次目录失败不该把刚选好的路径丢掉。
   st.sourcePath = displayPath;
   rerender(surface);
+  // 这一页换了来源，同一批其他页上的分配提示就不该再提它。
+  if (dispatchBatch?.counts.has(surface)) for (const other of dispatchBatch.counts.keys()) if (other !== surface) rerender(other);
   try {
     await persistLastSourceFolder(surface, displayPath);
   } catch (error) {
@@ -1614,7 +1711,7 @@ async function applySourcePaths(surface: Surface, pickedList: string[]): Promise
   }
   // 选完路径就直接读取，不用用户再点一次——手输/粘贴路径的场景不走这个函数，
   // 不受影响。复用 runScan 本身，扫描失败的提示和点按钮时完全一样。
-  await runScan(surface);
+  await runScan(surface, undefined, background);
 }
 
 interface StatCell {
@@ -1628,6 +1725,8 @@ interface StatCell {
   dim?: boolean;
   /** 数字下面的一行小字（样张 .stat .sub）。 */
   sub?: string;
+  /** 小字下面的蓝色跳转（缺组件时直达安装页）。 */
+  link?: { label: string; onClick: () => void };
 }
 
 /** 读取完成后统计条错落浮现一次；之后勾选文件、改开关引起的重绘不再重播。 */
@@ -1651,6 +1750,13 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
       const sub = el("small");
       sub.textContent = stat.sub;
       cell.append(sub);
+    }
+    if (stat.link) {
+      const go = el("button", "st-link");
+      go.type = "button";
+      go.textContent = stat.link.label;
+      go.addEventListener("click", stat.link.onClick);
+      cell.append(go);
     }
     sum.append(cell);
   }
@@ -1751,13 +1857,18 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   }
   if (surface === "cad") {
     // 合计只加扫描时数出来的（DXF）；DWG 开始后才统计，另起一行小字说明还有几张没算进来。
-    // 没连转换工具的 DWG 归「需转换工具」那一格，不算进「开始后统计」。
+    // 没连转换工具的 DWG 开不了工，不算进「开始后统计」；DWG 总数在「需转换的 DWG」那一格。
     const counted = files.filter((f) => !cadCountsPending(f));
     const pending = files.filter((f) => cadCountsPending(f) && !isRisky(surface, f)).length;
     const texts = counted.reduce((sum, f) => sum + num(f.text_count), 0);
     const candidates = counted.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
-    const blocked = files.filter((f) => isRisky(surface, f)).length;
     const noneCounted = counted.length === 0;
+    // DWG 每次翻译都要经转换工具读写，装好了也一样要转；这一格数的是 DWG 本身，
+    // 小字说转换工具的状态。没连上时给一个直达「扩展 → 组件」的蓝色链接。
+    const dwg = files.filter((f) => f.format === "dwg").length;
+    const converterKnown = Boolean(st.cadCapability);
+    const converterReady = cadConverterReady(st);
+    const missing = dwg > 0 && converterKnown && !converterReady;
     const pendingNote = pending
       ? noneCounted
         ? t("{0} 张 DWG 开始后统计", pending)
@@ -1772,7 +1883,14 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
         dim: noneCounted,
         sub: texts > candidates ? t("不含纯数字、编号和已是目标语言的文字") : undefined,
       },
-      { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
+      {
+        label: t("需转换的 DWG"),
+        value: String(dwg),
+        warn: missing,
+        dim: dwg === 0,
+        sub: dwg === 0 || !converterKnown ? undefined : converterReady ? t("转换工具已就绪") : t("尚未连接转换工具"),
+        link: missing ? { label: t("安装 ↗ 转换工具"), onClick: () => navigate("plugins", { focus: "oda" }) } : undefined,
+      },
     ];
   }
   if (isExtSurface(surface)) {
@@ -3852,13 +3970,14 @@ function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObje
 }
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
-async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
+async function runScan(surface: Surface, preferredResumeDir?: string, background = false): Promise<void> {
   const st = stateOf(surface);
   const path = normalizeUserPath(st.sourcePath);
   if (!path) return;
   st.sourcePath = path;
   if (st.task && !st.task.task.terminal) return;
   clearWorkspaceInput(surface);
+  st.resumePromptPending = false;
   const token = nextToken(scanTokens, surface);
   scanBusy.add(surface);
   if (surface === "cad") cancelCadInspection(st);
@@ -3912,9 +4031,15 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
         : (skipCount > 0
           ? t("已扫描到 {0} 个 {1} 文件，跳过 {2} 个。", items.length, surfaceLabel(surface), skipCount)
           : t("已扫描到 {0} 个 {1} 文件。", items.length, surfaceLabel(surface)));
-    showToast({ message: toastMessage });
+    // 后台读取（人在别的页面）：读到多少由那一页上的分配提示说，不另弹提示；续译弹窗等人进来。
+    // 读取期间人已经切到这一页的，照常弹。
+    const here = st.renderer !== null;
+    if (!background || here) showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
-    if (st.resumeInfo) void showResumeModal(surface, st);
+    if (st.resumeInfo) {
+      if (here || !background) void showResumeModal(surface, st);
+      else st.resumePromptPending = true;
+    }
     if (surface === "cad") autoCountCadAfterScan(st, token);
   } catch (error) {
     if (token !== scanTokens.get(surface)) return;
