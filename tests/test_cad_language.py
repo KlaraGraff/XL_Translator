@@ -169,3 +169,50 @@ def test_undecodable_multibyte_escape_is_left_as_is():
     from core.cad_translation import _plain_text
 
     assert _plain_text("\\M+5FFFF") == "\\M+5FFFF"
+
+
+def test_scan_count_equals_translated_plus_kept_plus_unresolved(tmp_path: Path):
+    """本机实测：页面「待翻译 2185」，任务记录「已翻译文字 2158」，看着像数位对调。
+
+    两个数口径不同：前者是翻译前的候选条数，后者是真正改动了的条数；差的那些是
+    模型确认已是目标语言（保留原文）或没拿到译文的。任务记录要把保留原文单独数出来，
+    三者加起来正好等于页面上的「待翻译」。
+    """
+    source = tmp_path / "plan.dxf"
+    source.write_text(
+        _dxf("PLAN DE MASSE", "SCALE 1:100", "Section B", "Bonjour plan", "The steel door"), encoding="utf-8"
+    )
+    options = CadPipelineOptions(source_lang="auto", target_lang="en")
+    scanned = scan_cad_file(source, options=options)
+
+    def translate_with_language(texts, glossary):
+        # SCALE 已是英文（保留），Section B 照译，Bonjour plan 没拿到译文。
+        return {"SCALE 1:100": ("SCALE 1:100", "en"), "Section B": ("SECTION B", "fr")}
+
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {"PLAN DE MASSE": "SITE PLAN"},
+        language_translator=translate_with_language,
+    ).translate_file(source, tmp_path / "plan_en.dxf", options=options)
+
+    assert result.stats.changed == 2
+    assert result.stats.kept_units == 1
+    assert len(result.unresolved) == 1
+    assert scanned.candidate_count == result.stats.changed + result.stats.kept_units + len(result.unresolved)
+    summary = result.summary.read_text(encoding="utf-8")
+    assert "已翻译文字：2 处" in summary and "保留原文（已是目标语言或译文与原文相同）：1 处" in summary
+
+
+def test_bilingual_same_as_source_counts_as_kept(tmp_path: Path):
+    # 双语时译文和原文只差大小写的（Section B → SECTION B）不再写一行，也算保留原文。
+    source = tmp_path / "plan.dxf"
+    source.write_text(_dxf("PLAN DE MASSE", "Section B"), encoding="utf-8")
+    options = CadPipelineOptions(target_lang="en", display_mode="source_first")
+    scanned = scan_cad_file(source, options=options)
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {"PLAN DE MASSE": "SITE PLAN"},
+        language_translator=lambda texts, glossary: {"Section B": ("SECTION B", "fr")},
+    ).translate_file(source, tmp_path / "plan_en.dxf", options=options)
+    assert (result.stats.changed, result.stats.kept_units, result.unresolved) == (1, 1, [])
+    assert scanned.candidate_count == 2

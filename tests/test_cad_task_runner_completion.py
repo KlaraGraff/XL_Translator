@@ -261,3 +261,21 @@ def test_cad_issues_say_needs_review_like_the_file_status(tmp_path, monkeypatch)
     assert done.file_results[0]["status"] == "needs_review"
     overflow = [issue for issue in done.issues if issue.get("reason") == "layout_overflow"]
     assert overflow and all(issue["severity"] == "needs_review" for issue in done.issues)
+
+
+def test_cad_runner_reports_kept_texts_next_to_translated(tmp_path, monkeypatch):
+    # 任务记录「已翻译文字」比页面「待翻译」少的那些（模型确认已是目标语言）单独记成「保留原文」。
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "plan.dxf"
+    source.write_text("0\nTEXT\n1\nPLAN DE MASSE\n0\nTEXT\n1\nSCALE 1:100\n", encoding="utf-8")
+    item = SimpleNamespace(path=source, name=source.name, format="dxf")
+    runner = CadTaskRunner(
+        files=[item], source_root=tmp_path, output_dir=tmp_path / "results", converter=_Converter(),
+        translator=lambda texts, glossary: {"PLAN DE MASSE": "SITE PLAN"},
+        language_translator=lambda texts, glossary: {"SCALE 1:100": ("SCALE 1:100", "en")},
+        options=CadPipelineOptions(target_lang="en"),
+    )
+    done = next(message for message in _run(runner) if hasattr(message, "file_results"))
+    assert done.kpi["translated_entities"] == 1
+    assert done.kpi["kept_entities"] == 1
+    assert done.file_results[0]["stats"]["kept_units"] == 1

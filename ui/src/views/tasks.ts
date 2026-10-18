@@ -475,7 +475,8 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
   // 任务收尾之后「未开始 0」是一句废话，还会让人以为有东西卡住没跑；只有真的剩了文件
   // 没开始（中止、出错）才值得占一格。
   return surfaceKpiRows(task).filter(
-    ([label, value]) => !(label === t("未开始") && task.terminal && value === 0),
+    ([label, value]) =>
+      !(label === t("未开始") && task.terminal && value === 0) && !(label === t("保留原文") && value === 0),
   );
 }
 
@@ -559,6 +560,9 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
       [
         [t("图纸"), ["file_count", "selected_file_count"]],
         [t("已翻译文字"), ["translated_entities"]],
+        // 页面上的「待翻译」= 已翻译文字 + 保留原文 + 没拿到译文（已进需复核）的条数；不列这一格，
+        // 两个数差几十条时看着像数错了。
+        [t("保留原文"), ["kept_entities"]],
         [t("未开始"), ["unstarted_file_count"]],
         [t("记忆库命中"), ["tm_hit_count"]],
         [t("调用模型次数"), ["api_call_count"]],
