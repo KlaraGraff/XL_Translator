@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from api.surfaces.adapter import AdapterSurface
+from api.surfaces.adapter import AdapterSurface, list_files
 from core.format_adapter import AdapterError, InProcessAdapterHost
 from core.ppt_converter import (
     FIDELITY_COMPATIBILITY,
@@ -148,6 +148,17 @@ def test_failed_conversion_is_a_readable_error_and_retried_next_time(tmp_path: P
         assert len(conversions.calls) == 2
     finally:
         host._patcher.stop()  # type: ignore[attr-defined]
+
+
+def test_office_lock_files_are_not_listed(tmp_path: Path) -> None:
+    # PowerPoint 开着「讲义.ppt」时同目录里有「~$讲义.ppt」；读取文件夹或直接选中它都不列出。
+    source = _legacy(tmp_path)
+    lock = tmp_path / "~$讲义.ppt"
+    lock.write_bytes(b"\x0bmaple" + b"\x00" * 159)
+    (tmp_path / "~$讲义.pptx").write_bytes(b"\x0bmaple" + b"\x00" * 159)
+    extensions = ("pptx", "ppt")
+    assert [path for path, _relative in list_files(tmp_path, extensions)] == [source]
+    assert list_files(lock, extensions) == []
 
 
 def test_new_format_files_never_touch_the_converter(tmp_path: Path) -> None:

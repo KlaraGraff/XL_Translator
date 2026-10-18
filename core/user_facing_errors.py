@@ -66,6 +66,12 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "系统未授权本程序控制 Office。请在「系统设置 › 隐私与安全性 › 自动化」中授权后重试。",
     ),
     (
+        # AppleScript 等 Office 回话超过两分钟（-1712）。必须在下面通用的 timed out
+        # 那条之前认出来，否则会被说成「模型服务响应超时」。
+        (r"-1712", r"apple ?event timed out"),
+        "本机 Office 长时间没有响应，可能有提示框在等待操作，或文件无法打开。",
+    ),
+    (
         (r"-2741", r"syntax error", r"-1708", r"doesn['’]t understand"),
         "本机 Office 不支持这项自动化操作。",
     ),
