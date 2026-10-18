@@ -32,6 +32,8 @@
     （固定行距一起缩），每档 5%，最低 60%（``text_box_fit.MIN_SCALE``）。
   - 表格：PowerPoint 的表格不吃自动调整，行会跟着字撑高，所以同样先长进下方空白；放不下
     再整张表一起缩字号，保持字号统一。
+  - 加高、加宽都和旁边的形状、页边留出 ``gap_mm``（默认 2 毫米，页面上可选），不紧挨着；
+    原稿里本来就比这更近的方向不再长。
 
 以上是默认的「融合」。页面上的写回偏好（``layout_mode``）另有两种：
 
@@ -40,7 +42,8 @@
   - 「固定版面」（``fixed``）：所有框和表格的位置大小都不动，只缩字：溢出缩排的框照档位缩，
     其余的框和表格缩 ``sz``。
 
-「不换行」的框加宽、缩字都放不下时智能换行：改成在框宽内折行（``wrap="square"``）再算。
+「不换行」的框加宽、缩到下限都放不下时智能换行：改成在框宽内折行（``wrap="square"``），
+除非折行后往下冒出的比一行往旁边冒出的还多（保持字号模式一律折行）。
 缩到下限仍放不下的返回 ``FitIssue``，进需复核清单。
 竖排（``eaVert`` 等）和艺术字变形的框不动（竖排由包 2 列入复核）。
 
@@ -84,6 +87,9 @@ LAYOUT_FIT = "fit"
 LAYOUT_KEEP_SIZE = "keep_size"
 LAYOUT_FIXED = "fixed"
 LAYOUT_MODES = (LAYOUT_FIT, LAYOUT_KEEP_SIZE, LAYOUT_FIXED)
+#: 融合模式加高、加宽时，与旁边的形状和页边至少留的距离（毫米），页面上可选。
+DEFAULT_GAP_MM = 2.0
+EMU_PER_MM = 36000
 
 #: ``FitIssue.reason``：缩到下限、往下方空白处加高也放不下。
 REASON_OVERFLOW = f"缩到 {round(MIN_SCALE * 100)}% 仍放不下"
@@ -159,6 +165,7 @@ def fit_after_write(
     touched: Iterable,
     *,
     layout_mode: str = LAYOUT_FIT,
+    gap_mm: float = DEFAULT_GAP_MM,
     fonts: FontLibrary | None = None,
 ) -> list[FitIssue]:
     """按译文调整 ``touched`` 里各框的字号或大小，就地改 ``root``；返回放不下的框。
@@ -167,7 +174,8 @@ def fit_after_write(
     ``presentation.xml``；``part_name`` 本身还没写回时读到的是原文）。只改 ``touched``
     里的形状。备注页等不是幻灯片、版式、母版的部件直接返回空列表。
     ``layout_mode``：``"fit"`` 融合（先加高再缩字），``"keep_size"`` 保持字号（只加高），
-    ``"fixed"`` 固定版面（只缩字）；认不得的按融合。
+    ``"fixed"`` 固定版面（只缩字）；认不得的按融合。``gap_mm``：融合模式加高、加宽时与旁边的
+    形状和页边至少留的距离；原稿里本来就比这更近的方向不再长。
     """
     if not _FITTABLE_PART.match(part_name or ""):
         return []
@@ -176,6 +184,7 @@ def fit_after_write(
         return []
     ctx = _PartContext(read_part, part_name, root, fonts or default_library())
     ctx.layout_mode = layout_mode if layout_mode in LAYOUT_MODES else LAYOUT_FIT
+    ctx.gap = max(0.0, float(gap_mm)) * EMU_PER_MM
     issues: list[FitIssue] = []
     done: set = set()
     for element in elements:
@@ -339,6 +348,7 @@ class _PartContext:
         self.fonts = fonts
         #: 写回偏好，见 ``LAYOUT_MODES``。
         self.layout_mode = LAYOUT_FIT
+        self.gap = DEFAULT_GAP_MM * EMU_PER_MM
         self._parsed: dict[str, Any] = {}
         self.measurer = _Measurer(fonts)
 
@@ -692,19 +702,20 @@ def _obstacles(ctx: _PartContext, own) -> list[_Rect]:
     return rects
 
 
-def _room_below(ctx: _PartContext, own, rect: _Rect) -> float:
-    """框下边到下面第一个形状（或页面底边）之间的空白，EMU。原本就和框重叠的形状不算。"""
+def _room_below(ctx: _PartContext, own, rect: _Rect, gap: float = 0.0) -> float:
+    """框下边到下面第一个形状（或页面底边）之间的空白，再减去要留的 ``gap``，EMU。
+    原本就和框重叠的形状不算。"""
     limit = float(ctx.slide_cy)
     for other in _obstacles(ctx, own):
         if other.intersects(rect):
             continue
         if other.x < rect.right and other.right > rect.x and other.y >= rect.bottom - 1:
             limit = min(limit, other.y)
-    return max(0.0, limit - rect.bottom)
+    return max(0.0, limit - rect.bottom - gap)
 
 
-def _room_sideways(ctx: _PartContext, own, rect: _Rect) -> tuple[float, float]:
-    """框左右两边到最近形状（或页面边）的空白，EMU。"""
+def _room_sideways(ctx: _PartContext, own, rect: _Rect, gap: float = 0.0) -> tuple[float, float]:
+    """框左右两边到最近形状（或页面边）的空白，各减去要留的 ``gap``，EMU。"""
     left, right = rect.x, float(ctx.slide_cx) - rect.right
     for other in _obstacles(ctx, own):
         if other.intersects(rect) or not (other.y < rect.bottom and other.bottom > rect.y):
@@ -713,7 +724,7 @@ def _room_sideways(ctx: _PartContext, own, rect: _Rect) -> tuple[float, float]:
             right = min(right, other.x - rect.right)
         elif other.right <= rect.x + 1:
             left = min(left, rect.x - other.right)
-    return max(0.0, left), max(0.0, right)
+    return max(0.0, left - gap), max(0.0, right - gap)
 
 
 # ---------------------------------------------------------------- 文字模型
@@ -1268,54 +1279,74 @@ def _fit_shape(ctx: _PartContext, tx_body) -> str | None:
     movable = not groups and not swapped and not _rotated(sp) and body.columns == 1
     can_grow = movable and ctx.layout_mode != LAYOUT_FIXED
 
-    def attempt(wrap: bool, apply: bool) -> str | None:
-        """按 wrap（是否在框宽内折行）算一遍；apply 为假时只算不改。"""
+    def attempt(wrap: bool, apply: bool) -> tuple[str | None, float]:
+        """按 wrap（是否在框宽内折行）算一遍；apply 为假时只算不改。
+
+        返回（进复核的原因，放下了为 None；最后那份排版冒出框外多少磅，往下和往旁边相加）。
+        """
         width = column_w if wrap else None
         before = _original_layout(ctx, sp, width)
         room_w = max(inner_w, before.widest if before else 0.0)
         tolerated_h = before.height if before else 0.0
 
-        def fits(layout: _Layout, height: float) -> bool:
-            return layout.height <= height + _FIT_EPSILON_PT and (wrap or layout.widest <= room_w + _FIT_EPSILON_PT)
+        def excess(layout: _Layout, height: float) -> float:
+            return _excess(layout, room_w if not wrap else None, height)
 
         if ctx.layout_mode == LAYOUT_KEEP_SIZE:
-            return _keep_size(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h,
-                              wrap=wrap, movable=movable, tolerated_h=tolerated_h, apply=apply)
+            reason = _keep_size(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h,
+                                wrap=wrap, movable=movable, tolerated_h=tolerated_h, apply=apply)
+            return reason, 0.0
 
         if body.kind == "norm":
             layout = None
             chosen = NORM_AUTOFIT_STEPS[-1]
             for font_scale, reduction in NORM_AUTOFIT_STEPS:
                 layout = _layout(paras, atoms, width, autofit_sizer(font_scale), reduction)
-                if fits(layout, capacity):
+                if not excess(layout, capacity):
                     chosen = (font_scale, reduction)
                     break
             if apply:
                 _write_norm_autofit(tx_body.find(_a("bodyPr")), *chosen)
-            if fits(layout, capacity):
-                return None
+            over = excess(layout, capacity)
+            if not over:
+                return None, 0.0
             grown = can_grow and wrap and _grow_down(ctx, sp, rect, layout.height - inner_h, apply=apply)
-            return None if grown else REASON_OVERFLOW
+            return (None, 0.0) if grown else (REASON_OVERFLOW, over)
 
         if can_grow:
-            done = _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h,
+            over = _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h,
                                     tolerated_h, wrap=wrap, apply=apply)
-            return None if done else REASON_OVERFLOW
+            return (REASON_OVERFLOW if over else None), over
 
         room_h = max(capacity, tolerated_h)
-        scale, layout = _explicit_scale(paras, atoms, width, lambda lay: fits(lay, room_h))
+        scale, layout = _explicit_scale(paras, atoms, width, lambda lay: not excess(lay, room_h))
         if apply and scale < 1:
             _apply_explicit(paras, [(tx_body, paras)], scale)
-        return None if fits(layout, room_h) else REASON_OVERFLOW
+        over = excess(layout, room_h)
+        return (REASON_OVERFLOW if over else None), over
 
-    if body.wrap or attempt(False, apply=False) is None:
-        return attempt(body.wrap, apply=True)
-    # 「不换行」的框加宽、缩字都放不下时智能换行：改成在框宽内折行再算一遍（CAD 同一思路）。
-    # 折行也放不下时，保持字号模式仍用折行（至少不横着出页），其余模式保留原来的不换行。
-    if attempt(True, apply=False) is None or ctx.layout_mode == LAYOUT_KEEP_SIZE:
+    if body.wrap:
+        return attempt(True, apply=True)[0]
+    unwrapped, unwrapped_over = attempt(False, apply=False)
+    if unwrapped is None:
+        return attempt(False, apply=True)[0]
+    # 「不换行」的框加宽、缩到最小都放不下时智能换行（CAD 同一做法）：改成在框宽内折行。
+    # 折行后往下冒出的比一行往旁边冒出的还多时保留一行；保持字号模式一律折行（至少不横着出页）。
+    # 折行后仍没完全放下的照样进复核。
+    wrapped, wrapped_over = attempt(True, apply=False)
+    if wrapped is None or ctx.layout_mode == LAYOUT_KEEP_SIZE or wrapped_over < unwrapped_over:
         tx_body.find(_a("bodyPr")).set("wrap", "square")
-        return attempt(True, apply=True)
-    return attempt(False, apply=True)
+        return attempt(True, apply=True)[0]
+    return attempt(False, apply=True)[0]
+
+
+def _excess(layout: _Layout, room_w: float | None, room_h: float) -> float:
+    """排版冒出 room_w × room_h 多少磅（往下 + 往旁边；room_w 为 None 表示折行、不算宽）；
+    放得下为 0。"""
+    over = max(0.0, layout.height - room_h - _FIT_EPSILON_PT)
+    if room_w is not None:
+        over += max(0.0, layout.widest - room_w - _FIT_EPSILON_PT)
+    return over
 
 
 def _original_layout(ctx: _PartContext, sp, width: float | None) -> _Layout | None:
@@ -1344,7 +1375,7 @@ def _grow_down(ctx: _PartContext, sp, rect: _Rect, extra_pt: float, *, apply: bo
     if extra_pt <= _FIT_EPSILON_PT:
         return True
     extra = extra_pt * EMU_PER_PT
-    if _room_below(ctx, sp, rect) + 1 < extra:
+    if _room_below(ctx, sp, rect, ctx.gap) + 1 < extra:
         return False
     if apply:
         _resize(ctx, sp, rect, dy=extra)
@@ -1362,8 +1393,8 @@ def _widen(align: str, need: float, left: float, right: float) -> tuple[float, f
 
 
 def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h, tolerated_h=0.0,
-                     *, wrap: bool, apply: bool = True) -> bool:
-    """先往空白处长（不换行的先加宽），长不下再缩字号。
+                     *, wrap: bool, apply: bool = True) -> float:
+    """先往空白处长（不换行的先加宽），长不下再缩字号；返回最后冒出多少磅，放下了为 0。
 
     tolerated_h 是原文在这个框里排出的高度：原文本来就超出框，译文排到同样高度也算放下。
     """
@@ -1373,18 +1404,18 @@ def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_
     room_w = inner_w
     if not wrap and full.widest > inner_w + _FIT_EPSILON_PT:
         need = (full.widest - inner_w) * EMU_PER_PT
-        dx_left, dx_right = _widen(paras[0].align if paras else "l", need, *_room_sideways(ctx, sp, rect))
+        dx_left, dx_right = _widen(paras[0].align if paras else "l", need, *_room_sideways(ctx, sp, rect, ctx.gap))
         room_w = inner_w + (dx_left + dx_right) / EMU_PER_PT
     grown = _Rect(rect.x - dx_left, rect.y, rect.cx + dx_left + dx_right, rect.cy)
-    grow_h = inner_h + _room_below(ctx, sp, grown) / EMU_PER_PT
+    grow_h = inner_h + _room_below(ctx, sp, grown, ctx.gap) / EMU_PER_PT
     room_h = max(grow_h, tolerated_h)
 
-    def accept(layout: _Layout) -> bool:
-        return layout.height <= room_h + _FIT_EPSILON_PT and (wrap or layout.widest <= room_w + _FIT_EPSILON_PT)
+    def over(layout: _Layout) -> float:
+        return _excess(layout, None if wrap else room_w, room_h)
 
-    scale, layout = _explicit_scale(paras, atoms, width, accept)
+    scale, layout = _explicit_scale(paras, atoms, width, lambda lay: not over(lay))
     if not apply:
-        return accept(layout)
+        return over(layout)
     if scale < 1:
         _apply_explicit(paras, [(tx_body, paras)], scale)
     if not wrap:
@@ -1398,7 +1429,7 @@ def _fit_auto_resize(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_
     dy = max(0.0, min(layout.height, grow_h) - inner_h) * EMU_PER_PT
     if dx_left or dx_right or dy:
         _resize(ctx, sp, rect, dx_left=dx_left, dx_right=dx_right, dy=dy)
-    return accept(layout)
+    return over(layout)
 
 
 def _keep_size(ctx, sp, tx_body, rect, body, paras, atoms, inner_w, inner_h, *, wrap: bool, movable: bool,
@@ -1517,7 +1548,7 @@ def _fit_table(ctx: _PartContext, frame) -> str | None:
     if original_tbl is not None:
         original_cells, original_heights = _table_cells(ctx, original_tbl, sx)
         original_need = _table_height(original_cells, original_heights, 1.0)
-    room = _room_below(ctx, frame, slide_rect) / EMU_PER_PT
+    room = _room_below(ctx, frame, slide_rect, ctx.gap) / EMU_PER_PT
 
     if ctx.layout_mode == LAYOUT_KEEP_SIZE:
         extra = _table_height(cells, heights, 1.0) - max(rows, original_need)

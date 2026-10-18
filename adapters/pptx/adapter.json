@@ -86,6 +86,55 @@
           }
         }
       ]
+    },
+    {
+      "key": "spacing",
+      "kind": "choice",
+      "label": {
+        "zh": "与周围内容的间距",
+        "en": "Spacing from nearby content",
+        "fr": "Espace avec le contenu voisin"
+      },
+      "help": {
+        "zh": "写回偏好为「融合」时，文本框和表格加高、加宽后与下方或旁边的其他内容、页面边缘至少留出的距离，以免紧挨在一起。原稿里本来就比这更近的方向不再加高或加宽，改为缩小字号。默认 2 毫米。「保持字号」「固定版面」不受影响。",
+        "en": "With the Balanced layout preference, the least distance a text box or table keeps from other content below or beside it and from the slide edges when it grows, so they do not touch. In a direction where the original is already closer than this, the box does not grow and the font shrinks instead. 2 mm by default. Keep font size and Keep layout fixed are not affected.",
+        "fr": "Avec la préférence Équilibré, distance minimale qu’une zone de texte ou un tableau garde avec les autres éléments en dessous ou à côté et avec les bords de la diapositive quand il s’agrandit, pour qu’ils ne se touchent pas. Dans une direction où l’original est déjà plus proche, la zone ne s’agrandit pas et le texte est réduit à la place. 2 mm par défaut. Taille conservée et Mise en page figée ne sont pas concernées."
+      },
+      "default": "mm2",
+      "choices": [
+        {
+          "value": "none",
+          "label": {
+            "zh": "不留",
+            "en": "None",
+            "fr": "Aucun"
+          }
+        },
+        {
+          "value": "mm1",
+          "label": {
+            "zh": "1 毫米",
+            "en": "1 mm",
+            "fr": "1 mm"
+          }
+        },
+        {
+          "value": "mm2",
+          "label": {
+            "zh": "2 毫米",
+            "en": "2 mm",
+            "fr": "2 mm"
+          }
+        },
+        {
+          "value": "mm4",
+          "label": {
+            "zh": "4 毫米",
+            "en": "4 mm",
+            "fr": "4 mm"
+          }
+        }
+      ]
     }
   ],
   "license": "MIT",

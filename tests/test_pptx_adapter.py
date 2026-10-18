@@ -77,6 +77,7 @@ def test_manifest() -> None:
     assert [(option.key, option.kind, option.default) for option in manifest.options] == [
         ("translate_notes", "toggle", True),
         ("layout_mode", "choice", "fit"),
+        ("spacing", "choice", "mm2"),
     ]
     # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（融合在前，是默认）。
     assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
@@ -144,6 +145,10 @@ def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
         ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
         ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
         ({"layout_mode": "bogus"}, {}),
+        ({"spacing": "mm2"}, {}),
+        ({"spacing": "mm4"}, {"gap_mm": 4.0}),
+        ({"spacing": "none", "layout_mode": "keep_size"}, {"gap_mm": 0.0, "layout_mode": "keep_size"}),
+        ({"spacing": "bogus"}, {}),
     ]
     with patch("core.pptx_text.fit_after_write", fit):
         for index, (options, expected) in enumerate(cases):
@@ -247,8 +252,8 @@ def test_the_page_is_registered_with_the_app() -> None:
         # 分包说明：「PPT」默认显示在侧栏，排在 Word 后面。
         assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
         assert descriptor["extensions"] == ["potx", "ppsx", "pptm", "pptx"]
-        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode"]
-        layout = descriptor["options"][-1]
+        assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode", "spacing"]
+        layout = descriptor["options"][2]
         assert layout["kind"] == "choice" and layout["default"] == "fit"
         assert [choice["label"]["zh"] for choice in layout["choices"]] == ["融合", "保持字号", "固定版面"]
     finally:

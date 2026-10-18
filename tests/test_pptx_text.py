@@ -371,6 +371,9 @@ def test_layout_mode_reaches_the_fit_only_when_not_default(tmp_path: Path) -> No
         seen.clear()
         _write(tmp_path, fit=fit, layout_mode=mode)
         assert seen and all(kwargs == {"layout_mode": mode} for kwargs in seen)
+    seen.clear()
+    _write(tmp_path, fit=fit, gap_mm=0.0)
+    assert seen and all(kwargs == {"gap_mm": 0.0} for kwargs in seen)
 
 
 def test_a_box_the_fit_grows_passes_the_check(tmp_path: Path) -> None:

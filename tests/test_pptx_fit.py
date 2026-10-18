@@ -107,7 +107,7 @@ def _translate(root, translations, *, bilingual=False):
     return touched
 
 
-def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, layout_mode="fit"):
+def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, layout_mode="fit", **fit_options):
     """``edit`` 改的是原文那份（包里的部件和要写回的都改），模拟另一种原稿。"""
     name = f"ppt/slides/slide{slide}.xml"
     if edit is not None:
@@ -117,7 +117,7 @@ def _run(parts, french, slide, *, bilingual=False, fonts=NO_FONTS, edit=None, la
     root = etree.fromstring(parts[name])
     touched = _translate(root, french, bilingual=bilingual)
     issues = fit_after_write(parts.get, name, root, list(touched.values()), fonts=fonts,
-                             layout_mode=layout_mode)
+                             layout_mode=layout_mode, **fit_options)
     return root, touched, issues
 
 
@@ -420,10 +420,53 @@ def test_fixed_layout_wraps_a_tall_unwrapped_box_instead_of_shrinking_further(pa
     assert "spauto-label" not in _reasons(root, issues)
 
 
-def test_unwrapped_box_stays_unwrapped_when_wrapping_does_not_help(parts, french):
+def test_fixed_layout_wraps_a_label_that_spills_less_wrapped(parts, french):
+    """固定版面：缩到 60% 一行往右冒出一截，折成两行只往下多一点，就折行；没完全放下照样进复核。"""
+    before = etree.fromstring(parts["ppt/slides/slide3.xml"])
     root, touched, issues = _run(parts, french, 3, layout_mode="fixed")
+    assert touched["spauto-label"].find(A + "bodyPr").get("wrap") == "square"
+    assert _ext(_shape(root, "spauto-label")) == _ext(_shape(before, "spauto-label"))
+    assert _reasons(root, issues)["spauto-label"] == REASON_OVERFLOW
+
+
+def _one_line_width(parts, french, name: str, scale: float) -> float:
+    """译文在 ``name`` 里排成一行、按 ``scale`` 缩字时的宽度（磅）。"""
+    part = "ppt/slides/slide3.xml"
+    root = etree.fromstring(parts[part])
+    _translate(root, french)
+    sp = _shape(root, name)
+    ctx = _PartContext(parts.get, part, root, NO_FONTS)
+    paras, atoms = pptx_fit._measure_shape(ctx, sp, sp.find(P + "txBody"))
+    return pptx_fit._layout(paras, atoms, None, pptx_fit.explicit_sizer(scale), line_scale=scale).widest
+
+
+def test_label_stays_on_one_line_when_wrapping_spills_more(parts, french):
+    """框只比 60% 的一行窄一点：一行往右冒 1 磅，折行会往下多出一行的一部分，保留一行。"""
+    insets = 2 * 91440
+    width = int((_one_line_width(parts, french, "spauto-label", pptx_fit.MIN_SCALE) - 1) * EMU_PER_PT) + insets
+
+    def narrower(root):
+        _shape(root, "spauto-label").find(f"{P}spPr/{A}xfrm/{A}ext").set("cx", str(width))
+
+    root, touched, issues = _run(parts, french, 3, edit=narrower, layout_mode="fixed")
     assert touched["spauto-label"].find(A + "bodyPr").get("wrap") == "none"
     assert _reasons(root, issues)["spauto-label"] == REASON_OVERFLOW
+
+
+def test_grown_boxes_keep_the_chosen_gap(parts, french):
+    """融合：往下长的框停在下方形状上沿往上 gap 处（默认 2 毫米）；gap 为 0 时可以贴上去。"""
+    obstacle = _ext(_shape(etree.fromstring(parts["ppt/slides/slide3.xml"]), "Rectangle 5"))
+    default_root, _touched, _issues = _run(parts, french, 3, bilingual=True)
+    x, y, cx, cy = _ext(_shape(default_root, "spauto-near"))
+    assert obstacle[1] - (y + cy) >= 2 * pptx_fit.EMU_PER_MM - 1
+    touching_root, _touched, _issues = _run(parts, french, 3, bilingual=True, gap_mm=0)
+    x, y, cx, cy = _ext(_shape(touching_root, "spauto-near"))
+    assert obstacle[1] - (y + cy) < 2 * pptx_fit.EMU_PER_MM
+    assert y + cy <= obstacle[1]
+    # 原稿里本来就比间距还近的，不再往那边长：间距设成很大时这个框一点也不长。
+    original = _ext(_shape(etree.fromstring(parts["ppt/slides/slide3.xml"]), "spauto-near"))
+    far_root, _touched, _issues = _run(parts, french, 3, bilingual=True, gap_mm=100)
+    assert _ext(_shape(far_root, "spauto-near"))[3] == original[3]
 
 
 def test_vertical_box_untouched_and_rotated_box_listed(parts, french):
