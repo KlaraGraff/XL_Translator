@@ -118,7 +118,14 @@ def _types(args: argparse.Namespace, out: Output) -> int:
         out.line(f"{item['key']:<14}{flow.label_of(item)}{extra}  {extensions}")
         for option in item.get("options") or ():
             values = "|".join(str(choice.get("value")) for choice in option.get("choices") or ()) or "…"
-            out.line(f"{'':<16}--option {option.get('key')}={values}  {flow.label_of({'label': option.get('label')})}")
+            if option.get("kind") == "number":
+                units = "|".join(str(unit.get("value")) for unit in option.get("units") or ())
+                values = f"<数字>[{units}]" if units else "<数字>"
+            when = "，".join(
+                f"{key}={'|'.join(str(item).lower() for item in wanted)}" for key, wanted in (option.get("show_when") or {}).items()
+            )
+            when = f"（{when} 时有效）" if when else ""
+            out.line(f"{'':<16}--option {option.get('key')}={values}  {flow.label_of({'label': option.get('label')})}{when}")
     return flow.EXIT_OK
 
 

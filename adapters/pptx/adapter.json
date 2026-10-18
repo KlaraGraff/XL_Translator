@@ -57,26 +57,26 @@
         "fr": "Préférence de mise en page"
       },
       "help": {
-        "zh": "译文比原文长、放不下时的处理方式。融合（默认）：文本框和表格先往下方空白处加高，碰到其他内容或页边再缩小字号。保持字号：字号不变，文本框和表格按需要加高，盖住其他内容或超出页面的列入需复核，适合译完后自行拆页的文件。固定版面：文本框和表格的大小、位置都不变，只缩小字号，适合公司模板、表单。字号最小缩到 60%，仍放不下的列入需复核。设为不换行的文字放不下时改为在框内换行。",
-        "en": "What to do when a translation is longer than its box. Balanced (default): text boxes and tables first grow down into free space and the font shrinks only when they reach other content or the slide edge. Keep font size: the font never shrinks and boxes and tables grow as far as needed; any that end up covering other content or running off the slide are listed for review. Suits files you will split into more slides yourself. Keep layout fixed: no text box or table is resized or moved and only the font shrinks. Suits company templates and forms. The font shrinks to 60% at most; anything that still does not fit is listed for review. Text set not to wrap starts wrapping inside its box when it would not fit otherwise.",
-        "fr": "Que faire quand une traduction est plus longue que sa zone. Équilibré (par défaut) : les zones de texte et les tableaux s’agrandissent d’abord vers le bas dans l’espace libre, et le texte n’est réduit qu’en atteignant un autre élément ou le bord de la diapositive. Taille conservée : la taille du texte ne change jamais et les zones et tableaux s’agrandissent autant que nécessaire ; ceux qui finissent par recouvrir d’autres éléments ou dépasser de la diapositive sont listés pour vérification. Adapté aux fichiers que vous scinderez vous-même en plusieurs diapositives. Mise en page figée : aucune zone de texte ni aucun tableau n’est redimensionné ou déplacé, seul le texte est réduit. Adapté aux modèles d’entreprise et aux formulaires. Le texte est réduit jusqu’à 60 % au plus ; ce qui ne tient toujours pas est listé pour vérification. Le texte sans retour à la ligne passe à la ligne dans sa zone quand il ne tiendrait pas autrement."
+        "zh": "译文比原文长、放不下时的处理方式。优先保持字号（默认）：文本框和表格先往下方空白处加高，碰到其他内容或页边再缩小字号。始终保持字号：字号不变，文本框和表格按需要加高，盖住其他内容或超出页面的列入需复核，适合译完后自行拆页的文件。固定版面：文本框和表格的大小、位置都不变，只缩小字号，适合公司模板、表单。字号最小缩到 60%，仍放不下的列入需复核。设为不换行的文字放不下时改为在框内换行。",
+        "en": "What to do when a translation is longer than its box. Keep font size where possible (default): text boxes and tables first grow down into free space and the font shrinks only when they reach other content or the slide edge. Always keep font size: the font never shrinks and boxes and tables grow as far as needed; any that end up covering other content or running off the slide are listed for review. Suits files you will split into more slides yourself. Keep layout fixed: no text box or table is resized or moved and only the font shrinks. Suits company templates and forms. The font shrinks to 60% at most; anything that still does not fit is listed for review. Text set not to wrap starts wrapping inside its box when it would not fit otherwise.",
+        "fr": "Que faire quand une traduction est plus longue que sa zone. Taille conservée si possible (par défaut) : les zones de texte et les tableaux s’agrandissent d’abord vers le bas dans l’espace libre, et le texte n’est réduit qu’en atteignant un autre élément ou le bord de la diapositive. Taille toujours conservée : la taille du texte ne change jamais et les zones et tableaux s’agrandissent autant que nécessaire ; ceux qui finissent par recouvrir d’autres éléments ou dépasser de la diapositive sont listés pour vérification. Adapté aux fichiers que vous scinderez vous-même en plusieurs diapositives. Mise en page figée : aucune zone de texte ni aucun tableau n’est redimensionné ou déplacé, seul le texte est réduit. Adapté aux modèles d’entreprise et aux formulaires. Le texte est réduit jusqu’à 60 % au plus ; ce qui ne tient toujours pas est listé pour vérification. Le texte sans retour à la ligne passe à la ligne dans sa zone quand il ne tiendrait pas autrement."
       },
       "default": "fit",
       "choices": [
         {
           "value": "fit",
           "label": {
-            "zh": "融合",
-            "en": "Balanced",
-            "fr": "Équilibré"
+            "zh": "优先保持字号",
+            "en": "Keep font size where possible",
+            "fr": "Taille conservée si possible"
           }
         },
         {
           "value": "keep_size",
           "label": {
-            "zh": "保持字号",
-            "en": "Keep font size",
-            "fr": "Taille conservée"
+            "zh": "始终保持字号",
+            "en": "Always keep font size",
+            "fr": "Taille toujours conservée"
           }
         },
         {
@@ -91,52 +91,49 @@
     },
     {
       "key": "spacing",
-      "kind": "choice",
+      "kind": "number",
       "label": {
         "zh": "与周围内容的间距",
         "en": "Spacing from nearby content",
         "fr": "Espace avec le contenu voisin"
       },
       "help": {
-        "zh": "写回偏好为「融合」时，文本框和表格加高、加宽后与下方或旁边的其他内容、页面边缘至少留出的距离，以免紧挨在一起。原稿里本来就比这更近的方向不再加高或加宽，改为缩小字号。单位「磅」与 PowerPoint 的字号、段落间距相同，6 磅约 2 毫米，默认 6 磅。「保持字号」「固定版面」不受影响。",
-        "en": "With the Balanced layout preference, the least distance a text box or table keeps from other content below or beside it and from the slide edges when it grows, so they do not touch. In a direction where the original is already closer than this, the box does not grow and the font shrinks instead. Points are the unit PowerPoint uses for font size and paragraph spacing; 6 pt is about 2 mm and is the default. Keep font size and Keep layout fixed are not affected.",
-        "fr": "Avec la préférence Équilibré, distance minimale qu’une zone de texte ou un tableau garde avec les autres éléments en dessous ou à côté et avec les bords de la diapositive quand il s’agrandit, pour qu’ils ne se touchent pas. Dans une direction où l’original est déjà plus proche, la zone ne s’agrandit pas et le texte est réduit à la place. Le point est l’unité de PowerPoint pour la taille de police et l’espacement des paragraphes ; 6 pt font environ 2 mm, valeur par défaut. Taille conservée et Mise en page figée ne sont pas concernées."
+        "zh": "文本框和表格加高、加宽后，与下方或旁边的其他内容、页面边缘至少留出的距离，以免紧挨在一起。原稿里本来就比这更近的方向不再加高或加宽，改为缩小字号。直接输入数字，单位可选磅、毫米、厘米（1 毫米约 2.8 磅），填 0 即不留。默认 2 磅。",
+        "en": "The least distance a text box or table keeps from other content below or beside it and from the slide edges when it grows, so they do not touch. In a direction where the original is already closer than this, the box does not grow and the font shrinks instead. Type a number and pick points, millimetres or centimetres (1 mm is about 2.8 pt); 0 leaves no gap. 2 pt by default.",
+        "fr": "Distance minimale qu’une zone de texte ou un tableau garde avec les autres éléments en dessous ou à côté et avec les bords de la diapositive quand il s’agrandit, pour qu’ils ne se touchent pas. Dans une direction où l’original est déjà plus proche, la zone ne s’agrandit pas et le texte est réduit à la place. Saisissez un nombre et choisissez points, millimètres ou centimètres (1 mm vaut environ 2,8 pt) ; 0 ne laisse aucun espace. 2 pt par défaut."
       },
-      "default": "pt6",
-      "choices": [
+      "default": 2,
+      "min": 0,
+      "units": [
         {
-          "value": "none",
+          "value": "pt",
           "label": {
-            "zh": "不留",
-            "en": "None",
-            "fr": "Aucun"
+            "zh": "磅",
+            "en": "pt",
+            "fr": "pt"
           }
         },
         {
-          "value": "pt3",
+          "value": "mm",
           "label": {
-            "zh": "3 磅",
-            "en": "3 pt",
-            "fr": "3 pt"
+            "zh": "毫米",
+            "en": "mm",
+            "fr": "mm"
           }
         },
         {
-          "value": "pt6",
+          "value": "cm",
           "label": {
-            "zh": "6 磅",
-            "en": "6 pt",
-            "fr": "6 pt"
-          }
-        },
-        {
-          "value": "pt12",
-          "label": {
-            "zh": "12 磅",
-            "en": "12 pt",
-            "fr": "12 pt"
+            "zh": "厘米",
+            "en": "cm",
+            "fr": "cm"
           }
         }
-      ]
+      ],
+      "unit": "pt",
+      "show_when": {
+        "layout_mode": ["fit"]
+      }
     }
   ],
   "license": "MIT",

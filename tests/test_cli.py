@@ -173,6 +173,31 @@ def test_a_choice_option_takes_one_of_its_values():
         flow.request_fields(sample, {"layout": True})
 
 
+def test_a_number_option_takes_a_number_and_one_of_its_units():
+    gap = {
+        "key": "gap",
+        "kind": "number",
+        "default": 2,
+        "min": 0,
+        "max": 50,
+        "label": {"zh": "间距"},
+        "units": [{"value": "pt", "label": {"zh": "磅"}}, {"value": "mm", "label": {"zh": "毫米"}}],
+        "unit": "pt",
+    }
+    sample = {**DESCRIPTORS[-1], "options": [gap, {**gap, "key": "plain", "units": [], "unit": ""}]}
+    assert flow.request_fields(sample, {"gap": "3"}) == {"options": {"gap": "3pt"}}
+    assert flow.request_fields(sample, {"gap": "1,5MM"}) == {"options": {"gap": "1.5mm"}}
+    assert flow.request_fields(sample, {"plain": "4.25"}) == {"options": {"plain": 4.25}}
+    with pytest.raises(flow.InputError, match="pt、mm"):
+        flow.request_fields(sample, {"gap": "3cm"})
+    with pytest.raises(flow.InputError, match="不带单位"):
+        flow.request_fields(sample, {"plain": "3pt"})
+    with pytest.raises(flow.InputError, match="不小于 0 的数字"):
+        flow.request_fields(sample, {"gap": "-1"})
+    with pytest.raises(flow.InputError, match="不能大于 50"):
+        flow.request_fields(sample, {"gap": "80mm"})
+
+
 def test_request_asks_for_the_apps_saved_values(tmp_path: Path):
     detection = flow.detect(DESCRIPTORS, [str(_touch(tmp_path / "a.txt"))])
 
@@ -338,6 +363,8 @@ def test_types_lists_built_in_and_run_time_types(app, run):
     assert "ext:sample" in keys and "ext:text" in keys
     code, out, _err = run("types")
     assert "示例文本（扩展）" in out and "--option uppercase" in out
+    # 数字选项列出可用的单位；从属的选项写明在什么时候有效。
+    assert "--option spacing=<数字>[pt|mm|cm]  与周围内容的间距（layout_mode=fit 时有效）" in out
 
 
 def test_scan_lists_what_would_be_translated(app, run, tmp_path: Path):

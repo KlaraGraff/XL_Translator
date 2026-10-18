@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from core.engine_client import EngineClient, EngineError, TaskEvent
+from core.format_adapter import format_number_value, parse_number_value
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -369,6 +370,8 @@ def _typed_value(key: str, raw: Any, spec: dict[str, Any]) -> Any:
         if str(raw).strip() in values:
             return str(raw).strip()
         raise InputError(f"选项「{key}」可选的值：{'、'.join(values)}，收到的是「{raw}」。")
+    if spec.get("kind") == "number":
+        return _number_value(key, raw, spec)
     if not isinstance(raw, str):
         return raw
     text = raw.strip()
@@ -387,6 +390,26 @@ def _typed_value(key: str, raw: Any, spec: dict[str, Any]) -> Any:
     except ValueError:
         raise InputError(f"选项「{key}」的值应为数字，收到的是「{raw}」。") from None
     return text
+
+
+def _number_value(key: str, raw: Any, spec: dict[str, Any]) -> Any:
+    units = [str(unit.get("value")) for unit in spec.get("units") or ()]
+    parsed = parse_number_value(raw)
+    example = f"「2」或「2{units[0]}」" if units else "「2」"
+    if parsed is None:
+        raise InputError(f"选项「{key}」的值应为不小于 0 的数字，如 {example}，收到的是「{raw}」。")
+    number, unit = parsed
+    if unit and unit not in units:
+        allowed = f"可用的单位：{'、'.join(units)}" if units else "这个选项不带单位"
+        raise InputError(f"选项「{key}」{allowed}，收到的是「{raw}」。")
+    low, high = spec.get("min"), spec.get("max")
+    if low is not None and number < low:
+        raise InputError(f"选项「{key}」的值不能小于 {format_number_value(low)}，收到的是「{raw}」。")
+    if high is not None and number > high:
+        raise InputError(f"选项「{key}」的值不能大于 {format_number_value(high)}，收到的是「{raw}」。")
+    if not units:
+        return number
+    return format_number_value(number, unit or str(spec.get("unit") or units[0]))
 
 
 def build_request(

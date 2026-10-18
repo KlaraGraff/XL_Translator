@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from lxml import etree
 
 from api.surfaces import all_surfaces, get_surface, unregister_surface
@@ -80,9 +81,9 @@ def test_manifest() -> None:
     assert [(option.key, option.kind, option.default) for option in manifest.options] == [
         ("translate_notes", "toggle", True),
         ("layout_mode", "choice", "fit"),
-        ("spacing", "choice", "pt6"),
+        ("spacing", "number", 2),
     ]
-    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（融合在前，是默认）。
+    # 写回偏好的三项就是缩字认的三种模式，顺序即界面上的顺序（优先保持字号在前，是默认）。
     assert tuple(choice.value for choice in manifest.options[1].choices) == LAYOUT_MODES
     # The PPT rules come on top of the app's own, which must stay word for word.
     assert manifest.prompt.startswith(CORE_TRANSLATION_PROMPT + "\n")
@@ -148,9 +149,11 @@ def test_layout_mode_reaches_the_fit(tmp_path: Path) -> None:
         ({"layout_mode": "keep_size"}, {"layout_mode": "keep_size"}),
         ({"layout_mode": "fixed"}, {"layout_mode": "fixed"}),
         ({"layout_mode": "bogus"}, {}),
-        ({"spacing": "pt6"}, {}),
-        ({"spacing": "pt12"}, {"gap_pt": 12.0}),
-        ({"spacing": "none", "layout_mode": "keep_size"}, {"gap_pt": 0.0, "layout_mode": "keep_size"}),
+        ({"spacing": "2pt"}, {}),
+        ({"spacing": "12pt"}, {"gap_pt": 12.0}),
+        ({"spacing": "2.54cm"}, {"gap_pt": pytest.approx(72.0)}),
+        ({"spacing": "0mm", "layout_mode": "keep_size"}, {"gap_pt": 0.0, "layout_mode": "keep_size"}),
+        ({"spacing": "5in"}, {}),
         ({"spacing": "bogus"}, {}),
     ]
     with patch("core.pptx_text.fit_after_write", fit):
@@ -276,7 +279,13 @@ def test_the_page_is_registered_with_the_app() -> None:
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode", "spacing"]
         layout = descriptor["options"][2]
         assert layout["kind"] == "choice" and layout["default"] == "fit"
-        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["融合", "保持字号", "固定版面"]
+        assert [choice["label"]["zh"] for choice in layout["choices"]] == ["优先保持字号", "始终保持字号", "固定版面"]
+        # 间距是输入的数字，默认 2 磅，只在「优先保持字号」时出现。
+        spacing = descriptor["options"][3]
+        assert spacing["kind"] == "number" and spacing["default"] == 2 and spacing["min"] == 0
+        assert [unit["value"] for unit in spacing["units"]] == ["pt", "mm", "cm"] and spacing["unit"] == "pt"
+        assert [unit["label"]["zh"] for unit in spacing["units"]] == ["磅", "毫米", "厘米"]
+        assert spacing["show_when"] == {"layout_mode": ["fit"]}
     finally:
         if not already:
             unregister_surface(key)

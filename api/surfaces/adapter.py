@@ -184,6 +184,11 @@ class AdapterSurface(Surface):
                 help=dict(option.help),
                 kind=option.kind,
                 choices=tuple(ChoiceDef(choice.value, dict(choice.label)) for choice in option.choices),
+                minimum=option.min,
+                maximum=option.max,
+                units=tuple(ChoiceDef(unit.value, dict(unit.label)) for unit in option.units),
+                unit=option.unit,
+                show_when={key: tuple(values) for key, values in option.show_when.items()},
             )
             for option in manifest.options
         )
@@ -208,11 +213,11 @@ class AdapterSurface(Surface):
         }
         return descriptor
 
-    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool | str]:
+    def resolve_options(self, settings: AppSettings | None, options: TaskOptions | None) -> dict[str, bool | int | float | str]:
         """Option values for a task: descriptor default ← saved on the page ← the request."""
         saved = dict(extension_settings(settings, self.key).options) if settings is not None else {}
         requested = dict((options.options if options is not None else None) or {})
-        resolved: dict[str, bool | str] = {}
+        resolved: dict[str, bool | int | float | str] = {}
         for option in self.options:
             value: Any = option.default
             if option.key in saved:
@@ -313,7 +318,7 @@ class AdapterSurface(Surface):
     def owner_label(self, snapshot: dict[str, object]) -> str:
         return f"{self.label} → {get_target_lang_display(str(snapshot.get('target_lang') or ''))}"
 
-    def write_bilingual(self, options: dict[str, bool | str]) -> bool:
+    def write_bilingual(self, options: dict[str, Any]) -> bool:
         """Write source + translation: the 双语对照 switch, or the only output the adapter has."""
         if self.output_bilingual and self.output_translation_only:
             return bool(options.get(BILINGUAL_OPTION_KEY, False))

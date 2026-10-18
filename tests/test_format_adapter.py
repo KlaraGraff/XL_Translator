@@ -360,6 +360,114 @@ def test_a_broken_choice_option_is_refused(change, message):
         parse_manifest(_manifest(options=[{**_LAYOUT, **change}]))
 
 
+_GAP = {
+    "key": "gap",
+    "kind": "number",
+    "label": {"zh": "间距", "en": "Gap", "fr": "Espace"},
+    "default": 2,
+    "min": 0,
+    "units": [
+        {"value": "pt", "label": {"zh": "磅", "en": "pt", "fr": "pt"}},
+        {"value": "mm", "label": {"zh": "毫米", "en": "mm", "fr": "mm"}},
+    ],
+}
+
+
+def test_a_number_option_is_described_and_resolved():
+    from api.task_contracts import TaskOptions
+    from core.surface_settings import set_surface_setting
+    from settings import AppSettings
+
+    manifest = parse_manifest(_manifest(options=[_GAP, {**_GAP, "key": "plain", "units": [], "max": 10}]))
+    # 不写 unit 时取第一项。
+    assert manifest.options[0].unit == "pt"
+    surface = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest))
+    gap, plain = surface.describe()["options"][-2:]
+    assert gap == {
+        "key": "gap",
+        "kind": "number",
+        "label": _GAP["label"],
+        "help": {},
+        "default": 2,
+        "min": 0,
+        "max": None,
+        "units": _GAP["units"],
+        "unit": "pt",
+    }
+    assert plain["units"] == [] and plain["max"] == 10
+    assert "units" not in surface.describe()["options"][0]  # 开关不带数字的字段
+    settings = AppSettings()
+    resolved = surface.resolve_options(settings, TaskOptions())
+    assert resolved["gap"] == "2pt" and resolved["plain"] == 2.0
+    set_surface_setting(settings, ECHO_KEY, "options", {"gap": "1.5mm"})
+    assert surface.resolve_options(settings, TaskOptions())["gap"] == "1.5mm"
+    # 只写数字按默认单位；逗号当小数点；越界的贴着边界；单位认不得、写不成数字的按默认。
+    for requested, expected in (
+        ({"gap": 4}, "4pt"),
+        ({"gap": "3,5 mm"}, "3.5mm"),
+        ({"gap": "3cm"}, "2pt"),
+        ({"gap": "-1pt"}, "2pt"),
+        ({"gap": True}, "2pt"),
+        ({"plain": "25"}, 10.0),
+        ({"plain": "3pt"}, 2.0),
+    ):
+        key = next(iter(requested))
+        assert surface.resolve_options(settings, TaskOptions(options=requested))[key] == expected, requested
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"default": "2"}, "default 应为数字"),
+        ({"default": True}, "default 应为数字"),
+        ({"min": -1}, "min 不能小于 0"),
+        ({"min": 3, "max": 1}, "min 大于 max"),
+        ({"max": 1}, "不在 min、max 之间"),
+        ({"unit": "cm"}, "unit 应为 units 里的一个"),
+        ({"units": [], "unit": "pt"}, "没有 units"),
+        ({"units": [_GAP["units"][0], _GAP["units"][0]]}, "units 里 value 重复"),
+        ({"choices": _LAYOUT["choices"]}, "不能有 choices"),
+        ({"kind": "choice", "choices": _LAYOUT["choices"], "default": "grow"}, "不能有 min、max、units、unit"),
+    ],
+)
+def test_a_broken_number_option_is_refused(change, message):
+    with pytest.raises(AdapterManifestError, match=message):
+        parse_manifest(_manifest(options=[{**_GAP, **change}]))
+
+
+def test_an_option_can_depend_on_an_earlier_one():
+    upper = {"key": "upper", "label": _LAYOUT["label"]}
+    gap = {**_GAP, "show_when": {"layout": "grow"}}
+    notes = {**upper, "key": "notes", "show_when": {"upper": [True], "layout": ["grow", "shrink"]}}
+    manifest = parse_manifest(_manifest(options=[upper, _LAYOUT, gap, notes]))
+    # 只有一个值时可以不写成列表。
+    assert manifest.options[2].show_when == {"layout": ["grow"]}
+    surface = AdapterSurface(manifest, InProcessAdapterHost(ECHO_DIR, manifest))
+    described = {option["key"]: option for option in surface.describe()["options"]}
+    assert described["gap"]["show_when"] == {"layout": ["grow"]}
+    assert described["notes"]["show_when"] == {"upper": [True], "layout": ["grow", "shrink"]}
+    assert "show_when" not in described["layout"]
+
+
+@pytest.mark.parametrize(
+    ("show_when", "message"),
+    [
+        ({"missing": ["grow"]}, "要写在它前面的开关或多选一"),
+        ({"later": [True]}, "要写在它前面的开关或多选一"),
+        ({"gap": ["2"]}, "要写在它前面的开关或多选一"),
+        ({"layout": ["sideways"]}, "layout 的值应为：grow、shrink"),
+        ({"layout": []}, "layout 的值应为"),
+        ({"upper": ["true"]}, "upper 的值应为：true、false"),
+    ],
+)
+def test_a_broken_dependency_is_refused(show_when, message):
+    upper = {"key": "upper", "label": _LAYOUT["label"]}
+    dependent = {"key": "child", "label": _LAYOUT["label"], "show_when": show_when}
+    later = {"key": "later", "label": _LAYOUT["label"]}
+    with pytest.raises(AdapterManifestError, match=message):
+        parse_manifest(_manifest(options=[upper, _LAYOUT, _GAP, dependent, later]))
+
+
 def test_a_toggle_default_written_as_text_still_loads():
     # 多选一以前，default 只收布尔值，"true" 这类字符串照布尔转；装好的扩展照样能读。
     option = {"key": "upper", "label": _LAYOUT["label"], "default": "true"}

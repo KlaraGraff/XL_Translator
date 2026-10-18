@@ -18,7 +18,7 @@ adapter it may import app modules.
   ``keep_size`` keeps the font size and only grows, ``fixed`` keeps every box
   and table where and as large as it is and only shrinks.
 - ``spacing`` is how far a box or table grown under ``fit`` stays from the
-  shapes around it and the slide edges (``pt6``, 6 pt or about 2 mm, by default).
+  shapes around it and the slide edges (a number the user types with a unit, ``2pt`` by default).
 - Old .ppt / .pps files are first converted to a temporary .pptx
   (``core/ppt_converter.py``: the local PowerPoint, else LibreOffice).  Reading,
   extracting and writing one file share that copy, so it is converted once;
@@ -33,7 +33,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
-from core.format_adapter import AdapterError
+from core.format_adapter import AdapterError, parse_number_value
 from core.ppt_converter import PptConversionCache, PptConversionError, converted_name, is_legacy_ppt
 from core.pptx_fit import DEFAULT_GAP_PT, LAYOUT_FIT, LAYOUT_MODES
 from core.pptx_text import PptxError, Translation, extract_units, scan_file, write_file
@@ -42,11 +42,11 @@ from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, T
 NOTES_OPTION = "translate_notes"
 #: The target language the app passes along with the switches (``lang`` of the written text).
 TARGET_LANG_OPTION = "target_lang"
-#: 写回偏好: 融合 ``fit`` (default) / 保持字号 ``keep_size`` / 固定版面 ``fixed``.
+#: 写回偏好: 优先保持字号 ``fit`` (default) / 始终保持字号 ``keep_size`` / 固定版面 ``fixed``.
 LAYOUT_OPTION = "layout_mode"
-#: 与周围内容的间距：选项值 → 磅（PowerPoint 字号、段落间距的单位）。
+#: 与周围内容的间距：用户输入的数字连单位（如 ``2pt``、``1.5mm``）；各单位折成多少磅。
 SPACING_OPTION = "spacing"
-SPACING_PT = {"none": 0.0, "pt3": 3.0, "pt6": 6.0, "pt12": 12.0}
+PT_PER_UNIT = {"pt": 1.0, "mm": 72 / 25.4, "cm": 72 / 2.54}
 
 _TEXT_UNIT_FIELDS = {item.name for item in fields(TextUnit)}
 _OUTPUT_FIELDS = {item.name for item in fields(OutputFile)}
@@ -63,7 +63,11 @@ def _layout_mode(options: Mapping[str, Any] | None) -> str:
 
 
 def _gap_pt(options: Mapping[str, Any] | None) -> float:
-    return SPACING_PT.get(str((options or {}).get(SPACING_OPTION) or ""), DEFAULT_GAP_PT)
+    parsed = parse_number_value((options or {}).get(SPACING_OPTION))
+    if parsed is None or (parsed[1] and parsed[1] not in PT_PER_UNIT):
+        return DEFAULT_GAP_PT
+    number, unit = parsed
+    return number * PT_PER_UNIT[unit or "pt"]
 
 
 def _notes(options: Mapping[str, Any] | None) -> bool:

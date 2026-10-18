@@ -1041,7 +1041,7 @@ def write_file(
 ) -> WriteResult:
     """把译文写进 ``source`` 的副本 ``out_path``，保存后验收；不通过时删掉输出、抛 ``PptxError``。
 
-    ``layout_mode``：写回偏好，融合 / 保持字号 / 固定版面；``gap_pt``：融合模式加高、加宽时与
+    ``layout_mode``：写回偏好，优先保持字号 / 始终保持字号 / 固定版面；``gap_pt``：优先保持字号模式加高、加宽时与
     旁边的形状和页边留的距离，单位磅（都见 ``core.pptx_fit``，交给缩字那一步）。
     """
     source = Path(source)
@@ -1072,7 +1072,7 @@ def write_file(
                     continue
                 root = deck.root(scope.part)
                 if scope.kind != "notes":
-                    # 默认值不传（「融合」、默认间距），缩字那一步按自己的默认走。
+                    # 默认值不传（「优先保持字号」、默认间距），缩字那一步按自己的默认走。
                     extra: dict[str, Any] = {"layout_mode": layout_mode} if layout_mode != LAYOUT_FIT else {}
                     if gap_pt != DEFAULT_GAP_PT:
                         extra["gap_pt"] = gap_pt

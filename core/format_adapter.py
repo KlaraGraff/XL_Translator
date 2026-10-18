@@ -63,6 +63,8 @@ _LAX_BOOLS = {
     **dict.fromkeys(("1", "on", "t", "true", "y", "yes"), True),
     **dict.fromkeys(("0", "off", "f", "false", "n", "no"), False),
 }
+#: 数字选项的值：数字后面可跟单位，如 ``2pt``、``1.5mm``、``3``。
+_NUMBER_VALUE_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?|[.,]\d+)\s*([a-z][a-z0-9_]*)?\s*$")
 _EXTENSION_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _ICON_RE = re.compile(r"^[a-z0-9-]{0,32}$")
 _CLOSING_MARK_RE = re.compile(r"<\s*/\s*g\s*\d+\s*>", re.IGNORECASE)
@@ -87,6 +89,27 @@ def _three_languages(value: Any, field: str, *, required: bool = True) -> dict[s
         if missing:
             raise ValueError(f"{field} 缺少 {', '.join(missing)}")
     return {lang: text for lang, text in texts.items() if text}
+
+
+def parse_number_value(value: Any) -> tuple[float, str] | None:
+    """数字选项的值拆成（数字, 单位）：``"2pt"`` → ``(2.0, "pt")``，``3`` → ``(3.0, "")``。
+
+    逗号当小数点（``"1,5mm"``）。负数、布尔值和认不出的写法返回 ``None``。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return (float(value), "") if value >= 0 and value == value and value != float("inf") else None
+    match = _NUMBER_VALUE_RE.match(str(value or "").lower())
+    if match is None:
+        return None
+    return float(match.group(1).replace(",", ".")), match.group(2) or ""
+
+
+def format_number_value(number: float, unit: str = "") -> str:
+    """``parse_number_value`` 的反过来：``(2.0, "pt")`` → ``"2pt"``，最多三位小数。"""
+    text = f"{round(float(number), 3):.3f}".rstrip("0").rstrip(".")
+    return f"{text}{unit}"
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -121,17 +144,28 @@ class AdapterOption(BaseModel):
     """清单里的一个选项；字段与描述符的 ``OptionDef`` 一致。
 
     ``kind`` 为 ``"toggle"``（默认）是开关，``default`` 是布尔值；为 ``"choice"`` 是多选一，
-    ``choices`` 列出各项，``default`` 是其中一项的 ``value``（不写时取第一项）。
+    ``choices`` 列出各项，``default`` 是其中一项的 ``value``（不写时取第一项）；为 ``"number"``
+    是让用户输入的数字，``default`` 是数字，``min``/``max`` 可选；再写 ``units`` 时旁边多一个
+    单位下拉，``unit`` 是默认单位（不写时取第一项），交给适配器的值是 ``"2pt"`` 这样数字连单位
+    的字符串（见 ``parse_number_value``），不写 ``units`` 时就是数字。
+
+    ``show_when`` 让一个选项从属于前面的开关或多选一：``{"layout_mode": ["fit"]}`` 表示只有
+    「layout_mode」选了 fit 时才显示，界面上缩进画在它下面。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     key: str
-    kind: Literal["toggle", "choice"] = "toggle"
+    kind: Literal["toggle", "choice", "number"] = "toggle"
     label: dict[str, str]
     help: dict[str, str] = Field(default_factory=dict)
-    default: bool | str = False
+    default: bool | int | float | str = False
     choices: list[AdapterChoice] = Field(default_factory=list)
+    min: float | None = None
+    max: float | None = None
+    units: list[AdapterChoice] = Field(default_factory=list)
+    unit: str = ""
+    show_when: dict[str, list[bool | str]] = Field(default_factory=dict)
 
     @field_validator("key")
     @classmethod
@@ -152,8 +186,20 @@ class AdapterOption(BaseModel):
     def _help(cls, value: Any) -> dict[str, str]:
         return _three_languages(value or {}, "help", required=False)
 
+    @field_validator("show_when", mode="before")
+    @classmethod
+    def _show_when(cls, value: Any) -> Any:
+        # 只有一个值时可以不写成列表：{"layout_mode": "fit"}。
+        if isinstance(value, Mapping):
+            return {key: item if isinstance(item, list) else [item] for key, item in value.items()}
+        return value
+
     @model_validator(mode="after")
     def _kind(self) -> AdapterOption:
+        if self.kind != "number" and (self.units or self.unit or self.min is not None or self.max is not None):
+            raise ValueError(f"选项 {self.key} 不是数字（\"kind\": \"number\"），不能有 min、max、units、unit")
+        if self.kind == "number":
+            return self._number()
         if self.kind == "toggle":
             if self.choices:
                 raise ValueError(f"开关 {self.key} 不能有 choices（多选一请写 \"kind\": \"choice\"）")
@@ -172,6 +218,32 @@ class AdapterOption(BaseModel):
             self.default = values[0]
         if self.default not in values:
             raise ValueError(f"选项 {self.key} 的 default 应为 choices 里的一个 value：{', '.join(values)}")
+        return self
+
+    def _number(self) -> AdapterOption:
+        if self.choices:
+            raise ValueError(f"数字选项 {self.key} 不能有 choices（单位写在 units 里）")
+        if isinstance(self.default, bool) or not isinstance(self.default, (int, float)):
+            raise ValueError(f"数字选项 {self.key} 的 default 应为数字")
+        if self.min is not None and self.min < 0:
+            raise ValueError(f"数字选项 {self.key} 的 min 不能小于 0")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"数字选项 {self.key} 的 min 大于 max")
+        low = 0.0 if self.min is None else self.min
+        high = float("inf") if self.max is None else self.max
+        if not low <= self.default <= high:
+            raise ValueError(f"数字选项 {self.key} 的 default 不在 min、max 之间")
+        values = [unit.value for unit in self.units]
+        if len(set(values)) != len(values):
+            raise ValueError(f"数字选项 {self.key} 的 units 里 value 重复")
+        if not values:
+            if self.unit:
+                raise ValueError(f"数字选项 {self.key} 没有 units，不能写 unit")
+            return self
+        if not self.unit:
+            self.unit = values[0]
+        if self.unit not in values:
+            raise ValueError(f"数字选项 {self.key} 的 unit 应为 units 里的一个 value：{', '.join(values)}")
         return self
 
 
@@ -290,6 +362,16 @@ class AdapterManifest(BaseModel):
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ValueError(f"开关的 key 重复：{', '.join(duplicates)}")
+        for index, option in enumerate(value):
+            earlier = {item.key: item for item in value[:index]}
+            for key, wanted in option.show_when.items():
+                parent = earlier.get(key)
+                if parent is None or parent.kind == "number":
+                    raise ValueError(f"选项 {option.key} 的 show_when 要写在它前面的开关或多选一：{key!r}")
+                allowed: list[bool | str] = [True, False] if parent.kind == "toggle" else [c.value for c in parent.choices]
+                if not wanted or any(item not in allowed or type(item) is not type(allowed[0]) for item in wanted):
+                    shown = "true、false" if parent.kind == "toggle" else "、".join(str(item) for item in allowed)
+                    raise ValueError(f"选项 {option.key} 的 show_when 里 {key} 的值应为：{shown}")
         return value
 
     @field_validator("sidebar_after")
@@ -573,7 +655,9 @@ __all__ = [
     "AdapterOption",
     "InProcessAdapterHost",
     "discover_adapters",
+    "format_number_value",
     "load_manifest",
     "parse_manifest",
+    "parse_number_value",
     "validate_units",
 ]

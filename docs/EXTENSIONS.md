@@ -29,7 +29,7 @@
 | `description` | 建议 | 页面「?」里的说明，三种语言；提交到扩展列表时必须有 |
 | `prompt` | 否 | 这种文件的内置规则（最长 4000 字），省略时用 Translator 通用的那份；用户可在「设置 → 翻译参数」里改写 |
 | `capabilities` | 否 | `{"translation_only": true, "bilingual": true}`，至少一种；两种都支持时页面有「双语对照」开关 |
-| `options` | 否 | 页面上的选项。开关：`{"key", "label", "help", "default"}`，`default` 为 `true`/`false`；多选一：再加 `"kind": "choice"` 和 `"choices": [{"value", "label"}, …]`（至少两项），`default` 为其中一项的 `value`，不写时取第一项，适配器收到的是选中项的 `value`。`bilingual`、`target_lang` 由应用提供，不能用作 key |
+| `options` | 否 | 页面上的选项。开关：`{"key", "label", "help", "default"}`，`default` 为 `true`/`false`；多选一：再加 `"kind": "choice"` 和 `"choices": [{"value", "label"}, …]`（至少两项），`default` 为其中一项的 `value`，不写时取第一项，适配器收到的是选中项的 `value`。输入数字：`"kind": "number"`，`default` 为数字，可加 `min`、`max`（不写 `min` 时不小于 0）；再加 `"units": [{"value", "label"}, …]` 时输入框旁边多一个单位下拉，`unit` 是默认单位（不写时取第一项），适配器收到 `"2pt"`、`"1.5mm"` 这样数字连单位的字符串，不带 `units` 时收到数字。任何选项都可加 `"show_when": {"前面某个选项的 key": [取值, …]}`：只在那个选项取这些值时显示，缩进画在它下面（值不显示时照样发给适配器，按需忽略）。`bilingual`、`target_lang` 由应用提供，不能用作 key |
 | `icon`、`license`、`repo`、`min_app_version` | 否 | 图标名、许可证、项目主页、需要的最低 Translator 版本 |
 | `visible_by_default`、`sidebar_after` | 否 | 只对随 Translator 提供的类型生效：没在「扩展」页拨过时也显示在侧栏、默认顺序里紧跟哪个类型（如 `word`）。装进来的扩展写了也不起作用（装上时本来就显示在侧栏） |
 

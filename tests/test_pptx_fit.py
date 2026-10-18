@@ -330,7 +330,7 @@ def test_group_shapes_scale_with_group_and_never_grow(parts, french):
     assert max(_sizes(touched["group-a"])) < 1800
 
 
-# ---------------------------------------------------------------- 保持字号
+# ---------------------------------------------------------------- 始终保持字号
 
 
 def _reasons(root, issues) -> dict[str, str]:
@@ -454,14 +454,14 @@ def test_label_stays_on_one_line_when_wrapping_spills_more(parts, french):
 
 
 def test_grown_boxes_keep_the_chosen_gap(parts, french):
-    """融合：往下长的框停在下方形状上沿往上 gap 处（默认 6 磅）；gap 为 0 时可以贴上去。"""
+    """优先保持字号：往下长的框停在下方形状上沿往上 gap 处（默认 2 磅）；gap 为 0 时可以贴上去。"""
     obstacle = _ext(_shape(etree.fromstring(parts["ppt/slides/slide3.xml"]), "Rectangle 5"))
     default_root, _touched, _issues = _run(parts, french, 3, bilingual=True)
     x, y, cx, cy = _ext(_shape(default_root, "spauto-near"))
-    assert obstacle[1] - (y + cy) >= 6 * pptx_fit.EMU_PER_PT - 1
+    assert obstacle[1] - (y + cy) >= 2 * pptx_fit.EMU_PER_PT - 1
     touching_root, _touched, _issues = _run(parts, french, 3, bilingual=True, gap_pt=0)
     x, y, cx, cy = _ext(_shape(touching_root, "spauto-near"))
-    assert obstacle[1] - (y + cy) < 6 * pptx_fit.EMU_PER_PT
+    assert obstacle[1] - (y + cy) < 2 * pptx_fit.EMU_PER_PT
     assert y + cy <= obstacle[1]
     # 原稿里本来就比间距还近的，不再往那边长：间距设成很大时这个框一点也不长。
     original = _ext(_shape(etree.fromstring(parts["ppt/slides/slide3.xml"]), "spauto-near"))

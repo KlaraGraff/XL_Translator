@@ -182,6 +182,24 @@ interface ChoiceDef {
   choices: Array<{ value: string; label: string }>;
 }
 
+/** 运行时注册的类型在「高级」里让人输入的数字（kind 为 "number"），有单位时旁边带单位下拉。 */
+interface NumberDef {
+  key: string;
+  label: string;
+  hint: string;
+  default: number;
+  min: number;
+  max: number | null;
+  /** 为空时不带单位，值按数字发出；否则按「数字连单位」的文字发出，如 "2pt"。 */
+  units: Array<{ value: string; label: string }>;
+  unit: string;
+}
+
+interface NumberValue {
+  value: number;
+  unit: string;
+}
+
 interface ToggleDef {
   key: string;
   label: string;
@@ -347,6 +365,69 @@ function surfaceChoices(surface: Surface): ChoiceDef[] {
     });
 }
 
+/** 运行设置里让人输入的数字，同样只有运行时注册的类型有、不落盘，值随开始任务的请求发出。 */
+function surfaceNumbers(surface: Surface): NumberDef[] {
+  if (!isExtSurface(surface)) return [];
+  return (surfaceDescriptor(surface)?.options ?? [])
+    .filter((option) => option.kind === "number")
+    .map((option) => {
+      const units = (option.units ?? []).map((unit) => ({ value: unit.value, label: localizedText(unit.label, unit.value) }));
+      return {
+        key: option.key,
+        label: localizedText(option.label, option.key),
+        hint: localizedText(option.help),
+        default: typeof option.default === "number" ? option.default : 0,
+        min: typeof option.min === "number" ? option.min : 0,
+        max: typeof option.max === "number" ? option.max : null,
+        units,
+        unit: units.some((unit) => unit.value === option.unit) ? String(option.unit) : units[0]?.value ?? "",
+      };
+    });
+}
+
+/** 运行时注册的类型里从属于别的选项的（描述符 show_when）：所依的选项现在的值都在列出的值里、
+ *  它们自己也显示着时才显示。内置页面没有描述符选项，一律显示。 */
+function extOptionShown(surface: Surface, st: SurfaceState, key: string, seen: Set<string> = new Set()): boolean {
+  if (!isExtSurface(surface) || seen.has(key)) return true;
+  const options = surfaceDescriptor(surface)?.options ?? [];
+  const option = options.find((item) => item.key === key);
+  if (!option?.show_when) return true;
+  seen.add(key);
+  return Object.entries(option.show_when).every(([parentKey, wanted]) => {
+    const parent = options.find((item) => item.key === parentKey);
+    if (!parent) return true;
+    const current = parent.kind === "toggle"
+      ? st.toggles.get(parentKey) ?? Boolean(parent.default)
+      : st.choices.get(parentKey) ?? String(parent.default);
+    return wanted.includes(current) && extOptionShown(surface, st, parentKey, seen);
+  });
+}
+
+/** 从属的选项挪到所依的选项正下方（同一个上级的按清单顺序往下排），加 opt-sub 缩进显示。 */
+function nestDependentOptions(surface: Surface, rows: Map<string, HTMLElement>): void {
+  if (!isExtSurface(surface)) return;
+  const lastUnder = new Map<string, HTMLElement>();
+  for (const option of surfaceDescriptor(surface)?.options ?? []) {
+    const parentKey = Object.keys(option.show_when ?? {})[0];
+    const row = rows.get(option.key);
+    const anchor = parentKey ? lastUnder.get(parentKey) ?? rows.get(parentKey) : undefined;
+    if (!row || !anchor) continue;
+    row.classList.add("opt-sub");
+    anchor.after(row);
+    lastUnder.set(parentKey, row);
+  }
+}
+
+/** 数字显示和发出时最多保留三位小数，不带多余的 0（2、1.5）。 */
+function formatOptionNumber(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
+}
+
+function numberOptionValue(def: NumberDef, current: NumberValue | undefined): number | string {
+  const value = current?.value ?? def.default;
+  return def.units.length ? `${formatOptionNumber(value)}${current?.unit ?? def.unit}` : value;
+}
+
 // ---------------------------------------------------------------------------
 // 每个 surface 的本地状态（模块级，跨 mount/unmount 存活，与 tasks.ts 的后台徽标循环
 // 各自独立——见文件尾「架构偏离说明」）。
@@ -418,6 +499,8 @@ interface SurfaceState {
   toggles: Map<string, boolean>;
   /** 运行时注册的类型的多选一（见 surfaceChoices），键是选项的 key。 */
   choices: Map<string, string>;
+  /** 运行时注册的类型让人输入的数字（见 surfaceNumbers），键是选项的 key。 */
+  numbers: Map<string, NumberValue>;
   targetLang: string;
   sourceLang: string;
   domainPreset: string;
@@ -495,6 +578,10 @@ function freshChoices(surface: Surface): Map<string, string> {
   return new Map(surfaceChoices(surface).map((choice) => [choice.key, choice.default]));
 }
 
+function freshNumbers(surface: Surface): Map<string, NumberValue> {
+  return new Map(surfaceNumbers(surface).map((number) => [number.key, { value: number.default, unit: number.unit }]));
+}
+
 function freshState(surface: Surface): SurfaceState {
   return {
     sourcePath: "",
@@ -505,6 +592,7 @@ function freshState(surface: Surface): SurfaceState {
     selected: new Set(),
     toggles: freshToggles(surface),
     choices: freshChoices(surface),
+    numbers: freshNumbers(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: NO_EXTRA_PROMPT,
@@ -3040,6 +3128,49 @@ function buildDomainField(surface: Exclude<Surface, "pdf">, st: SurfaceState, ac
   return field.root;
 }
 
+/** 数字输入框，有单位时右边接一个单位下拉。打的字认不出就还原成原来的值，越界的贴着边界
+ *  夹住（和设置页的 numberField 一样）；逗号当小数点。只改状态，不重画：开始翻译时现读。 */
+function buildNumberField(def: NumberDef, st: SurfaceState, active: boolean): HTMLElement {
+  const current = (): NumberValue => st.numbers.get(def.key) ?? { value: def.default, unit: def.unit };
+  const row = el("div", "num-unit");
+  const input = el("input", "num-unit-value");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.autocomplete = "off";
+  input.value = formatOptionNumber(current().value);
+  input.disabled = active;
+  input.setAttribute("aria-label", def.label);
+  input.addEventListener("change", () => {
+    const typed = input.value.trim().replace(",", ".");
+    const parsed = Number(typed);
+    if (!typed || !Number.isFinite(parsed)) {
+      input.value = formatOptionNumber(current().value);
+      return;
+    }
+    let value = Math.max(def.min, parsed);
+    if (def.max !== null) value = Math.min(def.max, value);
+    value = Math.round(value * 1000) / 1000;
+    input.value = formatOptionNumber(value);
+    st.numbers.set(def.key, { ...current(), value });
+  });
+  row.append(input);
+  if (def.units.length) {
+    const unit = createDropdown({
+      options: def.units,
+      value: current().unit,
+      disabled: active,
+      // className 还会拼成菜单的类名，只能是一个词。
+      className: "unit",
+      onChange: (value) => st.numbers.set(def.key, { ...current(), unit: value }),
+    });
+    unit.input.setAttribute("aria-label", def.label);
+    row.append(unit.root);
+  }
+  const field = createField(def.label, row);
+  if (def.hint) field.querySelector("label")?.append(createHintBadge(def.hint));
+  return field;
+}
+
 /** 「高级」折叠块（默认收起）：其余开关、CAD 的写回与锁定、输出位置。只是收起来，一项都不删。 */
 function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean): HTMLElement | null {
   const content = el("div", "adv");
@@ -3054,6 +3185,8 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
   }
 
   const resumeAuto = Boolean(activeResumeDir(st));
+  // 运行时注册的类型的各选项画出来的那一行，从属的选项最后挪到所依的选项下面（nestDependentOptions）。
+  const optionRows = new Map<string, HTMLElement>();
   for (const toggle of surfaceToggles(surface)) {
     // 「仅显示译文」提到上面做成了「输出」分段控件。
     if (toggle.key === "translationOnly") continue;
@@ -3061,6 +3194,7 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     if (surface === "cad" && toggle.key === "cadFitLayout") continue;
     // 原位替换、自动组合有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
     if (toggle.key === "skipOversizedPages" && st.pdfRoute === "auto") continue;
+    if (!extOptionShown(surface, st, toggle.key)) continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
     // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
     // 角标说明，想全译走横幅上的「改为全部重译」。
@@ -3080,10 +3214,12 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
       row.insertBefore(badge, row.querySelector(".sw"));
     }
     content.append(row);
+    optionRows.set(toggle.key, row);
   }
 
   for (const choice of surfaceChoices(surface)) {
-    content.append(createSelectField({
+    if (!extOptionShown(surface, st, choice.key)) continue;
+    const field = createSelectField({
       label: choice.label,
       hint: choice.hint,
       options: choice.choices,
@@ -3093,8 +3229,17 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
         st.choices.set(choice.key, value);
         rerender(surface);
       },
-    }).root);
+    }).root;
+    content.append(field);
+    optionRows.set(choice.key, field);
   }
+  for (const number of surfaceNumbers(surface)) {
+    if (!extOptionShown(surface, st, number.key)) continue;
+    const field = buildNumberField(number, st, active);
+    content.append(field);
+    optionRows.set(number.key, field);
+  }
+  nestDependentOptions(surface, optionRows);
 
   if (surface === "cad") content.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
   // 输出位置是各页自己的设置项（运行时注册的类型存在 settings.extensions[<id>]）。
@@ -4192,6 +4337,7 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.options = Object.fromEntries([
       ...surfaceToggles(surface).map((toggle) => [toggle.key, st.toggles.get(toggle.key) ?? toggle.default]),
       ...surfaceChoices(surface).map((choice) => [choice.key, st.choices.get(choice.key) ?? choice.default]),
+      ...surfaceNumbers(surface).map((number) => [number.key, numberOptionValue(number, st.numbers.get(number.key))]),
     ]);
   }
   if (surface === "cad") {
