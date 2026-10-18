@@ -2214,11 +2214,14 @@ class CadTranslationPipeline:
             # 写进图纸的译文：用兼容的 SHX 字体时，弯引号、长破折号、œ 这类字体里可能没有的
             # 字符换成同义写法（报告里仍是模型给的原样）。
             written = {key: shx_safe(value) for key, value in translations.items()} if font == compatible_font("en") else translations
-            # 双语时编号、规格这类译前译后一样的（M1、300×300×20）不再重复写一行。
-            unchanged: set[str] = set()
+            # 编号、单字母标签这类译前译后一样的（M1、E、AS、300×300×20）：双语时只差大小写、
+            # 全半角也不再重复写一行；仅译文时一字不差的照常写回（换字体时跟着换）。两种都记
+            # 「保留原文」，不算「已翻译文字」。
             if bilingual:
                 unchanged = {key for key, value in written.items() if _same_as_source(key, value)}
                 written = {key: value for key, value in written.items() if key not in unchanged}
+            else:
+                unchanged = {key for key, value in written.items() if value.strip() == key.strip()}
             table_plans = plan_table_cells(
                 records, candidates, written, display_mode=options.display_mode, escape=escape_unicode,
             )
@@ -2235,12 +2238,13 @@ class CadTranslationPipeline:
                 changed_unit = any(run.text in written for run in unit.runs)
                 if not unit.runs and unit.plain_text in written:
                     changed_unit = fully = True
+                pending = [run.text for run in unit.runs if _has_translatable_content(run.text)] or [unit.plain_text]
+                if all(text in kept_texts or text in unchanged for text in pending):
+                    stats.kept_units += 1
+                elif changed_unit:
+                    stats.changed += 1
                 if not changed_unit:
-                    pending = [run.text for run in unit.runs if _has_translatable_content(run.text)] or [unit.plain_text]
-                    if all(text in kept_texts or text in unchanged for text in pending):
-                        stats.kept_units += 1
                     continue
-                stats.changed += 1
                 start = _entity_start(records, unit.record_indices[0])
                 if unit.entity_type == "MTEXT":
                     cell_sources[id(records[start])] = unit.plain_text
@@ -2506,7 +2510,10 @@ class CadTranslationPipeline:
                 "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
             for item in unit_reports:
-                row = {**item, "status": _UNIT_STATUS_LABELS.get(str(item.get("status") or ""), item.get("status", ""))}
+                label = _UNIT_STATUS_LABELS.get(str(item.get("status") or ""), item.get("status", ""))
+                if item.get("status") == "translated" and str(item.get("source") or "") in unchanged:
+                    label = "译文与原文相同"
+                row = {**item, "status": label}
                 summary_lines.append("| {unit_id} | {source} | {translation} | {status} | {reason} |".format(**{key: str(value).replace("|", "\\|") for key, value in row.items()}))
             summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
             # Publish only after the output and all review artifacts are ready.
