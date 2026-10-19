@@ -154,6 +154,10 @@ def recent_tasks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # 只在本机界面上帮用户认出是哪一次；不会进反馈包。
                 "source_label": str(record.get("source_label") or ""),
                 "updated_at": record.get("updated_at") or record.get("created_at") or 0,
+                "terminal": True,
+                # 状态词和任务中心同一套判定（ui/src/views/tasks.ts taskStatusChip）：只看
+                # state 的话，零待办、只有提示的任务会写成「完成但有问题」，任务中心却是「已完成」。
+                "result": record.get("result") or {},
             }
         )
         if len(result) >= RECENT_TASK_LIMIT:

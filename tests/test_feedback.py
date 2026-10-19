@@ -182,6 +182,9 @@ class FeedbackPackageTests(IsolatedAppDataTestCase):
         self.assertGreater(preview["package_bytes"], 0)
         context = self.client.get("/api/feedback/context").json()
         self.assertEqual([task["task_id"] for task in context["tasks"]], ["task-1"])
+        # 界面按结果摘要判定状态词（和任务中心同一套），所以要带 result；日志不带。
+        self.assertEqual(context["tasks"][0]["result"]["message"], "盛泰项目报价单.xlsx 翻译失败")
+        self.assertNotIn("logs", context["tasks"][0])
 
     def test_send_without_a_relay_says_so(self) -> None:
         with patch.object(feedback, "FEEDBACK_ENDPOINT", ""), patch.dict("os.environ", {}, clear=False):
