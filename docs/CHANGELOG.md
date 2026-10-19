@@ -1,15 +1,5 @@
 # Translator 版本更新日志
 
-## 当前开发版
-
-- **「本批文件」卡片不再闪烁，各行对齐**：混合文件夹「全部开始」之后，「翻译」页上的「本批文件」卡片每来一次进度就整张重画，入场的淡入跟着重播，4 秒里闪二十来次；现在卡片原地更新，只改文字和进度条宽度，进度条也能平滑变长。各行右侧的状态（「已完成」「翻译中 85%」「完成但有问题 · 需复核」）长短不一时，中间那列设置以前跟着左右错开；现在各行共用同一套列宽，始终上下对齐。逐页检查了全软件在任务进行中有没有同类「刷新时重播入场动画」的地方，没有发现别处。
-
-  **The "This batch" card no longer flickers, and its rows line up**: After Start all on a mixed folder, the "This batch" card on the Translate page was redrawn on every progress update and replayed its fade-in, flashing about twenty times in four seconds. It now updates in place, changing only the text and the progress bar width, which also eases smoothly. When the statuses on the right differed in length ("Completed", "Translating 85%", "Completed with issues · Needs review"), the settings column in the middle used to shift from row to row; all rows now share the same column widths and stay aligned. Every page was checked during a running task for the same kind of replayed fade-in; none was found elsewhere.
-
-- **拖放区写全 PPT，.pptx 排在最前**：「翻译」页拖放区的说明句补上 PPT（「Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里……」，英文、法文同步）。PPT 芯片上的扩展名以前按字母排，显示成「.potx .pps .ppsx .ppt .pptm …」，最常用的 .pptx 被省略号挡掉；现在按类型清单的先后显示，.pptx 在第一个。打开应用时直接落在「翻译」页，类型信息晚到一步时，PPT 芯片偶尔不出现，现在会等类型信息到了再画。
-
-  **The drop area names PowerPoint, with .pptx first**: The sentence in the Translate page's drop area now includes PowerPoint ("Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here…", in French too). The PowerPoint chip used to list its extensions alphabetically as ".potx .pps .ppsx .ppt .pptm …", so the most common one, .pptx, was cut off; they now follow the type's own order, with .pptx first. When the app opened on the Translate page before the type list had loaded, the PowerPoint chip sometimes did not appear; the page now waits for the list.
-
 ## V10.3.0
 
 - **路径栏按钮改为「选择」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，省略号让它看起来像文字没显示完整；现在去掉省略号，只写「选择」（英文 Select，法文 Choisir），点开仍是「选择文件 / 选择文件夹」两项。
@@ -147,6 +137,14 @@
 - **从 PDF 页点「安装 ↗ 组件」后，矮窗口里也能看到要装的组件卡片**：跳到「扩展 → 组件」后，组件检测回来会整页重绘，卡片被挤到可视区下方、面板不再滚动。现在检测全部回来后再对准一次，卡片完整露出（#153）。
 
   **After clicking Install ↗ components on the PDF page, the component card is visible even in a short window**: Extensions → Components redraws once the component checks return, which pushed the card below the visible area without scrolling. The panel now scrolls to the card again after all checks return, so it is fully shown (#153).
+
+- **「本批文件」卡片不再闪烁，各行对齐**：混合文件夹「全部开始」之后，「翻译」页上的「本批文件」卡片每来一次进度就整张重画，入场的淡入跟着重播，4 秒里闪二十来次；现在卡片原地更新，只改文字和进度条宽度，进度条也能平滑变长。各行右侧的状态（「已完成」「翻译中 85%」「完成但有问题 · 需复核」）长短不一时，中间那列设置以前跟着左右错开；现在各行共用同一套列宽，始终上下对齐。逐页检查了全软件在任务进行中有没有同类「刷新时重播入场动画」的地方，没有发现别处。
+
+  **The "This batch" card no longer flickers, and its rows line up**: After Start all on a mixed folder, the "This batch" card on the Translate page was redrawn on every progress update and replayed its fade-in, flashing about twenty times in four seconds. It now updates in place, changing only the text and the progress bar width, which also eases smoothly. When the statuses on the right differed in length ("Completed", "Translating 85%", "Completed with issues · Needs review"), the settings column in the middle used to shift from row to row; all rows now share the same column widths and stay aligned. Every page was checked during a running task for the same kind of replayed fade-in; none was found elsewhere.
+
+- **拖放区写全 PPT，.pptx 排在最前**：「翻译」页拖放区的说明句补上 PPT（「Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里……」，英文、法文同步）。PPT 芯片上的扩展名以前按字母排，显示成「.potx .pps .ppsx .ppt .pptm …」，最常用的 .pptx 被省略号挡掉；现在按类型清单的先后显示，.pptx 在第一个。打开应用时直接落在「翻译」页，类型信息晚到一步时，PPT 芯片偶尔不出现，现在会等类型信息到了再画。
+
+  **The drop area names PowerPoint, with .pptx first**: The sentence in the Translate page's drop area now includes PowerPoint ("Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here…", in French too). The PowerPoint chip used to list its extensions alphabetically as ".potx .pps .ppsx .ppt .pptm …", so the most common one, .pptx, was cut off; they now follow the type's own order, with .pptx first. When the app opened on the Translate page before the type list had loaded, the PowerPoint chip sometimes did not appear; the page now waits for the list.
 
 ## V10.2.0
 
