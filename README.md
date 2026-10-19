@@ -2,19 +2,19 @@
 
 **简体中文** | [English](README.en.md)
 
-Translator 是一款开源的、基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel 与 Word 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。其他文件类型可通过扩展增加，也可作为 MCP 服务器供智能体调用。
+Translator 是一款开源的、基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PPT、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel、Word 与 PPT 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。其他文件类型可通过扩展增加，也可作为 MCP 服务器供智能体调用。
 
 [下载最新版本](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
 ![Translator 主界面：Excel 翻译完成](docs/images/readme/app-excel.png)
 
-> 本页的界面截图和翻译结果均使用虚构的示例资料，不含真实项目内容；翻译结果由应用实际翻译生成，CAD 图纸为 AutoCAD 中的实际显示效果。界面语言为中文，配色为素雅灰。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
+> 本页的界面截图和翻译结果除 PDF 示例页外均使用虚构的示例资料，不含真实项目内容；PDF 示例页为一份设备说明书中的一页（法语译为中文）。翻译结果由应用实际翻译生成，CAD 图纸为 AutoCAD 中的实际显示效果。界面语言为中文，配色为素雅灰。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
 
 ## 功能
 
 ### Excel
 
-支持 `.xlsx` 及旧版 `.xls` 格式。可翻译工作表名称、公式单元格的显示值及文件名；行高可随译文自动调整，也可保持行高并缩小字号；需要复核的单元格以底色标出。型号、标准编号等内容（如 `GB/T 8163-2018`）保持原样。
+支持 `.xlsx` 及旧版 `.xls` 格式。可翻译工作表名称、公式单元格的显示值及文件名；行高可随译文自动调整，也可保持行高并缩小字号；需要复核的单元格以底色标出。单元格中仅部分文字加粗或变色时，译文按原位置保留相应格式。型号、标准编号等内容（如 `GB/T 8163-2018`）保持原样。
 
 ![Excel 翻译进行中](docs/images/readme/app-excel-running.png)
 
@@ -25,7 +25,7 @@ Translator 是一款开源的、基于大语言模型的桌面文档翻译应用
 
 ### Word
 
-支持 `.docx` 及旧版 `.doc` 格式，可翻译正文、表格及页眉页脚。可选择不翻译封面和目录；自动编号在翻译后保持正确。文本框和脚注暂不翻译，检测到时将在结果中提示。
+支持 `.docx` 及旧版 `.doc` 格式，可翻译正文、表格及页眉页脚。可选择不翻译封面和目录；自动编号在翻译后保持正确。段落中部分文字的加粗、颜色，以及制表位、换行、图片和脚注编号，翻译后留在原来的位置。文本框和脚注暂不翻译，检测到时将在结果中提示。
 
 ![Word 翻译完成](docs/images/readme/app-word.png)
 
@@ -34,6 +34,12 @@ Translator 是一款开源的、基于大语言模型的桌面文档翻译应用
 </p>
 <p align="center"><sub>双语输出：每段原文后附法语译文，标题与页眉同样对照</sub></p>
 
+### PPT
+
+支持 `.pptx`、`.pptm`、`.ppsx`、`.potx`；旧版 `.ppt`、`.pps` 先自动转换，输出为 `.pptx`（转换使用本机的 PowerPoint 或 LibreOffice）。可翻译幻灯片中的文本框、形状和表格，图表与 SmartArt 中的文字，演讲者备注，以及母版和版式上的固定文字；加粗、颜色和超链接按原文保留。默认仅输出译文，也可输出原文与译文对照。图片、嵌入对象和批注中的文字不翻译，读取文件时会说明各有几处。
+
+译文比原文长、放不下时，可在页面右侧的「写回偏好」中选择处理方式：自适应排版（默认）先向下方空白处加高文本框和表格，不够再缩小字号；保持字号则字号不变、文本框按需加高；固定版面则不改变文本框和表格的大小与位置，只缩小字号。仍放不下的内容列入复核。
+
 ### PDF 与图片
 
 由图像模型逐页将文字替换为目标语言，并尽量保留原有版式和插图。图片支持 PNG、JPG、WebP、BMP 和 TIFF 格式。可启用审核模型逐页检查，翻译完成后可单独重新生成指定页面，并可另存压缩版 PDF。
@@ -41,10 +47,10 @@ Translator 是一款开源的、基于大语言模型的桌面文档翻译应用
 ![PDF 翻译完成及逐页结果](docs/images/readme/app-pdf.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="PDF 原文页面（中文）">
-  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="PDF 译文页面（法语）">
+  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="PDF 原文页面（法语）">
+  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="PDF 译文页面（中文）">
 </p>
-<p align="center"><sub>左：原文页面（中文）；右：译文页面（法语）</sub></p>
+<p align="center"><sub>左：原文页面（法语）；右：译文页面（中文）</sub></p>
 
 <p align="center">
   <img src="docs/images/readme/result-image-original.jpg" width="49%" alt="图片原图（中文）">
@@ -54,7 +60,7 @@ Translator 是一款开源的、基于大语言模型的桌面文档翻译应用
 
 ### CAD 图纸
 
-DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter，格式转换在任务中进行。图块内的文字可一并翻译。GBK 等中文编码的旧图纸可正确读写，旧版 CAD 以特殊编码保存的中文也能正确识别。
+DXF 文件可直接翻译；DWG 文件需先在「扩展 → 组件」中安装「图纸转换工具」（ODA File Converter），格式转换在任务中进行。图块内的文字可一并翻译。GBK 等中文编码的旧图纸可正确读写，旧版 CAD 以特殊编码保存的中文也能正确识别。
 
 译文写回方式可在页面右侧「译文写回」中设置：
 
@@ -86,17 +92,25 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 
 ![记忆库（来源分为手动维护和自动保存）](docs/images/readme/app-library.png)
 
-### 任务中心
+### 任务
 
 不同类型的任务可同时运行，任务可随时停止（PDF 和 CAD 任务还可暂停），之后可仅翻译剩余部分。每个任务均保留结果统计、待复核位置及输出文件。
 
-![任务中心](docs/images/readme/app-tasks.png)
+![任务页](docs/images/readme/app-tasks.png)
 
-![任务中心（深色模式）](docs/images/readme/app-tasks-dark.png)
+![任务页（深色模式）](docs/images/readme/app-tasks-dark.png)
+
+### 翻译入口与搜索
+
+「翻译」页是应用的入口：将文件或文件夹拖到窗口任意位置，即自动进入对应的翻译页。拖入同时含表格、文档、PPT 等多种文件的文件夹时，「翻译」页会列出各类文件和各自的设置，点击「全部开始」即可一起翻译，结果放在同一个输出文件夹中。按 ⌘K（macOS）或 Ctrl+K（Windows）可搜索页面、任务和记忆库词条；输入文件路径后按回车，即可开始翻译。
+
+### 译后核对
+
+译文中的数字、证件号、日期和人名与原文不一致时，会标记为需复核，并在复核清单中写明原文。例如证件号中的字母被改、日期的日和月颠倒、人名拼写被改。该核对仅在有明确证据时提示，不修改译文，适用于 Excel、Word 和 PPT。
 
 ### 反馈
 
-侧栏的「反馈」页用于报告问题或提出建议。可填写描述并直接粘贴截图，按需附带系统与版本信息、所选任务的日志、原文件和译文（原文件和译文默认不附带）；失败的任务也可在任务中心通过「反馈此问题」进入。发送前可查看将发送的全部内容，发送时显示上传进度，也可改为保存为 ZIP 文件。日志中的 API 密钥和文件路径已去除，随反馈上传的文件保存 90 天后自动删除。填写邮箱后，问题解决或相关功能上线时会收到邮件通知。
+侧栏的「反馈」页用于报告问题或提出建议。可填写描述并直接粘贴截图，按需附带系统与版本信息、所选任务的日志、原文件和译文（原文件和译文默认不附带）；失败的任务也可在任务页通过「反馈此问题」进入。发送前可查看将发送的全部内容，发送时显示上传进度，也可改为保存为 ZIP 文件。日志中的 API 密钥和文件路径已去除，随反馈上传的文件保存 90 天后自动删除。填写邮箱后，问题解决或相关功能上线时会收到邮件通知。
 
 ![反馈页](docs/images/readme/app-feedback.png)
 
@@ -116,7 +130,7 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 
 ### 扩展
 
-除 Excel、Word、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md），在「扩展」页打开后即出现在侧栏。在「扩展」页可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
+除 Excel、Word、PPT、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md），在「扩展 → 文件类型」中打开后即出现在侧栏。「扩展」页还包含「组件」（图纸转换工具、文字识别组件、PDF 处理组件等可选组件）和「智能体接入」页签。在「文件类型」页签可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
 
 ![扩展页：选择侧栏显示的翻译类型，浏览并安装扩展](docs/images/readme/app-extensions.png)
 
@@ -195,18 +209,18 @@ Windows 的数据目录为 `%LOCALAPPDATA%\Translator`。
 
 ## 接入智能体
 
-Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用：智能体可查询支持的文件类型、扫描文件、发起翻译、查看进度并取得结果文件的路径。同一程序也可在终端以命令行使用。Translator 打开时，任务显示在任务中心；未打开时，翻译引擎在后台运行，结束后自动退出。模型、语言和翻译参数沿用应用中的设置，使用前需先在应用中完成模型配置。译文写入原文件旁的新文件夹，原文件不会被修改。
+Translator 可作为 MCP 服务器，供 Claude Desktop、Claude Code、Cursor 等智能体调用：智能体可查询支持的文件类型、扫描文件、发起翻译、查看进度并取得结果文件的路径。同一程序也可在终端以命令行使用。Translator 打开时，任务显示在任务页；未打开时，翻译引擎在后台运行，结束后自动退出。模型、语言和翻译参数沿用应用中的设置，使用前需先在应用中完成模型配置。译文写入原文件旁的新文件夹，原文件不会被修改。
 
-最简单的接入方式：打开应用侧栏的「MCP」页面，点击「复制接入说明」，粘贴并发送给智能体，由它完成配置；按提示重新启动智能体后即可使用。以下为手动配置方法。
+最简单的接入方式：打开应用侧栏的「扩展」页，进入「智能体接入」页签，点击「复制接入说明」，粘贴并发送给智能体，由它完成配置；按提示重新启动智能体后即可使用。以下为手动配置方法。
 
-![MCP 页：复制接入说明](docs/images/readme/app-mcp.png)
+![智能体接入页签：复制接入说明](docs/images/readme/app-mcp.png)
 
 翻译引擎的位置：
 
 - macOS：`/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
 - Windows：`C:\Users\<用户名>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
 
-「MCP」页面的「高级」中显示本机的实际路径，配置和命令可直接复制。以下示例使用 macOS 路径；Windows 路径写入 JSON 时，需将每个 `\` 写作 `\\`。配置文件中已有其他服务时，将 `translator` 一项加入现有的 `mcpServers` 即可。
+「智能体接入」页签的「高级」中显示本机的实际路径，配置和命令可直接复制。以下示例使用 macOS 路径；Windows 路径写入 JSON 时，需将每个 `\` 写作 `\\`。配置文件中已有其他服务时，将 `translator` 一项加入现有的 `mcpServers` 即可。
 
 **Claude Desktop**：在「Settings → Developer → Edit Config」中打开 `claude_desktop_config.json`（macOS 位于 `~/Library/Application Support/Claude/`，Windows 位于 `%APPDATA%\Claude\`），加入以下内容后重新启动 Claude Desktop。
 

@@ -2,19 +2,19 @@
 
 [简体中文](README.md) | **English**
 
-Translator is an open-source desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, image and CAD (DWG / DXF) files**. Excel and Word files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent. Other file types can be added through extensions, and AI agents can use Translator as an MCP server.
+Translator is an open-source desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PowerPoint, PDF, image and CAD (DWG / DXF) files**. Excel, Word and PowerPoint files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent. Other file types can be added through extensions, and AI agents can use Translator as an MCP server.
 
 [Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
 ![Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> The application screenshots and translation results on this page use fictional sample documents and contain no real project content. The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+> With the exception of the PDF sample pages, the application screenshots and translation results on this page use fictional sample documents and contain no real project content; the PDF sample pages are a page from an equipment manual (French translated into Chinese). The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
 ## Features
 
 ### Excel
 
-Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formula cells and file names can also be translated. Row heights can be adjusted to fit the translation, or kept fixed with the font size reduced. Cells requiring review are highlighted. Model numbers and standard codes such as `GB/T 8163-2018` are left unchanged.
+Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formula cells and file names can also be translated. Row heights can be adjusted to fit the translation, or kept fixed with the font size reduced. Cells requiring review are highlighted. When only part of a cell is bold or colored, the translation keeps that formatting in the matching place. Model numbers and standard codes such as `GB/T 8163-2018` are left unchanged.
 
 ![Excel translation in progress](docs/images/readme/app-excel-running.png)
 
@@ -25,7 +25,7 @@ Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formu
 
 ### Word
 
-Supports `.docx` and legacy `.doc` files, including body text, tables, headers and footers. Cover pages and tables of contents can be excluded from translation, and automatic numbering is preserved. Text boxes and footnotes are not yet translated and are reported when detected.
+Supports `.docx` and legacy `.doc` files, including body text, tables, headers and footers. Cover pages and tables of contents can be excluded from translation, and automatic numbering is preserved. Bold and color applied to part of a paragraph, as well as tab stops, line breaks, pictures and footnote numbers, stay where they were after translation. Text boxes and footnotes are not yet translated and are reported when detected.
 
 ![Word translation completed](docs/images/readme/app-word.png)
 
@@ -34,6 +34,12 @@ Supports `.docx` and legacy `.doc` files, including body text, tables, headers a
 </p>
 <p align="center"><sub>Bilingual output: the French translation follows each paragraph; headings and headers are paired in the same way.</sub></p>
 
+### PowerPoint
+
+Supports `.pptx`, `.pptm`, `.ppsx` and `.potx`; legacy `.ppt` and `.pps` files are converted first and come out as `.pptx` (conversion uses PowerPoint or LibreOffice installed on the computer). Text boxes, shapes and tables on the slides, text in charts and SmartArt, speaker notes, and fixed text on masters and layouts are translated, keeping bold, colors and hyperlinks as in the original. The default output is translation only; bilingual output with the source and translation together is also available. Text in pictures, embedded objects and comments is not translated, and reading the file reports how many of each there are.
+
+When a translation is longer than the source and does not fit, Layout preference on the right of the page sets how it is handled: Adaptive layout (default) first makes text boxes and tables taller into the empty space below and then reduces the font size; Keep font size leaves the size unchanged and makes boxes taller as needed; Fixed layout keeps the size and position of every box and table and only reduces the font size. Anything that still does not fit is listed for review.
+
 ### PDF and images
 
 Each page is redrawn in the target language by an image model, preserving the original layout and graphics as closely as possible. Supported image formats are PNG, JPG, WebP, BMP and TIFF. A review model can optionally check each page; individual pages can be regenerated after translation, and a compressed copy of the PDF can be saved.
@@ -41,10 +47,10 @@ Each page is redrawn in the target language by an image model, preserving the or
 ![PDF translation with per-page results](docs/images/readme/app-pdf.png)
 
 <p align="center">
-  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="Original PDF page (Chinese)">
-  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="Translated PDF page (French)">
+  <img src="docs/images/readme/result-pdf-original.jpg" width="49%" alt="Original PDF page (French)">
+  <img src="docs/images/readme/result-pdf-translated.jpg" width="49%" alt="Translated PDF page (Chinese)">
 </p>
-<p align="center"><sub>Left: original page (Chinese). Right: translated page (French).</sub></p>
+<p align="center"><sub>Left: original page (French). Right: translated page (Chinese).</sub></p>
 
 <p align="center">
   <img src="docs/images/readme/result-image-original.jpg" width="49%" alt="Original image (Chinese)">
@@ -54,7 +60,7 @@ Each page is redrawn in the target language by an image model, preserving the or
 
 ### CAD drawings
 
-DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
+DXF files are translated directly. DWG files require ODA File Converter, installed as the Drawing converter under Extensions → Components; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
 
 How translations are written back is set under Writing translations on the right of the page:
 
@@ -86,17 +92,25 @@ Translations from Excel and Word jobs are stored automatically and reused first 
 
 ![Translation memory, with entries marked as manually maintained or saved automatically](docs/images/readme/app-library.png)
 
-### Task center
+### Tasks
 
 Jobs of different types can run concurrently. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only the remaining content. Each job records its statistics, items requiring review and output files.
 
-![Task center](docs/images/readme/app-tasks.png)
+![Tasks page](docs/images/readme/app-tasks.png)
 
-![Task center in dark mode](docs/images/readme/app-tasks-dark.png)
+![Tasks page in dark mode](docs/images/readme/app-tasks-dark.png)
+
+### Translation start page and search
+
+The Translation page is the entry point of the application: drop files or folders anywhere in the window and Translator opens the matching translation page. After dropping a folder that holds spreadsheets, documents, presentations and other files together, the Translation page lists each kind of file with its settings; click Start all to translate them together, with the results in one output folder. Press ⌘K (macOS) or Ctrl+K (Windows) to search pages, tasks and translation memory entries; type a file path and press Enter to start translating it.
+
+### Checks after translation
+
+When a number, ID number, date or name in the translation differs from the source, it is marked for review, with the original shown in the review list. Examples are a changed letter in an ID number, day and month swapped, or a misspelt name. The check reports only when there is clear evidence, never changes the translation, and applies to Excel, Word and PowerPoint.
 
 ### Feedback
 
-The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the task center with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days. If an email address is provided, a notification is sent when the issue is resolved or the feature is released.
+The Feedback page in the sidebar is used to report problems or suggest improvements. A description can be entered and screenshots pasted directly; system and version information, logs of selected tasks, source files and translations can be attached as needed (source files and translations are not attached by default). A failed job can also be reported from the Tasks page with Report this problem. Everything that will be sent can be reviewed beforehand, upload progress is shown while sending, and the package can be saved as a ZIP file instead. API keys and file paths are removed from logs, and uploaded files are deleted automatically after 90 days. If an email address is provided, a notification is sent when the issue is resolved or the feature is released.
 
 ![Feedback page](docs/images/readme/app-feedback.png)
 
@@ -116,7 +130,7 @@ Prompts consist of fixed built-in rules and optional extra instructions. The bui
 
 ### Extensions
 
-Besides Excel, Word, PDF and CAD, other file types can be translated through extensions, such as the bundled Text type (.txt, .md), which appears in the sidebar once switched on in the Extensions page. The Extensions page lets you browse and install reviewed extensions from the extension list, or add an extension package someone sent you; extensions are written by third-party authors and run with your user permissions, so only install them from sources you trust. To build your own, start from the [extension template](https://github.com/KlaraGraff/XL_Translator-extension-template) and submit it to the [extension list](https://github.com/KlaraGraff/XL_Translator-extensions) to share it; the steps are in [docs/EXTENSIONS.md](docs/EXTENSIONS.md) (Chinese).
+Besides Excel, Word, PowerPoint, PDF and CAD, other file types can be translated through extensions, such as the bundled Text type (.txt, .md), which appears in the sidebar once switched on under Extensions → File types. The Extensions page also holds Components (optional components such as the Drawing converter, the text recognition component and the PDF processing component) and Agent access. The File types tab lets you browse and install reviewed extensions from the extension list, or add an extension package someone sent you; extensions are written by third-party authors and run with your user permissions, so only install them from sources you trust. To build your own, start from the [extension template](https://github.com/KlaraGraff/XL_Translator-extension-template) and submit it to the [extension list](https://github.com/KlaraGraff/XL_Translator-extensions) to share it; the steps are in [docs/EXTENSIONS.md](docs/EXTENSIONS.md) (Chinese).
 
 ![Extensions page: choose the translation types shown in the sidebar, browse and install extensions](docs/images/readme/app-extensions.png)
 
@@ -195,18 +209,18 @@ Security note: any user with the application installed can decrypt an `.xltcfg` 
 
 ## Connecting AI agents
 
-Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor. An agent can list the supported file types, scan files, start a translation, check its progress and retrieve the paths of the output files. The same program can also be used from a terminal. While Translator is open, tasks appear in the Task center; otherwise the translation engine runs in the background and exits when done. Models, languages and translation options follow the application settings, so a model service must be configured in the application first. Translations are written to a new folder next to the source files, and the source files are never modified.
+Translator can act as an MCP server for agents such as Claude Desktop, Claude Code and Cursor. An agent can list the supported file types, scan files, start a translation, check its progress and retrieve the paths of the output files. The same program can also be used from a terminal. While Translator is open, tasks appear on the Tasks page; otherwise the translation engine runs in the background and exits when done. Models, languages and translation options follow the application settings, so a model service must be configured in the application first. Translations are written to a new folder next to the source files, and the source files are never modified.
 
-The simplest way to connect: open the MCP page from the sidebar, click Copy setup instructions, and paste them into a message to the agent, which completes the setup itself. Restart the agent if prompted, and it is ready to use. Manual setup is described below.
+The simplest way to connect: open the Extensions page from the sidebar, go to the Agent access tab, click Copy setup instructions, and paste them into a message to the agent, which completes the setup itself. Restart the agent if prompted, and it is ready to use. Manual setup is described below.
 
-![MCP page: copy the setup instructions](docs/images/readme/app-mcp.png)
+![Agent access tab: copy the setup instructions](docs/images/readme/app-mcp.png)
 
 Location of the translation engine:
 
 - macOS: `/Applications/Translator.app/Contents/Resources/sidecar/translator-sidecar/translator-sidecar`
 - Windows: `C:\Users\<user name>\AppData\Local\Translator\sidecar\translator-sidecar\translator-sidecar.exe`
 
-The Advanced section of the MCP page shows the actual path on the computer, with the configuration and command ready to copy. The examples below use the macOS path. When a Windows path is written in JSON, each `\` must be written as `\\`. If the configuration file already lists other servers, add the `translator` entry to the existing `mcpServers`.
+The Advanced section of the Agent access tab shows the actual path on the computer, with the configuration and command ready to copy. The examples below use the macOS path. When a Windows path is written in JSON, each `\` must be written as `\\`. If the configuration file already lists other servers, add the `translator` entry to the existing `mcpServers`.
 
 **Claude Desktop**: open `claude_desktop_config.json` from Settings → Developer → Edit Config (located in `~/Library/Application Support/Claude/` on macOS and `%APPDATA%\Claude\` on Windows), add the following and restart Claude Desktop.
 
