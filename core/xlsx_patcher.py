@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,7 +88,12 @@ DEFAULT_COL_WIDTH = 8.43        # Excel 默认列宽（字符数）
 DEFAULT_ROW_HEIGHT = 15.0       # Excel 默认行高（磅）
 BASE_FONT_SIZE_PT = 11.0        # 行高估算用的基准字号
 LINE_HEIGHT_RATIO = 1.4         # 行高估算用的行距系数
-CHARS_PER_WIDTH = 1.2           # 每单位列宽约可容纳的字符数
+CHARS_PER_WIDTH = 1.15          # 每单位列宽约可容纳的西文字符数（Calibri 11 法文实测 1.1～1.2）
+CELL_PADDING_WIDTH = 0.6        # 单元格左右留白约 4 像素，折合列宽单位，不能放字
+WIDE_CHAR_WEIGHT = 2.4          # 一个汉字 / 全角字符约占几个西文字符的宽度（11pt 汉字约 14.7 像素）
+SPILL_MIN_OVERFLOW = 1.5        # 原文比本列宽出这么多倍，才算「靠溢出显示」的标题
+SPILL_MAX_GROWTH = 5.0          # 不换行溢出的格，写入后的文字最多是原文的几倍宽（短中文标题双语可到 4 倍）
+SPILL_MAX_COLUMNS = 64          # 不换行的格最多往右借几列空格子显示（只是防失控的上限）
 MAX_SHEET_TITLE_LEN = 31        # Excel 分表名长度上限
 ORIGINAL_SHEET_SUFFIX = "_原文"  # keep_original_sheets 克隆分表的名字后缀
 _DEDUP_SUFFIX_RE = re.compile(r"(_\d+)$")  # 重名时补的 _2 / _3 …
@@ -321,6 +327,15 @@ class _Styles:
         except ValueError:
             return BASE_FONT_SIZE_PT
 
+    def alignment(self, xf_index: int) -> tuple[bool, str]:
+        """``(是否自动换行, 水平对齐)``；没写 alignment 时是 ``(False, "")``。"""
+        xf = self._xf(xf_index)
+        node = xf.find(_m("alignment")) if xf is not None else None
+        if node is None:
+            return False, ""
+        wrap = str(node.get("wrapText") or "").lower() in {"1", "true"}
+        return wrap, str(node.get("horizontal") or "").lower()
+
     # ── 写入 ──────────────────────────────────────────────────────────────
     def resolve(
         self,
@@ -522,17 +537,68 @@ def to_excel_argb(value: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # 排版估算（与旧 openpyxl 路径共用同一套公式）
 # ══════════════════════════════════════════════════════════════════════════════
-def estimate_chars_per_line(col_width: float, font_size_pt: float) -> int:
-    """按列宽+字号估算每行容纳字符数。"""
+def estimate_chars_per_line(col_width: float, font_size_pt: float) -> float:
+    """按列宽+字号估算每行容纳几个西文字符（汉字按 :data:`WIDE_CHAR_WEIGHT` 个算）。"""
     scale = 11.0 / max(font_size_pt, 0.1)
-    return max(1, int(col_width * CHARS_PER_WIDTH * scale))
+    return max(1.0, (col_width - CELL_PADDING_WIDTH) * CHARS_PER_WIDTH * scale)
 
 
-def estimate_required_lines(text: str, chars_per_line: int) -> int:
+def _char_weight(char: str) -> float:
+    return WIDE_CHAR_WEIGHT if unicodedata.east_asian_width(char) in {"W", "F"} else 1.0
+
+
+def estimate_text_units(text: str) -> float:
+    """``text`` 排成一行有多宽，单位是「一个西文字符」；汉字按 :data:`WIDE_CHAR_WEIGHT` 个算。"""
+    return sum(_char_weight(char) for char in str(text) if char not in "\r\n")
+
+
+_WRAP_TOKEN_RE = re.compile(r"[^\s\u3000]*[\s\u3000]*")
+
+
+def estimate_required_lines(text: str, chars_per_line: float) -> int:
+    """按 Excel 自动换行的规则估算行数：西文在词间断行，汉字可以在任意两字之间断开。
+
+    ``chars_per_line`` 是一行能放下几个西文字符（见 :func:`estimate_chars_per_line`）。
+    以前按「一个汉字 = 一个字符」算，中文多的格子少估一半多的行数，双语文字被裁掉。
+    """
+    capacity = max(float(chars_per_line), 1.0)
     total_lines = 0
     for segment in str(text).split("\n"):
-        total_lines += max(1, -(-len(segment) // max(chars_per_line, 1)))
+        lines, used = 1, 0.0
+        for token in _wrap_tokens(segment):
+            # 行尾的空格不占位置：Excel 把它挂在行外，不会因为它换行。
+            width = estimate_text_units(token)
+            visible = estimate_text_units(token.rstrip())
+            if used > 0 and used + visible > capacity:
+                lines, used = lines + 1, 0.0
+            if visible > capacity:
+                # 一个词比整行还长：Excel 按字符硬断，余下的部分接着排。
+                for char in token:
+                    weight = _char_weight(char) if char not in "\r\n" else 0.0
+                    if used > 0 and used + weight > capacity and not char.isspace():
+                        lines, used = lines + 1, 0.0
+                    used += weight
+                continue
+            used += width
+        total_lines += lines
     return max(1, total_lines)
+
+
+def _wrap_tokens(segment: str):
+    """切成能整体换行的最小单位：一个西文词（连同后面的空格），或者单个汉字 / 全角字符。"""
+    for match in _WRAP_TOKEN_RE.finditer(segment):
+        token = match.group(0)
+        if not token:
+            continue
+        start = 0
+        for index, char in enumerate(token):
+            if unicodedata.east_asian_width(char) in {"W", "F"} and not char.isspace():
+                if index > start:
+                    yield token[start:index]
+                yield char
+                start = index + 1
+        if start < len(token):
+            yield token[start:]
 
 
 def estimate_max_visible_lines(row_height: float, font_size_pt: float) -> int:
@@ -603,6 +669,14 @@ class _SheetGeometry:
 
     def row_height(self, row_num: int) -> float:
         return self._row_heights.get(row_num, self.default_row_height)
+
+    def span_height(self, first_row: int, last_row: int) -> float:
+        """``first_row``～``last_row`` 几行合起来的高度（纵向合并的单元格用）；隐藏行不计。"""
+        return sum(
+            self.row_height(index)
+            for index in range(first_row, last_row + 1)
+            if index not in self._hidden_rows
+        )
 
     def with_row_heights(self, heights: dict[int, float]) -> _SheetGeometry:
         """同一张表、但 ``heights``（行号 1 起 → 磅）里的行换成给定高度的副本。"""
@@ -1478,9 +1552,16 @@ def _process_sheet(
     row_texts: dict[int, list[tuple[int, str, int]]] = {}
     # 但只有本次真被改写过的行才允许动行高，见 _auto_adjust_row_heights。
     mutated_rows: set[int] = set()
+    merges = _merge_ranges(root)
+    merge_blocked = _merge_blocked_columns(merges)
 
     for row_num, row in _iter_rows(root):
         collected: list[tuple[int, str, int]] = []
+        # 本行有内容的列（含合并区域占住的列）：不换行的格只能往右借到下一格之前。
+        occupied = sorted(
+            {col for _, col, c in _iter_cells(row, row_num) if _cell_has_content(c)}
+            | merge_blocked.get(row_num, set())
+        )
         for _, col_index, cell in _iter_cells(row, row_num):
             formula_el = _cell_formula(cell)
 
@@ -1645,11 +1726,30 @@ def _process_sheet(
                     outcome.mutated_cells += 1
                     mutated_rows.add(row_num)
 
-                    if lock_row_height:
+                    merge_end = merges.get((row_num, col_index))
+                    # 锁定行高时双语那一格要两行才放得下（LibreOffice / WPS 照换行符显示），
+                    # 行高又不能加，只能照旧换行缩字号。
+                    keep_unwrapped = (
+                        merge_end is None
+                        and not (lock_row_height and BILINGUAL_SEPARATOR in new_text)
+                        and _fits_by_spilling(
+                            current_text or "",
+                            new_text,
+                            col_index,
+                            occupied,
+                            geometry=geometry,
+                            styles=styles,
+                            style_index=base_index,
+                        )
+                    )
+                    if lock_row_height and not keep_unwrapped:
+                        last_row, last_col = merge_end or (row_num, col_index)
                         size, reached_floor = _shrink_font_for_locked_row(
                             new_text,
-                            col_width=geometry.col_width(col_index),
-                            row_height=geometry.row_height(row_num),
+                            col_width=geometry.span_width(col_index, last_col)
+                            or geometry.col_width(col_index),
+                            row_height=geometry.span_height(row_num, last_row)
+                            or geometry.row_height(row_num),
                             font_size=styles.font_size(base_index),
                         )
                         if size is not None:
@@ -1702,7 +1802,7 @@ def _process_sheet(
 
                     new_index = styles.resolve(
                         base_index,
-                        wrap_text=True,
+                        wrap_text=not keep_unwrapped,
                         fill_argb=fill_argb,
                         font_color_argb=font_color_argb,
                         font_size=font_size,
@@ -1733,7 +1833,7 @@ def _process_sheet(
     changed_rows: set[int] = set()
     if not lock_row_height:
         changed_rows, touched_rows = _auto_adjust_row_heights(
-            root, geometry, row_texts, mutated_rows, styles
+            root, geometry, row_texts, mutated_rows, styles, merges
         )
         dirty = dirty or touched_rows
         # 文本框放不下时加高过的行（见 xlsx_embedded_text._grow_shape）：取两者较大的。
@@ -1963,12 +2063,79 @@ def _merge_ranges(root) -> dict[tuple[int, int], tuple[int, int]]:
     return ranges
 
 
+def _merge_blocked_columns(
+    merges: dict[tuple[int, int], tuple[int, int]],
+) -> dict[int, set[int]]:
+    """每一行里被合并区域占住的列：不换行的文字溢出时不会越过合并单元格。"""
+    blocked: dict[int, set[int]] = {}
+    for (top, left), (bottom, right) in merges.items():
+        if (bottom - top + 1) * (right - left + 1) > 4096:
+            continue  # 整片整片的合并很少见，也不值得展开
+        for row_num in range(top, bottom + 1):
+            blocked.setdefault(row_num, set()).update(range(left, right + 1))
+    return blocked
+
+
+def _merge_covered_cells(merges: dict[tuple[int, int], tuple[int, int]]) -> set[tuple[int, int]]:
+    """合并区域里除左上角之外的格：Excel 不显示它们的内容。"""
+    covered: set[tuple[int, int]] = set()
+    for (top, left), (bottom, right) in merges.items():
+        if (bottom - top + 1) * (right - left + 1) > 4096:
+            continue
+        for row_num in range(top, bottom + 1):
+            for col_index in range(left, right + 1):
+                if (row_num, col_index) != (top, left):
+                    covered.add((row_num, col_index))
+    return covered
+
+
+def _cell_has_content(cell) -> bool:
+    return any(_local(child) in {"v", "is", "f"} for child in cell)
+
+
+def _fits_by_spilling(
+    original_text: str,
+    text: str,
+    col_index: int,
+    occupied: list[int],
+    *,
+    geometry: _SheetGeometry,
+    styles: _Styles,
+    style_index: int,
+) -> bool:
+    """原本就靠往右边空格子溢出才显示得全的格（没合并的标题最常见），译文照样一行溢出放得下吗。
+
+    放得下就保持不换行：强行打开自动换行会让它挤在自己那一列里折成很多行，
+    把整行撑得老高。原文在本列里本来就（差不多）放得下的普通格不算——那是正常的数据格，
+    照旧打开自动换行，译文在本列里折行。只看左对齐 / 常规对齐，居中、右对齐的
+    溢出方向不同，照旧换行。Excel 不换行时不显示换行符，双语的原文和译文接在
+    一行里，所以按整串算宽度。
+    """
+    wrap, horizontal = styles.alignment(style_index)
+    if wrap or horizontal not in {"", "general", "left"} or "\n" in original_text:
+        return False
+    size = styles.font_size(style_index)
+    # 只差一点放不下的（估算本身有误差）当普通格处理，明显溢出才算。
+    own_room = estimate_chars_per_line(geometry.col_width(col_index), size)
+    if estimate_text_units(original_text) <= own_room * SPILL_MIN_OVERFLOW:
+        return False
+    # 译文比原文长出太多（长段说明、备注）时一行拖出去老远，不如在本列里折行。
+    if estimate_text_units(text) > estimate_text_units(original_text) * SPILL_MAX_GROWTH:
+        return False
+    following = next((col for col in occupied if col > col_index), None)
+    last_col = col_index + SPILL_MAX_COLUMNS if following is None else following - 1
+    if last_col <= col_index:
+        return False
+    return estimate_text_units(text) <= estimate_chars_per_line(geometry.span_width(col_index, last_col), size)
+
+
 def _auto_adjust_row_heights(
     root,
     geometry: _SheetGeometry,
     row_texts: dict[int, list[tuple[int, str, int]]],
     mutated_rows: set[int],
     styles: _Styles,
+    merges: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> tuple[set[int], bool]:
     """自动调整行高以适配双语内容。
 
@@ -1983,17 +2150,32 @@ def _auto_adjust_row_heights(
     只加不减：估算值不比现有行高（没写 ``ht`` 的行按分表默认行高算）高时原样不动。
     翻译只会往格里加字，把原本排得更高的行压矮只会把内容挤掉。
 
+    每行能放几个字按这一格的字号算（大字号标题一行放得少），汉字按两个多西文字符宽算。
+    合并区域里被盖住的格、没开自动换行的格不会折行，不按列宽去估：后者只按它自带的
+    换行符分行（LibreOffice / WPS 会照换行符显示）。
+
     返回 ``(高度真的变了的行号集合, 是否写过行属性)``。前者用于判断哪些悬浮图片
     需要固定尺寸；后者只是用来决定要不要重写分表 XML。
     """
-    merges = _merge_ranges(root)
+    if merges is None:
+        merges = _merge_ranges(root)
+    covered = _merge_covered_cells(merges)
     font_sizes: dict[int, float] = {}
+    wraps: dict[int, bool] = {}
+
+    def font_size(style_index: int) -> float:
+        if style_index not in font_sizes:
+            font_sizes[style_index] = styles.font_size(style_index)
+        return font_sizes[style_index]
+
+    def wraps_text(style_index: int) -> bool:
+        if style_index not in wraps:
+            wraps[style_index] = styles.alignment(style_index)[0]
+        return wraps[style_index]
 
     def line_height(style_index: int) -> float:
         # 大字号（标题常见 14～18pt）一行要更高；小于基准字号的仍按基准算，不往下压。
-        if style_index not in font_sizes:
-            font_sizes[style_index] = styles.font_size(style_index)
-        return max(font_sizes[style_index], BASE_FONT_SIZE_PT) * LINE_HEIGHT_RATIO
+        return max(font_size(style_index), BASE_FONT_SIZE_PT) * LINE_HEIGHT_RATIO
 
     changed: set[int] = set()
     touched = False
@@ -2004,6 +2186,8 @@ def _auto_adjust_row_heights(
             continue
         new_height = 0.0
         for col_index, text, style_index in row_texts.get(row_num, ()):
+            if (row_num, col_index) in covered:
+                continue
             last_row, last_col = merges.get((row_num, col_index), (row_num, col_index))
             if last_col > col_index:
                 width = geometry.span_width(col_index, last_col)
@@ -2011,7 +2195,10 @@ def _auto_adjust_row_heights(
                     continue  # 合并区域的列全藏起来了，看不见也就不用撑高
             else:
                 width = geometry.col_width(col_index)
-            lines = estimate_required_lines(text, max(1, int(width * CHARS_PER_WIDTH)))
+            if wraps_text(style_index):
+                lines = estimate_required_lines(text, estimate_chars_per_line(width, font_size(style_index)))
+            else:
+                lines = len(str(text).split("\n"))
             if lines <= 1:
                 continue  # 一行放得下的格不触发调整，和以前一样
             if last_row > row_num:
@@ -2445,6 +2632,40 @@ def _load_sheet_entries(
             continue
         entries.append(_SheetEntry(name=str(el.get("name") or ""), part=part))
     return entries
+
+
+def merged_rows_by_sheet(file_path: str | Path) -> dict[str, set[int]]:
+    """每张分表里被合并单元格占到的行号（1 起），按分表名索引。读不出来的分表略过。
+
+    Excel 的「自动调整行高」不认合并单元格：横跨几列的合并标题会被压回一行高，
+    译文被裁掉。调整前先记下这些行，调整完再把它们恢复到不低于原来的高度。
+    """
+    result: dict[str, set[int]] = {}
+    with _Package(Path(file_path)) as package:
+        root_rels_data = package.read("_rels/.rels")
+        if root_rels_data is None:
+            return result
+        workbook_part = ""
+        for rel in _parse(root_rels_data):
+            if rel.get("Type") == REL_TYPE_OFFICE_DOCUMENT:
+                workbook_part = _resolve_part("", rel.get("Target") or "")
+                break
+        workbook_data = package.read(workbook_part) if workbook_part else None
+        rels_data = package.read(_rels_path(workbook_part)) if workbook_part else None
+        if workbook_data is None or rels_data is None:
+            return result
+        for entry in _load_sheet_entries(package, _parse(workbook_data), workbook_part, _parse(rels_data)):
+            data = package.read(entry.part)
+            if data is None:
+                continue
+            try:
+                merges = _merge_ranges(_parse(data))
+            except etree.XMLSyntaxError:
+                continue
+            rows = set(_merge_blocked_columns(merges))
+            if rows:
+                result[entry.name] = rows
+    return result
 
 
 def _resolve_workbook_child_part(

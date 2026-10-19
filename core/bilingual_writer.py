@@ -25,7 +25,7 @@ from loguru import logger
 from config import EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
 from core.language_registry import get_target_lang_display
 from core.user_facing_errors import humanize_error
-from core.xlsx_patcher import write_bilingual_workbook
+from core.xlsx_patcher import merged_rows_by_sheet, write_bilingual_workbook
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
@@ -293,6 +293,36 @@ def bilingual_output_name(
     return f"{source.stem}_{lang}{form}{source.suffix}"
 
 
+def _merged_rows_or_empty(path: Path) -> dict[str, set[int]]:
+    try:
+        return merged_rows_by_sheet(path)
+    except Exception as exc:  # noqa: BLE001 - 读不出合并区域就照旧整表调整
+        logger.warning(f"读取合并单元格失败，按整表调整行高：{exc!r}")
+        return {}
+
+
+def _autofit_keeping_merged_rows(ws, merged_rows) -> None:
+    """整表自动调整行高，但有合并单元格的行不许比调整前矮。
+
+    Excel 的 AutoFit 不认合并单元格，横跨几列的合并标题行会被压回一行高、译文被裁；
+    这些行写入时已经按整个合并区域的宽度估过行高，调整后取两者较高的。
+    """
+    before = {}
+    for row_num in sorted(merged_rows):
+        try:
+            before[row_num] = float(ws.range(f"A{row_num}").row_height)
+        except Exception:  # noqa: BLE001 - 读不到就不保护这一行
+            continue
+    ws.used_range.rows.autofit()
+    for row_num, height in before.items():
+        try:
+            cell = ws.range(f"A{row_num}")
+            if float(cell.row_height) < height:
+                cell.row_height = height
+        except Exception as exc:  # noqa: BLE001 - 单行恢复失败不影响整份文件
+            logger.warning(f"恢复合并单元格行高失败（{ws.name} 第 {row_num} 行）：{exc!r}")
+
+
 def autofit_files_batch(
     file_paths: list[Path],
     log_callback=None,
@@ -346,10 +376,11 @@ def autofit_files_batch(
                     logger.info(
                         f"Excel AutoFit 打开临时副本：{staged_path}（原文件：{original_path}）"
                     )
+                    merged_rows = _merged_rows_or_empty(staged_path)
                     wb = current_app.books.open(str(staged_path))
                     try:
                         for ws in wb.sheets:
-                            ws.used_range.rows.autofit()
+                            _autofit_keeping_merged_rows(ws, merged_rows.get(ws.name, ()))
                         wb.save()
                     finally:
                         # A failed autofit/save must still close the book, or
