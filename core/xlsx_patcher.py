@@ -593,6 +593,14 @@ class _SheetGeometry:
     def col_width(self, col_index: int) -> float:
         return self._col_widths.get(col_index, self.default_col_width)
 
+    def span_width(self, first_col: int, last_col: int) -> float:
+        """``first_col``～``last_col`` 几列合起来的显示宽度（合并单元格用）；隐藏列不计。"""
+        return sum(
+            self.col_width(index)
+            for index in range(first_col, last_col + 1)
+            if index not in self._hidden_cols
+        )
+
     def row_height(self, row_num: int) -> float:
         return self._row_heights.get(row_num, self.default_row_height)
 
@@ -1466,13 +1474,13 @@ def _process_sheet(
     outcome = _SheetOutcome()
     dirty = False
 
-    # 行高估算需要整表的最终文本，未改动的单元格也要算进去。
-    row_texts: dict[int, list[tuple[int, str]]] = {}
+    # 行高估算需要整表的最终文本，未改动的单元格也要算进去：(列号, 文本, 样式号)。
+    row_texts: dict[int, list[tuple[int, str, int]]] = {}
     # 但只有本次真被改写过的行才允许动行高，见 _auto_adjust_row_heights。
     mutated_rows: set[int] = set()
 
     for row_num, row in _iter_rows(root):
-        collected: list[tuple[int, str]] = []
+        collected: list[tuple[int, str, int]] = []
         for _, col_index, cell in _iter_cells(row, row_num):
             formula_el = _cell_formula(cell)
 
@@ -1487,7 +1495,7 @@ def _process_sheet(
                     else _cell_static_text(cell, shared_strings)
                 )
                 if text:
-                    collected.append((col_index, text))
+                    collected.append((col_index, text, _cell_style_index(cell)))
                 continue
 
             # 这里取的是「屏幕上显示成什么样」，只服务于行高估算。公式单元格显示的是
@@ -1717,7 +1725,7 @@ def _process_sheet(
                     dirty = True
 
             if final_text:
-                collected.append((col_index, final_text))
+                collected.append((col_index, final_text, _cell_style_index(cell)))
 
         if collected:
             row_texts[row_num] = collected
@@ -1725,7 +1733,7 @@ def _process_sheet(
     changed_rows: set[int] = set()
     if not lock_row_height:
         changed_rows, touched_rows = _auto_adjust_row_heights(
-            root, geometry, row_texts, mutated_rows
+            root, geometry, row_texts, mutated_rows, styles
         )
         dirty = dirty or touched_rows
         # 文本框放不下时加高过的行（见 xlsx_embedded_text._grow_shape）：取两者较大的。
@@ -1937,11 +1945,30 @@ def _shrink_font_for_locked_row(
     return new_size, reached_floor
 
 
+def _merge_ranges(root) -> dict[tuple[int, int], tuple[int, int]]:
+    """分表的合并区域，按左上角索引：``(首行, 首列) → (末行, 末列)``。写坏的 ref 跳过。"""
+    ranges: dict[tuple[int, int], tuple[int, int]] = {}
+    merge_cells = root.find(_m("mergeCells"))
+    if merge_cells is None:
+        return ranges
+    for merge in merge_cells.findall(_m("mergeCell")):
+        first, _, last = str(merge.get("ref") or "").partition(":")
+        start = _split_coordinate(first.strip())
+        end = _split_coordinate((last or first).strip())
+        if start is None or end is None:
+            continue
+        top, bottom = sorted((start[0], end[0]))
+        left, right = sorted((start[1], end[1]))
+        ranges[(top, left)] = (bottom, right)
+    return ranges
+
+
 def _auto_adjust_row_heights(
     root,
     geometry: _SheetGeometry,
-    row_texts: dict[int, list[tuple[int, str]]],
+    row_texts: dict[int, list[tuple[int, str, int]]],
     mutated_rows: set[int],
+    styles: _Styles,
 ) -> tuple[set[int], bool]:
     """自动调整行高以适配双语内容。
 
@@ -1949,32 +1976,82 @@ def _auto_adjust_row_heights(
     这次一个字都没翻的行必须原样留着：它现在的高度是用户自己排的版，我们凭
     「估算出会换行」就改写它，等于拿翻译任务去破坏未翻译区域的排版。
 
+    合并单元格（左上角那格）按整个合并区域的宽度估算换行：只拿它自己那一列的宽度
+    去算，横跨整表的标题行会被估成十几行、撑到上百磅。跨多行的合并区域比的是
+    这几行加起来的高度，不够时只把最后一行补高差额，不去单独撑高首行。
+
+    只加不减：估算值不比现有行高（没写 ``ht`` 的行按分表默认行高算）高时原样不动。
+    翻译只会往格里加字，把原本排得更高的行压矮只会把内容挤掉。
+
     返回 ``(高度真的变了的行号集合, 是否写过行属性)``。前者用于判断哪些悬浮图片
     需要固定尺寸；后者只是用来决定要不要重写分表 XML。
     """
+    merges = _merge_ranges(root)
+    font_sizes: dict[int, float] = {}
+
+    def line_height(style_index: int) -> float:
+        # 大字号（标题常见 14～18pt）一行要更高；小于基准字号的仍按基准算，不往下压。
+        if style_index not in font_sizes:
+            font_sizes[style_index] = styles.font_size(style_index)
+        return max(font_sizes[style_index], BASE_FONT_SIZE_PT) * LINE_HEIGHT_RATIO
+
     changed: set[int] = set()
     touched = False
+    # 跨多行的合并格要等各行自己的高度定下来再比：(首行, 末行, 所需总高度)
+    spans: list[tuple[int, int, float]] = []
     for row_num, row in _iter_rows(root):
         if row_num not in mutated_rows:
             continue
-        max_lines = 1
-        for col_index, text in row_texts.get(row_num, ()):
-            chars_per_line = max(1, int(geometry.col_width(col_index) * CHARS_PER_WIDTH))
-            lines = 0
-            for segment in text.split("\n"):
-                lines += max(1, -(-len(segment) // chars_per_line))
-            max_lines = max(max_lines, lines)
+        new_height = 0.0
+        for col_index, text, style_index in row_texts.get(row_num, ()):
+            last_row, last_col = merges.get((row_num, col_index), (row_num, col_index))
+            if last_col > col_index:
+                width = geometry.span_width(col_index, last_col)
+                if width <= 0:
+                    continue  # 合并区域的列全藏起来了，看不见也就不用撑高
+            else:
+                width = geometry.col_width(col_index)
+            lines = estimate_required_lines(text, max(1, int(width * CHARS_PER_WIDTH)))
+            if lines <= 1:
+                continue  # 一行放得下的格不触发调整，和以前一样
+            if last_row > row_num:
+                spans.append((row_num, last_row, lines * line_height(style_index)))
+            else:
+                new_height = max(new_height, lines * line_height(style_index))
 
-        if max_lines <= 1:
+        old_height = _to_float(row.get("ht"), geometry.default_row_height)
+        if new_height <= old_height + 1e-9:
             continue
-
-        new_height = max_lines * BASE_FONT_SIZE_PT * LINE_HEIGHT_RATIO
-        old_height = _to_float(row.get("ht"), None)
         row.set("ht", _format_number(new_height))
         row.set("customHeight", "1")
         touched = True
-        if old_height is None or abs(old_height - new_height) > 1e-9:
-            changed.add(row_num)
+        changed.add(row_num)
+
+    if spans:
+        rows = dict(_iter_rows(root))
+        raises: dict[int, float] = {}
+
+        def current_height(row_num: int) -> float:
+            if row_num in raises:
+                return raises[row_num]
+            row = rows.get(row_num)
+            if row is None:
+                return geometry.default_row_height
+            if str(row.get("hidden") or "") in {"1", "true"}:
+                return 0.0
+            return _to_float(row.get("ht"), geometry.default_row_height)
+
+        for first_row, last_row, need in spans:
+            # 隐藏行不占高度；差额补在最后一个看得见的行上。
+            visible = [r for r in range(first_row, last_row + 1) if current_height(r) > 0]
+            if not visible:
+                continue
+            deficit = need - sum(current_height(r) for r in visible)
+            if deficit > 1e-9:
+                raises[visible[-1]] = current_height(visible[-1]) + deficit
+        raised = _raise_row_heights(root, geometry, raises)
+        changed |= raised
+        touched = touched or bool(raised)
     return changed, touched
 
 
