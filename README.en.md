@@ -12,6 +12,16 @@ Translator is an open-source desktop application for macOS and Windows that uses
 
 ## Features
 
+### Translation start page and search
+
+The Translation page is the entry point of the application: drop files or folders anywhere in the window and Translator opens the matching translation page. After dropping a folder that holds spreadsheets, documents, presentations and other files together, the Translation page lists each kind of file with its settings; click Start all to translate them together, with the results in one output folder.
+
+![Translation page: drop or select files and folders](docs/images/readme/app-home.png)
+
+![After selecting a folder with several kinds of files: each kind listed with its settings, started together](docs/images/readme/app-batch.png)
+
+Press ⌘K (macOS) or Ctrl+K (Windows) to search pages, tasks and translation memory entries; type a file path and press Enter to start translating it.
+
 ### Excel
 
 Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formula cells and file names can also be translated. Row heights can be adjusted to fit the translation, or kept fixed with the font size reduced. Cells requiring review are highlighted. When only part of a cell is bold or colored, the translation keeps that formatting in the matching place. Model numbers and standard codes such as `GB/T 8163-2018` are left unchanged.
@@ -101,16 +111,6 @@ Jobs of different types can run concurrently. Any job can be stopped (PDF and CA
 ![Tasks page](docs/images/readme/app-tasks.png)
 
 ![Tasks page in dark mode](docs/images/readme/app-tasks-dark.png)
-
-### Translation start page and search
-
-The Translation page is the entry point of the application: drop files or folders anywhere in the window and Translator opens the matching translation page. After dropping a folder that holds spreadsheets, documents, presentations and other files together, the Translation page lists each kind of file with its settings; click Start all to translate them together, with the results in one output folder.
-
-![Translation page: drop or select files and folders](docs/images/readme/app-home.png)
-
-![After selecting a folder with several kinds of files: each kind listed with its settings, started together](docs/images/readme/app-batch.png)
-
-Press ⌘K (macOS) or Ctrl+K (Windows) to search pages, tasks and translation memory entries; type a file path and press Enter to start translating it.
 
 ### Checks after translation
 
