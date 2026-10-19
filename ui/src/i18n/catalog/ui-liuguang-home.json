@@ -1,7 +1,7 @@
 {
-  "Excel、Word、PDF 与图片、CAD 图纸都可以放在这里，Translator 会按类型分到对应的工作区并读取内容。": {
-    "en": "Excel, Word, PDF and images, and CAD drawings can all go here. Translator sends each to the matching workspace and reads it.",
-    "fr": "Excel, Word, PDF et images, plans CAO : déposez-les ici. Translator envoie chaque fichier vers l'espace de travail correspondant et le lit."
+  "Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里，Translator 会按类型分到对应的工作区并读取内容。": {
+    "en": "Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here. Translator sends each to the matching workspace and reads it.",
+    "fr": "Excel, Word, PowerPoint, PDF et images, plans CAO : déposez-les ici. Translator envoie chaque fichier vers l'espace de travail correspondant et le lit."
   },
   "{0} 条 · {1} → {2}": {
     "en": "{0} entries · {1} → {2}",

@@ -308,7 +308,8 @@ def test_the_page_is_registered_with_the_app() -> None:
         assert descriptor["icon"] == "ppt"
         # 分包说明：「PPT」默认显示在侧栏，排在 Word 后面。
         assert descriptor["visible_by_default"] is True and descriptor["sidebar_after"] == "word"
-        assert descriptor["extensions"] == ["potx", "pps", "ppsx", "ppt", "pptm", "pptx"]
+        # 清单里的先后就是「翻译」页拖放区提示的先后：.pptx 排第一。
+        assert descriptor["extensions"] == ["pptx", "pptm", "ppsx", "potx", "ppt", "pps"]
         assert [option["key"] for option in descriptor["options"]] == ["bilingual", "translate_notes", "layout_mode", "spacing"]
         layout = descriptor["options"][2]
         assert layout["kind"] == "choice" and layout["default"] == "fit"
