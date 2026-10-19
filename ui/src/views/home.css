@@ -263,23 +263,45 @@
   color: var(--ink-3);
   cursor: pointer;
 }
-.bc-row {
+/* 各行共用一张网格（.bc-row 是 display: contents，格子直接排在 .bc-rows 上）：状态、「查看」两列
+ * 按最宽的一行定宽，中间的设置列每行从同一处开始，不随「已完成」「翻译中 85%」长短错开。
+ * 分隔线画在每个格子上，列间距用格子的左内边距而不是 column-gap，线才是连着的。 */
+.bc-rows {
   display: grid;
   grid-template-columns: auto minmax(120px, 0.9fr) minmax(0, 2fr) auto auto;
-  align-items: center;
-  column-gap: 12px;
-  padding: 9px 2px;
-  border-top: 1px solid var(--line);
   font-size: 13px;
   color: var(--ink);
 }
-.bc-row > svg {
+.bc-row {
+  display: contents;
+}
+.bc-row > * {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.bc-row > * + * {
+  padding-left: 12px;
+}
+.bc-ic {
+  padding-left: 2px;
   color: var(--ink-3);
 }
-.bc-nm {
-  display: flex;
+.bc-act {
+  padding-right: 2px;
+}
+/* 进度数字一跳一跳时状态列别跟着变宽变窄：数字等宽，列宽至少放得下「翻译中 100%」。 */
+.bc-st {
+  min-width: 7.5em;
+  font-variant-numeric: tabular-nums;
+}
+.bc-row > .bc-nm,
+.bc-row > .bc-recipe {
   flex-direction: column;
-  min-width: 0;
+  align-items: stretch;
+  justify-content: center;
 }
 .bc-nm b {
   font-weight: 600;
@@ -288,11 +310,6 @@
 .bc-set {
   color: var(--ink-3);
   font-size: 12px;
-}
-.bc-recipe {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
 }
 .bc-set {
   overflow: hidden;
@@ -319,13 +336,17 @@
 .bc-row .chip {
   white-space: nowrap;
 }
-.bc-bar {
+.bc-row > .bc-bar {
+  display: block;
   grid-column: 2 / -1;
   height: 3px;
   border-radius: 99px;
   background: var(--surface-2);
   overflow: hidden;
-  margin-top: 6px;
+  /* 紧贴在这一行的格子下面（格子下内边距 9px，上提 3px 留出 6px），下面再留 9px 到下一行的分隔线。 */
+  margin: -3px 0 9px 12px;
+  padding: 0;
+  border-top: 0;
 }
 .bc-bar i {
   display: block;

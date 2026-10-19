@@ -6,6 +6,7 @@
 import { createButton, createChip, openModal } from "../components";
 import { icon } from "../icons";
 import { t, tx } from "../i18n";
+import { markMorphBoundary, morphChildren, setReusableClick } from "../morph";
 import { navigate } from "../router";
 import type { TaskStatus } from "../api-client";
 import { consumePendingRestartWarning } from "../update-controller";
@@ -122,12 +123,21 @@ function showFailed(failed: NonNullable<BatchStartResponse["failed"]>): void {
   });
 }
 
+// 卡片在任务进行中每个进度事件都要重画。重画时原地更新（morph.ts）：卡片、各行、进度条的节点留着，
+// 只改文字和宽度，卡片的入场浮现不再重播，进度条的宽度也能接着过渡。所以下面绑点击一律用
+// setReusableClick / reusable 按钮（处理函数只认页面和这一批，不抓新建的节点）。
+//
+// 各行共用 .bc-rows 这一张网格（.bc-row 是 display: contents），状态那一列的宽度按最宽的一行算，
+// 「已完成」「翻译中 85%」「完成但有问题 · 需复核」长短不一时，中间的设置列照样上下对齐。
 function buildRows(view: BatchView): HTMLElement {
-  const rows = el("div", "bc-rows");
+  const rows = markMorphBoundary(el("div", "bc-rows"));
   for (const row of view.rows) {
-    const line = el("div", "bc-row");
+    const line = markMorphBoundary(el("div", "bc-row"));
     line.dataset.surface = row.surface;
-    line.append(icon(surfaceIcon(row.surface), { size: "sm" }));
+    line.dataset.key = row.surface;
+    const mark = el("span", "bc-ic");
+    mark.append(icon(surfaceIcon(row.surface), { size: "sm" }));
+    line.append(mark);
     const name = el("div", "bc-nm");
     name.append(el("b", undefined, surfaceLabel(row.surface)), el("span", "bc-ct", fileNounPhrase(row.surface, row.found)));
     const recipe = el("div", "bc-recipe");
@@ -135,12 +145,16 @@ function buildRows(view: BatchView): HTMLElement {
     summary.title = summary.textContent ?? "";
     recipe.append(summary);
     if (row.note) recipe.append(el("span", `bc-note${row.noteWarn ? " warn" : ""}`, row.note));
-    const chip = createChip({ label: row.label, tone: row.tone });
+    const state = el("span", "bc-st");
+    state.append(createChip({ label: row.label, tone: row.tone }));
+    const act = el("span", "bc-act");
     const go = el("button", "linklike bc-go", row.phase === "running" || row.phase === "finished" ? t("查看 ↗") : t("去设置 ↗"));
     go.type = "button";
     go.title = surfaceLabel(row.surface);
-    go.addEventListener("click", () => navigate(row.surface));
-    line.append(name, recipe, chip, go);
+    const surface = row.surface;
+    setReusableClick(go, () => navigate(surface));
+    act.append(go);
+    line.append(name, recipe, state, act);
     if (row.phase === "running") {
       const bar = el("div", "bc-bar");
       const fill = el("i");
@@ -154,7 +168,7 @@ function buildRows(view: BatchView): HTMLElement {
 }
 
 function buildFoot(view: BatchView, repaint: () => void): HTMLElement {
-  const foot = el("div", "bc-foot");
+  const foot = markMorphBoundary(el("div", "bc-foot"));
   const started = view.rows.some((row) => row.phase === "running" || row.phase === "finished");
   const words = el("div", "bc-out");
   if (started && view.outputDir) {
@@ -168,8 +182,8 @@ function buildFoot(view: BatchView, repaint: () => void): HTMLElement {
   if (started) {
     const running = view.rows.some((row) => row.phase === "running");
     foot.append(running
-      ? createButton({ label: t("全部任务"), icon: "tasks", onClick: () => navigate("tasks") })
-      : createButton({ label: t("打开输出文件夹"), icon: "folder", variant: "primary", onClick: () => openOutputFolder(view.outputDir), disabled: !view.outputDir }));
+      ? createButton({ label: t("全部任务"), icon: "tasks", reusable: true, onClick: () => navigate("tasks") })
+      : createButton({ label: t("打开输出文件夹"), icon: "folder", variant: "primary", reusable: true, onClick: () => openOutputFolder(view.outputDir), disabled: !view.outputDir }));
     return foot;
   }
   const reading = view.rows.some((row) => row.phase === "reading");
@@ -180,6 +194,7 @@ function buildFoot(view: BatchView, repaint: () => void): HTMLElement {
     icon: "play",
     variant: "primary",
     disabled: starting || reading || count === 0,
+    reusable: true,
     onClick: () => void startAll(view, false, repaint),
   }));
   return foot;
@@ -192,9 +207,13 @@ export function createBatchCard(): { node: HTMLElement; dispose: () => void } {
   const paint = (): void => {
     queued = false;
     const view = dispatchBatchView();
-    slot.textContent = "";
-    if (!view) return;
-    const card = el("section", "batch-card");
+    if (!view) {
+      slot.textContent = "";
+      return;
+    }
+    // 换了一批（拖入的文件夹不同）时 data-key 不同，morphChildren 配不上，新卡片照常浮现一次。
+    const card = markMorphBoundary(el("section", "batch-card"));
+    card.dataset.key = view.root;
     const head = el("div", "bc-head");
     head.append(icon("folder", { size: "sm" }), el("b", undefined, t("本批文件")));
     const from = el("span", "bc-from", baseName(view.root));
@@ -203,10 +222,12 @@ export function createBatchCard(): { node: HTMLElement; dispose: () => void } {
     const close = el("button", "linklike bc-x", "×");
     close.type = "button";
     close.setAttribute("aria-label", t("不再提示"));
-    close.addEventListener("click", clearDispatchBatch);
+    setReusableClick(close, clearDispatchBatch);
     head.append(close);
     card.append(head, buildRows(view), buildFoot(view, repaint));
-    slot.append(card);
+    const next = el("div");
+    next.append(card);
+    morphChildren(slot, next);
   };
   // 进度事件一秒能来好几次，合成一帧画一次。
   const repaint = (): void => {

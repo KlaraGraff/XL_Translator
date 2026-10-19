@@ -116,8 +116,13 @@ class OptionDef:
 
 
 def suffixes(values: Iterable[str]) -> tuple[str, ...]:
-    """File suffixes as descriptors list them: lower case, no dot, sorted."""
-    return tuple(sorted({str(value).lower().lstrip(".") for value in values if str(value).strip(".")}))
+    """File suffixes as descriptors list them: lower case, no dot, no repeats.
+
+    A list or tuple keeps its order, so a manifest can put its main format first (the
+    「翻译」page shows the first few as a hint); an unordered set is sorted.
+    """
+    ordered = values if isinstance(values, (list, tuple)) else sorted(values, key=lambda value: str(value).lower())
+    return tuple(dict.fromkeys(str(value).lower().lstrip(".") for value in ordered if str(value).strip(".")))
 
 
 @dataclass(frozen=True)

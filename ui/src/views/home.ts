@@ -15,7 +15,7 @@ import { ApiClient } from "../api-client";
 import { dispatchPaths } from "../drop-dispatch";
 import { installDropGlow } from "../drop-glow";
 import { applyModelPillFromRoles, modelRoleSummary } from "../model-pill";
-import { visibleTypeKeys } from "../surface-descriptors";
+import { loadSurfaceDescriptors, visibleTypeKeys } from "../surface-descriptors";
 import { onWorkspaceChange, stateOf, surfaceFileExtensions, surfaceIcon, surfaceLabel, type Surface } from "./workspace";
 import { redactedText } from "./workspace-util";
 import { taskRowSummary } from "./tasks";
@@ -78,7 +78,7 @@ function buildHero(types: Surface[]): HTMLElement {
   const big = el("div", "big");
   big.append(icon("upload", { size: "lg" }));
   hero.append(big, el("h2", undefined, t("拖入文件或文件夹")));
-  hero.append(el("p", undefined, t("Excel、Word、PDF 与图片、CAD 图纸都可以放在这里，Translator 会按类型分到对应的工作区并读取内容。")));
+  hero.append(el("p", undefined, t("Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里，Translator 会按类型分到对应的工作区并读取内容。")));
   const chips = el("div", "types");
   for (const surface of types) {
     const chip = el("button", "type-chip");
@@ -247,9 +247,12 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   void fillReady({ text: slots.text.val, image: slots.image.val, tm: slots.tm.val, domain: slots.domain.val, oda: slots.oda.val }, generation);
 
   // 先按内置四种画出来，拿到设置后按「扩展」页的显示设置换成实际的类型芯片。
-  void getClient()
-    .then((c) => c.request<Record<string, unknown>>("/api/settings"))
-    .then((settings) => {
+  // 启动时落在这一页，类型描述符可能还没拉到：也要等它，不然 PPT 这类随应用提供的类型会漏掉。
+  void Promise.all([
+    getClient().then((c) => c.request<Record<string, unknown>>("/api/settings")),
+    loadSurfaceDescriptors().catch(() => []),
+  ])
+    .then(([settings]) => {
       if (generation !== mountGeneration) return;
       const keys = visibleTypeKeys(settings) as Surface[];
       if (!keys.length || keys.join() === BUILTIN_TYPES.join()) return;
