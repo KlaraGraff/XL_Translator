@@ -6,10 +6,6 @@ Translator 是一款开源的、基于大语言模型的桌面文档翻译应用
 
 [下载最新版本](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
-![Translator 主界面：Excel 翻译完成](docs/images/readme/app-excel.png)
-
-> 本页的界面截图和翻译结果除 PDF 示例页外均使用虚构的示例资料，不含真实项目内容；PDF 示例页为一份设备说明书中的一页（法语译为中文）。翻译结果由应用实际翻译生成，CAD 图纸为 AutoCAD 中的实际显示效果。界面语言为中文，配色为默认的流光。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
-
 ## 功能
 
 ### 翻译入口与搜索

@@ -6,10 +6,6 @@ Translator is an open-source desktop application for macOS and Windows that uses
 
 [Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
-![Main window after an Excel translation](docs/images/readme/app-excel.png)
-
-> With the exception of the PDF sample pages, the application screenshots and translation results on this page use fictional sample documents and contain no real project content; the PDF sample pages are a page from an equipment manual (French translated into Chinese). The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Lumen color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
-
 ## Features
 
 ### Translation start page and search
