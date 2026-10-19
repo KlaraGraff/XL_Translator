@@ -8,7 +8,7 @@ Translator is an open-source desktop application for macOS and Windows that uses
 
 ![Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> With the exception of the PDF sample pages, the application screenshots and translation results on this page use fictional sample documents and contain no real project content; the PDF sample pages are a page from an equipment manual (French translated into Chinese). The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Neutral grey color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
+> With the exception of the PDF sample pages, the application screenshots and translation results on this page use fictional sample documents and contain no real project content; the PDF sample pages are a page from an equipment manual (French translated into Chinese). The translations were produced by the application itself, and the CAD drawings are shown as displayed in AutoCAD. The interface is shown in Chinese with the default Lumen color scheme. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
 ## Features
 
@@ -39,6 +39,8 @@ Supports `.docx` and legacy `.doc` files, including body text, tables, headers a
 Supports `.pptx`, `.pptm`, `.ppsx` and `.potx`; legacy `.ppt` and `.pps` files are converted first and come out as `.pptx` (conversion uses PowerPoint or LibreOffice installed on the computer). Text boxes, shapes and tables on the slides, text in charts and SmartArt, speaker notes, and fixed text on masters and layouts are translated, keeping bold, colors and hyperlinks as in the original. The default output is translation only; bilingual output with the source and translation together is also available. Text in pictures, embedded objects and comments is not translated, and reading the file reports how many of each there are.
 
 When a translation is longer than the source and does not fit, Layout preference on the right of the page sets how it is handled: Adaptive layout (default) first makes text boxes and tables taller into the empty space below and then reduces the font size; Keep font size leaves the size unchanged and makes boxes taller as needed; Fixed layout keeps the size and position of every box and table and only reduces the font size. Anything that still does not fit is listed for review.
+
+![PowerPoint translation completed](docs/images/readme/app-ppt.png)
 
 ### PDF and images
 
@@ -102,7 +104,13 @@ Jobs of different types can run concurrently. Any job can be stopped (PDF and CA
 
 ### Translation start page and search
 
-The Translation page is the entry point of the application: drop files or folders anywhere in the window and Translator opens the matching translation page. After dropping a folder that holds spreadsheets, documents, presentations and other files together, the Translation page lists each kind of file with its settings; click Start all to translate them together, with the results in one output folder. Press ⌘K (macOS) or Ctrl+K (Windows) to search pages, tasks and translation memory entries; type a file path and press Enter to start translating it.
+The Translation page is the entry point of the application: drop files or folders anywhere in the window and Translator opens the matching translation page. After dropping a folder that holds spreadsheets, documents, presentations and other files together, the Translation page lists each kind of file with its settings; click Start all to translate them together, with the results in one output folder.
+
+![Translation page: drop or select files and folders](docs/images/readme/app-home.png)
+
+![After selecting a folder with several kinds of files: each kind listed with its settings, started together](docs/images/readme/app-batch.png)
+
+Press ⌘K (macOS) or Ctrl+K (Windows) to search pages, tasks and translation memory entries; type a file path and press Enter to start translating it.
 
 ### Checks after translation
 
@@ -116,7 +124,7 @@ The Feedback page in the sidebar is used to report problems or suggest improveme
 
 ### Appearance
 
-Light and dark modes are available and can follow the system setting. Five color schemes can be selected under Settings → Appearance & language: Neutral grey (default), Warm paper, Soft cool, Celadon and Amber comfort. Light and dark mode can each use a different scheme, for example Neutral grey by day and Amber comfort at night.
+Light and dark modes are available and can follow the system setting. Six color schemes can be selected under Settings → Appearance & language: Lumen (default), Neutral grey, Warm paper, Soft cool, Celadon and Amber comfort. Light and dark mode can each use a different scheme, for example Neutral grey by day and Amber comfort at night.
 
 ### Languages and prompts
 
