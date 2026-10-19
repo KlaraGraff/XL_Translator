@@ -1625,10 +1625,18 @@ function cardSubtitle(entry: TaskEntry): string {
   return [surfaceLabel, detail, formatDay(entry.task.updated_at ?? entry.task.created_at)].filter(Boolean).join(" · ");
 }
 
+/** 任务在列表上的那个状态徽章。任务中心之外凡是要说「这个任务怎么样了」的地方（入口页
+ *  「最近」、⌘K、反馈页任务列表）都从这里取，不要直接拿 taskStateWord(task.state)：
+ *  后端只要有一条结果项就记成 completed_with_issues，只看 state 会把零待办、只有提示的
+ *  任务说成「完成但有问题」，而任务中心对同一个任务写着「已完成」。 */
+export function taskStatusChip(task: TaskStatus): { label: string; tone: ChipTone } {
+  const active = activeChip(task);
+  return active ? { label: active.label, tone: active.tone } : (reviewChip(task) ?? taskStateMeta(task));
+}
+
 /** 「翻译」入口页的「最近」一行：图标、标题、类型 · 时间、状态徽章，和任务中心卡片同一套说法。 */
 export function taskRowSummary(task: TaskStatus): { icon: IconName; title: string; meta: string; chip: { label: string; tone: ChipTone } } {
-  const active = activeChip(task);
-  const chip = active ? { label: active.label, tone: active.tone } : (reviewChip(task) ?? taskStateMeta(task));
+  const chip = taskStatusChip(task);
   return {
     icon: surfaceIcon(task.surface),
     title: cardTitle(task),
@@ -1841,11 +1849,14 @@ function renderDetail(): void {
       actions.append(createButton({ label: t("停止"), variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     }
   }
-  // 失败、中断、需复核：日志本身说明了问题，反馈时描述可以不写。
+  // 失败、中断、需复核：日志本身说明了问题，反馈时描述可以不写。按徽章的口气判断，
+  // 不按 state：零待办、只有提示的 completed_with_issues 徽章是绿色「已完成」，弹窗却按
+  // 「有问题」默认勾译文、标题报黄，跟工作区横幅进同一个弹窗时的说法也不一样。
+  const chipTone = (reviewChip(task) ?? meta).tone;
   const feedbackOptions = {
     taskId: task.task_id,
     taskLabel: titleText,
-    hasProblem: task.state === "error" || task.state === "interrupted" || task.state === "completed_with_issues" || reviews.length > 0,
+    hasProblem: chipTone === "warn" || chipTone === "dgr" || reviews.some((row) => row.needsReview),
   };
   if (task.terminal) {
     actions.append(createTaskFeedbackButton({ ...feedbackOptions, size: "mini" }));

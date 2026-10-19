@@ -14,11 +14,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar } from "../shell";
-import { ApiClient, ApiError } from "../api-client";
+import { ApiClient, ApiError, type TaskStatus } from "../api-client";
 import { clearElement, createButton, createCard, createDropdown, createHintBadge, openModal, showToast } from "../components";
 import { icon, type IconName } from "../icons";
 import { currentLocale, localeTag, localized, t, tx } from "../i18n";
 import { taskStateWord } from "../task-state-labels";
+import { taskStatusChip } from "./tasks";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface } from "../surface-descriptors";
 import {
   SEND_FAILURES,
@@ -39,6 +40,9 @@ interface FeedbackTask {
   state: string;
   source_label: string;
   updated_at: number;
+  terminal?: boolean;
+  /** 结果摘要，状态词按它和任务中心一样判定（见 taskStateText）。 */
+  result?: Record<string, unknown>;
 }
 
 interface FeedbackContext {
@@ -751,8 +755,17 @@ function taskName(task: FeedbackTask): string {
   return tx(task.source_label) || surfaceName(task.surface);
 }
 
+/** 状态词跟任务中心的徽章同一个出处：后端只要有一条结果项就记成 completed_with_issues，
+ *  直接用 taskStateWord(task.state) 会把零待办、只有提示的任务写成「完成但有问题」，
+ *  而任务中心对同一个任务写着「已完成」或「提示 N」。预览里的任务按 id 回到列表里取。 */
+function taskStateText(task: { task_id: string; state: string }): string {
+  const listed = context?.tasks.find((item) => item.task_id === task.task_id);
+  if (!listed?.result) return taskStateWord(task.state);
+  return taskStatusChip({ ...listed, terminal: true } as unknown as TaskStatus).label;
+}
+
 function taskMeta(task: FeedbackTask): string {
-  return [surfaceName(task.surface), taskStateWord(task.state), formatWhen(task.updated_at)].filter(Boolean).join(" · ");
+  return [surfaceName(task.surface), taskStateText(task), formatWhen(task.updated_at)].filter(Boolean).join(" · ");
 }
 
 function buildTaskToolbar(): HTMLElement {
@@ -948,7 +961,7 @@ function openPreviewModal(preview: PreviewPayload): void {
   };
   item(draft.contact.trim() ? t("反馈内容与邮箱") : t("反馈内容"));
   if (preview.system) item(t("系统与版本信息"));
-  for (const task of preview.tasks) item(t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateWord(task.state)));
+  for (const task of preview.tasks) item(t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateText(task)));
   for (const image of preview.images ?? []) item(t("截图：{0}（{1}）", image.name, formatBytes(image.bytes)));
   for (const file of preview.files) item(t("文件：{0}（{1}）", file.name, formatBytes(file.bytes)));
   body.push(list);
@@ -958,7 +971,7 @@ function openPreviewModal(preview: PreviewPayload): void {
   }
   for (const task of preview.tasks) {
     body.push(previewBlock(
-      t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateWord(task.state)),
+      t("任务日志：{0} · {1}", surfaceName(task.surface), taskStateText(task)),
       task.log || t("（此任务没有日志）"),
     ));
   }
