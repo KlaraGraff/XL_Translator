@@ -15,10 +15,19 @@ from unittest import mock
 
 from lxml import etree
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font
 
 from core import bilingual_writer
 from core.bilingual_writer import write_bilingual_file
-from core.xlsx_patcher import MAX_CELL_TEXT_LEN, NS_MAIN, NS_XDR
+from core.xlsx_patcher import (
+    BASE_FONT_SIZE_PT,
+    CHARS_PER_WIDTH,
+    LINE_HEIGHT_RATIO,
+    MAX_CELL_TEXT_LEN,
+    NS_MAIN,
+    NS_XDR,
+    estimate_required_lines,
+)
 
 NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -391,6 +400,120 @@ class RowHeightScopeTests(_PatcherDefectCase):
             f"行高被公式源码撑到了 {height}pt，公式不该按源码文本参与换行估算",
         )
         self.assertGreater(height, 15.0)
+
+
+class MergedCellRowHeightTests(_PatcherDefectCase):
+    """合并单元格按整个合并区域的宽度估算行高；任何行都只加高、不压矮。"""
+
+    TITLE = "工程量清单（土建工程）"
+    TITLE_FR = "Bordereau quantitatif et estimatif (travaux de génie civil)"
+    INFO = "工程名称：示例厂区综合楼项目　　　　编制日期：2026 年 9 月"
+    INFO_FR = (
+        "Projet : immeuble polyvalent de la zone industrielle (exemple)"
+        "    Date d'établissement : septembre 2026"
+    )
+    SECTION = "一、土方工程"
+    SECTION_FR = "I. Travaux de terrassement"
+    ITEM = "配电箱"
+    ITEM_FR = "Distribution box"
+    NOTE = "施工期间须做好基坑排水和边坡监测"
+    NOTE_FR = "Assurer le drainage des fouilles et la surveillance des talus pendant les travaux"
+
+    def _bill_of_quantities(self, *, title_height: float = 32) -> Path:
+        """仿工程量清单：标题、工程信息、分部标题都横跨 A:F 合并。"""
+        path = self.root / "merged.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "清单"
+        for letter, width in zip("ABCDEF", (7, 22, 46, 8, 11, 26)):
+            sheet.column_dimensions[letter].width = width
+        sheet.merge_cells("A1:F1")
+        sheet["A1"] = self.TITLE
+        sheet["A1"].font = Font(size=15, bold=True)
+        sheet.row_dimensions[1].height = title_height
+        sheet.merge_cells("A2:F2")  # 不设行高：按分表默认行高算
+        sheet["A2"] = self.INFO
+        sheet["A2"].font = Font(size=10)
+        sheet.merge_cells("A4:F4")
+        sheet["A4"] = self.SECTION
+        sheet.row_dimensions[4].height = 22
+        sheet["A5"] = self.ITEM  # 不合并的普通格，A 列只有 7 宽
+        workbook.save(path)
+        workbook.close()
+        return path
+
+    def _translations(self) -> dict[str, str]:
+        return {
+            self.TITLE: self.TITLE_FR,
+            self.INFO: self.INFO_FR,
+            self.SECTION: self.SECTION_FR,
+            self.ITEM: self.ITEM_FR,
+        }
+
+    def test_merged_single_row_cells_use_the_whole_merge_width(self) -> None:
+        source = self._bill_of_quantities()
+        output = self._write(source, self._translations())
+        rows = _sheet_rows(output)
+
+        # 15pt 标题两行（原文一行、译文一行）。只按 A 列 7 宽估算会算成 10 行、154pt。
+        title = float(rows["1"].get("ht"))
+        self.assertGreaterEqual(title, 2 * 15 * LINE_HEIGHT_RATIO - 1e-6, "大字号标题按两行算也该比 32pt 高")
+        self.assertLessEqual(title, 3 * 15 * LINE_HEIGHT_RATIO + 1e-6, f"合并标题行被撑到了 {title}pt")
+
+        one_line = BASE_FONT_SIZE_PT * LINE_HEIGHT_RATIO
+        info = float(rows["2"].get("ht"))
+        self.assertLessEqual(info, 3 * one_line + 1e-6, f"合并的工程信息行被撑到了 {info}pt")
+        self.assertGreater(info, 15.0)
+
+        section = float(rows["4"].get("ht"))
+        self.assertGreater(section, 22.0, "双语分部标题放不进原来的 22pt，仍要加高")
+        self.assertLessEqual(section, 3 * one_line + 1e-6, f"合并的分部标题行被撑到了 {section}pt")
+
+        # 不合并的格照旧按本列宽度估算："配电箱" 一行 + "Distribution box" 两行。
+        self.assertAlmostEqual(float(rows["5"].get("ht")), 3 * one_line, places=6)
+        self.assertEqual(rows["5"].get("customHeight"), "1")
+
+    def test_multi_row_merge_raises_only_its_last_row(self) -> None:
+        path = self.root / "vertical.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "说明"
+        sheet.column_dimensions["A"].width = 10
+        sheet.merge_cells("A2:A4")
+        sheet["A2"] = self.NOTE
+        for row_num in (2, 3, 4):
+            sheet.row_dimensions[row_num].height = 20
+        workbook.save(path)
+        workbook.close()
+
+        output = self._write(path, {self.NOTE: self.NOTE_FR})
+        rows = _sheet_rows(output)
+
+        heights = [float(rows[str(row_num)].get("ht")) for row_num in (2, 3, 4)]
+        self.assertEqual(heights[:2], [20.0, 20.0], "合并区域的首行和中间行不该被单独撑高")
+        lines = estimate_required_lines(
+            f"{self.NOTE}\n{self.NOTE_FR}", int(10 * CHARS_PER_WIDTH)
+        )
+        self.assertAlmostEqual(
+            sum(heights),
+            lines * BASE_FONT_SIZE_PT * LINE_HEIGHT_RATIO,
+            places=3,
+            msg="三行合起来正好补够所需高度：差额全加在最后一行",
+        )
+
+    def test_existing_taller_row_is_never_lowered(self) -> None:
+        source = self._bill_of_quantities(title_height=60)
+        path = self.root / "tall.xlsx"
+        workbook = load_workbook(source)
+        workbook.active.row_dimensions[5].height = 80
+        workbook.save(path)
+        workbook.close()
+
+        output = self._write(path, self._translations())
+        rows = _sheet_rows(output)
+
+        self.assertEqual(float(rows["1"].get("ht")), 60.0, "原本就够高的合并标题行不许压矮")
+        self.assertEqual(float(rows["5"].get("ht")), 80.0, "原本就够高的普通行不许压矮")
 
 
 if __name__ == "__main__":
