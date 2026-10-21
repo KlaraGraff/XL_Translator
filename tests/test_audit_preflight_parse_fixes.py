@@ -191,3 +191,17 @@ class NormalizeTranslationLanguageResultObjectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def test_parse_errors_never_carry_the_model_reply():
+    """解析失败的报错会进运行日志（任务包、反馈包都可能带上），不能带模型返回的原文和译文。"""
+    import pytest
+
+    from engines.base_engine import parse_response
+
+    with pytest.raises(ValueError) as caught:
+        parse_response(["Tableau général"], '["Tableau général", "配电盘"]', "OpenAI")
+    assert "Tableau" not in str(caught.value) and "配电盘" not in str(caught.value)
+    with pytest.raises(ValueError) as caught:
+        parse_response(["Tableau général"], '[{"text": "配电盘"}]', "OpenAI")
+    assert "配电盘" not in str(caught.value)

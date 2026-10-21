@@ -13,6 +13,8 @@ import json
 import re
 from abc import ABC, abstractmethod
 
+from loguru import logger
+
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.language_preflight import TranslationLanguageResult, normalize_translation_language_result
 from core.prompt_cache import compose_system
@@ -121,15 +123,19 @@ def parse_response(originals: list[str], raw: str, engine_label: str = "") -> di
                 if isinstance(tgt, dict):
                     tgt = tgt.get("translation")
                 if tgt is None or isinstance(tgt, (dict, list)):
+                    # 报错会进用户的运行日志（任务包、反馈包都可能带上）：只说第几项、什么类型，
+                    # 不带模型返回的内容——那里面是客户文件的原文和译文。
                     raise ValueError(
                         f"{label}响应解析失败：第 {index + 1} 项译文缺失或不是字符串"
-                        f"（{tgt!r}），违反协议约定"
+                        f"（{type(tgt).__name__}），违反协议约定"
                     )
                 result[src] = str(tgt)
             return result
     except json.JSONDecodeError:
         pass
-    raise ValueError(f"{label}响应解析失败 (无法匹配为包含 {len(originals)} 条记录的数组)，大模型原始内容：{raw[:200]}")
+    # 模型原样返回的内容只进调试日志：里面是客户文件的原文和译文（同上）。
+    logger.debug(f"{label}响应解析失败，大模型原始内容：{raw[:200]}")
+    raise ValueError(f"{label}响应解析失败 (无法匹配为包含 {len(originals)} 条记录的数组)")
 
 
 def parse_response_with_sources(
