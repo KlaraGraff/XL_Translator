@@ -252,11 +252,14 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         smart_mode=smart_mode,
     )
 
-    def translate(texts: list[str], prompt: str, should_stop=None, term_session=None) -> dict:
+    def translate(texts: list[str], prompt: str, should_stop=None, term_session=None,
+                  request_callback=None, error_callback=None) -> dict:
         # 页面自己拼提示词。接口放弃、停止时没发出去的条目不在结果里：页面再试一次，仍
         # 没有就记为「未获得译文」、列进这一页的复核清单，与 CAD 一致；原样返回的才可能是
         # 模型有意保留原文（core/pdf_vector/classify.py _translate_with_retry）。
-        return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session)
+        # request_callback 收逐批的发出与返回：PDF 任务据此写逐批日志、按返回条数推进进度。
+        return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session,
+                                 request_callback=request_callback, error_callback=error_callback)
 
     profile = None
     if smart_mode:

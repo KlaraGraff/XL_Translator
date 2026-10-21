@@ -124,5 +124,11 @@
   "本文件没有翻译任何内容，输出 PDF 与源文件一致。各页原因见任务报告。": {"en": "Nothing in this file was translated; the output PDF matches the source file. See the task report for the reason on each page.", "fr": "Rien n'a été traduit dans ce fichier ; le PDF de sortie correspond au fichier source. Les raisons page par page figurent dans le rapport de tâche."},
   "{0} 处未获得译文，需复核": {"en": "{0} {0|label got|labels got} no translation and {0|needs|need} review", "fr": "{0} {0|étiquette n'a|étiquettes n'ont} pas été {0|traduite|traduites} et {0|est|sont} à vérifier"},
   "{0} 处未获得译文，已保留原文，需复核": {"en": "{0} {0|label got|labels got} no translation; the original text was kept and needs review", "fr": "{0} {0|étiquette n'a|étiquettes n'ont} pas été {0|traduite|traduites} ; le texte d'origine est conservé et à vérifier"},
-  "原位替换文字（Beta）": {"en": "Replace text in place (Beta)", "fr": "Remplacer le texte sur place (Bêta)"}
+  "原位替换文字（Beta）": {"en": "Replace text in place (Beta)", "fr": "Remplacer le texte sur place (Bêta)"},
+  "[{0}] 第 {1} 页：原位替换文字（Beta）开始。": {"en": "[{0}] Page {1}: replacing text in place (Beta) started.", "fr": "[{0}] Page {1} : remplacement du texte sur place (Bêta) commencé."},
+  "状态：正在原位替换「{0}」第 {1} 页的文字…": {"en": "Status: replacing the text of page {1} of “{0}” in place…", "fr": "Statut : remplacement sur place du texte de la page {1} de « {0} »…"},
+  "[{0}] 第 {1} 页：正在识别画成线条的文字，共 {2} 块。": {"en": "[{0}] Page {1}: recognizing text drawn as lines, {2} {2|tile|tiles} in total.", "fr": "[{0}] Page {1} : reconnaissance du texte dessiné en traits, {2} {2|zone|zones} au total."},
+  "[{0}] 第 {1} 页：正在识别画成线条的文字，已完成 {2}/{3} 块。": {"en": "[{0}] Page {1}: recognizing text drawn as lines, {2}/{3} tiles done.", "fr": "[{0}] Page {1} : reconnaissance du texte dessiné en traits, {2}/{3} zones traitées."},
+  "[{0}] 第 {1} 页：读出 {2} 处文字，用时 {3} 秒。": {"en": "[{0}] Page {1}: read {2} {2|text|texts} in {3} s.", "fr": "[{0}] Page {1} : {2} {2|texte lu|textes lus} en {3} s."},
+  "[{0}] 第 {1} 页：译文已返回，正在写回原位置并自检。": {"en": "[{0}] Page {1}: translations received; writing them back in place and checking the page.", "fr": "[{0}] Page {1} : traductions reçues ; réécriture sur place et vérification de la page."}
 }

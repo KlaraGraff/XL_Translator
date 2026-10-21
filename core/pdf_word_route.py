@@ -25,7 +25,19 @@ from pathlib import Path
 from loguru import logger
 
 LogFn = Callable[[str, str], None]
+# progress(done, total)：整段 Word 翻译做完了多少（按 Word 各阶段的权重折算好，千分之一）。
 ProgressFn = Callable[[int, int], None]
+# Word 流程各阶段在整段里的份额：读取 / 翻译 / 写文件，与 api/surfaces/word.py 的
+# phase_weights 相同（core 不引 api）。
+_WORD_PHASE_WEIGHTS = (5, 80, 15)
+
+
+def _word_run_fraction(phase_index: int, phase_total: int, done: int, total: int) -> float:
+    """One Word-runner ProgressMsg (phase-local) as a share of the whole Word run."""
+    weights = _WORD_PHASE_WEIGHTS if phase_total == len(_WORD_PHASE_WEIGHTS) else (1,) * max(1, phase_total)
+    index = max(1, min(len(weights), phase_index))
+    within = min(1.0, max(0.0, done / max(1, total)))
+    return (sum(weights[: index - 1]) + weights[index - 1] * within) / sum(weights)
 
 # 东亚文字用的字体。Windows 自带微软雅黑；macOS 的 Word/WPS 会自动替换成苹方。
 EAST_ASIAN_FONT = "Microsoft YaHei"
@@ -476,7 +488,9 @@ def translate_pdf_via_word(
             continue
         if isinstance(message, ProgressMsg):
             if progress is not None and message.step_total:
-                progress(int(message.step_done), int(message.step_total))
+                fraction = _word_run_fraction(int(message.phase_index), int(message.phase_total),
+                                              int(message.step_done), int(message.step_total))
+                progress(round(1000 * fraction), 1000)
             continue
         if isinstance(message, (DoneMsg, ErrorMsg, StoppedMsg)):
             terms = dict(getattr(message, "terms", None) or {})

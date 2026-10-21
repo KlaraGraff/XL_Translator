@@ -620,3 +620,139 @@ class InplaceApiGaveUpTests(unittest.TestCase):
         self.assertEqual(page.inplace_untranslated, 3)
         self.assertEqual(page.inplace_message, "识别到 3 处文字，均未替换（未获得译文），这一页保留原样")
         self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+
+
+@unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
+class InplaceProgressTests(unittest.TestCase):
+    """原位替换的页属于「翻译」阶段：进度按识别、翻译返回、写回的真实完成量推进，逐页结果
+    写「原位替换中」，运行日志逐批说明。以前它在翻译阶段一开头就记成「已完成」，真正的活
+    放在「生成文件」里做：进度条几秒就到 90%，然后几分钟不动、日志一行没有。"""
+
+    _service_hooks = InplaceApiGaveUpTests._service_hooks
+
+    def test_whole_task_reports_in_place_work_inside_the_translate_phase(self):
+        from core.task_runner_messages import LogMsg, ProgressMsg, StatusMsg
+
+        hooks, _calls = self._service_hooks(set())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        source_pdf = root / "drawing.pdf"
+        _write_pdf(source_pdf, [A4, A1], with_text=[True, True])
+        settings = AppSettings(target_lang="zh")
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto",
+                                                   "auto_text_route": "image"})
+        settings.output.use_custom_output_dir = True
+        settings.output.custom_output_dir = str(root / "out")
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_model = "image-model"
+        settings.image_model_role.cloud_base_url = "https://images.example/v1"
+        runner = PdfImageTranslationRunner(
+            [PdfFileItem(path=source_pdf, name="drawing.pdf", size_kb=1.0, page_count=2)],
+            settings, source_root=root, image_client=_RecordingImageClient(_png_bytes(2481, 3508)),
+            task_logger_enabled=False, inplace_hooks=hooks,
+        )
+        seen: dict[str, object] = {}
+        translate = hooks.translate
+
+        def spying_translate(texts, prompt, **extra):
+            # 翻译请求发出时：图像页早已返回，原位替换页正在做。
+            if "snapshot" not in seen:
+                seen["snapshot"] = runner.pdf_page_snapshot()["files"][0]["pages"][1]
+            return translate(texts, prompt, **extra)
+
+        hooks.translate = spying_translate
+        with patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_word_route.word_route_available", return_value=True), \
+                patch("core.pdf_word_route.office_pdf_engine", return_value=("", "no office engine in tests")):
+            runner._run()
+
+        messages = []
+        while not runner._queue.empty():
+            messages.append(runner._queue.get_nowait())
+        record = runner._prepared_files[0].record
+        self.assertEqual(sorted(record.pages, key=lambda p: p.page_number)[1].inplace_status, "done")
+
+        # 进度：原位替换的页做完以前，「翻译」阶段到不了头，也不会进「生成文件」。
+        logs = [m.message for m in messages if isinstance(m, LogMsg)]
+        order = [m for m in messages if isinstance(m, (ProgressMsg, LogMsg))]
+        writing = next(i for i, m in enumerate(order)
+                       if isinstance(m, LogMsg) and "第 2 页：译文已返回" in m.message)
+        finished = next(i for i, m in enumerate(order)
+                        if isinstance(m, LogMsg) and "第 2 页：已替换" in m.message)
+        translate_steps = [m.step_done / m.step_total for m in order[:writing]
+                           if isinstance(m, ProgressMsg) and m.phase_index == 2]
+        self.assertTrue(translate_steps)
+        self.assertLess(max(translate_steps), 1.0)
+        self.assertEqual(translate_steps, sorted(translate_steps))  # 只进不退
+        # 图像页返回后是一半；原位替换这一页一点一点往上走，不是一下跳满。
+        self.assertGreater(len({round(v, 3) for v in translate_steps if 0.5 < v < 1.0}), 1)
+        self.assertFalse([m for m in order[:finished] if isinstance(m, ProgressMsg) and m.phase_index >= 3])
+        self.assertTrue([m for m in order if isinstance(m, ProgressMsg) and m.phase_index == 2
+                         and m.step_done == m.step_total])
+
+        # 进度卡上的计数：原位替换这一页做完以前，既不算「已生成」也不算「原样保留」。
+        from core.task_runner_messages import PdfPageRecoveryStatusMsg
+
+        started = next(i for i, m in enumerate(messages)
+                       if isinstance(m, LogMsg) and m.message.endswith("第 2 页：原位替换文字（Beta）开始。"))
+        live = [m for m in messages[:started] if isinstance(m, PdfPageRecoveryStatusMsg)][-1]
+        self.assertEqual((live.completed_pages, live.skipped_oversize_page_count), (1, 0))
+        final = [m for m in messages if isinstance(m, PdfPageRecoveryStatusMsg)][-1]
+        self.assertEqual((final.completed_pages, final.skipped_oversize_page_count), (2, 0))
+
+        # 逐页结果：正在做的这一页是「原位替换中」，不是「按幅面跳过」。
+        snap = seen["snapshot"]
+        self.assertTrue(snap["inplace_requested"])
+        self.assertEqual(snap["inplace_status"], "")
+        self.assertTrue(snap["inplace_active"])
+        self.assertFalse(runner.pdf_page_snapshot()["files"][0]["pages"][1]["inplace_active"])
+
+        # 日志：每个阶段都有一行，翻译按批说明。
+        self.assertIn("[drawing.pdf] 第 2 页：原位替换文字（Beta）开始。", logs)
+        self.assertTrue([line for line in logs if line.startswith("[drawing.pdf] 第 2 页：读出 ")])
+        self.assertTrue([line for line in logs if line.startswith("[drawing.pdf 第 2 页] 开始翻译 3 处内容")])
+        self.assertTrue([line for line in logs if line.startswith("[drawing.pdf 第 2 页] 第 1/1 批已返回")])
+        self.assertIn("[drawing.pdf] 第 2 页：译文已返回，正在写回原位置并自检。", logs)
+        statuses = [m.phase_desc for m in messages if isinstance(m, StatusMsg)]
+        self.assertIn("状态：正在原位替换「drawing.pdf」第 2 页的文字…", statuses)
+
+    def test_ocr_tiles_move_the_page_forward(self):
+        """识别画成线条的字按块计：块数一出来就有一行日志，进度跟着识别完的块走。"""
+        from core.pdf_image_translation import _InplacePageProgress
+
+        sent: list[float] = []
+        lines: list[str] = []
+
+        class Runner:
+            _inplace_page_fraction: dict = {}
+
+            def _translation_progress_units(self):
+                return 1.0 - 1.0 + self._inplace_page_fraction[("f", 1)]
+
+            def _send_translation_progress(self, units, total_pages):
+                sent.append(units / total_pages)
+
+        progress = _InplacePageProgress(Runner(), ("f", 1), total_pages=1,
+                                        log=lambda level, message: lines.append(message), batch_label="f 第 1 页")
+        progress.report("ocr", 0, 40)
+        for done in range(1, 41):
+            progress.report("ocr", done, 40)
+        progress.report("read", 1, 1, rows=12, seconds=3.2)
+        self.assertEqual(lines, ["正在识别画成线条的文字，共 40 块。", "读出 12 处文字，用时 3 秒。"])
+        self.assertAlmostEqual(sent[-1], 0.2, places=3)
+        self.assertEqual(len(sent), 41)  # 起点，之后每识别完一块一步，没有按时间的估算
+        progress.report("write", 0, 2)
+        self.assertAlmostEqual(sent[-1], 0.9, places=3)  # 没走模型的页，翻译那一份直接越过
+        progress.report("write", 2, 2)
+        self.assertAlmostEqual(sent[-1], 1.0, places=3)
+
+
+def test_word_segment_progress_folds_the_word_phases():
+    """转 Word 的正文段：Word 流程每个阶段各自从 0 数起，要按 Word 的阶段权重折成整段的份额。"""
+    from core.pdf_word_route import _word_run_fraction
+
+    assert _word_run_fraction(1, 3, 1, 1) == pytest.approx(0.05)
+    assert _word_run_fraction(2, 3, 5, 10) == pytest.approx(0.45)
+    assert _word_run_fraction(3, 3, 1, 1) == pytest.approx(1.0)

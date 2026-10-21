@@ -78,5 +78,9 @@
   "选择的位置不是可用的文字识别组件。": {"en": "The selected location is not a usable text recognition component.", "fr": "L'emplacement sélectionné n'est pas un composant de reconnaissance de texte utilisable."},
   "重新检测": {"en": "Detect again", "fr": "Relancer la détection"},
   "原位替换 · {0} 处未获得译文": {"en": "Replaced in place · {0} {0|label|labels} not translated", "fr": "Remplacé sur place · {0} {0|étiquette non traduite|étiquettes non traduites}"},
-  "未获得译文的地方：{0}{1}": {"en": "No translation received at: {0}{1}", "fr": "Aucune traduction reçue : {0}{1}"}
+  "未获得译文的地方：{0}{1}": {"en": "No translation received at: {0}{1}", "fr": "Aucune traduction reçue : {0}{1}"},
+  "原位替换中": {"en": "Replacing in place", "fr": "Remplacement sur place en cours"},
+  "等待原位替换": {"en": "Waiting for in-place replacement", "fr": "En attente du remplacement sur place"},
+  "正在识别、翻译并写回该页的文字，完成后装入输出文件。": {"en": "Reading, translating and writing back the text of this page; it goes into the output file when done.", "fr": "Lecture, traduction et réécriture du texte de cette page ; elle sera intégrée au fichier de sortie une fois terminée."},
+  "其余页面翻译完成后，将原位替换该页的文字。": {"en": "The text of this page will be replaced in place once the other pages are translated.", "fr": "Le texte de cette page sera remplacé sur place une fois les autres pages traduites."}
 }
