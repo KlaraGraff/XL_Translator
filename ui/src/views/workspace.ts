@@ -905,7 +905,7 @@ function applyPdfRouteSettings(st: SurfaceState, pdf: JsonObject): void {
   st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
 }
 
-// 设置页「一键改用文本翻译」改了 PDF 翻译方式：这里缓存的设置跟着换，回到 PDF 页
+// 设置页「改为转成 Word 翻译」改了 PDF 翻译方式：这里缓存的设置跟着换，回到 PDF 页
 // 看到的就是新方式（事件名见 settings-models.ts PDF_ROUTES_CHANGED_EVENT）。
 window.addEventListener("xlt:pdf-routes-changed", (event) => {
   const pdf = record((event as CustomEvent<unknown>).detail);

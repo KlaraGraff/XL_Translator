@@ -20,7 +20,7 @@ DEFAULT_MAX_LEN = 25
 
 # ── 翻译引擎标识符 ────────────────────────────────────────
 CLOUD_ENGINES = {
-    "Claude (Anthropic)":          "claude",
+    "Anthropic":                   "claude",
     "OpenAI / ChatGPT":            "openai",
     "自定义配置":                    "custom_openai",
     "智谱 GLM":                    "zhipu",

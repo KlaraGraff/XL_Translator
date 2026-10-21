@@ -108,7 +108,7 @@ const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
   pdf_review: "PDF 与图片审核", // i18n-ignore 存进设置的值
 };
 
-// 「一键改用文本翻译」：PDF 改成自动组合，能提取文字的页转成 Word 翻译，不用图像模型；
+// 「改为转成 Word 翻译」：PDF 改成自动组合，能提取文字的页转成 Word 翻译，不用图像模型；
 // 扫描页和保底方式仍交给图像模型——没有可用的图像模型时这些页保留原样，完成后列出来。
 // 图纸和大图保持用户原来的选择（默认原位替换）。
 const TEXT_ROUTE_PDF_PATCH = { translation_route: "auto", auto_text_route: "word" };
@@ -123,13 +123,13 @@ function pdfUsesTextRoutes(): boolean {
 function buildUseTextRoutesButton(): HTMLElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "linklike";
-  button.textContent = t("一键改用文本翻译");
+  button.className = "resume-link";
+  button.textContent = t("改为转成 Word 翻译");
   button.title = t("PDF 翻译方式改为「自动组合」，可提取文字的页转成 Word 翻译，不使用图像模型。");
   button.addEventListener("click", () => void reRenderAfter(async () => {
     await persistSettings({ pdf: TEXT_ROUTE_PDF_PATCH });
     window.dispatchEvent(new CustomEvent(PDF_ROUTES_CHANGED_EVENT, { detail: record(settings?.pdf) }));
-    showToast({ message: t("已改用文本翻译：PDF 翻译方式为「自动组合」，可提取文字的页转成 Word 翻译。") });
+    showToast({ message: t("已改为转成 Word 翻译：PDF 翻译方式为「自动组合」，可提取文字的页转成 Word 翻译。") });
   }));
   return button;
 }
@@ -383,7 +383,7 @@ export function renderModelsPage(host: HTMLElement): void {
   // 自定义配置、跟随别的用途、本地模型没有这一页，不显示。
   const keyLink = document.createElement("button");
   keyLink.type = "button";
-  keyLink.className = "linklike field-link";
+  keyLink.className = "resume-link";
   keyLink.textContent = t("获取 ↗ API 密钥");
   providerFieldHandle.root.querySelector("label")?.append(keyLink);
   const keyPage = () => (cloudMode && !following

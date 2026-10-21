@@ -298,7 +298,7 @@ export const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
 const PROVIDER_LABELS: Record<string, string> = localized(() => ({
   custom_openai: t("自定义配置"),
   openai: "OpenAI",
-  claude: "Claude",
+  claude: "Anthropic",
   zhipu: t("智谱 GLM"),
   dashscope: t("阿里百炼"),
   siliconflow: t("硅基流动"),

@@ -7,17 +7,9 @@
     "en": "Get ↗ API key",
     "fr": "Obtenir ↗ une clé API"
   },
-  "一键改用文本翻译": {
-    "en": "Switch to text translation",
-    "fr": "Passer à la traduction du texte"
-  },
   "PDF 翻译方式改为「自动组合」，可提取文字的页转成 Word 翻译，不使用图像模型。": {
     "en": "Sets the PDF translation method to “Automatic mix”: pages with extractable text are translated through Word, without the image model.",
     "fr": "Règle la méthode de traduction PDF sur « Combinaison automatique » : les pages dont le texte peut être extrait sont traduites via Word, sans modèle d'image."
-  },
-  "已改用文本翻译：PDF 翻译方式为「自动组合」，可提取文字的页转成 Word 翻译。": {
-    "en": "Switched to text translation: the PDF translation method is now “Automatic mix”, and pages with extractable text are translated through Word.",
-    "fr": "Traduction du texte activée : la méthode de traduction PDF est désormais « Combinaison automatique » et les pages dont le texte peut être extrait sont traduites via Word."
   },
   "没有可用的图像翻译模型：扫描页和需要保底的页会保留原样。": {
     "en": "No usable image translation model: scanned pages and pages that need the safety net are kept as they are.",
@@ -35,8 +27,16 @@
     "en": "The PDF and image translation model failed its connection test.",
     "fr": "Le modèle de traduction des PDF et des images a échoué au test de connexion."
   },
-  "PDF 与图片翻译需要图像模型，文字模型无法使用。国内外的图像模型我们都测试过，目前效果最好的是 ChatGPT 的 image-2.5-flare，其余效果都较差。建议改用这个模型，或改用文本翻译。": {
-    "en": "PDF and image translation needs an image model; text models cannot be used. We have tested image models from China and abroad: the best results so far come from ChatGPT's image-2.5-flare, and the others perform poorly. Use this model, or switch to text translation.",
-    "fr": "La traduction des PDF et des images nécessite un modèle d'image ; les modèles de texte ne conviennent pas. Nous avons testé des modèles d'image chinois et étrangers : les meilleurs résultats viennent pour l'instant de image-2.5-flare de ChatGPT, les autres donnent de mauvais résultats. Utilisez ce modèle, ou passez à la traduction du texte."
+  "改为转成 Word 翻译": {
+    "en": "Switch to Convert to Word",
+    "fr": "Passer à Conversion en Word"
+  },
+  "已改为转成 Word 翻译：PDF 翻译方式为「自动组合」，可提取文字的页转成 Word 翻译。": {
+    "en": "Switched to Convert to Word: the PDF translation method is now “Automatic mix”, and pages with extractable text are translated through Word.",
+    "fr": "Passage à Conversion en Word : la méthode de traduction PDF est désormais « Combinaison automatique » et les pages dont le texte peut être extrait sont traduites via Word."
+  },
+  "PDF 与图片翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。": {
+    "en": "PDF and image translation requires an image model; text models are not suitable. In our tests, ChatGPT's image-2.5-flare currently performs best. Use this model, or switch to Convert to Word.",
+    "fr": "La traduction des PDF et des images nécessite un modèle d'image ; les modèles de texte ne conviennent pas. D'après nos essais, image-2.5-flare de ChatGPT donne actuellement les meilleurs résultats. Utilisez ce modèle, ou passez à Conversion en Word."
   }
 }
