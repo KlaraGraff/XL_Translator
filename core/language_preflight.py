@@ -312,7 +312,7 @@ def normalize_translation_language_result(
         translation = nested
     if translation is None or isinstance(translation, (Mapping, list)):
         raise ValueError(
-            f"响应解析失败：译文缺失或不是字符串（{translation!r}），违反协议约定"
+            f"响应解析失败：译文缺失或不是字符串（{type(translation).__name__}），违反协议约定"
         )
 
     candidate = str(reported_source or "").strip().lower()

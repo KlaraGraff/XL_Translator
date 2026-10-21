@@ -32,6 +32,8 @@ from settings import AppSettings
 
 #: 程序判断不了原文语种时，记忆库按这几种原文语言去查。
 _AUTO_MEMORY_SOURCES = ("en", "fr", "zh")
+# 运行日志里限流、降速提示开头的页面名。
+_SURFACE_LOG_LABELS = {"cad": "CAD", "pdf": "PDF", "ext:pptx": "PPT"}
 
 
 class TextTranslationService:
@@ -58,6 +60,7 @@ class TextTranslationService:
     ) -> None:
         self.settings = settings
         self.surface_key = surface_key
+        self.log_label = _SURFACE_LOG_LABELS.get(surface_key) or surface_key.split(":", 1)[-1].upper()
         self.target_lang = target_lang
         self.source_lang = source_lang
         self.connection_ids = tuple(connection_ids)
@@ -177,6 +180,8 @@ class TextTranslationService:
             item_retries=self.rate.item_retry,
             # 原样退回的条目在这一批返回后立刻补问一次（PDF 原位替换）。
             resend_unchanged=resend_unchanged,
+            # 限流、降速提示开头写哪个页面（以前一律写成「Excel」）。
+            context_label=self.log_label,
         )
         for text in stats.untranslated_sources | stats.stopped_sources:
             if results.get(text) == text:

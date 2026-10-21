@@ -2280,10 +2280,12 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   const images = files.filter((f) => f.source_type === "image").length;
   // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，过滤掉即可。
   // 跳过项不占格：文件列表下面那一行「读取时跳过 N 项」已经说了。
+  // 「大幅面页」只对整页图像翻译有意义（那里有「跳过 A3 及更大的页面」开关）；自动组合先看
+  // 内容再看尺寸，大页面照常原位替换，这一格会让人以为它们不翻（maple 2026-10-21）。
   const pdfStats: (StatCell | null)[] = [
     { label: t("文件"), value: String(files.length) },
     { label: t("总页数"), value: String(pages) },
-    oversizedPageStat(oversizedPageStats(files)),
+    st.pdfRoute === "auto" ? null : oversizedPageStat(oversizedPageStats(files)),
     { label: t("独立图片"), value: String(images) },
   ];
   return pdfStats.filter((stat): stat is StatCell => stat !== null);
@@ -2910,7 +2912,8 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
       dimCell.textContent = "—";
     } else {
       dimCell.append(document.createTextNode(file.page_count === undefined && st.historyOnly ? "—" : t("{0} 页", num(file.page_count))));
-      const note = oversizedPageNote(file);
+      // 同上：「其中 N 页 A3+」「整份都是 A3+」只在整页图像翻译下提示。
+      const note = st.pdfRoute === "auto" ? null : oversizedPageNote(file);
       if (note) {
         dimCell.append(document.createTextNode(" · "));
         const span = el("span");
@@ -2945,7 +2948,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     statusCell.append(resumeChip(surface, resume));
   } else if (isRisky(surface, file)) {
     statusCell.append(createChip({ label: surface === "cad" ? t("需连接转换工具") : t("需先转换"), tone: "warn", icon: "warn" }));
-  } else if (surface === "pdf" && isAllOversized(file)) {
+  } else if (surface === "pdf" && st.pdfRoute !== "auto" && isAllOversized(file)) {
     // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
     // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
     statusCell.append(createChip({ label: t("整份均为大幅面"), tone: "warn", icon: "warn" }));
