@@ -158,6 +158,10 @@
 
   **A clear message for the wrong PDF model, and one click to switch to Convert to Word**: When the image model fails its test in a way that points to a text model, the message says an image model is required and that, in our tests, ChatGPT's image-2.5-flare currently performs best; "Switch to Convert to Word" beside it sets the PDF method to Automatic mix with extractable pages translated through Word. In Automatic mix an image model that failed its test counts as missing: scanned and fallback pages are kept as they are and listed at the end instead of being tried page by page. A review model that cannot read images gets a similar message.
 
+- **分段控件的滑块对齐**：设置页「连接方式」只有「云端 API」一项时（PDF 与图片翻译），滑块只占一半、文字错位；工作区右栏的「双语对照 / 仅译文」「源文件旁 / 自定义」滑块也比选中项宽 4 像素。滑块宽度现在按选项数计算，各处都对齐。
+
+  **Segmented control thumb alignment**: When "Connection method" had only "Cloud API" (PDF & image translation), the thumb covered half the bar and the label sat off-centre; the workspace side-panel switches had a thumb 4 px wider than the selected option. The thumb width now follows the number of options everywhere.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。

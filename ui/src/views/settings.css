@@ -261,10 +261,6 @@
 .set-body .opt-row .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
 .set-body .opt-row .ctl .sw { margin-left: 0; }
 
-/* 分段控件：app.css 里旧的 .seg { gap: 8px } 会把滑块和按钮错开，这里归零。4–5 项时滑块宽度。 */
-.set-body .seg { gap: 0; }
-.set-body .seg.n4 .thumb { width: calc(25% - 1.5px); }
-.set-body .seg.n5 .thumb { width: calc(20% - 1.2px); }
 .set-body .seg.seg-narrow { max-width: 360px; }
 .set-body .seg.seg-motion { width: 180px; }
 
