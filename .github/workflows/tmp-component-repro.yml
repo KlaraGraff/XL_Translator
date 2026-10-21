@@ -1,0 +1,64 @@
+name: TEMP component install repro
+
+on:
+  push:
+    branches:
+      - claude/project-thread-ytjpby
+
+permissions:
+  contents: read
+
+jobs:
+  released:
+    name: 10.3.1 sidecar (vcruntime ${{ matrix.msvcp }}, defender ${{ matrix.defender }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {msvcp: present, defender: off}
+          - {msvcp: hidden, defender: off}
+          - {msvcp: present, defender: on}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Environment
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion
+          Get-Item C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\mfplat.dll -ErrorAction SilentlyContinue | Format-Table Name, Length, VersionInfo
+          Get-MpComputerStatus -ErrorAction SilentlyContinue | Select-Object AMServiceEnabled, RealTimeProtectionEnabled, AntivirusEnabled
+      - name: Hide msvcp140 from System32
+        if: matrix.msvcp == 'hidden'
+        shell: pwsh
+        run: |
+          foreach ($name in "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll") {
+            $path = "C:\Windows\System32\$name"
+            if (Test-Path $path) {
+              takeown /f $path | Out-Null
+              icacls $path /grant "Administrators:F" | Out-Null
+              Rename-Item $path "$name.hidden"
+            }
+          }
+          Get-Item C:\Windows\System32\msvcp140* | Format-Table Name
+      - name: Turn on Defender real-time protection
+        if: matrix.defender == 'on'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          Remove-MpPreference -ExclusionPath (Get-MpPreference).ExclusionPath -ErrorAction SilentlyContinue
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled
+          Get-MpPreference | Select-Object ExclusionPath, DisableRealtimeMonitoring
+      - name: Download and unpack the 10.3.1 installer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/KlaraGraff/XL_Translator/releases/download/v10.3.1/Translator_Windows_x64_10.3.1_Setup.exe -OutFile setup.exe
+          7z x -y -orel setup.exe | Out-Null
+          Get-ChildItem rel\sidecar\translator-sidecar\translator-sidecar.exe
+      - name: One-click install through the released sidecar
+        shell: pwsh
+        run: python .github/tmp-repro/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
