@@ -144,3 +144,39 @@ def test_links_are_clickable_in_html():
     page = notify.build_message("xltranslator.support@gmail.com", "li@example.cn", notice).get_body(("html",)).get_content()
     assert f'<a href="{notify.RELEASES_URL}" style="color:#2f5bd3">{notify.RELEASES_URL}</a>' in page
     assert "已修复 &lt;b&gt;。" in page
+
+
+def test_prerelease_mail_goes_only_to_listed_issues_and_links_the_release_page():
+    second = ISSUE_BODY.replace("界面语言 fr", "界面语言 zh").replace("marie@example.fr", "li@example.cn")
+    github = FakeGitHub(
+        [{"number": 15, "body": second}, {"number": 16, "body": ISSUE_BODY}],
+        {15: [NOTICE], 16: [NOTICE]},
+    )
+    sent: dict[str, str] = {}
+    failures = notify.run(
+        github, (10, 0, 1), send=lambda to, n: sent.__setitem__(to, n.body), dry_run=False, only={15}, prerelease=True
+    )
+    assert failures == 0
+    assert list(sent) == ["li@example.cn"]
+    url = "https://github.com/KlaraGraff/XL_Translator/releases/tag/v10.0.1"
+    # 预发布在应用内看不到，邮件不能教用户在应用内更新，只给它自己的发布页。
+    assert sent["li@example.cn"].endswith(notify.PRERELEASE_HINTS["zh"].format(url=url))
+    assert notify.UPDATE_HINTS["zh"] not in sent["li@example.cn"]
+    assert [(number, label) for number, label, _ in github.finished] == [(15, "已通知")]
+    assert "预发布" in github.finished[0][2]
+
+
+def test_prerelease_requires_listed_issues_and_a_published_prerelease(monkeypatch, capsys):
+    import pytest
+
+    monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "x")
+    with pytest.raises(SystemExit):
+        notify.main(["--version", "10.0.1", "--prerelease"])
+    for state, expected in [
+        ({"draft": True, "prerelease": True}, "草稿"),
+        ({"draft": False, "prerelease": False}, "正式版"),
+    ]:
+        monkeypatch.setattr(notify, "prerelease_problem", lambda version, s=state: notify._release_state_problem("v10.0.1", s))
+        assert notify.main(["--version", "10.0.1", "--prerelease", "--issue", "15"]) == 1
+        assert expected in capsys.readouterr().out
+    assert notify._release_state_problem("v10.0.1", {"draft": False, "prerelease": True}) == ""

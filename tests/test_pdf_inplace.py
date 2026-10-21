@@ -812,6 +812,19 @@ def test_inplace_batch_retries_and_slowdowns_reach_the_report():
     assert runner._rate_limit_reduction_count == 2
 
 
+def test_inplace_failure_reason_has_no_class_name():
+    """「原位替换：…」那句给用户看：只要中文原因，不带 ApiKeyTemporarilyUnavailableError 这种类名。"""
+    from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+    from core.pdf_vector.classify import _translate_with_retry
+
+    def translate(texts, prompt):
+        raise ApiKeyTemporarilyUnavailableError("模型服务持续提示繁忙：已降至最低速度，170 秒内仍未恢复。")
+
+    errors: list[str] = []
+    assert _translate_with_retry(["Door"], "p", translate, errors) == ({}, 0)
+    assert errors and "Error" not in errors[0] and "模型服务" in errors[0]
+
+
 def test_word_segment_progress_folds_the_word_phases():
     """转 Word 的正文段：Word 流程每个阶段各自从 0 数起，要按 Word 的阶段权重折成整段的份额。"""
     from core.pdf_word_route import _word_run_fraction

@@ -14,6 +14,14 @@ name: Release (tag / publish)
 #                 最后确认 releases/latest 和 latest.json 都指向新版本。
 #                 撤回过的版本改好后也用它重新发布。发布成功后自动运行
 #                 feedback-notify.yml，给反馈已在这一版解决的用户发邮件。
+#   step=prerelease  和 publish 一样核对、换正文，但发布成「预发布」：发布页
+#                 上能看到、能下载，标着 Pre-release；releases/latest 和
+#                 latest.json 仍是上一个正式版，已安装的应用不会收到更新提示，
+#                 README 的下载链接也不变；不发反馈通知邮件。用于先发给个别
+#                 用户试用。
+#   step=promote  把预发布转为正式发布：重新核对、换正文，取消 Pre-release
+#                 并设为 Latest，确认 releases/latest 和 latest.json 都指向它，
+#                 然后发反馈通知邮件（和 publish 一样）。
 #   step=notes    只换正文（草稿或已发布都可以），核对规则同 publish，
 #                 不改变草稿状态。用于发布后修订说明。
 #   step=retract  把已发布的版本改回草稿：不删产物、不动标签。改完确认
@@ -34,12 +42,14 @@ on:
   workflow_dispatch:
     inputs:
       step:
-        description: "tag = 打标签并开始构建；publish = 换正文并正式发布；notes = 只换正文；retract = 撤回为草稿；discard = 删除草稿和标签（先留归档标签）"
+        description: "tag = 打标签并开始构建；publish = 换正文并正式发布；prerelease = 换正文并发布为预发布（不提示用户升级、不发通知）；promote = 预发布转正式发布；notes = 只换正文；retract = 撤回为草稿；discard = 删除草稿和标签（先留归档标签）"
         required: true
         type: choice
         options:
           - tag
           - publish
+          - prerelease
+          - promote
           - notes
           - retract
           - discard
@@ -119,12 +129,12 @@ jobs:
             echo
             echo "- 标签：\`v${VERSION}\` → \`$GITHUB_SHA\`"
             echo "- 已触发 Build Translator distributions，完成后会生成**草稿** Release。"
-            echo "- 下一步：把发布说明写进 \`docs/release-notes/v${VERSION}.md\` 合进 main，再用 step=publish 运行本工作流。"
+            echo "- 下一步：把发布说明写进 \`docs/release-notes/v${VERSION}.md\` 合进 main，再用 step=publish（或 step=prerelease 先发预发布）运行本工作流。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
-    name: ${{ inputs.step == 'notes' && 'Update notes of' || 'Publish' }} v${{ inputs.version }}
-    if: inputs.step == 'publish' || inputs.step == 'notes'
+    name: ${{ inputs.step == 'notes' && 'Update notes of' || inputs.step == 'prerelease' && 'Pre-release' || inputs.step == 'promote' && 'Promote' || 'Publish' }} v${{ inputs.version }}
+    if: contains(fromJSON('["publish", "prerelease", "promote", "notes"]'), inputs.step)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
@@ -140,12 +150,18 @@ jobs:
             exit 1
           fi
           tag="v${VERSION}"
-          if ! gh release view "$tag" --json isDraft,body,assets > "$RUNNER_TEMP/release.json"; then
+          if ! gh release view "$tag" --json isDraft,isPrerelease,body,assets > "$RUNNER_TEMP/release.json"; then
             echo "::error::找不到 $tag 的 Release。构建可能还没跑完，或者标签没打。"
             exit 1
           fi
-          if [[ "$STEP" == "publish" && "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
-            echo "::error::$tag 已经发布，不是草稿。只改正文请用 step=notes。"
+          draft="$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")"
+          pre="$(jq -r '.isPrerelease' "$RUNNER_TEMP/release.json")"
+          if [[ ("$STEP" == "publish" || "$STEP" == "prerelease") && "$draft" != "true" ]]; then
+            echo "::error::$tag 已经发布，不是草稿。预发布转正式请用 step=promote，只改正文请用 step=notes。"
+            exit 1
+          fi
+          if [[ "$STEP" == "promote" && ("$draft" != "false" || "$pre" != "true") ]]; then
+            echo "::error::step=promote 只接受已发布的预发布版本（$tag 现在 isDraft=$draft、isPrerelease=$pre）。草稿请用 step=publish。"
             exit 1
           fi
           jq -r '.body' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/current-body.md"
@@ -183,28 +199,39 @@ jobs:
         env:
           STEP: ${{ inputs.step }}
       - name: Publish
-        if: inputs.step == 'publish'
+        if: inputs.step != 'notes'
         shell: bash
         run: |
           set -euo pipefail
           tag="v${VERSION}"
-          gh release edit "$tag" --draft=false >/dev/null
-          gh release view "$tag" --json isDraft,url,assets > "$RUNNER_TEMP/published.json"
+          case "$STEP" in
+            # 撤回过的预发布再正式发布时，Pre-release 标记要一起去掉。
+            publish) gh release edit "$tag" --draft=false --prerelease=false --latest >/dev/null; want_pre=false; label="已发布" ;;
+            prerelease) gh release edit "$tag" --draft=false --prerelease --latest=false >/dev/null; want_pre=true; label="已发布为预发布（不提示已安装的应用升级）" ;;
+            promote) gh release edit "$tag" --prerelease=false --latest >/dev/null; want_pre=false; label="已由预发布转为正式发布" ;;
+          esac
+          gh release view "$tag" --json isDraft,isPrerelease,url,assets > "$RUNNER_TEMP/published.json"
           if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/published.json")" != "false" ]]; then
             echo "::error::取消草稿后读回仍是草稿。"
             exit 1
           fi
+          if [[ "$(jq -r '.isPrerelease' "$RUNNER_TEMP/published.json")" != "$want_pre" ]]; then
+            echo "::error::读回的 Pre-release 标记不是预期的 $want_pre。"
+            exit 1
+          fi
           url="$(jq -r '.url' "$RUNNER_TEMP/published.json")"
           {
-            echo "### v${VERSION} 已发布"
+            echo "### v${VERSION} ${label}"
             echo
             echo "$url"
             echo
             jq -r '.assets[] | "- \(.name)"' "$RUNNER_TEMP/published.json"
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          STEP: ${{ inputs.step }}
       # 已安装的应用从这两处得知新版本。临时签名包不带 latest.json，只核对前者。
       - name: Confirm installed apps now see this version
-        if: inputs.step == 'publish'
+        if: inputs.step == 'publish' || inputs.step == 'promote'
         shell: bash
         run: |
           set -euo pipefail
@@ -213,13 +240,21 @@ jobs:
             flags+=(--no-manifest)
           fi
           python scripts/check_release_latest.py --expect "v${VERSION}" "${flags[@]}"
+      # 预发布只给个别用户试用：对外的最新版必须还是上一个正式版。
+      - name: Confirm installed apps still see the previous release
+        if: inputs.step == 'prerelease'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/check_release_latest.py --not "v${VERSION}"
 
-  # 发布成功后给反馈已在这一版解决的用户发邮件（见 feedback-notify.yml）。邮件发不出
-  # 不影响已发布的版本，issue 保留「待通知」，下次发布再发。
+  # 正式发布成功后给反馈已在这一版解决的用户发邮件（见 feedback-notify.yml）。邮件发不出
+  # 不影响已发布的版本，issue 保留「待通知」，下次发布再发。预发布不发：邮件里教用户
+  # 在应用内点更新，而预发布在应用里看不到；等 step=promote 时再发。
   notify-feedback:
     name: Notify feedback users of v${{ inputs.version }}
     needs: publish
-    if: inputs.step == 'publish'
+    if: inputs.step == 'publish' || inputs.step == 'promote'
     uses: ./.github/workflows/feedback-notify.yml
     with:
       version: ${{ inputs.version }}

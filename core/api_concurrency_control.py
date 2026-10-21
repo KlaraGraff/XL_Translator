@@ -381,11 +381,14 @@ def _wait_out_minimum_capacity_limit(
         # nothing was said yet if we started out at the slowest setting.
         say_floor = not watch.announced_floor
         # Afterwards keep a slow heartbeat so a long wait does not look like a
-        # hang, without one line per retry.
+        # hang, without one line per retry.  Only while this wait has really
+        # lasted that long: a batch that got through restarts ``first_hit``, and
+        # the next hit used to say 「已等待 0 秒」 (本机验证 2026-10-21).
         say_heartbeat = (
             not say_floor
             and watch.last_notice_at
             and now - watch.last_notice_at >= LIMIT_WAIT_NOTICE_INTERVAL_SECONDS
+            and elapsed >= LIMIT_WAIT_NOTICE_INTERVAL_SECONDS
         )
         watch.announced_slowdown = True
         watch.announced_floor = True

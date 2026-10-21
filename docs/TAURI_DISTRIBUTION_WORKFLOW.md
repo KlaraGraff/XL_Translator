@@ -44,6 +44,8 @@ Windows 构建产出 NSIS 安装器（`installMode: currentUser`，不需要管�
 3. 构建完成后，把发布说明写进 `docs/release-notes/vX.Y.Z.md`（写法见该目录的 README），走 PR 合进 main。
 4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与 Release 上实际挂着的安装包一致），再替换草稿正文、读回逐字比对，然后才 `--draft=false`，最后用 `scripts/check_release_latest.py` 确认 `releases/latest` 和 `latest.json` 都已指向新版本（GitHub 有缓存，会重试几分钟）。发布成功后接着运行 `feedback-notify.yml`：反馈仓库里带「待通知」标签、通知版本不晚于本版的 issue，按 issue 里留的邮箱发邮件，再标「已通知」并关闭（规则见 `feedback-relay/README.md`「通知用户」）。邮件发不出不影响已发布的版本，issue 保留「待通知」，下次发布再发。
 
+   - 先给个别用户试用时，用 `step=prerelease` 代替 `step=publish`：核对和换正文完全相同，但 Release 发布为 Pre-release——发布页上看得到、能下载，`releases/latest`、`latest.json` 和 README 的下载链接仍是上一个正式版，已安装的应用不会收到更新提示（`core/update_checker.py` 也跳过预发布），工作流最后核对这一点；不发反馈通知邮件（邮件教用户在应用内更新，预发布在应用内看不到）。试用没问题后运行 `step=promote`：再核对、换一次正文，取消 Pre-release 并设为 Latest，确认两处都指向它，然后照常发反馈通知。试用发现问题要重新构建时，用下一个修订号（例如 10.3.2 → 10.3.3），因为已装上预发布的人不会被同版本号的新包更新。
+
 发布之后：
 
 - 修订说明：改 `docs/release-notes/vX.Y.Z.md` 合进 main，运行 `step=notes`。核对规则同上，只换正文，不改变草稿状态。
