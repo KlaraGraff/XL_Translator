@@ -16,7 +16,6 @@ from core.pdf_image_translation import (
     PdfFileItem,
     _page_has_text_layer,
     PdfImageTranslationRunner,
-    is_oversized_for_threshold,
     max_page_generation_attempts,
 )
 from core.pdf_vector import InplaceHooks, find_cjk_font
@@ -28,6 +27,7 @@ fitz = pytest.importorskip("fitz")
 
 A4 = (595.276, 841.89)
 A3 = (841.89, 1190.551)
+A2 = (1190.551, 1683.78)   # 长边超过 Word 的页面上限，按图纸和大图处理
 A1 = (1683.78, 2383.94)
 
 LABELS = {
@@ -62,7 +62,7 @@ def _hooks(translate=None) -> InplaceHooks:
 
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
 class InplaceTaskTests(unittest.TestCase):
-    def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A3), text=(True, True),
+    def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A2), text=(True, True),
              image_model_missing="", extra=None, office=None, blank=(), prefill=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -114,7 +114,7 @@ class InplaceTaskTests(unittest.TestCase):
             self.assertIn("屋面平面图", text)
             self.assertNotIn("Plan de toiture", text)
             self.assertEqual(len(out[1].get_drawings()), 1)  # the red line is untouched
-            self.assertAlmostEqual(out[1].rect.width, A3[0], places=1)
+            self.assertAlmostEqual(out[1].rect.width, A2[0], places=1)
         snap = runner.pdf_page_snapshot()["files"][0]["pages"][1]
         self.assertEqual(snap["inplace_status"], "done")
         self.assertEqual(snap["inplace_written"], 3)
@@ -156,7 +156,7 @@ class InplaceTaskTests(unittest.TestCase):
             {"text": "COUPE A-A", "reason": "旋转的文字未能确认", "box_px": [0, 0, 1, 1]},
         ])
         with patch("core.pdf_vector.translate_page_inplace", return_value=rotated):
-            runner, record, client = self._run(sizes=(A3,), text=(True,))
+            runner, record, client = self._run(sizes=(A2,), text=(True,))
         self.assertEqual(len(client.calls), 0)
         page = record.pages[0]
         self.assertEqual(page.inplace_status, "kept_original")
@@ -212,7 +212,7 @@ class InplaceTaskTests(unittest.TestCase):
 
 
     def test_without_an_image_model_image_pages_are_kept_and_listed(self):
-        _runner, record, client = self._run(route="inplace", sizes=(A4, A3), text=(False, True),
+        _runner, record, client = self._run(route="inplace", sizes=(A4, A2), text=(False, True),
                                             image_model_missing="还没有填写 API 密钥")
         pages = sorted(record.pages, key=lambda p: p.page_number)
         self.assertEqual(len(client.calls), 0)
@@ -262,7 +262,7 @@ class InplaceTaskTests(unittest.TestCase):
         fake_word, fake_pdf = self._fake_word_and_pdf()
         with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
                 patch("core.pdf_word_route.docx_to_pdf", fake_pdf):
-            _runner, record, _client = self._run(sizes=(A4, A3), office=("word", "test"),
+            _runner, record, _client = self._run(sizes=(A4, A2), office=("word", "test"),
                                                  extra={"also_save_word": True})
         self.assertEqual(record.translated_docx_path, "")
 
@@ -284,7 +284,7 @@ class InplaceTaskTests(unittest.TestCase):
 
         with patch("core.pdf_word_route.translate_pdf_via_word", fake_word), \
                 patch("core.pdf_word_route.docx_to_pdf", fake_docx_to_pdf):
-            _runner, record, client = self._run(sizes=(A4, A4, A3), text=(True, True, True),
+            _runner, record, client = self._run(sizes=(A4, A4, A2), text=(True, True, True),
                                                 office=("word", "test"))
         pages = sorted(record.pages, key=lambda p: p.page_number)
         self.assertEqual([p.word_status for p in pages], ["done", "done", ""])
@@ -352,7 +352,7 @@ class InplaceTaskTests(unittest.TestCase):
     def test_rerouted_and_kept_pages_are_explained_in_the_report(self):
         from core.pdf_task_report import _file_record_to_result, _route_report_lines
 
-        _runner, record, _client = self._run(target="en", sizes=(A4, A3), text=(True, True),
+        _runner, record, _client = self._run(target="en", sizes=(A4, A2), text=(True, True),
                                              extra={"auto_text_route": "inplace"})
         lines = "\n".join(_route_report_lines(record))
         self.assertIn("第 1 页：原位替换目前只支持译成中文，改用整页图像翻译", lines)
@@ -369,7 +369,7 @@ class InplaceTaskTests(unittest.TestCase):
             return WordRouteResult(ok=False, error="转成 Word 失败")
 
         with patch("core.pdf_word_route.translate_pdf_via_word", broken_word):
-            _runner, record, client = self._run(sizes=(A4, A3), text=(True, True), office=("word", "test"))
+            _runner, record, client = self._run(sizes=(A4, A2), text=(True, True), office=("word", "test"))
         first = sorted(record.pages, key=lambda p: p.page_number)[0]
         self.assertFalse(first.word_requested)
         self.assertIn("改用整页图像翻译", first.route_note)
@@ -378,13 +378,13 @@ class InplaceTaskTests(unittest.TestCase):
         self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
 
     def test_no_office_engine_sends_text_pages_to_the_safety_net(self):
-        _runner, record, client = self._run(sizes=(A4, A3), text=(True, True))   # office probe says none
+        _runner, record, client = self._run(sizes=(A4, A2), text=(True, True))   # office probe says none
         first = sorted(record.pages, key=lambda p: p.page_number)[0]
         self.assertIn("Microsoft Word", first.route_note)
         self.assertEqual(len(client.calls), 1)
 
     def test_safety_net_keep_original(self):
-        _runner, record, client = self._run(sizes=(A4, A3), text=(True, True),
+        _runner, record, client = self._run(sizes=(A4, A2), text=(True, True),
                                             extra={"auto_fallback": "skip"})
         first = sorted(record.pages, key=lambda p: p.page_number)[0]
         self.assertTrue(first.kept_reason)
@@ -412,14 +412,15 @@ class TextLayerTests(unittest.TestCase):
             pdf.close()
 
 
-class ThresholdTests(unittest.TestCase):
-    def test_thresholds(self):
-        self.assertTrue(is_oversized_for_threshold("A3", *A3))
-        self.assertFalse(is_oversized_for_threshold("A3", *A4))
-        self.assertFalse(is_oversized_for_threshold("A2", *A3))
-        self.assertTrue(is_oversized_for_threshold("A1", *A1))
-        self.assertTrue(is_oversized_for_threshold("A1", A1[1], A1[0]))  # landscape
-        self.assertFalse(is_oversized_for_threshold("A0", *A1))
+class WordPageSizeTests(unittest.TestCase):
+    def test_pages_larger_than_word_allows(self):
+        from core.pdf_routes import exceeds_word_page
+
+        self.assertFalse(exceeds_word_page(*A4))
+        self.assertFalse(exceeds_word_page(*A3))
+        self.assertFalse(exceeds_word_page(A3[1], A3[0]))   # landscape A3
+        self.assertTrue(exceeds_word_page(1190.551, 1683.78))  # A2: 594 mm > 558.8 mm
+        self.assertTrue(exceeds_word_page(A1[1], A1[0]))
 
 
 if __name__ == "__main__":
@@ -524,6 +525,42 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertEqual(final.file_results[0]["status"], "needs_review")
         self.assertEqual(final.file_results[0]["output_format"], "pdf")
 
+    def test_a3_text_pages_go_to_word(self):
+        # 先看内容再看尺寸：A3 放得进 Word，文字页照常转 Word，不再按大幅面送去原位替换。
+        from core.pdf_routes import DocumentKind, PageKind
+        from core.pdf_word_route import WordRouteResult
+        from core.task_runner import DoneMsg
+
+        calls: list[int] = []
+
+        def fake(_runner, _pdf, _work, final_path, _settings, **_kwargs):
+            calls.append(1)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        kinds = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False)])
+        runner, final, client = self._run_task(fake, sizes=(A3, A3), kinds=kinds)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertEqual(calls, [1])
+        self.assertEqual(len(client.calls), 0)
+        pages = runner._prepared_files[0].record.pages
+        self.assertFalse(any(page.inplace_requested for page in pages))
+        self.assertEqual(runner._prepared_files[0].record.skipped_oversize_page_count, 0)
+
+    def test_large_scans_are_scanned_pages(self):
+        from core.pdf_routes import DocumentKind, PageKind
+        from core.task_runner import DoneMsg
+
+        def never(*_args, **_kwargs):
+            raise AssertionError("not a text page")
+
+        kinds = DocumentKind("scan", [PageKind(1, "scan", True)])
+        runner, final, client = self._run_task(never, sizes=(A1,), text=(False,), kinds=kinds)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertGreaterEqual(len(client.calls), 1)   # 扫描页的首选：整页图像翻译
+        self.assertFalse(runner._prepared_files[0].record.pages[0].inplace_requested)
+
     def test_skipped_large_pages_count_whatever_the_saved_threshold(self):
         from core.task_runner import DoneMsg
 
@@ -583,7 +620,7 @@ class InplaceApiGaveUpTests(unittest.TestCase):
         from core.pdf_task_report import _inplace_report_lines, _summary_issues
 
         hooks, calls = self._service_hooks({"Mur coupe feu 1 heure"})
-        runner, record, _client = self._run(hooks=hooks, sizes=(A3,), text=(True,))
+        runner, record, _client = self._run(hooks=hooks, sizes=(A2,), text=(True,))
         page = record.pages[0]
 
         self.assertEqual(page.inplace_status, "done")
@@ -613,7 +650,7 @@ class InplaceApiGaveUpTests(unittest.TestCase):
 
     def test_api_giving_up_on_every_label_keeps_the_page_and_says_why(self):
         hooks, _calls = self._service_hooks(set(LABELS))
-        _runner, record, _client = self._run(hooks=hooks, sizes=(A3,), text=(True,))
+        _runner, record, _client = self._run(hooks=hooks, sizes=(A2,), text=(True,))
         page = record.pages[0]
 
         self.assertEqual(page.inplace_status, "kept_original")

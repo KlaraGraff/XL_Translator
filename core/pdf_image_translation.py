@@ -112,6 +112,7 @@ from core.pdf_routes import (
     ROUTE_SKIP,
     ROUTE_WORD,
     classify_document,
+    exceeds_word_page,
     fallback_route,
     page_route,
 )
@@ -447,20 +448,6 @@ def is_oversized_page(page_width_pt: float, page_height_pt: float) -> bool:
         long_edge_pt > PDF_A4_LONG_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
         and short_edge_pt > PDF_A4_SHORT_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
     )
-
-
-# 「从多大算大幅面」：A3 沿用原来的判定（长短边都超出 A4 约 15%），更大的档按
-# 纸张标准尺寸的九成算，扫描白边、裁切误差不会把 A1 判成 A2。
-_PAPER_EDGES_MM = {"A2": (420.0, 594.0), "A1": (594.0, 841.0), "A0": (841.0, 1189.0)}
-
-
-def is_oversized_for_threshold(threshold: str, page_width_pt: float, page_height_pt: float) -> bool:
-    if threshold not in _PAPER_EDGES_MM:
-        return is_oversized_page(page_width_pt, page_height_pt)
-    short_mm, long_mm = _PAPER_EDGES_MM[threshold]
-    long_pt = max(page_width_pt, page_height_pt)
-    short_pt = min(page_width_pt, page_height_pt)
-    return long_pt >= long_mm / 25.4 * 72 * 0.9 and short_pt >= short_mm / 25.4 * 72 * 0.9
 
 
 def _page_has_text_layer(page, source_pdf: str = "", page_index: int = -1) -> bool:
@@ -3392,11 +3379,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         pdf_settings = self._settings.pdf
         if getattr(pdf_settings, "translation_route", "image") == "image":
             return
-        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
-        kind = classify_document(
-            item.path,
-            is_oversized=lambda width, height: is_oversized_for_threshold(threshold, width, height),
-        )
+        kind = classify_document(item.path, is_oversized=exceeds_word_page)
         self._document_kinds[str(item.path)] = kind
         record.document_kind = kind.kind
         label = _DOCUMENT_KIND_LABELS.get(kind.kind, "")
@@ -4448,10 +4431,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 常有画成线条的字，照常识别）。
         native_only = self._page_kind(record.source_path, page.page_number - 1) == KIND_TEXT or (
             not self._page_kind(record.source_path, page.page_number - 1)
-            and not is_oversized_for_threshold(
-                getattr(self._settings.pdf, "oversized_page_threshold", "A3"),
-                page.page_width_pt, page.page_height_pt,
-            )
+            and not is_oversized_page(page.page_width_pt, page.page_height_pt)
         )
         try:
             result = translate_page_inplace(
@@ -4612,7 +4592,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             for page in record.pages
             if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
-        threshold = getattr(self._settings.pdf, "oversized_page_threshold", "A3")
         # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
         # 模型而保留的页、原位替换试过但没换成的页（大幅面页也一样）另有说法，不算
         # 在这里——那一页是试过了没换成，说成「因幅面过大被跳过」会让用户去关一个
@@ -4623,7 +4602,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             and not page.word_requested
             and (not page.inplace_requested
                  or (not page.inplace_status
-                     and is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt)))
+                     and is_oversized_page(page.page_width_pt, page.page_height_pt)))
         )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)
@@ -4918,16 +4897,15 @@ class PdfImageTranslationRunner(BaseTaskRunner):
     ) -> tuple[str, str]:
         """(route, reason)：reason 非空表示首选用不了、改走了保底方式。"""
         pdf_settings = self._settings.pdf
-        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
-        oversized = is_oversized_for_threshold(threshold, width_pt, height_pt)
+        oversized_a3 = is_oversized_page(width_pt, height_pt)
         auto = getattr(pdf_settings, "translation_route", "image") == "auto"
         page_kind = self._page_kind(source_path, page_index)
         if not page_kind and auto:
             page_kind = KIND_TEXT if _page_has_text_layer(page, source_pdf, page_index) else KIND_SCAN
         route = page_route(
             pdf_settings,
-            oversized_a3=is_oversized_page(width_pt, height_pt),
-            oversized=oversized,
+            oversized_a3=oversized_a3,
+            oversized=exceeds_word_page(width_pt, height_pt),
             page_kind=page_kind,
         )
         if not auto:
@@ -4939,7 +4917,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
             return route, ""
-        return fallback_route(pdf_settings, oversized=oversized, image_available=not self._image_model_missing), reason
+        return fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing), reason
 
     def _route_unusable_reason(self, route: str, source_path: str, page_number: int) -> str:
         if route == ROUTE_IMAGE and self._image_model_missing:

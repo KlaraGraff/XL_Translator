@@ -12,7 +12,9 @@
 图像模型、原位替换不支持目标语言、转 Word 失败、本机没有 Word……）改用「保底
 方式」。
 
-页面类型只看 PDF 本身（页面尺寸、可见文字、矢量密度），不调用模型。
+页面类型只看 PDF 本身（可见文字、矢量密度、页面尺寸），不调用模型。先看内容再看尺寸
+（maple 2026-10-21）：扫描页不论多大都是扫描页；可提取文字的页放得进 Word 就按文字页
+处理；线条密集的图纸页，以及大到放不进 Word 的文字页，才算「图纸和大图」。
 """
 from __future__ import annotations
 
@@ -36,6 +38,13 @@ KIND_BLANK = "blank"
 _DRAWING_SLANTED_ITEMS = 1000
 _DRAWING_ITEMS = 8000
 _VISIBLE_MIN_CHARS = 20
+# Word 的页面最大 22 英寸（55.88 cm）。长边超过它的文字页转不了 Word，按图纸处理。
+WORD_MAX_PAGE_EDGE_PT = 22 * 72
+
+
+def exceeds_word_page(width_pt: float, height_pt: float) -> bool:
+    """这一页放不进 Word 的页面（A2 及更大的页都放不下）。"""
+    return max(float(width_pt), float(height_pt)) > WORD_MAX_PAGE_EDGE_PT + 0.5
 
 
 @dataclass
@@ -65,10 +74,21 @@ class DocumentKind:
         return asdict(self)
 
 
+def _kind_from_counts(page_number: int, *, oversized: bool, visible: int, has_ink: bool,
+                     words: int, items: int, slanted: int) -> PageKind:
+    """Content first, size second: see the module docstring."""
+    drawing = slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
+    if visible < _VISIBLE_MIN_CHARS:
+        # 没有看得见的文字：字画成线条的图纸（矢量密）还是图纸，其余是扫描件或空白页。
+        if drawing:
+            return PageKind(page_number, KIND_DRAWING, oversized, words, items, slanted)
+        return PageKind(page_number, KIND_SCAN if has_ink else KIND_BLANK, oversized, words, items, slanted)
+    kind = KIND_DRAWING if drawing or oversized else KIND_TEXT
+    return PageKind(page_number, kind, oversized, words, items, slanted)
+
+
 def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
-    """page: a PyMuPDF page."""
-    if oversized:
-        return PageKind(page_number, KIND_DRAWING, True)
+    """page: a PyMuPDF page.  ``oversized``: too large for a Word page (exceeds_word_page)."""
     visible = 0
     try:
         for span in page.get_texttrace():
@@ -77,23 +97,31 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
                 visible += len(span.get("chars", ()))
     except Exception:  # noqa: BLE001 - unreadable text layer counts as none
         visible = 0
-    if visible < _VISIBLE_MIN_CHARS:
-        has_ink = bool(page.get_images(full=False)) or bool(page.get_drawings())
-        return PageKind(page_number, KIND_SCAN if has_ink else KIND_BLANK, False)
     items = slanted = 0
+    drawings = []
     try:
-        for path in page.get_drawings():
+        drawings = page.get_drawings()
+        for path in drawings:
             for item in path["items"]:
                 items += 1
                 if item[0] == "c":
                     slanted += 1
                 elif item[0] == "l" and abs(item[1].x - item[2].x) > 0.5 and abs(item[1].y - item[2].y) > 0.5:
                     slanted += 1
+            if items >= _DRAWING_ITEMS or slanted >= _DRAWING_SLANTED_ITEMS:
+                break  # 已经够判成图纸了，大图纸不必数完
     except Exception:  # noqa: BLE001 - cannot read the vectors: judge by the text
         pass
-    words = sum(1 for word in page.get_text("words") if any(ch.isalpha() for ch in word[4]))
-    drawing = slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
-    return PageKind(page_number, KIND_DRAWING if drawing else KIND_TEXT, False, words, items, slanted)
+    has_ink = bool(drawings)
+    if visible < _VISIBLE_MIN_CHARS and not has_ink:
+        try:
+            has_ink = bool(page.get_images(full=False))
+        except Exception:  # noqa: BLE001
+            has_ink = False
+    words = (sum(1 for word in page.get_text("words") if any(ch.isalpha() for ch in word[4]))
+             if visible >= _VISIBLE_MIN_CHARS else 0)
+    return _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
+                             words=words, items=items, slanted=slanted)
 
 
 def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind:
@@ -106,8 +134,6 @@ def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind
 
     import pypdfium2.raw as pdfium_c
 
-    if oversized:
-        return PageKind(page_number, KIND_DRAWING, True)
     has_ink = False
     visible = items = slanted = curve_points = 0
     x, y = ctypes.c_float(), ctypes.c_float()
@@ -147,11 +173,9 @@ def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind
         text = textpage.get_text_bounded() if visible >= _VISIBLE_MIN_CHARS else ""
     finally:
         textpage.close()
-    if visible < _VISIBLE_MIN_CHARS:
-        return PageKind(page_number, KIND_SCAN if has_ink else KIND_BLANK, False)
     words = sum(1 for token in (text or "").split() if any(ch.isalpha() for ch in token))
-    drawing = slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
-    return PageKind(page_number, KIND_DRAWING if drawing else KIND_TEXT, False, words, items, slanted)
+    return _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
+                             words=words, items=items, slanted=slanted)
 
 
 def _classify_with_pdfium(path: str | Path, *, is_oversized) -> list[PageKind]:
@@ -175,7 +199,7 @@ def _classify_with_pdfium(path: str | Path, *, is_oversized) -> list[PageKind]:
 def classify_document(path: str | Path, *, is_oversized) -> DocumentKind:
     """Sort one PDF into text document / drawing / scan / mixed.
 
-    ``is_oversized(width_pt, height_pt)`` decides the large-format pages.
+    ``is_oversized(width_pt, height_pt)``: pages too large for Word (text there counts as a drawing).
     """
     from core.pdf_component import is_available, require_fitz
 
@@ -205,7 +229,7 @@ def page_route(pdf_settings, *, oversized_a3: bool, oversized: bool, page_kind: 
     """The preferred route of one page of a file that is handled page by page.
 
     oversized_a3: the fixed A3 test behind the original 「跳过 A3 及更大的页面」.
-    oversized:    the user's large-format threshold (A3/A2/A1/A0).
+    oversized:    too large for a Word page (exceeds_word_page).
     page_kind:    classify_page() of this page (text / drawing / scan / blank).
 
     Whether the preferred route can actually be used on this machine (image
@@ -214,7 +238,8 @@ def page_route(pdf_settings, *, oversized_a3: bool, oversized: bool, page_kind: 
     """
     route = getattr(pdf_settings, "translation_route", ROUTE_IMAGE)
     if route == "auto":
-        if oversized or page_kind == KIND_DRAWING:
+        # 先看内容再看尺寸：扫描页不论多大都按扫描页；文字页放不进 Word 才按图纸。
+        if page_kind == KIND_DRAWING or (page_kind == KIND_TEXT and oversized):
             return getattr(pdf_settings, "auto_drawing_route", ROUTE_INPLACE)
         if page_kind == KIND_TEXT:
             return getattr(pdf_settings, "auto_text_route", ROUTE_WORD)
