@@ -12,7 +12,7 @@
   "打开汇总": {"en": "Open summary", "fr": "Ouvrir le récapitulatif"},
   "打开复核材料": {"en": "Open review files", "fr": "Ouvrir les éléments à vérifier"},
   "打开本地结果": {"en": "Open local result", "fr": "Ouvrir le résultat local"},
-  "自动检测": {"en": "Auto-detect", "fr": "Détection automatique"},
+  "自动识别": {"en": "Auto-detect", "fr": "Détection automatique"},
   "未记录": {"en": "(not recorded)", "fr": "(non enregistré)"},
   "源文件旁边新建的输出文件夹": {"en": "New output folder next to the source files", "fr": "Nouveau dossier de sortie à côté des fichiers source"},
   "本次任务的输出文件夹": {"en": "This task's output folder", "fr": "Dossier de sortie de cette tâche"},
