@@ -98,3 +98,43 @@ jobs:
       - name: Download, verify, unpack and convert with ODA File Converter
         run: python scripts/oda_install_smoke.py
 
+
+  # 「PDF 处理组件」「文字识别组件」一键安装：从 PyPI / conda-forge 真下载、解压、试运行。
+  # 依赖外部网站，同样只在手动触发时跑；改了 core/component_download.py、
+  # core/pdf_component_install.py、core/ocr_component_install.py 时跑一遍。
+  # Windows 上模拟一台「干净」的电脑：系统目录里没有 VC++ 运行库，数据目录带中文和空格
+  # （英文系统的代码页写不出这几个字）。
+  component-install:
+    name: PDF / OCR one-click install (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-release-py311.txt
+      - name: Install dependencies
+        run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt
+      - name: Hide the VC++ runtime from System32
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($item in Get-ChildItem C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\concrt140.dll -ErrorAction SilentlyContinue) {
+            takeown /f $item.FullName | Out-Null
+            icacls $item.FullName /grant "Administrators:F" | Out-Null
+            Rename-Item $item.FullName "$($item.Name).hidden"
+          }
+          "TRANSLATOR_APP_DATA_DIR=$env:RUNNER_TEMP\用户 张三\Translator" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Download, verify, unpack and run both components
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/component_install_smoke.py

@@ -62,8 +62,17 @@ def _ocr() -> bool:
         print(f"[ocr] INSTALL FAILED: {exc}")
         return False
     print(f"[ocr] installed in {time.monotonic() - started:.0f}s: {info}")
+    # 再按 PDF 原位替换的调用方式认一行字（图片走 stdin，语言数据给相对路径）。
+    from PIL import Image, ImageDraw, ImageFont
+
+    from core.pdf_vector import extract
+
+    image = Image.new("L", (900, 160), 255)
+    ImageDraw.Draw(image).text((20, 40), "Plan de masse 2026", fill=0, font=ImageFont.load_default(size=56))
+    words = [word["text"] for word in extract._tess(image, "fra+eng", info["path"])]
+    print(f"[ocr] recognised: {words}")
     installer.uninstall()
-    return installer.installed_executable() is None
+    return "masse" in words and installer.installed_executable() is None
 
 
 def main(argv: list[str]) -> int:
