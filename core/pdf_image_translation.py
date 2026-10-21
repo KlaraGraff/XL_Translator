@@ -1105,7 +1105,8 @@ def write_pdf_manifest_and_report(
         json.dumps(_summary_to_manifest(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    report_path.write_text(_summary_to_report(summary), encoding="utf-8")
+    # 页面素材和报告写在同一个文件夹里（应用管理的任务是处理记录目录，不是输出目录）。
+    report_path.write_text(_summary_to_report(summary, output_dir), encoding="utf-8")
     return manifest_path, report_path
 
 
@@ -2765,6 +2766,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 raise ImageModelUnavailableError("PDF 与图片翻译模型的名称不能为空")
             if image_optional and model_config.mode == "cloud" and not model_config.api_key:
                 raise ImageModelUnavailableError("PDF 与图片翻译模型还没有填写 API 密钥")
+            # 自动组合时图像模型只是扫描页和保底用的：这套配置测过、没通过，就当没有，
+            # 那些页保留原样，不让每一页都去试一遍再报错（也省掉白花的请求费）。
+            if image_optional and model_config.availability_status == "unavailable":
+                raise ImageModelUnavailableError("PDF 与图片翻译模型的连接测试未通过")
         except ImageModelUnavailableError as exc:
             message = str(exc)
             if image_optional:
@@ -2937,12 +2942,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     )
 
             while True:
+                paused = False
                 if (
                     not self._stop_event.is_set()
                     and total_pages > 0
                     and self._has_unfinished_pages(file_records)
                 ):
-                    self._process_prepared_pages(
+                    paused = self._process_prepared_pages(
                         prepared_files,
                         max_attempts=max_attempts,
                         scheduler=scheduler,
@@ -2953,7 +2959,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         total_pages=total_pages,
                     )
 
-                if self._pause_event.is_set() and not self._stop_event.is_set():
+                # 页面循环是因为暂停才退出的，就一定回到暂停这一步，不能再看一遍暂停标志：
+                # 用户在这两步之间点了「继续」，标志已经清掉，会被当成「页都跑完了」直接
+                # 去生成文件，没翻的页就再也不翻了。
+                if (paused or self._pause_event.is_set()) and not self._stop_event.is_set():
                     if self._wait_while_paused():
                         # Every submitted page has settled by now and no new
                         # page is in flight, so this is the only point where a
@@ -3638,7 +3647,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         review_model_config,
         concurrency: int,
         total_pages: int,
-    ) -> None:
+    ) -> bool:
+        """Translate the pages not yet done; return True when it left because of a pause."""
         futures: dict[Any, tuple[_PreparedPdfFile, PdfPageRecord]] = {}
         max_pending = max(1, concurrency + PDF_PAGE_RENDER_AHEAD_COUNT)
         producer_done = False
@@ -3792,10 +3802,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                     completed=self._settled_file_page_count(prepared.record),
                                     total=prepared.record.page_count,
                                 )
-                        return
+                        return True
 
                     if not futures:
-                        break
+                        if producer_done or self._stop_event.is_set():
+                            break
+                        # 上面因为暂停没有再提交新页，可还没走到暂停检查用户就点了「继续」：
+                        # 回到循环开头接着提交，不能当成全部页面都处理完了退出。
+                        continue
 
                     done, _ = wait(
                         list(futures.keys()),
@@ -3868,6 +3882,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 也漏计。所以不论从哪条路离开，都在这里统一撤干净。
             self._discard_stopped_pages(prepared_files)
             wait_notice.stop()
+        return False
 
     @staticmethod
     def _page_render_phase(record: PdfFileRecord) -> str:

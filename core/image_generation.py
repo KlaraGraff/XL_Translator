@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,7 @@ from config import (
     PDF_ASPECT_RATIO_TOLERANCE,
     PDF_MIN_READABLE_LONG_EDGE_PX,
     PDF_MIN_READABLE_SHORT_EDGE_PX,
+    is_siliconflow_endpoint,
     normalize_cloud_base_url,
 )
 from core.model_roles import (
@@ -105,6 +107,13 @@ PDF_IMAGE_TRANSLATION_LANGUAGE_RULES: dict[str, str] = {
 PDF_IMAGE_TRANSLATION_PROMPT = PDF_IMAGE_TRANSLATION_BASE_PROMPT
 
 
+# 图像模型测试失败、看起来是模型选错时附在原因后面（maple 2026-10-21 定的说法）。
+IMAGE_MODEL_ADVICE = (
+    "PDF 与图片翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 "
+    "ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。"
+)
+
+
 class ImageModelUnavailableError(RuntimeError):
     """Raised for explicit model-level unavailability signals."""
 
@@ -163,6 +172,14 @@ class OpenAICompatibleImageGenerationClient:
             review_feedback=review_feedback,
             document_context=document_context,
         )
+        if is_siliconflow_endpoint(model_config.provider, base_url):
+            return _generate_page_with_siliconflow(
+                source_image_path=source_image_path,
+                prompt=prompt,
+                model_config=model_config,
+                base_url=base_url,
+                timeout_seconds=self.timeout_seconds,
+            )
         if _is_gpt_image_model(model_config.model):
             return _generate_page_with_images_edit(
                 source_image_path=source_image_path,
@@ -283,6 +300,69 @@ def _generate_page_with_images_edit(
         f"{_actual_vs_requested_size_log(requested_size, image_bytes)}"
     )
     return image_bytes
+
+
+def _generate_page_with_siliconflow(
+    *,
+    source_image_path: Path,
+    prompt: str,
+    model_config: EffectiveModelConfig,
+    base_url: str,
+    timeout_seconds: float,
+) -> bytes:
+    """硅基流动没有 OpenAI 的 ``/responses`` 和 ``/images/edits``，图像编辑走它自己的
+    ``/images/generations``：原图以 data URL 放进 ``image`` 字段，返回的是一小时内有效的
+    图片链接（没有 base64），所以要再下载一次。
+
+    不传 ``image_size``：Qwen-Image-Edit 系列不认这个字段，输出跟随原图比例，
+    质检那边按「未协商尺寸」处理（见 ``pdf_page_request_size``）。
+    """
+    payload = {
+        "model": model_config.model,
+        "prompt": prompt,
+        "image": _image_data_url(source_image_path),
+    }
+    headers = {
+        "Authorization": f"Bearer {model_config.api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=timeout_seconds) as client:
+            response = client.post(f"{base_url}/images/generations", headers=headers, json=payload)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise _image_edit_http_error(exc) from exc
+            response_payload = response.json()
+            image_bytes = _extract_image_bytes(response_payload)
+            if not image_bytes:
+                image_url = _first_image_url(response_payload)
+                if image_url:
+                    download = client.get(image_url)
+                    download.raise_for_status()
+                    image_bytes = download.content
+    except Exception as exc:  # noqa: BLE001 - caller classifies page/model errors.
+        if is_model_unavailable_error(exc):
+            raise ImageModelUnavailableError(str(exc)) from exc
+        raise
+    if not image_bytes:
+        raise ValueError("图像生成接口已响应，但没有返回可用图片。")
+    return image_bytes
+
+
+def _first_image_url(payload: Any) -> str:
+    """``{"images": [{"url": ...}]}``（硅基流动）或 ``{"data": [{"url": ...}]}``（OpenAI 风格）。"""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("images", "data"):
+        items = payload.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            url = item.get("url") if isinstance(item, dict) else item
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                return url
+    return ""
 
 
 def _post_images_edit(
@@ -423,6 +503,7 @@ def check_image_generation_connectivity(
         test_image = Path(tmp) / "image_connectivity_test.png"
         Image.new("RGB", (64, 64), "white").save(test_image, format="PNG")
         last_error = ""
+        last_exc: BaseException | None = None
         for attempt in range(1, max(1, int(max_attempts)) + 1):
             try:
                 image_bytes = client.generate_page(
@@ -444,6 +525,7 @@ def check_image_generation_connectivity(
                 return ImageConnectivityResult(True, message)
             except Exception as exc:  # noqa: BLE001 - retry and report all image errors.
                 last_error = _sanitize_error(exc)
+                last_exc = exc
 
     # 设置页只给人话；原始报错（httpx 的英文、服务商的 JSON 报文）进调试日志，
     # 同时留在结果的 detail 里，不进存盘的那句说明。和 pdf_review 的连接测试一致。
@@ -453,6 +535,12 @@ def check_image_generation_connectivity(
         fallback="图像模型未正常响应，请检查该连接的地址、API 密钥和模型名称。",
     )
     message = f"{config.label}连接测试失败：{reason}"
+    status = "failed"
+    if last_exc is not None and looks_like_wrong_image_model(last_exc):
+        # 原因那句（多半是「未正常响应，请检查地址、密钥和模型名称」）对这种情况没帮助，
+        # 直接说清楚要换什么模型。
+        message = f"{config.label}连接测试失败：{IMAGE_MODEL_ADVICE}"
+        status = "wrong_model"
     record_image_model_availability(
         settings,
         ok=False,
@@ -461,7 +549,40 @@ def check_image_generation_connectivity(
         checked_at=_now_iso(),
         connection_id=connection_id,
     )
-    return ImageConnectivityResult(False, message, detail=last_error, status="failed")
+    return ImageConnectivityResult(False, message, detail=last_error, status=status)
+
+
+def looks_like_wrong_image_model(exc: BaseException) -> bool:
+    """接口通了、密钥也认，但这个模型给不出图：多半是填了文字模型。
+
+    密钥/额度/网络问题不算——那时换模型没用，提示只会把人带偏。
+    """
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and len(chain) < 5:  # 包装过的报错要看原始那一层
+        chain.append(current)
+        current = current.__cause__
+    if any(isinstance(item, ValueError) and "没有返回可用图片" in str(item) for item in chain):
+        return True
+    if any(isinstance(item, (httpx.TransportError, TimeoutError)) for item in chain):
+        return False
+    # 只看最里层的原始报错：外面包的那句是给人看的总结（「请检查密钥、模型和额度」），
+    # 里面的词会误中下面的密钥/额度判断。
+    text = _exception_text(chain[-1]).lower()
+    # 硅基流动拿文字模型调 /images/generations 回的是 403 + 「Illegal operation.」（code 30000），
+    # 不是密钥问题：同一密钥换改图模型就通过（2026-10-21 实测）。
+    if "illegal operation" in text:
+        return True
+    if re.search(r"\b(401|402|403)\b", text) or any(marker in text for marker in _CREDENTIAL_MARKERS):
+        return False
+    return bool(re.search(r"\b(400|404|415|422)\b", text))
+
+
+_CREDENTIAL_MARKERS = (
+    "invalid api key", "incorrect api key", "unauthorized",
+    "token is invalid", "invalid token", "authentication", "forbidden",
+    "insufficient_quota", "quota", "billing", "balance", "余额", "额度", "欠费", "未授权",
+)
 
 
 def is_model_unavailable_error(exc: BaseException) -> bool:

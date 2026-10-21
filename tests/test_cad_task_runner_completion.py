@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from pathlib import Path
@@ -227,6 +228,33 @@ def test_cad_stop_while_paused_inside_a_drawing_sends_no_new_requests(tmp_path, 
     assert sent == ["batch-1"]
     stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
     assert all(item.get("status") == "stopped" for item in stopped.files)
+
+
+def test_cad_every_pause_announces_itself_even_when_resume_races_the_first(tmp_path, monkeypatch):
+    """界面要等到「已暂停」这句才让人点继续。「继续」恰好落在第一次说出这句之后、
+    记下「已说过」之前时，以前第二次暂停就不再说，任务一直停在「正在暂停」。"""
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    runner, _sent = _batched_runner(tmp_path)
+    announced: list[str] = []
+
+    class _ResumeOnAnnounce:
+        def put(self, message) -> None:
+            announced.append(message.phase_desc)
+            if len(announced) == 1:
+                runner.resume()
+
+    runner._queue = _ResumeOnAnnounce()
+    runner.pause()
+    runner._wait_while_paused("first")
+    runner.pause()
+    waiter = threading.Thread(target=runner._wait_while_paused, args=("second",), daemon=True)
+    waiter.start()
+    deadline = time.monotonic() + 3
+    while len(announced) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    runner.resume()
+    waiter.join(3)
+    assert announced == ["first", "second"]
 
 
 def test_cad_issues_say_needs_review_like_the_file_status(tmp_path, monkeypatch):

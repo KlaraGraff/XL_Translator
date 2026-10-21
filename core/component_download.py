@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import shutil
 import threading
+import time
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -18,6 +20,8 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 from loguru import logger
+
+from core import system_proxy
 
 _CHUNK = 256 * 1024
 _TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=15.0)
@@ -54,6 +58,60 @@ def pypi_file(name: str, path: str, size: int, sha256: str) -> RemoteFile:
     return RemoteFile(name, tuple(host + path for host in PYPI_HOSTS), size, sha256)
 
 
+# Windows 上杀毒软件会在文件刚写完时打开它扫描，这一两秒里改名会被拒绝（WinError 5 / 32）。
+_REPLACE_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def replace_file(source: Path, target: Path) -> None:
+    """``os.replace``；Windows 上被占用时等一会儿再试，一共等十几秒。"""
+    for delay in (*_REPLACE_RETRY_DELAYS, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if delay is None or os.name != "nt":
+                raise
+            logger.debug(f"[组件安装] {target.name} 暂时无法改名，稍后再试：{exc!r}")
+            time.sleep(delay)
+
+
+def open_client() -> httpx.Client:
+    """下载用的客户端，跟随系统代理。
+
+    系统代理是 httpx 用不了的类型时（Windows「Internet 选项」里填的 SOCKS 代理会被读成
+    socks4://，环境变量里的 socks5:// 需要另装 socksio）建客户端就会出错：改为直连。
+    """
+    try:
+        return httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+    except (ValueError, ImportError) as exc:
+        logger.warning(f"[组件安装] 系统代理无法使用，改为直连下载：{exc}")
+        return direct_client()
+
+
+def direct_client() -> httpx.Client:
+    return httpx.Client(timeout=_TIMEOUT, follow_redirects=True, trust_env=False)
+
+
+class _DirectFallback:
+    """经系统代理连不上时（代理软件已退出、代理设置还在），同一个地址直连再试一次。"""
+
+    def __init__(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._client: httpx.Client | None = None
+
+    def wanted(self, exc: BaseException, url: str) -> bool:
+        return self._enabled and system_proxy.should_retry_direct(exc, url)
+
+    def client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = direct_client()
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -62,11 +120,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verified(path: Path, item: RemoteFile) -> bool:
+def file_matches(path: Path, size: int, sha256: str) -> bool:
     try:
-        return path.stat().st_size == item.size and _sha256(path) == item.sha256
+        return path.stat().st_size == size and _sha256(path) == sha256
     except OSError:
         return False
+
+
+def _verified(path: Path, item: RemoteFile) -> bool:
+    return file_matches(path, item.size, item.sha256)
 
 
 def download_files(
@@ -83,59 +145,74 @@ def download_files(
     done = 0
     paths: list[Path] = []
     own_client = client is None
-    http = client or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+    http = client or open_client()
+    direct = _DirectFallback(own_client)
     try:
         for item in items:
             path = target_dir / item.name
             if not _verified(path, item):
-                _download_one(http, item, path, done, total, progress, cancel)
+                _download_one(http, direct, item, path, done, total, progress, cancel)
             done += item.size
             if progress:
                 progress(done, total)
             paths.append(path)
     finally:
+        direct.close()
         if own_client:
             http.close()
     return paths
 
 
-def _download_one(http: httpx.Client, item: RemoteFile, path: Path, base: int, total: int,
-                  progress: ProgressFn | None, cancel: threading.Event | None) -> None:
+def _fetch(http: httpx.Client, url: str, item: RemoteFile, partial: Path, base: int, total: int,
+           progress: ProgressFn | None, cancel: threading.Event | None) -> tuple[int, str]:
+    """下载到 partial；返回 (字节数, SHA-256)。"""
+    received = 0
+    digest = hashlib.sha256()
+    with http.stream("GET", url) as response:
+        response.raise_for_status()
+        with partial.open("wb") as handle:
+            for chunk in response.iter_bytes(_CHUNK):
+                if cancel is not None and cancel.is_set():
+                    raise ComponentDownloadCancelled("安装已取消。")
+                handle.write(chunk)
+                digest.update(chunk)
+                received += len(chunk)
+                if received > item.size:
+                    raise ComponentDownloadError("downloaded more bytes than expected")
+                if progress:
+                    progress(base + received, total)
+    return received, digest.hexdigest()
+
+
+def _download_one(http: httpx.Client, direct: _DirectFallback, item: RemoteFile, path: Path, base: int,
+                  total: int, progress: ProgressFn | None, cancel: threading.Event | None) -> None:
     partial = path.with_name(path.name + ".part")
     last_error = ""
     for url in item.urls:
         if cancel is not None and cancel.is_set():
             raise ComponentDownloadCancelled("安装已取消。")
-        received = 0
-        digest = hashlib.sha256()
         try:
-            with http.stream("GET", url) as response:
-                response.raise_for_status()
-                with partial.open("wb") as handle:
-                    for chunk in response.iter_bytes(_CHUNK):
-                        if cancel is not None and cancel.is_set():
-                            raise ComponentDownloadCancelled("安装已取消。")
-                        handle.write(chunk)
-                        digest.update(chunk)
-                        received += len(chunk)
-                        if received > item.size:
-                            raise ComponentDownloadError("downloaded more bytes than expected")
-                        if progress:
-                            progress(base + received, total)
+            try:
+                received, sha256 = _fetch(http, url, item, partial, base, total, progress, cancel)
+            except httpx.HTTPError as exc:
+                if not direct.wanted(exc, url):
+                    raise
+                logger.warning(f"[组件安装] 经系统代理连不上，改为直连再试：{url}: {exc!r}")
+                received, sha256 = _fetch(direct.client(), url, item, partial, base, total, progress, cancel)
         except ComponentDownloadCancelled:
             partial.unlink(missing_ok=True)
             raise
         except (httpx.HTTPError, OSError, ComponentDownloadError) as exc:
-            last_error = f"{url}: {exc}"
+            last_error = f"{url}: {exc!r}"
             logger.warning(f"[组件安装] 下载失败，换下一个下载源：{last_error}")
             partial.unlink(missing_ok=True)
             continue
-        if received != item.size or digest.hexdigest() != item.sha256:
+        if received != item.size or sha256 != item.sha256:
             last_error = f"{url}: size or SHA-256 mismatch"
             logger.warning(f"[组件安装] 文件核对未通过，换下一个下载源：{last_error}")
             partial.unlink(missing_ok=True)
             continue
-        partial.replace(path)
+        replace_file(partial, path)
         return
     logger.warning(f"[组件安装] {item.name} 所有下载源都失败：{last_error}")
     raise ComponentDownloadError("组件下载失败，请检查网络连接。")
@@ -197,7 +274,7 @@ def _write_member(source, destination: Path, executable: bool) -> None:
         shutil.copyfileobj(source, handle, _CHUNK)
     if executable:
         temporary.chmod(0o755)
-    temporary.replace(destination)
+    replace_file(temporary, destination)
 
 
 def extract_tar_zst(stream, target: Path, files: dict[str, str],
@@ -323,27 +400,39 @@ def stream_conda_files(
     """
     limit = min(data_size, max_bytes)
     own_client = client is None
-    http = client or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+    http = client or open_client()
+    direct = _DirectFallback(own_client)
+    headers = {"Range": f"bytes={data_offset}-{data_offset + limit - 1}"}
+
+    def fetch(session: httpx.Client, url: str) -> None:
+        with session.stream("GET", url, headers=headers) as response:
+            if response.status_code not in (200, 206):
+                raise ComponentDownloadError(f"HTTP {response.status_code}")
+            stream = _RangeStream(response, data_offset, limit, progress, cancel)
+            extract_tar_zst(stream, target, files, hashes)
+
     last_error = ""
     try:
         for url in item.urls:
             if cancel is not None and cancel.is_set():
                 raise ComponentDownloadCancelled("安装已取消。")
-            headers = {"Range": f"bytes={data_offset}-{data_offset + limit - 1}"}
             try:
-                with http.stream("GET", url, headers=headers) as response:
-                    if response.status_code not in (200, 206):
-                        raise ComponentDownloadError(f"HTTP {response.status_code}")
-                    stream = _RangeStream(response, data_offset, limit, progress, cancel)
-                    extract_tar_zst(stream, target, files, hashes)
-                    return
+                try:
+                    fetch(http, url)
+                except httpx.HTTPError as exc:
+                    if not direct.wanted(exc, url):
+                        raise
+                    logger.warning(f"[组件安装] 经系统代理连不上，改为直连再试：{url}: {exc!r}")
+                    fetch(direct.client(), url)
+                return
             except ComponentDownloadCancelled:
                 raise
             except (httpx.HTTPError, OSError, ComponentDownloadError) as exc:
-                last_error = f"{url}: {exc}"
+                last_error = f"{url}: {exc!r}"
                 logger.warning(f"[组件安装] 下载失败，换下一个下载源：{last_error}")
                 continue
     finally:
+        direct.close()
         if own_client:
             http.close()
     logger.warning(f"[组件安装] {item.name} 所有下载源都失败：{last_error}")

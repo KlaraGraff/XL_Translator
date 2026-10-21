@@ -7,7 +7,8 @@ usual install locations. This module lives under ``core`` and must never
 import from ``api``.
 
 The one-click install keeps its language data next to the program, so every
-call to it must carry ``tesseract_env(exe)`` (TESSDATA_PREFIX).
+call to it must carry ``**tesseract_options(exe)`` (TESSDATA_PREFIX and the
+working directory it is relative to).
 """
 from __future__ import annotations
 
@@ -77,16 +78,30 @@ def _known_locations() -> list[Path]:
     return [Path("/usr/bin/tesseract")]
 
 
-def tesseract_env(path: Path | str | None) -> dict[str, str] | None:
-    """调用 tesseract 时要用的环境变量；一键安装的版本要指明语言数据目录，其余用 None（照常继承）。"""
+def tesseract_options(path: Path | str | None) -> dict[str, Any]:
+    """调用 tesseract 时 ``subprocess.run`` 要加的 env / cwd；用户自己装的照常继承，返回 {}。
+
+    一键安装的版本要指明语言数据目录。Windows 上 tesseract 按系统代码页读 TESSDATA_PREFIX，
+    路径里有代码页以外的字（比如英文系统上的中文用户名）时就找不到语言数据：在组件目录里
+    运行、给相对路径。要识别的图片也别用路径传，用 stdin（见 ``ocr_image_bytes``）。
+    """
     if not path:
-        return None
+        return {}
     from core.ocr_component_install import tessdata_dir
 
     tessdata = tessdata_dir(Path(path))
     if tessdata is None:
-        return None
-    return {**os.environ, "TESSDATA_PREFIX": str(tessdata)}
+        return {}
+    return {"env": {**os.environ, "TESSDATA_PREFIX": tessdata.name}, "cwd": str(tessdata.parent)}
+
+
+def png_bytes(image: Any) -> bytes:
+    """PIL 图片转成 PNG，交给 ``tesseract stdin ...`` 识别（不经临时文件的路径）。"""
+    import io
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def tesseract_version(path: Path) -> str | None:
@@ -99,7 +114,7 @@ def tesseract_version(path: Path) -> str | None:
             timeout=_SUBPROCESS_TIMEOUT,
             check=False,
             creationflags=_NO_WINDOW,
-            env=tesseract_env(path),
+            **tesseract_options(path),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -122,7 +137,7 @@ def tesseract_languages(path: Path) -> list[str]:
             timeout=_SUBPROCESS_TIMEOUT,
             check=False,
             creationflags=_NO_WINDOW,
-            env=tesseract_env(path),
+            **tesseract_options(path),
         )
     except (OSError, subprocess.SubprocessError):
         return []

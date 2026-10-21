@@ -19,7 +19,6 @@ import os
 import re
 import statistics
 import subprocess
-import tempfile
 import threading
 from collections.abc import Callable
 from difflib import SequenceMatcher
@@ -27,7 +26,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from core.ocr_engine import tesseract_env
+from core.ocr_engine import png_bytes, tesseract_options
 
 from .common import fitz, norm_text, sha256, write_json
 
@@ -80,14 +79,11 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 
 
 
 def _tess(img: Image.Image, langs: str, exe: str = "tesseract") -> list[dict]:
-    with tempfile.TemporaryDirectory() as td:
-        f = Path(td) / "t.png"
-        img.save(f)
-        res = subprocess.run([exe, str(f), "stdout", "--psm", "11", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
-                             env=tesseract_env(exe),
-                             capture_output=True, text=True)
+    # 图片从 stdin 给：Windows 上 tesseract 按系统代码页读路径，临时目录在中文用户名下时会找不到。
+    res = subprocess.run([exe, "stdin", "stdout", "--psm", "11", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
+                         input=png_bytes(img), capture_output=True, **tesseract_options(exe))
     words = []
-    for line in res.stdout.splitlines()[1:]:
+    for line in res.stdout.decode("utf-8", "replace").splitlines()[1:]:
         a = line.split("\t")
         if len(a) < 12 or not a[11].strip() or float(a[10]) < 0:
             continue
@@ -719,14 +715,10 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
             seen_bands.append(band)
             clip = fitz.Rect([v * 72 / dpi for v in (gb.x0 - 4, gb.y0 - 4, gb.x1 + 4, gb.y1 + 4)]) * page.derotation_matrix
             img = _render_paths(page, [d for _, d in glyphs], clip, 2 * dpi / 72)
-            with tempfile.TemporaryDirectory() as td:
-                f = Path(td) / "l.png"
-                img.save(f)
-                res = subprocess.run([exe, str(f), "stdout", "--psm", "7", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
-                                     env=tesseract_env(exe),
-                                     capture_output=True, text=True)
+            res = subprocess.run([exe, "stdin", "stdout", "--psm", "7", "-l", langs, "tsv"], creationflags=_NO_WINDOW,
+                                 input=png_bytes(img), capture_output=True, **tesseract_options(exe))
             words = []
-            for line in res.stdout.splitlines()[1:]:
+            for line in res.stdout.decode("utf-8", "replace").splitlines()[1:]:
                 a = line.split("\t")
                 if len(a) >= 12 and a[11].strip() and float(a[10]) >= 0:
                     words.append((a[11], float(a[10]) / 100))

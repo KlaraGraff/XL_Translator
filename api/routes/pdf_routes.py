@@ -20,6 +20,11 @@ def route_capabilities() -> dict[str, Any]:
     try:
         _validate_image_model(settings)
         image_ready, image_message = True, ""
+        # 测过、没通过的图像模型按「没有」算，和任务里一样（见 PdfImageTranslationRunner）。
+        from core.model_roles import ROLE_IMAGE, resolve_effective_model_config
+
+        if resolve_effective_model_config(settings, ROLE_IMAGE).availability_status == "unavailable":
+            image_ready, image_message = False, "PDF 与图片翻译模型的连接测试未通过。"
     except TaskInputError as exc:
         image_ready, image_message = False, str(exc)
     word_component = word_route_available()
