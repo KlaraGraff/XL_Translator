@@ -329,6 +329,9 @@ def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
     )
 
 
+REVIEW_MODEL_ADVICE = "PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。"
+
+
 def check_pdf_review_connectivity(
     settings: AppSettings,
     *,
@@ -390,7 +393,8 @@ def check_pdf_review_connectivity(
 
     message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
     if last_exc is not None and looks_like_wrong_image_model(last_exc):
-        message = f"{message.rstrip('。')}。PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。"
+        # 整句换掉：原来那句「请检查接口地址、API 密钥和模型名称」会把人引去查密钥。
+        message = f"{config.label}连接测试失败：{REVIEW_MODEL_ADVICE}"
     record_pdf_review_model_availability(
         settings,
         ok=False,

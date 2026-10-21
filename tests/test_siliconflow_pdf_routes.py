@@ -25,7 +25,12 @@ from core.image_generation import (
     check_image_generation_connectivity,
 )
 from core.model_roles import ROLE_IMAGE, ROLE_PDF_REVIEW, SOURCE_INDEPENDENT, EffectiveModelConfig
-from core.pdf_review import OpenAICompatiblePdfReviewClient, check_pdf_review_connectivity, review_routes
+from core.pdf_review import (
+    REVIEW_MODEL_ADVICE,
+    OpenAICompatiblePdfReviewClient,
+    check_pdf_review_connectivity,
+    review_routes,
+)
 from settings import AppSettings
 
 IMAGE_MODELS = {"Qwen/Qwen-Image-Edit-2509"}
@@ -75,7 +80,8 @@ class _FakeSiliconFlow(BaseHTTPRequestHandler):
         model = payload.get("model")
         if self.path == "/v1/images/generations":
             if model not in IMAGE_MODELS:
-                self._send_json(400, {"code": 20015, "message": "Model is not supported for this API"})
+                # 真实硅基流动（2026-10-21 实测）：文字模型调这个接口回 403 而不是 400。
+                self._send_json(403, {"code": 30000, "message": "Illegal operation.", "data": None})
                 return
             if not str(payload.get("image", "")).startswith("data:image/png;base64,"):
                 self._send_json(400, {"message": "image is required"})
@@ -87,7 +93,8 @@ class _FakeSiliconFlow(BaseHTTPRequestHandler):
             content = payload["messages"][-1]["content"]
             has_image = isinstance(content, list) and any(part.get("type") == "image_url" for part in content)
             if has_image and model not in VISION_MODELS:
-                self._send_json(400, {"message": "This model does not support image input"})
+                # 真实硅基流动（2026-10-21 实测）的原话。
+                self._send_json(400, {"code": 20041, "message": "The model is not a VLM (Vision Language Model). Please use text-only prompts.", "data": None})
                 return
             answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
             self._send_json(200, {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": answer}}]})
@@ -234,7 +241,7 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
         with patch("core.model_roles.get_key", return_value="sk-test"):
             result = check_pdf_review_connectivity(settings, max_attempts=1)
         self.assertFalse(result.ok)
-        self.assertIn("支持图片输入的模型", result.message)
+        self.assertEqual(result.message, f"PDF 与图片审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
 
     def test_route_panel_treats_a_failed_image_model_as_missing(self) -> None:
         # 自动组合：图像模型测过、没通过，就和没设置一样，扫描页与保底页保留原样。

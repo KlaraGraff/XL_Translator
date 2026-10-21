@@ -272,7 +272,10 @@ class ModelCatalogTests(unittest.TestCase):
 
     def test_siliconflow_lists_only_models_that_fit_the_role(self) -> None:
         # 硅基流动的 /models 默认把文字、图片、语音模型混在一起；PDF 与图片翻译只列改图模型。
-        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "Qwen/Qwen-Image-Edit-2509"}]}))
+        # type=image 里还有只能文字生图的（2026-10-21 真实接口返回的 6 个），本地再筛掉。
+        image_models = ["Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image", "Qwen/Qwen-Image-Edit-2509",
+                        "Qwen/Qwen-Image-Edit", "Qwen/Qwen-Image", "Kwai-Kolors/Kolors"]
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": model} for model in image_models]}))
         with self._patch_client(fake_client):
             image = fetch_openai_compatible_models(
                 provider="siliconflow", api_key="k", base_url="", capability="image",
@@ -281,10 +284,20 @@ class ModelCatalogTests(unittest.TestCase):
                 provider="siliconflow", api_key="k", base_url="", capability="text",
             )
         self.assertTrue(image.ok and text.ok)
+        self.assertEqual(image.models, ["Qwen/Qwen-Image-Edit-2509", "Qwen/Qwen-Image-Edit"])
         self.assertEqual(fake_client.get_calls[0]["url"], "https://api.siliconflow.cn/v1/models")
-        self.assertEqual(fake_client.get_calls[0]["params"], {"sub_type": "image-to-image"})
+        # sub_type=image-to-image 在真实接口上返回 data: null。
+        self.assertEqual(fake_client.get_calls[0]["params"], {"type": "image"})
         # 用途不同，缓存也分开：文字用途不能拿到图片模型的列表。
         self.assertEqual(fake_client.get_calls[1]["params"], {"sub_type": "chat"})
+
+    def test_siliconflow_image_list_falls_back_when_no_name_says_edit(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "Vendor/New-Image-Model"}]}))
+        with self._patch_client(fake_client):
+            image = fetch_openai_compatible_models(
+                provider="siliconflow", api_key="k", base_url="", capability="image",
+            )
+        self.assertEqual(image.models, ["Vendor/New-Image-Model"])
 
     def test_providers_without_base_url_and_claude_can_list_models(self) -> None:
         fake_client = _FakeClient(_FakeResponse({"data": [{"id": "m"}]}))

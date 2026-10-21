@@ -569,6 +569,10 @@ def looks_like_wrong_image_model(exc: BaseException) -> bool:
     # 只看最里层的原始报错：外面包的那句是给人看的总结（「请检查密钥、模型和额度」），
     # 里面的词会误中下面的密钥/额度判断。
     text = _exception_text(chain[-1]).lower()
+    # 硅基流动拿文字模型调 /images/generations 回的是 403 + 「Illegal operation.」（code 30000），
+    # 不是密钥问题：同一密钥换改图模型就通过（2026-10-21 实测）。
+    if "illegal operation" in text:
+        return True
     if re.search(r"\b(401|402|403)\b", text) or any(marker in text for marker in _CREDENTIAL_MARKERS):
         return False
     return bool(re.search(r"\b(400|404|415|422)\b", text))

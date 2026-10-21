@@ -19,10 +19,10 @@ from config import (
 
 DEFAULT_MODEL_LIST_TIMEOUT_SECONDS = 12.0
 # 硅基流动的 /models 默认把文字、图片、语音、视频模型混在一起列。按用途只列能用的：
-# PDF 与图片翻译要「改图」的模型（image-to-image），审核要能对话的模型（chat，含视觉模型）。
-# 不在表里的用途/服务商照旧拉全量。
+# PDF 与图片翻译要图片模型（type=image；实测 sub_type=image-to-image 返回 data: null），
+# 审核要能对话的模型（chat，含视觉模型）。不在表里的用途/服务商照旧拉全量。
 PROVIDER_CAPABILITY_MODEL_FILTERS: dict[tuple[str, str], dict[str, str]] = {
-    ("siliconflow", "image"): {"sub_type": "image-to-image"},
+    ("siliconflow", "image"): {"type": "image"},
     ("siliconflow", "vision_text"): {"sub_type": "chat"},
     ("siliconflow", "text"): {"sub_type": "chat"},
 }
@@ -229,6 +229,19 @@ def fetch_ollama_models(
     return result
 
 
+def _narrow_models(provider: str, capability: str, models: list[str]) -> list[str]:
+    """服务端筛不细的再在本地筛一遍。
+
+    硅基流动 type=image 里混着只能「文字生图」的模型（Qwen-Image、Z-Image、Kolors），
+    整页翻译要把原图交给它改，只有改图模型（名字带 Edit）用得上。一个都对不上时
+    原样返回，免得服务商改了命名后列表变空。
+    """
+    if provider == "siliconflow" and capability == "image":
+        editing = [model for model in models if "edit" in model.lower()]
+        return editing or models
+    return models
+
+
 def fetch_openai_compatible_models(
     *,
     provider: str,
@@ -307,7 +320,7 @@ def fetch_openai_compatible_models(
             detail=url,
         )
 
-    models = _extract_model_ids(payload)
+    models = _narrow_models(provider_name, capability, _extract_model_ids(payload))
     if not models:
         return ModelCatalogResult(
             ok=False,
