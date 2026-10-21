@@ -137,6 +137,30 @@ class ChineseToFrenchTests(_PageCase):
         self.assertEqual(result.review, 1)
         self.assertEqual(result.review_items[0]["reason"], "译文中仍有原文")
 
+    def test_removing_a_label_leaves_the_code_right_above_it(self):
+        # 型号和容量叠得很紧（行距小于字框高）：换掉「500门」不能把上一行型号的字一起删掉
+        def build(page):
+            page.insert_font(fontname="zh", fontfile=str(find_cjk_font()))
+            page.insert_text((100, 100), "5*TN3000", fontsize=10)
+            page.insert_text((100, 108), "500门", fontname="zh", fontsize=10)
+
+        result, _prompts = self._run(build, {"500门": "Capacité : 500"}, "fr")
+        self.assertEqual(result.written, 1, result.review_items)
+        with fitz.open(result.output_pdf) as out:
+            text = out[0].get_text()
+        self.assertIn("5*TN3000", text)
+        self.assertIn("Capacité : 500", text)
+        self.assertNotIn("门", text)
+
+    def test_dates_written_with_month_names_are_written(self):
+        def build(page):
+            page.insert_font(fontname="zh", fontfile=str(find_cjk_font()))
+            page.insert_text((60, 100), "2026年3月24日", fontname="zh", fontsize=10)
+            page.insert_text((60, 160), "2026年4月1日", fontname="zh", fontsize=10)
+
+        result, _prompts = self._run(build, {"2026年3月24日": "24 mars 2026", "2026年4月1日": "1er avril 2026"}, "fr")
+        self.assertEqual(result.written, 2, result.review_items)
+
     def test_chinese_target_keeps_chinese_labels(self):
         result, _prompts = self._run(self._build, ZH_FR, "zh")
         self.assertEqual(result.written, 0)
@@ -242,6 +266,21 @@ class ClassifyTests(unittest.TestCase):
                                   source_lang="zh", target_lang="fr")
         self.assertEqual(rows[0]["translation"], "Fosse")   # hooks without the keyword still work
 
+    def test_dates_count_as_day_month_year_however_written(self):
+        def outcome(source, translation):
+            rows = [self._row(source)]
+            ct.classify_and_translate(rows, translate=lambda texts, _p: {t: translation for t in texts},
+                                      source_lang="zh", target_lang="fr")
+            return rows[0]["decision"], rows[0]["decision_reason"]
+
+        for translation in ("24 mars 2026", "24/03/2026", "24.03.2026", "March 24, 2026", "2026-03-24"):
+            self.assertEqual(outcome("2026年3月24日", translation), ("write", "model_translation"), translation)
+        # a wrong day or month is still caught
+        self.assertEqual(outcome("2026年3月24日", "25 mars 2026"), ("review", "numeric_mismatch"))
+        self.assertEqual(outcome("2026年3月24日", "24 avril 2026"), ("review", "numeric_mismatch"))
+        # a word that only looks like a month counts only next to a number
+        self.assertEqual(numbers("Le mur mai", dates=True), [])
+
     def test_target_name_in_the_prompt(self):
         self.assertEqual(ct.target_language_name("zh"), "简体中文")
         self.assertEqual(ct.target_language_name("fr"), "法文")
@@ -267,6 +306,10 @@ class LanguageAndFontTests(unittest.TestCase):
         self.assertTrue(looks_serif("SimSun"))
         self.assertFalse(looks_serif("ArialMT"))
         self.assertFalse(looks_serif("romans"))       # AutoCAD's single-stroke Roman Simplex is a sans
+        # subset fonts named only 「CIDFont+F1」 go by the font's serif flag; a known name wins
+        self.assertTrue(looks_serif("CIDFont+F1", 4))
+        self.assertFalse(looks_serif("CIDFont+F1", 0))
+        self.assertFalse(looks_serif("ArialMT", 4))
         self.assertTrue(looks_bold("Arial-BoldMT"))
         self.assertTrue(looks_bold("SimHei", 16))
         self.assertFalse(looks_bold("SimHei"))

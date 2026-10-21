@@ -321,12 +321,63 @@ def _passes(rects):
     return groups
 
 
-def apply_removal(page, rows, dpi, protect=None):
+def _clear_of_kept_text(disp, lb, rot, kept, dpi):
+    """``disp`` (display px) pulled back off kept text lines it reaches into.
+
+    MuPDF drops every glyph a text redaction touches, so on tightly stacked lines
+    (or a label set right against a type code) the full line box of a replaced
+    row also took letters of the line above or beside it: 「500门」 under
+    「5*TN3000」 left only 「5」「0」 of the code.  The rectangle may shrink back
+    to the middle of its own line; any glyph of its own still touches that, so
+    the row's text is still removed whole."""
+    x0, y0, x1, y1 = disp
+    eps = 0.3 * dpi / 72.0
+    horizontal = rot % 180 == 0
+    # cross axis: across the line; along axis: the reading direction
+    c0, c1 = (lb[1], lb[3]) if horizontal else (lb[0], lb[2])
+    a0, a1 = (lb[0], lb[2]) if horizontal else (lb[1], lb[3])
+    core0, core1 = c0 + 0.3 * (c1 - c0), c1 - 0.3 * (c1 - c0)
+    ends0, ends1 = a0 + 0.15 * (c1 - c0), a1 - 0.15 * (c1 - c0)
+    lo_c, hi_c = (y0, y1) if horizontal else (x0, x1)
+    lo_a, hi_a = (x0, x1) if horizontal else (y0, y1)
+    for k in kept:
+        if k[0] >= x1 or k[2] <= x0 or k[1] >= y1 or k[3] <= y0:
+            continue
+        k_c0, k_c1 = (k[1], k[3]) if horizontal else (k[0], k[2])
+        k_a0, k_a1 = (k[0], k[2]) if horizontal else (k[1], k[3])
+        mid = (k_c0 + k_c1) / 2
+        if mid < core0:          # a line on one side across the reading direction
+            lo_c = max(lo_c, min(k_c1 + eps, core0))
+        elif mid > core1:
+            hi_c = min(hi_c, max(k_c0 - eps, core1))
+        elif (k_a0 + k_a1) / 2 < (a0 + a1) / 2:   # on the same line, before or after it
+            lo_a = max(lo_a, min(k_a1 + eps, ends0))
+        else:
+            hi_a = min(hi_a, max(k_a0 - eps, ends1))
+    return (lo_a, lo_c, hi_a, hi_c) if horizontal else (lo_c, lo_a, hi_c, hi_a)
+
+
+def _kept_native(rows, removed_ids) -> list:
+    """Display boxes of the text-layer lines that stay on the page."""
+    return [b for r in rows if r.get("origin") == "native" and r["id"] not in removed_ids
+            for b in (r.get("line_boxes") or [r["display_box"]])]
+
+
+def apply_removal(page, rows, dpi, protect=None, kept_text=None):
+    """Remove the rows' source text.  ``kept_text`` are the display boxes of text
+    lines that stay; native redactions are kept off them (_clear_of_kept_text)."""
     native, outline = [], []
     for r in rows:
+        rot = int(r.get("display_rotation", 0))
         for lb in r.get("line_boxes") or [r["display_box"]]:
-            rect = redaction_rect(dict(r, display_box=lb), page, dpi)[1]
-            (native if r.get("origin") == "native" else outline).append(rect)
+            disp, rect = redaction_rect(dict(r, display_box=lb), page, dpi)
+            if r.get("origin") == "native":
+                if kept_text:
+                    disp = _clear_of_kept_text(disp, lb, rot, kept_text, dpi)
+                    rect = display_pt_to_page(px_to_display_pt(disp, dpi), page)
+                native.append(rect)
+            else:
+                outline.append(rect)
     for g in _passes(native):
         for rect in g:
             page.add_redact_annot(rect, fill=False)
@@ -704,7 +755,7 @@ def pick_fonts(rows, fonts: FontSet) -> dict[str, str]:
             continue
         native = r.get("origin") == "native"
         choice = fonts.pick(text, bold=native and looks_bold(r.get("font", ""), r.get("font_flags", 0)),
-                            serif=native and looks_serif(r.get("font", "")))
+                            serif=native and looks_serif(r.get("font", ""), r.get("font_flags", 0)))
         if choice is None:
             skipped[r["id"]] = "font_missing_glyph"
             continue
@@ -749,7 +800,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     active = list(cand)
     trial = fitz.open(source)
     tp = trial[0]
-    apply_removal(tp, active, dpi, protect)
+    active_ids = {r["id"] for r in active}
+    apply_removal(tp, active, dpi, protect, kept_text=_kept_native(rows, active_ids))
     replay_non_glyph(tp, src_sigs, src_draw, active, dpi)
     trial_gray = render(tp, dpi).convert("L")
     if trial_preview:
@@ -774,7 +826,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     n_draw_src = len(src_page.get_drawings())
     n_img_src = len(src_page.get_images(full=True))
     ok_ids = {r["id"] for r in ok}
-    apply_removal(page, ok, dpi, protect + [r["display_box"] for r in cand if r["id"] not in ok_ids])
+    apply_removal(page, ok, dpi, protect + [r["display_box"] for r in cand if r["id"] not in ok_ids],
+                  kept_text=_kept_native(rows, ok_ids))
     replayed = replay_non_glyph(page, src_sigs, src_draw, ok, dpi)
     n_restored = len(replayed)
     after_gray = render(page, dpi).convert("L")

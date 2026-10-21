@@ -421,7 +421,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             r.update(decision="keep_source", decision_reason="retained_by_model", translation_source="retained_by_model")
         elif problem:
             r.update(decision="review", decision_reason=problem)
-        elif any(n not in numbers(dst) for n in numbers(r["source_text"])):
+        elif any(n not in numbers(dst, dates=True) for n in numbers(r["source_text"], dates=True)):
             r.update(decision="review", decision_reason="numeric_mismatch")
         elif sorted(re.findall(r"[<>≤≥=±]", r["source_text"])) != sorted(re.findall(r"[<>≤≥=±]", dst)):
             r.update(decision="review", decision_reason="operator_mismatch")

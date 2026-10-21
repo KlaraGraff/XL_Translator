@@ -3244,8 +3244,9 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
       st.targetLang = value;
       void persistSettings(isExtSurface(surface) ? extSettingsPatch(surface, "target_lang", value) : surface === "pdf" ? nestedPatch("pdf.target_lang", value) : { [`${surface}_target_lang`]: value });
       refreshRecipe(surface, st);
-      // CAD 的字号比例按目标语言分两套，换语言后右栏要显示另一套。
-      if (surface === "cad") rerender(surface);
+      // CAD 和 PDF 原位替换的字号比例按目标语言分两套，换语言后右栏要显示另一套
+      // （PDF 原位替换「暂不支持该目标语言」的提示也跟着目标语言）。
+      if (surface === "cad" || (surface === "pdf" && pdfUsesInplace(st))) rerender(surface);
       // 历史产物的文件名里带目标语言，换了语言这份检测就对不上号了。静默作废，不弹提示：
       // 用户此刻在做的是选语言，不是在处理续译。
       if (st.resumeInfo && st.resumeDetectedLang && st.resumeDetectedLang !== value) {

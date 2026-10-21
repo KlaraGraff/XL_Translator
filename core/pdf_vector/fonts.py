@@ -67,9 +67,19 @@ def has_cjk(text: str) -> bool:
     return bool(CJK_TEXT_RE.search(text or ""))
 
 
-def looks_serif(font_name: str) -> bool:
+_SANS_NAME_RE = re.compile(
+    r"romans|sans|arial|helvetica|verdana|tahoma|calibri|segoe|roboto|gothic|hei|yahei|dengxian|等线|黑", re.I)
+
+
+def looks_serif(font_name: str, flags: int = 0) -> bool:
+    """Serif by the font's name; a name that says nothing (subset fonts such as
+    「CIDFont+F1」) goes by the font's own serif flag (span flags bit 4)."""
     name = str(font_name or "").split("+", 1)[-1]
-    return bool(_SERIF_NAME_RE.search(name)) and not re.search(r"romans|sans", name, re.I)
+    if _SANS_NAME_RE.search(name):
+        return False
+    if _SERIF_NAME_RE.search(name):
+        return True
+    return bool(int(flags or 0) & 4)
 
 
 def looks_bold(font_name: str, flags: int = 0) -> bool:

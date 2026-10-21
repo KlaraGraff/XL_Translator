@@ -18,7 +18,7 @@ from pathlib import Path
 from PIL import Image, ImageChops
 
 from .common import display_pt_to_page, fitz, numbers, px_to_display_pt, read_json, sha256, write_json  # noqa: F401
-from .writeback import _item_geom, apply_removal, ink_count, redaction_rect, render
+from .writeback import _item_geom, _kept_native, apply_removal, ink_count, redaction_rect, render
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -190,7 +190,8 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
                            "examples": unexpected[:20]}
 
     # numbers
-    num_fail = [w["id"] for w in written if any(n not in numbers(w["translation"]) for n in numbers(w["source_text"]))]
+    num_fail = [w["id"] for w in written
+                if any(n not in numbers(w["translation"], dates=True) for n in numbers(w["source_text"], dates=True))]
     res["numbers"] = {"checked": len(written), "failures": num_fail}
 
     # pixels
@@ -225,7 +226,8 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
     tmp = fitz.open(source)
     wid = {w["id"] for w in written}
     apply_removal(tmp[0], [rows[i] for i in wid], dpi,
-                  [r["display_box"] for r in rows.values() if r["id"] not in wid and r.get("origin") == "ocr"])
+                  [r["display_box"] for r in rows.values() if r["id"] not in wid and r.get("origin") == "ocr"],
+                  kept_text=_kept_native(rows.values(), wid))
     rg = render(tmp[0], dpi).convert("L")
     tmp.close()
     hits = []
