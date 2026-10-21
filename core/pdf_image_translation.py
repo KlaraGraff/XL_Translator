@@ -1451,8 +1451,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 的正文段要整段翻译，都比一页图像翻译久得多。这些页按真实完成的份额计（识别了几块、
         # 返回了几条），见 _translation_progress_units；进度只进不退。
         self._inplace_page_fraction: dict[tuple[str, int], float] = {}
-        # 连续几页原位替换的图纸共用一段场景说明：(源文件, 这一组的首页) -> 说明。
-        self._inplace_group_profiles: dict[tuple[str, int], str] = {}
         self._inplace_active_page: tuple[str, int] | None = None
         self._translate_progress_reached = -1
         self._retrying_pages: set[str] = set()
@@ -2746,7 +2744,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._completed_page_count = 0
         self._submitted_page_count = 0
         self._inplace_page_fraction = {}
-        self._inplace_group_profiles = {}
         self._inplace_active_page = None
         self._translate_progress_reached = -1
         self._stop_wait_started_at = None
@@ -3933,45 +3930,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             return None
         return context
 
-    def _inplace_group_profile(self, record: PdfFileRecord, page_number: int, profile):
-        """原位替换这一页用的场景说明：连续几页原位替换的图纸算一组，一组只请求一次。
-
-        中间隔着的空白页不打断一组。整份文件都在这一组里时直接用任务开始时的说明。
-        """
-        inplace = {item.page_number for item in record.pages if item.inplace_requested}
-        group = self._page_group(record.source_path, inplace, page_number)
-        shared = self._shared_document_profile(record.source_path, group)
-        if shared is not None or profile is None:
-            return _reuse_profile(shared, profile)
-        key = (str(record.source_path), min(group))
-        cached = self._inplace_group_profiles.get(key)
-        if cached:
-            return lambda _texts: cached
-
-        def first_of_group(texts: list[str]) -> str:
-            # 这一组的第一页写说明，后面几页沿用；没写成就让下一页再试。
-            text = str(profile(texts) or "")
-            if text:
-                self._inplace_group_profiles[key] = text
-            return text
-
-        return first_of_group
-
-    def _page_group(self, source_path: str, members: set[int], page_number: int) -> set[int]:
-        """``page_number`` 所在的那一段连续页（都在 ``members`` 里，空白页不打断）。"""
-        kind = self._document_kinds.get(str(source_path))
-        blank = {item.page_number for item in kind.pages if item.kind == KIND_BLANK} if kind else set()
-        group = {page_number}
-        for step in (-1, 1):
-            number = page_number + step
-            while number in members or number in blank:
-                if number in members:
-                    group.add(number)
-                number += step
-                if number < 1 or (kind is not None and number > len(kind.pages)) or (kind is None and number not in members):
-                    break
-        return group
-
     def _pending_inplace_pages(self) -> list[tuple[str, PdfPageRecord]]:
         """原位替换的页：已经按「已完成」记了账（见大幅面页那条快速路径），其实还没处理。"""
         return [
@@ -4533,7 +4491,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page.page_number - 1,
                 work,
                 translate=_with_stop(progress.wrap_translate(hooks.translate), self._stop_event.is_set),
-                profile=self._inplace_group_profile(record, page.page_number, hooks.profile),
+                profile=_reuse_profile(
+                    self._shared_document_profile(
+                        record.source_path, (item.page_number for item in record.pages if item.inplace_requested),
+                    ),
+                    hooks.profile,
+                ),
                 tesseract=hooks.tesseract,
                 tesseract_languages=hooks.tesseract_languages,
                 source_lang=hooks.source_lang,
