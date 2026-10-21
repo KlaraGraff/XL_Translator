@@ -8,10 +8,24 @@ from dataclasses import dataclass
 
 import httpx
 
-from config import LM_STUDIO_BASE_URL, OLLAMA_BASE_URL, normalize_cloud_base_url
+from config import (
+    DASHSCOPE_OPENAI_BASE_URL,
+    LM_STUDIO_BASE_URL,
+    OLLAMA_BASE_URL,
+    ZHIPU_OPENAI_BASE_URL,
+    normalize_cloud_base_url,
+)
 
 
 DEFAULT_MODEL_LIST_TIMEOUT_SECONDS = 12.0
+# 硅基流动的 /models 默认把文字、图片、语音、视频模型混在一起列。按用途只列能用的：
+# PDF 与图片翻译要「改图」的模型（image-to-image），审核要能对话的模型（chat，含视觉模型）。
+# 不在表里的用途/服务商照旧拉全量。
+PROVIDER_CAPABILITY_MODEL_FILTERS: dict[tuple[str, str], dict[str, str]] = {
+    ("siliconflow", "image"): {"sub_type": "image-to-image"},
+    ("siliconflow", "vision_text"): {"sub_type": "chat"},
+    ("siliconflow", "text"): {"sub_type": "chat"},
+}
 OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "openai",
     "custom_openai",
@@ -20,7 +34,17 @@ OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "deepseek",
     "lm_studio",
     "custom_local",
+    "zhipu",
+    "dashscope",
+    "claude",
 }
+# 智谱、百炼不让填 Base URL，模型列表走它们的 OpenAI 兼容地址。
+FIXED_MODEL_LIST_BASE_URLS = {
+    "zhipu": ZHIPU_OPENAI_BASE_URL,
+    "dashscope": DASHSCOPE_OPENAI_BASE_URL,
+}
+# Anthropic 的 /models 不认 Bearer，要 x-api-key 加版本头。
+ANTHROPIC_VERSION = "2023-06-01"
 
 # Model discovery is intentionally a process-local cache.  It is keyed by the
 # effective connection identity (provider, normalized base URL and a
@@ -83,16 +107,19 @@ def build_model_catalog_signature(
     provider: str,
     api_key: str,
     base_url: str,
+    capability: str = "",
 ) -> str:
     """Return a non-secret signature for cached model-list results."""
     provider_name = str(provider or "").strip()
-    return "|".join(
-        [
-            provider_name,
-            _normalize_base_url(provider_name, base_url),
-            _hash_secret(str(api_key or "").strip()),
-        ]
-    )
+    parts = [
+        provider_name,
+        _normalize_base_url(provider_name, base_url),
+        _hash_secret(str(api_key or "").strip()),
+    ]
+    model_filter = PROVIDER_CAPABILITY_MODEL_FILTERS.get((provider_name, capability))
+    if model_filter:
+        parts.append("&".join(f"{k}={v}" for k, v in sorted(model_filter.items())))
+    return "|".join(parts)
 
 
 def _sanitize_error_message(exc: Exception, *, secret: str = "") -> str:
@@ -109,6 +136,8 @@ def _append_url_path(base_url: str, path: str) -> str:
 
 
 def _normalize_base_url(provider: str, base_url: str) -> str:
+    if provider in FIXED_MODEL_LIST_BASE_URLS:
+        return FIXED_MODEL_LIST_BASE_URLS[provider].rstrip("/")
     normalized = str(base_url or "").strip().rstrip("/")
     if provider == "lm_studio" and not normalized:
         return LM_STUDIO_BASE_URL.rstrip("/")
@@ -206,8 +235,13 @@ def fetch_openai_compatible_models(
     api_key: str,
     base_url: str,
     timeout_seconds: float = DEFAULT_MODEL_LIST_TIMEOUT_SECONDS,
+    capability: str = "",
 ) -> ModelCatalogResult:
-    """Fetch `/models` for OpenAI-compatible providers."""
+    """Fetch `/models` for OpenAI-compatible providers.
+
+    ``capability`` (text / image / vision_text) narrows the list on providers
+    that can filter server-side; see ``PROVIDER_CAPABILITY_MODEL_FILTERS``.
+    """
     provider_name = str(provider or "").strip()
     key = str(api_key or "").strip()
     normalized_base_url = _normalize_base_url(provider_name, base_url)
@@ -244,17 +278,24 @@ def fetch_openai_compatible_models(
         provider=provider_name,
         api_key=key,
         base_url=normalized_base_url,
+        capability=capability,
     )
     cached = _get_cached_result(signature)
     if cached is not None:
         return cached
 
     url = _append_url_path(normalized_base_url, "/models")
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    if provider_name == "claude":
+        headers = {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}
+    else:
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    params = PROVIDER_CAPABILITY_MODEL_FILTERS.get((provider_name, capability)) or None
+    if provider_name == "claude":
+        params = {"limit": "1000"}  # 默认一页只给 20 个
 
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
-            response = client.get(url, headers=headers)
+            response = client.get(url, headers=headers, params=params)
             response.raise_for_status()
             payload = response.json()
     except Exception as exc:  # noqa: BLE001 - converted to user-facing result.

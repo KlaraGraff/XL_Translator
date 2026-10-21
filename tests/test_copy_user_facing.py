@@ -26,7 +26,7 @@ class ConnectionTestMessageTests(unittest.TestCase):
 class ConnectionDisplayLabelTests(unittest.TestCase):
     def test_unnamed_connection_shows_provider_name_and_host(self) -> None:
         connection = ModelConnection(provider="custom_openai", base_url="https://api.example.com/v1")
-        self.assertEqual(connection.display_label, "OpenAI 兼容 · api.example.com")
+        self.assertEqual(connection.display_label, "自定义配置 · api.example.com")
 
     def test_unnamed_connection_without_address_shows_provider_name(self) -> None:
         self.assertEqual(ModelConnection(provider="deepseek").display_label, "DeepSeek")

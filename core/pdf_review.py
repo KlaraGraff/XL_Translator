@@ -15,8 +15,8 @@ import httpx
 from loguru import logger
 from PIL import Image
 
-from config import normalize_cloud_base_url
-from core.image_generation import is_model_unavailable_error
+from config import is_siliconflow_endpoint, normalize_cloud_base_url
+from core.image_generation import is_model_unavailable_error, looks_like_wrong_image_model
 from core.user_facing_errors import humanize_error
 from core.model_roles import (
     EffectiveModelConfig,
@@ -48,6 +48,36 @@ PDF_PAGE_REVIEW_PROMPT = (
     "they must not change the pass/fail decision. Return strict JSON only with keys: pass "
     "(boolean), blocking_issues (array), minor_suggestions (array of strings), summary (string)."
 )
+
+
+# 没有 OpenAI ``/responses`` 接口、只能走 ``/chat/completions`` 的服务商。
+CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow"})
+_ROUTE_PATHS = {"chat": "chat/completions", "responses": "responses"}
+
+
+def review_routes(config: EffectiveModelConfig) -> list[str]:
+    """按连接的「文本请求协议」决定审核请求走哪种接口，和文档翻译同一个设置。
+
+    以前这里写死只发 OpenAI 的 ``/responses``，只有 chat 接口的服务商（硅基流动等）
+    无论选哪个模型都失败。指定了协议就只走那一种；自动时先走 ``/responses``
+    （原有行为，OpenAI 与多数中转站已验证），对方没有这个接口再换 chat。
+    """
+    mode = str(config.api_mode or "auto").strip()
+    mode = {"codex_responses": "responses", "chat_completions": "chat"}.get(mode, mode)
+    if mode in _ROUTE_PATHS:
+        return [mode]
+    if config.provider in CHAT_COMPLETIONS_ONLY_PROVIDERS or is_siliconflow_endpoint(
+        config.provider, config.base_url
+    ):
+        return ["chat"]
+    return ["responses", "chat"]
+
+
+def _route_missing(exc: httpx.HTTPStatusError, kind: str) -> bool:
+    if kind == "route":
+        return True
+    # 没有这个接口时，很多服务直接回一个空白或通用的 404/405，认不出具体原因。
+    return kind == "request" and exc.response.status_code in {404, 405}
 
 
 class PdfReviewModelUnavailableError(RuntimeError):
@@ -130,66 +160,53 @@ class OpenAICompatiblePdfReviewClient:
             effective_model_after_rollback,
             rollback_upgraded_model,
         )
-        from core.text_transport import classify_http_error
+        from core.text_transport import classify_http_error, extract_chat_text
 
         effective_model = effective_model_after_rollback(
             model_config.connection_id, model_config.model,
             model_config.base_url, ROLE_PDF_REVIEW,
         )
-        payload = {
-            "model": effective_model,
-            "instructions": PDF_PAGE_REVIEW_PROMPT,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"Target language: {target_language}. "
-                                "First image is the original source PDF page. "
-                                "Second image is the translated candidate page."
-                            ),
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": _image_data_url(source_image_path),
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": _image_data_url(translated_image_path),
-                        },
-                    ],
-                }
-            ],
-            "store": False,
-            "stream": False,
-        }
+        user_text = (
+            f"Target language: {target_language}. "
+            "First image is the original source PDF page. "
+            "Second image is the translated candidate page."
+        )
+        builders = {"chat": _chat_review_payload, "responses": _responses_review_payload}
         headers = {
             "Authorization": f"Bearer {model_config.api_key}",
             "Content-Type": "application/json",
         }
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.post(f"{base_url}/responses", headers=headers, json=payload)
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    if classify_http_error(exc)[0] != "model":
-                        raise
-                    previous = rollback_upgraded_model(
-                        model_config.connection_id, effective_model,
-                        model_config.base_url, api_key=model_config.api_key,
-                        model_role=ROLE_PDF_REVIEW,
+                routes = review_routes(model_config)
+                for index, route in enumerate(routes):
+                    payload = builders[route](
+                        effective_model, user_text, source_image_path, translated_image_path,
                     )
-                    if not previous:
-                        raise
-                    payload["model"] = previous
-                    response = client.post(
-                        f"{base_url}/responses", headers=headers, json=payload,
-                    )
-                    response.raise_for_status()
-                response_payload = response.json()
+                    url = f"{base_url}/{_ROUTE_PATHS[route]}"
+                    response = client.post(url, headers=headers, json=payload)
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        kind = classify_http_error(exc)[0]
+                        if index + 1 < len(routes) and _route_missing(exc, kind):
+                            # 自动模式：这家没有这种接口，换另一种再发一次。
+                            logger.debug(f"[PDF审核] {url} 不可用（{exc.response.status_code}），改用下一种接口。")
+                            continue
+                        if kind != "model":
+                            raise
+                        previous = rollback_upgraded_model(
+                            model_config.connection_id, effective_model,
+                            model_config.base_url, api_key=model_config.api_key,
+                            model_role=ROLE_PDF_REVIEW,
+                        )
+                        if not previous:
+                            raise
+                        payload["model"] = previous
+                        response = client.post(url, headers=headers, json=payload)
+                        response.raise_for_status()
+                    response_payload = response.json()
+                    break
         except Exception as exc:  # noqa: BLE001 - caller classifies page/model errors.
             if is_model_unavailable_error(exc):
                 logger.debug(f"[PDF审核] 审核模型不可用原始错误：{exc!r}")
@@ -204,8 +221,53 @@ class OpenAICompatiblePdfReviewClient:
                 ) from exc
             raise
 
-        text = _extract_response_text(response_payload)
+        if route == "chat":
+            text = extract_chat_text(response_payload)
+        else:
+            text = _extract_response_text(response_payload)
         return parse_pdf_review_result(text)
+
+
+def _responses_review_payload(
+    model: str, user_text: str, source_image_path: Path, translated_image_path: Path,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": PDF_PAGE_REVIEW_PROMPT,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_text},
+                    {"type": "input_image", "image_url": _image_data_url(source_image_path)},
+                    {"type": "input_image", "image_url": _image_data_url(translated_image_path)},
+                ],
+            }
+        ],
+        "store": False,
+        "stream": False,
+    }
+
+
+def _chat_review_payload(
+    model: str, user_text: str, source_image_path: Path, translated_image_path: Path,
+) -> dict[str, Any]:
+    # 只有 /chat/completions 的服务商（硅基流动）：同一组内容换成 chat 的 image_url 写法。
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": PDF_PAGE_REVIEW_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": _image_data_url(source_image_path)}},
+                    {"type": "image_url", "image_url": {"url": _image_data_url(translated_image_path)}},
+                ],
+            },
+        ],
+        "stream": False,
+    }
 
 
 def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
@@ -302,6 +364,7 @@ def check_pdf_review_connectivity(
         Image.new("RGB", (64, 64), "white").save(source, format="PNG")
         Image.new("RGB", (64, 64), "white").save(translated, format="PNG")
         last_error = ""
+        last_exc: BaseException | None = None
         for _attempt in range(1, max(1, int(max_attempts)) + 1):
             try:
                 result = client.review_page(
@@ -323,8 +386,11 @@ def check_pdf_review_connectivity(
                 return PdfReviewConnectivityResult(True, message, detail=detail)
             except Exception as exc:  # noqa: BLE001 - retry and report all review errors.
                 last_error = _sanitize_error(exc)
+                last_exc = exc
 
     message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
+    if last_exc is not None and looks_like_wrong_image_model(last_exc):
+        message = f"{message.rstrip('。')}。PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。"
     record_pdf_review_model_availability(
         settings,
         ok=False,

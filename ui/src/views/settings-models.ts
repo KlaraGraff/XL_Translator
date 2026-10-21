@@ -28,6 +28,7 @@ import { saveJsonFile } from "../save-file";
 import { setModelPillSettingsRole } from "../model-pill";
 import {
   type ApiKeyExportRow,
+  apiKeyPageFor,
   applyProviderDerivedState,
   attachModelNameDropdown,
   client,
@@ -65,8 +66,8 @@ import {
   type PoolConnection,
   providerBaseUrlDefaults,
   providerBaseUrlDisabled,
+  openExternalUrl,
   providerLabel,
-  providerModelDefaults,
   queueModelFormSave,
   record,
   refreshDataHealth,
@@ -106,6 +107,32 @@ const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
   image: "PDF 与图片翻译", // i18n-ignore 存进设置的值
   pdf_review: "PDF 与图片审核", // i18n-ignore 存进设置的值
 };
+
+// 「一键改用文本翻译」：PDF 改成自动组合，能提取文字的页转成 Word 翻译，不用图像模型；
+// 扫描页和保底方式仍交给图像模型——没有可用的图像模型时这些页保留原样，完成后列出来。
+// 图纸和大图保持用户原来的选择（默认原位替换）。
+const TEXT_ROUTE_PDF_PATCH = { translation_route: "auto", auto_text_route: "word" };
+// 工作区缓存着一份 PDF 设置，改完发这个事件让它跟着换（见 workspace.ts）。
+const PDF_ROUTES_CHANGED_EVENT = "xlt:pdf-routes-changed";
+
+function pdfUsesTextRoutes(): boolean {
+  const pdf = record(settings?.pdf);
+  return text(pdf.translation_route) === "auto" && text(pdf.auto_text_route, "word") === "word";
+}
+
+function buildUseTextRoutesButton(): HTMLElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "linklike";
+  button.textContent = t("一键改用文本翻译");
+  button.title = t("PDF 翻译方式改为「自动组合」，可提取文字的页转成 Word 翻译，不使用图像模型。");
+  button.addEventListener("click", () => void reRenderAfter(async () => {
+    await persistSettings({ pdf: TEXT_ROUTE_PDF_PATCH });
+    window.dispatchEvent(new CustomEvent(PDF_ROUTES_CHANGED_EVENT, { detail: record(settings?.pdf) }));
+    showToast({ message: t("已改用文本翻译：PDF 翻译方式为「自动组合」，可提取文字的页转成 Word 翻译。") });
+  }));
+  return button;
+}
 
 function savedAccessMode(role: string): string {
   const selected = activeConnection(role);
@@ -352,6 +379,25 @@ export function renderModelsPage(host: HTMLElement): void {
   // it — see MODEL_FORM_DRAFT_FIELD_IDS.
   providerSelectEl.dataset.formScope = `${role}|${cloudMode ? "cloud" : "local"}|${selected?.id ?? ""}`;
   grid.append(providerFieldHandle.root);
+  // 「获取 ↗ API 密钥」：打开所选服务商创建密钥的控制台，注册账号、建密钥都在那里。
+  // 自定义配置、跟随别的用途、本地模型没有这一页，不显示。
+  const keyLink = document.createElement("button");
+  keyLink.type = "button";
+  keyLink.className = "linklike field-link";
+  keyLink.textContent = t("获取 ↗ API 密钥");
+  providerFieldHandle.root.querySelector("label")?.append(keyLink);
+  const keyPage = () => (cloudMode && !following
+    ? apiKeyPageFor(providerSelectEl.value, baseUrlField?.input.value ?? formBaseUrl)
+    : "");
+  const paintKeyLink = () => {
+    const url = keyPage();
+    keyLink.hidden = !url;
+    keyLink.title = url;
+  };
+  keyLink.addEventListener("click", () => {
+    const url = keyPage();
+    if (url) void openExternalUrl(url);
+  });
 
   const baseUrlDisabledByProvider = cloudMode && providerBaseUrlDisabled.has(formProvider);
   const baseUrlField = textField(
@@ -390,10 +436,11 @@ export function renderModelsPage(host: HTMLElement): void {
     baseUrlField.input.value = providerBaseUrlDisabled.has(value)
       ? ""
       : providerBaseUrlDefaults[value] ?? "";
-    // 模型名称跟着服务商一起重填：A 家的模型 ID 拿到 B 家去必定报错，留着它比清掉更坏。
-    // 没有预设的服务商（OpenAI 兼容、各家自建网关）保持原样，不拿空字符串去洗掉用户填的值。
-    const recommended = providerModelDefaults[value];
-    if (recommended) modelNameField.input.value = recommended;
+    // 换了服务商就清空模型名称：A 家的模型 ID 拿到 B 家去必定报错。不预填任何型号，
+    // 各家换代太快，写死的推荐很快过时；由用户获取模型列表后自己选。换到自定义配置
+    // （各家自建网关）时保持原样，不拿空字符串去洗掉用户填的值。
+    if (value !== "custom_openai") modelNameField.input.value = "";
+    paintKeyLink();
   };
 
   const modelNameField = textField(t("模型名称"), formModel, () => undefined, { placeholder: cloudMode ? t("输入模型 ID") : t("例如 qwen2.5:7b"), hint: t("点击右侧箭头可展开候选列表；列表中没有的模型也可手动输入。") });
@@ -412,7 +459,9 @@ export function renderModelsPage(host: HTMLElement): void {
   // 原来挂的是原生 <datalist>：候选只在输入框获得焦点且内容匹配时才冒出来，长得像一
   // 条灰色系统条，跟这一页其余的下拉完全不是一套东西，用户也找不到「怎么把它调出来」。
   // 改成输入框右侧一个箭头按钮，点开走 openMenu，和「浏览」那类锚定菜单同一套外观。
-  attachModelNameDropdown(modelNameField.input, currentCatalog, () => providerSelectEl.value);
+  attachModelNameDropdown(modelNameField.input, currentCatalog);
+  baseUrlField.input.addEventListener("input", paintKeyLink);
+  paintKeyLink();
   // 两列：连接方式 | 服务商；模型名称 | Base URL；API 密钥 | 文本请求协议；连接名称整行。
   // 都要等 modelNameField 建好之后再挂进 DOM，因为 onProviderChange 的闭包引用它。
   grid.append(modelNameField.root, baseUrlField.root);
@@ -528,6 +577,7 @@ export function renderModelsPage(host: HTMLElement): void {
       failure.style.color = "var(--warn)";
       failure.textContent = `${tx(reason)}${checkedAt ? t("（{0}）", checkedAt) : ""}`;
       statusParts.push(failure);
+      if (role === "image" && !pdfUsesTextRoutes()) statusParts.push(buildUseTextRoutesButton());
     }
     if (!list.length) {
       const note = document.createElement("span");

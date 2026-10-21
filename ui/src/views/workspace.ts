@@ -896,6 +896,24 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
   stateOf(surface).renderer?.();
 }
 
+function applyPdfRouteSettings(st: SurfaceState, pdf: JsonObject): void {
+  // 分支早先的 inplace / word 两个单一路线由后端换算成自动组合，这里只认两种。
+  st.pdfRoute = text(pdf.translation_route) === "image" || !text(pdf.translation_route) ? "image" : "auto";
+  st.pdfAutoScanRoute = oneOf(text(pdf.auto_scan_route), ["image", "skip"] as const, "image");
+  st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
+  st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
+  st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
+}
+
+// 设置页「一键改用文本翻译」改了 PDF 翻译方式：这里缓存的设置跟着换，回到 PDF 页
+// 看到的就是新方式（事件名见 settings-models.ts PDF_ROUTES_CHANGED_EVENT）。
+window.addEventListener("xlt:pdf-routes-changed", (event) => {
+  const pdf = record((event as CustomEvent<unknown>).detail);
+  settings = { ...settings, pdf: { ...record(settings.pdf), ...pdf } };
+  applyPdfRouteSettings(stateOf("pdf"), pdf);
+  pdfRouteCapsStale = true;
+});
+
 function applySettingsToStates(): void {
   for (const surface of ["excel", "word", "pdf", "cad"] as Surface[]) {
     const st = stateOf(surface);
@@ -903,12 +921,7 @@ function applySettingsToStates(): void {
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
-      // 分支早先的 inplace / word 两个单一路线由后端换算成自动组合，这里只认两种。
-      st.pdfRoute = text(pdf.translation_route) === "image" || !text(pdf.translation_route) ? "image" : "auto";
-      st.pdfAutoScanRoute = oneOf(text(pdf.auto_scan_route), ["image", "skip"] as const, "image");
-      st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
-      st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
-      st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
+      applyPdfRouteSettings(st, pdf);
       st.pdfAlsoSaveWord = pdf.also_save_word === true;
       const threshold = text(pdf.oversized_page_threshold);
       st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
@@ -3851,7 +3864,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const usesImage = st.pdfAutoScanRoute === "image" || st.pdfAutoFallback === "image"
     || st.pdfAutoTextRoute === "image" || st.pdfAutoDrawingRoute === "image";
   if (caps && usesImage && !caps.image_model_ready) {
-    wrap.append(note(t("没有设置图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
+    wrap.append(note(t("没有可用的图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
   }
   const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
   const usesWord = st.pdfAutoTextRoute === "word";

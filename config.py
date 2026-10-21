@@ -22,7 +22,7 @@ DEFAULT_MAX_LEN = 25
 CLOUD_ENGINES = {
     "Claude (Anthropic)":          "claude",
     "OpenAI / ChatGPT":            "openai",
-    "OpenAI 兼容":                  "custom_openai",
+    "自定义配置":                    "custom_openai",
     "智谱 GLM":                    "zhipu",
     "阿里百炼 (通义)":             "dashscope",
     "硅基流动":                    "siliconflow",
@@ -31,13 +31,13 @@ CLOUD_ENGINES = {
 
 IMAGE_GENERATION_MODEL_PROVIDERS = {
     "OpenAI / ChatGPT": "openai",
-    "OpenAI 兼容": "custom_openai",
+    "自定义配置": "custom_openai",
     "硅基流动": "siliconflow",
 }
 
 VISION_TEXT_MODEL_PROVIDERS = {
     "OpenAI / ChatGPT": "openai",
-    "OpenAI 兼容": "custom_openai",
+    "自定义配置": "custom_openai",
     "硅基流动": "siliconflow",
 }
 
@@ -48,7 +48,9 @@ DEFAULT_CUSTOM_OPENAI_API_KEY = ""
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
-SILICONFLOW_BASE_URL = "https://api.siliconflow.com/v1"
+# 默认国内站：国内用户在 cloud.siliconflow.cn 申请的密钥，在国际站 api.siliconflow.com
+# 会被拒（Token is invalid）。国际站用户把 Base URL 改成 .com 即可。
+SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
 ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -63,17 +65,19 @@ CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
 
-# 选中服务商时预填的型号。一律取各家的轻量/快速档：翻译是逐段高频调用，
-# 默认给重型号会让第一次试用既慢又贵。这只是预填，用户可以直接改写，
-# 「获取模型列表」拉到的才是该账号真正可用的清单。
-# custom_openai / lanyi 没有默认值——端点由用户自己填，型号无从猜测。
-CLOUD_PROVIDER_MODEL_DEFAULTS = {
-    "openai": "gpt-5.6-luna",
-    "claude": "claude-haiku-4-5-20251001",
-    "deepseek": "deepseek-v4-flash",
-    "zhipu": "glm-4-flash",
-    "dashscope": "qwen-turbo",
-    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
+# 各家创建 API 密钥的控制台页面。设置页选中服务商时给一个「获取 ↗ API 密钥」链接。
+# 不预填模型名称：各家型号换代太快，写死的推荐很快过时，模型由用户获取列表后自己选。
+CLOUD_PROVIDER_API_KEY_PAGES = {
+    "openai": "https://platform.openai.com/api-keys",
+    "claude": "https://console.anthropic.com/settings/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+    "dashscope": "https://bailian.console.aliyun.com/?tab=model#/api-key",
+    "siliconflow": "https://cloud.siliconflow.cn/account/ak",
+}
+# 同一家国内站、国际站账号不通用：Base URL 落在国际站时，链接也指向国际站控制台。
+CLOUD_API_KEY_PAGES_BY_HOST = {
+    "api.siliconflow.com": "https://cloud.siliconflow.com/account/ak",
 }
 LOCAL_MODEL_PROVIDERS = {
     "Ollama": "ollama",
@@ -91,6 +95,15 @@ CLOUD_REQUEST_TIMEOUT = 120  # 单次文本模型请求上限（秒）
 
 def cloud_provider_base_url_default(provider: str) -> str:
     return CLOUD_PROVIDER_BASE_URL_DEFAULTS.get(str(provider or "").strip(), "")
+
+
+def is_siliconflow_endpoint(provider: str, base_url: str = "") -> bool:
+    """硅基流动：选了这家，或用「自定义配置」填了它的地址。它没有 OpenAI 的 ``/responses``
+    和 ``/images/edits``，图像与审核请求要走它自己的接口。"""
+    if str(provider or "").strip() == "siliconflow":
+        return True
+    host = (urlsplit(str(base_url or "").strip()).hostname or "").lower()
+    return host.endswith(("siliconflow.cn", "siliconflow.com"))
 
 
 def cloud_provider_uses_base_url(provider: str) -> bool:

@@ -296,7 +296,7 @@ export const FOLLOW_PREFIX = "follow:";
 export const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek"];
 export const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
 const PROVIDER_LABELS: Record<string, string> = localized(() => ({
-  custom_openai: t("OpenAI 兼容"),
+  custom_openai: t("自定义配置"),
   openai: "OpenAI",
   claude: "Claude",
   zhipu: t("智谱 GLM"),
@@ -315,7 +315,19 @@ export function providerLabel(provider: string): string {
 // 第二份硬编码：URL 一旦在前后端各存一份，服务商换了端点就会有一边是错的，而错的那
 // 一边正好是用户看得见的那份。接口没回来之前预填表为空 —— 只是不预填，不会挡住手填。
 export let providerBaseUrlDefaults: Record<string, string> = {};
-export let providerModelDefaults: Record<string, string> = {};
+// 各家创建 API 密钥的控制台页面（同一接口下发）。按 Base URL 主机名的表先查：同一家
+// 国内站、国际站账号不通用，链接要跟着当前地址走。
+let providerApiKeyPages: Record<string, string> = {};
+let apiKeyPagesByHost: Record<string, string> = {};
+export function apiKeyPageFor(provider: string, baseUrl: string): string {
+  let host = "";
+  try {
+    host = new URL(baseUrl.trim()).hostname.toLowerCase();
+  } catch {
+    host = "";
+  }
+  return (host && apiKeyPagesByHost[host]) || providerApiKeyPages[provider] || "";
+}
 export let providerBaseUrlDisabled = new Set<string>();
 // 存后端原文，显示时再翻译：切换界面语言后跟着变。
 let disabledBaseUrlPlaceholderSource = "当前服务商无需填写 Base URL"; // i18n-ignore 后端原文，显示时由 tx() 翻译
@@ -964,17 +976,20 @@ async function refreshProviderDefaults(): Promise<void> {
   try {
     const payload = await client.request<{
       base_url_defaults: Record<string, string>;
-      model_defaults?: Record<string, string>;
+      api_key_pages?: Record<string, string>;
+      api_key_pages_by_host?: Record<string, string>;
       base_url_disabled: string[];
       disabled_placeholder: string;
     }>("/api/models/provider-defaults");
     providerBaseUrlDefaults = payload.base_url_defaults || {};
-    providerModelDefaults = payload.model_defaults || {};
+    providerApiKeyPages = payload.api_key_pages || {};
+    apiKeyPagesByHost = payload.api_key_pages_by_host || {};
     providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
     if (payload.disabled_placeholder) disabledBaseUrlPlaceholderSource = String(payload.disabled_placeholder);
   } catch (error) {
     providerBaseUrlDefaults = {};
-    providerModelDefaults = {};
+    providerApiKeyPages = {};
+    apiKeyPagesByHost = {};
     providerBaseUrlDisabled = new Set();
     console.warn("服务商预设读取失败，本次不预填 Base URL：", error); // i18n-ignore 控制台日志，不面向用户
   }
@@ -1271,14 +1286,13 @@ export function settingsFold(key: string, opts: { title: string; meta?: string; 
 
 /**
  * 把「模型名称」输入框包成一个可下拉的组合框：输入框照旧可以随便打字，右侧箭头把候选
- * 展开成锚定菜单。候选优先用刚获取到的模型列表；还没获取时退回服务商的推荐型号，让这
- * 个箭头在新建连接的第一分钟就有东西可给——否则它只是个点了没反应的装饰。
+ * 展开成锚定菜单。候选只来自从服务商获取到的模型列表：不再给写死的「推荐型号」，
+ * 各家型号换代太快，写死的推荐很快就过时。
  */
 export function attachModelNameDropdown(
   input: HTMLInputElement,
   // 每次点开时现取：表单里换了服务商或地址，之前获取的列表就不再属于它。
   currentCatalog: () => string[],
-  currentProvider: () => string,
 ): void {
   const host = input.parentElement;
   if (!host) return;
@@ -1294,15 +1308,8 @@ export function attachModelNameDropdown(
   caret.append(icon("chev", { size: "sm" }));
   wrap.append(caret);
 
-  const candidates = (): { list: string[]; fallback: boolean } => {
-    const catalog = currentCatalog();
-    if (catalog.length) return { list: catalog, fallback: false };
-    const recommended = providerModelDefaults[currentProvider()];
-    return recommended ? { list: [recommended], fallback: true } : { list: [], fallback: false };
-  };
-
   const paint = () => {
-    const { list } = candidates();
+    const list = currentCatalog();
     caret.disabled = input.disabled || !list.length;
     caret.title = caret.disabled
       ? t("尚无候选模型。请点击下方的「获取模型列表」从服务商获取。")
@@ -1314,7 +1321,7 @@ export function attachModelNameDropdown(
   caret.addEventListener("pointerenter", paint);
 
   caret.addEventListener("click", () => {
-    const { list, fallback } = candidates();
+    const list = currentCatalog();
     if (!list.length) return;
     openMenu(
       // 锚在整条输入框而不是箭头上：openMenu 按 anchor 的左边缘定位，锚在右侧的小
@@ -1322,7 +1329,6 @@ export function attachModelNameDropdown(
       wrap,
       list.map((item) => ({
         label: item,
-        description: fallback ? t("服务商推荐型号") : undefined,
         onSelect: () => {
           input.value = item;
           input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2895,7 +2901,7 @@ async function openAppDataDirectory(): Promise<void> {
   }
 }
 
-async function openExternalUrl(url: string): Promise<void> {
+export async function openExternalUrl(url: string): Promise<void> {
   if (!url) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
