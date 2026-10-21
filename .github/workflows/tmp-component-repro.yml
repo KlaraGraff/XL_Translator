@@ -10,14 +10,11 @@ permissions:
 
 jobs:
   released:
-    name: 10.3.1 sidecar (vcruntime ${{ matrix.msvcp }}, defender ${{ matrix.defender }})
+    name: 10.3.1 sidecar (${{ matrix.scenario }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {msvcp: present, defender: off}
-          - {msvcp: hidden, defender: off}
-          - {msvcp: present, defender: on}
+        scenario: [vc-runtime-hidden, chinese-data-dir, socks-proxy, http-proxy-registry]
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -25,40 +22,33 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
-      - name: Environment
-        shell: pwsh
-        run: |
-          [System.Environment]::OSVersion
-          Get-Item C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\mfplat.dll -ErrorAction SilentlyContinue | Format-Table Name, Length, VersionInfo
-          Get-MpComputerStatus -ErrorAction SilentlyContinue | Select-Object AMServiceEnabled, RealTimeProtectionEnabled, AntivirusEnabled
-      - name: Hide msvcp140 from System32
-        if: matrix.msvcp == 'hidden'
-        shell: pwsh
-        run: |
-          foreach ($item in Get-ChildItem C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\concrt140.dll -ErrorAction SilentlyContinue) {
-            $path = $item.FullName; $name = $item.Name
-            if (Test-Path $path) {
-              takeown /f $path | Out-Null
-              icacls $path /grant "Administrators:F" | Out-Null
-              Rename-Item $path "$name.hidden"
-            }
-          }
-          Get-ChildItem C:\Windows\System32\msvcp140*, C:\Windows\System32\vcruntime140* | Format-Table Name
-      - name: Turn on Defender real-time protection
-        if: matrix.defender == 'on'
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $false
-          Remove-MpPreference -ExclusionPath (Get-MpPreference).ExclusionPath -ErrorAction SilentlyContinue
-          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled
-          Get-MpPreference | Select-Object ExclusionPath, DisableRealtimeMonitoring
       - name: Download and unpack the 10.3.1 installer
         shell: pwsh
         run: |
           Invoke-WebRequest https://github.com/KlaraGraff/XL_Translator/releases/download/v10.3.1/Translator_Windows_x64_10.3.1_Setup.exe -OutFile setup.exe
           7z x -y -orel setup.exe | Out-Null
           Get-ChildItem rel\sidecar\translator-sidecar\translator-sidecar.exe
+      - name: Hide the VC++ runtime from System32
+        if: matrix.scenario == 'vc-runtime-hidden'
+        shell: pwsh
+        run: |
+          foreach ($item in Get-ChildItem C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\concrt140.dll -ErrorAction SilentlyContinue) {
+            takeown /f $item.FullName | Out-Null
+            icacls $item.FullName /grant "Administrators:F" | Out-Null
+            Rename-Item $item.FullName "$($item.Name).hidden"
+          }
+          Get-ChildItem C:\Windows\System32\msvcp140*, C:\Windows\System32\vcruntime140* | Format-Table Name
+      - name: Proxy in Internet Settings (like Clash "system proxy")
+        if: matrix.scenario == 'http-proxy-registry'
+        shell: pwsh
+        run: |
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+          Set-ItemProperty $key ProxyEnable 1
+          Set-ItemProperty $key ProxyServer "127.0.0.1:7890"
+          python -c "import urllib.request; print(urllib.request.getproxies())"
       - name: One-click install through the released sidecar
         shell: pwsh
-        run: python .github/repro-local/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
+        run: |
+          if ("${{ matrix.scenario }}" -eq "chinese-data-dir") { $env:REPRO_DATA_PARENT = "$env:RUNNER_TEMP\用户 张三" }
+          if ("${{ matrix.scenario }}" -eq "socks-proxy") { $env:ALL_PROXY = "socks5://127.0.0.1:7891"; $env:HTTPS_PROXY = "socks5://127.0.0.1:7891" }
+          python .github/repro-local/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr

@@ -13,7 +13,11 @@ for stream in (sys.stdout, sys.stderr):
 
 exe = sys.argv[1]
 components = sys.argv[2:] or ["pdf2docx"]
-data_dir = tempfile.mkdtemp(prefix="sidecar-data-")
+parent = os.environ.get("REPRO_DATA_PARENT")
+if parent:
+    os.makedirs(parent, exist_ok=True)
+data_dir = tempfile.mkdtemp(prefix="sidecar-data-", dir=parent or None)
+print("data dir:", data_dir)
 env = {**os.environ, "TRANSLATOR_APP_DATA_DIR": data_dir}
 proc = subprocess.Popen([exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True,
                         encoding="utf-8", errors="replace")
@@ -62,7 +66,7 @@ try:
     proc.wait(timeout=20)
 except subprocess.TimeoutExpired:
     proc.kill()
-for log in glob.glob(os.path.join(data_dir, "**", "*.log"), recursive=True):
+for log in glob.glob(os.path.join(data_dir, "**", "*.log"), recursive=True) + glob.glob(os.path.join(data_dir, "**", "*.log.*"), recursive=True):
     print(f"===== {log}")
     with open(log, encoding="utf-8", errors="replace") as handle:
         print(handle.read()[-20000:])
