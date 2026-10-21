@@ -3914,9 +3914,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
     def _shared_document_profile(self, source_path: str, pages: Iterable[int]) -> str | None:
         """原位替换页、转 Word 段能不能直接用任务开始时为整份 PDF 写的文档说明。
 
-        只有这一部分就是整份文件（除空白页外每一页都在 ``pages`` 里，比如整份都是大幅
-        图纸、都原位替换）时才沿用：混着扫描页、正文、图纸的文件，各部分内容往往不同，
-        准确度优先，各自再写一段（maple 2026-10-21）。
+        只有这一部分就是整份文件（除空白页外每一页都在 ``pages`` 里：整份转 Word 的一段，
+        或只有一页的图纸）时才沿用；其余转 Word 每段、原位替换每页各写一段，准确度优先
+        （maple 2026-10-21）。
         "" 表示这次不用说明（「自动识别场景」关着）；None 表示由那一页、那一段自己写。
         """
         if self._profile_requester is None:
@@ -4491,12 +4491,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page.page_number - 1,
                 work,
                 translate=_with_stop(progress.wrap_translate(hooks.translate), self._stop_event.is_set),
-                profile=_reuse_profile(
-                    self._shared_document_profile(
-                        record.source_path, (item.page_number for item in record.pages if item.inplace_requested),
-                    ),
-                    hooks.profile,
-                ),
+                # 原位替换每一页单独写场景说明（一份图纸里常混着不同专业）；只有整份文件就是
+                # 这一页时，沿用任务开始时写的那段（讲的是同一个内容）。
+                profile=_reuse_profile(self._shared_document_profile(record.source_path, [page.page_number]),
+                                       hooks.profile),
                 tesseract=hooks.tesseract,
                 tesseract_languages=hooks.tesseract_languages,
                 source_lang=hooks.source_lang,

@@ -813,7 +813,10 @@ class SharedDocumentProfileTests(unittest.TestCase):
 
     def test_whole_file_reuses_the_opening_description(self):
         runner = self._runner(["drawing", "drawing", "blank"])
-        self.assertEqual(runner._shared_document_profile("a.pdf", [1, 2]), "电气图纸")
+        self.assertEqual(runner._shared_document_profile("a.pdf", [1, 2]), "电气图纸")   # one Word segment
+        self.assertIsNone(runner._shared_document_profile("a.pdf", [1]))   # one in-place page of two
+        single = self._runner(["drawing", "blank"])
+        self.assertEqual(single._shared_document_profile("a.pdf", [1]), "电气图纸")
 
     def test_mixed_file_asks_again_for_each_part(self):
         runner = self._runner(["text", "scan", "drawing"])
