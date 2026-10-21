@@ -162,6 +162,16 @@ def test_release_workflow_replaces_body_before_publishing():
     assert 'check_release_latest.py --expect "v${VERSION}"' in workflow
     assert 'gh release edit "$tag" --draft=true' in workflow
     assert 'check_release_latest.py --not "v${VERSION}"' in workflow
+    # 预发布：不占 Latest、发布后核对对外最新版仍是上一个正式版，不发反馈通知；
+    # 转正式时取消 Pre-release、设为 Latest、核对指向新版，再发通知。
+    assert 'gh release edit "$tag" --draft=false --prerelease --latest=false' in workflow
+    assert 'gh release edit "$tag" --prerelease=false --latest' in workflow
+    pre_check = workflow.index("Confirm installed apps still see the previous release")
+    assert "if: inputs.step == 'prerelease'" in workflow[pre_check:pre_check + 200]
+    notify = workflow.index("\n  notify-feedback:")
+    notify_block = workflow[notify:workflow.index("\n  retract:")]
+    assert "if: inputs.step == 'publish' || inputs.step == 'promote'" in notify_block
+    assert "prerelease" not in notify_block.split("if:")[1].splitlines()[0]
     # 删除只出现在 discard 这一步：只删草稿，删之前先建好并读回归档标签。
     discard = workflow.index("\n  discard:")
     head = workflow[:discard]
