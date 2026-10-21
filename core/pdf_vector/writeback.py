@@ -12,10 +12,15 @@ A trial redaction is rendered first.  Rows whose ink does not disappear
 (text inside a raster image, glyphs merged with a long path) keep their
 original text and are reported as ``source_not_removable``.
 
-Chinese size is derived from the source glyph height, not squeezed into the
-tight OCR rectangle.  Lines may extend into verified blank space; they shrink
-only when that space runs out, and wrap only into the source line slots or
-verified blank lines.  Colour is sampled from the source ink.
+The translation size is derived from the source glyph height, not squeezed
+into the tight OCR rectangle.  Lines may extend into verified blank space; when
+that space runs out they shrink by the same tiers as CAD (core.cad_layout:
+first narrower, from 70 % also smaller, down to the user's minimum), and only
+then wrap into verified blank lines below.  Lines of a paragraph always flow
+through its own source line slots.  Colour is sampled from the source ink.
+
+Each line is written in a system font that has every one of its glyphs
+(core/pdf_vector/fonts.py); a line no font can show is left as the source.
 """
 from __future__ import annotations
 
@@ -27,19 +32,25 @@ from pathlib import Path
 
 from PIL import Image
 
+from core.cad_layout import DEFAULT_FIT_SETTINGS_ZH, FitSettings, scale_parts
+
 from .common import (
     fitz,
     adv_up, display_point_to_page, display_pt_to_page, insert_rotate,
     px_to_display_pt, read_json, sha256, write_json,
 )
+from .fonts import FontSet, has_cjk, looks_bold, looks_serif, needs_shaping
 
 Image.MAX_IMAGE_PIXELS = None
 FONT_NAME = "CNF"
 INK_GRAY = 200            # gray level counted as ink
 RESIDUAL_LIMIT = 0.35     # share of source ink allowed to survive redaction
-MIN_SHRINK = 0.55         # shrink factor tried before wrapping
-FLOOR_SHRINK = 0.38       # absolute smallest size relative to the target
 MIN_FONT_PT = 1.6
+# up to this many verified blank lines below a paragraph take the wrapped rest; a
+# one-line label gets at most LABEL_EXTRA_LINES (Chinese labels often come back
+# six or eight times as long in French, so three lines alone would force 50 %)
+MAX_EXTRA_LINES = 8
+LABEL_EXTRA_LINES = 3
 
 
 # ----------------------------------------------------------------- raster
@@ -102,18 +113,22 @@ def sample_color(rgb: Image.Image, box) -> tuple[float, float, float]:
 
 # ----------------------------------------------------------------- text
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9À-ÿ.,:;=/+\-×²³%#°()\[\]'’&_<>≤≥Ø]+|\s+|.", re.S)
+# Han, kana and CJK punctuation break between any two characters; every other run
+# (Latin, Cyrillic, Greek or Hangul words, numbers, codes) stays whole.
+_CJK_CHARS = "\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef"
+TOKEN_RE = re.compile(rf"[{_CJK_CHARS}]|[^\s{_CJK_CHARS}]+|\s+", re.S)
 
 
-def wrap(text: str, font: fitz.Font, fs: float, widths: list[float]) -> list[str] | None:
-    """Greedy wrap into len(widths) lines; Latin/number runs never split."""
+def wrap(text: str, font: fitz.Font, fs: float, widths: list[float], squeeze: float = 1.0) -> list[str] | None:
+    """Greedy wrap into len(widths) lines; words, numbers and codes never split.
+    ``squeeze`` narrows the glyphs (width factor), as written by place_line."""
     toks = TOKEN_RE.findall(text)
     lines, cur, i = [], "", 0
     for t in toks:
         w_lim = widths[min(i, len(widths) - 1)]
         cand = cur + t
-        if font.text_length(cand.rstrip(), fontsize=fs) <= w_lim or not cur.strip():
-            if font.text_length(cand.rstrip(), fontsize=fs) > w_lim and not cur.strip():
+        if font.text_length(cand.rstrip(), fontsize=fs) * squeeze <= w_lim or not cur.strip():
+            if font.text_length(cand.rstrip(), fontsize=fs) * squeeze > w_lim and not cur.strip():
                 return None  # single token wider than the line
             cur = cand
             continue
@@ -144,14 +159,18 @@ def em_from_box(src: str, thick_pt: float) -> float:
 
 # ----------------------------------------------------------------- layout
 
-def content_box(gray: Image.Image, pad_px: float = 0.0) -> tuple[float, float, float, float] | None:
-    """Outermost ink of the source page (px). Translations never grow past it:
-    a paragraph on a text page would otherwise run into the page margin."""
+def content_box(gray: Image.Image, pad_px: float = 0.0, rows=()) -> tuple[float, float, float, float] | None:
+    """Outermost ink of the source page (px), and of the source line boxes ``rows``
+    (a text line's box reaches above its ink: the font's ascender). Translations
+    never grow past it: a paragraph on a text page would otherwise run into the
+    page margin."""
     mask = gray.point(lambda v: 255 if v < 200 else 0)
     box = mask.getbbox()
     if box is None:
         return None
     x0, y0, x1, y1 = box
+    for b in rows:
+        x0, y0, x1, y1 = min(x0, b[0]), min(y0, b[1]), max(x1, b[2]), max(y1, b[3])
     return (x0 - pad_px, y0 - pad_px, x1 + pad_px, y1 + pad_px)
 
 
@@ -212,11 +231,20 @@ def slot_geometry(box_px, rot):
     return y0, y1 - y0, (x0 + x1) / 2, x1 - x0
 
 
-def _baseline(font, text, fs, rot, start_along_px, center_cross_px, dpi):
+def _metrics(text: str) -> tuple[float, float, float]:
+    """(baseline below the line centre, ink above the centre, ink below), in em."""
+    if has_cjk(text):
+        # CJK ink spans roughly baseline-0.88em .. baseline+0.12em; centre it.
+        return 0.38, 0.5, 0.5
+    # Latin, Cyrillic, Greek: capitals and ascenders reach baseline-0.75em,
+    # descenders baseline+0.22em
+    return 0.33, 0.45, 0.55
+
+
+def _baseline(text, fs, rot, start_along_px, center_cross_px, dpi):
     k = 72.0 / dpi
-    (ax, ay), (ux, uy) = adv_up(rot)
-    # CJK ink spans roughly baseline-0.12em .. baseline+0.88em; centre it.
-    shift = 0.38 * fs
+    _, (ux, uy) = adv_up(rot)
+    shift = _metrics(text)[0] * fs
     if rot % 180 == 0:
         sx, sy = start_along_px * k, center_cross_px * k
     else:
@@ -224,27 +252,36 @@ def _baseline(font, text, fs, rot, start_along_px, center_cross_px, dpi):
     return sx, sy, sx - ux * shift, sy - uy * shift
 
 
-def line_rect(font, text, fs, rot, start_along_px, center_cross_px, dpi):
+def line_rect(font, text, fs, rot, start_along_px, center_cross_px, dpi, squeeze=1.0):
     """Display px rectangle a line will occupy (no drawing)."""
     k = 72.0 / dpi
-    (ax, ay), _ = adv_up(rot)
-    sx, sy, bx, by = _baseline(font, text, fs, rot, start_along_px, center_cross_px, dpi)
-    width_pt = font.text_length(text, fontsize=fs)
+    (ax, ay), (ux, uy) = adv_up(rot)
+    sx, sy, bx, by = _baseline(text, fs, rot, start_along_px, center_cross_px, dpi)
+    width_pt = font.text_length(text, fontsize=fs) * squeeze
     ex, ey = bx + ax * width_pt, by + ay * width_pt
     tx0, tx1 = sorted([bx, ex])
     ty0, ty1 = sorted([by, ey])
-    half = 0.5 * fs
+    _, above, below = _metrics(text)
     if rot % 180 == 0:
-        return (tx0 / k, (sy - half) / k, tx1 / k, (sy + half) / k)
-    return ((sx - half) / k, ty0 / k, (sx + half) / k, ty1 / k)
+        lo, hi = (sy - above * fs, sy + below * fs) if uy < 0 else (sy - below * fs, sy + above * fs)
+        return (tx0 / k, lo / k, tx1 / k, hi / k)
+    lo, hi = (sx - above * fs, sx + below * fs) if ux < 0 else (sx - below * fs, sx + above * fs)
+    return (lo / k, ty0 / k, hi / k, ty1 / k)
 
 
-def place_line(page, font, text, fs, rot, start_along_px, center_cross_px, dpi, color):
-    """Insert one line; return its display px rectangle."""
-    _, _, bx, by = _baseline(font, text, fs, rot, start_along_px, center_cross_px, dpi)
-    page.insert_text(display_point_to_page(fitz.Point(bx, by), page), text, fontname=FONT_NAME, fontsize=fs,
-                     rotate=insert_rotate(rot, page.rotation), color=color, overlay=True)
-    return line_rect(font, text, fs, rot, start_along_px, center_cross_px, dpi)
+def place_line(page, font, text, fs, rot, start_along_px, center_cross_px, dpi, color, *,
+               fontname=FONT_NAME, squeeze=1.0):
+    """Insert one line; return its display px rectangle.  ``squeeze`` < 1 narrows
+    the glyphs along the reading direction (CAD's width factor), height unchanged."""
+    _, _, bx, by = _baseline(text, fs, rot, start_along_px, center_cross_px, dpi)
+    point = display_point_to_page(fitz.Point(bx, by), page)
+    rotate = insert_rotate(rot, page.rotation)
+    morph = None
+    if squeeze < 0.999:
+        morph = (point, fitz.Matrix(squeeze, 1) if rotate % 180 == 0 else fitz.Matrix(1, squeeze))
+    page.insert_text(point, text, fontname=fontname, fontsize=fs, rotate=rotate, color=color, overlay=True,
+                     morph=morph)
+    return line_rect(font, text, fs, rot, start_along_px, center_cross_px, dpi, squeeze)
 
 
 # ----------------------------------------------------------------- main flow
@@ -284,12 +321,63 @@ def _passes(rects):
     return groups
 
 
-def apply_removal(page, rows, dpi, protect=None):
+def _clear_of_kept_text(disp, lb, rot, kept, dpi):
+    """``disp`` (display px) pulled back off kept text lines it reaches into.
+
+    MuPDF drops every glyph a text redaction touches, so on tightly stacked lines
+    (or a label set right against a type code) the full line box of a replaced
+    row also took letters of the line above or beside it: 「500门」 under
+    「5*TN3000」 left only 「5」「0」 of the code.  The rectangle may shrink back
+    to the middle of its own line; any glyph of its own still touches that, so
+    the row's text is still removed whole."""
+    x0, y0, x1, y1 = disp
+    eps = 0.3 * dpi / 72.0
+    horizontal = rot % 180 == 0
+    # cross axis: across the line; along axis: the reading direction
+    c0, c1 = (lb[1], lb[3]) if horizontal else (lb[0], lb[2])
+    a0, a1 = (lb[0], lb[2]) if horizontal else (lb[1], lb[3])
+    core0, core1 = c0 + 0.3 * (c1 - c0), c1 - 0.3 * (c1 - c0)
+    ends0, ends1 = a0 + 0.15 * (c1 - c0), a1 - 0.15 * (c1 - c0)
+    lo_c, hi_c = (y0, y1) if horizontal else (x0, x1)
+    lo_a, hi_a = (x0, x1) if horizontal else (y0, y1)
+    for k in kept:
+        if k[0] >= x1 or k[2] <= x0 or k[1] >= y1 or k[3] <= y0:
+            continue
+        k_c0, k_c1 = (k[1], k[3]) if horizontal else (k[0], k[2])
+        k_a0, k_a1 = (k[0], k[2]) if horizontal else (k[1], k[3])
+        mid = (k_c0 + k_c1) / 2
+        if mid < core0:          # a line on one side across the reading direction
+            lo_c = max(lo_c, min(k_c1 + eps, core0))
+        elif mid > core1:
+            hi_c = min(hi_c, max(k_c0 - eps, core1))
+        elif (k_a0 + k_a1) / 2 < (a0 + a1) / 2:   # on the same line, before or after it
+            lo_a = max(lo_a, min(k_a1 + eps, ends0))
+        else:
+            hi_a = min(hi_a, max(k_a0 - eps, ends1))
+    return (lo_a, lo_c, hi_a, hi_c) if horizontal else (lo_c, lo_a, hi_c, hi_a)
+
+
+def _kept_native(rows, removed_ids) -> list:
+    """Display boxes of the text-layer lines that stay on the page."""
+    return [b for r in rows if r.get("origin") == "native" and r["id"] not in removed_ids
+            for b in (r.get("line_boxes") or [r["display_box"]])]
+
+
+def apply_removal(page, rows, dpi, protect=None, kept_text=None):
+    """Remove the rows' source text.  ``kept_text`` are the display boxes of text
+    lines that stay; native redactions are kept off them (_clear_of_kept_text)."""
     native, outline = [], []
     for r in rows:
+        rot = int(r.get("display_rotation", 0))
         for lb in r.get("line_boxes") or [r["display_box"]]:
-            rect = redaction_rect(dict(r, display_box=lb), page, dpi)[1]
-            (native if r.get("origin") == "native" else outline).append(rect)
+            disp, rect = redaction_rect(dict(r, display_box=lb), page, dpi)
+            if r.get("origin") == "native":
+                if kept_text:
+                    disp = _clear_of_kept_text(disp, lb, rot, kept_text, dpi)
+                    rect = display_pt_to_page(px_to_display_pt(disp, dpi), page)
+                native.append(rect)
+            else:
+                outline.append(rect)
     for g in _passes(native):
         for rect in g:
             page.add_redact_annot(rect, fill=False)
@@ -487,16 +575,40 @@ def smooth_em(rows, dpi):
         r["_em"] = med if len(sib) >= 3 and abs(r["_em0"] - med) > 0.1 * med else r["_em0"]
 
 
-def layout_row(row, layout, font, page, dpi, all_rows):
+def _fit_ladder(fit: FitSettings) -> tuple[list[float], list[float]]:
+    """Overall scales tried in the row's own line(s), then when wrapping into blank
+    lines below -- CAD's rule (core.cad_layout.fit_translated_texts): full size if
+    it fits, else the default scale, then 0.1 a step down to the minimum; only a
+    row that does not fit even at the minimum wraps, at the largest scale it can."""
+    tiers = fit.tiers()
+    return [1.0] + [t for t in tiers if t < 1.0 - 1e-9], tiers
+
+
+def _band_below(box, union, rot, off, thick_scale=1.0):
+    """A line slot ``off`` px below ``box`` (against the up vector), as long as the
+    whole block ``union`` along the reading direction, ``thick_scale`` times as thick."""
+    (ux, uy) = adv_up(rot)[1]
+    x0, y0, x1, y1 = box
+    if rot % 180 == 0:
+        x0, x1 = union[0], union[2]
+        mid, half = (y0 + y1) / 2, (y1 - y0) * thick_scale / 2
+        y0, y1 = mid - half, mid + half
+    else:
+        y0, y1 = union[1], union[3]
+        mid, half = (x0 + x1) / 2, (x1 - x0) * thick_scale / 2
+        x0, x1 = mid - half, mid + half
+    return (x0 - ux * off, y0 - uy * off, x1 - ux * off, y1 - uy * off)
+
+
+def layout_row(row, layout, page, dpi, all_rows, fit: FitSettings | None = None):
+    fit = (fit or DEFAULT_FIT_SETTINGS_ZH).normalized()
+    font = row["_font"].font
     rot = int(row.get("display_rotation", 0))
     lines = row.get("line_boxes") or [row["display_box"]]
     geo = [slot_geometry(b, rot) for b in lines]
     thick_px = statistics.median(g[3] for g in geo)
     k = dpi / 72.0
-    em = row["_em"]
-    letters = [c for c in row.get("source_text", "") if c.isalpha()]
-    caps = bool(letters) and all(not c.islower() for c in letters)
-    target = (0.86 if caps else 0.82) * em
+    target = row["_base"]
     text = row["translation"].strip()
     multi = len(lines) > 1
     if multi:
@@ -518,54 +630,67 @@ def layout_row(row, layout, font, page, dpi, all_rows):
         fwd = layout.extend(b, rot, True, limit_px=max(ln * 2.5, t * 30))
         back = 0.0 if anchor_left else layout.extend(b, rot, False, limit_px=max(ln * 1.0, t * 10))
         slots.append({"box": b, "start": s, "len": ln, "center": c, "fwd": fwd, "back": back})
-    # extra blank lines below the last slot (wrap room) for single-line rows
-    extra = []
-    if not multi:
-        b = lines[0]
-        (ux, uy) = adv_up(rot)[1]
-        x0, y0, x1, y1 = b
-        gap = thick_px * 1.25
-        for n in (1, 2):
-            off = gap * n
-            nb = (x0 - ux * off, y0 - uy * off, x1 - ux * off, y1 - uy * off)
-            if layout.blank(nb):
-                extra.append(nb)
-            else:
-                break
+    # verified blank lines below the last line take the wrapped rest (one-line labels
+    # and paragraphs alike), at the source line pitch, closer when the text is smaller
+    union = (min(b[0] for b in lines), min(b[1] for b in lines), max(b[2] for b in lines), max(b[3] for b in lines))
+    centres = [g[2] for g in geo]
+    pitch = abs(centres[-1] - centres[0]) / (len(centres) - 1) if multi else thick_px * 1.25
+    pitch = max(pitch, thick_px * 1.1)
+    extra_cache: dict[float, list] = {}
 
-    def try_fit(fs, use_extra):
-        widths = []
-        for s in slots:
-            avail = s["len"] + s["fwd"] + s["back"]
-            widths.append(avail / k)
-        all_slots = list(slots)
-        if use_extra:
-            for nb in extra:
-                s0, ln, c0, _ = slot_geometry(nb, rot)
-                all_slots.append({"box": nb, "start": s0, "len": ln, "center": c0, "fwd": slots[0]["fwd"], "back": slots[0]["back"]})
-                widths.append((ln + slots[0]["fwd"] + slots[0]["back"]) / k)
-        out = wrap(text, font, fs, widths[: len(all_slots)])
-        return (out, all_slots) if out else (None, None)
+    def extra_lines(height_scale):
+        if height_scale not in extra_cache:
+            extra = []
+            # a paragraph may grow by as many lines as it has (at least two)
+            limit = min(MAX_EXTRA_LINES, max(2, len(lines))) if multi else LABEL_EXTRA_LINES
+            for n in range(1, limit + 1):
+                nb = _band_below(lines[-1], union, rot, pitch * height_scale * n, height_scale)
+                if not layout.blank(nb):
+                    break
+                s0, ln, c0, t0 = slot_geometry(nb, rot)
+                # each new line may grow only into blank space of its own
+                fwd = layout.extend(nb, rot, True, limit_px=max(ln * 2.5, t0 * 30))
+                back = 0.0 if anchor_left else layout.extend(nb, rot, False, limit_px=max(ln * 1.0, t0 * 10))
+                extra.append({"box": nb, "start": s0, "len": ln, "center": c0, "fwd": fwd, "back": back})
+            extra_cache[height_scale] = extra
+        return extra_cache[height_scale]
+
+    def try_fit(fs, squeeze, use_extra, height_scale=1.0):
+        used = slots + extra_lines(height_scale) if use_extra else list(slots)
+        widths = [(s["len"] + s["fwd"] + s["back"]) / k for s in used]
+        out = wrap(text, font, fs, widths, squeeze)
+        return (out, used) if out else (None, None)
 
     sign = 1 if rot in (0, 270) else -1
 
-    def place(fs, res, used):
+    def inside(start, s, width_px):
+        """``start`` moved just enough to keep the line inside its verified blank band."""
+        lo = s["start"] - sign * s["back"]
+        hi = s["start"] + sign * (s["len"] + s["fwd"])
+        if sign > 0:
+            return max(min(start, hi - width_px), lo)
+        return min(max(start, hi + width_px), lo)
+
+    def place(fs, squeeze, res, used):
+        widths = [font.text_length(line, fontsize=fs) * squeeze * k for line in res]
+        shift = 0.0
+        if not anchor_left:
+            # a centred stack moves as one block: the line that must move furthest to
+            # stay in its band takes the others along, so wrapped lines share one axis
+            for line_w, s in zip(widths, used):
+                start = s["start"] + sign * s["len"] / 2 - sign * line_w / 2
+                d = inside(start, s, line_w) - start
+                if abs(d) > abs(shift):
+                    shift = d
         out = []
         for i, line in enumerate(res):
             s = used[i]
-            width_px = font.text_length(line, fontsize=fs) * k
+            width_px = widths[i]
             if anchor_left:
                 start = s["start"]
             else:
                 centre = s["start"] + sign * s["len"] / 2
-                start = centre - sign * width_px / 2
-                # keep inside the verified blank band
-                lo = s["start"] - sign * s["back"]
-                hi = s["start"] + sign * (s["len"] + s["fwd"])
-                if sign > 0:
-                    start = max(min(start, hi - width_px), lo)
-                else:
-                    start = min(max(start, hi + width_px), lo)
+                start = inside(centre - sign * width_px / 2 + shift, s, width_px)
             centre_x = s["center"]
             if multi and not anchor_left and len(res) < len(slots):
                 # centred stack that now needs fewer lines: keep it centred on the block
@@ -575,47 +700,91 @@ def layout_row(row, layout, font, page, dpi, all_rows):
             out.append((line, start, centre_x))
         return out
 
-    def collides(fs, placements):
+    def collides(fs, squeeze, placements):
         for line, start, centre in placements:
-            r = line_rect(font, line, fs, rot, start, centre, dpi)
+            r = line_rect(font, line, fs, rot, start, centre, dpi, squeeze)
             if any(not (r[2] <= a or r[0] >= c or r[3] <= b or r[1] >= d) for a, b, c, d in layout.occupied):
                 return True
         return False
 
+    one_line, wrapped = _fit_ladder(fit)
+    stages = [(False, one_line, None)]
+    if extra_lines(1.0) or extra_lines(scale_parts(wrapped[-1])[0]):
+        stages.append((True, wrapped, "wrapped_into_blank"))
     chosen = None
-    stages = [(False, target, target * MIN_SHRINK, None)]
-    if extra:
-        stages.append((True, target, target * MIN_SHRINK, "wrapped_into_blank"))
-    stages.append((False, target * MIN_SHRINK, max(MIN_FONT_PT / max(target, 1e-6), FLOOR_SHRINK) * target, "shrunk_hard"))
-    for use_extra, hi_fs, lo_fs, label in stages:
-        fs = hi_fs
-        while fs >= lo_fs and fs >= MIN_FONT_PT:
-            res, used = try_fit(fs, use_extra)
+    for use_extra, scales, label in stages:
+        for scale in scales:
+            height_scale, squeeze = scale_parts(scale)
+            fs = target * height_scale
+            if fs < MIN_FONT_PT:
+                break
+            res, used = try_fit(fs, squeeze, use_extra, height_scale)
             if res:
-                pl = place(fs, res, used)
-                if not collides(fs, pl):
-                    chosen = (fs, pl, label or ("fit" if fs == target else "shrunk"))
+                pl = place(fs, squeeze, res, used)
+                if not collides(fs, squeeze, pl):
+                    chosen = (scale, fs, squeeze, pl, label or ("fit" if scale >= 1.0 else "shrunk"))
                     break
-            fs *= 0.95
         if chosen:
             break
     if chosen is None:
         return None, "no_fit"
-    fs, placements, how = chosen
-    return {"fontsize": fs, "lines": placements, "how": how, "target": target, "anchor_left": anchor_left}, None
+    scale, fs, squeeze, placements, how = chosen
+    return {"fontsize": fs, "scale": scale, "squeeze": squeeze, "lines": placements, "how": how,
+            "target": target, "anchor_left": anchor_left}, None
 
 
-def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path, font_path: Path,
-        trial_preview: Path | None = None) -> dict:
+def row_base_size(row) -> float:
+    """The 100 % size of a row's translation (pt): the source size, and for Chinese,
+    Japanese or Korean written over Latin source a little smaller, so the glyphs
+    stand as tall as the source capitals."""
+    em = row["_em"]
+    if not has_cjk(row.get("translation", "")) or has_cjk(row.get("source_text", "")):
+        return em
+    letters = [c for c in row.get("source_text", "") if c.isalpha()]
+    caps = bool(letters) and all(not c.islower() for c in letters)
+    return (0.86 if caps else 0.82) * em
+
+
+def pick_fonts(rows, fonts: FontSet) -> dict[str, str]:
+    """Choose each row's font; rows nothing can show are returned as skipped."""
+    skipped = {}
+    for r in rows:
+        text = r["translation"].strip()
+        if needs_shaping(text):
+            skipped[r["id"]] = "unsupported_script"
+            continue
+        native = r.get("origin") == "native"
+        choice = fonts.pick(text, bold=native and looks_bold(r.get("font", ""), r.get("font_flags", 0)),
+                            serif=native and looks_serif(r.get("font", ""), r.get("font_flags", 0)))
+        if choice is None:
+            skipped[r["id"]] = "font_missing_glyph"
+            continue
+        r["_font"] = choice
+    return skipped
+
+
+def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path, font_path: Path | None = None,
+        trial_preview: Path | None = None, *, fonts: FontSet | None = None, fit: FitSettings | None = None) -> dict:
+    """Write the manifest's translations into ``output``.  ``fonts`` picks the font of
+    each line (``font_path`` forces one font for all); ``fit`` is the shrink ladder
+    (default: the Chinese one, full size first)."""
+    fonts = fonts or FontSet(forced=font_path)
+    fit = (fit or DEFAULT_FIT_SETTINGS_ZH).normalized()
     data = read_json(manifest)
     dpi = float(data.get("dpi", 200))
     rows = data["rows"]
     cand = [r for r in rows if r.get("decision") == "write" and str(r.get("translation", "")).strip()
             and r.get("translation", "").strip() != r.get("source_text", "").strip()]
+    cand_ids = {r["id"] for r in cand}
     skipped = {}
     for r in rows:
-        if r not in cand:
+        if r["id"] not in cand_ids:
             skipped[r["id"]] = r.get("decision_reason") or r.get("decision") or "not_write"
+    # a line no installed font can show (or that needs shaping) keeps its source
+    no_font = pick_fonts(cand, fonts)
+    skipped.update(no_font)
+    cand = [r for r in cand if r["id"] not in no_font]
+    cand_ids = {r["id"] for r in cand}
 
     src_doc = fitz.open(source)
     src_page = src_doc[0]
@@ -625,13 +794,14 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
         r["_color"] = r.get("color") or sample_color(src_rgb, r["display_box"])
 
     # 1) trial removal on a copy; repeat while a row would alter real graphics
-    protect = [r["display_box"] for r in rows if r not in cand and r.get("origin") == "ocr"]
+    protect = [r["display_box"] for r in rows if r["id"] not in cand_ids and r.get("origin") == "ocr"]
     src_draw: dict = {}
     src_sigs = path_sigs(src_page, src_draw)
     active = list(cand)
     trial = fitz.open(source)
     tp = trial[0]
-    apply_removal(tp, active, dpi, protect)
+    active_ids = {r["id"] for r in active}
+    apply_removal(tp, active, dpi, protect, kept_text=_kept_native(rows, active_ids))
     replay_non_glyph(tp, src_sigs, src_draw, active, dpi)
     trial_gray = render(tp, dpi).convert("L")
     if trial_preview:
@@ -655,27 +825,36 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     page = doc[0]
     n_draw_src = len(src_page.get_drawings())
     n_img_src = len(src_page.get_images(full=True))
-    apply_removal(page, ok, dpi, protect + [r["display_box"] for r in cand if r not in ok])
+    ok_ids = {r["id"] for r in ok}
+    apply_removal(page, ok, dpi, protect + [r["display_box"] for r in cand if r["id"] not in ok_ids],
+                  kept_text=_kept_native(rows, ok_ids))
     replayed = replay_non_glyph(page, src_sigs, src_draw, ok, dpi)
     n_restored = len(replayed)
     after_gray = render(page, dpi).convert("L")
-    layout = Layout(after_gray, dpi, bounds=content_box(src_gray, pad_px=2 * dpi / 72.0))
+    layout = Layout(after_gray, dpi, bounds=content_box(src_gray, pad_px=2 * dpi / 72.0,
+                                                        rows=[b for r in rows for b in (r.get("line_boxes") or [r["display_box"]])]))
     smooth_em(ok, dpi)
-    font = fitz.Font(fontfile=str(font_path))
-    page.insert_font(fontname=FONT_NAME, fontfile=str(font_path))
+    for r in ok:
+        r["_base"] = row_base_size(r)
+    inserted: set[str] = set()
     placed, failed = [], []
     # big text first so titles keep their size when space is contested
     for r in sorted(ok, key=lambda r: -max(slot_geometry(b, int(r.get("display_rotation", 0)))[3]
                                            for b in (r.get("line_boxes") or [r["display_box"]]))):
-        plan, why = layout_row(r, layout, font, page, dpi, cand)
+        plan, why = layout_row(r, layout, page, dpi, cand, fit)
         if plan is None:
             failed.append(r)
             skipped[r["id"]] = why
             continue
+        choice = r["_font"]
+        if choice.name not in inserted:
+            page.insert_font(fontname=choice.name, fontfile=str(choice.path))
+            inserted.add(choice.name)
         rot = int(r.get("display_rotation", 0))
         rects = []
         for line, start, centre in plan["lines"]:
-            rects.append(place_line(page, font, line, plan["fontsize"], rot, start, centre, dpi, r["_color"]))
+            rects.append(place_line(page, choice.font, line, plan["fontsize"], rot, start, centre, dpi, r["_color"],
+                                    fontname=choice.name, squeeze=plan["squeeze"]))
         layout.occupied.extend(rects)
         r["_plan"] = plan
         r["_rects"] = rects
@@ -686,7 +865,7 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     if failed:
         doc.close()
         keep_ids = {r["id"] for r in placed}
-        return run_restricted(source, manifest, output, preview, report, font_path, keep_ids, skipped, data)
+        return run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit)
 
     doc.subset_fonts()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -706,11 +885,15 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
             "images_source": n_img_src, "images_output": out_info["images"], "paths_restored": n_restored,
             "fit_modes": _count(p["_plan"]["how"] for p in placed),
             "font_ratio_median": statistics.median(p["_plan"]["fontsize"] / p["_plan"]["target"] for p in placed) if placed else None,
+            "scale_median": statistics.median(p["_plan"]["scale"] for p in placed) if placed else None,
+            "fonts": sorted({p["_font"].path.name for p in placed}),
         },
         "page": out_info,
         "written": [{"id": r["id"], "source_text": r["source_text"], "translation": r["translation"],
                      "translation_source": r.get("translation_source"), "fontsize": round(r["_plan"]["fontsize"], 2),
                      "target_fontsize": round(r["_plan"]["target"], 2), "fit": r["_plan"]["how"],
+                     "scale": r["_plan"]["scale"], "width_factor": round(r["_plan"]["squeeze"], 3),
+                     "font": r["_font"].path.name,
                      "anchor_left": r["_plan"]["anchor_left"], "lines": [ln[0] for ln in r["_plan"]["lines"]],
                      "residual_ink": round(r["_residual"], 3), "color": [round(c, 3) for c in r["_color"]],
                      "display_box": r["display_box"], "line_boxes": r.get("line_boxes"),
@@ -723,15 +906,18 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     return rep
 
 
-def run_restricted(source, manifest, output, preview, report, font_path, keep_ids, skipped, data):
+def run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit):
     rows = data["rows"]
     for r in rows:
         if r.get("decision") == "write" and r["id"] not in keep_ids:
             r["decision"] = "keep_source"
             r["decision_reason"] = skipped.get(r["id"], "layout_failed")
+        # working values of the first attempt (fonts, plans) are not part of the manifest
+        for key in [key for key in r if key.startswith("_")]:
+            del r[key]
     tmp = Path(report).with_name(Path(report).stem + "_restricted_manifest.json")
     write_json(tmp, data)
-    rep = run(source, tmp, output, preview, report, font_path)
+    rep = run(source, tmp, output, preview, report, fonts=fonts, fit=fit)
     return rep
 
 

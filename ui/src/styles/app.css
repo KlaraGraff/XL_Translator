@@ -834,6 +834,8 @@ table.review-tbl { table-layout: fixed; }
 .rp-sub { margin: -2px 0 10px; padding-left: 12px; border-left: 2px solid var(--line-2); }
 .rp-pair { display: flex; gap: 8px; }
 .rp-pair > .field { flex: 1; min-width: 0; margin-bottom: 4px; }
+/* 一边的名称在英文、法文里折成两行时（「Échelle minimale du texte」），两个下拉框仍然对齐：名称贴着下拉框，整组靠下。 */
+.rp-pair > .field { display: flex; flex-direction: column; justify-content: flex-end; }
 .rp-note { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); margin: -2px 0 10px; }
 .rp-action { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: -2px 0 12px; }
 .rp-action-note { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }

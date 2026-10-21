@@ -42,6 +42,18 @@ _VISIBLE_MIN_CHARS = 20
 WORD_MAX_PAGE_EDGE_PT = 22 * 72
 
 
+#: 原位替换写不了这种目标语言时，页面改用保底方式的原因。
+INPLACE_TARGET_UNSUPPORTED = "原位替换暂不支持该目标语言（文字需连写排版）"
+
+
+def inplace_target_supported(target_lang: str) -> bool:
+    """原位替换能不能译成这种语言：阿拉伯文、泰文、印度各文字等要连写或从右往左排的不能
+    （见 core.pdf_vector.fonts）；中文、日文、韩文和用拉丁、西里尔、希腊字母的都可以。"""
+    from core.pdf_vector.fonts import target_supported
+
+    return target_supported(str(target_lang or ""))
+
+
 def exceeds_word_page(width_pt: float, height_pt: float) -> bool:
     """这一页放不进 Word 的页面（A2 及更大的页都放不下）。"""
     return max(float(width_pt), float(height_pt)) > WORD_MAX_PAGE_EDGE_PT + 0.5

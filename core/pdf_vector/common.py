@@ -96,5 +96,51 @@ def text_has_cjk(s: str) -> bool:
 NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 
 
-def numbers(s: str) -> list[str]:
-    return NUMBER_RE.findall(unicodedata.normalize("NFKC", str(s or "")))
+# 译成西文时日期常写成「24 mars 2026」「24/03/2026」「24.03.2026」。核对数字时把这几种
+# 写法拆成日、月、年三个数：紧挨着数字的月份名按月份的数字算（离数字远的同形词 mai、
+# may 不算），03 与 3 算同一个数，「2026年3月24日」才对得上。
+_MONTH_NAMES = (
+    ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre",
+     "novembre", "décembre"),
+    ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+     "november", "december"),
+    ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
+     "noviembre", "diciembre"),
+    ("januar", "februar", "märz", "april", "mai", "juni", "juli", "august", "september", "oktober",
+     "november", "dezember"),
+    ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre",
+     "novembre", "dicembre"),
+    ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro",
+     "novembro", "dezembro"),
+)
+MONTHS = {name: index for names in _MONTH_NAMES for index, name in enumerate(names, 1)}
+MONTHS.update({"fevrier": 2, "aout": 8, "decembre": 12, "marz": 3, "marco": 3,
+               "jan": 1, "janv": 1, "feb": 2, "fév": 2, "févr": 2, "fev": 2, "mar": 3, "apr": 4, "avr": 4,
+               "jun": 6, "jul": 7, "juil": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11,
+               "dec": 12, "déc": 12})
+_MONTH_RE = re.compile(r"(?<![^\W\d_])(" + "|".join(sorted(map(re.escape, MONTHS), key=len, reverse=True))
+                       + r")\.?(?![^\W\d_])", re.IGNORECASE)
+_DIGIT_BEFORE_RE = re.compile(r"\d(?:er|st|nd|rd|th)?[\s.,/-]*$", re.IGNORECASE)
+_DIGIT_AFTER_RE = re.compile(r"[\s.,/-]*\d")
+_NUMERIC_DATE_RE = re.compile(r"(?<![\d.,])(\d{1,4})([./-])(\d{1,2})\2(\d{1,4})(?![\d.,])")
+
+
+def _month_numbers(s: str) -> str:
+    def swap(m: re.Match[str]) -> str:
+        near = _DIGIT_BEFORE_RE.search(s, 0, m.start()) or _DIGIT_AFTER_RE.match(s, m.end())
+        return f" {MONTHS[m.group(1).lower()]} " if near else m.group(0)
+
+    return _MONTH_RE.sub(swap, s)
+
+
+def numbers(s: str, *, dates: bool = False) -> list[str]:
+    """Numbers in ``s``; a decimal comma counts as a decimal point (French 1,5 = 1.5).
+
+    ``dates``: dates count as day, month and year whatever way they are written,
+    so 「2026年3月24日」, 「24 mars 2026」 and 「24/03/2026」 hold the same numbers."""
+    text = unicodedata.normalize("NFKC", str(s or ""))
+    if not dates:
+        return [n.replace(",", ".") for n in NUMBER_RE.findall(text)]
+    text = _NUMERIC_DATE_RE.sub(r"\1 \3 \4", _month_numbers(text))
+    return [n.replace(",", ".") if any(c in n for c in ".,") else (n.lstrip("0") or "0")
+            for n in NUMBER_RE.findall(text)]
