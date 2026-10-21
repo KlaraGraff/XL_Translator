@@ -1,0 +1,32 @@
+# Temporary: runs the PDF in-place tests on the same macOS runner as the release
+# build (system Arial / Arial Unicode). Removed before this PR is merged.
+name: Temporary macOS in-place check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  macos-inplace:
+    runs-on: macos-14
+    timeout-minutes: 40
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      TRANSLATOR_APP_DATA_DIR: ${{ github.workspace }}/../translator-tests/app-data
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Install release dependencies
+        run: |
+          python -m venv .venv
+          PYTHON_BIN=./.venv/bin/python3 bash ./scripts/install_macos_dependencies.sh
+          ./.venv/bin/python3 -m pip install --requirement requirements-test.txt
+      - name: Fonts the in-place writer picks here
+        run: |
+          ./.venv/bin/python3 -c "from core.pdf_vector.fonts import FontSet, find_cjk_font; print(find_cjk_font(), FontSet('en').pick('Roof plan').path)"
+      - name: PDF in-place tests
+        run: ./.venv/bin/python3 -m pytest -q tests/test_pdf_inplace_languages.py tests/test_pdf_inplace.py
+      - name: Full suite as in the release build
+        run: ./.venv/bin/python3 scripts/release_env_tests.py
