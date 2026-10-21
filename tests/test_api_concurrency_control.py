@@ -163,6 +163,36 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
 
+    def test_the_minute_line_never_says_it_waited_zero_seconds(self) -> None:
+        # 本机验证 2026-10-21：一批过去以后计时重新开始，下一次碰到繁忙就写了
+        # 「已等待 0 秒，正在继续重试」。只有真的连续等了一分钟才说。
+        scheduler = WeightedApiScheduler(1)
+        reset_minimum_capacity_watch(scheduler)
+        messages: list[str] = []
+        clock = [1000.0]
+
+        def hit() -> None:
+            handle_api_concurrency_limit(
+                _limit_error(), scheduler=scheduler, request_generation=None,
+                context_label="PDF", error_callback=messages.append,
+            )
+
+        with patch("core.api_concurrency_control.time.monotonic", lambda: clock[0]), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_BASE_DELAY", 0.0), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_MAX_DELAY", 0.0), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_GRACE_SECONDS", 600.0):
+            hit()  # 「已降至最低速度」
+            clock[0] += 70
+            reset_minimum_capacity_watch(scheduler)  # a batch got through
+            hit()
+            self.assertFalse([m for m in messages if "已等待" in m], messages)
+            clock[0] += 70
+            hit()  # still busy a minute later: now the line is due
+
+        waits = [m for m in messages if "已等待" in m]
+        self.assertEqual(len(waits), 1, messages)
+        self.assertIn("已等待 70 秒", waits[0])
+
     def test_one_limit_episode_writes_at_most_two_run_log_lines(self) -> None:
         """A burst of 429s is one event to the user, not twenty."""
         scheduler = WeightedApiScheduler(40)
