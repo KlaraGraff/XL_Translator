@@ -1,5 +1,39 @@
 # Translator 版本更新日志
 
+## V10.3.1
+
+- **Excel 行高：首行等处不再被裁或异常撑高**：合并单元格的标题、中文表头、伸到右侧空格里的标题，以前估算行高时常常偏低（文字被裁掉一截）或偏高（整行被撑得很高）。现在合并单元格按整个合并区域的宽度估算，每行能放几个字按字号计算，汉字按全角宽度、西文按单词断行；没有开「自动换行」的格不再按列宽折行；伸到右侧空格的标题放得下时保持一行；锁定行高时，合并格按整个区域缩小字号；Excel 自动调整行高后，有合并单元格的行不会比调整前更矮。
+
+  **Excel row heights: no more clipped or oversized rows**: Merged title cells, Chinese headers and titles spilling into empty cells to the right often got row heights that were too low (text cut off) or too high. Merged cells are now measured across their whole merged width, the characters per line follow the font size, Chinese characters count as full width and Western text wraps by word; cells without Wrap text are no longer wrapped to the column width; a spilling title that fits stays on one line; with locked row heights, merged cells shrink their font across the whole area; and after Excel's own AutoFit, rows with merged cells are never lower than before.
+
+- **「本批文件」卡片不再闪烁，各行对齐**：混合文件夹「全部开始」之后，「翻译」页上的「本批文件」卡片每来一次进度就整张重画，入场的淡入跟着重播，4 秒里闪二十来次；现在卡片原地更新，只改文字和进度条宽度，进度条也能平滑变长。各行右侧的状态（「已完成」「翻译中 85%」「完成但有问题 · 需复核」）长短不一时，中间那列设置以前跟着左右错开；现在各行共用同一套列宽，始终上下对齐。逐页检查了全软件在任务进行中有没有同类「刷新时重播入场动画」的地方，没有发现别处。
+
+  **The "This batch" card no longer flickers, and its rows line up**: After Start all on a mixed folder, the "This batch" card on the Translate page was redrawn on every progress update and replayed its fade-in, flashing about twenty times in four seconds. It now updates in place, changing only the text and the progress bar width, which also eases smoothly. When the statuses on the right differed in length ("Completed", "Translating 85%", "Completed with issues · Needs review"), the settings column in the middle used to shift from row to row; all rows now share the same column widths and stay aligned. Every page was checked during a running task for the same kind of replayed fade-in; none was found elsewhere.
+
+- **拖放区写全 PPT，.pptx 排在最前**：「翻译」页拖放区的说明句补上 PPT（「Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里……」，英文、法文同步）。PPT 芯片上的扩展名以前按字母排，显示成「.potx .pps .ppsx .ppt .pptm …」，最常用的 .pptx 被省略号挡掉；现在按类型清单的先后显示，.pptx 在第一个。打开应用时直接落在「翻译」页，类型信息晚到一步时，PPT 芯片偶尔不出现，现在会等类型信息到了再画。
+
+  **The drop area names PowerPoint, with .pptx first**: The sentence in the Translate page's drop area now includes PowerPoint ("Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here…", in French too). The PowerPoint chip used to list its extensions alphabetically as ".potx .pps .ppsx .ppt .pptm …", so the most common one, .pptx, was cut off; they now follow the type's own order, with .pptx first. When the app opened on the Translate page before the type list had loaded, the PowerPoint chip sometimes did not appear; the page now waits for the list.
+
+- **反馈页的任务状态与任务页一致**：只有提示、没有问题的任务，在反馈页「选择任务」列表和发送内容预览里以前写成「完成但有问题」，任务页却显示「已完成」或「提示 N」。现在两处用同一套判断；「反馈此任务」弹窗也不再把这类任务默认当成有问题。
+
+  **Task status on the feedback page matches the Tasks page**: A task with notes but no problems used to show as "Completed with issues" in the feedback page's task list and send preview, while the Tasks page said "Completed" or "N notes". Both now use the same rule, and the "Send feedback on this task" dialog no longer treats such tasks as having a problem.
+
+- **修复：PDF 翻译选硅基流动时任何模型都用不了**：「PDF 与图片翻译」和「PDF 与图片审核」以前写死只发 OpenAI 专有的 /responses 请求，硅基流动没有这个接口，选哪个模型测试连接都失败（小红书用户反馈）。现在硅基流动的整页图像翻译走它自己的图像接口（Qwen-Image-Edit 这类改图模型），审核和文档翻译一样按连接的「文本请求协议」发请求，自动识别时一种不通就换另一种。硅基流动的默认地址改为国内站 api.siliconflow.cn（国内站申请的密钥在国际站会被拒）；获取模型列表时按用途只列能用的模型；智谱、阿里百炼、Anthropic 也能获取模型列表了。
+
+  **Fix: no SiliconFlow model worked for PDF translation**: PDF and image translation and PDF and image review always sent OpenAI's own /responses request, which SiliconFlow does not offer, so every model failed the connection test. SiliconFlow page translation now uses its own image API (image-editing models such as Qwen-Image-Edit), and review follows the connection's text request protocol like document translation, trying the other one when Auto finds the first missing. SiliconFlow now defaults to its China endpoint api.siliconflow.cn (keys from the China site are refused by the international one); model lists show only models that fit the use; Zhipu, Alibaba Bailian and Anthropic can now fetch model lists too.
+
+- **模型服务：不再预填型号，「OpenAI 兼容」改名「自定义配置」、「Claude」改名「Anthropic」，可一键打开各家控制台**：选服务商时不再自动填一个「推荐型号」，模型名称右侧的箭头也不再列「服务商推荐型号」：各家型号换代太快，写死的推荐很快过时，请获取模型列表后自己选；换服务商时模型名称清空。服务商第一项「OpenAI 兼容」改名「自定义配置」，「Claude」改名「Anthropic」。选中各家服务商时，「服务商」旁边有「获取 ↗ API 密钥」，点一下打开它创建密钥的控制台（硅基流动按当前地址分国内站、国际站）。
+
+  **Model services: no preset model, "Custom configuration" and "Anthropic", and a link to each provider's console**: Picking a provider no longer fills in a "recommended" model, and the model-name arrow no longer offers one: models change too fast for a fixed recommendation to stay right, so fetch the list and choose; switching providers clears the model name. The first provider option, "OpenAI-compatible", is now "Custom configuration", and "Claude" is now "Anthropic". With a named provider selected, "Get ↗ API key" next to Provider opens its key console (SiliconFlow's China or international site, following the current address).
+
+- **PDF 与图片翻译填错模型时说清楚，并可一键改为转成 Word 翻译**：图像模型测试连接没通过、看起来是填了文字模型时，提示写明需使用图像模型，并说明经实测目前效果最佳的是 ChatGPT 的 image-2.5-flare；旁边「改为转成 Word 翻译」把 PDF 翻译方式改为「自动组合」、可提取文字的页转成 Word 翻译。自动组合里，测试没通过的图像模型按「没有」处理：扫描页和需要保底的页保留原样并在完成后列出，不再逐页去试。审核模型不能看图时同样提示换一个支持图片输入的模型。
+
+  **A clear message for the wrong PDF model, and one click to switch to Convert to Word**: When the image model fails its test in a way that points to a text model, the message says an image model is required and that, in our tests, ChatGPT's image-2.5-flare currently performs best; "Switch to Convert to Word" beside it sets the PDF method to Automatic mix with extractable pages translated through Word. In Automatic mix an image model that failed its test counts as missing: scanned and fallback pages are kept as they are and listed at the end instead of being tried page by page. A review model that cannot read images gets a similar message.
+
+- **分段控件的滑块对齐**：设置页「连接方式」只有「云端 API」一项时（PDF 与图片翻译），滑块只占一半、文字错位；工作区右栏的「双语对照 / 仅译文」「源文件旁 / 自定义」滑块也比选中项宽 4 像素。滑块宽度现在按选项数计算，各处都对齐。
+
+  **Segmented control thumb alignment**: When "Connection method" had only "Cloud API" (PDF & image translation), the thumb covered half the bar and the label sat off-centre; the workspace side-panel switches had a thumb 4 px wider than the selected option. The thumb width now follows the number of options everywhere.
+
 ## V10.3.0
 
 - **路径栏按钮改为「选择」**：各翻译页顶部路径栏右侧的按钮原来写作「选择…」，省略号让它看起来像文字没显示完整；现在去掉省略号，只写「选择」（英文 Select，法文 Choisir），点开仍是「选择文件 / 选择文件夹」两项。
@@ -137,30 +171,6 @@
 - **从 PDF 页点「安装 ↗ 组件」后，矮窗口里也能看到要装的组件卡片**：跳到「扩展 → 组件」后，组件检测回来会整页重绘，卡片被挤到可视区下方、面板不再滚动。现在检测全部回来后再对准一次，卡片完整露出（#153）。
 
   **After clicking Install ↗ components on the PDF page, the component card is visible even in a short window**: Extensions → Components redraws once the component checks return, which pushed the card below the visible area without scrolling. The panel now scrolls to the card again after all checks return, so it is fully shown (#153).
-
-- **「本批文件」卡片不再闪烁，各行对齐**：混合文件夹「全部开始」之后，「翻译」页上的「本批文件」卡片每来一次进度就整张重画，入场的淡入跟着重播，4 秒里闪二十来次；现在卡片原地更新，只改文字和进度条宽度，进度条也能平滑变长。各行右侧的状态（「已完成」「翻译中 85%」「完成但有问题 · 需复核」）长短不一时，中间那列设置以前跟着左右错开；现在各行共用同一套列宽，始终上下对齐。逐页检查了全软件在任务进行中有没有同类「刷新时重播入场动画」的地方，没有发现别处。
-
-  **The "This batch" card no longer flickers, and its rows line up**: After Start all on a mixed folder, the "This batch" card on the Translate page was redrawn on every progress update and replayed its fade-in, flashing about twenty times in four seconds. It now updates in place, changing only the text and the progress bar width, which also eases smoothly. When the statuses on the right differed in length ("Completed", "Translating 85%", "Completed with issues · Needs review"), the settings column in the middle used to shift from row to row; all rows now share the same column widths and stay aligned. Every page was checked during a running task for the same kind of replayed fade-in; none was found elsewhere.
-
-- **拖放区写全 PPT，.pptx 排在最前**：「翻译」页拖放区的说明句补上 PPT（「Excel、Word、PPT、PDF 与图片、CAD 图纸都可以放在这里……」，英文、法文同步）。PPT 芯片上的扩展名以前按字母排，显示成「.potx .pps .ppsx .ppt .pptm …」，最常用的 .pptx 被省略号挡掉；现在按类型清单的先后显示，.pptx 在第一个。打开应用时直接落在「翻译」页，类型信息晚到一步时，PPT 芯片偶尔不出现，现在会等类型信息到了再画。
-
-  **The drop area names PowerPoint, with .pptx first**: The sentence in the Translate page's drop area now includes PowerPoint ("Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here…", in French too). The PowerPoint chip used to list its extensions alphabetically as ".potx .pps .ppsx .ppt .pptm …", so the most common one, .pptx, was cut off; they now follow the type's own order, with .pptx first. When the app opened on the Translate page before the type list had loaded, the PowerPoint chip sometimes did not appear; the page now waits for the list.
-
-- **修复：PDF 翻译选硅基流动时任何模型都用不了**：「PDF 与图片翻译」和「PDF 与图片审核」以前写死只发 OpenAI 专有的 /responses 请求，硅基流动没有这个接口，选哪个模型测试连接都失败（小红书用户反馈）。现在硅基流动的整页图像翻译走它自己的图像接口（Qwen-Image-Edit 这类改图模型），审核和文档翻译一样按连接的「文本请求协议」发请求，自动识别时一种不通就换另一种。硅基流动的默认地址改为国内站 api.siliconflow.cn（国内站申请的密钥在国际站会被拒）；获取模型列表时按用途只列能用的模型；智谱、阿里百炼、Anthropic 也能获取模型列表了。
-
-  **Fix: no SiliconFlow model worked for PDF translation**: PDF and image translation and PDF and image review always sent OpenAI's own /responses request, which SiliconFlow does not offer, so every model failed the connection test. SiliconFlow page translation now uses its own image API (image-editing models such as Qwen-Image-Edit), and review follows the connection's text request protocol like document translation, trying the other one when Auto finds the first missing. SiliconFlow now defaults to its China endpoint api.siliconflow.cn (keys from the China site are refused by the international one); model lists show only models that fit the use; Zhipu, Alibaba Bailian and Anthropic can now fetch model lists too.
-
-- **模型服务：不再预填型号，「OpenAI 兼容」改名「自定义配置」、「Claude」改名「Anthropic」，可一键打开各家控制台**：选服务商时不再自动填一个「推荐型号」，模型名称右侧的箭头也不再列「服务商推荐型号」：各家型号换代太快，写死的推荐很快过时，请获取模型列表后自己选；换服务商时模型名称清空。服务商第一项「OpenAI 兼容」改名「自定义配置」，「Claude」改名「Anthropic」。选中各家服务商时，「服务商」旁边有「获取 ↗ API 密钥」，点一下打开它创建密钥的控制台（硅基流动按当前地址分国内站、国际站）。
-
-  **Model services: no preset model, "Custom configuration" and "Anthropic", and a link to each provider's console**: Picking a provider no longer fills in a "recommended" model, and the model-name arrow no longer offers one: models change too fast for a fixed recommendation to stay right, so fetch the list and choose; switching providers clears the model name. The first provider option, "OpenAI-compatible", is now "Custom configuration", and "Claude" is now "Anthropic". With a named provider selected, "Get ↗ API key" next to Provider opens its key console (SiliconFlow's China or international site, following the current address).
-
-- **PDF 与图片翻译填错模型时说清楚，并可一键改为转成 Word 翻译**：图像模型测试连接没通过、看起来是填了文字模型时，提示写明需使用图像模型，并说明经实测目前效果最佳的是 ChatGPT 的 image-2.5-flare；旁边「改为转成 Word 翻译」把 PDF 翻译方式改为「自动组合」、可提取文字的页转成 Word 翻译。自动组合里，测试没通过的图像模型按「没有」处理：扫描页和需要保底的页保留原样并在完成后列出，不再逐页去试。审核模型不能看图时同样提示换一个支持图片输入的模型。
-
-  **A clear message for the wrong PDF model, and one click to switch to Convert to Word**: When the image model fails its test in a way that points to a text model, the message says an image model is required and that, in our tests, ChatGPT's image-2.5-flare currently performs best; "Switch to Convert to Word" beside it sets the PDF method to Automatic mix with extractable pages translated through Word. In Automatic mix an image model that failed its test counts as missing: scanned and fallback pages are kept as they are and listed at the end instead of being tried page by page. A review model that cannot read images gets a similar message.
-
-- **分段控件的滑块对齐**：设置页「连接方式」只有「云端 API」一项时（PDF 与图片翻译），滑块只占一半、文字错位；工作区右栏的「双语对照 / 仅译文」「源文件旁 / 自定义」滑块也比选中项宽 4 像素。滑块宽度现在按选项数计算，各处都对齐。
-
-  **Segmented control thumb alignment**: When "Connection method" had only "Cloud API" (PDF & image translation), the thumb covered half the bar and the label sat off-centre; the workspace side-panel switches had a thumb 4 px wider than the selected option. The thumb width now follows the number of options everywhere.
 
 ## V10.2.0
 
