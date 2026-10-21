@@ -236,6 +236,19 @@ def supports_resend_unchanged(fn) -> bool:
         return False
 
 
+def _reason(exc: BaseException) -> str:
+    """The sentence the run log shows for a failed request (「原位替换：…」).
+
+    It used to read 「ApiKeyTemporarilyUnavailableError: 模型服务持续提示繁忙…」: the
+    class name means nothing to the user.  Same rule as the batch notices
+    (core.engine_dispatcher.user_facing_batch_reason); the raw error goes to the
+    debug log there.
+    """
+    from core.engine_dispatcher import user_facing_batch_reason
+
+    return user_facing_batch_reason(exc)
+
+
 def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
                           **extra) -> tuple[dict, int]:
     """Texts the service gave up on are left out of the result (the app's
@@ -263,20 +276,20 @@ def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn,
         try:
             res = dict(translate(texts, prompt, resend_unchanged=pick, **extra) or {})
         except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
-            errors.append(f"{type(exc).__name__}: {exc}")
+            errors.append(_reason(exc))
             return {}, 0
         return res, len(picked)
     try:
         res = dict(translate(texts, prompt, **extra) or {})
     except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
-        errors.append(f"{type(exc).__name__}: {exc}")
+        errors.append(_reason(exc))
         return {}, 0
     again = [t for t in texts if needs_another_try(t, res.get(t))]
     if again:
         try:
             res.update({k: v for k, v in (translate(again, prompt, **extra) or {}).items() if v})
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"retry {type(exc).__name__}: {exc}")
+            errors.append(_reason(exc))
     return res, len(again)
 
 
@@ -323,7 +336,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             try:
                 scene = profile([r["source_text"] for r in rows if any(ch.isalpha() for ch in r["source_text"])]) or ""
             except Exception as exc:  # noqa: BLE001 - the description is optional
-                errors.append(f"profile {type(exc).__name__}: {exc}")
+                errors.append(_reason(exc))
             if scene:
                 from core.document_profile import append_profile
                 prompt = append_profile(prompt, scene)
@@ -334,7 +347,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
                                       lang_pairs=[f"{source_lang}-{memory.target_lang}"], log=log)
                 from_memory = {k: v for k, v in session.hits.items() if v}
             except Exception as exc:  # noqa: BLE001 - the memory is optional, the page still translates
-                errors.append(f"memory {type(exc).__name__}: {exc}")
+                errors.append(_reason(exc))
                 session = None
         ask = [text for text in inputs if text not in from_memory]
         if ask:
@@ -371,7 +384,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
         try:
             memory.close(session, learned, counts=counts)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"memory {type(exc).__name__}: {exc}")
+            errors.append(_reason(exc))
 
     def count(key):
         c: dict = {}
