@@ -13,7 +13,6 @@ pdf2docx，NumPy、OpenCV 这些大库不进主进程。
 from __future__ import annotations
 
 import json
-import os
 import platform
 import shutil
 import sys
@@ -31,7 +30,9 @@ from core.component_download import (
     RemoteFile,
     download_files,
     extract_wheel,
+    file_matches,
     pypi_file,
+    replace_file,
 )
 
 MANIFEST_VERSION = "1"
@@ -100,6 +101,16 @@ MANIFEST: dict[str, tuple[RemoteFile, ...]] = {
     ),
 }
 
+# PyMuPDF 的 Windows 版要用 VC++ 运行库里的 msvcp140.dll，wheel 和翻译引擎都没带：没装过
+# 「Visual C++ 可再发行程序包」的电脑上加载不了。NumPy 的 wheel 里带了一份（只改了文件名），
+# 核对后拷到 pymupdf 目录里，Windows 加载 PyMuPDF 时先在它自己的目录里找。
+RUNTIME_COPIES: dict[str, tuple[tuple[str, str, int, str], ...]] = {
+    "windows-x64": (
+        ("numpy.libs/msvcp140-263139962577ecda4cd9469ca360a746.dll", "pymupdf/msvcp140.dll",
+         575056, "a4c2229bdc2a2a630acdc095b4d86008e5c3e3bc7773174354f3da4f5beb9cde"),
+    ),
+}
+
 ProgressFn = Callable[[str, int, int], None]  # (phase, done, total)
 
 
@@ -118,6 +129,15 @@ def platform_key() -> str:
     if sys.platform.startswith("linux") and machine in ("x86_64", "amd64"):
         return "linux-x64"
     return ""
+
+
+def _copy_runtime(site_dir: Path) -> None:
+    for source, target, size, sha256 in RUNTIME_COPIES.get(platform_key(), ()):
+        path = site_dir / source
+        if not file_matches(path, size, sha256):
+            logger.warning(f"[PDF 处理组件] 运行库 {source} 缺失或核对未通过")
+            raise ComponentInstallError("组件文件不完整。")
+        shutil.copyfile(path, site_dir / target)
 
 
 def manifest_files() -> tuple[RemoteFile, ...]:
@@ -173,7 +193,7 @@ def _write_record(data: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -196,9 +216,13 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
     if not _INSTALL_LOCK.acquire(blocking=False):
         raise ComponentInstallError("组件正在安装，请稍候。")
     root = component_root()
-    staging = root / f".staging-{uuid.uuid4().hex[:8]}"
+    downloads = root / ".downloads"
+    # 每次装进一个新目录：Windows 上正被翻译引擎加载着的旧库删不掉、也挪不动，不能原地覆盖。
+    # 直接解压到最终目录、不再整个改名：杀毒软件还在扫刚写出的库时，Windows 不让改名。
+    # 试运行通过后写下记录才算换上；没写记录的目录不会被用到，下次安装或卸载时删掉。
+    final_dir = root / f"{MANIFEST_VERSION}-{uuid.uuid4().hex[:8]}"
+    installed = False
     try:
-        downloads = root / ".downloads"
 
         def on_bytes(done: int, total: int) -> None:
             if progress:
@@ -208,7 +232,7 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
             wheels = download_files(files, downloads, progress=on_bytes, cancel=cancel, client=_http_client())
         except ComponentDownloadError as exc:
             raise ComponentInstallError(str(exc)) from exc
-        site_dir = staging / "site-packages"
+        site_dir = final_dir / "site-packages"
         site_dir.mkdir(parents=True, exist_ok=True)
         for index, wheel in enumerate(wheels, start=1):
             if progress:
@@ -217,32 +241,31 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
                 extract_wheel(wheel, site_dir)
             except ComponentDownloadError as exc:
                 raise ComponentInstallError(str(exc)) from exc
+        _copy_runtime(site_dir)
         if progress:
             progress("verify", 0, 1)
         ok, version, detail = probe_in_subprocess(site_dir, convert=True)
         if not ok:
             logger.warning(f"[PDF 处理组件] 一键安装后试运行失败：{detail}")
             raise ComponentInstallError("组件已下载，但无法在本机运行。")
-        # 每次装进一个新目录：Windows 上正被翻译引擎加载着的旧库删不掉、也挪不动，
-        # 不能原地覆盖。旧目录尽量删，删不掉的下次安装或卸载时再删。
-        final_dir = root / f"{MANIFEST_VERSION}-{uuid.uuid4().hex[:8]}"
-        old_dirs = [path for path in root.iterdir() if path.is_dir() and path != staging]
-        staging.replace(final_dir)
+        old_dirs = [path for path in root.iterdir() if path.is_dir() and path not in (final_dir, downloads)]
         _write_record({
             "version": MANIFEST_VERSION,
             "site_dir": f"{final_dir.name}/site-packages",
             "pymupdf": version,
             "platform": platform_key(),
         })
+        installed = True
+        # 旧目录尽量删，删不掉的下次安装或卸载时再删。
         for old in old_dirs:
-            if old.exists() and old.name != ".downloads":
-                _discard(old)
+            _discard(old)
         shutil.rmtree(downloads, ignore_errors=True)
         if progress:
             progress("done", 1, 1)
         return installed_info()
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if not installed:
+            shutil.rmtree(final_dir, ignore_errors=True)
         _INSTALL_LOCK.release()
 
 

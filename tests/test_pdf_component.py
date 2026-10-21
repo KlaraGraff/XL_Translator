@@ -88,6 +88,60 @@ def test_download_can_be_cancelled(tmp_path):
         download_files([item], tmp_path, cancel=cancel, client=_client({}))
 
 
+def test_an_unusable_system_proxy_falls_back_to_a_direct_connection(monkeypatch):
+    # Windows「Internet 选项」里填 SOCKS 代理时，Python 读出来是 socks4://，httpx 建客户端就报错。
+    for name in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "socks4://127.0.0.1:7891")
+    with pytest.raises(ValueError):
+        httpx.Client()
+    with component_download.open_client() as client:
+        assert client.trust_env is False
+
+
+def test_download_retries_directly_when_the_system_proxy_is_gone(tmp_path, monkeypatch):
+    good = b"real wheel bytes"
+    item = _remote("a.whl", good)
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("proxy refused", request=request)
+
+    monkeypatch.setattr(component_download, "open_client", lambda: httpx.Client(transport=httpx.MockTransport(refused)))
+    monkeypatch.setattr(component_download, "direct_client", lambda: _client({"https://primary.test/a.whl": good}))
+    monkeypatch.setattr(component_download.system_proxy, "proxy_for", lambda url: "http://127.0.0.1:7890")
+    [path] = download_files([item], tmp_path)
+    assert path.read_bytes() == good
+
+    # 没走代理时连不上就是连不上，不另外直连。
+    monkeypatch.setattr(component_download.system_proxy, "proxy_for", lambda url: "")
+    (tmp_path / "a.whl").unlink()
+    with pytest.raises(ComponentDownloadError, match="下载失败"):
+        download_files([item], tmp_path)
+
+
+def test_rename_waits_for_a_virus_scanner_on_windows(tmp_path, monkeypatch):
+    import types
+
+    calls: list[tuple[Path, Path]] = []
+
+    def replace(source, target):
+        calls.append((source, target))
+        if len(calls) < 3:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(component_download, "os", types.SimpleNamespace(name="nt", replace=replace))
+    monkeypatch.setattr(component_download.time, "sleep", lambda seconds: None)
+    component_download.replace_file(tmp_path / "a.part", tmp_path / "a")
+    assert len(calls) == 3
+
+    def always(source, target):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(component_download, "os", types.SimpleNamespace(name="nt", replace=always))
+    with pytest.raises(PermissionError):
+        component_download.replace_file(tmp_path / "a.part", tmp_path / "a")
+
+
 def test_extract_rejects_paths_outside_the_target(tmp_path):
     wheel = tmp_path / "bad.whl"
     wheel.write_bytes(_wheel({"../evil.py": b"x"}))
@@ -149,6 +203,38 @@ def test_install_keeps_nothing_when_the_component_cannot_run(hermetic, monkeypat
     assert installer.installed_site_dir() is None
     leftovers = [path.name for path in installer.component_root().iterdir() if path.name != ".downloads"]
     assert leftovers == []
+
+
+def test_install_copies_the_vc_runtime_next_to_pymupdf(hermetic, monkeypatch):
+    # Windows：PyMuPDF 要的 msvcp140.dll 从 NumPy 的 wheel 里核对后拷到 pymupdf 目录。
+    runtime = b"fake msvcp140"
+    wheels = {
+        "pymupdf-9.9.9-cp310-abi3-test.whl": _wheel({"pymupdf/__init__.py": b"VersionBind = '9.9.9'\n"}),
+        "pdf2docx-0.5.13-py3-none-any.whl": _wheel({"pdf2docx/__init__.py": b""}),
+        "numpy-test.whl": _wheel({"numpy.libs/msvcp140-abc.dll": runtime}),
+    }
+    files = tuple(_remote(name, data) for name, data in wheels.items())
+    monkeypatch.setattr(installer, "manifest_files", lambda: files)
+    monkeypatch.setattr(installer, "_http_client",
+                        lambda: _client({f"https://primary.test/{name}": data for name, data in wheels.items()}))
+    monkeypatch.setattr(pdf_component, "probe_in_subprocess", lambda site_dir, convert=False: (True, "9.9.9", ""))
+    copies = (("numpy.libs/msvcp140-abc.dll", "pymupdf/msvcp140.dll", len(runtime), hashlib.sha256(runtime).hexdigest()),)
+    monkeypatch.setitem(installer.RUNTIME_COPIES, installer.platform_key(), copies)
+    info = installer.install()
+    assert (Path(info["site_dir"]) / "pymupdf" / "msvcp140.dll").read_bytes() == runtime
+
+    monkeypatch.setitem(installer.RUNTIME_COPIES, installer.platform_key(),
+                        (("numpy.libs/msvcp140-abc.dll", "pymupdf/msvcp140.dll", len(runtime), "0" * 64),))
+    with pytest.raises(installer.ComponentInstallError, match="不完整"):
+        installer.install()
+
+
+def test_windows_runtime_copy_comes_from_the_pinned_numpy_wheel():
+    numpy = [item.name for item in installer.MANIFEST["windows-x64"] if item.name.startswith("numpy-")]
+    assert numpy == ["numpy-2.2.6-cp311-cp311-win_amd64.whl"], "re-pin RUNTIME_COPIES when NumPy changes"
+    [(source, target, size, sha256)] = installer.RUNTIME_COPIES["windows-x64"]
+    assert source.startswith("numpy.libs/msvcp140-") and target == "pymupdf/msvcp140.dll"
+    assert size > 0 and len(sha256) == 64
 
 
 def test_install_reports_unsupported_platforms(hermetic, monkeypatch):
