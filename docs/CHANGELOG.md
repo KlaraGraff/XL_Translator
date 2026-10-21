@@ -146,6 +146,22 @@
 
   **The drop area names PowerPoint, with .pptx first**: The sentence in the Translate page's drop area now includes PowerPoint ("Excel, Word, PowerPoint, PDF and images, and CAD drawings can all go here…", in French too). The PowerPoint chip used to list its extensions alphabetically as ".potx .pps .ppsx .ppt .pptm …", so the most common one, .pptx, was cut off; they now follow the type's own order, with .pptx first. When the app opened on the Translate page before the type list had loaded, the PowerPoint chip sometimes did not appear; the page now waits for the list.
 
+- **修复：PDF 翻译选硅基流动时任何模型都用不了**：「PDF 与图片翻译」和「PDF 与图片审核」以前写死只发 OpenAI 专有的 /responses 请求，硅基流动没有这个接口，选哪个模型测试连接都失败（小红书用户反馈）。现在硅基流动的整页图像翻译走它自己的图像接口（Qwen-Image-Edit 这类改图模型），审核和文档翻译一样按连接的「文本请求协议」发请求，自动识别时一种不通就换另一种。硅基流动的默认地址改为国内站 api.siliconflow.cn（国内站申请的密钥在国际站会被拒）；获取模型列表时按用途只列能用的模型；智谱、阿里百炼、Anthropic 也能获取模型列表了。
+
+  **Fix: no SiliconFlow model worked for PDF translation**: PDF and image translation and PDF and image review always sent OpenAI's own /responses request, which SiliconFlow does not offer, so every model failed the connection test. SiliconFlow page translation now uses its own image API (image-editing models such as Qwen-Image-Edit), and review follows the connection's text request protocol like document translation, trying the other one when Auto finds the first missing. SiliconFlow now defaults to its China endpoint api.siliconflow.cn (keys from the China site are refused by the international one); model lists show only models that fit the use; Zhipu, Alibaba Bailian and Anthropic can now fetch model lists too.
+
+- **模型服务：不再预填型号，「OpenAI 兼容」改名「自定义配置」、「Claude」改名「Anthropic」，可一键打开各家控制台**：选服务商时不再自动填一个「推荐型号」，模型名称右侧的箭头也不再列「服务商推荐型号」：各家型号换代太快，写死的推荐很快过时，请获取模型列表后自己选；换服务商时模型名称清空。服务商第一项「OpenAI 兼容」改名「自定义配置」，「Claude」改名「Anthropic」。选中各家服务商时，「服务商」旁边有「获取 ↗ API 密钥」，点一下打开它创建密钥的控制台（硅基流动按当前地址分国内站、国际站）。
+
+  **Model services: no preset model, "Custom configuration" and "Anthropic", and a link to each provider's console**: Picking a provider no longer fills in a "recommended" model, and the model-name arrow no longer offers one: models change too fast for a fixed recommendation to stay right, so fetch the list and choose; switching providers clears the model name. The first provider option, "OpenAI-compatible", is now "Custom configuration", and "Claude" is now "Anthropic". With a named provider selected, "Get ↗ API key" next to Provider opens its key console (SiliconFlow's China or international site, following the current address).
+
+- **PDF 与图片翻译填错模型时说清楚，并可一键改为转成 Word 翻译**：图像模型测试连接没通过、看起来是填了文字模型时，提示写明需使用图像模型，并说明经实测目前效果最佳的是 ChatGPT 的 image-2.5-flare；旁边「改为转成 Word 翻译」把 PDF 翻译方式改为「自动组合」、可提取文字的页转成 Word 翻译。自动组合里，测试没通过的图像模型按「没有」处理：扫描页和需要保底的页保留原样并在完成后列出，不再逐页去试。审核模型不能看图时同样提示换一个支持图片输入的模型。
+
+  **A clear message for the wrong PDF model, and one click to switch to Convert to Word**: When the image model fails its test in a way that points to a text model, the message says an image model is required and that, in our tests, ChatGPT's image-2.5-flare currently performs best; "Switch to Convert to Word" beside it sets the PDF method to Automatic mix with extractable pages translated through Word. In Automatic mix an image model that failed its test counts as missing: scanned and fallback pages are kept as they are and listed at the end instead of being tried page by page. A review model that cannot read images gets a similar message.
+
+- **分段控件的滑块对齐**：设置页「连接方式」只有「云端 API」一项时（PDF 与图片翻译），滑块只占一半、文字错位；工作区右栏的「双语对照 / 仅译文」「源文件旁 / 自定义」滑块也比选中项宽 4 像素。滑块宽度现在按选项数计算，各处都对齐。
+
+  **Segmented control thumb alignment**: When "Connection method" had only "Cloud API" (PDF & image translation), the thumb covered half the bar and the label sat off-centre; the workspace side-panel switches had a thumb 4 px wider than the selected option. The thumb width now follows the number of options everywhere.
+
 ## V10.2.0
 
 - **优化：jsDelivr 卡住时「浏览扩展」不再久等**：扩展列表先取 jsDelivr，3 秒内没有结果就同时取 GitHub 原始地址，先拿到的为准（原来要等 jsDelivr 超时 20 秒才换）；从列表下载扩展包时，一个地址 15 秒没有新数据就换下一个（原来 60 秒）。

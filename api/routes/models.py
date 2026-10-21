@@ -41,8 +41,9 @@ from core.model_throughput import (
 from core.pdf_review import check_pdf_review_connectivity
 from config import (
     CLOUD_PROVIDER_BASE_URL_DEFAULTS,
+    CLOUD_API_KEY_PAGES_BY_HOST,
+    CLOUD_PROVIDER_API_KEY_PAGES,
     CLOUD_PROVIDER_BASE_URL_DISABLED,
-    CLOUD_PROVIDER_MODEL_DEFAULTS,
     DISABLED_BASE_URL_PLACEHOLDER,
     is_valid_concurrency_unlock_code,
 )
@@ -90,14 +91,16 @@ def register(app: FastAPI) -> None:
         copy of the table in the UI would drift the first time a provider's
         endpoint moves.
 
-        ``model_defaults`` follows the same rule for the model name, and is the
-        only source the model-name dropdown has before a catalog is fetched.
+        ``api_key_pages`` (by provider) and ``api_key_pages_by_host`` (by Base
+        URL host, checked first) feed the form's link to each provider's key
+        console.  No model name is prefilled: presets go stale too quickly.
         """
         return {
             "base_url_defaults": dict(CLOUD_PROVIDER_BASE_URL_DEFAULTS),
             "base_url_disabled": sorted(CLOUD_PROVIDER_BASE_URL_DISABLED),
             "disabled_placeholder": DISABLED_BASE_URL_PLACEHOLDER,
-            "model_defaults": dict(CLOUD_PROVIDER_MODEL_DEFAULTS),
+            "api_key_pages": dict(CLOUD_PROVIDER_API_KEY_PAGES),
+            "api_key_pages_by_host": dict(CLOUD_API_KEY_PAGES_BY_HOST),
         }
 
     @app.get("/api/models/roles")
@@ -391,6 +394,7 @@ def register(app: FastAPI) -> None:
             provider=config.provider,
             api_key=config.api_key,
             base_url=config.base_url,
+            capability=config.capability,
         )
         return _json_safe(result)
 

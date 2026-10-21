@@ -1596,6 +1596,7 @@ const segSlides = new Map<string, { from: number; to: number; count: number; sta
 /** .seg：两三个互斥选项排成一条，白色滑块（.thumb）滑到选中项下面。 */
 export function createSegmented(options: SegmentedOptions): HTMLDivElement {
   const root = el("div", { className: `seg n${options.options.length}` });
+  root.style.setProperty("--seg-n", String(Math.max(1, options.options.length)));
   root.setAttribute("role", "radiogroup");
   if (options.ariaLabel) root.setAttribute("aria-label", options.ariaLabel);
   const thumb = el("span", { className: "thumb" });

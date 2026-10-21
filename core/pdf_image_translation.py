@@ -2660,6 +2660,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 raise ImageModelUnavailableError("PDF 与图片翻译模型的名称不能为空")
             if image_optional and model_config.mode == "cloud" and not model_config.api_key:
                 raise ImageModelUnavailableError("PDF 与图片翻译模型还没有填写 API 密钥")
+            # 自动组合时图像模型只是扫描页和保底用的：这套配置测过、没通过，就当没有，
+            # 那些页保留原样，不让每一页都去试一遍再报错（也省掉白花的请求费）。
+            if image_optional and model_config.availability_status == "unavailable":
+                raise ImageModelUnavailableError("PDF 与图片翻译模型的连接测试未通过")
         except ImageModelUnavailableError as exc:
             message = str(exc)
             if image_optional:
