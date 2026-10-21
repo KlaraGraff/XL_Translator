@@ -35,15 +35,15 @@ jobs:
         if: matrix.msvcp == 'hidden'
         shell: pwsh
         run: |
-          foreach ($name in "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll") {
-            $path = "C:\Windows\System32\$name"
+          foreach ($item in Get-ChildItem C:\Windows\System32\msvcp140*.dll, C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\concrt140.dll -ErrorAction SilentlyContinue) {
+            $path = $item.FullName; $name = $item.Name
             if (Test-Path $path) {
               takeown /f $path | Out-Null
               icacls $path /grant "Administrators:F" | Out-Null
               Rename-Item $path "$name.hidden"
             }
           }
-          Get-Item C:\Windows\System32\msvcp140* | Format-Table Name
+          Get-ChildItem C:\Windows\System32\msvcp140*, C:\Windows\System32\vcruntime140* | Format-Table Name
       - name: Turn on Defender real-time protection
         if: matrix.defender == 'on'
         shell: pwsh
