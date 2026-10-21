@@ -1,6 +1,8 @@
 # 新版本发布后，给反馈已在这一版解决的用户发邮件。
 #
-# 发布流程（release.yml step=publish）发布成功后自动调用本工作流；也可以手动运行，
+# 预发布（release.yml step=prerelease）不自动调用：手动运行时勾 prerelease 并填 issues，
+# 只给这几位试用的用户发，邮件附预发布页链接。
+# 发布流程（release.yml step=publish / promote）发布成功后自动调用本工作流；也可以手动运行，
 # 勾 dry_run 只列出将发送的通知。规则见 scripts/feedback_notify.py：反馈仓库里带
 # 「待通知」标签、且有 <!-- xl-notify version=X.Y.Z --> 通知评论的 issue，版本已发布
 # 就发给 issue 里留的邮箱，然后标「已通知」并关闭。
@@ -26,6 +28,14 @@ on:
         description: 只列出将发送的通知，不发邮件、不改 issue
         type: boolean
         default: true
+      prerelease:
+        description: 这一版是预发布：只发给下面填的 issue，邮件附它的发布页链接（版本必须已发布为 Pre-release）
+        type: boolean
+        default: false
+      issues:
+        description: 只发这些反馈 issue，空格分隔的编号，例如 "15"（预发布时必填）
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -46,10 +56,19 @@ jobs:
           if [[ "${DRY_RUN}" == "true" ]]; then
             flags+=(--dry-run)
           fi
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            flags+=(--prerelease)
+          fi
+          for number in ${ISSUES}; do
+            flags+=(--issue "$number")
+          done
           python scripts/feedback_notify.py --version "$VERSION" "${flags[@]}"
         env:
           VERSION: ${{ inputs.version }}
           DRY_RUN: ${{ inputs.dry_run == true }}
+          PRERELEASE: ${{ inputs.prerelease == true }}
+          ISSUES: ${{ inputs.issues }}
+          GITHUB_TOKEN: ${{ github.token }}
           FEEDBACK_GITHUB_TOKEN: ${{ secrets.FEEDBACK_GITHUB_TOKEN }}
           FEEDBACK_SMTP_USER: ${{ secrets.FEEDBACK_SMTP_USER }}
           FEEDBACK_SMTP_PASSWORD: ${{ secrets.FEEDBACK_SMTP_PASSWORD }}

@@ -12,7 +12,13 @@ Works on the private feedback repository the relay files issues into:
 * the issue then gets a short comment (without the address), the label
   ``已通知`` instead of ``待通知``, and is closed as completed.
 
-Issues without a usable address are labelled ``无邮箱`` and closed. Logs of
+Issues without a usable address are labelled ``无邮箱`` and closed.
+
+``--prerelease --issue N`` sends a pre-release (a build only some users try
+first) to the listed issues only, once that version is published as a GitHub
+Pre-release. Installed apps never offer a pre-release, so the mail links its
+release page instead of telling the user to update in the app; the issue is
+then closed as usual and gets no second mail when the version goes formal. Logs of
 this public repository never show an address or the email text.
 
 Environment: FEEDBACK_GITHUB_TOKEN, FEEDBACK_REPO (default
@@ -30,6 +36,7 @@ import os
 import re
 import smtplib
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -59,6 +66,12 @@ UPDATE_HINTS = {
     "zh": f"更新方法：在应用的「设置 → 更新与关于」中点击更新即可，原有设置和数据都会保留。如需手动安装，请在发布页下载最新版本：{RELEASES_URL}",
     "en": f"To update, open Settings → Updates & about in the app and click Update; your settings and data are kept. To install manually, download the latest version from the release page: {RELEASES_URL}",
     "fr": f"Pour mettre à jour, ouvrez Paramètres → Mises à jour dans l’application et cliquez sur Mettre à jour\u00a0; vos paramètres et vos données sont conservés. Pour une installation manuelle, téléchargez la dernière version sur la page de publication\u00a0: {RELEASES_URL}",
+}
+# 预发布在应用内看不到，只能从它自己的发布页下载安装包。
+PRERELEASE_HINTS = {
+    "zh": "这是预发布的测试版，应用内的更新检查暂时不会提示它。请在下面的发布页下载与您系统对应的安装包，直接安装即可，原有设置和数据都会保留：{url}",
+    "en": "This is a pre-release test build, so the in-app update check does not offer it yet. Download the installer for your system from the release page below and install it directly; your settings and data are kept: {url}",
+    "fr": "Il s’agit d’une version de test préliminaire : la vérification des mises à jour dans l’application ne la propose pas encore. Téléchargez le programme d’installation correspondant à votre système sur la page ci-dessous et installez-le directement ; vos paramètres et vos données sont conservés : {url}",
 }
 _URL_RE = re.compile(r"https://[^\s<>\"']+")
 
@@ -111,8 +124,17 @@ def ui_language(issue_body: str) -> str:
     return code if code in UPDATE_HINTS else "zh"
 
 
-def with_update_hint(notice: Notice, language: str) -> Notice:
+def release_page_url(version: tuple[int, int, int]) -> str:
+    return f"https://github.com/KlaraGraff/XL_Translator/releases/tag/v{'.'.join(map(str, version))}"
+
+
+def with_update_hint(notice: Notice, language: str, *, prerelease_url: str = "") -> Notice:
     """Append how to install the new version, unless the notice already links the release page."""
+    if prerelease_url:
+        if prerelease_url in notice.body:
+            return notice
+        hint = PRERELEASE_HINTS.get(language, PRERELEASE_HINTS["zh"]).format(url=prerelease_url)
+        return Notice(notice.version, notice.subject, f"{notice.body}\n\n{hint}")
     if RELEASES_URL in notice.body:
         return notice
     hint = UPDATE_HINTS.get(language, UPDATE_HINTS["zh"])
@@ -216,12 +238,24 @@ def latest_notice(comments: list[dict[str, Any]]) -> Notice | None:
     return None
 
 
-def run(github: GitHub, released: tuple[int, int, int], *, send: Any, dry_run: bool) -> int:
-    """Send every due notice; return how many failed."""
+def run(
+    github: GitHub,
+    released: tuple[int, int, int],
+    *,
+    send: Any,
+    dry_run: bool,
+    only: set[int] | None = None,
+    prerelease: bool = False,
+) -> int:
+    """Send every due notice (only to ``only`` when given); return how many failed."""
     version_text = ".".join(map(str, released))
+    prerelease_url = release_page_url(released) if prerelease else ""
+    done_note = f"v{version_text} 已发布为预发布，已发邮件请用户试用" if prerelease else f"v{version_text} 已发布，已发邮件通知用户"
     failures = 0
     for issue in github.pending_issues():
         number = int(issue["number"])
+        if only is not None and number not in only:
+            continue
         notice = latest_notice(github.comments(number))
         if notice is None:
             print(f"#{number}：有「{PENDING_LABEL}」标签但还没写通知，跳过。")
@@ -240,13 +274,15 @@ def run(github: GitHub, released: tuple[int, int, int], *, send: Any, dry_run: b
             continue
         try:
             issue_body = str(issue.get("body") or "")
-            notice = with_update_hint(with_reference(notice, feedback_reference(issue_body)), ui_language(issue_body))
+            notice = with_update_hint(
+                with_reference(notice, feedback_reference(issue_body)), ui_language(issue_body), prerelease_url=prerelease_url
+            )
             send(address, notice)
         except (smtplib.SMTPException, OSError) as exc:
             failures += 1
             print(f"::error::#{number}：发给 {mask(address)} 失败（{type(exc).__name__}），保留「{PENDING_LABEL}」，下次发布再发。")
             continue
-        github.finish(number, DONE_LABEL, f"v{version_text} 已发布，已发邮件通知用户（{mask(address)}）。")
+        github.finish(number, DONE_LABEL, f"{done_note}（{mask(address)}）。")
         print(f"#{number}：已发给 {mask(address)}。")
     return failures
 
@@ -255,8 +291,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--version", required=True, help="刚发布的版本号 X.Y.Z")
     parser.add_argument("--dry-run", action="store_true", help="只列出将发送的通知，不发邮件、不改 issue")
+    parser.add_argument("--issue", type=int, action="append", help="只发这几个反馈 issue（可重复）")
+    parser.add_argument("--prerelease", action="store_true", help="这一版是预发布：必须配合 --issue，邮件链到它的发布页")
     args = parser.parse_args(argv)
     released = parse_version(args.version)
+    if args.prerelease:
+        if not args.issue:
+            parser.error("--prerelease 只发给指定的用户，需要 --issue")
+        problem = prerelease_problem(released)
+        if problem:
+            print(f"::error::{problem}")
+            return 1
 
     token = os.environ.get("FEEDBACK_GITHUB_TOKEN", "")
     if not token:
@@ -277,7 +322,35 @@ def main(argv: list[str] | None = None) -> int:
             smtp.login(user, password)
             smtp.send_message(build_message(user, address, notice))
 
-    return 1 if run(github, released, send=send, dry_run=dry_run) else 0
+    only = set(args.issue) if args.issue else None
+    return 1 if run(github, released, send=send, dry_run=dry_run, only=only, prerelease=args.prerelease) else 0
+
+
+def prerelease_problem(version: tuple[int, int, int]) -> str:
+    """Empty when v{version} is a published Pre-release; otherwise why the mail must not go out."""
+    tag = f"v{'.'.join(map(str, version))}"
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/KlaraGraff/XL_Translator/releases/tags/{tag}",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "xl-translator-feedback-notify"},
+    )
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            release = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        # 草稿对外查不到，也算还没发布。
+        return f"{tag} 还没有发布（{exc.code}），不发邮件。"
+    return _release_state_problem(tag, release)
+
+
+def _release_state_problem(tag: str, release: dict[str, Any]) -> str:
+    if release.get("draft"):
+        return f"{tag} 还是草稿，不发邮件。"
+    if not release.get("prerelease"):
+        return f"{tag} 已是正式版，请不带 --prerelease 运行。"
+    return ""
 
 
 if __name__ == "__main__":
