@@ -193,7 +193,6 @@ class CadTaskRunner(BaseTaskRunner):
         self._translation_identity = dict(translation_identity or {})
         self._checkpoint_path = self._run_dir / ".cad-checkpoint.json"
         self._last_stage: str | None = None
-        self._pause_acknowledged = False
         self._queue: queue.Queue[Any] = queue.Queue()
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
@@ -226,17 +225,20 @@ class CadTaskRunner(BaseTaskRunner):
 
     def resume(self) -> None:
         self._pause_event.clear()
-        self._pause_acknowledged = False
 
     def end_paused(self) -> None:
         self.stop()
 
     def _wait_while_paused(self, status: str) -> None:
         """Block the runner thread while paused; return on resume or stop."""
+        # 「已暂停」每次停下都要说一句：界面收到它才从「正在暂停」变成「已暂停」、才能点继续。
+        # 这个标记只属于这一次等待；放在对象上由 resume() 清掉的话，「继续」恰好落在
+        # 说出这句和记下「已说过」之间，下一次暂停就再也不说，任务卡在「正在暂停」。
+        announced = False
         while self._pause_event.is_set() and not self._stop_event.is_set():
-            if not self._pause_acknowledged:
+            if not announced:
                 self._queue.put(StatusMsg(phase_desc=status))
-                self._pause_acknowledged = True
+                announced = True
             time.sleep(0.1)
 
     def _progress(self, progress: CadProgress, *, file_path: Path | None = None) -> None:

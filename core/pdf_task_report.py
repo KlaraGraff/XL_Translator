@@ -252,8 +252,12 @@ def _pdf_artifact_label(path: str, record: PdfFileRecord) -> str:
     return "未生成"
 
 
-def _pdf_file_material_paths(summary: PdfTaskSummary, record: PdfFileRecord) -> dict[str, str]:
-    output_dir = Path(summary.output_dir)
+def _pdf_file_material_paths(
+    summary: PdfTaskSummary,
+    record: PdfFileRecord,
+    material_root: str | Path | None = None,
+) -> dict[str, str]:
+    output_dir = Path(material_root) if material_root is not None else Path(summary.output_dir)
     archive_stem = _page_archive_stem(
         Path(record.relative_path or record.name or "未命名 PDF")
     )
@@ -473,7 +477,10 @@ def _summary_to_manifest(summary: PdfTaskSummary) -> dict[str, Any]:
     return payload
 
 
-def _summary_to_report(summary: PdfTaskSummary) -> str:
+def _summary_to_report(summary: PdfTaskSummary, material_root: str | Path | None = None) -> str:
+    """``material_root`` is where ``_pdf_pages`` really lives: the task's process
+    folder for app-managed runs, not the delivery folder the user opens."""
+    material_dir = Path(material_root) if material_root is not None else Path(summary.output_dir)
     lines = [
         "# PDF 翻译报告",
         "",
@@ -504,13 +511,13 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
         f"- 审核轻微建议：{summary.review_minor_suggestion_count}",
         f"- 因模型繁忙而降速的次数：{summary.rate_limit_reduction_count}",
         f"- 保留部分素材：{'是' if summary.partial_artifacts_available else '否'}",
-        f"- 页面素材目录：{Path(summary.output_dir) / PDF_PAGES_ROOT}",
+        f"- 页面素材目录：{material_dir / PDF_PAGES_ROOT}",
         "",
         "## 文件明细",
         "",
     ]
     for file_record in summary.files:
-        material_paths = _pdf_file_material_paths(summary, file_record)
+        material_paths = _pdf_file_material_paths(summary, file_record, material_dir)
         lines.extend(
             [
                 f"### {file_record.name}",

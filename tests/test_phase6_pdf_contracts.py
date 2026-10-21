@@ -40,7 +40,7 @@ from core.pdf_image_translation import (
     write_pdf_manifest_and_report,
 )
 from core.pdf_review import PDF_PAGE_REVIEW_PROMPT, PdfPageReviewResult, PdfReviewIssue
-from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, PdfReviewStatusMsg, StoppedMsg
+from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, PdfReviewStatusMsg, StatusMsg, StoppedMsg
 from settings import AppSettings, set_cloud_provider_config
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -381,7 +381,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertTrue(client.first_call_started.wait(3))
                 runner.pause()
                 client.release_first_call.set()
-                time.sleep(0.15)
+                _wait_until_paused(self, runner)
                 self.assertEqual(client.calls, 1)
                 runner.resume()
                 assert runner._thread is not None
@@ -393,6 +393,48 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
             self.assertTrue(any(isinstance(message, DoneMsg) for message in messages))
             self.assertFalse(any(isinstance(message, StoppedMsg) for message in messages))
 
+    def _assert_resume_finishes_all_pages(self, runner, client) -> None:
+        assert runner._thread is not None
+        runner._thread.join(30)
+        self.assertFalse(runner.is_running())
+        messages = _drain_runner_messages(runner)
+        self.assertEqual(client.calls, 3)
+        self.assertTrue(any(isinstance(message, DoneMsg) for message in messages))
+        self.assertFalse(any(isinstance(message, StoppedMsg) for message in messages))
+
+    def test_resume_before_the_run_loop_sees_the_pause_still_finishes(self) -> None:
+        # 页面循环因暂停退出、主循环还没看暂停标志时用户就点了「继续」：
+        # 以前会直接去生成文件，后两页再也不翻（满载机器上真出现过一次）。
+        with tempfile.TemporaryDirectory() as temporary:
+            runner, client, patches = self._start_real_paused_runner(Path(temporary))
+            process_pages = runner._process_prepared_pages
+
+            def resume_as_soon_as_pages_return(*args, **kwargs):
+                result = process_pages(*args, **kwargs)
+                if runner._pause_event.is_set():
+                    runner.resume()
+                return result
+
+            runner._process_prepared_pages = resume_as_soon_as_pages_return
+            with patches[0], patches[1]:
+                runner.start()
+                self.assertTrue(client.first_call_started.wait(3))
+                runner.pause()
+                client.release_first_call.set()
+                self._assert_resume_finishes_all_pages(runner, client)
+
+    def test_resume_between_the_submit_check_and_the_pause_check_still_finishes(self) -> None:
+        # 同一个空档的另一头：提交新页时还是暂停，紧接着查暂停时已经继续了。
+        with tempfile.TemporaryDirectory() as temporary:
+            runner, client, patches = self._start_real_paused_runner(Path(temporary))
+            runner._pause_event = _ResumeRightAfterFirstReadEvent(runner)
+            with patches[0], patches[1]:
+                runner.start()
+                self.assertTrue(client.first_call_started.wait(3))
+                runner.pause()
+                client.release_first_call.set()
+                self._assert_resume_finishes_all_pages(runner, client)
+
     def test_real_runner_end_while_paused_writes_stopped_manifest_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runner, client, patches = self._start_real_paused_runner(Path(temporary))
@@ -401,7 +443,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertTrue(client.first_call_started.wait(3))
                 runner.pause()
                 client.release_first_call.set()
-                time.sleep(0.15)
+                _wait_until_paused(self, runner)
                 self.assertEqual(client.calls, 1)
                 runner.end_paused()
                 assert runner._thread is not None
@@ -420,7 +462,20 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
             manifest = json.loads(Path(terminal[0].manifest_path).read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "stopped")
             self.assertEqual(manifest["terminal_reason"], "end_paused")
-            self.assertTrue(Path(terminal[0].report_path).exists())
+            report_path = Path(terminal[0].report_path)
+            self.assertTrue(report_path.exists())
+            # 报告里写的素材位置必须是真实存在的那个文件夹：素材和报告一起放在处理记录
+            # 目录里，输出目录只放给用户的 PDF。以前报告指向「输出目录/_pdf_pages」。
+            report = report_path.read_text(encoding="utf-8")
+            material_lines = [
+                line.split("：", 1)[1]
+                for line in report.splitlines()
+                if line.startswith(("- 页面素材目录：", "- 源页素材：", "- 译后页素材："))
+            ]
+            self.assertEqual(len(material_lines), 3, report)
+            for material in material_lines:
+                self.assertTrue(Path(material).is_dir(), material)
+                self.assertTrue(Path(material).is_relative_to(report_path.parent), material)
 
     def test_end_paused_remains_stopped_after_all_submitted_pages_finish(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -446,7 +501,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertTrue(client.first_call_started.wait(3))
                 runner.pause()
                 client.release_first_call.set()
-                time.sleep(0.15)
+                _wait_until_paused(self, runner)
                 self.assertEqual(client.calls, 1)
                 runner.end_paused()
                 assert runner._thread is not None
@@ -622,6 +677,39 @@ def _write_png_bytes() -> bytes:
         path = Path(temporary) / "source.png"
         _write_png(path)
         return path.read_bytes()
+
+
+class _ResumeRightAfterFirstReadEvent(threading.Event):
+    """A pause flag that the user「continues」the moment the runner first reads it as set
+    after the first page has settled, i.e. while no page is in flight."""
+
+    def __init__(self, runner: PdfImageTranslationRunner) -> None:
+        super().__init__()
+        self._runner = runner
+        self._fired = False
+
+    def is_set(self) -> bool:
+        value = super().is_set()
+        if value and not self._fired and self._runner._completed_page_count >= 1:
+            self._fired = True
+            self.clear()
+        return value
+
+
+def _wait_until_paused(case: unittest.TestCase, runner: PdfImageTranslationRunner) -> None:
+    """Wait until the runner announces 已暂停 instead of guessing with a sleep:
+    on a loaded machine 0.15 s was not always enough to reach the pause loop."""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        with runner._queue.mutex:
+            pending = list(runner._queue.queue)
+        if any(
+            isinstance(message, StatusMsg) and "已暂停" in str(message.phase_desc)
+            for message in pending
+        ):
+            return
+        time.sleep(0.02)
+    case.fail("runner did not reach its pause loop")
 
 
 def _drain_runner_messages(runner: PdfImageTranslationRunner) -> list[object]:
