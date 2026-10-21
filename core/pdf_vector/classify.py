@@ -4,8 +4,14 @@ rest through a caller-supplied engine; record where every final string came from
 decision        meaning
 --------------  -------------------------------------------------------------
 write           translated text will replace the source
-keep_source     source stays (numbers, codes, model returned it unchanged)
+keep_source     source stays (numbers, codes, already in the target language,
+                model returned it unchanged)
 review          source stays and a human should look (bad OCR, model issue)
+
+The target language is any language whose text is written letter after letter
+(core/pdf_vector/fonts.py); whether a line is already in the target language
+follows CAD (core.cad_language.classify_text_language).  The source may be any
+language the PDF text layer holds, Chinese included; OCR reads Latin script only.
 
 translation_source: model | memory | glossary | retained_identifier | retained_numeric
                     | retained_by_model | none
@@ -26,10 +32,18 @@ import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
-from .common import norm_text, numbers, text_has_cjk
+from core.cad_language import (
+    NON_LATIN_SCRIPT_RE,
+    TARGET,
+    classify_text_language,
+    is_residual_foreign_text,
+    target_script_pattern,
+)
+
+from .common import norm_text, numbers
 
 PROMPT = (
-    "你在翻译工程图纸（建筑、结构、机电、消防）上的标注。把每条{src}原文逐条翻译成简体中文工程术语。"
+    "你在翻译工程图纸（建筑、结构、机电、消防）上的标注。把每条{src}原文逐条翻译成{dst}工程术语。"
     "保留所有数字、单位、钢筋符号、字母代号、构件编号、比较符号、邮箱、电话、地址和公司名。"
     "缩写和代号（如 HA12、PCF、BAES）原样保留。"
     "如果某条原文是 OCR 识别错误产生的无意义字符，原样返回，不要猜测。"
@@ -81,13 +95,17 @@ def in_lexicon(tok: str, lang: str) -> bool:
     return strip_accents(tok.casefold()) in lexicon(lang)
 
 
-def classify(row: dict, min_ocr: float, lang: str = "fr", strong_texts: set | None = None) -> tuple[str, str]:
+def classify(row: dict, min_ocr: float, lang: str = "fr", strong_texts: set | None = None,
+             target_lang: str = "zh") -> tuple[str, str]:
     t = row["source_text"]
     if not any(c.isalpha() for c in t):
         return "keep_source", "retained_numeric"
     words = [w for w in WORD_RE.findall(t) if wordlike(w)]
-    if not words:
+    if not words and not NON_LATIN_SCRIPT_RE.search(t):
         return "keep_source", "retained_identifier"
+    if classify_text_language(t, target_lang) == TARGET:
+        # 已是目标语言（中文图纸译成中文时的中文标注、法文图纸里的法文）；拿不准的照常翻译
+        return "keep_source", "already_target"
     if row.get("origin") == "ocr":
         score = row.get("ocr_score") or 0.0
         bad = sum(garbage_word(w) for w in words)
@@ -168,7 +186,8 @@ def _sig(t: str) -> tuple:
 
 
 def _letters_key(t: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", strip_accents(t.casefold()))
+    # letters of every script count (Chinese labels differ only in their characters)
+    return "".join(c for c in strip_accents(t.casefold()) if c.isalnum())
 
 
 def canonicalize(rows: list[dict]) -> dict[str, str]:
@@ -180,14 +199,20 @@ def canonicalize(rows: list[dict]) -> dict[str, str]:
     when their digits and signs are identical and their letters are nearly
     identical (short labels must match exactly apart from accents/case), so
     'Coupe A-A' and 'Coupe B-B' or 'Type 1' and 'Type 2' stay separate.
+    Near-identical merging is for OCR reads only: text read from the PDF itself
+    is exact, and two such labels that differ by one character ('一层平面图（东区）'
+    / '一层平面图（西区）') are two labels.
     """
     from collections import Counter
     from difflib import SequenceMatcher
 
     texts = Counter(norm_text(r["source_text"]) for r in rows)
     score: dict = {}
+    exact: set[str] = set()
     for r in rows:
         score.setdefault(norm_text(r["source_text"]), []).append(r.get("ocr_score") or 1.0)
+        if r.get("origin") != "ocr":
+            exact.add(norm_text(r["source_text"]))
     uniq = sorted(texts, key=lambda t: (-texts[t], -sum(score[t]) / len(score[t]), -len(t)))
     canon_of: dict[str, str] = {}
     heads: list[str] = []
@@ -202,7 +227,7 @@ def canonicalize(rows: list[dict]) -> dict[str, str]:
                 hit = h
                 break
             short = min(len(kt), len(kh))
-            if short < 10:
+            if short < 10 or t in exact or h in exact:
                 continue  # short labels: one letter can change the meaning
             ratio = SequenceMatcher(None, kt, kh).ratio()
             truncated = (kh.startswith(kt) or kt.startswith(kh)) and abs(len(kt) - len(kh)) <= 3
@@ -220,7 +245,33 @@ def canonicalize(rows: list[dict]) -> dict[str, str]:
 
 TranslateFn = Callable[[list[str], str], dict]
 ProfileFn = Callable[[list[str]], str]
-SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de": "德语", "it": "意大利语", "pt": "葡萄牙语"}
+SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de": "德语", "it": "意大利语", "pt": "葡萄牙语",
+                     "zh": "中文", "ja": "日语", "ko": "韩语"}
+
+
+def target_language_name(target_lang: str) -> str:
+    """提示词里的目标语言：中文按「简体中文」（与以前一样），其余按语言列表里的名称。"""
+    code = str(target_lang or "").strip()
+    if code.lower() in ("", "zh", "zh-cn", "zh-hans"):
+        return "简体中文"
+    from core.language_registry import get_target_lang_display
+
+    return get_target_lang_display(code, include_optional=True)
+
+
+def translation_problem(source: str, translation: str, target_lang: str) -> str:
+    """译文能不能写回：空串可以；``retained_by_model`` 是模型原样退回或没译成目标语言的
+    文字（保留原文），``residual_source`` 是译文里还夹着原文的文字（列进复核）。"""
+    if norm_text(translation).casefold() == norm_text(source).casefold():
+        return "retained_by_model"
+    pattern = target_script_pattern(target_lang)
+    if pattern is not None:
+        # 中文、日文、韩文、俄文等：译文里要有目标语言自己的文字（与以前「须含汉字」一样）
+        return "" if re.search(pattern, translation) else "retained_by_model"
+    if is_residual_foreign_text(translation, target_lang):
+        # 译成西文，译文里还留着汉字等原文文字：半截没译
+        return "residual_source"
+    return ""
 
 
 def supports_resend_unchanged(fn) -> bool:
@@ -236,6 +287,20 @@ def supports_resend_unchanged(fn) -> bool:
         return False
 
 
+def takes_source_lang(fn) -> bool:
+    """The translate hook takes ``source_lang`` (the page's own source language, so the
+    engine's request says "from Chinese" rather than "from auto"); a wrapper that
+    passes it through says so with a ``takes_source_lang`` attribute."""
+    if fn is None:
+        return False
+    if getattr(fn, "takes_source_lang", False):
+        return True
+    try:
+        return "source_lang" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
                           **extra) -> tuple[dict, int]:
     """Texts the service gave up on are left out of the result (the app's
@@ -245,7 +310,8 @@ def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn,
     untouched means the model meant to keep it (company names and addresses
     really do stay)."""
     def needs_another_try(text: str, translated: str | None) -> bool:
-        return bool(WORD_RE.search(text)) and (not translated or norm_text(translated) == norm_text(text))
+        has_words = bool(WORD_RE.search(text)) or bool(NON_LATIN_SCRIPT_RE.search(text))
+        return has_words and (not translated or norm_text(translated) == norm_text(text))
 
     if supports_resend_unchanged(translate):
         # The app's service resends a batch's untouched words as soon as that batch
@@ -282,7 +348,8 @@ def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn,
 
 def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, profile: ProfileFn | None = None,
                            source_lang: str = "fr", min_ocr: float = 0.45, glossary: dict | None = None,
-                           memory=None, memory_file=None, memory_location: str = "", log=None) -> dict:
+                           memory=None, memory_file=None, memory_location: str = "", log=None,
+                           target_lang: str = "zh") -> dict:
     """Fill ``decision``, ``decision_reason``, ``translation`` and
     ``translation_source`` on every row; return a summary.
 
@@ -296,7 +363,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
     strong = {norm_text(r["source_text"]).casefold() for r in rows
               if r.get("origin") == "ocr" and (r.get("ocr_score") or 0) >= 0.9 and int(r.get("display_rotation", 0)) == 0}
     for r in rows:
-        dec, why = classify(r, min_ocr, source_lang, strong)
+        dec, why = classify(r, min_ocr, source_lang, strong, target_lang)
         r["classification"] = why
         r["decision"], r["decision_reason"] = dec, why
         r["translation"], r["translation_source"] = r["source_text"], "none"
@@ -318,7 +385,7 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
     scene, retried, res = "", 0, {}
     session, from_memory = None, {}
     if to_model and translate is not None:
-        prompt = PROMPT.format(src=SOURCE_LANG_NAMES.get(source_lang, "外文"))
+        prompt = PROMPT.format(src=SOURCE_LANG_NAMES.get(source_lang, "外文"), dst=target_language_name(target_lang))
         if profile is not None:
             try:
                 scene = profile([r["source_text"] for r in rows if any(ch.isalpha() for ch in r["source_text"])]) or ""
@@ -339,16 +406,21 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
         ask = [text for text in inputs if text not in from_memory]
         if ask:
             extra = {"term_session": session} if session is not None else {}
+            if source_lang in SOURCE_LANG_NAMES and takes_source_lang(translate):
+                extra["source_lang"] = source_lang
             res, retried = _translate_with_retry(ask, prompt, translate, errors, **extra)
         res.update(from_memory)
     not_applied = session.not_applied_texts() if session is not None else set()
     for r in to_model:
         dst = norm_text(res.get(r["model_input"]) or "")
         r["model_output"] = dst or None
+        problem = translation_problem(r["model_input"], dst, target_lang) if dst else ""
         if not dst:
             r.update(decision="review", decision_reason="model_missing")
-        elif norm_text(dst).casefold() == norm_text(r["model_input"]).casefold() or not text_has_cjk(dst):
+        elif problem == "retained_by_model":
             r.update(decision="keep_source", decision_reason="retained_by_model", translation_source="retained_by_model")
+        elif problem:
+            r.update(decision="review", decision_reason=problem)
         elif any(n not in numbers(dst) for n in numbers(r["source_text"])):
             r.update(decision="review", decision_reason="numeric_mismatch")
         elif sorted(re.findall(r"[<>≤≥=±]", r["source_text"])) != sorted(re.findall(r"[<>≤≥=±]", dst)):

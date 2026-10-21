@@ -191,11 +191,12 @@ class InplaceTaskTests(unittest.TestCase):
         runner._run_inplace_pages(record, runner._prepared_files[0])
         self.assertEqual(len(calls), before)
 
-    def test_non_chinese_target_keeps_the_large_page_original(self):
-        _runner, record, _client = self._run(target="en")
+    def test_unsupported_target_keeps_the_large_page_original(self):
+        # 阿拉伯文要连写、从右往左排，原位替换写不了；大幅面页不会改用图像翻译
+        _runner, record, _client = self._run(target="ar")
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
-        self.assertFalse(page.inplace_requested)       # in place only writes Chinese
-        self.assertIn("只支持译成中文", page.kept_reason)  # large pages never fall back to image
+        self.assertFalse(page.inplace_requested)
+        self.assertIn("原位替换暂不支持该目标语言（文字需连写排版）", page.kept_reason)
 
     def test_skip_mode_does_not_touch_oversized_page(self):
         _runner, record, _client = self._run(route="image")
@@ -352,11 +353,11 @@ class InplaceTaskTests(unittest.TestCase):
     def test_rerouted_and_kept_pages_are_explained_in_the_report(self):
         from core.pdf_task_report import _file_record_to_result, _route_report_lines
 
-        _runner, record, _client = self._run(target="en", sizes=(A4, A2), text=(True, True),
+        _runner, record, _client = self._run(target="ar", sizes=(A4, A2), text=(True, True),
                                              extra={"auto_text_route": "inplace"})
         lines = "\n".join(_route_report_lines(record))
-        self.assertIn("第 1 页：原位替换目前只支持译成中文，改用整页图像翻译", lines)
-        self.assertIn("第 2 页：原位替换目前只支持译成中文，这一页保留原样", lines)
+        self.assertIn("第 1 页：原位替换暂不支持该目标语言（文字需连写排版），改用整页图像翻译", lines)
+        self.assertIn("第 2 页：原位替换暂不支持该目标语言（文字需连写排版），这一页保留原样", lines)
         detail = _file_record_to_result(record)
         text = str(detail)
         self.assertNotIn("没有设置图像翻译模型", text)

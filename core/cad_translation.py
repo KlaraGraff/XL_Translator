@@ -63,13 +63,13 @@ from core.cad_writeback import (
 )
 from core.document_profile import is_context_sensitive
 from core.cad_language import (
-    LATIN_TARGET_LANGS,
     NON_LATIN_SCRIPT_RE as _NON_LATIN_SCRIPT_RE,
     TARGET as _LANG_TARGET,
     UNSURE as _LANG_UNSURE,
     base_lang as _base_lang,
     classify_text_language,
     has_latin_words as _has_latin_words,
+    is_residual_foreign_text,
 )
 from core.request_log import TICK_SECONDS, WAIT_LOG_SECONDS, BatchRequestLog
 from core.request_progress import InFlightRequestTracker
@@ -1167,16 +1167,7 @@ def _is_likely_target_language(text: str, target_lang: str) -> bool:
     return classify_text_language(text, target_lang) == _LANG_TARGET
 
 
-def _is_residual_foreign_text(text: str, target_lang: str) -> bool:
-    """Whether written-back text still looks untranslated for ``target_lang``.
-
-    For CJK/other-script targets the leftover must be real Latin words, not
-    part numbers or standard codes. For Latin targets the leftover is any
-    remaining CJK/other non-Latin script.
-    """
-    if _base_lang(target_lang) in LATIN_TARGET_LANGS:
-        return bool(_NON_LATIN_SCRIPT_RE.search(text))
-    return _has_latin_words(text) and not _is_likely_target_language(text, target_lang)
+_is_residual_foreign_text = is_residual_foreign_text
 
 
 def _matches_source_language(text: str, source_lang: str) -> bool:

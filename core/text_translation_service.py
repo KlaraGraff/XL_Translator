@@ -138,6 +138,7 @@ class TextTranslationService:
         engine: Any = None,
         resend_unchanged: Callable[[str, str | None], bool] | None = None,
         stats: Any = None,
+        source_lang: str | None = None,
     ) -> dict[str, str]:
         """分批翻译，返回 ``{原文: 译文}``。
 
@@ -157,7 +158,8 @@ class TextTranslationService:
             self._prompt(prompt, glossary, context),
             self.rate.batch_items,
             self.rate.concurrency,
-            source_lang=self.source_lang,
+            # 调用方认出了原文语种（PDF 原位替换按页）时用它，否则用服务建时给的。
+            source_lang=source_lang or self.source_lang,
             api_scheduler=self.api_scheduler,
             # 逐批回调：进度条跟着批次走，而不是停住再跳。
             progress_callback=progress,

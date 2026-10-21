@@ -317,6 +317,8 @@ export type PdfRouteCapabilities = {
   office_engine: string;
   office_message: string;
   inplace_target_ok: boolean;
+  /** 原位替换写不了的目标语言（基础代码，如 ar、th）：这些文字要连写排版。 */
+  inplace_unsupported_targets?: string[];
 };
 
 export type PdfPageFile = {

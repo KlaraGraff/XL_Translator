@@ -67,6 +67,7 @@ def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
                 "display_box": [round(v * k, 1) for v in (r.x0, r.y0, r.x1, r.y1)],
                 "display_rotation": rot, "oblique": not any(abs(v) > 0.99 for v in (vx, vy)),
                 "font_size_pt": max(s["size"] for s in spans), "font": spans[0]["font"],
+                "font_flags": int(spans[0].get("flags") or 0),
                 "color": [((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255],
                 "ocr_score": None, "source_passes": ["native"],
             })

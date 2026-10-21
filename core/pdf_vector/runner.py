@@ -1,8 +1,13 @@
 """「原位替换文字（保留矢量）」Beta：把 PDF 的一页在原位换成译文。
 
 一页的流程：取出这一页 → 读文字（文字层 + 可选的 Tesseract 识别画成线条的
-字）→ 分类、去重、写图纸说明、翻译 → 删掉原文字形、按原字号和颜色写中文 →
+字）→ 分类、去重、写图纸说明、翻译 → 删掉原文字形、按原字号和颜色写译文 →
 自检。自检不过的页不交付，调用方保留原页。
+
+译成哪种语言都行，只要那种文字是一个字一个字从左往右写的（fonts.target_supported）；
+放不下时按 CAD 的那套比例缩小、再换行（core.cad_layout.FitSettings）。原文能从文字层
+读到的，中文也照样翻；画成线条的字只认拉丁字母（Tesseract 只带了西文的识别数据），
+原文是中日韩文字的页不跑识别。
 
 PDF 的读写用 PyMuPDF（AGPL-3.0，沿用其原许可，见 THIRD_PARTY_NOTICES.md），它属于「PDF 处理组件」，不随安装包分发。
 """
@@ -15,9 +20,12 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from core.cad_layout import FitSettings, default_fit_settings
+
 from . import extract, qa, writeback
 from .classify import ProfileFn, TranslateFn, classify_and_translate
 from .common import fitz, write_json
+from .fonts import SANS, FontSet
 
 LogFn = Callable[[str, str], None]
 # report(step, done, total, **info): where the page is, for the task's progress
@@ -28,27 +36,8 @@ ReportFn = Callable[..., None]
 # Which Tesseract languages to read with, by document language.
 _OCR_LANGS = {"fr": "fra+eng", "en": "eng", "es": "spa+eng", "de": "deu+eng", "it": "ita+eng", "pt": "por+eng"}
 
-_FONT_CANDIDATES = [
-    # Windows
-    Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf",
-    Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "msyh.ttc",
-    Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simsun.ttc",
-    # macOS
-    Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-    Path("/System/Library/Fonts/STHeiti Medium.ttc"),
-    Path("/Library/Fonts/Arial Unicode.ttf"),
-    # Linux
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
-    Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"),
-]
-
-
-def find_cjk_font() -> Path | None:
-    for candidate in _FONT_CANDIDATES:
-        if candidate.exists():
-            return candidate
-    return None
+# 原文是这几种文字时不跑识别：识别数据只有西文的，读画成线条的汉字只会读出乱码。
+_CJK_SOURCES = frozenset({"zh", "ja", "ko"})
 
 
 def ocr_languages(source_lang: str, installed: list[str] | None) -> str:
@@ -82,9 +71,17 @@ _STOPWORDS = {
 
 
 def guess_language(texts: list[str], fallback: str = "fr") -> str:
-    """Pick the source language from common short words (enough for drawings)."""
+    """Pick the source language: Chinese, Japanese or Korean by their characters (one
+    such character carries about as much as three Latin letters), else from common
+    short words (enough for drawings)."""
     import re
 
+    joined = "".join(texts)
+    latin = len(re.findall(r"[A-Za-zÀ-ÿ]", joined))
+    for lang, pattern in (("ko", r"[\uac00-\ud7af]"), ("ja", r"[\u3040-\u30ff]"), ("zh", r"[\u3400-\u9fff]")):
+        count = len(re.findall(pattern, joined))
+        if count >= 2 and count * 3 >= latin:
+            return lang
     words = [w.casefold() for t in texts for w in re.findall(r"[^\W\d_]+", t)]
     scores = {lang: sum(1 for w in words if w in stop) for lang, stop in _STOPWORDS.items()}
     best = max(scores, key=scores.get) if scores else fallback
@@ -102,6 +99,9 @@ class InplaceResult:
     term_review: int = 0        # written, but a set translation from the memory was not used
     not_written: int = 0        # translated but could not be placed safely
     ocr_used: bool = False
+    # 原文是中日韩文字，画成线条的字没有去识别（只有西文的识别数据）
+    ocr_skipped_cjk: bool = False
+    source_lang: str = ""
     unrecognized_regions: int = 0
     error: str = ""
     scene_profile: str = ""
@@ -125,6 +125,9 @@ _REASON_TEXT = {
     "source_not_removable": "原文删不干净（可能在图片里）",
     "no_fit": "空间不够，放不下译文",
     "term_not_applied": "未采用记忆库中的设定译法",
+    "residual_source": "译文中仍有原文",
+    "font_missing_glyph": "本机字体缺少译文中的字",
+    "unsupported_script": "译文需要连写排版，暂不支持原位替换",
 }
 
 
@@ -149,8 +152,17 @@ def translate_page_inplace(
     memory_file: Path | str | None = None,
     memory_location: str = "",
     report: ReportFn | None = None,
+    target_lang: str = "zh",
+    font_style: str = SANS,
+    fit: FitSettings | None = None,
+    fallback_lang: str = "fr",
 ) -> InplaceResult:
-    """Translate one page in place; the result PDF holds that single page."""
+    """Translate one page in place; the result PDF holds that single page.
+
+    ``font_style`` and ``fit`` are the page's 「译文字体」 and shrink scales (defaults:
+    sans, and CAD's scales for ``target_lang``); ``font_path`` forces one font.
+    ``fallback_lang`` is the source language when the page itself has no text to
+    tell (the rest of the document's language)."""
     def say(level: str, message: str) -> None:
         if log:
             log(level, message)
@@ -160,9 +172,8 @@ def translate_page_inplace(
             report(step, done, total, **info)
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    font = font_path or find_cjk_font()
-    if font is None:
-        return InplaceResult(ok=False, error="找不到可用的中文字体")
+    fonts = FontSet(target_lang, font_style, forced=font_path)
+    fit = fit or default_fit_settings(target_lang)
     page_pdf = work_dir / "page.pdf"
     with fitz.open(source_pdf) as src:
         one = fitz.open()
@@ -172,8 +183,9 @@ def translate_page_inplace(
 
     if source_lang in ("", "auto", None):
         with fitz.open(page_pdf) as one_doc:
-            source_lang = guess_language([one_doc[0].get_text()], fallback="fr")
-    langs = ocr_languages(source_lang, tesseract_languages) if tesseract and not native_only else ""
+            source_lang = guess_language([one_doc[0].get_text()], fallback=fallback_lang or "fr")
+    cjk_source = source_lang in _CJK_SOURCES
+    langs = ocr_languages(source_lang, tesseract_languages) if tesseract and not native_only and not cjk_source else ""
     exe = tesseract if langs else None
     started = time.monotonic()
     info = extract.run(page_pdf, work_dir / "extract", 200, langs or "eng", (0, 90, 270),
@@ -186,7 +198,7 @@ def translate_page_inplace(
     summary = classify_and_translate(
         rows, translate=translate, profile=profile, source_lang=source_lang,
         memory=memory, memory_file=memory_file or source_pdf, memory_location=memory_location,
-        log=lambda level, message: say(level, f"{prefix}{message}"),
+        log=lambda level, message: say(level, f"{prefix}{message}"), target_lang=target_lang,
     )
     for err in summary.get("errors") or []:
         say("WARN", f"原位替换：{err}")
@@ -196,7 +208,7 @@ def translate_page_inplace(
     out_pdf = work_dir / "page_inplace.pdf"
     report_path = work_dir / "writeback.json"
     tell("write", 0, 2)
-    rep = writeback.run(page_pdf, manifest, out_pdf, work_dir / "preview.png", report_path, font)
+    rep = writeback.run(page_pdf, manifest, out_pdf, work_dir / "preview.png", report_path, fonts=fonts, fit=fit)
     tell("write", 1, 2)
     check = qa.run(page_pdf, out_pdf, manifest, report_path, work_dir / "qa.json", work_dir / "ledger.csv")
     tell("write", 2, 2)
@@ -230,6 +242,8 @@ def translate_page_inplace(
         not_written=len(decided_write - written_ids),
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe),
+        ocr_skipped_cjk=bool(cjk_source and not native_only),
+        source_lang=source_lang,
         unrecognized_regions=int((check.get("unrecognized_text") or {}).get("candidates") or 0),
         scene_profile=summary.get("scene_profile", ""),
         review_items=review_items,

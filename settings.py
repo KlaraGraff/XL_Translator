@@ -1186,6 +1186,34 @@ class PdfSettings(BaseModel):
     # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字
     # 层时这一步自动跳过。v33 新增，默认开。
     smart_context: bool = True
+    # 原位替换写回译文（2026-10-21 起支持中文以外的目标语言）：与 CAD「译文写回」同一套规则。
+    # 译文字体：sans 无衬线字体；original 接近原文字体（原文是衬线字体时用衬线字体）。
+    # 放不下时先缩到初始比例、再按 0.1 一档缩到最小比例，仍放不下就往下方空白处换行
+    # （core.cad_layout.FitSettings）。比例按目标语言分两套，``*_zh`` 那对用于中文，默认值
+    # 与 CAD 相同（core.cad_layout.default_fit_settings）。加法字段，旧文件按默认值补齐，不升版本号。
+    inplace_font: Literal["sans", "original"] = "sans"
+    inplace_fit_default_scale: float = 0.7
+    inplace_fit_min_scale: float = 0.4
+    inplace_fit_default_scale_zh: float = 1.0
+    inplace_fit_min_scale_zh: float = 0.4
+
+    def inplace_fit(self, target_lang: str | None = None):
+        """目标语言对应的那对缩放比例（core.cad_layout.FitSettings）。"""
+        from core.cad_layout import FitSettings, is_chinese_target
+
+        if is_chinese_target(self.target_lang if target_lang is None else target_lang):
+            return FitSettings(self.inplace_fit_default_scale_zh, self.inplace_fit_min_scale_zh).normalized()
+        return FitSettings(self.inplace_fit_default_scale, self.inplace_fit_min_scale).normalized()
+
+    @model_validator(mode="after")
+    def _normalize_inplace_layout(self):
+        from core.cad_layout import FitSettings
+
+        fit = FitSettings(self.inplace_fit_default_scale, self.inplace_fit_min_scale).normalized()
+        self.inplace_fit_default_scale, self.inplace_fit_min_scale = fit.default_scale, fit.min_scale
+        fit_zh = FitSettings(self.inplace_fit_default_scale_zh, self.inplace_fit_min_scale_zh).normalized()
+        self.inplace_fit_default_scale_zh, self.inplace_fit_min_scale_zh = fit_zh.default_scale, fit_zh.min_scale
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -1220,6 +1248,7 @@ _PDF_ROUTE_CHOICES: dict[str, tuple[str, ...]] = {
     "auto_drawing_route": ("inplace", "skip", "image"),
     "auto_fallback": ("image", "skip"),
     "oversized_page_threshold": ("A3", "A2", "A1", "A0"),
+    "inplace_font": ("sans", "original"),
 }
 
 

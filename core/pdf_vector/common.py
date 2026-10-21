@@ -97,4 +97,5 @@ NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 
 
 def numbers(s: str) -> list[str]:
-    return NUMBER_RE.findall(unicodedata.normalize("NFKC", str(s or "")))
+    """Numbers in ``s``; a decimal comma counts as a decimal point (French 1,5 = 1.5)."""
+    return [n.replace(",", ".") for n in NUMBER_RE.findall(unicodedata.normalize("NFKC", str(s or "")))]

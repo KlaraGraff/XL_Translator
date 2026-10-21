@@ -3508,6 +3508,7 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
   nestDependentOptions(surface, optionRows);
 
   if (surface === "cad") content.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
+  if (surface === "pdf" && pdfUsesInplace(st)) content.append(...buildPdfInplaceFields(st, active));
   // 输出位置是各页自己的设置项（运行时注册的类型存在 settings.extensions[<id>]）。
   content.append(createField(t("输出位置"), buildOutputLocation(surface, st, active)));
 
@@ -3778,7 +3779,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
     hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
       { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
-      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变，中文字号略小；只能译成中文") },
+      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变；放不下的译文自动缩小或换行") },
       { value: "image", label: imageLabel, description: imageDesc },
     ],
     value: st.pdfAutoTextRoute,
@@ -3788,7 +3789,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
+    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留；遇到画成线条的字要先识别，会慢一些，画成线条的中文、日文、韩文暂不能识别，保留原样。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
     options: [
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
       { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
@@ -3801,7 +3802,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、原位替换暂不支持目标语言（如阿拉伯文）。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
     options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
     value: st.pdfAutoFallback,
     disabled: active,
@@ -3860,11 +3861,23 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
       wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
     }
   }
-  if (usesInplace && !st.targetLang.toLowerCase().startsWith("zh")) {
-    wrap.append(note(t("原位替换目前只能译成中文：这些页会改用保底方式，大幅面图纸保留原样。"), true));
+  if (usesInplace && !inplaceTargetSupported(st.targetLang)) {
+    wrap.append(note(t("原位替换暂不支持当前的目标语言（文字需要连写排版，如阿拉伯文、泰文、印地文）：这些页会改用保底方式，大幅面图纸保留原样。"), true));
   }
   if (!usesImage) wrap.append(note(t("这次不会调用图像模型。")));
   return wrap;
+}
+
+/** 当前目标语言能不能原位替换。名单来自后端（core/pdf_vector/fonts.py COMPLEX_SCRIPT_TARGETS）；
+ *  还没取到时按能处理算，免得一闪而过的误报。 */
+function inplaceTargetSupported(targetLang: string): boolean {
+  const base = targetLang.trim().toLowerCase().replace("_", "-").split("-")[0];
+  return !(pdfRouteCaps?.inplace_unsupported_targets ?? []).includes(base);
+}
+
+/** 自动组合里有一类页选了原位替换。 */
+function pdfUsesInplace(st: SurfaceState): boolean {
+  return st.pdfRoute === "auto" && (st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace");
 }
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
@@ -5980,6 +5993,76 @@ function buildCadScaleFields(st: SurfaceState, active: boolean): HTMLElement {
   row.append(first.root, last.root);
   group.append(row);
   return group;
+}
+
+// PDF 原位替换的译文字体和两档字号比例：规则与 CAD「译文写回」相同（放不下先压窄、再按 0.1 一档缩小，
+// 到最小比例仍放不下才往下方空白处换行），比例同样按目标语言分两套存在 settings.pdf 里。
+const PDF_INPLACE_FONTS = ["sans", "original"] as const;
+
+function pdfSettingValue(key: string): unknown {
+  return record(settings.pdf)[key];
+}
+
+function persistPdfSetting(key: string, value: unknown, what: string): void {
+  const previous = pdfSettingValue(key);
+  settings = { ...settings, pdf: { ...record(settings.pdf), [key]: value } };
+  rerender("pdf");
+  void persistSettingsOrRevert("pdf", nestedPatch(`pdf.${key}`, value as JsonObject[string]), () => {
+    settings = { ...settings, pdf: { ...record(settings.pdf), [key]: previous } };
+  }, what);
+}
+
+function buildPdfInplaceFields(st: SurfaceState, active: boolean): HTMLElement[] {
+  const sec = el("div", "rp-sec");
+  sec.textContent = t("原位替换排版");
+  sec.append(createHintBadge(t("译文比原文长、会压到旁边的文字或伸出格子时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」；缩到最小仍放不下的，写到下方的空白处换行；还放不下的保留原文，列入报告请人工复核。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。")));
+
+  const fontValue = pdfSettingValue("inplace_font");
+  const font = createSelectField({
+    label: t("译文字体"),
+    hint: t("译文用电脑自带的字体写入，按目标语言挑选能显示全部译文的字体；原文加粗的，译文也加粗。选「跟随原文风格」时，原文是衬线体（如 Times New Roman、宋体）的，译文也用衬线体。电脑上没有能显示某处译文的字体时，那一处保留原文，列入报告。"),
+    options: [
+      { value: "sans", label: t("无衬线字体（推荐）") },
+      { value: "original", label: t("跟随原文风格") },
+    ],
+    value: typeof fontValue === "string" && (PDF_INPLACE_FONTS as readonly string[]).includes(fontValue) ? fontValue : "sans",
+    disabled: active,
+    onChange: (value) => persistPdfSetting("inplace_font", value, t("译文字体")),
+  });
+
+  // 键名与 CAD 同一套（fit_default_scale(_zh) / fit_min_scale(_zh)），前面加 inplace_。
+  const keys = cadFitKeys(st.targetLang);
+  const defaultKey = `inplace_${keys.defaultKey}`;
+  const minKey = `inplace_${keys.minKey}`;
+  const scaleOf = (key: string, fallback: number): number => {
+    const value = Number(pdfSettingValue(key));
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
+  const defaultScale = scaleOf(defaultKey, keys.defaultFallback);
+  const minScale = scaleOf(minKey, keys.minFallback);
+  const scaleLabel = (value: string) => `${Math.round(Number(value) * 100)}%`;
+  const row = el("div", "rp-pair");
+  const first = createSelectField({
+    label: t("初始字号比例"),
+    options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
+    value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? String(keys.defaultFallback),
+    disabled: active,
+    onChange: (value) => {
+      const scale = Number(value);
+      persistPdfSetting(defaultKey, scale, t("初始字号比例"));
+      // 最小比例不能大于初始比例（后端也这样收），界面先对齐。
+      if (scaleOf(minKey, keys.minFallback) > scale) persistPdfSetting(minKey, scale, t("最小字号比例"));
+    },
+  });
+  const last = createSelectField({
+    label: t("最小字号比例"),
+    options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
+    value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
+    disabled: active,
+    onChange: (value) => persistPdfSetting(minKey, Number(value), t("最小字号比例")),
+  });
+  row.append(first.root, last.root);
+  return [sec, font.root, row];
 }
 
 function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {

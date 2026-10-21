@@ -31,7 +31,9 @@ def route_capabilities() -> dict[str, Any]:
     engine, office_message = office_pdf_engine() if word_component else ("", "未安装「PDF 处理组件」。")
     # 原位替换要用组件里的 PyMuPDF；装了 pdf2docx 但 PyMuPDF 加载不了时，转 Word 照常可用。
     component = component_state(refresh=True)
-    target = str(settings.pdf.target_lang or "").lower()
+    from core.pdf_routes import inplace_target_supported
+    from core.pdf_vector.fonts import COMPLEX_SCRIPT_TARGETS
+
     return {
         "image_model_ready": image_ready,
         "image_model_message": image_message,
@@ -40,7 +42,9 @@ def route_capabilities() -> dict[str, Any]:
         "inplace_component_message": component.message,
         "office_engine": engine,
         "office_message": office_message,
-        "inplace_target_ok": target.startswith("zh"),
+        "inplace_target_ok": inplace_target_supported(settings.pdf.target_lang),
+        # 原位替换写不了的目标语言（界面按当前选的目标语言提示，不必等设置存好再查）。
+        "inplace_unsupported_targets": sorted(COMPLEX_SCRIPT_TARGETS),
     }
 
 

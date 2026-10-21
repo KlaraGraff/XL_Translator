@@ -7,7 +7,7 @@ import pytest
 from core.pdf_vector import classify as ct
 from core.pdf_vector import extract
 from core.pdf_vector.common import insert_rotate
-from core.pdf_vector.runner import find_cjk_font
+from core.pdf_vector import find_cjk_font
 from core.pdf_vector.writeback import FONT_NAME, apply_removal, place_line, render
 
 # PyMuPDF 属于「PDF 处理组件」，不随安装包分发；没装它的环境跳过这些测试。

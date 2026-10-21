@@ -696,8 +696,10 @@ def _box(entity: _TextEntity) -> _TextBox:
     return _TextBox(entity.entity_no, left, right, bottom, top)
 
 
-def _scales(scale: float) -> tuple[float, float]:
-    """``(字高缩放, 字宽缩放)``，两者相乘等于 ``scale``：先收字宽，收到 0.7 再降字高。"""
+def scale_parts(scale: float) -> tuple[float, float]:
+    """``(字高缩放, 字宽缩放)``，两者相乘等于 ``scale``：先收字宽，收到 0.7 再降字高。
+
+    PDF 原位替换写回译文时用同一套拆法（core/pdf_vector/writeback.py）。"""
     if scale >= _WIDTH_ONLY_SCALE:
         return 1.0, scale
     return scale / _WIDTH_ONLY_SCALE, _WIDTH_ONLY_SCALE
@@ -861,7 +863,7 @@ def fit_translated_texts(
                 continue
         if not fits and unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
             unresolved.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
-        height_scale, width_scale = _scales(scale)
+        height_scale, width_scale = scale_parts(scale)
         edits.append((entity, height * height_scale, width_factor * width_scale))
 
     # 从后往前改：改字高、插入第二行都会让后面的记录后移。
@@ -948,7 +950,7 @@ def _wrap_plan(
     for tier in settings.tiers():
         if tier > fit + 1e-9:
             continue
-        height_scale, width_scale = _scales(tier)
+        height_scale, width_scale = scale_parts(tier)
         new_height = height * height_scale
         offset = (1 + _WRAP_GAP) * new_height / 2
         left, right = _horizontal_span(entity.halign, x, widest * tier)
