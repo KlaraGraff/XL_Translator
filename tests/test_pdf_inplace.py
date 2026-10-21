@@ -786,6 +786,31 @@ class InplaceProgressTests(unittest.TestCase):
         self.assertAlmostEqual(sent[-1], 1.0, places=3)
 
 
+def test_inplace_batch_retries_and_slowdowns_reach_the_report():
+    """原位替换这一页的批次重试和降速次数要记进 PDF 报告（以前报告写 0）。"""
+    from core.pdf_image_translation import _InplacePageProgress
+
+    runner = PdfImageTranslationRunner(
+        [], AppSettings(), image_client=_RecordingImageClient(_png_bytes(10, 10)), task_logger_enabled=False,
+    )
+
+    def translate(texts, prompt, request_callback=None, error_callback=None, stats=None):
+        stats.record_transient_retry()
+        stats.record_transient_retry()
+        stats.record_retry()
+        stats.adaptive_concurrency_reductions += 1
+        return {text: f"{text}-译" for text in texts}
+
+    progress = _InplacePageProgress(runner, ("f", 1), total_pages=0, log=lambda *_: None, batch_label="f 第 1 页")
+    assert progress.wrap_translate(translate)(["Door"], "p") == {"Door": "Door-译"}
+    assert runner._text_retry_count == 3
+    assert runner._rate_limit_reduction_count == 1
+
+    runner._record_text_batch_counts(2, 1)  # 转 Word 的一段
+    assert runner._text_retry_count == 5
+    assert runner._rate_limit_reduction_count == 2
+
+
 def test_word_segment_progress_folds_the_word_phases():
     """转 Word 的正文段：Word 流程每个阶段各自从 0 数起，要按 Word 的阶段权重折成整段的份额。"""
     from core.pdf_word_route import _word_run_fraction

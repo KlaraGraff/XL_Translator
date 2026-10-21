@@ -284,7 +284,7 @@ class TranslationTaskManager:
         source = (
             source_lang
             if source_lang is not None
-            else str(surface_setting(settings, spec.key, "source_lang", settings.source_lang) or "auto")
+            else str(surface_setting(settings, spec.key, "source_lang", "auto") or "auto")
         )
         return spec.saved_scan_defaults(settings, source_lang=source, target_lang=target)
 
@@ -504,8 +504,10 @@ class TranslationTaskManager:
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
             raise TaskInputError(f"找不到「{root.name or root}」，可能已被移动或删除。")
+        # 没有自己源语言设置的页面（PDF：按每页识别原文语种）是自动识别。以前退回全局的
+        # source_lang（默认中文），任务详情就写成「中文 → 中文」。
         default_surface_source = surface_setting(
-            settings, normalized_surface, "source_lang", settings.source_lang
+            settings, normalized_surface, "source_lang", "auto"
         )
         source_selection = normalize_source_selection(
             selected_options.source_lang

@@ -57,6 +57,9 @@ class WordRouteResult:
     word_result: dict = field(default_factory=dict)
     # 这一段的「记忆库」结果（TaskTermSession.finish），PDF 任务把几段合并后显示。
     terms: dict = field(default_factory=dict)
+    # 这一段的批次重试（缩小重试 + 接口临时故障重发）和降速次数，算进 PDF 报告。
+    retry_count: int = 0
+    rate_limit_reduction_count: int = 0
 
 
 def word_route_available() -> bool:
@@ -506,17 +509,24 @@ def translate_pdf_via_word(
             failure = message.message
         elif isinstance(message, StoppedMsg):
             stopped = True
+    stats = getattr(runner, "batch_stats", None)
+    counts = {
+        "retry_count": (int(getattr(stats, "retry_count", 0) or 0)
+                        + int(getattr(stats, "transient_retry_count", 0) or 0)),
+        "rate_limit_reduction_count": int(getattr(stats, "adaptive_concurrency_reductions", 0) or 0),
+    }
     if done is None:
-        return WordRouteResult(ok=False, stopped=stopped or stop_sent, terms=terms,
+        return WordRouteResult(ok=False, stopped=stopped or stop_sent, terms=terms, **counts,
                                error="任务已停止" if (stopped or stop_sent) else (failure or "Word 翻译没有完成。"))
     outputs = [item for item in done.file_results if item.get("success") and item.get("output")]
     if not outputs or not Path(outputs[0]["output"]).is_file():
         errors = [str(item.get("error") or "") for item in done.file_results]
-        return WordRouteResult(ok=False, terms=terms, error=next((e for e in errors if e), "Word 翻译没有生成文件。"))
+        return WordRouteResult(ok=False, terms=terms, **counts,
+                               error=next((e for e in errors if e), "Word 翻译没有生成文件。"))
     final_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs[0]["output"], final_path)
     return WordRouteResult(ok=True, output_path=str(final_path), issues=list(done.issues or []),
-                           word_result=dict(outputs[0]), terms=terms)
+                           word_result=dict(outputs[0]), terms=terms, **counts)
 
 
 # --------------------------------------------------------------------------
