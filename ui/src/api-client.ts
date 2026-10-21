@@ -274,6 +274,8 @@ export type PdfPage = {
    *  kept_original = 没成功（出错/自检不过/没有可替换的字），输出里是原页。 */
   inplace_requested?: boolean;
   inplace_status?: "" | "done" | "kept_original" | "stopped";
+  /** 原位替换正在做这一页（识别、翻译或写回）；还没轮到的页为 false。 */
+  inplace_active?: boolean;
   inplace_written?: number;
   inplace_kept?: number;
   inplace_review?: number;

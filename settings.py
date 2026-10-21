@@ -1179,7 +1179,8 @@ class PdfSettings(BaseModel):
     auto_fallback: Literal["image", "skip"] = "image"
     # 自动组合：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
     also_save_word: bool = False
-    # 从多大算大幅面（原位替换、自动组合用）：A3（默认，即以前的判定）/ A2 / A1 / A0。
+    # 以前的「大幅面起点」（A3 / A2 / A1 / A0）。2026-10-21 起自动组合先看内容再看尺寸
+    # （见 core.pdf_routes），不再读这一项；字段留着，旧设置文件照常读写。
     oversized_page_threshold: Literal["A3", "A2", "A1", "A0"] = "A3"
     # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
     # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字

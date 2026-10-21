@@ -8,7 +8,6 @@ import pytest
 from pathlib import Path
 
 
-from core.pdf_image_translation import is_oversized_for_threshold
 from core.pdf_routes import (
     KIND_BLANK,
     KIND_DRAWING,
@@ -16,6 +15,7 @@ from core.pdf_routes import (
     KIND_SCAN,
     KIND_TEXT,
     classify_document,
+    exceeds_word_page,
     page_route,
 )
 from core.pdf_word_route import normalize_fonts_xml
@@ -25,6 +25,7 @@ from settings import AppSettings, PdfSettings
 fitz = pytest.importorskip("fitz")
 
 A4 = (595.276, 841.89)
+A3 = (841.89, 1190.551)
 A1 = (1683.78, 2383.94)
 SENTENCE = "The applicant must present a valid passport and proof of travel insurance before departure."
 
@@ -71,6 +72,10 @@ class PageRouteTests(unittest.TestCase):
         self.assertEqual(_route(pdf, kind=KIND_DRAWING), "inplace")
         self.assertEqual(_route(pdf, big=True, kind=KIND_DRAWING), "inplace")
         self.assertEqual(_route(pdf, kind=KIND_BLANK), "skip")
+        # 先看内容再看尺寸：扫描页不论多大都按扫描页，文字页放不进 Word 才按图纸
+        self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_SCAN), "image")
+        self.assertEqual(_route(pdf, a3=True, kind=KIND_TEXT), "word")
+        self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_TEXT), "inplace")
         custom = PdfSettings(translation_route="auto", auto_scan_route="skip", auto_text_route="inplace",
                              auto_drawing_route="skip")
         self.assertEqual(_route(custom, kind=KIND_SCAN), "skip")
@@ -106,8 +111,8 @@ class PageRouteTests(unittest.TestCase):
 
 
 
-def _text_page(doc) -> None:
-    page = doc.new_page(width=A4[0], height=A4[1])
+def _text_page(doc, size=A4) -> None:
+    page = doc.new_page(width=size[0], height=size[1])
     y = 80
     for _ in range(12):
         page.insert_text((50, y), SENTENCE[:90], fontsize=9)
@@ -126,8 +131,8 @@ def _drawing_page(doc, size=A4) -> None:
         page.insert_text((60, 60 + i * 14), label, fontsize=8)
 
 
-def _scan_page(doc) -> None:
-    page = doc.new_page(width=A4[0], height=A4[1])
+def _scan_page(doc, size=A4) -> None:
+    page = doc.new_page(width=size[0], height=size[1])
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 80), 0)
     pix.clear_with(200)
     page.insert_image(page.rect, pixmap=pix)
@@ -142,7 +147,7 @@ class ClassifyTests(unittest.TestCase):
         for build in builders:
             build(doc)
         doc.save(path)
-        return classify_document(path, is_oversized=lambda w, h: is_oversized_for_threshold("A3", w, h))
+        return classify_document(path, is_oversized=exceeds_word_page)
 
     def test_kinds(self) -> None:
         self.assertEqual(self._classify([_text_page, _text_page]).kind, KIND_TEXT)
@@ -153,6 +158,33 @@ class ClassifyTests(unittest.TestCase):
         blank = self._classify([_text_page, lambda d: d.new_page()])
         self.assertEqual(blank.kind, KIND_TEXT)
         self.assertEqual(blank.pages[1].kind, KIND_BLANK)
+
+    def test_content_first_then_size(self) -> None:
+        self.assertEqual(self._classify([lambda d: _text_page(d, A3)]).kind, KIND_TEXT)     # fits in Word
+        self.assertEqual(self._classify([lambda d: _text_page(d, A1)]).kind, KIND_DRAWING)  # too large for Word
+        self.assertEqual(self._classify([lambda d: _scan_page(d, A1)]).kind, KIND_SCAN)     # a scan stays a scan
+        self.assertEqual(self._classify([lambda d: d.new_page(width=A1[0], height=A1[1])]).kind, KIND_SCAN)
+
+    def test_ocr_only_where_it_can_find_something(self) -> None:
+        from core.pdf_routes import needs_ocr
+
+        big_text = self._classify([lambda d: _text_page(d, A1)]).pages[0]
+        self.assertEqual(big_text.kind, KIND_DRAWING)
+        self.assertFalse(needs_ocr(big_text))                     # too big for Word, text all readable
+        self.assertFalse(needs_ocr(self._classify([_text_page]).pages[0]))
+        self.assertTrue(needs_ocr(self._classify([_drawing_page]).pages[0]))   # dense lines
+        self.assertTrue(needs_ocr(self._classify([lambda d: _scan_page(d, A1)]).pages[0]))
+
+    def test_lines_without_text_are_a_drawing(self) -> None:
+        def outlined(doc) -> None:   # CAD export with the text drawn as lines
+            page = doc.new_page(width=A3[0], height=A3[1])
+            shape = page.new_shape()
+            for i in range(1100):
+                shape.draw_line((20 + i % 50 * 10, 100 + i // 50 * 20), (28 + i % 50 * 10, 112 + i // 50 * 20))
+            shape.finish(color=(0, 0, 0), width=0.3)
+            shape.commit()
+
+        self.assertEqual(self._classify([outlined]).kind, KIND_DRAWING)
 
 
 class FontNormalizationTests(unittest.TestCase):

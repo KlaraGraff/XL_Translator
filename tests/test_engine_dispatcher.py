@@ -775,3 +775,48 @@ class QualityFilterResetTrackingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class _ResendEngine(TranslationEngine):
+    """First answer keeps "Acme" untouched; the second batch is slow."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[float, list[str]]] = []
+        self._lock = threading.Lock()
+        self._asked: set[str] = set()
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/resend"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        with self._lock:
+            self.calls.append((time.monotonic(), list(texts)))
+            first = "Acme" not in self._asked
+            self._asked.update(texts)
+        if "slow" in texts[0]:
+            time.sleep(0.6)
+        return {text: (text if text == "Acme" and first else f"译{text}") for text in texts}
+
+
+class ResendUnchangedTests(unittest.TestCase):
+    def test_a_batch_resends_its_untouched_words_without_waiting_for_the_others(self) -> None:
+        engine = _ResendEngine()
+        started = time.monotonic()
+        result = translate_texts(
+            ["Acme", "door", "slow one", "slow two"], engine, "zh", "prompt",
+            batch_size=2, concurrency=2, source_lang="en",
+            resend_unchanged=lambda text, translated: translated in (None, text),
+        )
+        self.assertEqual(result["Acme"], "译Acme")
+        self.assertEqual(result["slow one"], "译slow one")
+        resend = [at for at, texts in engine.calls if texts == ["Acme"]]
+        self.assertEqual(len(resend), 1)
+        self.assertLess(resend[0] - started, 0.5)   # long before the slow batch came back
+
+    def test_without_the_hook_nothing_is_resent(self) -> None:
+        engine = _ResendEngine()
+        result = translate_texts(["Acme", "door"], engine, "zh", "prompt", batch_size=2, concurrency=1,
+                                 source_lang="en")
+        self.assertEqual(len(engine.calls), 1)
+        self.assertNotEqual(result.get("Acme"), "译Acme")

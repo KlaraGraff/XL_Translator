@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import queue
@@ -12,7 +13,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -41,7 +42,8 @@ from core import bilingual_writer
 from core.runner_base import BaseTaskRunner
 from core.output_name_translation import translate_output_stem
 from core.file_progress import FileProgressReporter
-from core.request_log import PDF_PAGE_WAIT_TEMPLATE, RequestWaitNotice
+from core.phase_progress import PhaseProgress
+from core.request_log import PDF_PAGE_WAIT_TEMPLATE, WAIT_LOG_SECONDS, BatchRequestLog, RequestWaitNotice
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
@@ -110,7 +112,10 @@ from core.pdf_routes import (
     ROUTE_SKIP,
     ROUTE_WORD,
     classify_document,
+    PageKind,
+    exceeds_word_page,
     fallback_route,
+    needs_ocr,
     page_route,
 )
 from core.pdf_models import (  # noqa: F401
@@ -445,20 +450,6 @@ def is_oversized_page(page_width_pt: float, page_height_pt: float) -> bool:
         long_edge_pt > PDF_A4_LONG_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
         and short_edge_pt > PDF_A4_SHORT_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
     )
-
-
-# 「从多大算大幅面」：A3 沿用原来的判定（长短边都超出 A4 约 15%），更大的档按
-# 纸张标准尺寸的九成算，扫描白边、裁切误差不会把 A1 判成 A2。
-_PAPER_EDGES_MM = {"A2": (420.0, 594.0), "A1": (594.0, 841.0), "A0": (841.0, 1189.0)}
-
-
-def is_oversized_for_threshold(threshold: str, page_width_pt: float, page_height_pt: float) -> bool:
-    if threshold not in _PAPER_EDGES_MM:
-        return is_oversized_page(page_width_pt, page_height_pt)
-    short_mm, long_mm = _PAPER_EDGES_MM[threshold]
-    long_pt = max(page_width_pt, page_height_pt)
-    short_pt = min(page_width_pt, page_height_pt)
-    return long_pt >= long_mm / 25.4 * 72 * 0.9 and short_pt >= short_mm / 25.4 * 72 * 0.9
 
 
 def _page_has_text_layer(page, source_pdf: str = "", page_index: int = -1) -> bool:
@@ -959,7 +950,128 @@ def _with_stop(translate, should_stop):
         except TypeError:
             return translate(texts, prompt, **extra)
 
+    wrapped.resends_unchanged = _supports_resend_unchanged(translate)
     return wrapped
+
+
+def _supports_resend_unchanged(translate) -> bool:
+    from core.pdf_vector.classify import supports_resend_unchanged
+
+    return supports_resend_unchanged(translate)
+
+
+def _reuse_profile(shared: str | None, profile):
+    """原位替换页的「自动识别场景」：任务开始时已为整份文件写好说明就直接用，不再请一次。"""
+    if shared is None:
+        return profile
+    if not shared:
+        return None
+    return lambda _texts: shared
+
+
+def _accepts_keywords(fn, *names: str) -> bool:
+    """True when ``fn`` takes every keyword in ``names`` (or ``**kwargs``)."""
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+        return True
+    return all(name in parameters for name in names)
+
+
+class _InplacePageProgress:
+    """One「原位替换」page's share of the 翻译 phase, and its run-log lines.
+
+    The page used to be booked as finished the moment it was queued, then did all
+    of its work (reading the text, waiting minutes on the translation, writing
+    back) inside「生成文件」, with the bar parked at 90% and nothing in the log.
+    Now the share follows what is really done: OCR tiles read, translations
+    returned (per returned batch, never requests still out: maple 2026-10-12),
+    written back and checked.  The shares are fixed; a step that does not run
+    is passed over (core.phase_progress).
+    """
+
+    STEPS = (("read", 20.0), ("translate", 70.0), ("write", 10.0))
+
+    def __init__(
+        self,
+        runner: PdfImageTranslationRunner,
+        key: tuple[str, int],
+        *,
+        total_pages: int,
+        log: Callable[[str, str], None],
+        batch_label: str,
+    ) -> None:
+        self._runner = runner
+        self._key = key
+        self._total_pages = total_pages
+        self._log = log
+        self._batch_label = batch_label
+        self._phase = PhaseProgress(
+            self._on_progress, phase_index=2, phase_total=4, phase_name="翻译", steps=self.STEPS
+        )
+        self._ocr_logged_at = 0.0
+        self._translate_calls = 0
+
+    def _on_progress(self, message: ProgressMsg) -> None:
+        if not self._total_pages:
+            return
+        self._runner._inplace_page_fraction[self._key] = message.step_done / max(1, message.step_total)
+        self._runner._send_translation_progress(
+            self._runner._translation_progress_units(), self._total_pages
+        )
+
+    def report(self, step: str, done: int = 0, total: int = 0, **info: Any) -> None:
+        """``report`` of core.pdf_vector.translate_page_inplace."""
+        now = time.monotonic()
+        if step == "ocr":
+            if done == 0:
+                self._ocr_logged_at = now
+                self._log("INFO", f"正在识别画成线条的文字，共 {total} 块。")
+            elif done < total and now - self._ocr_logged_at >= WAIT_LOG_SECONDS:
+                # 慢的电脑上这一步能有好几分钟：隔一阵说一声做到哪了。
+                self._ocr_logged_at = now
+                self._log("INFO", f"正在识别画成线条的文字，已完成 {done}/{total} 块。")
+            self._phase.report("read", done, total)
+        elif step == "read":
+            self._log("INFO", f"读出 {int(info.get('rows') or 0)} 处文字，用时 {float(info.get('seconds') or 0):.0f} 秒。")
+            self._phase.report("read", 1, 1)
+        elif step == "write":
+            if done == 0:
+                self._log("INFO", "译文已返回，正在写回原位置并自检。")
+            self._phase.report("write", done, total)
+
+    def wrap_translate(self, translate):
+        """Hand the page's translate hook a per-batch log and progress (when it takes them)."""
+        if translate is None or not _accepts_keywords(translate, "request_callback", "error_callback"):
+            return translate
+
+        def wrapped(texts, prompt, **extra):
+            self._translate_calls += 1
+            # 第一次是这一页全部要翻的文字；第二次只补原样返回、没拿到译文的几条
+            # （core/pdf_vector/classify.py _translate_with_retry），不再推进度。
+            counts = self._translate_calls == 1
+            total = len(texts)
+            log = lambda level, message: self._runner._log(level, f"[{self._batch_label}] {message}")  # noqa: E731
+            request_log = BatchRequestLog(
+                log, unit="处", subject="内容", thread_name="pdf-inplace-wait-log"
+            )
+
+            def on_event(event) -> None:
+                request_log.on_event(event)
+                if counts:
+                    tracker = request_log.tracker
+                    self._phase.report("translate", tracker.done_items(), tracker.planned_items or total)
+
+            with request_log:
+                return translate(
+                    texts, prompt, request_callback=on_event,
+                    error_callback=lambda message: log("WARN", message), **extra,
+                )
+
+        wrapped.resends_unchanged = _supports_resend_unchanged(translate)
+        return wrapped
 
 
 _DOCUMENT_KIND_LABELS = {
@@ -1337,6 +1449,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
+        # 「翻译」阶段的进度不只是返回的页数：原位替换的页要识别文字、翻译、写回，转 Word
+        # 的正文段要整段翻译，都比一页图像翻译久得多。这些页按真实完成的份额计（识别了几块、
+        # 返回了几条），见 _translation_progress_units；进度只进不退。
+        self._inplace_page_fraction: dict[tuple[str, int], float] = {}
+        self._inplace_active_page: tuple[str, int] | None = None
+        self._translate_progress_reached = -1
         self._retrying_pages: set[str] = set()
         self._retried_pages: set[str] = set()
         self._recovered_pages: set[str] = set()
@@ -2218,6 +2336,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
             "inplace_requested": bool(page.inplace_requested) if page is not None else False,
             "inplace_status": page.inplace_status if page is not None else "",
+            # 原位替换正在做这一页（识别、翻译或写回）。还没轮到的页 inplace_status 也是空的，
+            # 界面靠它分开「原位替换中」和「等待原位替换」。
+            "inplace_active": self._inplace_active_page == (str(prepared.item.path), page_number),
             "inplace_written": int(page.inplace_written) if page is not None else 0,
             "inplace_kept": int(page.inplace_kept) if page is not None else 0,
             "inplace_review": int(page.inplace_review) if page is not None else 0,
@@ -2624,6 +2745,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
+        self._inplace_page_fraction = {}
+        self._inplace_active_page = None
+        self._translate_progress_reached = -1
         self._stop_wait_started_at = None
         self._stop_wait_last_emit = 0.0
         self._retrying_pages.clear()
@@ -2815,10 +2939,15 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             # 复用上次的成品页必须发生在这里：页记录一旦建好，_iter_rendered_pages
             # 就会自然跳过这些页，装订、逐页面板、停止/暂停语义全都不用另开分支。
             self._prefill_resume_pages(prepared_files, output_dir=output_dir)
-            # 自动组合：混合文件里的正文段先转 Word 翻好，转不成的页随后按保底方式翻译。
-            self._run_word_segments(prepared_files)
             total_pages = sum(record.page_count for record in file_records)
             self._total_page_count = total_pages
+            self._queue.put(
+                ProgressMsg(1, 4, "读取文件", len(prepared_files), max(1, len(self._files)))
+            )
+            self._queue.put(StatusMsg(f"状态：已准备 {len(prepared_files)} 个文件，共 {total_pages} 页。"))
+            # 自动组合：混合文件里的正文段先转 Word 翻好，转不成的页随后按保底方式翻译。
+            # 它已经是在翻译了，进度记在「翻译」阶段（上面先把「读取文件」报完）。
+            self._run_word_segments(prepared_files, total_pages=total_pages)
             self._emit_page_status()
             for prepared in prepared_files:
                 if self._all_file_pages_settled_for_progress(prepared.record):
@@ -2830,10 +2959,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         completed=completed,
                         total=prepared.record.page_count,
                     )
-            self._queue.put(
-                ProgressMsg(1, 4, "读取文件", len(prepared_files), max(1, len(self._files)))
-            )
-            self._queue.put(StatusMsg(f"状态：已准备 {len(prepared_files)} 个文件，共 {total_pages} 页。"))
 
             while True:
                 paused = False
@@ -2875,6 +3000,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             checked_at=datetime.now().isoformat(timespec="seconds"),
                         )
 
+                if not fatal_error:
+                    # 原位替换的页在整份文件的其余页翻完后处理，仍算「翻译」阶段：它的识别、
+                    # 翻译和写回占了这类图纸的大部分时间，放到「生成文件」里进度会停在 90%。
+                    self._run_inplace_pages_for_translation(prepared_files, total_pages)
                 has_unfinished_pages = self._has_unfinished_pages(file_records)
                 # Ending a paused task is terminal even if its last submitted
                 # page settled while the user made that choice.
@@ -3278,16 +3407,18 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         pdf_settings = self._settings.pdf
         if getattr(pdf_settings, "translation_route", "image") == "image":
             return
-        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
-        kind = classify_document(
-            item.path,
-            is_oversized=lambda width, height: is_oversized_for_threshold(threshold, width, height),
-        )
+        kind = classify_document(item.path, is_oversized=exceeds_word_page)
         self._document_kinds[str(item.path)] = kind
         record.document_kind = kind.kind
         label = _DOCUMENT_KIND_LABELS.get(kind.kind, "")
         if label:
             self._log("INFO", f"[{record.name}] 判断为{label}，按页处理。")
+
+    def _page_kind_info(self, source_path: str, page_index: int) -> PageKind | None:
+        kind = self._document_kinds.get(source_path)
+        if kind is None or page_index >= len(kind.pages):
+            return None
+        return kind.pages[page_index]
 
     def _page_kind(self, source_path: str, page_index: int) -> str:
         kind = self._document_kinds.get(source_path)
@@ -3788,24 +3919,64 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         """
         return "translate" if record.pages else "render"
 
+    def _shared_document_profile(self, source_path: str, pages: Iterable[int]) -> str | None:
+        """原位替换页、转 Word 段能不能直接用任务开始时为整份 PDF 写的文档说明。
+
+        只有这一部分就是整份文件（除空白页外每一页都在 ``pages`` 里：整份转 Word 的一段，
+        或只有一页的图纸）时才沿用；其余转 Word 每段、原位替换每页各写一段，准确度优先
+        （maple 2026-10-21）。
+        "" 表示这次不用说明（「自动识别场景」关着）；None 表示由那一页、那一段自己写。
+        """
+        if self._profile_requester is None:
+            return ""
+        context = self._document_contexts.get(str(source_path), "")
+        kind = self._document_kinds.get(str(source_path))
+        if not context or kind is None or not kind.pages:
+            return None
+        covered = set(pages)
+        if any(page.page_number not in covered for page in kind.pages if page.kind != KIND_BLANK):
+            return None
+        return context
+
+    def _pending_inplace_pages(self) -> list[tuple[str, PdfPageRecord]]:
+        """原位替换的页：已经按「已完成」记了账（见大幅面页那条快速路径），其实还没处理。"""
+        return [
+            (str(prepared.item.path), page)
+            for prepared in list(self._prepared_files)
+            if prepared.record.status != PDF_OUTPUT_STATE_FAILED
+            for page in list(prepared.record.pages)
+            if page.inplace_requested and not page.inplace_status
+        ]
+
+    def _translation_progress_units(self) -> float:
+        """「翻译」阶段完成了多少页：返回的页数，原位替换的页按真正做完的份额算。"""
+        units = float(self._completed_page_count)
+        for key, page in self._pending_inplace_pages():
+            units -= 1.0 - self._inplace_page_fraction.get((key, page.page_number), 0.0)
+        return max(0.0, units)
+
+    def _send_translation_progress(self, units: float, total_pages: int) -> None:
+        """「翻译」阶段的进度，按千分之一报；只进不退（并发的回调可能乱序到达）。"""
+        value = int(round(1000 * min(1.0, max(0.0, units / max(1, total_pages)))))
+        with self._page_status_lock:
+            if value <= self._translate_progress_reached:
+                return
+            self._translate_progress_reached = value
+        self._queue.put(ProgressMsg(2, 4, "翻译", value, 1000))
+
     def _push_translation_progress(self, total_pages: int) -> None:
         """Emit the "N / total 已完成" progress pair used by both the normal
         future-completion path and the skipped-oversize-page fast path."""
-        self._queue.put(
-            ProgressMsg(
-                2,
-                4,
-                "翻译",
-                self._completed_page_count,
-                max(1, total_pages),
-            )
-        )
+        units = self._translation_progress_units()
+        self._send_translation_progress(units, total_pages)
         if self._stop_event.is_set():
             self._emit_stop_wait_status(force=True)
             return
+        # 原位替换还没做完的页不算「已完成」。
+        done = self._completed_page_count - len(self._pending_inplace_pages())
         self._queue.put(
             StatusMsg(
-                f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
+                f"状态：正在翻译 PDF 页面，已完成 {max(0, done)} / {total_pages} 页。"
             )
         )
 
@@ -4134,10 +4305,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         terms["not_applied"] = not_applied
         self._word_terms.append(terms)
 
-    def _run_word_segments(self, prepared_files: list[_PreparedPdfFile]) -> None:
+    def _run_word_segments(self, prepared_files: list[_PreparedPdfFile], *, total_pages: int = 0) -> None:
         """自动组合（Beta）：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
         翻译，再转回 PDF。转好的段在装配时按原页序拼进来；转不成的页随后按保底方式
-        处理（见 _decide_page_route）。转出来的 Word 只留在过程文件夹里。"""
+        处理（见 _decide_page_route）。转出来的 Word 只留在过程文件夹里。
+
+        这一步属于「翻译」阶段：转好的页按页数计入进度，正在翻的一段按 Word 流程真实
+        返回的份额计（转不成的页之后还要按保底方式翻，不算）。"""
         from core.pdf_word_route import OfficePdfError, docx_to_pdf, translate_pdf_via_word
 
         plans = [(prepared, self._planned_word_pages(prepared)) for prepared in prepared_files]
@@ -4146,6 +4320,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             return
         unavailable = self._word_segments_possible()
         hooks = self._inplace_hooks
+        finished_pages = 0
         for prepared, page_numbers in plans:
             record = prepared.record
             key = str(prepared.item.path)
@@ -4181,6 +4356,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 work.mkdir(parents=True, exist_ok=True)
                 stem = Path(record.name).stem
                 seg_pdf = work / f"{stem}_p{first}-{last}.pdf"
+                base = finished_pages
+
+                def segment_progress(done: int, total: int, *, base: int = base, size: int = len(seg)) -> None:
+                    if total_pages:
+                        units = base + size * min(1.0, max(0.0, done / max(1, total)))
+                        self._send_translation_progress(units, total_pages)
+
                 try:
                     _extract_pdf_pages(Path(record.source_copy_path), seg_pdf, first, last)
                     result = translate_pdf_via_word(
@@ -4188,7 +4370,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         source_lang=str(getattr(hooks, "source_lang", "") or self._settings.source_lang or "auto"),
                         should_stop=self._stop_event.is_set, log=self._log,
                         file_label=f"{record.name} {label}", key_overrides=self._key_overrides,
-                        term_file_paths=[Path(record.source_path)],
+                        term_file_paths=[Path(record.source_path)], progress=segment_progress,
+                        document_profile=self._shared_document_profile(record.source_path, seg),
                     )
                     self._collect_word_terms(result.terms, f"{record.name} {label}")
                     if not result.ok:
@@ -4213,18 +4396,55 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                              issue_count=len(result.issues), engine=engine)
                 record.word_issue_count += len(result.issues)
                 mark("done", note=f"{label}的文字可以提取，转成 Word 翻译后转回 PDF 拼入")
+                finished_pages += len(seg)
+                segment_progress(1, 1)
                 self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
 
-    def _run_inplace_pages(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
-        """「原位替换文字（Beta）」：逐页删字写回；失败或自检不过的页保留原页。"""
+    def _run_inplace_pages_for_translation(
+        self, prepared_files: list[_PreparedPdfFile], total_pages: int
+    ) -> None:
+        """「翻译」阶段的最后一步：其余页都翻完的文件，接着做它的原位替换页。
+
+        停止了就不做：装配时 _finalize_file_record 照旧把它们记成「任务已停止」。
+        """
+        if self._stop_event.is_set():
+            return
+        for prepared in prepared_files:
+            record = prepared.record
+            if (
+                record.source_type == SOURCE_TYPE_IMAGE
+                or record.status == PDF_OUTPUT_STATE_FAILED
+                or not self._record_has_all_pages_finished(record)
+                or not any(page.inplace_requested and not page.inplace_status for page in record.pages)
+            ):
+                continue
+            self._file_progress.emit(
+                prepared.item.path,
+                "active",
+                "translate",
+                completed=self._settled_file_page_count(record),
+                total=record.page_count,
+            )
+            self._run_inplace_pages(record, prepared, total_pages=total_pages)
+            self._emit_page_status()
+            self._push_translation_progress(total_pages)
+
+    def _run_inplace_pages(
+        self,
+        record: PdfFileRecord,
+        prepared: _PreparedPdfFile,
+        *,
+        total_pages: int = 0,
+    ) -> None:
+        """「原位替换文字（Beta）」：逐页删字写回；失败或自检不过的页保留原页。
+
+        ``total_pages`` 不为 0 时（任务的「翻译」阶段里），每页的识别、翻译、写回按真实
+        完成的份额推进进度条；单页重新生成时为 0，进度另有说法。"""
         # 只处理还没试过的页。单页重新生成、「换回上一版」也会走到这里，它们不该
         # 顺带把别的原位替换页重跑一遍（又花一分钟、又调一次模型）。
         pages = [page for page in record.pages if page.inplace_requested and not page.inplace_status]
         if not pages or self._inplace_hooks is None:
             return
-        from core.pdf_vector import translate_page_inplace
-
-        hooks = self._inplace_hooks
         if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
             for page in pages:
                 page.inplace_status = "kept_original"
@@ -4237,64 +4457,92 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page.inplace_status = "stopped"
                 page.inplace_message = "任务已停止，这一页保留原样"
                 continue
-            self._log("INFO", f"[{record.name}] 第 {page.page_number} 页：原位替换文字（Beta）开始，大图约需 1–2 分钟。")
-            work = work_root / f"page_{page.page_number:04d}"
-            # 判成普通文字页的，字都在文字层里，不用再跑文字识别（图纸页、大幅面页
-            # 常有画成线条的字，照常识别）。
-            native_only = self._page_kind(record.source_path, page.page_number - 1) == KIND_TEXT or (
-                not self._page_kind(record.source_path, page.page_number - 1)
-                and not is_oversized_for_threshold(
-                    getattr(self._settings.pdf, "oversized_page_threshold", "A3"),
-                    page.page_width_pt, page.page_height_pt,
-                )
-            )
+            self._log("INFO", f"[{record.name}] 第 {page.page_number} 页：原位替换文字（Beta）开始。")
+            self._queue.put(StatusMsg(f"状态：正在原位替换「{record.name}」第 {page.page_number} 页的文字…"))
+            key = (str(prepared.item.path), page.page_number)
+            self._inplace_active_page = key
             try:
-                result = translate_page_inplace(
-                    Path(record.source_copy_path),
-                    page.page_number - 1,
-                    work,
-                    translate=_with_stop(hooks.translate, self._stop_event.is_set),
-                    profile=hooks.profile,
-                    tesseract=hooks.tesseract,
-                    tesseract_languages=hooks.tesseract_languages,
-                    source_lang=hooks.source_lang,
-                    log=self._log,
-                    native_only=native_only,
-                    memory=getattr(hooks, "memory", None),
-                    memory_file=Path(record.source_path),
-                    memory_location=f"{record.name} 第 {page.page_number} 页",
-                )
-            except Exception as exc:  # noqa: BLE001 - one page only costs that page
-                logger.debug(f"[PDF] 原位替换失败：{exc!r}")
-                page.inplace_status = "kept_original"
-                page.inplace_message = "原位替换出错，这一页保留原样：" + user_facing_reason(exc, fallback="处理这一页时出错。")
-                self._log("WARN", f"[{record.name}] 第 {page.page_number} 页{page.inplace_message}")
-                continue
-            page.inplace_written = result.written
-            page.inplace_kept = result.kept
-            page.inplace_review = result.review + result.not_written
-            page.inplace_untranslated = int(getattr(result, "untranslated", 0) or 0)
-            page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
-            page.inplace_review_items = result.review_items
-            if result.ok and result.written > 0:
-                page.inplace_status = "done"
-                page.inplace_pdf_path = result.output_pdf
-                note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
-                page.inplace_message = (
-                    f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
-                    f"{page.inplace_review} 处认不准保留原文{note}"
-                )
-                if page.inplace_untranslated:
-                    page.inplace_message += f"；{page.inplace_untranslated} 处未获得译文，需复核"
-                if page.inplace_term_review:
-                    page.inplace_message += f"；{page.inplace_term_review} 处未采用记忆库中的设定译法，需复核"
-                self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
-            else:
-                page.inplace_status = "kept_original"
-                page.inplace_message = result.error or _inplace_nothing_written_message(
-                    result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only)
-                )
-                self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
+                self._run_one_inplace_page(record, prepared, page, work_root, total_pages=total_pages)
+            finally:
+                self._inplace_active_page = None
+                self._inplace_page_fraction.pop(key, None)
+
+    def _run_one_inplace_page(
+        self,
+        record: PdfFileRecord,
+        prepared: _PreparedPdfFile,
+        page: PdfPageRecord,
+        work_root: Path,
+        *,
+        total_pages: int,
+    ) -> None:
+        from core.pdf_vector import translate_page_inplace
+
+        hooks = self._inplace_hooks
+        key = (str(prepared.item.path), page.page_number)
+        head = f"[{record.name}] 第 {page.page_number} 页："
+        progress = _InplacePageProgress(
+            self, key, total_pages=total_pages,
+            log=lambda level, message: self._log(level, f"{head}{message}"),
+            batch_label=f"{record.name} 第 {page.page_number} 页",
+        )
+        work = work_root / f"page_{page.page_number:04d}"
+        # 字都在文字层里的页不用再跑文字识别；线条密的图纸、读不到文字的页照常识别
+        # （core.pdf_routes.needs_ocr）。没判断过类型的页按尺寸：大幅面页照常识别。
+        kind_info = self._page_kind_info(record.source_path, page.page_number - 1)
+        native_only = (not needs_ocr(kind_info) if kind_info is not None
+                       else not is_oversized_page(page.page_width_pt, page.page_height_pt))
+        try:
+            result = translate_page_inplace(
+                Path(record.source_copy_path),
+                page.page_number - 1,
+                work,
+                translate=_with_stop(progress.wrap_translate(hooks.translate), self._stop_event.is_set),
+                # 原位替换每一页单独写场景说明（一份图纸里常混着不同专业）；只有整份文件就是
+                # 这一页时，沿用任务开始时写的那段（讲的是同一个内容）。
+                profile=_reuse_profile(self._shared_document_profile(record.source_path, [page.page_number]),
+                                       hooks.profile),
+                tesseract=hooks.tesseract,
+                tesseract_languages=hooks.tesseract_languages,
+                source_lang=hooks.source_lang,
+                log=self._log,
+                native_only=native_only,
+                memory=getattr(hooks, "memory", None),
+                memory_file=Path(record.source_path),
+                memory_location=f"{record.name} 第 {page.page_number} 页",
+                report=progress.report,
+            )
+        except Exception as exc:  # noqa: BLE001 - one page only costs that page
+            logger.debug(f"[PDF] 原位替换失败：{exc!r}")
+            page.inplace_status = "kept_original"
+            page.inplace_message = "原位替换出错，这一页保留原样：" + user_facing_reason(exc, fallback="处理这一页时出错。")
+            self._log("WARN", f"[{record.name}] 第 {page.page_number} 页{page.inplace_message}")
+            return
+        page.inplace_written = result.written
+        page.inplace_kept = result.kept
+        page.inplace_review = result.review + result.not_written
+        page.inplace_untranslated = int(getattr(result, "untranslated", 0) or 0)
+        page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
+        page.inplace_review_items = result.review_items
+        if result.ok and result.written > 0:
+            page.inplace_status = "done"
+            page.inplace_pdf_path = result.output_pdf
+            note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
+            page.inplace_message = (
+                f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
+                f"{page.inplace_review} 处认不准保留原文{note}"
+            )
+            if page.inplace_untranslated:
+                page.inplace_message += f"；{page.inplace_untranslated} 处未获得译文，需复核"
+            if page.inplace_term_review:
+                page.inplace_message += f"；{page.inplace_term_review} 处未采用记忆库中的设定译法，需复核"
+            self._log("OK", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
+        else:
+            page.inplace_status = "kept_original"
+            page.inplace_message = result.error or _inplace_nothing_written_message(
+                result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only)
+            )
+            self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 
     def _finalize_image_record(
         self,
@@ -4406,7 +4654,6 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             for page in record.pages
             if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
-        threshold = getattr(self._settings.pdf, "oversized_page_threshold", "A3")
         # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
         # 模型而保留的页、原位替换试过但没换成的页（大幅面页也一样）另有说法，不算
         # 在这里——那一页是试过了没换成，说成「因幅面过大被跳过」会让用户去关一个
@@ -4417,7 +4664,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             and not page.word_requested
             and (not page.inplace_requested
                  or (not page.inplace_status
-                     and is_oversized_for_threshold(threshold, page.page_width_pt, page.page_height_pt)))
+                     and is_oversized_page(page.page_width_pt, page.page_height_pt)))
         )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)
@@ -4712,16 +4959,15 @@ class PdfImageTranslationRunner(BaseTaskRunner):
     ) -> tuple[str, str]:
         """(route, reason)：reason 非空表示首选用不了、改走了保底方式。"""
         pdf_settings = self._settings.pdf
-        threshold = getattr(pdf_settings, "oversized_page_threshold", "A3")
-        oversized = is_oversized_for_threshold(threshold, width_pt, height_pt)
+        oversized_a3 = is_oversized_page(width_pt, height_pt)
         auto = getattr(pdf_settings, "translation_route", "image") == "auto"
         page_kind = self._page_kind(source_path, page_index)
         if not page_kind and auto:
             page_kind = KIND_TEXT if _page_has_text_layer(page, source_pdf, page_index) else KIND_SCAN
         route = page_route(
             pdf_settings,
-            oversized_a3=is_oversized_page(width_pt, height_pt),
-            oversized=oversized,
+            oversized_a3=oversized_a3,
+            oversized=exceeds_word_page(width_pt, height_pt),
             page_kind=page_kind,
         )
         if not auto:
@@ -4733,7 +4979,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
             return route, ""
-        return fallback_route(pdf_settings, oversized=oversized, image_available=not self._image_model_missing), reason
+        return fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing), reason
 
     def _route_unusable_reason(self, route: str, source_path: str, page_number: int) -> str:
         if route == ROUTE_IMAGE and self._image_model_missing:
@@ -5418,10 +5664,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
 
     def _emit_page_status_locked(self) -> None:
         pending_submitted = max(0, self._submitted_page_count - self._completed_page_count)
+        # 原位替换还没做完的页：记账时按「已完成」算了（与大幅面页同一条快速路径），界面上
+        # 却既不是「已生成」也不是「原样保留」——它正等着、或正在原位替换。
+        pending_inplace = len(self._pending_inplace_pages())
         self._queue.put(
             PdfPageRecoveryStatusMsg(
                 total_pages=self._total_page_count,
-                completed_pages=self._completed_page_count,
+                completed_pages=max(0, self._completed_page_count - pending_inplace),
                 submitted_page_count=self._submitted_page_count,
                 pending_submitted_page_count=pending_submitted,
                 retrying_page_count=len(self._retrying_pages),
@@ -5433,6 +5682,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     for prepared in self._prepared_files
                     for page in prepared.record.pages
                     if page.skipped_oversize
+                    and not (page.inplace_requested and page.inplace_status in {"", "done"})
+                    and not (page.word_requested and page.word_status == "done")
                 ),
             )
         )

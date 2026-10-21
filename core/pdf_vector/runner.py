@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,6 +20,10 @@ from .classify import ProfileFn, TranslateFn, classify_and_translate
 from .common import fitz, write_json
 
 LogFn = Callable[[str, str], None]
+# report(step, done, total, **info): where the page is, for the task's progress
+# bar and run log.  Steps: "ocr" (tiles read, done/total), "read" (text read:
+# rows, native, ocr, seconds), "write" (translations in: written back, then checked).
+ReportFn = Callable[..., None]
 
 # Which Tesseract languages to read with, by document language.
 _OCR_LANGS = {"fr": "fra+eng", "en": "eng", "es": "spa+eng", "de": "deu+eng", "it": "ita+eng", "pt": "por+eng"}
@@ -143,11 +148,16 @@ def translate_page_inplace(
     memory=None,
     memory_file: Path | str | None = None,
     memory_location: str = "",
+    report: ReportFn | None = None,
 ) -> InplaceResult:
     """Translate one page in place; the result PDF holds that single page."""
     def say(level: str, message: str) -> None:
         if log:
             log(level, message)
+
+    def tell(step: str, done: int = 0, total: int = 0, **info) -> None:
+        if report:
+            report(step, done, total, **info)
 
     work_dir.mkdir(parents=True, exist_ok=True)
     font = font_path or find_cjk_font()
@@ -165,9 +175,13 @@ def translate_page_inplace(
             source_lang = guess_language([one_doc[0].get_text()], fallback="fr")
     langs = ocr_languages(source_lang, tesseract_languages) if tesseract and not native_only else ""
     exe = tesseract if langs else None
+    started = time.monotonic()
     info = extract.run(page_pdf, work_dir / "extract", 200, langs or "eng", (0, 90, 270),
-                       max(2, (os.cpu_count() or 4) - 2), exe)
+                       max(2, (os.cpu_count() or 4) - 2), exe,
+                       progress=lambda done, total: tell("ocr", done, total))
     rows = info["rows"]
+    tell("read", 1, 1, rows=len(rows), native=sum(1 for r in rows if r.get("origin") == "native"),
+         ocr=bool(exe), seconds=time.monotonic() - started)
     prefix = f"{memory_location}：" if memory_location else ""
     summary = classify_and_translate(
         rows, translate=translate, profile=profile, source_lang=source_lang,
@@ -181,8 +195,11 @@ def translate_page_inplace(
 
     out_pdf = work_dir / "page_inplace.pdf"
     report_path = work_dir / "writeback.json"
+    tell("write", 0, 2)
     rep = writeback.run(page_pdf, manifest, out_pdf, work_dir / "preview.png", report_path, font)
+    tell("write", 1, 2)
     check = qa.run(page_pdf, out_pdf, manifest, report_path, work_dir / "qa.json", work_dir / "ledger.csv")
+    tell("write", 2, 2)
 
     decided_write = {r["id"] for r in rows if r["decision"] == "write"}
     written_ids = {w["id"] for w in rep["written"]}

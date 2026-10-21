@@ -375,7 +375,13 @@ function focusFailingPages(ui: PdfReviewUiState, handles: PdfGroupHandle[], firs
  *  模型、placeholder_pending 等着补占位页。三个的 chip 都是灰的（reviewResultChip），
  *  既不是失败也不是「有问题」——小结要是不单独数它们，就会把它们算进「通过」。 */
 function pageIsUnfinished(page: PdfPage): boolean {
-  return page.status === "pending" || page.status === "rendered" || page.status === "placeholder_pending";
+  return page.status === "pending" || page.status === "rendered" || page.status === "placeholder_pending" || inplacePending(page);
+}
+
+/** 走原位替换、还没做完的页。后端把它和大幅面页一样记成 skipped_oversize（不送图像模型），
+ *  原位替换在其余页翻完后才做，做完才有 inplace_status。这期间它不是「按幅面跳过」。 */
+function inplacePending(page: PdfPage): boolean {
+  return Boolean(page.inplace_requested) && !page.inplace_status;
 }
 
 /** 分组标题右侧常驻小结。
@@ -406,13 +412,13 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
   // 「还在排队，等着轮到」（待处理）——任务已经定格在终态，它不会再自己轮到。混进
   // 前两档的任何一档都会让用户会错意（以为程序判定这页有质量问题，或以为程序还在
   // 后台继续跑），见 reviewResultChip 对 pending 页在 taskStopped 下的处理。
-  const stoppedSet = new Set(taskStopped ? pages.filter((page) => !pageNeedsRerun(page) && page.status === "pending") : []);
+  const stoppedSet = new Set(taskStopped ? pages.filter((page) => !pageNeedsRerun(page) && (page.status === "pending" || inplacePending(page))) : []);
   const flagged = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && pageIsProblem(page, taskStopped));
   const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
   // 按幅面跳过的 A3+ 页没有翻译，只是原样保留——不能算进「通过」。以前一份只有一页
   // A3 的文件汇总写着「1 页全部通过」，展开才看到那一页是「按幅面跳过」。
   const isSkippedOversize = (page: PdfPage): boolean =>
-    Boolean(page.skipped_oversize) && page.inplace_status !== "done" && !page.kept_reason && page.word_status !== "done";
+    Boolean(page.skipped_oversize) && page.inplace_status !== "done" && !inplacePending(page) && !page.kept_reason && page.word_status !== "done";
   const oversize = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !flagged.includes(page) && !unfinished.includes(page) && isSkippedOversize(page));
   const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length - oversize.length;
 
@@ -877,6 +883,11 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
     if (termReview > 0) return createChip({ label: t("原位替换 · {0} 处需复核", termReview), tone: "warn" });
     return createChip({ label: t("原位替换"), tone: "ok" });
   }
+  if (inplacePending(page)) {
+    // 跟 pending 页同一套：任务停在「已停止」时它不会再轮到。
+    if (page.inplace_active) return createChip({ label: t("原位替换中"), tone: "tint" });
+    return taskStopped ? createChip({ label: t("已停止"), tone: "warn" }) : createChip({ label: t("等待原位替换"), tone: "mute" });
+  }
   if (page.word_status === "done") return createChip({ label: t("转 Word"), tone: "ok" });
   if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("转 Word 未成功"), tone: "warn" });
   if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
@@ -966,6 +977,12 @@ function pageNote(page: PdfPage, taskStopped: boolean, reviewEnabled: boolean): 
 function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
   if (page.word_status === "done") return tx(page.word_message ?? "");
   if (page.inplace_requested && page.inplace_status) return inplaceNote(page);
+  if (inplacePending(page)) {
+    if (page.inplace_active) return t("正在识别、翻译并写回该页的文字，完成后装入输出文件。");
+    return taskStopped
+      ? t("任务已停止，尚未处理到该页，并非生成失败；对同一输出目录执行「继续上次翻译」即可将其重新加入队列。")
+      : t("其余页面翻译完成后，将原位替换该页的文字。");
+  }
   if (page.word_requested && page.word_status) return tx(page.word_message ?? "");
   if (page.kept_reason) return tx(page.kept_reason);
   if (page.skipped_oversize) return t("幅面较大，未送翻译，原始内容已原样保留在输出文件中。");

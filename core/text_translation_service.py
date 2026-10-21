@@ -136,6 +136,7 @@ class TextTranslationService:
         error_callback: Callable[[str], None] | None = None,
         request_callback: Callable[[Any], None] | None = None,
         engine: Any = None,
+        resend_unchanged: Callable[[str, str | None], bool] | None = None,
     ) -> dict[str, str]:
         """分批翻译，返回 ``{原文: 译文}``。
 
@@ -170,6 +171,8 @@ class TextTranslationService:
             transient_retries=self.rate.request_retry,
             max_chars=self.rate.batch_chars,
             item_retries=self.rate.item_retry,
+            # 原样退回的条目在这一批返回后立刻补问一次（PDF 原位替换）。
+            resend_unchanged=resend_unchanged,
         )
         for text in stats.untranslated_sources | stats.stopped_sources:
             if results.get(text) == text:

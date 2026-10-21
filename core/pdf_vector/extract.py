@@ -19,6 +19,8 @@ import os
 import re
 import statistics
 import subprocess
+import threading
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -160,7 +162,8 @@ def _map_box(box, rot, W, H, ox, oy):
 
 
 def ocr_rows(gray: Image.Image, langs: str, rotations=(0, 90, 270), workers: int = 6,
-             exe: str = "tesseract") -> list[dict]:
+             exe: str = "tesseract", progress: Callable[[int, int], None] | None = None) -> list[dict]:
+    """Read the raster in tiles; ``progress(done, total)`` follows the finished tiles."""
     W, H = gray.size
     jobs = []
     # faint grey outline lettering needs a hard threshold to be read at all
@@ -202,9 +205,25 @@ def ocr_rows(gray: Image.Image, langs: str, rotations=(0, 90, 270), workers: int
                         "clipped": clipped})
         return res
 
+    finished = [0]
+    lock = threading.Lock()
+
+    def work_and_count(j):
+        res = work(j)
+        if progress is not None:
+            # counted as each tile finishes: the whole-page reads are far slower
+            # than the tiles, and counting in cut order would sit on them for minutes
+            with lock:
+                finished[0] += 1
+                progress(finished[0], len(jobs))
+        return res
+
     raw = []
+    if progress is not None:
+        progress(0, len(jobs))
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-        for res in pool.map(work, jobs):
+        # results in the order the tiles were cut, so the rows come out the same every time
+        for res in pool.map(work_and_count, jobs):
             raw.extend(res)
     return raw
 
@@ -729,9 +748,10 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
 # ------------------------------------------------------------- main
 
 def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers: int,
-        tesseract: str | None = "tesseract") -> dict:
+        tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None) -> dict:
     """Rows for page 1 of ``source``.  Without ``tesseract`` only the native
-    text layer is read (outline lettering is then counted, not translated)."""
+    text layer is read (outline lettering is then counted, not translated).
+    ``progress(done, total)`` follows the OCR tiles."""
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(source)
     if len(doc) != 1:
@@ -749,7 +769,7 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
     pix = tp.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
     gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
     tmp.close()
-    raw = ocr_rows(gray, langs, rotations, workers, tesseract) if tesseract else []
+    raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
     ocr, dropped = dedup(raw)
     V, Hs = rules(page, dpi)
     ocr, n_split = split_at_rules(ocr, V, Hs)

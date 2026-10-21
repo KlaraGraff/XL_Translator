@@ -569,7 +569,6 @@ interface SurfaceState {
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
   pdfAlsoSaveWord: boolean;
   /** 从多大算大幅面（原位替换、自动组合用）。 */
-  pdfOversizedPageThreshold: "A3" | "A2" | "A1" | "A0";
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -630,7 +629,6 @@ function freshState(surface: Surface): SurfaceState {
     pdfAutoDrawingRoute: "inplace",
     pdfAutoFallback: "image",
     pdfAlsoSaveWord: false,
-    pdfOversizedPageThreshold: "A3",
   };
 }
 
@@ -923,8 +921,6 @@ function applySettingsToStates(): void {
       st.targetLang = text(pdf.target_lang, "zh");
       applyPdfRouteSettings(st, pdf);
       st.pdfAlsoSaveWord = pdf.also_save_word === true;
-      const threshold = text(pdf.oversized_page_threshold);
-      st.pdfOversizedPageThreshold = threshold === "A2" || threshold === "A1" || threshold === "A0" ? threshold : "A3";
     } else {
       const fallbackTarget = surface === "word" ? "fr" : surface === "cad" ? "zh" : text(settings.target_lang, "en");
       st.targetLang = text(settings[`${surface}_target_lang`], fallbackTarget);
@@ -3767,7 +3763,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   const keepLabel = t("原样保留");
   wrap.append(buildRouteRow({
     label: t("扫描页"),
-    hint: t("提取不到文字的页，比如签字页、盖章的评审意见、拍照件。只有图像模型能翻。"),
+    hint: t("提取不到文字的页，比如签字页、盖章的评审意见、拍照件；扫描的大幅面图纸也算扫描页。只有图像模型能翻。"),
     options: [
       { value: "image", label: imageLabel, description: imageDesc },
       { value: "skip", label: keepLabel, description: t("不翻译，完成后列出来") },
@@ -3779,7 +3775,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("可提取文字的页"),
-    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
+    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
       { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变，中文字号略小；只能译成中文") },
@@ -3792,7 +3788,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("达到大幅面起点的页，以及线条密集、字都是零散标注的图纸页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
+    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留，目前只支持译成中文；遇到画成线条的字要先识别，会慢一些。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
     options: [
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
       { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
@@ -3805,26 +3801,12 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。大幅面图纸不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、译成英文不能原位替换。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
     options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
     value: st.pdfAutoFallback,
     disabled: active,
     sub: true,
     onChange: (value) => void handlePdfRouteChange(st, "pdfAutoFallback", "pdf.auto_fallback", value as SurfaceState["pdfAutoFallback"]),
-  }));
-  wrap.append(buildRouteRow({
-    label: t("大幅面起点"),
-    hint: t("多大的页面算图纸和大图。默认 A3 及以上（长、宽都超出 A4 约 15%）。"),
-    options: [
-      { value: "A3", label: t("A3 及以上") },
-      { value: "A2", label: t("A2 及以上") },
-      { value: "A1", label: t("A1 及以上") },
-      { value: "A0", label: t("A0") },
-    ],
-    value: st.pdfOversizedPageThreshold,
-    disabled: active,
-    sub: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfOversizedPageThreshold", "pdf.oversized_page_threshold", value as SurfaceState["pdfOversizedPageThreshold"]),
   }));
   if (st.pdfAutoTextRoute === "word") {
     const sw = createSwitchRow({
@@ -3887,7 +3869,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
  *  见 persistSettingsOrRevert 顶部的说明）。 */
-async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfAlsoSaveWord" | "pdfOversizedPageThreshold">(
+async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfAlsoSaveWord">(
   st: SurfaceState,
   stateKey: K,
   settingPath: string,
