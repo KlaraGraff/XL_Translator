@@ -151,6 +151,38 @@ def test_install_keeps_nothing_when_the_component_cannot_run(hermetic, monkeypat
     assert leftovers == []
 
 
+def test_install_copies_the_vc_runtime_next_to_pymupdf(hermetic, monkeypatch):
+    # Windows：PyMuPDF 要的 msvcp140.dll 从 NumPy 的 wheel 里核对后拷到 pymupdf 目录。
+    runtime = b"fake msvcp140"
+    wheels = {
+        "pymupdf-9.9.9-cp310-abi3-test.whl": _wheel({"pymupdf/__init__.py": b"VersionBind = '9.9.9'\n"}),
+        "pdf2docx-0.5.13-py3-none-any.whl": _wheel({"pdf2docx/__init__.py": b""}),
+        "numpy-test.whl": _wheel({"numpy.libs/msvcp140-abc.dll": runtime}),
+    }
+    files = tuple(_remote(name, data) for name, data in wheels.items())
+    monkeypatch.setattr(installer, "manifest_files", lambda: files)
+    monkeypatch.setattr(installer, "_http_client",
+                        lambda: _client({f"https://primary.test/{name}": data for name, data in wheels.items()}))
+    monkeypatch.setattr(pdf_component, "probe_in_subprocess", lambda site_dir, convert=False: (True, "9.9.9", ""))
+    copies = (("numpy.libs/msvcp140-abc.dll", "pymupdf/msvcp140.dll", len(runtime), hashlib.sha256(runtime).hexdigest()),)
+    monkeypatch.setitem(installer.RUNTIME_COPIES, installer.platform_key(), copies)
+    info = installer.install()
+    assert (Path(info["site_dir"]) / "pymupdf" / "msvcp140.dll").read_bytes() == runtime
+
+    monkeypatch.setitem(installer.RUNTIME_COPIES, installer.platform_key(),
+                        (("numpy.libs/msvcp140-abc.dll", "pymupdf/msvcp140.dll", len(runtime), "0" * 64),))
+    with pytest.raises(installer.ComponentInstallError, match="不完整"):
+        installer.install()
+
+
+def test_windows_runtime_copy_comes_from_the_pinned_numpy_wheel():
+    numpy = [item.name for item in installer.MANIFEST["windows-x64"] if item.name.startswith("numpy-")]
+    assert numpy == ["numpy-2.2.6-cp311-cp311-win_amd64.whl"], "re-pin RUNTIME_COPIES when NumPy changes"
+    [(source, target, size, sha256)] = installer.RUNTIME_COPIES["windows-x64"]
+    assert source.startswith("numpy.libs/msvcp140-") and target == "pymupdf/msvcp140.dll"
+    assert size > 0 and len(sha256) == 64
+
+
 def test_install_reports_unsupported_platforms(hermetic, monkeypatch):
     monkeypatch.setattr(installer, "manifest_files", lambda: ())
     with pytest.raises(installer.ComponentInstallError, match="不支持一键安装"):

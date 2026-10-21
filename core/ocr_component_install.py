@@ -35,6 +35,7 @@ from core.component_download import (
     conda_file,
     download_files,
     extract_conda,
+    replace_file,
     stream_conda_files,
 )
 
@@ -383,7 +384,7 @@ def _write_record(data: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -449,9 +450,12 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
     if not _INSTALL_LOCK.acquire(blocking=False):
         raise ComponentInstallError("组件正在安装，请稍候。")
     root = component_root()
-    staging = root / f".staging-{uuid.uuid4().hex[:8]}"
     downloads = root / ".downloads"
     total = download_size()
+    # 直接解压到最终目录、不再整个改名（杀毒软件还在扫刚写出的程序时，Windows 不让改名）；
+    # 试识别通过后写下记录才算换上，没写记录的目录下次安装或卸载时删掉。
+    final_dir = root / f"{MANIFEST_VERSION}-{uuid.uuid4().hex[:8]}"
+    installed = False
     try:
         client = _http_client()
         packages = [conda_file(current.subdir, item.name, item.size, item.sha256) for item in current.packages]
@@ -468,20 +472,20 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
 
         try:
             paths = download_files(remote, downloads, progress=on_bytes, cancel=cancel, client=client)
-            staging.mkdir(parents=True, exist_ok=True)
+            final_dir.mkdir(parents=True, exist_ok=True)
             stream = current.tesseract
             files = dict(_destination(source) for source, _size, _sha in stream.files)
             hashes = {_destination(source)[0]: (size, sha) for source, size, sha in stream.files}
             stream_conda_files(
                 conda_file(current.subdir, stream.name, 0, ""), stream.data_offset, stream.data_size,
-                staging, files, hashes, progress=on_stream, cancel=cancel, client=client)
+                final_dir, files, hashes, progress=on_stream, cancel=cancel, client=client)
             for index, (package, path) in enumerate(zip(current.packages, paths), start=1):
                 if progress:
                     progress("extract", index - 1, len(current.packages))
-                extract_conda(path, staging, dict(_destination(source) for source in package.files))
+                extract_conda(path, final_dir, dict(_destination(source) for source in package.files))
         except ComponentDownloadError as exc:
             raise ComponentInstallError(str(exc)) from exc
-        tessdata = staging / "tessdata"
+        tessdata = final_dir / "tessdata"
         (tessdata / "configs").mkdir(parents=True, exist_ok=True)
         for item, path in zip(TESSDATA, paths[len(packages):]):
             shutil.copyfile(path, tessdata / item.name)
@@ -489,16 +493,15 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
             (tessdata / "configs" / name).write_text(text, encoding="utf-8")
         if progress:
             progress("verify", 0, 1)
-        version = _self_test(staging)
-        final_dir = root / f"{MANIFEST_VERSION}-{uuid.uuid4().hex[:8]}"
-        old_dirs = [path for path in root.iterdir() if path.is_dir() and path not in (staging, downloads)]
-        staging.replace(final_dir)
+        version = _self_test(final_dir)
+        old_dirs = [path for path in root.iterdir() if path.is_dir() and path not in (final_dir, downloads)]
         _write_record({
             "version": MANIFEST_VERSION,
             "dir": final_dir.name,
             "tesseract": version,
             "platform": platform_key(),
         })
+        installed = True
         for old in old_dirs:
             _discard(old)
         shutil.rmtree(downloads, ignore_errors=True)
@@ -506,7 +509,8 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
             progress("done", 1, 1)
         return installed_info()
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if not installed:
+            shutil.rmtree(final_dir, ignore_errors=True)
         _INSTALL_LOCK.release()
 
 

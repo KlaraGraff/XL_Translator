@@ -32,12 +32,15 @@ port, token = (part.split("=", 1)[1] for part in line.split())
 base = f"http://127.0.0.1:{port}"
 
 
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else (b"{}" if method == "POST" else None)
     req = urllib.request.Request(base + path, data=data, method=method,
                                  headers={"X-Translator-Token": token, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _opener.open(req, timeout=60) as resp:
             return json.loads(resp.read() or b"null")
     except urllib.error.HTTPError as exc:
         return {"http_error": exc.code, "body": exc.read().decode("utf-8", "replace")}

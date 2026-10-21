@@ -14,9 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [vc-runtime-hidden, chinese-data-dir, socks-proxy, http-proxy-registry]
+        scenario: [dead-http-proxy-registry, socks-proxy-registry]
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: actions/setup-python@v6.2.0
@@ -27,7 +27,37 @@ jobs:
         run: |
           Invoke-WebRequest https://github.com/KlaraGraff/XL_Translator/releases/download/v10.3.1/Translator_Windows_x64_10.3.1_Setup.exe -OutFile setup.exe
           7z x -y -orel setup.exe | Out-Null
-          Get-ChildItem rel\sidecar\translator-sidecar\translator-sidecar.exe
+      - name: Proxy in Internet Settings (like a proxy app's "system proxy")
+        shell: pwsh
+        run: |
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+          Set-ItemProperty $key ProxyEnable 1
+          if ("${{ matrix.scenario }}" -eq "socks-proxy-registry") { Set-ItemProperty $key ProxyServer "socks=127.0.0.1:7891" } else { Set-ItemProperty $key ProxyServer "127.0.0.1:7890" }
+          python -c "import urllib.request; print(urllib.request.getproxies())"
+      - name: One-click install through the released sidecar
+        shell: pwsh
+        timeout-minutes: 15
+        run: python .github/repro-local/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
+
+  fixed:
+    name: this branch from source (${{ matrix.scenario }})
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [vc-runtime-hidden, chinese-data-dir]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-release-py311.txt
+      - name: Install dependencies
+        run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt
       - name: Hide the VC++ runtime from System32
         if: matrix.scenario == 'vc-runtime-hidden'
         shell: pwsh
@@ -37,18 +67,9 @@ jobs:
             icacls $item.FullName /grant "Administrators:F" | Out-Null
             Rename-Item $item.FullName "$($item.Name).hidden"
           }
-          Get-ChildItem C:\Windows\System32\msvcp140*, C:\Windows\System32\vcruntime140* | Format-Table Name
-      - name: Proxy in Internet Settings (like Clash "system proxy")
-        if: matrix.scenario == 'http-proxy-registry'
+          Get-ChildItem $env:pythonLocation\*.dll | Format-Table Name
+      - name: One-click installs
         shell: pwsh
         run: |
-          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-          Set-ItemProperty $key ProxyEnable 1
-          Set-ItemProperty $key ProxyServer "127.0.0.1:7890"
-          python -c "import urllib.request; print(urllib.request.getproxies())"
-      - name: One-click install through the released sidecar
-        shell: pwsh
-        run: |
-          if ("${{ matrix.scenario }}" -eq "chinese-data-dir") { $env:REPRO_DATA_PARENT = "$env:RUNNER_TEMP\用户 张三" }
-          if ("${{ matrix.scenario }}" -eq "socks-proxy") { $env:ALL_PROXY = "socks5://127.0.0.1:7891"; $env:HTTPS_PROXY = "socks5://127.0.0.1:7891" }
-          python .github/repro-local/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
+          if ("${{ matrix.scenario }}" -eq "chinese-data-dir") { $env:TRANSLATOR_APP_DATA_DIR = "$env:RUNNER_TEMP\用户 张三\Translator" }
+          python scripts/component_install_smoke.py

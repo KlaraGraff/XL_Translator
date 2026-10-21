@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import shutil
 import threading
+import time
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -54,6 +56,23 @@ def pypi_file(name: str, path: str, size: int, sha256: str) -> RemoteFile:
     return RemoteFile(name, tuple(host + path for host in PYPI_HOSTS), size, sha256)
 
 
+# Windows 上杀毒软件会在文件刚写完时打开它扫描，这一两秒里改名会被拒绝（WinError 5 / 32）。
+_REPLACE_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def replace_file(source: Path, target: Path) -> None:
+    """``os.replace``；Windows 上被占用时等一会儿再试，一共等十几秒。"""
+    for delay in (*_REPLACE_RETRY_DELAYS, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if delay is None or os.name != "nt":
+                raise
+            logger.debug(f"[组件安装] {target.name} 暂时无法改名，稍后再试：{exc!r}")
+            time.sleep(delay)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -62,11 +81,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verified(path: Path, item: RemoteFile) -> bool:
+def file_matches(path: Path, size: int, sha256: str) -> bool:
     try:
-        return path.stat().st_size == item.size and _sha256(path) == item.sha256
+        return path.stat().st_size == size and _sha256(path) == sha256
     except OSError:
         return False
+
+
+def _verified(path: Path, item: RemoteFile) -> bool:
+    return file_matches(path, item.size, item.sha256)
 
 
 def download_files(
@@ -135,7 +158,7 @@ def _download_one(http: httpx.Client, item: RemoteFile, path: Path, base: int, t
             logger.warning(f"[组件安装] 文件核对未通过，换下一个下载源：{last_error}")
             partial.unlink(missing_ok=True)
             continue
-        partial.replace(path)
+        replace_file(partial, path)
         return
     logger.warning(f"[组件安装] {item.name} 所有下载源都失败：{last_error}")
     raise ComponentDownloadError("组件下载失败，请检查网络连接。")
@@ -197,7 +220,7 @@ def _write_member(source, destination: Path, executable: bool) -> None:
         shutil.copyfileobj(source, handle, _CHUNK)
     if executable:
         temporary.chmod(0o755)
-    temporary.replace(destination)
+    replace_file(temporary, destination)
 
 
 def extract_tar_zst(stream, target: Path, files: dict[str, str],
