@@ -102,6 +102,52 @@ class FrenchToEnglishTests(_PageCase):
         self.assertEqual(result.written, 0)
         self.assertEqual(result.kept, 2)
 
+    def test_a_label_packed_against_a_code_leaves_the_code_whole(self):
+        # 行距 8 磅、字号 10 磅：两行的字框（Helvetica 高 1.37 个字号）叠进对方三分之一，
+        # 换掉标注时型号曾整行被删（macOS 上 Arial Unicode 的中文标注同样如此）
+        mapping = {"Capacité 500 portes": "Capacity 500 doors"}
+        for above, below in (("5*TN3000", "Capacité 500 portes"), ("Capacité 500 portes", "5*TN3000")):
+            with self.subTest(above=above):
+                def build(page, above=above, below=below):
+                    page.insert_text((100, 100), above, fontsize=10)
+                    page.insert_text((100, 108), below, fontsize=10)
+
+                result, _prompts = self._run(build, mapping, "en")
+                self.assertEqual(result.written, 1, result.review_items)
+                with fitz.open(result.output_pdf) as out:
+                    text = out[0].get_text()
+                self.assertIn("5*TN3000", text)
+                self.assertIn("Capacity 500 doors", text)
+                self.assertNotIn("Capacité", text)
+
+    def test_text_layer_reads_plain_spaces_and_hyphens(self):
+        # Arial on macOS draws the space and U+00A0, the hyphen and U+00AD with one glyph each;
+        # MuPDF's map then read 「1\xadhour\xa0fire\xa0wall」.  Same map on the font here.
+        from core.pdf_vector.writeback import set_to_unicode
+
+        path, text = _latin_font(), "1-hour fire wall"
+        font = fitz.Font(fontfile=str(path))
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_font(fontname="XLT0", fontfile=str(path))
+        page.insert_text((50, 100), text, fontname="XLT0", fontsize=12)
+        xref = next(f[0] for f in page.get_fonts(full=True) if f[4] == "XLT0")
+        mac = {" ": "\xa0", "-": "\xad"}
+        pairs = "\n".join(f"<{font.has_glyph(ord(c)):04x}> <{ord(mac.get(c, c)):04x}>" for c in sorted(set(text)))
+        bad = ("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapName /Adobe-Identity-UCS def\n"
+               "/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+               f"{len(set(text))} beginbfchar\n{pairs}\nendbfchar\nendcmap\n"
+               "CMapName currentdict /CMap defineresource pop\nend\nend\n")
+        doc.update_stream(int(doc.xref_get_key(xref, "ToUnicode")[1].split()[0]), bad.encode())
+
+        def read(d):
+            with fitz.open("pdf", d.tobytes()) as copy:
+                return copy[0].get_text().strip()
+
+        self.assertEqual(read(doc), "1\xadhour\xa0fire\xa0wall")
+        set_to_unicode(doc, page, {"XLT0": (font, set(text))})
+        self.assertEqual(read(doc), text)
+
 
 @unittest.skipUnless(find_cjk_font() and _latin_font(), "no CJK or Latin font on this machine")
 class ChineseToFrenchTests(_PageCase):

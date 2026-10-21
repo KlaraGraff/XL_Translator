@@ -284,6 +284,45 @@ def place_line(page, font, text, fs, rot, start_along_px, center_cross_px, dpi, 
     return line_rect(font, text, fs, rot, start_along_px, center_cross_px, dpi, squeeze)
 
 
+def set_to_unicode(doc, page, written) -> None:
+    """Give each inserted font a text layer that reads back what was written.
+
+    MuPDF maps every glyph back to the last code point that uses it, and some
+    system fonts draw the space and the no-break space (U+00A0), or the hyphen and
+    the soft hyphen (U+00AD), with one glyph (Arial on macOS), so the page's text
+    read 「Roof\\xa0plan」 and 「1\\xadhour」, which breaks copying and searching the
+    translated drawing.  The map is rebuilt from the characters actually written
+    (glyph ids are character ids under Identity-H); a glyph two of them share reads
+    as the lower code point.  It also drops the map's entries for the thousands of
+    glyphs never used.  ``written``: resource name -> (fitz.Font, chars)."""
+    for f in page.get_fonts(full=True):
+        xref, name = f[0], f[4]
+        if name not in written:
+            continue
+        font, chars = written[name]
+        table: dict[int, str] = {}
+        for ch in sorted(chars):
+            gid = font.has_glyph(ord(ch))
+            if gid:
+                table.setdefault(gid, ch)
+        pairs = [f"<{gid:04x}> <{table[gid].encode('utf-16-be').hex()}>" for gid in sorted(table)]
+        blocks = "".join(f"{len(chunk)} beginbfchar\n" + "\n".join(chunk) + "\nendbfchar\n"
+                         for chunk in (pairs[i:i + 100] for i in range(0, len(pairs), 100)))
+        cmap = ("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+                "/CIDSystemInfo <</Registry(Adobe)/Ordering(UCS)/Supplement 0>> def\n"
+                "/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n"
+                "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+                f"{blocks}endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n")
+        kind, value = doc.xref_get_key(xref, "ToUnicode")
+        if kind == "xref":
+            target = int(value.split()[0])
+        else:
+            target = doc.get_new_xref()
+            doc.update_object(target, "<<>>")
+            doc.xref_set_key(xref, "ToUnicode", f"{target} 0 R")
+        doc.update_stream(target, cmap.encode("ascii"))
+
+
 # ----------------------------------------------------------------- main flow
 
 def redaction_rect(row, page, dpi):
@@ -321,15 +360,26 @@ def _passes(rects):
     return groups
 
 
+# MuPDF drops a glyph once a text redaction covers more than a tenth of the glyph's
+# box (the font's ascender to descender, the same box as the text layer's line box);
+# measured on PyMuPDF 1.28: 1.4 pt of a 13.7 pt box goes, 1.35 pt stays.
+_GLYPH_TOUCH = 0.1
+
+
 def _clear_of_kept_text(disp, lb, rot, kept, dpi):
     """``disp`` (display px) pulled back off kept text lines it reaches into.
 
     MuPDF drops every glyph a text redaction touches, so on tightly stacked lines
     (or a label set right against a type code) the full line box of a replaced
     row also took letters of the line above or beside it: 「500门」 under
-    「5*TN3000」 left only 「5」「0」 of the code.  The rectangle may shrink back
-    to the middle of its own line; any glyph of its own still touches that, so
-    the row's text is still removed whole."""
+    「5*TN3000」 left only 「5」「0」 of the code.
+
+    Across the line the rectangle stops at the kept line's box.  Fonts with tall
+    boxes (Arial Unicode on macOS) make neighbouring boxes overlap far into each
+    other; then it may reach just under a tenth into the kept box (_GLYPH_TOUCH),
+    which MuPDF lets stand.  Either way a quarter of the row's own box stays
+    covered, which still takes every glyph of its own; only when the lines overlap
+    even more does it fall back to the middle of its own line."""
     x0, y0, x1, y1 = disp
     eps = 0.3 * dpi / 72.0
     horizontal = rot % 180 == 0
@@ -340,20 +390,29 @@ def _clear_of_kept_text(disp, lb, rot, kept, dpi):
     ends0, ends1 = a0 + 0.15 * (c1 - c0), a1 - 0.15 * (c1 - c0)
     lo_c, hi_c = (y0, y1) if horizontal else (x0, x1)
     lo_a, hi_a = (x0, x1) if horizontal else (y0, y1)
+    clear = [lo_c, hi_c]      # off the kept boxes altogether
+    near = [lo_c, hi_c]       # just under a tenth into them
     for k in kept:
         if k[0] >= x1 or k[2] <= x0 or k[1] >= y1 or k[3] <= y0:
             continue
         k_c0, k_c1 = (k[1], k[3]) if horizontal else (k[0], k[2])
         k_a0, k_a1 = (k[0], k[2]) if horizontal else (k[1], k[3])
         mid = (k_c0 + k_c1) / 2
+        reach = 0.8 * _GLYPH_TOUCH * (k_c1 - k_c0)
         if mid < core0:          # a line on one side across the reading direction
-            lo_c = max(lo_c, min(k_c1 + eps, core0))
+            clear[0], near[0] = max(clear[0], k_c1 + eps), max(near[0], k_c1 - reach)
         elif mid > core1:
-            hi_c = min(hi_c, max(k_c0 - eps, core1))
+            clear[1], near[1] = min(clear[1], k_c0 - eps), min(near[1], k_c0 + reach)
         elif (k_a0 + k_a1) / 2 < (a0 + a1) / 2:   # on the same line, before or after it
             lo_a = max(lo_a, min(k_a1 + eps, ends0))
         else:
             hi_a = min(hi_a, max(k_a0 - eps, ends1))
+    for lo, hi in (clear, near):
+        if min(hi, c1) - max(lo, c0) >= 0.25 * (c1 - c0):
+            lo_c, hi_c = lo, hi
+            break
+    else:
+        lo_c, hi_c = max(lo_c, min(near[0], core0)), min(hi_c, max(near[1], core1))
     return (lo_a, lo_c, hi_a, hi_c) if horizontal else (lo_c, lo_a, hi_c, hi_a)
 
 
@@ -867,6 +926,11 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
         keep_ids = {r["id"] for r in placed}
         return run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit)
 
+    written: dict[str, tuple[object, set[str]]] = {}
+    for r in placed:
+        written.setdefault(r["_font"].name, (r["_font"].font, set()))[1].update(
+            "".join(ln[0] for ln in r["_plan"]["lines"]))
+    set_to_unicode(doc, page, written)
     doc.subset_fonts()
     output.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output, garbage=3, deflate=True)
