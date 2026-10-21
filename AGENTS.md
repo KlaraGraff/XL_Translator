@@ -43,6 +43,11 @@ Hard rules:
    - `step=publish`: the body lives in `docs/release-notes/v{version}.md` and is merged into main first.
      The workflow first validates the body, then replaces the draft body, reads it back to compare, then clears the draft — fixed order;
      finally it confirms that the latest version installed apps see (`releases/latest`, `latest.json`) has switched over.
+   - `step=prerelease`: same checks and body replacement as publish, but the release goes out marked Pre-release: visible and
+     downloadable on the releases page, while `releases/latest`, `latest.json` and the README download link stay on the previous
+     formal release (installed apps get no update prompt) and no feedback emails are sent. Use it to let specific users try a build.
+     `step=promote` later turns it into the formal release (Latest, confirms both endpoints switched, then sends feedback emails);
+     both need maple's confirmation, and promoting needs its own.
    - `step=notes`: revise the body after publishing; `step=retract`: revert to draft (no artifacts deleted, tag untouched),
      and confirm the latest version has fallen back to the previous formal release. Retracting also requires maple's confirmation.
    - `step=discard`: delete an unpublished draft and its tag so the same version number can be rebuilt; before deleting,
