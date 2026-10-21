@@ -61,4 +61,4 @@ jobs:
           Get-ChildItem rel\sidecar\translator-sidecar\translator-sidecar.exe
       - name: One-click install through the released sidecar
         shell: pwsh
-        run: python .github/tmp-repro/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
+        run: python .github/repro-local/drive_sidecar.py rel\sidecar\translator-sidecar\translator-sidecar.exe pdf2docx ocr
