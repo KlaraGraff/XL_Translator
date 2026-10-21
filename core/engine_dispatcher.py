@@ -1057,7 +1057,7 @@ def _translate_batch_with_fallback(
                 context_label=context_label,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
-            logger.error(f"Excel 翻译请求不再重发，已停止拆分批次：{exc}")
+            logger.error(f"{context_label} 翻译请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
             stats.record_untranslated(batch, str(exc))
@@ -1073,7 +1073,7 @@ def _translate_batch_with_fallback(
             midpoint = max(1, len(batch) // 2)
             stats.record_retry()
             logger.warning(
-                "Excel 批次翻译失败，已缩小批次重试"
+                f"{context_label} 批次翻译失败，已缩小批次重试"
                 f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc}"
             )
             message = f"一批翻译出错，已拆分为更小的批次重试：{_batch_failure_reason(exc)}"
@@ -1138,7 +1138,7 @@ def _translate_batch_with_fallback(
         stats.record_untranslated(batch, str(exc))
         head = str(batch[0] if batch else "")[:40]
         logger.error(
-            f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数："
+            f"{context_label} 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数："
             f"{head}... | {exc}"
         )
         err_msg = (
@@ -1405,7 +1405,7 @@ def _translate_batch_with_sources_fallback(
                 context_label=context_label,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
-            logger.error(f"Excel 语言回报请求不再重发，已停止拆分批次：{exc}")
+            logger.error(f"{context_label} 语言回报请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
             stats.record_untranslated(batch, str(exc))
@@ -1477,7 +1477,7 @@ def _translate_batch_with_sources_fallback(
                 return recovered_items
             batch = failed
         stats.record_untranslated(batch, str(exc))
-        logger.error(f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}")
+        logger.error(f"{context_label} 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}")
         err_msg = (
             f"有 {len(batch)} 条内容未能翻译，已保留原文："
             f"{_batch_failure_reason(exc)}"
