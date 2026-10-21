@@ -1475,7 +1475,7 @@ function runningStatusMeta(state: TaskStatus["state"]): { label: string; tone: S
 }
 
 function sourceLabel(st: SurfaceState): string {
-  if (st.sourceLang === "auto") return t("自动检测");
+  if (st.sourceLang === "auto") return t("自动识别");
   return tx(languageOptions.source.find((o) => o.code === st.sourceLang)?.display_name ?? st.sourceLang);
 }
 function targetLabel(st: SurfaceState): string {

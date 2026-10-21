@@ -302,10 +302,10 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
   return refs;
 }
 
-/** 快照里存的是语言代码（auto、en、zh），详情里要显示成「自动检测 → 英文」。
+/** 快照里存的是语言代码（auto、en、zh），详情里要显示成「自动识别 → 英文」。
  *  语言表进入任务中心时拉一次；没拉到时退回代码本身，不挡渲染。 */
 // 存原文，显示时再 tx()：切换界面语言后跟着变。
-const languageNames = new Map<string, string>([["auto", "自动检测"]]); // i18n-ignore 显示时由 tx() 翻译
+const languageNames = new Map<string, string>([["auto", "自动识别"]]); // i18n-ignore 显示时由 tx() 翻译
 let languageNamesRequested = false;
 
 async function loadLanguageNames(): Promise<void> {
