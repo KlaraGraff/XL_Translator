@@ -501,5 +501,8 @@ class OfficePdfTests(unittest.TestCase):
             caps = route_capabilities()
         self.assertEqual(set(caps), {"image_model_ready", "image_model_message", "word_component",
                                      "inplace_component", "inplace_component_message",
-                                     "office_engine", "office_message", "inplace_target_ok"})
+                                     "office_engine", "office_message", "inplace_target_ok",
+                                     "inplace_unsupported_targets"})
         self.assertEqual(caps["office_engine"], "")
+        self.assertIn("ar", caps["inplace_unsupported_targets"])
+        self.assertNotIn("fr", caps["inplace_unsupported_targets"])

@@ -223,3 +223,24 @@ def classify_text_language(text: str, target_lang: str) -> str:
     if target_score >= 2 and target_score > other_best:
         return TARGET
     return UNSURE
+
+
+def target_script_pattern(target_lang: str) -> str | None:
+    """目标语言自己的文字（中文的汉字、韩文的谚文、俄文的西里尔字母…）的正则；
+    用拉丁字母书写或不认识的目标语言是 None。"""
+    code = base_lang(target_lang)
+    return _CJK_TARGET_PATTERNS.get(code) or _SCRIPT_TARGET_PATTERNS.get(code)
+
+
+def is_residual_foreign_text(text: str, target_lang: str) -> bool:
+    """Whether written-back text still looks untranslated for ``target_lang``.
+
+    For CJK/other-script targets the leftover must be real Latin words, not
+    part numbers or standard codes. For Latin targets the leftover is any
+    remaining CJK/other non-Latin script.
+
+    CAD 写回后扫残留外文、PDF 原位替换核对译文都用这一条。
+    """
+    if base_lang(target_lang) in LATIN_TARGET_LANGS:
+        return bool(NON_LATIN_SCRIPT_RE.search(text))
+    return has_latin_words(text) and classify_text_language(text, target_lang) != TARGET

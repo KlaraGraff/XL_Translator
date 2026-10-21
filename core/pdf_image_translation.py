@@ -107,6 +107,7 @@ from core.pdf_routes import (
     KIND_MIXED,
     KIND_SCAN,
     KIND_TEXT,
+    INPLACE_TARGET_UNSUPPORTED,
     ROUTE_IMAGE,
     ROUTE_INPLACE,
     ROUTE_SKIP,
@@ -115,6 +116,7 @@ from core.pdf_routes import (
     PageKind,
     exceeds_word_page,
     fallback_route,
+    inplace_target_supported,
     needs_ocr,
     page_route,
 )
@@ -896,7 +898,11 @@ def determine_pdf_task_status(
     return PDF_OUTPUT_STATE_COMPLETED
 
 
-def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False) -> str:
+# 原文是中日韩文字的页不跑识别（识别数据只有西文的）：画成线条的字保留原样。
+_INPLACE_CJK_OCR_NOTE = "（画成线条的中文、日文、韩文暂不能识别，保留原样）"
+
+
+def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, cjk_ocr_skipped: bool = False) -> str:
     """原位替换一处都没写：照实说认出了什么、为什么没换，不能笼统说「没有找到文字」。"""
     items = [item for item in (getattr(result, "review_items", None) or []) if item.get("kind") != "term"]
     kept = int(getattr(result, "kept", 0) or 0)
@@ -912,6 +918,8 @@ def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False) 
         return message + "，这一页保留原样"
     if kept:
         return f"识别到的 {kept} 处都是数字和编号等不需要翻译的内容，这一页保留原样"
+    if cjk_ocr_skipped:
+        return f"没有找到可以替换的文字{_INPLACE_CJK_OCR_NOTE}，这一页保留原样"
     if ocr_missing:
         return "没有找到可以替换的文字（没有安装文字识别组件，画成线条的字未识别），这一页保留原样"
     return "没有找到可以替换的文字，这一页保留原样"
@@ -951,6 +959,7 @@ def _with_stop(translate, should_stop):
             return translate(texts, prompt, **extra)
 
     wrapped.resends_unchanged = _supports_resend_unchanged(translate)
+    wrapped.takes_source_lang = _takes_source_lang(translate)
     return wrapped
 
 
@@ -958,6 +967,12 @@ def _supports_resend_unchanged(translate) -> bool:
     from core.pdf_vector.classify import supports_resend_unchanged
 
     return supports_resend_unchanged(translate)
+
+
+def _takes_source_lang(translate) -> bool:
+    from core.pdf_vector.classify import takes_source_lang
+
+    return takes_source_lang(translate)
 
 
 def _reuse_profile(shared: str | None, profile):
@@ -1086,6 +1101,7 @@ class _InplacePageProgress:
                     )
 
         wrapped.resends_unchanged = _supports_resend_unchanged(translate)
+        wrapped.takes_source_lang = _takes_source_lang(translate)
         return wrapped
 
 
@@ -1472,6 +1488,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 返回了几条），见 _translation_progress_units；进度只进不退。
         self._inplace_page_fraction: dict[tuple[str, int], float] = {}
         self._inplace_active_page: tuple[str, int] | None = None
+        # 每份文件的原文语言（原位替换的页自己读不到文字时用，见 _document_source_lang）
+        self._document_langs: dict[str, str] = {}
         self._translate_progress_reached = -1
         self._retrying_pages: set[str] = set()
         self._retried_pages: set[str] = set()
@@ -4464,11 +4482,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         pages = [page for page in record.pages if page.inplace_requested and not page.inplace_status]
         if not pages or self._inplace_hooks is None:
             return
-        if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
+        if not inplace_target_supported(self._settings.pdf.target_lang):
             for page in pages:
                 page.inplace_status = "kept_original"
-                page.inplace_message = "原位替换文字（Beta）目前只支持译成中文，这一页保留原样"
-            self._log("WARN", f"[{record.name}] 原位替换文字（Beta）目前只支持译成中文，相关页面保留原样。")
+                page.inplace_message = f"{INPLACE_TARGET_UNSUPPORTED}，这一页保留原样"
+            self._log("WARN", f"[{record.name}] {INPLACE_TARGET_UNSUPPORTED}，相关页面保留原样。")
             return
         work_root = Path(prepared.translated_pages_dir) / "inplace"
         for page in sorted(pages, key=lambda item: item.page_number):
@@ -4511,6 +4529,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         kind_info = self._page_kind_info(record.source_path, page.page_number - 1)
         native_only = (not needs_ocr(kind_info) if kind_info is not None
                        else not is_oversized_page(page.page_width_pt, page.page_height_pt))
+        pdf_settings = self._settings.pdf
+        target_lang = str(pdf_settings.target_lang or "zh")
         try:
             result = translate_page_inplace(
                 Path(record.source_copy_path),
@@ -4530,6 +4550,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 memory_file=Path(record.source_path),
                 memory_location=f"{record.name} 第 {page.page_number} 页",
                 report=progress.report,
+                # 译文字体、放不下时缩到多小（「高级 → 原位替换」，与 CAD「译文写回」同一套规则）
+                target_lang=target_lang,
+                font_style=str(getattr(pdf_settings, "inplace_font", "sans") or "sans"),
+                fit=pdf_settings.inplace_fit(target_lang),
+                fallback_lang=self._document_source_lang(record, target_lang),
             )
         except Exception as exc:  # noqa: BLE001 - one page only costs that page
             logger.debug(f"[PDF] 原位替换失败：{exc!r}")
@@ -4547,6 +4572,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page.inplace_status = "done"
             page.inplace_pdf_path = result.output_pdf
             note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
+            if getattr(result, "ocr_skipped_cjk", False):
+                note = _INPLACE_CJK_OCR_NOTE
             page.inplace_message = (
                 f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                 f"{page.inplace_review} 处认不准保留原文{note}"
@@ -4559,9 +4586,28 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         else:
             page.inplace_status = "kept_original"
             page.inplace_message = result.error or _inplace_nothing_written_message(
-                result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only)
+                result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only),
+                cjk_ocr_skipped=bool(getattr(result, "ocr_skipped_cjk", False)),
             )
             self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
+
+    def _document_source_lang(self, record: PdfFileRecord, target_lang: str) -> str:
+        """整份文件的原文语言：页面自己读不到文字（全是线条）时按它决定识别哪种文字。
+
+        读文字层的前 30 页，只读一次。整份都读不到文字时按法文（以前的做法），
+        译成法文时按英文。"""
+        key = str(record.source_path)
+        if key not in self._document_langs:
+            from core.pdf_vector.runner import guess_language
+
+            fallback = "en" if target_lang.lower().startswith("fr") else "fr"
+            try:
+                lines = _pdf_text_lines(Path(record.source_copy_path or record.source_path))
+            except Exception as exc:  # noqa: BLE001 - only a hint for pages without text
+                logger.debug(f"[PDF] 读取文字层判断原文语言失败：{exc!r}")
+                lines = []
+            self._document_langs[key] = guess_language(lines, fallback=fallback)
+        return self._document_langs[key]
 
     def _finalize_image_record(
         self,
@@ -5008,8 +5054,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 return "原位替换不可用"
             if not self._pdf_component_ready():
                 return "未安装「PDF 处理组件」"
-            if not str(self._settings.pdf.target_lang or "").lower().startswith("zh"):
-                return "原位替换目前只支持译成中文"
+            if not inplace_target_supported(self._settings.pdf.target_lang):
+                return INPLACE_TARGET_UNSUPPORTED
         if route == ROUTE_WORD:
             entry = self._word_pages.get((source_path, page_number))
             if entry is None or entry.get("status") != "done":
