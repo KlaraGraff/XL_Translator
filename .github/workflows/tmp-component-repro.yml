@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [dead-http-proxy-registry, socks-proxy-registry]
+        scenario: [socks-proxy-registry]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [vc-runtime-hidden, chinese-data-dir]
+        scenario: [vc-runtime-hidden, chinese-data-dir, dead-http-proxy-registry, socks-proxy-registry]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -68,8 +68,22 @@ jobs:
             Rename-Item $item.FullName "$($item.Name).hidden"
           }
           Get-ChildItem $env:pythonLocation\*.dll | Format-Table Name
+      - name: Proxy in Internet Settings
+        if: endsWith(matrix.scenario, 'proxy-registry')
+        shell: pwsh
+        run: |
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+          Set-ItemProperty $key ProxyEnable 1
+          if ("${{ matrix.scenario }}" -eq "socks-proxy-registry") { Set-ItemProperty $key ProxyServer "socks=127.0.0.1:7891" } else { Set-ItemProperty $key ProxyServer "127.0.0.1:7890" }
+          python -c "import urllib.request; print(urllib.request.getproxies())"
       - name: One-click installs
         shell: pwsh
         run: |
           if ("${{ matrix.scenario }}" -eq "chinese-data-dir") { $env:TRANSLATOR_APP_DATA_DIR = "$env:RUNNER_TEMP\用户 张三\Translator" }
           python scripts/component_install_smoke.py
+      - name: OCR at a path outside the code page (pdf_vector reads through stdin)
+        if: matrix.scenario == 'chinese-data-dir'
+        shell: pwsh
+        run: |
+          $env:TRANSLATOR_APP_DATA_DIR = "$env:RUNNER_TEMP\用户 张三\Translator"
+          python -c "import sys; sys.path.insert(0, '.'); from core import ocr_component_install as i; i.install(); from PIL import Image, ImageDraw, ImageFont; im = Image.new('L', (900, 160), 255); ImageDraw.Draw(im).text((20, 40), 'Plan de masse 2026', fill=0, font=ImageFont.load_default(size=56)); from core.pdf_vector import extract; from core import ocr_engine; exe = str(ocr_engine.resolve_tesseract()); words = extract._tess(im, 'fra+eng', exe); print(exe, [w['text'] for w in words]); assert any('masse' in w['text'] for w in words); print('languages', ocr_engine.tesseract_languages(ocr_engine.resolve_tesseract()))"

@@ -88,6 +88,60 @@ def test_download_can_be_cancelled(tmp_path):
         download_files([item], tmp_path, cancel=cancel, client=_client({}))
 
 
+def test_an_unusable_system_proxy_falls_back_to_a_direct_connection(monkeypatch):
+    # Windows「Internet 选项」里填 SOCKS 代理时，Python 读出来是 socks4://，httpx 建客户端就报错。
+    for name in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "socks4://127.0.0.1:7891")
+    with pytest.raises(ValueError):
+        httpx.Client()
+    with component_download.open_client() as client:
+        assert client.trust_env is False
+
+
+def test_download_retries_directly_when_the_system_proxy_is_gone(tmp_path, monkeypatch):
+    good = b"real wheel bytes"
+    item = _remote("a.whl", good)
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("proxy refused", request=request)
+
+    monkeypatch.setattr(component_download, "open_client", lambda: httpx.Client(transport=httpx.MockTransport(refused)))
+    monkeypatch.setattr(component_download, "direct_client", lambda: _client({"https://primary.test/a.whl": good}))
+    monkeypatch.setattr(component_download.system_proxy, "proxy_for", lambda url: "http://127.0.0.1:7890")
+    [path] = download_files([item], tmp_path)
+    assert path.read_bytes() == good
+
+    # 没走代理时连不上就是连不上，不另外直连。
+    monkeypatch.setattr(component_download.system_proxy, "proxy_for", lambda url: "")
+    (tmp_path / "a.whl").unlink()
+    with pytest.raises(ComponentDownloadError, match="下载失败"):
+        download_files([item], tmp_path)
+
+
+def test_rename_waits_for_a_virus_scanner_on_windows(tmp_path, monkeypatch):
+    import types
+
+    calls: list[tuple[Path, Path]] = []
+
+    def replace(source, target):
+        calls.append((source, target))
+        if len(calls) < 3:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(component_download, "os", types.SimpleNamespace(name="nt", replace=replace))
+    monkeypatch.setattr(component_download.time, "sleep", lambda seconds: None)
+    component_download.replace_file(tmp_path / "a.part", tmp_path / "a")
+    assert len(calls) == 3
+
+    def always(source, target):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(component_download, "os", types.SimpleNamespace(name="nt", replace=always))
+    with pytest.raises(PermissionError):
+        component_download.replace_file(tmp_path / "a.part", tmp_path / "a")
+
+
 def test_extract_rejects_paths_outside_the_target(tmp_path):
     wheel = tmp_path / "bad.whl"
     wheel.write_bytes(_wheel({"../evil.py": b"x"}))

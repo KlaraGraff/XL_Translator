@@ -302,8 +302,9 @@ def test_install_lays_out_checks_and_records_the_component(hermetic, monkeypatch
     assert not (installer.component_root() / ".downloads").exists()
     # 一键安装的版本被选中，并带着它自己的语言数据目录。
     assert ocr_engine.resolve_tesseract() == executable.resolve()
-    env = ocr_engine.tesseract_env(executable)
-    assert env is not None and env["TESSDATA_PREFIX"] == str(base / "tessdata")
+    # 在组件目录里运行、语言数据给相对路径：Windows 上 tesseract 读不了系统代码页以外的路径。
+    options = ocr_engine.tesseract_options(executable)
+    assert options["cwd"] == str(base) and options["env"]["TESSDATA_PREFIX"] == "tessdata"
     status = ocr_engine.ocr_status()
     assert status["state"] == "connected" and status["source"] == "managed"
     assert status["languages"] == ["eng", "fra"] or sorted(status["languages"]) == ["eng", "fra"]
@@ -369,7 +370,7 @@ def test_a_chosen_location_wins_over_the_one_click_install(hermetic):
     ocr_engine.save_tesseract_path(str(own))
     assert ocr_engine.resolve_tesseract() == own.resolve()
     assert ocr_engine.ocr_status()["source"] == "manual"
-    assert ocr_engine.tesseract_env(own) is None  # 用户自己的照常继承环境
+    assert ocr_engine.tesseract_options(own) == {}  # 用户自己的照常继承环境
 
 
 def test_installed_record_cannot_point_outside_the_component_folder(hermetic):
@@ -389,13 +390,16 @@ def test_inplace_ocr_runs_the_managed_program_with_its_language_data(hermetic, m
     seen: list[dict] = []
     real_run = subprocess.run
 
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("env") or {})
-        return real_run(*args, **kwargs)
+    def spy(command, **kwargs):
+        seen.append({"command": command, **kwargs})
+        return real_run(command, **kwargs)
 
     monkeypatch.setattr(extract.subprocess, "run", spy)
     extract._tess(Image.new("L", (40, 20), 255), "eng", str(managed))
-    assert seen and seen[0].get("TESSDATA_PREFIX") == str(managed.parent.parent / "tessdata")
+    [call] = seen
+    assert call["env"]["TESSDATA_PREFIX"] == "tessdata" and call["cwd"] == str(managed.parent.parent)
+    # 图片从 stdin 给，不经临时目录的路径（Windows 上中文用户名下的路径 tesseract 读不了）。
+    assert call["command"][1] == "stdin" and call["input"].startswith(b"\x89PNG")
 
 
 # ── plugins page API ──────────────────────────────────────────────────────

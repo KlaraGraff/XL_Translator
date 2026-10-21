@@ -411,24 +411,26 @@ def _self_test(base: Path) -> str:
     """装好的程序能启动、能列出语言、能认出一行字；返回版本号，失败抛 ComponentInstallError。"""
     from PIL import Image, ImageDraw, ImageFont
 
-    executable = base / "bin" / _executable_name()
-    env = {**os.environ, "TESSDATA_PREFIX": str(base / "tessdata")}
+    from core.ocr_engine import png_bytes
 
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([str(executable), *args], capture_output=True, text=True, timeout=60,
-                              check=False, env=env, creationflags=_NO_WINDOW)
+    executable = base / "bin" / _executable_name()
+    # 与 core.ocr_engine.tesseract_options 一样：在组件目录里运行、语言数据给相对路径、图片走 stdin，
+    # Windows 上路径里有系统代码页以外的字（英文系统上的中文用户名）时 tesseract 读不了路径。
+    env = {**os.environ, "TESSDATA_PREFIX": "tessdata"}
+
+    def run(*args: str, image: bytes | None = None) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run([str(executable), *args], input=image, capture_output=True, timeout=60,
+                                check=False, env=env, cwd=str(base), creationflags=_NO_WINDOW)
+        return subprocess.CompletedProcess(result.args, result.returncode,
+                                           result.stdout.decode("utf-8", "replace"),
+                                           result.stderr.decode("utf-8", "replace"))
 
     try:
         version = run("--version")
         langs = run("--list-langs")
         image = Image.new("L", (900, 160), 255)
         ImageDraw.Draw(image).text((20, 40), "Plan de masse 2026", fill=0, font=ImageFont.load_default(size=56))
-        sample = base / "self-test.png"
-        image.save(sample)
-        try:
-            ocr = run(str(sample), "stdout", "--psm", "11", "-l", "fra+eng", "tsv")
-        finally:
-            sample.unlink(missing_ok=True)
+        ocr = run("stdin", "stdout", "--psm", "11", "-l", "fra+eng", "tsv", image=png_bytes(image))
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning(f"[文字识别组件] 一键安装后试运行失败：{exc!r}")
         raise ComponentInstallError("组件已下载，但无法在本机运行。") from exc

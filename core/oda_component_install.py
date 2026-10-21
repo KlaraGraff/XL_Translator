@@ -32,7 +32,9 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from core import system_proxy
 from core.app_paths import get_app_data_dir
+from core.component_download import direct_client, open_client, replace_file
 
 ProgressFn = Callable[[str, int, int], None]
 
@@ -164,10 +166,11 @@ def _run(args: list[str], *, timeout: float = 300, input_text: str | None = None
 
 def _download(url: str, path: Path, progress: ProgressFn | None, cancel: threading.Event | None) -> None:
     client = _http_client()
-    http = client or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+    http = client or open_client()
     partial = path.with_name(path.name + ".part")
-    try:
-        with http.stream("GET", url) as response:
+
+    def fetch(session: httpx.Client) -> None:
+        with session.stream("GET", url) as response:
             response.raise_for_status()
             total = int(response.headers.get("content-length") or 0)
             if total > _MAX_BYTES:
@@ -183,7 +186,18 @@ def _download(url: str, path: Path, progress: ProgressFn | None, cancel: threadi
                         raise ComponentInstallError(NOT_A_PACKAGE)
                     if progress:
                         progress("download", received, max(total, received))
-        partial.replace(path)
+
+    try:
+        try:
+            fetch(http)
+        except httpx.HTTPError as exc:
+            # 代理软件已退出、系统代理设置还在：直连再试一次。
+            if client is not None or not system_proxy.should_retry_direct(exc, url):
+                raise
+            logger.warning(f"[图纸转换工具] 经系统代理连不上，改为直连再试：{exc!r}")
+            with direct_client() as session:
+                fetch(session)
+        replace_file(partial, path)
     except httpx.HTTPError as exc:
         logger.warning(f"[图纸转换工具] 下载失败：{url}: {exc!r}")
         raise ComponentInstallError(DOWNLOAD_FAILED) from exc
