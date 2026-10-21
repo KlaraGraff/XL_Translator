@@ -367,8 +367,12 @@ class WordTaskRunner(BaseTaskRunner):
         resume_output_dir: str | None = None,
         term_file_paths: list[Path] | None = None,
         batch_output_dir: str | None = None,
+        document_profile: str | None = None,
     ):
         self._files = file_items
+        # 调用方已经写好的文档说明（PDF 转 Word：任务开始时为整份 PDF 写的那一段）。给了就
+        # 直接用，不再请模型通读一遍；空字符串表示这次不用说明。None 时按「自动识别场景」自己写。
+        self._preset_profile = document_profile
         # 记忆库词条「只在…中生效」按这些路径判断；PDF 转 Word 传原 PDF，不传时按要翻译的文件。
         self._term_file_paths = list(term_file_paths) if term_file_paths else None
         self._settings = settings
@@ -999,7 +1003,8 @@ class WordTaskRunner(BaseTaskRunner):
             # 「自动识别场景」的通读请求和语言识别互不依赖：先在后台发出去，和语言识别
             # 同时进行，语言识别完再取结果。
             profile_future = None
-            if smart_mode and global_unique_texts and engine_supports_chat(engine):
+            if (self._preset_profile is None and smart_mode and global_unique_texts
+                    and engine_supports_chat(engine)):
                 profile_future = self._start_document_profile(engine, global_unique_texts, target_lang)
             parallel_requests = concurrency if settings.engine.mode != "local" else 1
 
@@ -1019,7 +1024,10 @@ class WordTaskRunner(BaseTaskRunner):
             _raise_if_stopped()
 
             document_profile = ""
-            if profile_future is not None:
+            if self._preset_profile:
+                document_profile = self._preset_profile
+                system_prompt = append_profile(system_prompt, document_profile)
+            elif profile_future is not None:
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在通读文档…"))
                 document_profile = wait_result(profile_future, should_stop=self.stop_requested, default="")

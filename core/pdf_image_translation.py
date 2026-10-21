@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -948,7 +948,23 @@ def _with_stop(translate, should_stop):
         except TypeError:
             return translate(texts, prompt, **extra)
 
+    wrapped.resends_unchanged = _supports_resend_unchanged(translate)
     return wrapped
+
+
+def _supports_resend_unchanged(translate) -> bool:
+    from core.pdf_vector.classify import supports_resend_unchanged
+
+    return supports_resend_unchanged(translate)
+
+
+def _reuse_profile(shared: str | None, profile):
+    """原位替换页的「自动识别场景」：任务开始时已为整份文件写好说明就直接用，不再请一次。"""
+    if shared is None:
+        return profile
+    if not shared:
+        return None
+    return lambda _texts: shared
 
 
 def _accepts_keywords(fn, *names: str) -> bool:
@@ -1052,6 +1068,7 @@ class _InplacePageProgress:
                     error_callback=lambda message: log("WARN", message), **extra,
                 )
 
+        wrapped.resends_unchanged = _supports_resend_unchanged(translate)
         return wrapped
 
 
@@ -3894,6 +3911,25 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         """
         return "translate" if record.pages else "render"
 
+    def _shared_document_profile(self, source_path: str, pages: Iterable[int]) -> str | None:
+        """原位替换页、转 Word 段能不能直接用任务开始时为整份 PDF 写的文档说明。
+
+        只有这一部分就是整份文件（除空白页外每一页都在 ``pages`` 里，比如整份都是大幅
+        图纸、都原位替换）时才沿用：混着扫描页、正文、图纸的文件，各部分内容往往不同，
+        准确度优先，各自再写一段（maple 2026-10-21）。
+        "" 表示这次不用说明（「自动识别场景」关着）；None 表示由那一页、那一段自己写。
+        """
+        if self._profile_requester is None:
+            return ""
+        context = self._document_contexts.get(str(source_path), "")
+        kind = self._document_kinds.get(str(source_path))
+        if not context or kind is None or not kind.pages:
+            return None
+        covered = set(pages)
+        if any(page.page_number not in covered for page in kind.pages if page.kind != KIND_BLANK):
+            return None
+        return context
+
     def _pending_inplace_pages(self) -> list[tuple[str, PdfPageRecord]]:
         """原位替换的页：已经按「已完成」记了账（见大幅面页那条快速路径），其实还没处理。"""
         return [
@@ -4327,6 +4363,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         should_stop=self._stop_event.is_set, log=self._log,
                         file_label=f"{record.name} {label}", key_overrides=self._key_overrides,
                         term_file_paths=[Path(record.source_path)], progress=segment_progress,
+                        document_profile=self._shared_document_profile(record.source_path, seg),
                     )
                     self._collect_word_terms(result.terms, f"{record.name} {label}")
                     if not result.ok:
@@ -4454,7 +4491,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page.page_number - 1,
                 work,
                 translate=_with_stop(progress.wrap_translate(hooks.translate), self._stop_event.is_set),
-                profile=hooks.profile,
+                profile=_reuse_profile(
+                    self._shared_document_profile(
+                        record.source_path, (item.page_number for item in record.pages if item.inplace_requested),
+                    ),
+                    hooks.profile,
+                ),
                 tesseract=hooks.tesseract,
                 tesseract_languages=hooks.tesseract_languages,
                 source_lang=hooks.source_lang,

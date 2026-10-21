@@ -793,3 +793,40 @@ def test_word_segment_progress_folds_the_word_phases():
     assert _word_run_fraction(1, 3, 1, 1) == pytest.approx(0.05)
     assert _word_run_fraction(2, 3, 5, 10) == pytest.approx(0.45)
     assert _word_run_fraction(3, 3, 1, 1) == pytest.approx(1.0)
+
+
+class SharedDocumentProfileTests(unittest.TestCase):
+    """「自动识别场景」：整份文件走同一种方式时沿用开头的说明，混合文件各部分自己写。"""
+
+    def _runner(self, kinds, *, requester=True):
+        from core.pdf_routes import DocumentKind, PageKind
+
+        runner = PdfImageTranslationRunner(
+            [], AppSettings(), image_client=_RecordingImageClient(_png_bytes(10, 10)),
+            task_logger_enabled=False,
+            profile_requester=(lambda lines, log: "电气图纸") if requester else None,
+        )
+        runner._document_kinds["a.pdf"] = DocumentKind("mixed", [PageKind(i + 1, kind, False)
+                                                                 for i, kind in enumerate(kinds)])
+        runner._document_contexts["a.pdf"] = "电气图纸"
+        return runner
+
+    def test_whole_file_reuses_the_opening_description(self):
+        runner = self._runner(["drawing", "drawing", "blank"])
+        self.assertEqual(runner._shared_document_profile("a.pdf", [1, 2]), "电气图纸")
+
+    def test_mixed_file_asks_again_for_each_part(self):
+        runner = self._runner(["text", "scan", "drawing"])
+        self.assertIsNone(runner._shared_document_profile("a.pdf", [3]))
+        self.assertIsNone(runner._shared_document_profile("a.pdf", [1]))
+
+    def test_switch_off_means_no_description(self):
+        runner = self._runner(["drawing"], requester=False)
+        self.assertEqual(runner._shared_document_profile("a.pdf", [1]), "")
+
+
+def test_word_runner_uses_a_given_description_without_asking():
+    from core.word_task_runner import WordTaskRunner
+
+    runner = WordTaskRunner([], AppSettings(), document_profile="电气图纸")
+    assert runner._preset_profile == "电气图纸"

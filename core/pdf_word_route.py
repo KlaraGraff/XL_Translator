@@ -428,8 +428,13 @@ def translate_pdf_via_word(
     file_label: str = "",
     key_overrides: dict[str, str] | None = None,
     term_file_paths: list[Path] | None = None,
+    document_profile: str | None = None,
 ) -> WordRouteResult:
-    """Convert, translate with the Word pipeline, and place the .docx at final_path."""
+    """Convert, translate with the Word pipeline, and place the .docx at final_path.
+
+    ``document_profile``: the PDF's own description, reused instead of asking the
+    model again (None: the Word pipeline writes one if its switch is on).
+    """
     from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StoppedMsg
     from core.word_document import scan_word_path
     from core.word_task_runner import WordTaskRunner
@@ -466,7 +471,8 @@ def translate_pdf_via_word(
     # 记忆库词条的「只在…中生效」按原 PDF 的文件名和文件夹判断，不按临时转出的 Word。
     runner = WordTaskRunner(items, word_settings, source_root=work_dir, source_lang=source_lang,
                             key_overrides=key_overrides,
-                            term_file_paths=term_file_paths or [pdf_path])
+                            term_file_paths=term_file_paths or [pdf_path],
+                            document_profile=document_profile)
     runner.start()
     stop_sent = False
     done = None

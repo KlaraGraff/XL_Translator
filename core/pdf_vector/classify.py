@@ -19,7 +19,9 @@ listed for review (``term_review``).
 from __future__ import annotations
 
 import gzip
+import inspect
 import re
+import threading
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
@@ -221,6 +223,19 @@ ProfileFn = Callable[[list[str]], str]
 SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de": "德语", "it": "意大利语", "pt": "葡萄牙语"}
 
 
+def supports_resend_unchanged(fn) -> bool:
+    """The translate hook takes ``resend_unchanged`` (see _translate_with_retry); a
+    wrapper that passes it through says so with a ``resends_unchanged`` attribute."""
+    if fn is None:
+        return False
+    if getattr(fn, "resends_unchanged", False):
+        return True
+    try:
+        return "resend_unchanged" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
                           **extra) -> tuple[dict, int]:
     """Texts the service gave up on are left out of the result (the app's
@@ -229,12 +244,34 @@ def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn,
     before we believe it: still missing means "no translation" (review), still
     untouched means the model meant to keep it (company names and addresses
     really do stay)."""
+    def needs_another_try(text: str, translated: str | None) -> bool:
+        return bool(WORD_RE.search(text)) and (not translated or norm_text(translated) == norm_text(text))
+
+    if supports_resend_unchanged(translate):
+        # The app's service resends a batch's untouched words as soon as that batch
+        # returns, instead of waiting here for the slowest batch first.
+        picked: set[str] = set()
+        lock = threading.Lock()
+
+        def pick(text: str, translated: str | None) -> bool:
+            if not needs_another_try(text, translated):
+                return False
+            with lock:
+                picked.add(text)
+            return True
+
+        try:
+            res = dict(translate(texts, prompt, resend_unchanged=pick, **extra) or {})
+        except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
+            errors.append(f"{type(exc).__name__}: {exc}")
+            return {}, 0
+        return res, len(picked)
     try:
         res = dict(translate(texts, prompt, **extra) or {})
     except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
         errors.append(f"{type(exc).__name__}: {exc}")
         return {}, 0
-    again = [t for t in texts if WORD_RE.search(t) and (not res.get(t) or norm_text(res[t]) == norm_text(t))]
+    again = [t for t in texts if needs_another_try(t, res.get(t))]
     if again:
         try:
             res.update({k: v for k, v in (translate(again, prompt, **extra) or {}).items() if v})

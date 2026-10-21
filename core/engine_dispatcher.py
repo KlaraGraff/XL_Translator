@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
@@ -524,6 +524,7 @@ def translate_texts(
     transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
     max_chars: int | None = None,
     item_retries: int = 0,
+    resend_unchanged: Callable[[str, str | None], bool] | None = None,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -531,6 +532,8 @@ def translate_texts(
     - max_chars：每批原文字符数之和的上限（翻译参数 → 每批字符上限）；不给时按
       云端 3200 / 本地 2400 兜底。
     - item_retries：拆到最小仍没译出来的条目逐条单独重发的次数（单段重试次数）。
+    - resend_unchanged(原文, 译文或 None)：为真的条目在这一批返回后立刻再发一次（只一次），
+      不等其它批次；算在这一批的用时里。PDF 原位替换用它补问原样退回的词。
 
     - Ollama（mode=local）：engine.translate_batch 内部已有 asyncio 并发，
       此处保持串行逐批调用，避免与 asyncio.run() 冲突。
@@ -572,19 +575,22 @@ def translate_texts(
                 logger.info("翻译任务收到停止信号，停止提交后续本地批次。")
                 break
             partial = _run_batch_with_events(
-                lambda current: _translate_batch_with_fallback(
-                    current,
-                    engine=engine,
-                    target_lang=target_lang,
-                    system_prompt=system_prompt,
-                    source_lang=source_lang,
-                    api_scheduler=None,
-                    request_category=request_category,
-                    should_stop=should_stop,
-                    error_callback=error_callback,
-                    stats=run_stats,
-                    max_transient_retries=transient_retries,
-                    item_retries=item_retries,
+                lambda current: _with_unchanged_resend(
+                    lambda items: _translate_batch_with_fallback(
+                        items,
+                        engine=engine,
+                        target_lang=target_lang,
+                        system_prompt=system_prompt,
+                        source_lang=source_lang,
+                        api_scheduler=None,
+                        request_category=request_category,
+                        should_stop=should_stop,
+                        error_callback=error_callback,
+                        stats=run_stats,
+                        max_transient_retries=transient_retries,
+                        item_retries=item_retries,
+                    ),
+                    current, resend_unchanged, should_stop,
                 ),
                 batch,
                 index=batch_index,
@@ -612,19 +618,22 @@ def translate_texts(
     def _submit_batch(batch_index: int, batch: list[str]) -> tuple[list[str], dict[str, str]]:
         """单批次执行，返回 (原始词条列表, 翻译结果)。失败时会缩小批次重试。"""
         return batch, _run_batch_with_events(
-            lambda current: _translate_batch_with_fallback(
-                current,
-                engine=engine,
-                target_lang=target_lang,
-                system_prompt=system_prompt,
-                source_lang=source_lang,
-                api_scheduler=scheduler,
-                request_category=request_category,
-                should_stop=should_stop,
-                error_callback=error_callback,
-                stats=run_stats,
-                max_transient_retries=transient_retries,
-                item_retries=item_retries,
+            lambda current: _with_unchanged_resend(
+                lambda items: _translate_batch_with_fallback(
+                    items,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    source_lang=source_lang,
+                    api_scheduler=scheduler,
+                    request_category=request_category,
+                    should_stop=should_stop,
+                    error_callback=error_callback,
+                    stats=run_stats,
+                    max_transient_retries=transient_retries,
+                    item_retries=item_retries,
+                ),
+                current, resend_unchanged, should_stop,
             ),
             batch,
             index=batch_index,
@@ -690,6 +699,28 @@ def translate_texts(
         _attach_partial_results(fatal, results)
         raise fatal
     return results
+
+
+def _with_unchanged_resend(run, batch: list[str], resend, should_stop) -> dict[str, str]:
+    """One batch, then at once one more try for the entries ``resend`` picks (see translate_texts)."""
+    partial = run(batch)
+    if resend is None or (should_stop and should_stop()):
+        return partial
+    again = [text for text in batch if resend(text, partial.get(text))]
+    if not again:
+        return partial
+    try:
+        more = run(again)
+    except ApiKeyTemporarilyUnavailableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the first answer stands
+        logger.debug(f"原样退回的条目补发失败：{exc!r}")
+        return partial
+    for text in again:
+        value = more.get(text)
+        if value and value != text:
+            partial[text] = value
+    return partial
 
 
 def _attach_partial_results(exc: BaseException, results: dict) -> None:
