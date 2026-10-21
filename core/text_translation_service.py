@@ -137,6 +137,7 @@ class TextTranslationService:
         request_callback: Callable[[Any], None] | None = None,
         engine: Any = None,
         resend_unchanged: Callable[[str, str | None], bool] | None = None,
+        stats: Any = None,
     ) -> dict[str, str]:
         """分批翻译，返回 ``{原文: 译文}``。
 
@@ -147,7 +148,8 @@ class TextTranslationService:
         接口放弃的批次、停止时没发出去的批次，``translate_texts`` 按原文占位交回。那不是
         译文，这里把它们摘掉，调用方据此记为「未获得译文」、标需复核（CAD 与 PDF 原位替换）。
         """
-        stats = engine_dispatcher.TranslationBatchRunStats()
+        # ``stats`` 给了就记在调用方的那份里（PDF 任务据此统计批次重试和降速次数）。
+        stats = stats if stats is not None else engine_dispatcher.TranslationBatchRunStats()
         results = engine_dispatcher.translate_texts(
             texts,
             self._engine_for(term_session, engine),

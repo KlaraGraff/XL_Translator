@@ -1064,11 +1064,26 @@ class _InplacePageProgress:
                     tracker = request_log.tracker
                     self._phase.report("translate", tracker.done_items(), tracker.planned_items or total)
 
-            with request_log:
-                return translate(
-                    texts, prompt, request_callback=on_event,
-                    error_callback=lambda message: log("WARN", message), **extra,
-                )
+            # 批次重试、降速次数记进报告（翻译接口收 stats 时；收不到的报告照旧不含）。
+            stats = None
+            if _accepts_keywords(translate, "stats"):
+                from core.engine_dispatcher import TranslationBatchRunStats
+
+                stats = TranslationBatchRunStats()
+            if stats is not None:
+                extra["stats"] = stats
+            try:
+                with request_log:
+                    return translate(
+                        texts, prompt, request_callback=on_event,
+                        error_callback=lambda message: log("WARN", message), **extra,
+                    )
+            finally:
+                if stats is not None:
+                    self._runner._record_text_batch_counts(
+                        stats.retry_count + stats.transient_retry_count,
+                        stats.adaptive_concurrency_reductions,
+                    )
 
         wrapped.resends_unchanged = _supports_resend_unchanged(translate)
         return wrapped
@@ -1430,6 +1445,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 并发跑页时丢计数是必然的，报告里的「接口调用次数」会比实际少。
         self._counter_lock = threading.Lock()
         self._rate_limit_reduction_count = 0
+        # 原位替换、转 Word 两条文字路线的批次重试（缩小重试 + 接口临时故障重发），
+        # 和整页图像翻译的「第几次生成」一起记进报告的「重试次数」。
+        self._text_retry_count = 0
         self._api_call_count = 0
         self._review_api_call_count = 0
         self._fatal_model_error = ""
@@ -4374,6 +4392,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         document_profile=self._shared_document_profile(record.source_path, seg),
                     )
                     self._collect_word_terms(result.terms, f"{record.name} {label}")
+                    self._record_text_batch_counts(result.retry_count, result.rate_limit_reduction_count)
                     if not result.ok:
                         mark("stopped" if result.stopped else "failed",
                              "任务已停止" if result.stopped else "转成 Word 翻译失败")
@@ -5794,6 +5813,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._rate_limit_reduction_count += 1
         self._log("WARN", message)
 
+    def _record_text_batch_counts(self, retries: int, reductions: int) -> None:
+        """原位替换、转 Word 的一页（一段）翻完后，把它的批次重试和降速次数记进报告。"""
+        with self._counter_lock:
+            self._text_retry_count += max(0, int(retries or 0))
+            self._rate_limit_reduction_count += max(0, int(reductions or 0))
+
     def _finalize_placeholders(
         self,
         record: PdfFileRecord,
@@ -5985,7 +6010,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         compressed_pdfs = sum(1 for record in file_records if record.compressed_pdf_path)
         placeholder_count = sum(record.placeholder_page_count for record in file_records)
         emergency_count = sum(record.emergency_ratio_normalized_count for record in file_records)
-        retry_count = sum(record.retry_count for record in file_records)
+        retry_count = sum(record.retry_count for record in file_records) + self._text_retry_count
         skipped_oversize_count = sum(
             record.skipped_oversize_page_count for record in file_records
         )

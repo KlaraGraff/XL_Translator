@@ -29,6 +29,11 @@ class _FakeWordRunner:
                     elapsed_sec=1.0, tm_hit_count=0, api_call_count=2),
         ]
 
+        from core.word_batching import WordBatchRunStats
+
+        self.batch_stats = WordBatchRunStats(retry_count=1, transient_retry_count=2,
+                                             adaptive_concurrency_reductions=1)
+
     def start(self) -> None:
         pass
 
@@ -60,6 +65,8 @@ def test_word_route_relays_batch_lines(tmp_path):
         )
 
     assert result.ok
+    # 这一段的批次重试和降速次数交给 PDF 报告。
+    assert (result.retry_count, result.rate_limit_reduction_count) == (3, 1)
     assert logged == [
         ("INFO", "[doc.pdf] 已转成 Word，开始按 Word 流程翻译。"),
         ("INFO", "[doc.pdf] 开始翻译 12 处内容（相同内容只翻译一次）：分 2 批发送，每次同时发送 2 批"),

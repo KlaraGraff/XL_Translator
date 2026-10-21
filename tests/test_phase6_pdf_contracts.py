@@ -281,6 +281,9 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
             snapshot = started["task_snapshot"]
             self.assertEqual(snapshot["surface"], "pdf")
             self.assertEqual(snapshot["target_lang"], "en")
+            # PDF 没有源语言选项，按每页识别；不能退回全局的「中文」，写成「中文 → 中文」。
+            self.assertEqual(settings.source_lang, "zh")
+            self.assertEqual(snapshot["source_lang"], "auto")
             self.assertEqual(snapshot["pdf_output"]["custom_output_dir"], str(root / "pdf-output"))
             self.assertEqual(snapshot["tm"], {"enabled": False})
             self.assertEqual(snapshot["pdf_file_count"], 1)

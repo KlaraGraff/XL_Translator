@@ -92,6 +92,21 @@ def test_batches_follow_the_rate_and_the_prompt_carries_its_parts():
     assert {(call["target"], call["source"]) for call in engine.calls} == {("zh", "fr")}
 
 
+def test_the_caller_gets_the_batch_counts():
+    from core.engine_dispatcher import TranslationBatchRunStats
+
+    calls: list[dict] = []
+
+    def fake_translate_texts(texts, *args, **kwargs):
+        calls.append(kwargs)
+        return {text: f"{text}-译" for text in texts}
+
+    stats = TranslationBatchRunStats()
+    with patch("core.engine_dispatcher.translate_texts", fake_translate_texts):
+        _service(FakeEngine(), surface_key="pdf").translate(["Porte"], stats=stats)
+    assert calls[0]["stats"] is stats
+
+
 def test_a_given_prompt_replaces_the_page_prompt():
     engine = FakeEngine()
     service = _service(engine)

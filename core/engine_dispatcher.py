@@ -525,6 +525,7 @@ def translate_texts(
     max_chars: int | None = None,
     item_retries: int = 0,
     resend_unchanged: Callable[[str, str | None], bool] | None = None,
+    context_label: str = "Excel",
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -589,6 +590,7 @@ def translate_texts(
                         stats=run_stats,
                         max_transient_retries=transient_retries,
                         item_retries=item_retries,
+                        context_label=context_label,
                     ),
                     current, resend_unchanged, should_stop,
                 ),
@@ -632,6 +634,7 @@ def translate_texts(
                     stats=run_stats,
                     max_transient_retries=transient_retries,
                     item_retries=item_retries,
+                    context_label=context_label,
                 ),
                 current, resend_unchanged, should_stop,
             ),
@@ -749,6 +752,7 @@ def translate_texts_with_sources(
     request_callback=None,
     max_chars: int | None = None,
     item_retries: int = 0,
+    context_label: str = "Excel",
 ) -> dict[str, TranslationLanguageResult]:
     """Translate bounded batches while retaining model-reported source codes.
 
@@ -788,6 +792,7 @@ def translate_texts_with_sources(
                 stats=run_stats,
                 max_transient_retries=transient_retries,
                 item_retries=item_retries,
+                context_label=context_label,
             ),
             batch,
             index=batch_index,
@@ -936,6 +941,7 @@ def _translate_batch_with_fallback(
     transient_round: int = 0,
     max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
     item_retries: int = 0,
+    context_label: str = "Excel",
 ) -> dict[str, str]:
     if not batch:
         return {}
@@ -983,7 +989,7 @@ def _translate_batch_with_fallback(
                 exc,
                 scheduler=api_scheduler,
                 request_generation=request_generation,
-                context_label="Excel",
+                context_label=context_label,
                 error_callback=error_callback,
                 should_stop=should_stop,
             )
@@ -1019,6 +1025,7 @@ def _translate_batch_with_fallback(
                     transient_round=transient_round,
                     max_transient_retries=max_transient_retries,
                     item_retries=item_retries,
+                    context_label=context_label,
                 )
         rejected = credential_rejection(exc)
         if rejected is not None:
@@ -1047,6 +1054,7 @@ def _translate_batch_with_fallback(
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
                 item_retries=item_retries,
+                context_label=context_label,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 翻译请求不再重发，已停止拆分批次：{exc}")
@@ -1085,6 +1093,7 @@ def _translate_batch_with_fallback(
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
                 item_retries=item_retries,
+                context_label=context_label,
             )
             right = _translate_batch_with_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1094,6 +1103,7 @@ def _translate_batch_with_fallback(
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
                 item_retries=item_retries,
+                context_label=context_label,
             )
             return {**left, **right}
         if item_retries > 0 and not _is_rate_limit_error(exc) and not (should_stop and should_stop()):
@@ -1272,6 +1282,7 @@ def _translate_batch_with_sources_fallback(
     transient_round: int = 0,
     max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
     item_retries: int = 0,
+    context_label: str = "Excel",
 ) -> dict[str, TranslationLanguageResult]:
     if not batch:
         return {}
@@ -1327,7 +1338,7 @@ def _translate_batch_with_sources_fallback(
                 exc,
                 scheduler=api_scheduler,
                 request_generation=request_generation,
-                context_label="Excel",
+                context_label=context_label,
                 error_callback=error_callback,
                 should_stop=should_stop,
             )
@@ -1360,6 +1371,7 @@ def _translate_batch_with_sources_fallback(
                     transient_round=transient_round,
                     max_transient_retries=max_transient_retries,
                     item_retries=item_retries,
+                    context_label=context_label,
                 )
         # Splitting a batch cannot fix a rejected key or a missing model, and
         # the sources variant used to keep bisecting anyway — mirror the plain
@@ -1390,6 +1402,7 @@ def _translate_batch_with_sources_fallback(
                 transient_round=transient_round + 1,
                 max_transient_retries=max_transient_retries,
                 item_retries=item_retries,
+                context_label=context_label,
             )
         if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
             logger.error(f"Excel 语言回报请求不再重发，已停止拆分批次：{exc}")
@@ -1421,6 +1434,7 @@ def _translate_batch_with_sources_fallback(
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
                 item_retries=item_retries,
+                context_label=context_label,
             )
             right = _translate_batch_with_sources_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1430,6 +1444,7 @@ def _translate_batch_with_sources_fallback(
                 split_depth=split_depth + 1,
                 max_transient_retries=_split_retries(exc, max_transient_retries),
                 item_retries=item_retries,
+                context_label=context_label,
             )
             return {**left, **right}
         recovered_items: dict[str, TranslationLanguageResult] = {}

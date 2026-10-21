@@ -255,6 +255,24 @@ class EngineDispatcherTests(unittest.TestCase):
         # user configured.
         self.assertTrue(any("已自动降低发送速度" in message for message in errors), errors)
 
+    def test_slowdown_notice_names_the_calling_page(self) -> None:
+        # CAD、PDF、PPT 共用这一套批次翻译，提示开头以前一律写成「Excel」。
+        errors: list[str] = []
+        translate_texts(
+            ["alpha"],
+            ConcurrencyLimitExcelEngine(fail_count=1),
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=5,
+            error_callback=errors.append,
+            source_lang="en",
+            context_label="PDF",
+        )
+
+        self.assertTrue(errors)
+        self.assertTrue(all(message.startswith("PDF ") for message in errors), errors)
+
     def test_translate_texts_retries_same_batch_after_local_descriptor_limit(self) -> None:
         engine = LocalDescriptorLimitExcelEngine(fail_count=1)
         stats = TranslationBatchRunStats()

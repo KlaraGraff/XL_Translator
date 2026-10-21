@@ -934,6 +934,8 @@ class WordTaskRunner(BaseTaskRunner):
         preprocess_summaries: list[dict] = []
         front_matter_summaries: list[dict] = []
         word_batch_stats = WordBatchRunStats()
+        # PDF「转成 Word」那几段据此把批次重试、降速次数算进 PDF 报告（core.pdf_word_route）。
+        self.batch_stats = word_batch_stats
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
         # 模型报「本来就是目标语言」、原样返回的段落：成品体检不再把它们报成未译源文。
