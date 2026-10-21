@@ -1,5 +1,31 @@
 # Translator 版本更新日志
 
+## V10.3.2
+
+- **Windows 一键安装组件：补上 VC++ 运行库、系统代理用不了时直连、中文用户名下文字识别可用**（反馈 #15）：没装 VC++ 运行库的电脑上，「PDF 处理组件」装好后加载失败；现在随组件放入所需的运行库文件。系统代理是 SOCKS、或设了代理却没有在运行时，组件下载以前直接失败，现在改为直接连接再试一次。安装时直接解压到最终目录，并等待杀毒软件扫描结束后再改名。文字识别在用户名或数据目录含中文的英文版 Windows 上也能安装和识别。
+
+  **Windows one-click components: VC++ runtime, direct download when the system proxy fails, OCR under a Chinese user name** (feedback #15): On PCs without the VC++ runtime, the PDF component failed to load after installing; the needed runtime file now ships with it. A SOCKS system proxy, or a proxy that is set but not running, used to make component downloads fail; they now retry with a direct connection. Installs unpack straight into their final folder and wait for virus scanners before renaming. OCR now installs and runs on English Windows when the user name or data folder contains Chinese.
+
+- **PDF 暂停后马上继续，不再跳过没翻的页**：暂停刚生效时点「继续」，以前会直接生成文件，剩下的页不再翻译；现在会接着翻完。PDF 报告里的页面素材路径改为真实位置。CAD 在同样的时机暂停，不再卡在「正在暂停」。
+
+  **Resuming a PDF right after pausing no longer skips pages**: Clicking Resume just as a pause took effect used to go straight to building the file, leaving the remaining pages untranslated; they are now translated. The PDF report now gives the real location of page materials. CAD no longer gets stuck on "Pausing" in the same situation.
+
+- **PDF 原位替换：进度按真实完成量推进，逐页显示状态**：原位替换以前排进「生成文件」阶段，进度条几秒冲到 90% 后几分钟不动；现在在「翻译」阶段按识别、翻译、写回的真实完成量推进，逐页显示「原位替换中」「等待原位替换」，运行日志写出每一步。失败原因不再带程序内部的错误名称，「已等待 0 秒」这类提示不再出现。
+
+  **PDF in-place replacement: progress follows real work, with per-page status**: In-place pages used to run in the "Building file" stage, so the bar jumped to 90% and then stood still for minutes. They now run in the "Translating" stage and advance with real recognition, translation and write-back progress; each page shows "Replacing in place" or "Waiting for in-place replacement", and the run log records every step. Failure reasons no longer carry internal error names, and "waited 0 seconds" lines no longer appear.
+
+- **PDF 自动组合：先看内容，再看尺寸**：扫描页不论多大都按扫描页；可提取文字、放得进 Word 的页转成 Word 翻译；图纸页和放不进 Word 的大页面用原位替换。去掉「大幅面起点」设置及相关的大幅面提示。整份文件走同一种方式时沿用开头的场景说明，不再重复请求；混合文件各部分仍各写一段，保证准确。
+
+  **PDF Automatic mix: content first, then size**: Scanned pages count as scans at any size; pages with extractable text that fit in Word go through Word; drawings and pages too large for Word are replaced in place. The "Large-format threshold" setting and its large-page hints are gone. When a whole file takes one route it reuses the opening scene description instead of asking again; mixed files still get one per part, for accuracy.
+
+- **PDF 原位替换：可以译成中文以外的语言，也能翻中文原文**：以前只能把外文图纸译成中文。现在可以译成其他语言（阿拉伯文、泰文、印地文等需要连写排版的文字除外，这些页改用保底方式并有提示）；文字层里的中文、日文、韩文也能读出翻译，画成线条的中日韩文字暂不识别、保留原样。译文放不下时按 CAD「译文写回」的规则先压窄、再缩小、最后换行；PDF「高级」里新增「原位替换排版」（译文字体、初始字号比例、最小字号比例）。译文字体按目标语言选用电脑自带、能显示全部译文的字体。
+
+  **PDF in-place replacement: any target language, and Chinese source text**: In-place replacement used to translate foreign drawings into Chinese only. It now translates into other languages too (except scripts that need joined shaping, such as Arabic, Thai and Hindi, whose pages use the fallback with a notice), and Chinese, Japanese and Korean in the text layer are read and translated; CJK text drawn as strokes is not recognised yet and stays as it is. Translations that do not fit are narrowed, then shrunk, then wrapped, following CAD's write-back rules; PDF Advanced gains "In-place layout" (translation font, initial and minimum font scale). The translation font is a system font that covers the whole translation in the target language.
+
+- **其他改进**：PDF 报告计入原位替换和转 Word 部分的重试与降速次数；PDF 任务的原文语言记为自动检测，任务标题不再显示「中文 → 中文」；模型服务繁忙等提示写明是哪个页面（PDF、CAD、PPT）发出的；无法解析的模型回复不再写进运行日志，避免客户原文随任务包或反馈包传出。
+
+  **Other improvements**: The PDF report counts retries and slowdowns from in-place and Word parts; PDF tasks record their source language as auto-detect, so the task header no longer reads "Chinese → Chinese"; notices such as "model service busy" now name the page that sent them (PDF, CAD, PPT); model replies that cannot be parsed are no longer written into the run log, so client text does not travel in task or feedback packages.
+
 ## V10.3.1
 
 - **Excel 行高：首行等处不再被裁或异常撑高**：合并单元格的标题、中文表头、伸到右侧空格里的标题，以前估算行高时常常偏低（文字被裁掉一截）或偏高（整行被撑得很高）。现在合并单元格按整个合并区域的宽度估算，每行能放几个字按字号计算，汉字按全角宽度、西文按单词断行；没有开「自动换行」的格不再按列宽折行；伸到右侧空格的标题放得下时保持一行；锁定行高时，合并格按整个区域缩小字号；Excel 自动调整行高后，有合并单元格的行不会比调整前更矮。
