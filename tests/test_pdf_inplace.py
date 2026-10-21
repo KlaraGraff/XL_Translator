@@ -820,6 +820,23 @@ class SharedDocumentProfileTests(unittest.TestCase):
         self.assertIsNone(runner._shared_document_profile("a.pdf", [3]))
         self.assertIsNone(runner._shared_document_profile("a.pdf", [1]))
 
+    def test_consecutive_inplace_pages_share_one_description(self):
+        from types import SimpleNamespace
+
+        runner = self._runner(["scan", "text", "drawing", "blank", "drawing", "text", "drawing"])
+        record = SimpleNamespace(source_path="a.pdf", pages=[
+            SimpleNamespace(page_number=n, inplace_requested=n in {3, 5, 7}) for n in range(1, 8)])
+        asked: list[list[str]] = []
+
+        def profile(texts):
+            asked.append(list(texts))
+            return f"说明{len(asked)}"
+
+        self.assertEqual(runner._inplace_group_profile(record, 3, profile)(["p3"]), "说明1")
+        self.assertEqual(runner._inplace_group_profile(record, 5, profile)(["p5"]), "说明1")  # 3–5 one group
+        self.assertEqual(runner._inplace_group_profile(record, 7, profile)(["p7"]), "说明2")  # page 6 breaks it
+        self.assertEqual(asked, [["p3"], ["p7"]])
+
     def test_switch_off_means_no_description(self):
         runner = self._runner(["drawing"], requester=False)
         self.assertEqual(runner._shared_document_profile("a.pdf", [1]), "")
