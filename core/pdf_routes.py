@@ -87,6 +87,19 @@ def _kind_from_counts(page_number: int, *, oversized: bool, visible: int, has_in
     return PageKind(page_number, kind, oversized, words, items, slanted)
 
 
+def needs_ocr(page: PageKind) -> bool:
+    """原位替换这一页要不要跑文字识别（找画成线条、嵌在图片里的字）。
+
+    能直接读到文字、线条也不密的页（文字页，或只因为放不进 Word 才算图纸的大页面）不跑：
+    BitCloud E-001 这类大图纸上识别只认出符号乱码和公司标志，却要在慢电脑上多等几分钟
+    （maple 2026-10-21）。线条密的图纸常有画成线条的字，读不到文字的页只能靠识别。
+    """
+    if page.kind == KIND_TEXT:
+        return False
+    dense = page.slanted_items >= _DRAWING_SLANTED_ITEMS or page.vector_items >= _DRAWING_ITEMS
+    return not (page.kind == KIND_DRAWING and page.words > 0 and not dense)
+
+
 def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
     """page: a PyMuPDF page.  ``oversized``: too large for a Word page (exceeds_word_page)."""
     visible = 0

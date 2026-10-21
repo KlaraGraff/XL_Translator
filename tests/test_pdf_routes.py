@@ -165,6 +165,16 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(self._classify([lambda d: _scan_page(d, A1)]).kind, KIND_SCAN)     # a scan stays a scan
         self.assertEqual(self._classify([lambda d: d.new_page(width=A1[0], height=A1[1])]).kind, KIND_SCAN)
 
+    def test_ocr_only_where_it_can_find_something(self) -> None:
+        from core.pdf_routes import needs_ocr
+
+        big_text = self._classify([lambda d: _text_page(d, A1)]).pages[0]
+        self.assertEqual(big_text.kind, KIND_DRAWING)
+        self.assertFalse(needs_ocr(big_text))                     # too big for Word, text all readable
+        self.assertFalse(needs_ocr(self._classify([_text_page]).pages[0]))
+        self.assertTrue(needs_ocr(self._classify([_drawing_page]).pages[0]))   # dense lines
+        self.assertTrue(needs_ocr(self._classify([lambda d: _scan_page(d, A1)]).pages[0]))
+
     def test_lines_without_text_are_a_drawing(self) -> None:
         def outlined(doc) -> None:   # CAD export with the text drawn as lines
             page = doc.new_page(width=A3[0], height=A3[1])

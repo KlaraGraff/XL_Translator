@@ -112,8 +112,10 @@ from core.pdf_routes import (
     ROUTE_SKIP,
     ROUTE_WORD,
     classify_document,
+    PageKind,
     exceeds_word_page,
     fallback_route,
+    needs_ocr,
     page_route,
 )
 from core.pdf_models import (  # noqa: F401
@@ -3412,6 +3414,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if label:
             self._log("INFO", f"[{record.name}] 判断为{label}，按页处理。")
 
+    def _page_kind_info(self, source_path: str, page_index: int) -> PageKind | None:
+        kind = self._document_kinds.get(source_path)
+        if kind is None or page_index >= len(kind.pages):
+            return None
+        return kind.pages[page_index]
+
     def _page_kind(self, source_path: str, page_index: int) -> str:
         kind = self._document_kinds.get(source_path)
         if kind is None or page_index >= len(kind.pages):
@@ -4479,12 +4487,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             batch_label=f"{record.name} 第 {page.page_number} 页",
         )
         work = work_root / f"page_{page.page_number:04d}"
-        # 判成普通文字页的，字都在文字层里，不用再跑文字识别（图纸页、大幅面页
-        # 常有画成线条的字，照常识别）。
-        native_only = self._page_kind(record.source_path, page.page_number - 1) == KIND_TEXT or (
-            not self._page_kind(record.source_path, page.page_number - 1)
-            and not is_oversized_page(page.page_width_pt, page.page_height_pt)
-        )
+        # 字都在文字层里的页不用再跑文字识别；线条密的图纸、读不到文字的页照常识别
+        # （core.pdf_routes.needs_ocr）。没判断过类型的页按尺寸：大幅面页照常识别。
+        kind_info = self._page_kind_info(record.source_path, page.page_number - 1)
+        native_only = (not needs_ocr(kind_info) if kind_info is not None
+                       else not is_oversized_page(page.page_width_pt, page.page_height_pt))
         try:
             result = translate_page_inplace(
                 Path(record.source_copy_path),
