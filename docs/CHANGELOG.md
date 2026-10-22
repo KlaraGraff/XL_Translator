@@ -22,9 +22,9 @@
 
   **PDF in-place replacement: any target language, and Chinese source text**: In-place replacement used to translate foreign drawings into Chinese only. It now translates into other languages too (except scripts that need joined shaping, such as Arabic, Thai and Hindi, whose pages use the fallback with a notice), and Chinese, Japanese and Korean in the text layer are read and translated; CJK text drawn as strokes is not recognised yet and stays as it is. Translations that do not fit are narrowed, then shrunk, then wrapped, following CAD's write-back rules; PDF Advanced gains "In-place layout" (translation font, initial and minimum font scale). The translation font is a system font that covers the whole translation in the target language.
 
-- **PDF 与图片审核可以选 DeepSeek**（反馈 #16）：DeepSeek 官方 API 已支持图片输入（如 deepseek-flash），审核用途以前一保存就被拒绝，现在可以选用；审核请求直接按官方首选写法发送。DeepSeek 不能生成图片，「PDF 与图片翻译」仍不能选它。
+- **PDF 与图片审核可以选 DeepSeek**（反馈 #16）：DeepSeek 官方 API 已支持图片输入（如 deepseek-flash），审核用途以前一保存就被拒绝，现在可以选用；审核请求直接按官方首选写法发送。新装时审核模型跟随文档翻译模型，文档翻译用 DeepSeek 时审核以前被标成不可用，现在不会。DeepSeek 不能生成图片，「PDF 与图片翻译」仍不能选它，提示改为说明它能识别图片但不能生成图片，并建议更换连接或改为转成 Word 翻译。
 
-  **DeepSeek for PDF and image review** (feedback #16): DeepSeek's official API now accepts images (e.g. deepseek-flash), but choosing it for review used to be refused on save; it can now be used, and review requests use DeepSeek's preferred format. DeepSeek cannot generate images, so PDF and image translation still cannot use it.
+  **DeepSeek for PDF and image review** (feedback #16): DeepSeek's official API now accepts images (e.g. deepseek-flash), but choosing it for review used to be refused on save; it can now be used, and review requests use DeepSeek's preferred format. On a fresh install review follows the document translation model, and review used to be marked unavailable when that was DeepSeek; it no longer is. DeepSeek cannot generate images, so PDF and image translation still cannot use it; the message now says it can read but not generate images and suggests another connection or Convert to Word.
 
 - **其他改进**：PDF 报告计入原位替换和转 Word 部分的重试与降速次数；PDF 任务的原文语言记为「自动识别」，任务标题不再显示「中文 → 中文」；模型服务繁忙等提示写明是哪个页面（PDF、CAD、PPT）发出的；无法解析的模型回复不再写进运行日志，避免客户原文随任务包或反馈包传出。
 
