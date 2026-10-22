@@ -176,6 +176,7 @@
   "此文件在传输过程中已损坏或被修改，未导入任何内容。请让发送方重新发送。": {"en": "This file was damaged in transit or has been modified; nothing was imported. Ask the sender to send it again.", "fr": "Ce fichier a été endommagé pendant le transfert ou a été modifié ; rien n'a été importé. Demandez à l'expéditeur de le renvoyer."},
   "已保存。{0}": {"en": "Saved. {0}", "fr": "Enregistré. {0}"},
   "{0}当前使用的连接。": {"en": "Connections currently used for {0}.", "fr": "Connexions actuellement utilisées pour {0}."},
+  "PDF 使用「转成 Word」或「原位替换」翻译时无需设置此项。": {"en": " Not needed when PDFs use “Convert to Word” or “Replaced in place”.", "fr": " Inutile lorsque les PDF utilisent « Conversion en Word » ou « Remplacé sur place »."},
   "修改后自动保存。": {"en": "Changes are saved automatically.", "fr": "Les modifications sont enregistrées automatiquement."},
   "修改后自动保存。速率与重试在「翻译参数」中按文件类型设置。": {"en": "Changes are saved automatically. Rate and retries are set per file type in “Translation options”.", "fr": "Les modifications sont enregistrées automatiquement. Le débit et les nouvelles tentatives se règlent par type de fichier dans « Options de traduction »."},
   "可放心分享，导入方需自行填写密钥。": {"en": "Safe to share; whoever imports it adds their own keys.", "fr": "Peut être partagé sans risque ; la personne qui l'importe saisit ses propres clés."},

@@ -307,9 +307,11 @@ export function renderModelsPage(host: HTMLElement): void {
   const accessDirty = () => modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
 
   // ---- 连接：列表在上，所选连接的表单紧接在同一节里 ----
+  // 图像翻译那张卡容易被当成「翻译 PDF 都要配」：写明转成 Word、原位替换用不到它（反馈 #16）。
+  const connDesc = t("{0}当前使用的连接。", MODEL_ROLE_SHORT_LABELS[role] || role);
   const connSec = sec({
     title: t("连接"),
-    desc: t("{0}当前使用的连接。", MODEL_ROLE_SHORT_LABELS[role] || role),
+    desc: role === "image" ? connDesc + t("PDF 使用「转成 Word」或「原位替换」翻译时无需设置此项。") : connDesc,
     actions: [buildAddConnectionButton(role)],
   });
   let listCard = buildConnectionListCard(role);
