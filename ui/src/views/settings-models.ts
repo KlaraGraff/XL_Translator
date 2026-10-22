@@ -942,7 +942,7 @@ async function saveModel(
     { method: "PUT", body: JSON.stringify(body) },
   );
   // 这一行可能是别的用途跟随的来源：换了服务商或改成本地模型后，跟随它的用途也许就用
-  // 不了了（例如 DeepSeek 不能看图，审核模型跟着失效）。这次保存照常生效，但必须当场
+  // 不了了（例如 DeepSeek 不能生成图片，图像翻译模型跟着失效）。这次保存照常生效，但必须当场
   // 告诉用户哪个用途受了影响，不能等他跑任务时才发现。
   await refreshModelRoles();
   for (const [otherRole, problem] of Object.entries(otherRoleProblems(role))) {
