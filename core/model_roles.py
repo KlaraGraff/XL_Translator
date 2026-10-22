@@ -886,6 +886,7 @@ def provider_supports_capability(provider: str, capability: str) -> bool:
         "siliconflow",
         "lanyi",
         "deepseek",
+        "xiaomi",
     }
 
 

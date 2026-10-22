@@ -52,8 +52,8 @@ PDF_PAGE_REVIEW_PROMPT = (
 
 # 没有 OpenAI ``/responses`` 接口、只能走 ``/chat/completions`` 的服务商。
 # DeepSeek 的图片输入以 /chat/completions 为准（官方视觉指南的首选写法），
-# 不去试 /v1/responses。
-CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow", "deepseek"})
+# 不去试 /v1/responses。小米 MiMo 的看图示例同样只有 /chat/completions。
+CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow", "deepseek", "xiaomi"})
 _ROUTE_PATHS = {"chat": "chat/completions", "responses": "responses"}
 
 

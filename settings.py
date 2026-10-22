@@ -3353,6 +3353,8 @@ def _api_key_env_names(provider: str) -> tuple[str, ...]:
         return ("LANYI_API_KEY",)
     if normalized_provider == "deepseek":
         return ("DEEPSEEK_API_KEY",)
+    if normalized_provider == "xiaomi":
+        return ("XIAOMI_API_KEY", "MIMO_API_KEY")
     return ()
 
 

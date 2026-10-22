@@ -32,6 +32,7 @@ OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "lanyi",
     "siliconflow",
     "deepseek",
+    "xiaomi",
     "lm_studio",
     "custom_local",
     "zhipu",
@@ -235,10 +236,19 @@ def _narrow_models(provider: str, capability: str, models: list[str]) -> list[st
     硅基流动 type=image 里混着只能「文字生图」的模型（Qwen-Image、Z-Image、Kolors），
     整页翻译要把原图交给它改，只有改图模型（名字带 Edit）用得上。一个都对不上时
     原样返回，免得服务商改了命名后列表变空。
+
+    小米 MiMo 的 /models 把语音识别、语音合成（mimo-v2.5-asr、mimo-v2.5-tts…）和
+    对话模型列在一起，前两种翻译、审核都用不上。
     """
     if provider == "siliconflow" and capability == "image":
         editing = [model for model in models if "edit" in model.lower()]
         return editing or models
+    if provider == "xiaomi":
+        chat = [
+            model for model in models
+            if not any(tag in model.lower() for tag in ("-tts", "-asr"))
+        ]
+        return chat or models
     return models
 
 
