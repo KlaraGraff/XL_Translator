@@ -27,6 +27,7 @@ from core.word_inline_marks import (
     parse_marked,
     place_marks,
     placeholder_texts,
+    repair_marks,
     strip_marks,
     unmark,
 )
@@ -513,6 +514,86 @@ class PlaceMarksTests(unittest.TestCase):
         self.assertEqual(place_marks(NoChat(), self.ITEMS), {})
 
 
+class RepairMarksTests(unittest.TestCase):
+    """反馈 #19：一段里有十几个行内公式时，模型常弄丢、重复或写走样一两个占位符。整段退回
+    写法会把所有公式都挤到段末；补救后其余公式留在原处，丢的那个按前后位置估出来。"""
+
+    MARKED = "where <x1/> is the stress, <x2/> is the strain and <x3/> is the modulus."
+
+    def test_lost_placeholder_goes_between_its_neighbours(self) -> None:
+        translation = "其中<x1/>为应力，为应变，<x3/>为模量。"
+        self.assertEqual(repair_marks(self.MARKED, translation), "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
+
+    def test_french_placeholder_lands_between_words(self) -> None:
+        translation = "où <x1/> est la contrainte, est la déformation et <x3/> est le module."
+        repaired = repair_marks(self.MARKED, translation)
+        self.assertEqual(repaired, "où <x1/> est la contrainte, <x2/> est la déformation et <x3/> est le module.")
+        self.assertTrue(marks_match(self.MARKED, repaired))
+
+    def test_duplicates_unknown_and_malformed_placeholders_are_cleaned(self) -> None:
+        translation = "其中<x1/>为应力，<x2>为应变，<x3/>为模量<x3/><x9/>。"
+        self.assertEqual(repair_marks(self.MARKED, translation), "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
+        self.assertEqual(repair_marks(self.MARKED, "其中&lt;x1/&gt;为应力，<x2/>为应变，<x3/>为模量。"),
+                         "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
+
+    def test_adjacent_formulas_keep_their_order(self) -> None:
+        # 相邻的三个公式中间那个丢了：补在第一个之后、第三个之前
+        self.assertEqual(repair_marks("令<x1/>、<x2/>、<x3/>表示各项。", "Let <x1/>, <x3/> denote the terms."),
+                         "Let <x1/>, <x2/><x3/> denote the terms.")
+
+    def test_broken_format_tags_are_dropped_but_formulas_stay(self) -> None:
+        marked = "<g1>Note</g1>: <x1/> and <x2/> are constants."
+        repaired = repair_marks(marked, "<g1>注</g1>：<x1/>和<x2/>为常数</g1>。")
+        self.assertEqual(repaired, "注：<x1/>和<x2/>为常数。")
+
+    def test_too_much_lost_or_nothing_to_repair_gives_up(self) -> None:
+        self.assertIsNone(repair_marks(self.MARKED, "其中<x1/>为应力，为应变，为模量。"))
+        self.assertIsNone(repair_marks("<g1>注：</g1>单位毫米。", "注：单位毫米。"))
+        self.assertIsNone(repair_marks("a<x1/>b\nc", "a<x1/>b"))
+
+    def test_mark_engine_keeps_the_repaired_version_aside(self) -> None:
+        plain = "where  is the stress,  is the strain and  is the modulus."
+        inner = _FakeEngine(lambda t: "où <x1/> est la contrainte, est la déformation et <x3/> est le module.")
+        engine = InlineMarkEngine(inner, {plain: self.MARKED})
+        result = engine.translate_batch([plain], "fr", "SYS")
+        self.assertEqual(result[plain], "où  est la contrainte,  est la déformation et  est le module.")
+        self.assertNotIn(plain, engine.marked_translations)
+        self.assertEqual(engine.repaired_translations[plain][1],
+                         "où <x1/> est la contrainte, <x2/> est la déformation et <x3/> est le module.")
+
+    def test_place_marks_hands_back_repaired_answers_separately(self) -> None:
+        source = "where  is the stress,  is the strain and  is the modulus."
+        translation = "其中为应力，为应变，为模量。"
+        engine = _ChatEngine(json.dumps(["其中<x1/>为应力，为应变，<x3/>为模量。"], ensure_ascii=False))
+        loose: dict = {}
+        self.assertEqual(place_marks(engine, [(source, self.MARKED, translation)], repaired=loose), {})
+        self.assertEqual(loose, {source: (self.MARKED, "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")})
+
+    def test_runner_falls_back_to_the_repaired_version(self) -> None:
+        """定稿后补标记：模型这次又弄丢了占位符，就用翻译时补救的那一版。"""
+        import threading
+
+        from core.word_task_runner import WordTaskRunner
+
+        source = "where  is the stress,  is the strain and  is the modulus."
+        runner = WordTaskRunner.__new__(WordTaskRunner)
+        runner._marked_sources = {source: self.MARKED}
+        runner._stop_event = threading.Event()
+        runner._inline_mark_engine = InlineMarkEngine(
+            _ChatEngine('["其中为应力，为应变，为模量。"]'), runner._marked_sources
+        )
+        runner._inline_mark_engine.repaired_translations[source] = (
+            self.MARKED, "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。"
+        )
+        runner._place_missing_inline_marks(runner._inline_mark_engine.inner, {source: "其中为应力，为应变，为模量。"})
+        self.assertEqual(runner._inline_mark_engine.marked_translations[source][1],
+                         "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
+        # 定稿被复查改过、对不上补救版的不用
+        runner._inline_mark_engine.marked_translations.clear()
+        runner._place_missing_inline_marks(runner._inline_mark_engine.inner, {source: "其中应力为，应变为，模量为。"})
+        self.assertNotIn(source, runner._inline_mark_engine.marked_translations)
+
+
 class WriteBackTests(unittest.TestCase):
     SOURCE = "注意：施工前必须完成技术交底。"
     MARKED_SOURCE = "<g1>注意：</g1>施工前必须完成技术交底。"
@@ -687,6 +768,40 @@ class WriteBackTests(unittest.TestCase):
                                      {source: ("混凝土强度按<x1/>计算。", "Résistance calculée.")},
                                      translation_only=translation_only)
                 self.assertEqual([_with_math(item) for item in out.paragraphs], expected)
+
+    def test_repaired_translation_without_format_tags_keeps_formulas_in_place(self) -> None:
+        """反馈 #19：补救时格式标记整套去掉了，公式照样放回句中，文字用主体格式。"""
+        doc = Document()
+        paragraph = doc.add_paragraph()
+        paragraph.add_run("注").bold = True
+        paragraph.add_run("：强度按")
+        _add_math(paragraph, "f=N/A")
+        paragraph.add_run("计算，面积为")
+        _add_math(paragraph, "A")
+        paragraph.add_run("。")
+        source, marked = "注：强度按计算，面积为。", "<g1>注</g1>：强度按<x1/>计算，面积为<x2/>。"
+        repaired = "Note : la résistance est calculée selon <x1/>, la surface vaut <x2/>."
+        for translation_only, expected in (
+            (True, ["Note : la résistance est calculée selon {f=N/A}, la surface vaut {A}."]),
+            (False, ["注：强度按{f=N/A}计算，面积为{A}。",
+                     "Note : la résistance est calculée selon {f=N/A}, la surface vaut {A}."]),
+        ):
+            with self.subTest(translation_only=translation_only):
+                out, _ = self._write(doc, {source: strip_marks(repaired)}, {source: (marked, repaired)},
+                                     translation_only=translation_only)
+                self.assertEqual([_with_math(item) for item in out.paragraphs], expected)
+
+    def test_paragraph_with_many_formulas_is_marked(self) -> None:
+        """反馈 #19：一段 24 个行内公式超过原来 16 个占位符的上限，整段退回写法、公式全到段末。"""
+        doc = Document()
+        paragraph = doc.add_paragraph()
+        for index in range(24):
+            paragraph.add_run(f"项{index}")
+            _add_math(paragraph, f"a{index}")
+        paragraph.add_run("。")
+        marks = paragraph_marks(paragraph)
+        self.assertIsNotNone(marks)
+        self.assertEqual(len(marks.placeholders), 24)
 
     def test_formula_in_a_table_cell_and_display_formula_at_the_end(self) -> None:
         doc = Document()

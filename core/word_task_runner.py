@@ -2017,14 +2017,28 @@ class WordTaskRunner(BaseTaskRunner):
             items.append((source, marked, translation))
         if not items:
             return
+        loose: dict[str, tuple[str, str]] = {}
         placed = place_marks(
             engine,
             items,
             should_stop=self.stop_requested,
             log=lambda message: logger.info(message),
+            repaired=loose,
         )
         known.update(placed)
-        logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处")
+        # 模型补不上的，退而用估出位置的补救版（repair_marks）：先用翻译时那一版，对不上定稿
+        # 再用补标记这次的。一段十几个公式丢了一两个时，其余公式仍留在句中，不全挤到段末
+        repaired = 0
+        early = self._inline_mark_engine.repaired_translations
+        for source, _marked, translation in items:
+            if source in placed:
+                continue
+            for entry in (early.get(source), loose.get(source)):
+                if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
+                    known[source] = entry
+                    repaired += 1
+                    break
+        logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处，估位补救 {repaired} 处")
 
     def _collect_file_texts(
         self,
