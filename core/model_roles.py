@@ -612,6 +612,18 @@ def record_model_role_availability(
     target.availability_checked_at = str(checked_at or "").strip()
 
 
+def amend_model_role_availability_message(
+    settings: AppSettings,
+    role: str,
+    message: str,
+    *,
+    connection_id: str = "",
+) -> None:
+    """Replace the reason of a verdict just recorded, keeping its status and time."""
+    target = _availability_record_target(settings, role, connection_id)
+    target.availability_message = str(message or "").strip()
+
+
 def _availability_record_target(settings: AppSettings, role: str, connection_id: str):
     """Return whichever object owns the test verdict for one connection."""
     owner = model_role_owner(settings, role)

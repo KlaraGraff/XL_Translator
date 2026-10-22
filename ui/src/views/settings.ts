@@ -335,6 +335,20 @@ let disabledBaseUrlPlaceholderSource = "当前服务商无需填写 Base URL"; /
 export function disabledBaseUrlPlaceholder(): string {
   return tx(disabledBaseUrlPlaceholderSource);
 }
+// Base URL 旁的「?」说明（同一接口下发后端原文，显示时翻译），例如小米 MiMo 的套餐地址
+// 和按量付费地址不同。没有说明的服务商返回空串。
+let providerBaseUrlHintSources: Record<string, string> = {};
+export function baseUrlHintFor(provider: string): string {
+  const source = providerBaseUrlHintSources[provider];
+  return source ? tx(source) : "";
+}
+// Base URL 下拉里的常用地址（同一接口下发），例如小米各地区的 Token Plan 和按量付费
+// API。名称是后端原文，显示时翻译；没有常用地址的服务商返回空数组，不出箭头。
+export type BaseUrlOption = { label: string; url: string };
+let providerBaseUrlOptions: Record<string, BaseUrlOption[]> = {};
+export function baseUrlOptionsFor(provider: string): BaseUrlOption[] {
+  return (providerBaseUrlOptions[provider] ?? []).map((option) => ({ label: tx(option.label), url: option.url }));
+}
 
 // 本地运行器的 Base URL 预填表。上面「不留第二份硬编码」的约定只对云端成立——
 // /api/models/provider-defaults 下发的是 CLOUD_PROVIDER_BASE_URL_DEFAULTS，本地运行器
@@ -979,18 +993,24 @@ async function refreshProviderDefaults(): Promise<void> {
       base_url_defaults: Record<string, string>;
       api_key_pages?: Record<string, string>;
       api_key_pages_by_host?: Record<string, string>;
+      base_url_hints?: Record<string, string>;
+      base_url_options?: Record<string, BaseUrlOption[]>;
       base_url_disabled: string[];
       disabled_placeholder: string;
     }>("/api/models/provider-defaults");
     providerBaseUrlDefaults = payload.base_url_defaults || {};
     providerApiKeyPages = payload.api_key_pages || {};
     apiKeyPagesByHost = payload.api_key_pages_by_host || {};
+    providerBaseUrlHintSources = payload.base_url_hints || {};
+    providerBaseUrlOptions = payload.base_url_options || {};
     providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
     if (payload.disabled_placeholder) disabledBaseUrlPlaceholderSource = String(payload.disabled_placeholder);
   } catch (error) {
     providerBaseUrlDefaults = {};
     providerApiKeyPages = {};
     apiKeyPagesByHost = {};
+    providerBaseUrlHintSources = {};
+    providerBaseUrlOptions = {};
     providerBaseUrlDisabled = new Set();
     console.warn("服务商预设读取失败，本次不预填 Base URL：", error); // i18n-ignore 控制台日志，不面向用户
   }

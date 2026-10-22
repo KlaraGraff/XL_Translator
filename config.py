@@ -2,6 +2,7 @@
 全局常量（不可变默认值）。
 用户可修改的配置在 settings.py 中管理。
 """
+from dataclasses import is_dataclass, replace
 from urllib.parse import urlsplit, urlunsplit
 
 from app_meta import APP_NAME as APP_NAME, APP_VERSION as APP_VERSION
@@ -61,9 +62,10 @@ LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
 ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-# 小米 MiMo 按量付费只有这一个地址（国内）。Token Plan 套餐用户的 Base URL 按订阅地区
-# 不同（token-plan-cn / -sgp / -ams），自己改成套餐页给的地址即可。
-XIAOMI_BASE_URL = "https://api.xiaomimimo.com/v1"
+# 小米 MiMo 的 Token Plan 套餐和按量付费 API 地址不同，密钥也不通用。多数用户买的是
+# Token Plan，默认填国内套餐地址；其他地区套餐（-sgp / -ams）和按量付费用户自己改。
+XIAOMI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+XIAOMI_PAY_AS_YOU_GO_BASE_URL = "https://api.xiaomimimo.com/v1"
 CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "openai": OPENAI_BASE_URL,
     "claude": CLAUDE_BASE_URL,
@@ -73,6 +75,52 @@ CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "xiaomi": XIAOMI_BASE_URL,
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
+# 选中服务商时 Base URL 旁的说明（「?」提示）和下拉里的常用地址，只给地址有讲究的
+# 服务商。小米三个 Token Plan 集群见官方订阅说明（中国、新加坡、欧洲）。
+CLOUD_PROVIDER_BASE_URL_HINTS = {
+    "xiaomi": (
+        "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址；"
+        "其他地区的套餐和按量付费 API 可从下拉列表中选择对应地址。"
+    ),
+}
+CLOUD_PROVIDER_BASE_URL_OPTIONS = {
+    "xiaomi": [
+        {"label": "Token Plan（国内）", "url": XIAOMI_BASE_URL},
+        {"label": "Token Plan（新加坡）", "url": "https://token-plan-sgp.xiaomimimo.com/v1"},
+        {"label": "Token Plan（欧洲）", "url": "https://token-plan-ams.xiaomimimo.com/v1"},
+        {"label": "按量付费 API", "url": XIAOMI_PAY_AS_YOU_GO_BASE_URL},
+    ],
+}
+# 测试连接、获取模型列表失败时追加的一句：小米的套餐地址和按量付费地址密钥不通用，
+# 地址选错是最常见的原因，通用的报错看不出来。
+CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS = {
+    "xiaomi": (
+        "请检查 Base URL：此处默认填写 Token Plan 国内地址；如使用其他地区的 Token Plan 套餐"
+        "或按量付费 API，请从 Base URL 的下拉列表中选择对应地址。"
+    ),
+}
+# 只给「没连上 / 被拒」这类可能是地址选错的失败追加：密钥被拒（credential）、接口不存在
+# （route / request）、连不上（request_failed / unreachable / connect_timeout）、协议都试
+# 完了（budget_exhausted），以及审核测试的笼统失败（failed）。表单没填全、模型答非所问、
+# 限流超时都与地址无关，不追加。
+_ADDRESS_FAILURE_STATUSES = {
+    "credential", "route", "request", "request_failed", "unreachable",
+    "connect_timeout", "budget_exhausted", "failed",
+}
+
+
+def with_connection_failure_hint(provider: str, result):
+    """测试连接 / 获取模型列表失败时，按服务商在原因后面补一句排查建议。"""
+    hint = CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS.get(str(provider or "").strip())
+    if not hint or not is_dataclass(result) or result.ok:
+        return result
+    if getattr(result, "status", "") not in _ADDRESS_FAILURE_STATUSES or hint in result.message:
+        return result
+    # 接成同一段话（界面按句号逐句翻译）；原因没以句号结尾时补一个。
+    message = result.message.rstrip()
+    if message and not message.endswith(("。", "！", "？")):
+        message += "。"
+    return replace(result, message=f"{message}{hint}")
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
 
 # 各家创建 API 密钥的控制台页面。设置页选中服务商时给一个「获取 ↗ API 密钥」链接。
@@ -84,15 +132,14 @@ CLOUD_PROVIDER_API_KEY_PAGES = {
     "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     "dashscope": "https://bailian.console.aliyun.com/?tab=model#/api-key",
     "siliconflow": "https://cloud.siliconflow.cn/account/ak",
-    "xiaomi": "https://platform.xiaomimimo.com/#/console/api-keys",
+    # Token Plan 的密钥（tp- 开头）在套餐管理页。
+    "xiaomi": "https://platform.xiaomimimo.com/#/console/plan-manage",
 }
 # 同一家国内站、国际站账号不通用：Base URL 落在国际站时，链接也指向国际站控制台。
 CLOUD_API_KEY_PAGES_BY_HOST = {
     "api.siliconflow.com": "https://cloud.siliconflow.com/account/ak",
-    # 小米 Token Plan 的密钥（tp- 开头）不在 API Keys 页，在套餐管理页。
-    "token-plan-cn.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
-    "token-plan-sgp.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
-    "token-plan-ams.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
+    # 小米按量付费 API 的密钥（sk- 开头）在 API Keys 页。
+    "api.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/api-keys",
 }
 LOCAL_MODEL_PROVIDERS = {
     "Ollama": "ollama",
