@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -347,6 +348,30 @@ def _translation_in_unexpected_cjk(source: str, translation: str | None, target_
     if not text or text.strip() == str(source or "").strip():
         return False
     return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
+
+
+_MARK_ORIGIN_LABELS = {
+    None: "没经过带标记的翻译（记忆库、夹杂多种语言等）",
+    "ok": "定稿后译文被改过",
+    "repaired": "定稿后译文被改过",
+    "lost": "翻译时占位符丢了一半以上",
+}
+_SLOT_RE_FOR_LOG = re.compile(r"<\s*x\s*\d+\s*/\s*>", re.IGNORECASE)
+_PLACE_REASON_LABELS = {"no_answer": "没拿到回答", "broken": "标记仍对不上", "text": "改了译文文字"}
+
+
+def _log_unplaced_marks(failed, outcomes: dict[str, str], reasons: dict[str, str]) -> None:
+    """放不回原位、按整段写法写回的段落：只记来源、原因和占位符个数（排查用，不含原文）。"""
+    origins = Counter(_MARK_ORIGIN_LABELS[outcomes.get(source)] for source, _marked in failed)
+    causes = Counter(_PLACE_REASON_LABELS.get(reasons.get(source, ""), "未补标记") for source, _marked in failed)
+    slots = sorted((len(_SLOT_RE_FOR_LOG.findall(marked)) for _source, marked in failed), reverse=True)
+    logger.info(
+        f"Word 段内格式：{len(failed)} 段按整段写法写回；来源："
+        + "、".join(f"{label} {count}" for label, count in origins.most_common())
+        + "；补标记："
+        + "、".join(f"{label} {count}" for label, count in causes.most_common())
+        + f"；各段占位符个数 {slots}"
+    )
 
 
 class WordTaskRunner(BaseTaskRunner):
@@ -2015,15 +2040,24 @@ class WordTaskRunner(BaseTaskRunner):
             if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
                 continue
             items.append((source, marked, translation))
+        mark_engine = self._inline_mark_engine
+        retries = mark_engine.retry_counts
+        if any(retries.values()):
+            logger.info(
+                f"Word 段内格式：占位符重试，单独重问成功 {retries['alone']} 处，拆两半成功 {retries['split']} 处，"
+                f"仍不完整 {retries['failed']} 处"
+            )
         if not items:
             return
         loose: dict[str, tuple[str, str]] = {}
+        reasons: dict[str, str] = {}
         placed = place_marks(
             engine,
             items,
             should_stop=self.stop_requested,
             log=lambda message: logger.info(message),
             repaired=loose,
+            reasons=reasons,
         )
         known.update(placed)
         # 模型补不上的，退而用估出位置的补救版（repair_marks）：先用翻译时那一版，对不上定稿
@@ -2039,6 +2073,9 @@ class WordTaskRunner(BaseTaskRunner):
                     repaired += 1
                     break
         logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处，估位补救 {repaired} 处")
+        failed = [(source, marked) for source, marked, _translation in items if source not in known]
+        if failed:
+            _log_unplaced_marks(failed, mark_engine.outcomes, reasons)
 
     def _collect_file_texts(
         self,

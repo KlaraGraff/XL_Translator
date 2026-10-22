@@ -1187,6 +1187,7 @@ def write_bilingual_docx(
     table_insertions = 0
     cell_line_mismatch_count = 0
     marked_write_count = 0
+    marked_unused: dict[str, int] = {}
     highlight_count = 0
     highlight_skip_count = 0
 
@@ -1230,6 +1231,11 @@ def write_bilingual_docx(
         pieces = marks.pieces_for(marked) if marked else None
         if pieces:
             marked_write_count += 1
+        elif marks is not None and marks.is_marked:
+            # 排查用：带标记的译文有，却没用上（只记原因，不记原文）
+            sent = (marked_translations or {}).get(source, ("", ""))[0]
+            reason = "原文标记不一致" if marks.marked_text != sent else "译文和定稿不一致" if not marked else "拆分失败"
+            marked_unused[reason] = marked_unused.get(reason, 0) + 1
         if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
             if pieces:
                 _write_marked_runs(paragraph, pieces, marks.groups, marks.base_rpr, target_lang=target_lang)
@@ -1387,6 +1393,11 @@ def write_bilingual_docx(
     doc.save(str(out_path))
     if marked_write_count:
         logger.info(f"Word 写回：{out_path.name} 有 {marked_write_count} 处按标记保留了段内格式")
+    if marked_unused:
+        logger.info(
+            f"Word 写回：{out_path.name} 有带标记的译文没用上："
+            + "、".join(f"{reason} {count}" for reason, count in marked_unused.items())
+        )
     if log_callback:
         highlight_summary = ""
         if review_mark_map:
