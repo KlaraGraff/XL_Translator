@@ -1,6 +1,10 @@
 # Translator 版本更新日志
 
-## V10.3.2
+## V10.3.3
+
+10.3.2 只作为预发布版给个别用户试用过，没有正式发布，其内容并入本版。
+
+10.3.2 was only a pre-release tried by a few users and was never formally released; its changes are included here.
 
 - **Windows 一键安装组件：补上 VC++ 运行库、系统代理用不了时直连、中文用户名下文字识别可用**（反馈 #15）：没装 VC++ 运行库的电脑上，「PDF 处理组件」装好后加载失败；现在随组件放入所需的运行库文件。系统代理是 SOCKS、或设了代理却没有在运行时，组件下载以前直接失败，现在改为直接连接再试一次。安装时直接解压到最终目录，并等待杀毒软件扫描结束后再改名。文字识别在用户名或数据目录含中文的英文版 Windows 上也能安装和识别。
 
