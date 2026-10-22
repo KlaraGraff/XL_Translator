@@ -28,6 +28,7 @@ from core.word_inline_marks import (
     place_marks,
     placeholder_texts,
     repair_marks,
+    split_marked,
     strip_marks,
     unmark,
 )
@@ -592,6 +593,81 @@ class RepairMarksTests(unittest.TestCase):
         runner._inline_mark_engine.marked_translations.clear()
         runner._place_missing_inline_marks(runner._inline_mark_engine.inner, {source: "其中应力为，应变为，模量为。"})
         self.assertNotIn(source, runner._inline_mark_engine.marked_translations)
+
+
+class RetryMarksTests(unittest.TestCase):
+    """maple 的思路（反馈 #19）：占位符没完整回来就当译文出错重试——先单独问这一段，再按
+    句子拆成两半问，最后才估位置。"""
+
+    PLAIN = "where  is the stress. Then  is the strain and  is the modulus."
+    MARKED = "where <x1/> is the stress. Then <x2/> is the strain and <x3/> is the modulus."
+    GOOD = "其中<x1/>为应力。<x2/>为应变，<x3/>为模量。"
+    LOST = "其中<x1/>为应力。为应变，<x3/>为模量。"
+
+    def _engine(self, answer):
+        inner = _FakeEngine(answer)
+        return inner, InlineMarkEngine(inner, {self.PLAIN: self.MARKED})
+
+    def test_split_marked_cuts_at_a_sentence_end_outside_format_tags(self) -> None:
+        self.assertEqual(split_marked(self.MARKED),
+                         ("where <x1/> is the stress.", "Then <x2/> is the strain and <x3/> is the modulus."))
+        self.assertEqual(split_marked("其中<x1/>为应力。<x2/>为应变；<x3/>为模量。"),
+                         ("其中<x1/>为应力。", "<x2/>为应变；<x3/>为模量。"))
+        self.assertIsNone(split_marked("<g1>Note. Here</g1> <x1/> is."))
+        self.assertIsNone(split_marked("e.g. only <x1/> one sentence."))
+        self.assertIsNone(split_marked("第一行<x1/>。\n第二行。"))
+
+    def test_lost_placeholder_in_a_batch_is_asked_again_alone(self) -> None:
+        def answer(text):
+            if text == self.MARKED:
+                return self.LOST if len(inner.calls) == 1 else self.GOOD
+            return "Autre."
+        inner, engine = self._engine(answer)
+        result = engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
+        self.assertEqual(result[self.PLAIN], "其中为应力。为应变，为模量。")
+        self.assertEqual([calls for calls, _prompt in inner.calls][1], [self.MARKED])
+        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
+
+    def test_still_lost_alone_is_split_into_two_halves(self) -> None:
+        halves = {"where <x1/> is the stress.": "其中<x1/>为应力。",
+                  "Then <x2/> is the strain and <x3/> is the modulus.": "<x2/>为应变，<x3/>为模量。"}
+        inner, engine = self._engine(lambda text: halves.get(text, self.LOST))
+        engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
+        self.assertEqual([calls for calls, _prompt in inner.calls][2], list(halves))
+        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
+
+    def test_french_halves_are_joined_with_a_space(self) -> None:
+        halves = {"where <x1/> is the stress.": "où <x1/> est la contrainte.",
+                  "Then <x2/> is the strain and <x3/> is the modulus.": "Puis <x2/> est la déformation et <x3/> le module."}
+        inner, engine = self._engine(lambda text: halves.get(text, "où <x1/> est la contrainte. Puis la déformation."))
+        result = engine.translate_batch([self.PLAIN], "fr", "SYS")
+        # 只有一段：不再单独问一次，直接拆
+        self.assertEqual(len(inner.calls), 2)
+        self.assertEqual(result[self.PLAIN], "où  est la contrainte. Puis  est la déformation et  le module.")
+
+    def test_failed_retries_fall_back_to_estimated_positions(self) -> None:
+        def answer(text):
+            if len(inner.calls) > 1:
+                raise RuntimeError("timeout")
+            return self.LOST
+        inner, engine = self._engine(answer)
+        engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
+        self.assertNotIn(self.PLAIN, engine.marked_translations)
+        self.assertEqual(engine.repaired_translations[self.PLAIN][1], "其中<x1/>为应力。<x2/>为应变，<x3/>为模量。")
+
+    def test_source_language_protocol_retries_too(self) -> None:
+        def answer(text):
+            return self.LOST if len(inner.calls) == 1 else self.GOOD
+        inner, engine = self._engine(answer)
+        results = engine.translate_batch_with_sources([self.PLAIN, "其他。"], "zh", "SYS")
+        self.assertEqual(results[0].source_text, self.PLAIN)
+        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
+
+    def test_format_only_paragraphs_are_not_retried(self) -> None:
+        marked = {"注意：施工前必须完成技术交底。": "<g1>注意：</g1>施工前必须完成技术交底。"}
+        inner = _FakeEngine(lambda t: "Attention : briefing.")
+        InlineMarkEngine(inner, marked).translate_batch(list(marked) + ["其他。"], "fr", "SYS")
+        self.assertEqual(len(inner.calls), 1)
 
 
 class WriteBackTests(unittest.TestCase):
