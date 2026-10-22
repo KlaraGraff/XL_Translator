@@ -41,7 +41,7 @@ MODEL_ROLE_LABELS = {
     ROLE_TRANSLATION: "文本翻译模型",
     ROLE_CLEANER: "记忆库清洗模型",
     ROLE_IMAGE: "图像翻译模型",
-    ROLE_PDF_REVIEW: "PDF 与图片审核模型",
+    ROLE_PDF_REVIEW: "图像翻译审核模型",
 }
 
 MODEL_ROLE_CAPABILITIES = {
@@ -63,7 +63,7 @@ FOLLOW_SOURCE_LABELS = {
     ROLE_TRANSLATION: "跟随文本翻译模型",
     ROLE_CLEANER: "跟随记忆库清洗模型",
     ROLE_IMAGE: "跟随图像翻译模型",
-    ROLE_PDF_REVIEW: "跟随 PDF 与图片审核模型",
+    ROLE_PDF_REVIEW: "跟随图像翻译审核模型",
 }
 
 # 报错里给用户看的能力说法；内部能力代码（text / image / vision_text）不出现在句子里。
@@ -1153,7 +1153,7 @@ def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
     reason = {
         ROLE_CLEANER: "记忆库清洗需要云端文本模型。",
         ROLE_IMAGE: "图像翻译需要支持图片生成的云端模型。",
-        ROLE_PDF_REVIEW: "PDF 与图片审核需要支持图片识别的云端模型。",
+        ROLE_PDF_REVIEW: "图像翻译审核需要支持图片识别的云端模型。",
     }.get(role, f"{role_name}只支持云端模型。")
     source_name = role_label(source_role) if source_role else "跟随来源"
     return (

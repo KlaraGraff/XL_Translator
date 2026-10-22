@@ -288,7 +288,7 @@ export const MODEL_ROLE_LABELS: Record<string, string> = localized(() => ({
   translation: t("文本翻译（Excel / Word / CAD）"),
   cleaner: t("记忆库清洗"),
   image: t("图像翻译"),
-  pdf_review: t("PDF 与图片审核"),
+  pdf_review: t("图像翻译审核"),
 }));
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";

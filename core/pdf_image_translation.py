@@ -1903,20 +1903,20 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
                 logger.debug(f"[PDF] 单页重生成解析审核模型配置失败原始错误：{exc!r}")
                 raise PdfPageActionError(
-                    "PDF 与图片审核模型的设置不可用："
+                    "图像翻译审核模型的设置不可用："
                     + user_facing_reason(
                         exc,
-                        fallback="请在设置中检查 PDF 与图片审核模型的连接。",
+                        fallback="请在设置中检查图像翻译审核模型的连接。",
                     )
                 ) from exc
             if not provider_supports_capability(review_model_config.provider, "vision_text"):
                 raise PdfPageActionError(
                     unsupported_capability_message(
-                        "PDF 与图片审核模型", review_model_config.provider, "vision_text"
+                        "图像翻译审核模型", review_model_config.provider, "vision_text"
                     )
                 )
             if not review_model_config.model:
-                raise PdfPageActionError("PDF 与图片审核模型的名称不能为空。")
+                raise PdfPageActionError("图像翻译审核模型的名称不能为空。")
 
         max_attempts = max_page_generation_attempts(self._settings.pdf.page_retry_attempts)
         self._review_total = max_attempts
@@ -2872,11 +2872,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 if not provider_supports_capability(review_model_config.provider, "vision_text"):
                     raise PdfReviewModelUnavailableError(
                         unsupported_capability_message(
-                            "PDF 与图片审核模型", review_model_config.provider, "vision_text"
+                            "图像翻译审核模型", review_model_config.provider, "vision_text"
                         )
                     )
                 if not review_model_config.model:
-                    raise PdfReviewModelUnavailableError("PDF 与图片审核模型的名称不能为空")
+                    raise PdfReviewModelUnavailableError("图像翻译审核模型的名称不能为空")
             except PdfReviewModelUnavailableError as exc:
                 message = str(exc)
                 record_pdf_review_model_availability(
@@ -2886,16 +2886,16 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     signature=review_model_signature,
                     checked_at=datetime.now().isoformat(timespec="seconds"),
                 )
-                self._queue.put(ErrorMsg(message=f"PDF 与图片审核模型的设置不可用：{message}"))
+                self._queue.put(ErrorMsg(message=f"图像翻译审核模型的设置不可用：{message}"))
                 return
             except Exception as exc:  # noqa: BLE001 - init converted to UI error.
                 logger.debug(f"[PDF] 解析审核模型配置失败原始错误：{exc!r}")
                 self._queue.put(
                     ErrorMsg(
-                        message="PDF 与图片审核模型的设置不可用："
+                        message="图像翻译审核模型的设置不可用："
                         + user_facing_reason(
                             exc,
-                            fallback="请在设置中检查 PDF 与图片审核模型的连接。",
+                            fallback="请在设置中检查图像翻译审核模型的连接。",
                         )
                     )
                 )
@@ -5331,7 +5331,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 user_facing_reason(
                                     exc,
                                     fallback=(
-                                        "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                                        "图像翻译审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
                                         "模型名称和账户额度。"
                                     ),
                                 )
@@ -5348,7 +5348,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 PdfReviewIssue(
                                     type="review_request_failed",
                                     problem=review_failure_reason,
-                                    suggestion="请重试审核或更换 PDF 与图片审核模型。",
+                                    suggestion="请重试审核或更换图像翻译审核模型。",
                                 )
                             ],
                             summary=f"审核请求失败：{review_failure_reason}",
@@ -5803,7 +5803,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         record_pdf_review_model_availability(
             self._settings,
             ok=True,
-            message="PDF 与图片审核模型调用成功。",
+            message="图像翻译审核模型调用成功。",
             checked_at=datetime.now().isoformat(timespec="seconds"),
         )
 

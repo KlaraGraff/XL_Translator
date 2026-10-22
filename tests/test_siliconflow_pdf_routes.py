@@ -132,7 +132,7 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
     def _config(self, role: str, model: str, provider: str = "siliconflow", api_mode: str = "auto"):
         return EffectiveModelConfig(
             role=role,
-            label="PDF 与图片翻译模型" if role == ROLE_IMAGE else "PDF 与图片审核模型",
+            label="PDF 与图片翻译模型" if role == ROLE_IMAGE else "图像翻译审核模型",
             capability="image" if role == ROLE_IMAGE else "vision_text",
             mode="cloud",
             provider=provider,
@@ -241,7 +241,7 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
         with patch("core.model_roles.get_key", return_value="sk-test"):
             result = check_pdf_review_connectivity(settings, max_attempts=1)
         self.assertFalse(result.ok)
-        self.assertEqual(result.message, f"PDF 与图片审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
+        self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
 
     def test_route_panel_treats_a_failed_image_model_as_missing(self) -> None:
         # 自动组合：图像模型测过、没通过，就和没设置一样，扫描页与保底页保留原样。

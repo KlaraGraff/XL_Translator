@@ -851,6 +851,10 @@
     "en": "Same as PDF & image review model",
     "fr": "Identique au modèle de vérification PDF et images"
   },
+  "跟随图像翻译审核模型": {
+    "en": "Same as image translation review model",
+    "fr": "Identique au modèle de vérification des images"
+  },
   "跟随文本翻译（Excel / Word / CAD）": {
     "en": "Same as text translation (Excel / Word / CAD)",
     "fr": "Identique à la traduction de texte (Excel / Word / CAD)"
@@ -866,6 +870,14 @@
   "跟随PDF 与图片翻译": {
     "en": "Same as image translation",
     "fr": "Identique à la traduction d'images"
+  },
+  "跟随图像翻译审核": {
+    "en": "Same as image translation review",
+    "fr": "Identique à la vérification des images"
+  },
+  "跟随PDF 与图片审核": {
+    "en": "Same as image translation review",
+    "fr": "Identique à la vérification des images"
   },
   "翻译文字": {
     "en": "text translation",
@@ -974,6 +986,10 @@
   "PDF 与图片审核需要支持图片识别的云端模型。": {
     "en": "PDF & image review needs a cloud model that can read images.",
     "fr": "La vérification PDF et images nécessite un modèle cloud capable d'analyser des images."
+  },
+  "图像翻译审核需要支持图片识别的云端模型。": {
+    "en": "Image translation review needs a cloud model that can read images.",
+    "fr": "La vérification des images nécessite un modèle cloud capable d'analyser des images."
   },
   "系统未授权本程序控制 Office。请在「系统设置 › 隐私与安全性 › 自动化」中授权后重试。": {
     "en": "The system has not allowed this app to control Office. Grant access in “System Settings › Privacy & Security › Automation” and try again.",
@@ -1279,13 +1295,25 @@
     "en": "Page-by-page review is on. Enter the name of the PDF & image review model first.",
     "fr": "La vérification page par page est activée. Saisissez d'abord le nom du modèle de vérification PDF et images."
   },
+  "已开启逐页审核，请先填写图像翻译审核模型的名称。": {
+    "en": "Page-by-page review is on. Enter the name of the image translation review model first.",
+    "fr": "La vérification page par page est activée. Saisissez d'abord le nom du modèle de vérification des images."
+  },
   "已开启逐页审核，请先给 PDF 与图片审核模型填写 API 密钥。": {
     "en": "Page-by-page review is on. Enter an API key for the PDF & image review model first.",
     "fr": "La vérification page par page est activée. Saisissez d'abord une clé API pour le modèle de vérification PDF et images."
   },
+  "已开启逐页审核，请先给图像翻译审核模型填写 API 密钥。": {
+    "en": "Page-by-page review is on. Enter an API key for the image translation review model first.",
+    "fr": "La vérification page par page est activée. Saisissez d'abord une clé API pour le modèle de vérification des images."
+  },
   "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。": {
     "en": "The PDF & image review model failed its last test. Test it again, turn off review, or confirm that you want to continue anyway.",
     "fr": "Le modèle de vérification PDF et images a échoué à son dernier test. Testez-le à nouveau, désactivez la vérification ou confirmez que vous souhaitez continuer."
+  },
+  "图像翻译审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。": {
+    "en": "The image translation review model failed its last test. Test it again, turn off review, or confirm that you want to continue anyway.",
+    "fr": "Le modèle de vérification des images a échoué à son dernier test. Testez-le à nouveau, désactivez la vérification ou confirmez que vous souhaitez continuer."
   },
   "PDF 与图片翻译模型的设置不可用：{0}": {
     "en": "The PDF & image translation model settings cannot be used: {0}",
@@ -1306,6 +1334,10 @@
   "PDF 与图片审核模型的设置不可用：{0}": {
     "en": "The PDF & image review model settings cannot be used: {0}",
     "fr": "Les paramètres du modèle de vérification PDF et images sont inutilisables : {0}"
+  },
+  "图像翻译审核模型的设置不可用：{0}": {
+    "en": "The image translation review model settings cannot be used: {0}",
+    "fr": "Les paramètres du modèle de vérification des images sont inutilisables : {0}"
   },
   "补译复核": {
     "en": "Missing-translation check",

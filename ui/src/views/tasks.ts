@@ -434,8 +434,8 @@ function connectionSwitchText(task: TaskStatus): string {
 const ROLE_LABELS: Record<string, string> = localized(() => ({
   translation: t("文本翻译模型"),
   image: t("图像翻译模型"),
-  pdf_review: t("PDF 与图片审核模型"),
-  review: t("PDF 与图片审核模型"),
+  pdf_review: t("图像翻译审核模型"),
+  review: t("图像翻译审核模型"),
   cleaner: t("记忆库清洗模型"),
 }));
 

@@ -371,6 +371,10 @@
     "en": "PDF & image review model call succeeded.",
     "fr": "Appel au modèle de vérification PDF et images réussi."
   },
+  "图像翻译审核模型调用成功。": {
+    "en": "Image translation review model call succeeded.",
+    "fr": "Appel au modèle de vérification des images réussi."
+  },
   "[{0}] 第 {1} 页已生成失败占位页 {2}": {
     "en": "[{0}] Failure placeholder page generated for page {1}: {2}",
     "fr": "[{0}] Page de substitution générée pour la page {1} : {2}"
@@ -390,6 +394,10 @@
   "PDF 与图片审核模型的名称不能为空。": {
     "en": "The PDF & image review model name cannot be empty.",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide."
+  },
+  "图像翻译审核模型的名称不能为空。": {
+    "en": "The image translation review model name cannot be empty.",
+    "fr": "Le nom du modèle de vérification des images ne peut pas être vide."
   },
   "{0}已保留上一版译文页和输出文件，本次改动未生效。": {
     "en": "{0} The previous translated page and output files were kept; this change did not take effect.",
@@ -583,6 +591,10 @@
     "en": "The PDF & image review model settings are unusable: ",
     "fr": "Les paramètres du modèle de vérification PDF et images sont inutilisables : "
   },
+  "图像翻译审核模型的设置不可用：": {
+    "en": "The image translation review model settings are unusable: ",
+    "fr": "Les paramètres du modèle de vérification des images sont inutilisables : "
+  },
   "换回上一版时出现了未预期的问题。": {
     "en": "An unexpected problem occurred while reverting to the previous version.",
     "fr": "Un problème inattendu est survenu lors du retour à la version précédente."
@@ -703,6 +715,10 @@
     "en": "Check the PDF & image review model connection in Settings.",
     "fr": "Veuillez vérifier la connexion du modèle de vérification PDF et images dans les paramètres."
   },
+  "请在设置中检查图像翻译审核模型的连接。": {
+    "en": "Check the image translation review model connection in Settings.",
+    "fr": "Veuillez vérifier la connexion du modèle de vérification des images dans les paramètres."
+  },
   "无法修改页面存档中的文件。": {
     "en": "Files in the page archive cannot be modified.",
     "fr": "Les fichiers de l'archive des pages ne peuvent pas être modifiés."
@@ -762,6 +778,10 @@
   "请重试审核或更换 PDF 与图片审核模型。": {
     "en": "Retry the review or switch to a different PDF & image review model.",
     "fr": "Relancez la vérification ou changez de modèle de vérification PDF et images."
+  },
+  "请重试审核或更换图像翻译审核模型。": {
+    "en": "Retry the review or switch to a different image translation review model.",
+    "fr": "Relancez la vérification ou changez de modèle de vérification des images."
   },
   "这一页压缩时出错。": {
     "en": "An error occurred while compressing this page.",
@@ -1187,13 +1207,25 @@
     "en": "The PDF & image review model has no endpoint address yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore d'adresse de service"
   },
+  "图像翻译审核模型尚未填写接口地址": {
+    "en": "The image translation review model has no endpoint address yet",
+    "fr": "Le modèle de vérification des images n'a pas encore d'adresse de service"
+  },
   "PDF 与图片审核模型尚未填写 API 密钥": {
     "en": "The PDF & image review model has no API key yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore de clé API"
   },
+  "图像翻译审核模型尚未填写 API 密钥": {
+    "en": "The image translation review model has no API key yet",
+    "fr": "Le modèle de vérification des images n'a pas encore de clé API"
+  },
   "PDF 与图片审核模型的名称不能为空": {
     "en": "The PDF & image review model name cannot be empty",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide"
+  },
+  "图像翻译审核模型的名称不能为空": {
+    "en": "The image translation review model name cannot be empty",
+    "fr": "Le nom du modèle de vérification des images ne peut pas être vide"
   },
   "审核结果无法解析。": {
     "en": "The review result could not be parsed.",
@@ -1230,6 +1262,10 @@
   "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
     "en": "The PDF & image review model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
     "fr": "Le modèle de vérification PDF et images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
+  },
+  "图像翻译审核模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
+    "en": "The image translation review model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
+    "fr": "Le modèle de vérification des images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
   },
   "审核模型判定未通过，但未返回具体问题。": {
     "en": "The review model judged the page as failed but gave no specific issue.",

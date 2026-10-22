@@ -370,10 +370,11 @@ class ModelUpgradeState(BaseModel):
 
 _SEEDED_CONNECTION_PREFIX = "seed-"
 
-# V10.3.2 起「文档翻译」改称「文本翻译」，「PDF 与图片翻译」改称「图像翻译」。
+# V10.3.2 起「文档翻译」改称「文本翻译」，「PDF 与图片翻译」改称「图像翻译」，「PDF 与图片审核」改称「图像翻译审核」。
 _RENAMED_FOLLOW_LABELS = {
     "跟随文档翻译（Excel / Word / CAD）": "跟随文本翻译（Excel / Word / CAD）",
     "跟随PDF 与图片翻译": "跟随图像翻译",
+    "跟随PDF 与图片审核": "跟随图像翻译审核",
 }
 
 _PROVIDER_DISPLAY_NAMES = {

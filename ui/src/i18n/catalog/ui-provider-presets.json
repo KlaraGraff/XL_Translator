@@ -15,9 +15,9 @@
     "en": "No usable image translation model: scanned pages and pages that need the safety net are kept as they are.",
     "fr": "Aucun modèle de traduction d'image utilisable : les pages numérisées et celles qui ont besoin de la solution de repli sont conservées telles quelles."
   },
-  "PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。": {
-    "en": "PDF and image review needs a model that can read images. Choose a model that accepts image input.",
-    "fr": "La vérification des PDF et des images nécessite un modèle capable de lire les images. Choisissez un modèle qui accepte des images en entrée."
+  "图像翻译审核需要能识别图片的模型，请换一个支持图片输入的模型。": {
+    "en": "Image translation review needs a model that can read images. Choose a model that accepts image input.",
+    "fr": "La vérification des images nécessite un modèle capable de lire les images. Choisissez un modèle qui accepte des images en entrée."
   },
   "图像翻译模型的连接测试未通过": {
     "en": "The image translation model failed its connection test",

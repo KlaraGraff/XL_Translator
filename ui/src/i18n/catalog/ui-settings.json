@@ -15,9 +15,9 @@
     "en": "Image translation",
     "fr": "Traduction d'images"
   },
-  "PDF 与图片审核": {
-    "en": "PDF & image review",
-    "fr": "Vérification PDF et images"
+  "图像翻译审核": {
+    "en": "Image translation review",
+    "fr": "Vérification des images"
   },
   "OpenAI 兼容": {
     "en": "OpenAI-compatible",

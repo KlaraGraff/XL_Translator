@@ -122,24 +122,24 @@ class PdfSurface(Surface):
             review_model = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
         except Exception as exc:  # noqa: BLE001
             raise TaskInputError(
-                f"PDF 与图片审核模型的设置不可用：{_model_config_reason(exc)}",
+                f"图像翻译审核模型的设置不可用：{_model_config_reason(exc)}",
                 reason=REASON_PDF_REVIEW_MODEL_MISSING,
             ) from exc
         if not review_model.model:
             raise TaskInputError(
-                "已开启逐页审核，请先填写 PDF 与图片审核模型的名称。",
+                "已开启逐页审核，请先填写图像翻译审核模型的名称。",
                 reason=REASON_PDF_REVIEW_MODEL_MISSING,
             )
         if not provider_supports_capability(review_model.provider, "vision_text"):
             raise TaskInputError(
                 unsupported_capability_message(
-                    "PDF 与图片审核模型", review_model.provider, "vision_text"
+                    "图像翻译审核模型", review_model.provider, "vision_text"
                 ),
                 reason=REASON_PDF_REVIEW_MODEL_MISSING,
             )
         if review_model.mode == "cloud" and not review_model.api_key:
             raise TaskInputError(
-                "已开启逐页审核，请先给 PDF 与图片审核模型填写 API 密钥。",
+                "已开启逐页审核，请先给图像翻译审核模型填写 API 密钥。",
                 reason=REASON_PDF_REVIEW_MODEL_MISSING,
             )
         availability = str(settings.pdf_review_model_role.availability_status or "unknown")
@@ -148,7 +148,7 @@ class PdfSurface(Surface):
             # 拿它开一个带「仍要继续」按钮的弹窗，而不是弹一句两秒就没的提示。靠比对中文
             # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
-                "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。",
+                "图像翻译审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。",
                 # 界面认这个 reason 开弹窗，所以不改成通用的 needs_confirmation；
                 # 命令行和 MCP 看 accept。
                 reason="pdf_review_model_unavailable",

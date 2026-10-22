@@ -39,6 +39,7 @@ class ConnectionDisplayLabelTests(unittest.TestCase):
         self.assertEqual(old.display_label, "跟随文本翻译（Excel / Word / CAD）")
         self.assertEqual(old.label, "跟随文档翻译（Excel / Word / CAD）")
         self.assertEqual(ModelConnection(label="跟随PDF 与图片翻译").display_label, "跟随图像翻译")
+        self.assertEqual(ModelConnection(label="跟随PDF 与图片审核").display_label, "跟随图像翻译审核")
 
 
 if __name__ == "__main__":
