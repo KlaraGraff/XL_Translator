@@ -5,11 +5,12 @@
 段落里格式和主体不同的那几截用 ``<g1>…</g1>`` 包住随原文发出，模型把标记放到对应
 的译文上，写回时每截按原来的格式（和链接）各写一个 run。
 
-段里的制表符、软换行、行内图片、脚注编号这类不能翻译的东西，写成自闭合的占位符
+段里的制表符、软换行、行内图片、脚注编号、公式这类不能翻译的东西，写成自闭合的占位符
 ``<x1/>`` 随原文发出，模型把它放到译文里对应的位置，写回时那里原样放回原来的节点
-（「1.2⇥**施工范围**见附图」的制表符和加粗都保得住）。段首段尾的占位符不发给模型，
+（「1.2⇥**施工范围**见附图」的制表符和加粗都保得住；「强度按 [公式] 计算」的公式也留在
+句中原处，双语版式的译文段里同样有一份）。段首段尾的占位符不发给模型，
 写回时固定留在段首段尾。占位符去掉标记后还原成纯文本里对应的字符（制表符 ``\t``、
-换行 ``\n``，图片和脚注编号为空），下游看到的纯文本和以前一样。
+换行 ``\n``，图片、脚注编号和公式为空），下游看到的纯文本和以前一样。
 
 标记的写法和校验与 PPT、Excel 共用：成对的 ``<gN>…</gN>`` 管格式，``<xN/>`` 管占位，
 两套编号各自从 1 起。
@@ -45,15 +46,18 @@ MARK_PROMPT_RULE = (
     "译文必须保留每一对标记，各包住与原文标记内容对应的译文；标记位置可以随译文语序调整，"
     "但不得增加、删除、合并、嵌套或改动标记。标记两侧的空格按译文语言的习惯书写，"
     "如「<g1>Note :</g1> les cotes…」冒号后照常留空格。"
-    "部分词条还带有 <x1/> 这样的自闭合占位符，代表制表符、换行、图片、脚注编号等不翻译的内容："
+    "部分词条还带有 <x1/> 这样的自闭合占位符，代表制表符、换行、图片、脚注编号、公式等不翻译的内容："
     "每个占位符在译文中必须原样出现恰好一次，放在译文里对应的位置，可以在标记里面，"
     "不得删除、复制或改写。"
 )
 
+# Word 公式（OMML）：段落里和 w:r 平级的节点，python-docx 的 paragraph.text 读不到它
+_MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+MATH_TAGS = frozenset((f"{_MATH_NS}oMath", f"{_MATH_NS}oMathPara"))
 _PARAGRAPH_CHILDREN = frozenset(
     qn(tag) for tag in ("w:pPr", "w:r", "w:hyperlink", "w:bookmarkStart", "w:bookmarkEnd", "w:proofErr",
                         "w:permStart", "w:permEnd")
-)
+) | MATH_TAGS
 _HYPERLINK_CHILDREN = frozenset((qn("w:r"), qn("w:proofErr")))
 _RUN_CHILDREN = frozenset((qn("w:rPr"), qn("w:t"), qn("w:lastRenderedPageBreak")))
 # run 里排在文字中间、但不是文字的东西，作为占位符随原文发出、写回时照抄原节点。
@@ -107,11 +111,14 @@ class Placeholder:
     text: str  # 在纯文本里对应的字符
 
     @property
-    def layout_only(self) -> bool:
-        """只有制表符、软换行这类版式（不含分页、分栏），双语的译文段里可以再复制一份。"""
+    def copyable(self) -> bool:
+        """只有制表符、软换行这类版式（不含分页、分栏）和公式，双语的译文段里可以再复制一份。"""
         return all(
-            node.tag in _LAYOUT_SLOT_TAGS
-            and not (node.tag == qn("w:br") and (node.get(qn("w:type")) or "textWrapping") != "textWrapping")
+            node.tag in MATH_TAGS
+            or (
+                node.tag in _LAYOUT_SLOT_TAGS
+                and not (node.tag == qn("w:br") and (node.get(qn("w:type")) or "textWrapping") != "textWrapping")
+            )
             for node, _rpr in self.nodes
         )
 
@@ -214,13 +221,13 @@ class _Item:
 
 
 def _content_runs(paragraph_element) -> list[tuple[object, object | None]] | None:
-    """[(w:r, 所在的 w:hyperlink 或 None)]；结构不简单时返回 None。"""
+    """[(w:r 或公式, 所在的 w:hyperlink 或 None)]；结构不简单时返回 None。"""
     runs: list[tuple[object, object | None]] = []
     for child in paragraph_element:
         tag = child.tag
         if not isinstance(tag, str) or tag not in _PARAGRAPH_CHILDREN:
             return None
-        if tag == qn("w:r"):
+        if tag == qn("w:r") or tag in MATH_TAGS:
             runs.append((child, None))
         elif tag == qn("w:hyperlink"):
             for nested in child:
@@ -229,6 +236,8 @@ def _content_runs(paragraph_element) -> list[tuple[object, object | None]] | Non
                 if nested.tag == qn("w:r"):
                     runs.append((nested, child))
     for run, _hyperlink in runs:
+        if run.tag in MATH_TAGS:
+            continue
         if any(not isinstance(node.tag, str) or node.tag not in _RUN_CHILDREN | _SLOT_TAGS for node in run):
             return None
     return runs
@@ -238,6 +247,13 @@ def _content_items(runs) -> list[_Item]:
     """文字一截一项；相邻的占位内容（中间没有文字）并成一项。"""
     items: list[_Item] = []
     for run, hyperlink in runs:
+        if run.tag in MATH_TAGS:
+            # 整个公式是一个占位：不在纯文本里，写回时不套 w:r，直接放回段落
+            if items and items[-1].is_slot:
+                items[-1].node_pairs.append((run, None))
+            else:
+                items.append(_Item("", None, hyperlink, [(run, None)]))
+            continue
         rpr = run.find(qn("w:rPr"))
         for node in run:
             if node.tag == qn("w:t"):
@@ -539,10 +555,14 @@ def _new_run(text: str, rpr):
 
 
 def _placeholder_runs(placeholder: Placeholder, *, move: bool) -> list:
-    """占位内容按原来的 run 格式各放进一个 w:r。move=True 时挪用原节点（原段落随后整段
-    换掉，挪用比复制稳妥：文本框里的文字、图片的编号都还是原来那一份）。"""
+    """占位内容按原来的 run 格式各放进一个 w:r（公式本来就和 w:r 平级，原样放回）。
+    move=True 时挪用原节点（原段落随后整段换掉，挪用比复制稳妥：文本框里的文字、图片的
+    编号都还是原来那一份）。"""
     runs = []
     for node, rpr in placeholder.nodes:
+        if node.tag in MATH_TAGS:
+            runs.append(node if move else deepcopy(node))
+            continue
         run = OxmlElement("w:r")
         if rpr is not None:
             run.append(deepcopy(rpr))
@@ -556,7 +576,7 @@ def _without_objects(pieces) -> list:
     out: list = []
     dropped = False
     for text, group in pieces:
-        if isinstance(text, Placeholder) and not text.layout_only:
+        if isinstance(text, Placeholder) and not text.copyable:
             dropped = True
             continue
         if dropped and isinstance(text, str) and out and isinstance(out[-1][0], str) and out[-1][0].endswith(" "):
@@ -570,14 +590,14 @@ def _without_objects(pieces) -> list:
 def build_run_nodes(pieces, groups: dict[int, MarkGroup], base_rpr, *, keep_objects: bool = True) -> list:
     """按拆好的译文生成 w:r（链接那截包在 w:hyperlink 里，相邻同一个链接的并在一起），
     返回要插进段落的节点。片段里的 Placeholder 照抄原节点；keep_objects=False（双语版式
-    新插的译文段）时只复制制表符、换行这类版式，图片、脚注编号留在原文段里。"""
+    新插的译文段）时只复制制表符、换行这类版式和公式，图片、脚注编号留在原文段里。"""
     nodes = []
     last_link: tuple[object, object] | None = None  # (原链接, 新建的 w:hyperlink)
     if not keep_objects:
         pieces = _without_objects(pieces)
     for text, group in pieces:
         if isinstance(text, Placeholder):
-            if not keep_objects and not text.layout_only:
+            if not keep_objects and not text.copyable:
                 continue
             runs = _placeholder_runs(text, move=keep_objects)
         elif text:
@@ -601,9 +621,13 @@ def build_run_nodes(pieces, groups: dict[int, MarkGroup], base_rpr, *, keep_obje
 
 
 def replace_paragraph_content(paragraph, nodes) -> None:
-    """删掉段落里原有的文字 run 和超链接，把新节点放在第一个被删节点的位置。"""
+    """删掉段落里原有的文字 run 和超链接，把新节点放在第一个被删节点的位置。新节点里挪用的
+    公式也先从原位摘下，免得插回去时位置算错。"""
     element = paragraph._p
-    old = [child for child in element if child.tag in (qn("w:r"), qn("w:hyperlink"))]
+    old = [
+        child for child in element
+        if child.tag in (qn("w:r"), qn("w:hyperlink")) or any(node is child for node in nodes)
+    ]
     if old:
         anchor_index = list(element).index(old[0])
         for child in old:
@@ -710,7 +734,7 @@ PLACE_MARKS_PROMPT = (
     "你是文档排版助手。下面 JSON 数组的每一项给出带 <g1>…</g1> 成对格式标记的原文和它已经定稿的译文。"
     "请在译文中插入与原文相同的标记，各包住与原文标记内容对应的译文。只插入标记，译文的其他字符"
     "（包括空格、标点、换行）一个都不能改动；每对标记恰好出现一次，不得嵌套。"
-    "原文里 <x1/> 这样的自闭合占位符（制表符、图片、脚注编号等）在译文中也必须恰好出现一次："
+    "原文里 <x1/> 这样的自闭合占位符（制表符、图片、脚注编号、公式等）在译文中也必须恰好出现一次："
     "译文里已经有的保持原位，没有的插到对应的位置；原文占位符处译文只有一个空格时，用占位符替换这个空格。"
     "按原顺序返回 JSON 字符串数组，长度与输入相同，每项是插好标记的译文；不要输出解释或 markdown 代码块。"
 )

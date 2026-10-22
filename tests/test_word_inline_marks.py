@@ -112,6 +112,36 @@ def _runs(paragraph):
     return out
 
 
+_MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+def _add_math(paragraph, formula: str, *, display: bool = False):
+    """段落里接一个 Word 公式（OMML），和 w:r 平级。"""
+    from docx.oxml import parse_xml
+
+    math = f'<m:oMath xmlns:m="{_MATH_NS}"><m:r><m:t>{formula}</m:t></m:r></m:oMath>'
+    if display:
+        math = f'<m:oMathPara xmlns:m="{_MATH_NS}">{math}</m:oMathPara>'
+    paragraph._p.append(parse_xml(math))
+
+
+def _with_math(paragraph):
+    """段落内容按顺序，公式写成 {公式}。"""
+    out = []
+    for node in paragraph._p.iter(qn("w:t"), f"{{{_MATH_NS}}}t"):
+        out.append(node.text if node.tag == qn("w:t") else "{" + node.text + "}")
+    return "".join(out)
+
+
+def _formula_paragraph(doc):
+    """「混凝土强度按 [f=N/A] 计算。」"""
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("混凝土强度按")
+    _add_math(paragraph, "f=N/A")
+    paragraph.add_run("计算。")
+    return paragraph
+
+
 class ParagraphMarksTests(unittest.TestCase):
     def test_bold_label_is_marked_and_base_is_the_longer_run(self) -> None:
         marks = paragraph_marks(_bold_label_paragraph(Document()))
@@ -629,6 +659,49 @@ class WriteBackTests(unittest.TestCase):
         )
         self.assertEqual(_sequence(out.paragraphs[0]), "混凝土强度¹应满足设计要求。")
         self.assertEqual(_sequence(out.paragraphs[1]), "La résistance du béton doit satisfaire aux exigences.")
+
+    def test_formula_stays_in_the_sentence(self) -> None:
+        """反馈 #18：段落里的 Word 公式读不进纯文本，整段写法的译文里公式没了（双语）或挪到
+        段尾（仅译文）。现在公式作为占位符随原文发出，译文里放回原处，双语的译文段也有一份。"""
+        source, marked = "混凝土强度按计算。", "混凝土强度按<x1/>计算。"
+        marked_fr = "La résistance du béton est calculée selon <x1/>."
+        for translation_only, expected in ((True, ["La résistance du béton est calculée selon {f=N/A}."]),
+                                           (False, ["混凝土强度按{f=N/A}计算。",
+                                                    "La résistance du béton est calculée selon {f=N/A}."])):
+            with self.subTest(translation_only=translation_only):
+                doc = Document()
+                _formula_paragraph(doc)
+                out, plain = self._write_case(doc, source, marked, marked_fr, translation_only=translation_only)
+                self.assertEqual(plain, "La résistance du béton est calculée selon .")
+                self.assertEqual([_with_math(item) for item in out.paragraphs], expected)
+
+    def test_formula_is_kept_when_the_placeholder_is_lost(self) -> None:
+        """模型弄丢了占位符：按整段写法写回，公式仍在——双语的译文段把它接在句末，仅译文留在原段。"""
+        source = "混凝土强度按计算。"
+        for translation_only, expected in ((True, ["Résistance calculée.{f=N/A}"]),
+                                           (False, ["混凝土强度按{f=N/A}计算。", "Résistance calculée.{f=N/A}"])):
+            with self.subTest(translation_only=translation_only):
+                doc = Document()
+                _formula_paragraph(doc)
+                out, _ = self._write(doc, {source: "Résistance calculée."},
+                                     {source: ("混凝土强度按<x1/>计算。", "Résistance calculée.")},
+                                     translation_only=translation_only)
+                self.assertEqual([_with_math(item) for item in out.paragraphs], expected)
+
+    def test_formula_in_a_table_cell_and_display_formula_at_the_end(self) -> None:
+        doc = Document()
+        cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+        cell.paragraphs[0].add_run("面积")
+        _add_math(cell.paragraphs[0], "A=πr^2")
+        cell.paragraphs[0].add_run("取整")
+        doc.add_paragraph("式中：")
+        _add_math(doc.add_paragraph(), "σ=M/W", display=True)
+        source, marked = "面积取整", "面积<x1/>取整"
+        out, _ = self._write_case(doc, source, marked, "Surface <x1/> arrondie", translation_only=False)
+        self.assertEqual([_with_math(item) for item in out.tables[0].cell(0, 0).paragraphs],
+                         ["面积{A=πr^2}取整", "Surface {A=πr^2} arrondie"])
+        # 文末单独一行的公式不是空段，不能被收尾时删掉
+        self.assertEqual(_with_math(out.paragraphs[-1]), "{σ=M/W}")
 
     def test_stored_translation_with_a_space_for_the_tab_still_keeps_tab_and_bold(self) -> None:
         """本机实测：双语跑过一次后记忆库存的是「1.2 Portée…」（制表符成了空格），再跑仅译文

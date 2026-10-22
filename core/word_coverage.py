@@ -43,6 +43,8 @@ from core.word_document import (
     _apply_story_translations,
     _cell_has_review_highlight,
     _cell_source_text,
+    _cell_text_paragraphs,
+    _copy_math_to_translation,
     _ensure_owner_writable,
     _insert_translation_paragraph_after,
     _is_toc_or_field_paragraph,
@@ -216,6 +218,7 @@ def write_untranslated_docx(
                 translation_paragraph = _insert_translation_paragraph_after(
                     paragraph, translation, target_lang=target_lang
                 )
+                _copy_math_to_translation([paragraph], translation_paragraph)
             paragraph_insertions += 1
             if review_mark:
                 # 原文段和刚插进去的译文段都涂上：用户在文档里翻到哪一边都看得见。
@@ -250,7 +253,9 @@ def write_untranslated_docx(
             if output_translation_only:
                 _replace_cell_text(cell, translation, target_lang=target_lang)
             else:
-                _append_translation_to_cell(cell, translation, target_lang=target_lang)
+                sources = _cell_text_paragraphs(cell)
+                translation_paragraph = _append_translation_to_cell(cell, translation, target_lang=target_lang)
+                _copy_math_to_translation(sources, translation_paragraph)
             loosen_row_height(cell)
             table_insertions += 1
             if review_mark:
