@@ -38,6 +38,7 @@ from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
 from core.word_inline_marks import (
+    MATH_TAGS,
     build_run_nodes,
     cell_marks,
     iter_new_runs,
@@ -1275,6 +1276,8 @@ def write_bilingual_docx(
             )
             if pieces:
                 _rewrite_translation_paragraph(translation_paragraph, pieces, marks, target_lang=target_lang)
+            else:
+                _copy_math_to_translation([paragraph], translation_paragraph)
             if review_mark:
                 _apply_paragraph_review_mark(
                     translation_paragraph,
@@ -1334,11 +1337,13 @@ def write_bilingual_docx(
                         }
                     )
         else:
-            _append_translation_to_cell(
+            sources = _cell_text_paragraphs(cell)
+            translation_paragraph = _append_translation_to_cell(
                 cell,
                 resolved.text,
                 target_lang=target_lang,
             )
+            _copy_math_to_translation(sources, translation_paragraph)
         loosen_row_height(cell)
         if review_mark:
             if _apply_cell_review_mark(
@@ -2887,6 +2892,34 @@ def _append_translation_to_cell(
     return new_para
 
 
+def _copy_math_to_translation(sources: list[Paragraph], translation: Paragraph) -> None:
+    """双语版式按整段写法新插的译文段：原文段里的公式复制一份过来。
+
+    公式（OMML）和 w:r 平级，``paragraph.text`` 读不到，整段写法的译文里就没有它；不补的话
+    译文段里的公式整个不见了（反馈 #18）。能按占位符放回句中原处的走 word_inline_marks，
+    这里是放不回时的保底：排在第一段文字之前的放在译文前面，其余接在译文后面。"""
+    lead: list = []
+    trail: list = []
+    for index, source in enumerate(sources):
+        seen_text = index > 0
+        for child in source._p:
+            if child.tag in MATH_TAGS:
+                (trail if seen_text else lead).append(deepcopy(child))
+            elif not seen_text and any((node.text or "").strip() for node in child.iter(qn("w:t"))):
+                seen_text = True
+    if not lead and not trail:
+        return
+    element = translation._p
+    first_run = next((child for child in element if child.tag in (qn("w:r"), qn("w:hyperlink"))), None)
+    for node in lead:
+        if first_run is not None:
+            first_run.addprevious(node)
+        else:
+            element.append(node)
+    for node in trail:
+        element.append(node)
+
+
 def _layout_tags_to_keep(text: str) -> frozenset:
     """这段译文里没有的版式节点才需要原样留住。
 
@@ -3313,7 +3346,8 @@ def _is_removable_empty_paragraph_element(paragraph_element) -> bool:
     ):
         if paragraph_element.findall(f".//{qn(f'w:{tag}')}"):
             return False
-    return True
+    # 公式（OMML）里的文字是 m:t 不是 w:t，文末单独一行的公式不能当空段删掉
+    return next(paragraph_element.iter(*MATH_TAGS), None) is None
 
 
 def _last_non_empty_paragraph(paragraphs: list[Paragraph]) -> Paragraph | None:
