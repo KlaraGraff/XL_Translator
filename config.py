@@ -2,6 +2,7 @@
 全局常量（不可变默认值）。
 用户可修改的配置在 settings.py 中管理。
 """
+from dataclasses import is_dataclass, replace
 from urllib.parse import urlsplit, urlunsplit
 
 from app_meta import APP_NAME as APP_NAME, APP_VERSION as APP_VERSION
@@ -74,15 +75,52 @@ CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "xiaomi": XIAOMI_BASE_URL,
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
-# 选中服务商时 Base URL 旁的说明（「?」提示），只给地址有讲究的服务商。
+# 选中服务商时 Base URL 旁的说明（「?」提示）和下拉里的常用地址，只给地址有讲究的
+# 服务商。小米三个 Token Plan 集群见官方订阅说明（中国、新加坡、欧洲）。
 CLOUD_PROVIDER_BASE_URL_HINTS = {
     "xiaomi": (
-        # 网址放在句末、后面不跟标点：提示框里标点会被单独折到下一行。
-        "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址，"
-        "其他地区的套餐请填写套餐页提供的地址。使用按量付费 API 时，请将地址改为："
-        "https://api.xiaomimimo.com/v1"
+        "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址；"
+        "其他地区的套餐和按量付费 API 可从下拉列表中选择对应地址。"
     ),
 }
+CLOUD_PROVIDER_BASE_URL_OPTIONS = {
+    "xiaomi": [
+        {"label": "Token Plan（国内）", "url": XIAOMI_BASE_URL},
+        {"label": "Token Plan（新加坡）", "url": "https://token-plan-sgp.xiaomimimo.com/v1"},
+        {"label": "Token Plan（欧洲）", "url": "https://token-plan-ams.xiaomimimo.com/v1"},
+        {"label": "按量付费 API", "url": XIAOMI_PAY_AS_YOU_GO_BASE_URL},
+    ],
+}
+# 测试连接、获取模型列表失败时追加的一句：小米的套餐地址和按量付费地址密钥不通用，
+# 地址选错是最常见的原因，通用的报错看不出来。
+CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS = {
+    "xiaomi": (
+        "请检查 Base URL：此处默认填写 Token Plan 国内地址；如使用其他地区的 Token Plan 套餐"
+        "或按量付费 API，请从 Base URL 的下拉列表中选择对应地址。"
+    ),
+}
+# 只给「没连上 / 被拒」这类可能是地址选错的失败追加：密钥被拒（credential）、接口不存在
+# （route / request）、连不上（request_failed / unreachable / connect_timeout）、协议都试
+# 完了（budget_exhausted），以及审核测试的笼统失败（failed）。表单没填全、模型答非所问、
+# 限流超时都与地址无关，不追加。
+_ADDRESS_FAILURE_STATUSES = {
+    "credential", "route", "request", "request_failed", "unreachable",
+    "connect_timeout", "budget_exhausted", "failed",
+}
+
+
+def with_connection_failure_hint(provider: str, result):
+    """测试连接 / 获取模型列表失败时，按服务商在原因后面补一句排查建议。"""
+    hint = CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS.get(str(provider or "").strip())
+    if not hint or not is_dataclass(result) or result.ok:
+        return result
+    if getattr(result, "status", "") not in _ADDRESS_FAILURE_STATUSES or hint in result.message:
+        return result
+    # 接成同一段话（界面按句号逐句翻译）；原因没以句号结尾时补一个。
+    message = result.message.rstrip()
+    if message and not message.endswith(("。", "！", "？")):
+        message += "。"
+    return replace(result, message=f"{message}{hint}")
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
 
 # 各家创建 API 密钥的控制台页面。设置页选中服务商时给一个「获取 ↗ API 密钥」链接。

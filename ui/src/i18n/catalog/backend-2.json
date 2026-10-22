@@ -611,9 +611,29 @@
     "en": "Xiaomi MiMo",
     "fr": "Xiaomi MiMo"
   },
-  "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址，其他地区的套餐请填写套餐页提供的地址。使用按量付费 API 时，请将地址改为：https://api.xiaomimimo.com/v1": {
-    "en": "Token Plan subscriptions and the pay-as-you-go API use different addresses. The Token Plan China address is filled in by default; for a plan in another region, enter the address shown on your plan page. For the pay-as-you-go API, change the address to: https://api.xiaomimimo.com/v1",
-    "fr": "Les abonnements Token Plan et l'API à l'usage utilisent des adresses différentes. L'adresse Token Plan Chine est renseignée par défaut ; pour un abonnement dans une autre région, saisissez l'adresse indiquée sur la page de votre abonnement. Pour l'API à l'usage, remplacez l'adresse par : https://api.xiaomimimo.com/v1"
+    "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址；其他地区的套餐和按量付费 API 可从下拉列表中选择对应地址。": {
+    "en": "Token Plan subscriptions and the pay-as-you-go API use different addresses. The Token Plan China address is filled in by default; for a plan in another region or the pay-as-you-go API, choose the matching address from the dropdown list.",
+    "fr": "Les abonnements Token Plan et l'API à l'usage utilisent des adresses différentes. L'adresse Token Plan Chine est renseignée par défaut ; pour un abonnement dans une autre région ou l'API à l'usage, choisissez l'adresse correspondante dans la liste déroulante."
+  },
+  "请检查 Base URL：此处默认填写 Token Plan 国内地址；如使用其他地区的 Token Plan 套餐或按量付费 API，请从 Base URL 的下拉列表中选择对应地址。": {
+    "en": "Check the Base URL: the Token Plan China address is filled in by default. If you use a Token Plan in another region or the pay-as-you-go API, choose the matching address from the Base URL dropdown list.",
+    "fr": "Vérifiez la Base URL : l'adresse Token Plan Chine est renseignée par défaut. Si vous utilisez un abonnement Token Plan dans une autre région ou l'API à l'usage, choisissez l'adresse correspondante dans la liste déroulante de la Base URL."
+  },
+  "Token Plan（国内）": {
+    "en": "Token Plan (China)",
+    "fr": "Token Plan (Chine)"
+  },
+  "Token Plan（新加坡）": {
+    "en": "Token Plan (Singapore)",
+    "fr": "Token Plan (Singapour)"
+  },
+  "Token Plan（欧洲）": {
+    "en": "Token Plan (Europe)",
+    "fr": "Token Plan (Europe)"
+  },
+  "按量付费 API": {
+    "en": "Pay-as-you-go API",
+    "fr": "API à l'usage"
   },
   "资料管理场景": {
     "en": "Document management",

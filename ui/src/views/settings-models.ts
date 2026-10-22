@@ -32,6 +32,7 @@ import {
   applyProviderDerivedState,
   attachModelNameDropdown,
   baseUrlHintFor,
+  baseUrlOptionsFor,
   client,
   CLOUD_PROVIDERS,
   connRow,
@@ -424,12 +425,50 @@ export function renderModelsPage(host: HTMLElement): void {
       baseUrlLabel.append(baseUrlHint);
     }
   };
+  // 同一类服务商的常用地址（小米：各地区 Token Plan 与按量付费 API）做成下拉，点箭头
+  // 选；输入框照样能手填。没有常用地址的服务商不出箭头，外观和以前一样。
+  const baseUrlCombo = document.createElement("div");
+  baseUrlCombo.className = "combo";
+  baseUrlField.input.parentElement?.insertBefore(baseUrlCombo, baseUrlField.input);
+  baseUrlCombo.append(baseUrlField.input);
+  const baseUrlCaret = document.createElement("button");
+  baseUrlCaret.type = "button";
+  baseUrlCaret.className = "combo-caret";
+  baseUrlCaret.setAttribute("aria-label", t("展开常用地址"));
+  baseUrlCaret.title = t("从常用地址中选择");
+  baseUrlCaret.append(icon("chev", { size: "sm" }));
+  baseUrlCombo.append(baseUrlCaret);
+  let baseUrlOptionsProvider = formProvider;
+  baseUrlCaret.addEventListener("click", () => {
+    const options = baseUrlOptionsFor(baseUrlOptionsProvider);
+    if (!options.length || baseUrlField.input.disabled) return;
+    openMenu(
+      baseUrlCombo,
+      options.map((option) => ({
+        label: option.label,
+        description: option.url,
+        onSelect: () => {
+          baseUrlField.input.value = option.url;
+          baseUrlField.input.dispatchEvent(new Event("input", { bubbles: true }));
+          baseUrlField.input.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+      })),
+      { width: baseUrlCombo.getBoundingClientRect().width, maxHeight: 280 },
+    );
+  });
+  const paintBaseUrlOptions = (provider: string) => {
+    baseUrlOptionsProvider = provider;
+    baseUrlCaret.hidden = !(cloudMode && !following && baseUrlOptionsFor(provider).length);
+    baseUrlCombo.classList.toggle("no-caret", baseUrlCaret.hidden);
+  };
   paintBaseUrlHint(formProvider);
+  paintBaseUrlOptions(formProvider);
   // 只改 Base URL 的可填性和占位符，不动它的值——草稿回填时要按服务商重放这段联动，
   // 但绝不能把用户刚敲的 Base URL 冲掉。
   setApplyProviderDerivedState((value) => {
     if (!cloudMode) return;
     paintBaseUrlHint(value);
+    paintBaseUrlOptions(value);
     if (providerBaseUrlDisabled.has(value)) {
       baseUrlField.input.disabled = true;
       baseUrlField.input.placeholder = disabledBaseUrlPlaceholder();

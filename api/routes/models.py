@@ -16,6 +16,7 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     ModelRoleConfigError,
     add_role_connection,
+    amend_model_role_availability_message,
     allowed_source_roles,
     list_role_connections,
     model_config_signature,
@@ -38,15 +39,17 @@ from core.model_throughput import (
     set_model_throughput,
     throughput_profile_keys,
 )
-from core.pdf_review import check_pdf_review_connectivity
+from core.pdf_review import REVIEW_MODEL_ADVICE, check_pdf_review_connectivity
 from config import (
     CLOUD_PROVIDER_BASE_URL_DEFAULTS,
     CLOUD_API_KEY_PAGES_BY_HOST,
     CLOUD_PROVIDER_API_KEY_PAGES,
     CLOUD_PROVIDER_BASE_URL_DISABLED,
     CLOUD_PROVIDER_BASE_URL_HINTS,
+    CLOUD_PROVIDER_BASE_URL_OPTIONS,
     DISABLED_BASE_URL_PLACEHOLDER,
     is_valid_concurrency_unlock_code,
+    with_connection_failure_hint,
 )
 from settings import (
     AppSettings,
@@ -95,7 +98,9 @@ def register(app: FastAPI) -> None:
         ``api_key_pages`` (by provider) and ``api_key_pages_by_host`` (by Base
         URL host, checked first) feed the form's link to each provider's key
         console.  ``base_url_hints`` explains the Base URL for providers whose
-        address depends on the plan (Chinese source, translated by the UI).
+        address depends on the plan (Chinese source, translated by the UI);
+        ``base_url_options`` lists that provider's common addresses for the
+        Base URL dropdown.
         No model name is prefilled: presets go stale too quickly.
         """
         return {
@@ -105,6 +110,10 @@ def register(app: FastAPI) -> None:
             "api_key_pages": dict(CLOUD_PROVIDER_API_KEY_PAGES),
             "api_key_pages_by_host": dict(CLOUD_API_KEY_PAGES_BY_HOST),
             "base_url_hints": dict(CLOUD_PROVIDER_BASE_URL_HINTS),
+            "base_url_options": {
+                provider: [dict(option) for option in options]
+                for provider, options in CLOUD_PROVIDER_BASE_URL_OPTIONS.items()
+            },
         }
 
     @app.get("/api/models/roles")
@@ -369,8 +378,19 @@ def register(app: FastAPI) -> None:
                 )
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
+        # 审核测试已判定是模型不能看图时，原因写的是换模型，不再引去查地址。
+        hinted = (
+            result
+            if role == ROLE_PDF_REVIEW and REVIEW_MODEL_ADVICE in str(getattr(result, "message", ""))
+            else with_connection_failure_hint(config.provider, result)
+        )
+        if hinted is not result:
+            # 连接卡片上的「不可用」原因也带上这句，不只是一闪而过的提示条。
+            amend_model_role_availability_message(
+                settings, role, hinted.message, connection_id=connection_id,
+            )
         save_settings(settings)
-        return _json_safe(result)
+        return _json_safe(hinted)
 
     @app.post("/api/models/catalog/{role}")
     def fetch_saved_role_models(
@@ -400,7 +420,7 @@ def register(app: FastAPI) -> None:
             base_url=config.base_url,
             capability=config.capability,
         )
-        return _json_safe(result)
+        return _json_safe(with_connection_failure_hint(config.provider, result))
 
     @app.post("/api/models/fetch")
     def fetch_models(request: ModelFetchRequest) -> dict[str, Any]:

@@ -232,6 +232,8 @@ table.review-tbl { table-layout: fixed; }
  * 一套东西，用户也没法主动把它调出来。 */
 .combo { position: relative; }
 .combo input[type="text"] { padding-right: 32px; }
+.combo.no-caret input[type="text"] { padding-right: 10px; }
+.combo-caret[hidden] { display: none; }
 .combo-caret {
   position: absolute; right: 4px; top: 0; height: 32px; width: 26px;
   display: flex; align-items: center; justify-content: center;

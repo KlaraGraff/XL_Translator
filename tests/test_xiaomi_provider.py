@@ -21,12 +21,15 @@ from config import (
     CLOUD_ENGINES,
     CLOUD_PROVIDER_API_KEY_PAGES,
     CLOUD_PROVIDER_BASE_URL_HINTS,
+    CLOUD_PROVIDER_BASE_URL_OPTIONS,
+    CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS,
     XIAOMI_BASE_URL,
     XIAOMI_PAY_AS_YOU_GO_BASE_URL,
     cloud_provider_base_url_default,
     normalize_cloud_base_url,
+    with_connection_failure_hint,
 )
-from core.connectivity_check import OPENAI_COMPATIBLE_PROVIDERS
+from core.connectivity_check import OPENAI_COMPATIBLE_PROVIDERS, ConnectivityResult
 from core.engine_dispatcher import build_engine
 from core.model_catalog import (
     OPENAI_COMPATIBLE_MODEL_PROVIDERS,
@@ -44,7 +47,8 @@ from core.model_roles import (
 )
 from core.pdf_review import check_pdf_review_connectivity
 from engines.openai_engine import OpenAIEngine
-from settings import AppSettings, _api_key_env_names
+from settings import AppSettings, _api_key_env_names, load_settings, save_key, save_settings
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 CHAT_MODELS = ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed"]
 SPEECH_MODELS = [
@@ -104,11 +108,38 @@ class XiaomiPresetTests(unittest.TestCase):
             payload["api_key_pages_by_host"]["api.xiaomimimo.com"],
             "https://platform.xiaomimimo.com/#/console/api-keys",
         )
-        # Base URL 旁的说明写明两种地址不同，并给出按量付费地址。
-        hint = payload["base_url_hints"]["xiaomi"]
+        # Base URL 旁的说明写明两种地址不同；下拉里列出三个 Token Plan 集群和按量付费地址，
+        # 第一项就是默认地址。
         self.assertEqual(payload["base_url_hints"], CLOUD_PROVIDER_BASE_URL_HINTS)
-        self.assertIn("Token Plan", hint)
-        self.assertIn(XIAOMI_PAY_AS_YOU_GO_BASE_URL, hint)
+        self.assertIn("Token Plan", payload["base_url_hints"]["xiaomi"])
+        options = payload["base_url_options"]["xiaomi"]
+        self.assertEqual(options, CLOUD_PROVIDER_BASE_URL_OPTIONS["xiaomi"])
+        self.assertEqual(options[0]["url"], XIAOMI_BASE_URL)
+        self.assertEqual(
+            [option["url"] for option in options],
+            [
+                "https://token-plan-cn.xiaomimimo.com/v1",
+                "https://token-plan-sgp.xiaomimimo.com/v1",
+                "https://token-plan-ams.xiaomimimo.com/v1",
+                XIAOMI_PAY_AS_YOU_GO_BASE_URL,
+            ],
+        )
+        self.assertNotIn("deepseek", payload["base_url_options"])
+
+    def test_failure_hint_only_for_real_failures(self) -> None:
+        hint = CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS["xiaomi"]
+        failed = ConnectivityResult(ok=False, status="request_failed", message="连接测试失败：HTTP 401")
+        self.assertEqual(
+            with_connection_failure_hint("xiaomi", failed).message,
+            f"连接测试失败：HTTP 401。{hint}",
+        )
+        # 表单没填全、测试通过、别家服务商：原样返回。
+        for provider, result in (
+            ("xiaomi", ConnectivityResult(ok=False, status="missing_api_key", message="请先填写 API 密钥。")),
+            ("xiaomi", ConnectivityResult(ok=True, status="ok", message="测试通过。")),
+            ("deepseek", failed),
+        ):
+            self.assertIs(with_connection_failure_hint(provider, result), result)
 
 
 class _FakeMiMo(BaseHTTPRequestHandler):
@@ -155,7 +186,11 @@ class _FakeMiMo(BaseHTTPRequestHandler):
         if payload.get("model") not in CHAT_MODELS:
             self._send_json(400, {"error": {"message": "Not supported model"}})
             return
-        answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
+        content = payload["messages"][-1]["content"]
+        if isinstance(content, list):  # 审核：带图
+            answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
+        else:  # 文本测试连接要求只回 OK；mimo-v2.6-pro 在这里故意答非所问
+            answer = "OK" if payload["model"] != "mimo-v2.6-pro" else "好的"
         self._send_json(200, {"choices": [{"finish_reason": "stop", "message": {
             "role": "assistant", "reasoning_content": "…", "content": answer,
         }}]})
@@ -208,6 +243,67 @@ class XiaomiOverHttpTests(unittest.TestCase):
         self.assertEqual([call["path"] for call in _FakeMiMo.calls], ["/v1/chat/completions"])
         content = _FakeMiMo.calls[0]["json"]["messages"][-1]["content"]
         self.assertEqual([part["type"] for part in content], ["text", "image_url", "image_url"])
+
+
+
+class XiaomiFailureHintRouteTests(IsolatedAppDataTestCase):
+    """测试连接、获取模型列表失败时，小米额外提示检查 Base URL（套餐地址和按量付费地址不通用）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeMiMo)
+        cls.base_url = f"http://127.0.0.1:{cls.server.server_address[1]}/v1"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self) -> None:
+        super().setUp()
+        clear_model_catalog_cache()
+        self._save_settings("mimo-v2.6-flash")
+        self.client = TestClient(create_app())
+        self.hint = CLOUD_PROVIDER_CONNECTION_FAILURE_HINTS["xiaomi"]
+
+    def _save_settings(self, model: str) -> None:
+        settings = AppSettings()
+        settings.engine.mode = "cloud"
+        settings.engine.cloud_provider = "xiaomi"
+        settings.engine.cloud_model = model
+        settings.engine.cloud_base_url = self.base_url
+        save_settings(AppSettings(**settings.model_dump()))
+
+    def test_wrong_key_points_at_the_base_url(self) -> None:
+        save_key("xiaomi", "sk-wrong", self.base_url)
+        result = self.client.post("/api/models/connectivity/translation", json={}).json()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["message"].endswith(self.hint), result["message"])
+        # 连接卡片上的「不可用」原因也带着这句。
+        self.assertIn(self.hint, load_settings().engine.availability_message)
+
+        catalog = self.client.post("/api/models/catalog/translation", json={"refresh": True}).json()
+        self.assertFalse(catalog["ok"])
+        self.assertTrue(catalog["message"].endswith(self.hint), catalog["message"])
+
+    def test_passing_test_and_missing_key_carry_no_hint(self) -> None:
+        missing = self.client.post("/api/models/connectivity/translation", json={}).json()
+        self.assertFalse(missing["ok"])
+        self.assertNotIn(self.hint, missing["message"])
+
+        save_key("xiaomi", "sk-test", self.base_url)
+        passed = self.client.post("/api/models/connectivity/translation", json={}).json()
+        self.assertTrue(passed["ok"], passed["message"])
+        self.assertNotIn(self.hint, passed["message"])
+
+    def test_connected_but_wrong_answer_is_not_blamed_on_the_address(self) -> None:
+        self._save_settings("mimo-v2.6-pro")
+        save_key("xiaomi", "sk-test", self.base_url)
+        result = self.client.post("/api/models/connectivity/translation", json={}).json()
+        self.assertFalse(result["ok"])
+        self.assertNotIn(self.hint, result["message"])
 
 
 if __name__ == "__main__":

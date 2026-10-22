@@ -42,5 +42,13 @@
   "PDF 与图片翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。": {
     "en": "PDF and image translation requires an image model; text models are not suitable. In our tests, ChatGPT's image-2.5-flare currently performs best. Use this model, or switch to Convert to Word.",
     "fr": "La traduction des PDF et des images nécessite un modèle d'image ; les modèles de texte ne conviennent pas. D'après nos essais, image-2.5-flare de ChatGPT donne actuellement les meilleurs résultats. Utilisez ce modèle, ou passez à Conversion en Word."
+  },
+  "展开常用地址": {
+    "en": "Show common addresses",
+    "fr": "Afficher les adresses courantes"
+  },
+  "从常用地址中选择": {
+    "en": "Choose from common addresses",
+    "fr": "Choisir parmi les adresses courantes"
   }
 }
