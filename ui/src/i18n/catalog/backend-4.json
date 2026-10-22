@@ -851,10 +851,6 @@
     "en": "image review",
     "fr": "la vérification d'images"
   },
-  "{0}能识别图片，但不能生成图片。{1}需要能生成图片的模型，请在设置中更换连接；PDF 也可改为转成 Word 翻译，由文档翻译模型翻译。": {
-    "en": "{0} can read images but cannot generate them. The {1} needs a model that can generate images. Change the connection in Settings, or switch PDFs to Word conversion so the document translation model translates them.",
-    "fr": "{0} peut lire des images, mais pas en générer. {1} : un modèle capable de générer des images est nécessaire. Changez la connexion dans les paramètres, ou passez les PDF à la conversion Word pour qu'ils soient traduits par le modèle de traduction de documents."
-  },
   "{0}不支持{1}，请在设置中为{2}更换支持{3}的连接。": {
     "en": "{0} does not support {1}. In Settings, give the {2} a connection that supports {3}.",
     "fr": "{0} ne prend pas en charge {1}. Dans les paramètres, attribuez au {2} une connexion qui prend en charge {3}."

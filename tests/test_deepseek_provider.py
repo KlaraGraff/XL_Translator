@@ -36,7 +36,6 @@ from core.model_roles import (
     SOURCE_INDEPENDENT,
     provider_supports_capability,
     role_capability,
-    unsupported_capability_message,
 )
 from core.pdf_review import REVIEW_MODEL_ADVICE, check_pdf_review_connectivity
 from engines.openai_engine import OpenAIEngine
@@ -67,16 +66,6 @@ class DeepSeekProviderTests(unittest.TestCase):
         )
         self.assertFalse(
             provider_supports_capability("deepseek", role_capability(ROLE_IMAGE))
-        )
-
-    def test_image_role_explains_it_reads_images_but_cannot_generate_them(self) -> None:
-        message = unsupported_capability_message("PDF 与图片翻译模型", "deepseek", "image")
-        self.assertTrue(message.startswith("DeepSeek能识别图片，但不能生成图片。"), message)
-        self.assertIn("转成 Word 翻译", message)
-        # 两样都不会的服务商仍是原来那句。
-        self.assertEqual(
-            unsupported_capability_message("PDF 与图片翻译模型", "zhipu", "image"),
-            "智谱 GLM不支持生成图片，请在设置中为PDF 与图片翻译模型更换支持生成图片的连接。",
         )
 
     def test_supports_the_two_buttons_next_to_the_provider_picker(self) -> None:
