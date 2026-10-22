@@ -9,7 +9,11 @@ covered here alongside the provider registration itself.
 
 from __future__ import annotations
 
+import json
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -27,10 +31,13 @@ from core.engine_dispatcher import build_engine
 from core.model_catalog import OPENAI_COMPATIBLE_MODEL_PROVIDERS
 from core.model_roles import (
     ROLE_IMAGE,
+    ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    SOURCE_INDEPENDENT,
     provider_supports_capability,
     role_capability,
 )
+from core.pdf_review import REVIEW_MODEL_ADVICE, check_pdf_review_connectivity
 from engines.openai_engine import OpenAIEngine
 from settings import AppSettings, _api_key_env_names
 
@@ -46,9 +53,16 @@ class DeepSeekProviderTests(unittest.TestCase):
     def test_blank_base_url_falls_back_to_the_preset(self) -> None:
         self.assertEqual(normalize_cloud_base_url("deepseek", ""), DEEPSEEK_BASE_URL)
 
-    def test_satisfies_text_capability_but_not_image(self) -> None:
+    def test_reads_images_but_cannot_generate_them(self) -> None:
+        """DeepSeek 的 API 自 2026-08-21 起接受图片输入（deepseek-flash），但不出图。
+
+        以前审核用途也把它挡在门外，用户选 DeepSeek 存都存不下（反馈 #16）。
+        """
         self.assertTrue(
             provider_supports_capability("deepseek", role_capability(ROLE_TRANSLATION))
+        )
+        self.assertTrue(
+            provider_supports_capability("deepseek", role_capability(ROLE_PDF_REVIEW))
         )
         self.assertFalse(
             provider_supports_capability("deepseek", role_capability(ROLE_IMAGE))
@@ -79,6 +93,82 @@ class DeepSeekProviderTests(unittest.TestCase):
         engine = build_engine(settings)
 
         self.assertIsInstance(engine, OpenAIEngine)
+
+
+VISION_MODELS = {"deepseek-flash"}
+
+
+class _FakeDeepSeek(BaseHTTPRequestHandler):
+    """只有 /chat/completions 的 DeepSeek：deepseek-flash 认图，deepseek-v4-pro 不认。"""
+
+    calls: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        return None
+
+    def _send_json(self, status: int, payload) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server API
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        self.calls.append({"path": self.path, "json": payload})
+        if self.path != "/v1/chat/completions":
+            self._send_json(404, {"error": {"message": "Not Found"}})
+            return
+        content = payload["messages"][-1]["content"]
+        has_image = isinstance(content, list) and any(part.get("type") == "image_url" for part in content)
+        if has_image and payload.get("model") not in VISION_MODELS:
+            self._send_json(400, {"error": {"message": "image input is not supported by this model", "type": "invalid_request_error"}})
+            return
+        answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
+        self._send_json(200, {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": answer}}]})
+
+
+class DeepSeekReviewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeDeepSeek)
+        cls.base_url = f"http://127.0.0.1:{cls.server.server_address[1]}/v1"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self) -> None:
+        _FakeDeepSeek.calls = []
+
+    def _settings(self, model: str) -> AppSettings:
+        settings = AppSettings()
+        role = settings.pdf_review_model_role
+        role.source_role = SOURCE_INDEPENDENT
+        role.cloud_provider = "deepseek"
+        role.cloud_model = model
+        role.cloud_base_url = self.base_url
+        return settings
+
+    def test_review_test_passes_with_the_vision_model_over_chat(self) -> None:
+        with patch("core.model_roles.get_key", return_value="sk-test"):
+            result = check_pdf_review_connectivity(self._settings("deepseek-flash"), max_attempts=1)
+        self.assertTrue(result.ok, result.message)
+        # 直接走 chat，不先去试 /v1/responses。
+        self.assertEqual([call["path"] for call in _FakeDeepSeek.calls], ["/v1/chat/completions"])
+        content = _FakeDeepSeek.calls[0]["json"]["messages"][-1]["content"]
+        self.assertEqual([part["type"] for part in content], ["text", "image_url", "image_url"])
+
+    def test_text_only_model_is_told_to_pick_one_that_reads_images(self) -> None:
+        with patch("core.model_roles.get_key", return_value="sk-test"):
+            result = check_pdf_review_connectivity(self._settings("deepseek-v4-pro"), max_attempts=1)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, f"PDF 与图片审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
 
 
 class ProviderDefaultsRouteTests(unittest.TestCase):

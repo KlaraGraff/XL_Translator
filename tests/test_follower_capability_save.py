@@ -1,7 +1,7 @@
 """换文档翻译的服务商时，跟随它的用途变得用不了，不能连带把这次保存拒掉。
 
-新装状态下「PDF 与图片审核模型」默认跟随文档翻译模型。以前把文档翻译换成 DeepSeek、
-阿里百炼（不能看图）或本地模型，保存时会连带校验审核角色，校验不过就整单 422，
+新装状态下「PDF 与图片审核模型」默认跟随文档翻译模型。以前把文档翻译换成智谱、
+阿里百炼（本应用里不能看图）或本地模型，保存时会连带校验审核角色，校验不过就整单 422，
 文档翻译怎么也存不进去。现在文档翻译照常保存，审核角色在面板上标为不可用并写明原因；
 用到它的 PDF 任务开始前给出同一句原因。
 """
@@ -67,7 +67,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
 
     def test_text_only_provider_saves_and_marks_review_unavailable(self) -> None:
         for provider, model, name in (
-            ("deepseek", "deepseek-chat", "DeepSeek"),
+            ("zhipu", "glm-4-flash", "智谱 GLM"),
             ("dashscope", "qwen-plus", "阿里百炼 (通义)"),
         ):
             with self.subTest(provider=provider):
@@ -107,16 +107,16 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         self.assertIn("跟随来源不可用", roles["pdf_review"]["config_problem"])
 
     def test_other_saves_keep_working_while_review_is_unavailable(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         response = self.client.put("/api/settings", json={"theme": "dark"})
         self.assertEqual(response.status_code, 200, response.text)
-        self._switch_translation_to("deepseek", "deepseek-reasoner")
-        self.assertEqual(load_settings().engine.cloud_model, "deepseek-reasoner")
+        self._switch_translation_to("zhipu", "glm-4-plus")
+        self.assertEqual(load_settings().engine.cloud_model, "glm-4-plus")
         throughput = self.client.get("/api/models/throughput/pdf_review")
         self.assertEqual(throughput.status_code, 200, throughput.text)
 
     def test_review_row_gets_its_own_way_out(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         review_row = self._roles()["pdf_review"]["connections"][0]
         url = f"/api/models/roles/pdf_review/connections/{review_row['id']}"
 
@@ -126,7 +126,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
             json={"connection_mode": "follow", "source_role": "translation", "model": "x"},
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("DeepSeek不支持看图审核", response.json()["detail"])
+        self.assertIn("智谱 GLM不支持看图审核", response.json()["detail"])
 
         # 改成独立的云端连接就恢复可用。
         response = self.client.put(
@@ -141,10 +141,17 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["config_problem"], "")
-        self.assertEqual(self._roles()["translation"]["provider"], "deepseek")
+        self.assertEqual(self._roles()["translation"]["provider"], "zhipu")
+
+    def test_deepseek_translation_keeps_the_following_review_usable(self) -> None:
+        # DeepSeek 的 API 已能读图片（deepseek-flash），跟随它的审核用途不再标为不可用（反馈 #16）。
+        self._switch_translation_to("deepseek", "deepseek-flash")
+        review = self._roles()["pdf_review"]
+        self.assertEqual(review["config_problem"], "")
+        self.assertEqual(review["connections"][0]["connection_mode"], "follow")
 
     def test_switching_translation_back_clears_the_problem(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         self.assertTrue(self._roles()["pdf_review"]["config_problem"])
         self._switch_translation_to("custom_openai", "gpt-like")
         review = self._roles()["pdf_review"]
@@ -158,18 +165,18 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
             json={
                 "connection_mode": "cloud",
                 "source_role": "independent",
-                "provider": "deepseek",
-                "model": "deepseek-chat",
+                "provider": "zhipu",
+                "model": "glm-4-flash",
             },
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("DeepSeek不支持看图审核", response.json()["detail"])
+        self.assertIn("智谱 GLM不支持看图审核", response.json()["detail"])
 
     def test_deleting_a_connection_is_not_blocked_by_an_unavailable_follower(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         added = self.client.post(
             "/api/models/roles/translation/connections",
-            json={"label": "备用", "provider": "deepseek", "model": "deepseek-chat"},
+            json={"label": "备用", "provider": "zhipu", "model": "glm-4-flash"},
         )
         self.assertEqual(added.status_code, 200, added.text)
         backup = added.json()["connections"][1]["id"]
@@ -190,7 +197,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         return settings
 
     def test_pdf_task_explains_the_unavailable_review_model(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         settings = self._pdf_ready_settings()
         settings.pdf.review_enabled = True
         with patch("core.model_roles.get_key", return_value="secret"), self.assertRaises(
@@ -200,10 +207,10 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
                 files=[object()], settings=settings, options=TaskOptions()
             )
         self.assertEqual(caught.exception.reason, REASON_PDF_REVIEW_MODEL_MISSING)
-        self.assertIn("DeepSeek不支持看图审核", str(caught.exception))
+        self.assertIn("智谱 GLM不支持看图审核", str(caught.exception))
 
     def test_pdf_task_without_review_is_not_affected(self) -> None:
-        self._switch_translation_to("deepseek", "deepseek-chat")
+        self._switch_translation_to("zhipu", "glm-4-flash")
         settings = self._pdf_ready_settings()
         settings.pdf.review_enabled = False
         save_settings(settings)
