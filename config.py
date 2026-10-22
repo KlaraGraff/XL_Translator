@@ -27,6 +27,7 @@ CLOUD_ENGINES = {
     "阿里百炼 (通义)":             "dashscope",
     "硅基流动":                    "siliconflow",
     "DeepSeek":                    "deepseek",
+    "小米 MiMo":                   "xiaomi",
 }
 
 IMAGE_GENERATION_MODEL_PROVIDERS = {
@@ -37,12 +38,13 @@ IMAGE_GENERATION_MODEL_PROVIDERS = {
 
 # 看图审核：能读图片输入的服务商。DeepSeek 自 2026-08-21 起 API 接受图片输入
 # （现为 deepseek-flash；deepseek-v4-pro 不支持，测试连接会如实报错）。它不能生成
-# 图片，所以不在上面的图像翻译名单里。
+# 图片，所以不在上面的图像翻译名单里。小米 MiMo 同理：mimo-v2.6 系列读图，不出图。
 VISION_TEXT_MODEL_PROVIDERS = {
     "OpenAI / ChatGPT": "openai",
     "自定义配置": "custom_openai",
     "硅基流动": "siliconflow",
     "DeepSeek": "deepseek",
+    "小米 MiMo": "xiaomi",
 }
 
 DEFAULT_CLOUD_PROVIDER = "custom_openai"
@@ -59,12 +61,16 @@ LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
 ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+# 小米 MiMo 按量付费只有这一个地址（国内）。Token Plan 套餐用户的 Base URL 按订阅地区
+# 不同（token-plan-cn / -sgp / -ams），自己改成套餐页给的地址即可。
+XIAOMI_BASE_URL = "https://api.xiaomimimo.com/v1"
 CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "openai": OPENAI_BASE_URL,
     "claude": CLAUDE_BASE_URL,
     "siliconflow": SILICONFLOW_BASE_URL,
     "lanyi": LANYI_BASE_URL,
     "deepseek": DEEPSEEK_BASE_URL,
+    "xiaomi": XIAOMI_BASE_URL,
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
@@ -78,10 +84,15 @@ CLOUD_PROVIDER_API_KEY_PAGES = {
     "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     "dashscope": "https://bailian.console.aliyun.com/?tab=model#/api-key",
     "siliconflow": "https://cloud.siliconflow.cn/account/ak",
+    "xiaomi": "https://platform.xiaomimimo.com/#/console/api-keys",
 }
 # 同一家国内站、国际站账号不通用：Base URL 落在国际站时，链接也指向国际站控制台。
 CLOUD_API_KEY_PAGES_BY_HOST = {
     "api.siliconflow.com": "https://cloud.siliconflow.com/account/ak",
+    # 小米 Token Plan 的密钥（tp- 开头）不在 API Keys 页，在套餐管理页。
+    "token-plan-cn.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
+    "token-plan-sgp.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
+    "token-plan-ams.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
 }
 LOCAL_MODEL_PROVIDERS = {
     "Ollama": "ollama",
