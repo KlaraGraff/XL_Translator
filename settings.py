@@ -350,7 +350,7 @@ class ModelConnection(TextProtocolSettings):
     def display_label(self) -> str:
         if self.label:
             # 跟随连接没起名时，界面会把「跟随 + 用途名」存成连接名；用途改名后旧名照新说法显示。
-            return _RENAMED_FOLLOW_LABELS.get(self.label, self.label)
+            return _renamed_follow_label(self.label)
         # 没起名的连接以前直接显示 Base URL 或内部标识（custom_openai），设置页
         # 和任务中心里读起来像代码。改成服务商名，有地址时补上主机名好区分多条连接。
         name = _PROVIDER_DISPLAY_NAMES.get(self.provider, self.provider)
@@ -371,11 +371,22 @@ class ModelUpgradeState(BaseModel):
 _SEEDED_CONNECTION_PREFIX = "seed-"
 
 # V10.3.2 起「文档翻译」改称「文本翻译」，「PDF 与图片翻译」改称「图像翻译」，「PDF 与图片审核」改称「图像翻译审核」。
-_RENAMED_FOLLOW_LABELS = {
-    "跟随文档翻译（Excel / Word / CAD）": "跟随文本翻译（Excel / Word / CAD）",
-    "跟随PDF 与图片翻译": "跟随图像翻译",
-    "跟随PDF 与图片审核": "跟随图像翻译审核",
-}
+# 按前缀换，旧版本存下的写法（如「跟随文档翻译（Excel / Word）」）也照新说法显示。
+_RENAMED_FOLLOW_PREFIXES = (
+    ("跟随文档翻译", "跟随文本翻译"),
+    ("跟随PDF 与图片翻译", "跟随图像翻译"),
+    ("跟随 PDF 与图片翻译", "跟随图像翻译"),
+    ("跟随PDF 与图片审核", "跟随图像翻译审核"),
+    ("跟随 PDF 与图片审核", "跟随图像翻译审核"),
+)
+
+
+def _renamed_follow_label(label: str) -> str:
+    for old, new in _RENAMED_FOLLOW_PREFIXES:
+        if label.startswith(old):
+            return new + label[len(old):]
+    return label
+
 
 _PROVIDER_DISPLAY_NAMES = {
     **{value: label for label, value in {**CLOUD_ENGINES, **LOCAL_MODEL_PROVIDERS}.items()},
