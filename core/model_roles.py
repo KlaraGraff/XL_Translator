@@ -88,6 +88,13 @@ def provider_display_name(provider: str) -> str:
 
 def unsupported_capability_message(label: str, provider: str, capability: str) -> str:
     """「服务商不支持这项能力」的统一人话。"""
+    if capability == "image" and str(provider or "").strip() in vision_text_provider_values():
+        # 能看图却不能出图的服务商（DeepSeek）：用户常以为「支持图片」就能翻译图片，
+        # 先把两件事分开说，再给出不用图像模型的路（反馈 #16）。
+        return (
+            f"{provider_display_name(provider)}能识别图片，但不能生成图片。{label}需要能生成图片的模型，"
+            "请在设置中更换连接；PDF 也可改为转成 Word 翻译，由文档翻译模型翻译。"
+        )
     ability = capability_label(capability)
     return (
         f"{provider_display_name(provider)}不支持{ability}，请在设置中为{label}更换支持{ability}的连接。"
