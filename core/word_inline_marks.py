@@ -664,6 +664,9 @@ class InlineMarkEngine:
         self.marked_translations: dict[str, tuple[str, str]] = {}
         # 标记没完整回来、经 repair_marks 补救过的：原文 → (带标记原文, 补救后的译文)
         self.repaired_translations: dict[str, tuple[str, str]] = {}
+        # 排查用（只进 app.log，不含原文）：每段最后一次的结果 ok / repaired / lost，重试的次数
+        self.outcomes: dict[str, str] = {}
+        self.retry_counts: dict[str, int] = {"alone": 0, "split": 0, "failed": 0}
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -682,6 +685,7 @@ class InlineMarkEngine:
         if ok or repaired is not None:
             translation = add_boundary_spaces(repaired or translation, target_lang, placeholder_texts(sent, plain))
         with self._lock:
+            self.outcomes[plain] = "ok" if ok else "repaired" if repaired is not None else "lost"
             if ok:
                 self.marked_translations[plain] = (sent, translation)
                 self.repaired_translations.pop(plain, None)
@@ -711,25 +715,35 @@ class InlineMarkEngine:
         if alone:
             again = self._ask([sent], target_lang, prompt, source_lang, with_sources).get(sent)
             if again is not None and marks_match(sent, again):
+                self._count_retry("alone")
                 return again
         halves = split_marked(sent)
         if halves is None:
+            self._count_retry("failed")
             return translation
         answers = self._ask(list(halves), target_lang, prompt, source_lang, with_sources)
         parts = []
         for half in halves:
             answer = answers.get(half)
             if not answer:
+                self._count_retry("failed")
                 return translation
             if _ANY_MARK_RE.search(half) and not marks_match(half, answer):
                 answer = repair_marks(half, answer)
                 if answer is None:
+                    self._count_retry("failed")
                     return translation
             parts.append(answer.strip())
         joined = ("" if _no_word_spaces(target_lang) else " ").join(parts)
         if marks_match(sent, joined) or repair_marks(sent, joined) is not None:
+            self._count_retry("split")
             return joined
+        self._count_retry("failed")
         return translation
+
+    def _count_retry(self, kind: str) -> None:
+        with self._lock:
+            self.retry_counts[kind] += 1
 
     def _retry_failed(self, pairs, target_lang, prompt, source_lang, *, with_sources: bool) -> dict[str, str]:
         """[(带标记原文, 译文)] 里占位符没对上的逐段重试，返回 带标记原文 → 重试后的译文。"""
@@ -984,12 +998,14 @@ def _seed_slots(marked: str, translation: str, texts: dict[int, str]) -> str:
     return "".join(seeded)
 
 
-def place_marks(engine, items, *, should_stop=None, log=None, repaired=None) -> dict[str, tuple[str, str]]:
+def place_marks(engine, items, *, should_stop=None, log=None, repaired=None, reasons=None) -> dict[str, tuple[str, str]]:
     """给已经定稿、但没有带标记版本的译文补上标记（记忆库直接套用的、夹杂多种语言那条路
     翻的、模型弄丢标记的、复查改过的）。只让模型插标记：插完去掉标记必须和定稿一字不差
     （只允许空白不同，见 same_text），否则放弃，按整段写法写回。
     items: [(原文, 带标记原文, 定稿译文)]。给了 repaired（dict）时，模型这次又弄丢了几个
-    占位符的，经 repair_marks 补救后放进 repaired，由调用方决定要不要用。"""
+    占位符的，经 repair_marks 补救后放进 repaired，由调用方决定要不要用。给了 reasons（dict）
+    时记下没补上的原因（排查用）：no_answer 没拿到回答、broken 标记仍对不上、text 改了译文文字。"""
+    reasons = {} if reasons is None else reasons
     import json
 
     from engines.base_engine import engine_supports_chat, strip_markdown_json
@@ -1009,7 +1025,9 @@ def place_marks(engine, items, *, should_stop=None, log=None, repaired=None) -> 
             continue
         pending.append((source, marked, translation, seeded, texts))
     if not pending or not engine_supports_chat(engine):
+        reasons.update((item[0], "no_answer") for item in pending)
         return placed
+    reasons.update((item[0], "no_answer") for item in pending)
     for start in range(0, len(pending), PLACE_MARKS_BATCH):
         if should_stop is not None and should_stop():
             break
@@ -1031,11 +1049,15 @@ def place_marks(engine, items, *, should_stop=None, log=None, repaired=None) -> 
             if not marks_match(marked, answer):
                 answer = repair_marks(marked, answer) if repaired is not None else None
                 if answer is None:
+                    reasons[source] = "broken"
                     continue
                 target = repaired
+            reasons[source] = "text" if target is placed else "broken"
             for candidate in (_settle_object_gaps(answer, translation, texts), answer):
                 if same_text(strip_marks(candidate, texts), translation):
                     target[source] = (marked, candidate)
+                    if target is placed:
+                        reasons.pop(source, None)
                     break
     return placed
 
