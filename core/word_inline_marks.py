@@ -468,8 +468,7 @@ def add_boundary_spaces(
 ) -> str:
     """译文用空格分词时，补上标记边界处模型漏掉的空格（见 _BOUNDARY_GAP_RE）；placeholders
     给出占位符对应的字符时，不占字符的占位符（脚注编号、图片）两边也补（见 _OBJECT_GAP_RE）。"""
-    lang = str(target_lang or "").strip().lower().replace("_", "-").split("-")[0]
-    if lang in ("zh", "ja", "ko", "th", "lo", "km", "my"):
+    if _no_word_spaces(target_lang):
         return translation
 
     def fill(match: re.Match) -> str:
@@ -695,11 +694,63 @@ class InlineMarkEngine:
                     self.repaired_translations.pop(plain, None)
         return unmark(translation, sent, plain)
 
+    def _ask(self, texts: list[str], target_lang, prompt, source_lang, with_sources: bool) -> dict[str, str]:
+        try:
+            if with_sources:
+                reported = self.inner.translate_batch_with_sources(texts, target_lang, prompt, source_lang=source_lang)
+                return {item.source_text: item.translation for item in reported}
+            return dict(self.inner.translate_batch(texts, target_lang, prompt, source_lang=source_lang))
+        except Exception:  # noqa: BLE001 - 重试失败只是退回补救或整段写法，不影响这一批
+            return {}
+
+    def _retry_marks(self, sent: str, translation, target_lang, prompt, source_lang, *, alone: bool,
+                     with_sources: bool):
+        """占位符（公式、图片、脚注编号等）没完整回来的一段，像译文出错一样重试，减轻模型
+        一次要顾的东西（反馈 #19）：原来和别的段一批的，先单独再问一次；还不行按句子拆成两半
+        分别翻再拼回。都不行返回原来的译文，交给 repair_marks 估位置。"""
+        if alone:
+            again = self._ask([sent], target_lang, prompt, source_lang, with_sources).get(sent)
+            if again is not None and marks_match(sent, again):
+                return again
+        halves = split_marked(sent)
+        if halves is None:
+            return translation
+        answers = self._ask(list(halves), target_lang, prompt, source_lang, with_sources)
+        parts = []
+        for half in halves:
+            answer = answers.get(half)
+            if not answer:
+                return translation
+            if _ANY_MARK_RE.search(half) and not marks_match(half, answer):
+                answer = repair_marks(half, answer)
+                if answer is None:
+                    return translation
+            parts.append(answer.strip())
+        joined = ("" if _no_word_spaces(target_lang) else " ").join(parts)
+        if marks_match(sent, joined) or repair_marks(sent, joined) is not None:
+            return joined
+        return translation
+
+    def _retry_failed(self, pairs, target_lang, prompt, source_lang, *, with_sources: bool) -> dict[str, str]:
+        """[(带标记原文, 译文)] 里占位符没对上的逐段重试，返回 带标记原文 → 重试后的译文。"""
+        failed = [
+            (outgoing, translation) for outgoing, translation in pairs
+            if _SLOT_RE.search(outgoing) and not marks_match(outgoing, translation)
+        ]
+        alone = len(pairs) > 1
+        return {
+            outgoing: self._retry_marks(outgoing, translation, target_lang, prompt, source_lang, alone=alone,
+                                        with_sources=with_sources)
+            for outgoing, translation in failed
+        }
+
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
         sent, prompt = self._outgoing(list(texts), system_prompt)
         if prompt is system_prompt:
             return self.inner.translate_batch(texts, target_lang, system_prompt, source_lang=source_lang)
-        raw = self.inner.translate_batch(sent, target_lang, prompt, source_lang=source_lang)
+        raw = dict(self.inner.translate_batch(sent, target_lang, prompt, source_lang=source_lang))
+        raw.update(self._retry_failed([(outgoing, raw[outgoing]) for outgoing in sent if outgoing in raw],
+                                      target_lang, prompt, source_lang, with_sources=False))
         result: dict[str, str] = {}
         for plain, outgoing in zip(texts, sent):
             if outgoing in raw:
@@ -711,14 +762,50 @@ class InlineMarkEngine:
         if prompt is system_prompt:
             return self.inner.translate_batch_with_sources(texts, target_lang, system_prompt, source_lang=source_lang)
         reported = self.inner.translate_batch_with_sources(sent, target_lang, prompt, source_lang=source_lang)
+        retried = self._retry_failed([(item.source_text, item.translation) for item in reported],
+                                     target_lang, prompt, source_lang, with_sources=True)
         plain_by_sent = dict(zip(sent, texts))
         out = []
         for item in reported:
             plain = plain_by_sent.get(item.source_text, item.source_text)
+            translation = retried.get(item.source_text, item.translation)
             out.append(replace(item, source_text=plain,
-                               translation=self._receive(plain, item.source_text, item.translation,
-                                                         target_lang)))
+                               translation=self._receive(plain, item.source_text, translation, target_lang)))
         return out
+
+
+def _no_word_spaces(target_lang) -> bool:
+    """译文不用空格分词（中日韩泰等）。"""
+    lang = str(target_lang or "").strip().lower().replace("_", "-").split("-")[0]
+    return lang in ("zh", "ja", "ko", "th", "lo", "km", "my")
+
+
+# 句末：中文句号类直接断；西文句号类后面要有空格，且下一个字是大写字母、数字、汉字或标记，
+# 免得在「e.g. the」「Fig. 3」这种地方断开（「Fig. 3」仍可能断，只影响拆在哪儿，不影响结果）
+_SENTENCE_END_RE = re.compile(r"[。！？；]\s*|[.!?;]\s+(?=[A-ZÀ-ÖØ-Þ0-9<\u4e00-\u9fff])")
+
+
+def split_marked(marked: str) -> tuple[str, str] | None:
+    """一段带标记的原文按句子拆成两半，只在句末、而且不在格式标记中间拆；两半的占位符尽量
+    一样多。单元格（多行）、只有一句的返回 None。"""
+    if "\n" in marked:
+        return None
+    marks = list(_ANY_MARK_RE.finditer(marked))
+    candidates: list[tuple[int, int]] = []  # (拆开的位置, 前一半的占位符数)
+    for sentence_end in _SENTENCE_END_RE.finditer(marked):
+        cut = sentence_end.end()
+        if any(mark.start() < cut < mark.end() for mark in marks):
+            continue
+        before = [mark for mark in marks if mark.end() <= cut]
+        opened = sum(1 if mark.group(1) != "/" else -1 for mark in before if mark.group(3) is None)
+        if opened or not marked[:cut].strip() or not marked[cut:].strip():
+            continue
+        candidates.append((cut, sum(1 for mark in before if mark.group(3) is not None)))
+    if not candidates:
+        return None
+    total = len(_SLOT_RE.findall(marked))
+    cut, _count = min(candidates, key=lambda item: (abs(item[1] * 2 - total), abs(item[0] * 2 - len(marked))))
+    return marked[:cut].strip(), marked[cut:].strip()
 
 
 def _line_ids(text: str) -> list[int]:
