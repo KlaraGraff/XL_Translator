@@ -2,7 +2,7 @@
 
 「翻译参数」的 Excel、Word、PDF、CAD 页签各有一组同样的五项：同时请求数、每批条数、
 每批字符上限、失败重试次数、单段重试次数。存在 ``settings.rate.<类型>``，None 表示
-没改过，按文档翻译模型是云端还是本地取默认值。PDF 整页图像翻译另有三项（同时生成
+没改过，按文本翻译模型是云端还是本地取默认值。PDF 整页图像翻译另有三项（同时生成
 页数、单页重试次数、同时审核页数），存在 ``settings.pdf``。
 
 v37 及以前，同时请求数和每批条数按模型保存（core/model_throughput.py），CAD、Word
@@ -157,7 +157,7 @@ def resolve_surface_rate(
 ) -> SurfaceRate:
     """这种文件类型这一次用的五项数值。
 
-    ``mode`` 是任务实际用的文档翻译模型连接的模式；不给就按当前设置的主用连接取。
+    ``mode`` 是任务实际用的文本翻译模型连接的模式；不给就按当前设置的主用连接取。
     运行时注册的类型（``ext:<id>``）在「翻译参数」里没有自己的一组，见 ``extension_rate``。
     """
     if is_extension_key(surface):
@@ -177,7 +177,7 @@ def resolve_surface_rate(
 def extension_rate(settings: AppSettings, surface: str, *, mode: str | None = None) -> SurfaceRate:
     """运行时注册的类型（格式适配器）用的速率与重试。
 
-    同时请求数和每批条数按文档翻译模型的吞吐量取（core/model_throughput.py），与任务
+    同时请求数和每批条数按文本翻译模型的吞吐量取（core/model_throughput.py），与任务
     开始时调度器为 ``page_key = "adapter"`` 预留的并发一致（``task_role_rate``）；每批
     字符上限和两项重试次数取云端 / 本地的默认值。
     """
@@ -252,7 +252,7 @@ def _pdf_concurrency(settings: AppSettings, key: str, role: str, mode: str | Non
 
 
 def resolve_pdf_page_concurrency(settings: AppSettings, *, mode: str | None = None) -> int:
-    """整页图像翻译同时生成的页数；``mode`` 是 PDF 与图片翻译模型的模式。"""
+    """整页图像翻译同时生成的页数；``mode`` 是图像翻译模型的模式。"""
     return _pdf_concurrency(settings, "page_generation_concurrency", ROLE_IMAGE, mode)
 
 

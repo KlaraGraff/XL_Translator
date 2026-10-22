@@ -216,8 +216,8 @@ export function mount(container: HTMLElement, _params: ViewParams): void {
   const ready = el("div", "hcol");
   const readyRows = el("div", "rows ready stag");
   const slots = {
-    text: readyRow(t("文档翻译模型")),
-    image: readyRow(t("PDF 与图片翻译模型")),
+    text: readyRow(t("文本翻译模型")),
+    image: readyRow(t("图像翻译模型")),
     tm: readyRow(t("记忆库")),
     domain: readyRow(t("补充要求")),
     oda: readyRow(t("图纸转换工具")),

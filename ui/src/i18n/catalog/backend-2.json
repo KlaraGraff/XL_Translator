@@ -1079,6 +1079,10 @@
     "en": "Connection testing only supports the document translation model or the memory cleanup model.",
     "fr": "Le test de connexion ne prend en charge que le modèle de traduction de documents ou le modèle de nettoyage de la mémoire."
   },
+  "连接测试只支持文本翻译模型或记忆库清洗模型。": {
+    "en": "Connection testing only supports the text translation model or the memory cleanup model.",
+    "fr": "Le test de connexion ne prend en charge que le modèle de traduction de texte ou le modèle de nettoyage de la mémoire."
+  },
   "请先填写 Ollama 模型名称。": {
     "en": "Enter the Ollama model name first.",
     "fr": "Saisissez d'abord le nom du modèle Ollama."

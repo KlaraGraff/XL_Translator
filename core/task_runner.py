@@ -437,7 +437,7 @@ class TaskRunner(BaseTaskRunner):
                 self._file_progress.emit_many("unstarted", "not_started")
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
-            # 速率与重试按「翻译参数 → Excel」（core/surface_rate.py），默认值按文档翻译模型
+            # 速率与重试按「翻译参数 → Excel」（core/surface_rate.py），默认值按文本翻译模型
             # 是云端还是本地分档。
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             self._rate = resolve_surface_rate(

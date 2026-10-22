@@ -17,7 +17,7 @@ from settings import AppSettings, ExtensionSettings
 
 #: 运行时注册的类型的页面键前缀，如 ``ext:srt``。
 EXTENSION_PREFIX = "ext:"
-#: 运行时注册的类型的模型页面键（``Surface.page_key``）：只用文档翻译模型。
+#: 运行时注册的类型的模型页面键（``Surface.page_key``）：只用文本翻译模型。
 EXTENSION_PAGE_KEY = "adapter"
 
 _MISSING: Any = object()

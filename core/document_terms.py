@@ -13,7 +13,7 @@
 2. :class:`TermPicker` 把候选词连同文档说明交给模型，请它挑出需要全文统一的专业
    术语和专名，各给一个译法和一句适用场景说明；定错一个就全文一起错，所以请它拿不准
    的不选。优先用「记忆库清洗模型」（一般配得比翻译模型好）；没配、不可用或请求失败
-   时改用文档翻译模型；都不行就跳过，照常翻译，运行日志写明原因。
+   时改用文本翻译模型；都不行就跳过，照常翻译，运行日志写明原因。
 3. 定下的词由 :class:`core.tm_terms.TermIndex` 随批附上（只附本批出现的），翻完核对
    哪些位置采用了；在大多数位置被采用的，按「自动保存」存进记忆库，备注为适用场景
    （:mod:`core.term_session`）。
@@ -491,10 +491,10 @@ def _failure_reason(exc: BaseException) -> str:
 
 
 class TermPicker:
-    """请模型定译法：先用记忆库清洗模型，不行再用文档翻译模型。
+    """请模型定译法：先用记忆库清洗模型，不行再用文本翻译模型。
 
     ``primary`` 返回清洗模型的引擎（没配好、不可用时返回 ``None``），第一次用到时才建；
-    ``fallback`` 是文档翻译模型的引擎。``log(level, message)`` 写运行日志。
+    ``fallback`` 是文本翻译模型的引擎。``log(level, message)`` 写运行日志。
     :attr:`engine_name` 是最后定下译法的那个引擎，存进记忆库时记作来源。
     """
 
@@ -525,7 +525,7 @@ class TermPicker:
                     try:
                         engine = self._primary_factory()
                     except Exception as exc:  # noqa: BLE001 - fall back to the translation model
-                        logger.info(f"记忆库清洗模型建不起来，统一用词改用文档翻译模型：{exc!r}")
+                        logger.info(f"记忆库清洗模型建不起来，统一用词改用文本翻译模型：{exc!r}")
                         engine = None
                     self._primary = engine if engine_supports_chat(engine) else None
             return self._primary
@@ -569,12 +569,12 @@ class TermPicker:
                             (
                                 f"统一用词：记忆库清洗模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
                                 if role == "cleaner"
-                                else f"统一用词：文档翻译模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
+                                else f"统一用词：文本翻译模型为文中反复出现的 {len(terms)} 个词确定了统一译法，将随批附上"
                             ),
                         )
                     return terms
             if role == "cleaner" and index + 1 < len(attempts):
-                log("INFO", f"统一用词：记忆库清洗模型未能确定译法，改用文档翻译模型。原因：{reason}")
+                log("INFO", f"统一用词：记忆库清洗模型未能确定译法，改用文本翻译模型。原因：{reason}")
         if attempts:
             log("WARN", f"统一用词：未能确定译法，按常规方式继续翻译。原因：{reason}")
         return []
@@ -583,7 +583,7 @@ class TermPicker:
 def cleaner_engine_factory(settings) -> Callable[[], object | None]:
     """记忆库清洗模型的引擎，第一次用到时才建（用创建这一刻所在线程的密钥快照）。
 
-    清洗模型没填模型名、测试结果为不可用时返回 ``None``，由调用方改用文档翻译模型。
+    清洗模型没填模型名、测试结果为不可用时返回 ``None``，由调用方改用文本翻译模型。
     """
     from settings import current_key_overrides, provider_key_overrides
 
@@ -612,7 +612,7 @@ def cleaner_engine_factory(settings) -> Callable[[], object | None]:
 
 
 def make_term_picker(settings, translation_engine, *, target_lang: str, log=None) -> TermPicker:
-    """任务流程用的定译法入口：清洗模型优先，文档翻译模型兜底。"""
+    """任务流程用的定译法入口：清洗模型优先，文本翻译模型兜底。"""
     from core.tm_terms import is_cjk_target
     from engines.base_engine import get_target_lang_name
 

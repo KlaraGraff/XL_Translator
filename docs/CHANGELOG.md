@@ -1,6 +1,10 @@
 # Translator 版本更新日志
 
-## V10.3.2
+## V10.3.3
+
+10.3.2 只作为预发布版给个别用户试用过，没有正式发布，其内容并入本版。
+
+10.3.2 was only a pre-release tried by a few users and was never formally released; its changes are included here.
 
 - **Windows 一键安装组件：补上 VC++ 运行库、系统代理用不了时直连、中文用户名下文字识别可用**（反馈 #15）：没装 VC++ 运行库的电脑上，「PDF 处理组件」装好后加载失败；现在随组件放入所需的运行库文件。系统代理是 SOCKS、或设了代理却没有在运行时，组件下载以前直接失败，现在改为直接连接再试一次。安装时直接解压到最终目录，并等待杀毒软件扫描结束后再改名。文字识别在用户名或数据目录含中文的英文版 Windows 上也能安装和识别。
 
@@ -22,9 +26,17 @@
 
   **PDF in-place replacement: any target language, and Chinese source text**: In-place replacement used to translate foreign drawings into Chinese only. It now translates into other languages too (except scripts that need joined shaping, such as Arabic, Thai and Hindi, whose pages use the fallback with a notice), and Chinese, Japanese and Korean in the text layer are read and translated; CJK text drawn as strokes is not recognised yet and stays as it is. Translations that do not fit are narrowed, then shrunk, then wrapped, following CAD's write-back rules; PDF Advanced gains "In-place layout" (translation font, initial and minimum font scale). The translation font is a system font that covers the whole translation in the target language.
 
-- **模型服务新增「小米 MiMo」**（反馈 #17）：多数用户使用 Token Plan 套餐，选中后 Base URL 默认填为 Token Plan 国内地址 `https://token-plan-cn.xiaomimimo.com/v1`，「获取 ↗ API 密钥」指向套餐管理页。Base URL 旁的说明写明套餐与按量付费 API 地址不同，Base URL 可从下拉列表中选择 Token Plan 国内、新加坡、欧洲地址或按量付费 API 地址（`https://api.xiaomimimo.com/v1`），选按量付费时链接随之指向 API Keys 页。测试连接或获取模型列表因密钥被拒、接口不存在等失败时，额外提示检查 Base URL。不预填型号，「获取模型列表」只列对话模型（语音识别、语音合成模型不列）。可用于文档翻译、记忆库清洗和 PDF 与图片审核（mimo-v2.6 系列能识别图片）；它不能生成图片，用作 PDF 与图片翻译模型时会提示不支持。
+- **图像翻译审核可以选 DeepSeek**（反馈 #16）：DeepSeek 官方 API 已支持图片输入（如 deepseek-flash），审核用途以前一保存就被拒绝，现在可以选用；审核请求直接按官方首选写法发送。新装时审核模型跟随文本翻译模型，文本翻译用 DeepSeek 时审核以前被标成不可用，现在不会。DeepSeek 不能生成图片，「图像翻译」仍不能选它。
 
-  **New model service: Xiaomi MiMo** (feedback #17): Most users have a Token Plan subscription, so selecting it fills Base URL with the Token Plan China address `https://token-plan-cn.xiaomimimo.com/v1`, and "Get ↗ API key" opens plan management. A note beside Base URL explains that Token Plan and the pay-as-you-go API use different addresses, and Base URL offers a dropdown with the Token Plan China, Singapore and Europe addresses and the pay-as-you-go API address (`https://api.xiaomimimo.com/v1`); choosing pay-as-you-go switches the link to the API Keys page. When Test connection or Fetch model list fails because the key is rejected or the endpoint does not exist, an extra line suggests checking the Base URL. No model name is prefilled, and Fetch model list shows chat models only (speech recognition and speech synthesis models are left out). It can be used for document translation, memory cleanup and PDF and image review (the mimo-v2.6 models read images); it cannot generate images, so choosing it as the PDF and image translation model shows that it is not supported.
+  **DeepSeek for image translation review** (feedback #16): DeepSeek's official API now accepts images (e.g. deepseek-flash), but choosing it for review used to be refused on save; it can now be used, and review requests use DeepSeek's preferred format. On a fresh install review follows the text translation model, and review used to be marked unavailable when that was DeepSeek; it no longer is. DeepSeek cannot generate images, so image translation still cannot use it.
+
+- **模型用途改名，并写明各自做什么**（反馈 #16）：「设置 → 模型服务」里的「文档翻译模型」改称「文本翻译模型」，「PDF 与图片翻译模型」改称「图像翻译模型」，「PDF 与图片审核模型」改称「图像翻译审核模型」，提示、错误信息、帮助和英文、法文界面同步。以前名称里带「PDF」，容易让人以为翻译 PDF 都要在这里选模型；其实 PDF 的「转成 Word」「原位替换」用的是文本翻译模型，只有整页图像翻译和图片文件才用图像翻译模型。每种用途的「连接」说明里补了一句：用来做什么、需要什么能力的模型。
+
+  **Model uses renamed, with what each one does** (feedback #16): Under Settings → Models, the "Document translation model" is now the "Text translation model", the "PDF & image translation model" is now the "Image translation model" and the "PDF & image review model" is now the "Image translation review model", with hints, error messages, help and the English and French interface updated to match. The old name mentioned PDF, which suggested every PDF needed a model set there; in fact PDF "Convert to Word" and "In-place replacement" use the text translation model, and only full-page image translation and image files use the image translation model. Each use's Connections note now says what it is for and what kind of model it needs.
+
+- **模型服务新增「小米 MiMo」**（反馈 #17）：多数用户使用 Token Plan 套餐，选中后 Base URL 默认填为 Token Plan 国内地址 `https://token-plan-cn.xiaomimimo.com/v1`，「获取 ↗ API 密钥」指向套餐管理页。Base URL 旁的说明写明套餐与按量付费 API 地址不同，Base URL 可从下拉列表中选择 Token Plan 国内、新加坡、欧洲地址或按量付费 API 地址（`https://api.xiaomimimo.com/v1`），选按量付费时链接随之指向 API Keys 页。测试连接或获取模型列表因密钥被拒、接口不存在等失败时，额外提示检查 Base URL。不预填型号，「获取模型列表」只列对话模型（语音识别、语音合成模型不列）。可用于文本翻译、记忆库清洗和图像翻译审核（mimo-v2.6 系列能识别图片）；它不能生成图片，用作图像翻译模型时会提示不支持。
+
+  **New model service: Xiaomi MiMo** (feedback #17): Most users have a Token Plan subscription, so selecting it fills Base URL with the Token Plan China address `https://token-plan-cn.xiaomimimo.com/v1`, and "Get ↗ API key" opens plan management. A note beside Base URL explains that Token Plan and the pay-as-you-go API use different addresses, and Base URL offers a dropdown with the Token Plan China, Singapore and Europe addresses and the pay-as-you-go API address (`https://api.xiaomimimo.com/v1`); choosing pay-as-you-go switches the link to the API Keys page. When Test connection or Fetch model list fails because the key is rejected or the endpoint does not exist, an extra line suggests checking the Base URL. No model name is prefilled, and Fetch model list shows chat models only (speech recognition and speech synthesis models are left out). It can be used for text translation, memory cleanup and image translation review (the mimo-v2.6 models read images); it cannot generate images, so choosing it as the image translation model shows that it is not supported.
 
 - **其他改进**：PDF 报告计入原位替换和转 Word 部分的重试与降速次数；PDF 任务的原文语言记为「自动识别」，任务标题不再显示「中文 → 中文」；模型服务繁忙等提示写明是哪个页面（PDF、CAD、PPT）发出的；无法解析的模型回复不再写进运行日志，避免客户原文随任务包或反馈包传出。
 

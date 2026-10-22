@@ -1511,6 +1511,10 @@
     "en": "Auto-detect: the document translation model is unavailable, so no document summary was written; the PDF is translated as usual",
     "fr": "Détection automatique : le modèle de traduction de documents est indisponible, aucun résumé du document n'a été rédigé ; le PDF est traduit normalement"
   },
+  "自动识别场景：文本翻译模型不可用，不生成文档说明，PDF 照常翻译": {
+    "en": "Auto-detect: the text translation model is unavailable, so no document summary was written; the PDF is translated as usual",
+    "fr": "Détection automatique : le modèle de traduction de texte est indisponible, aucun résumé du document n'a été rédigé ; le PDF est traduit normalement"
+  },
   "正在通读图纸，概括图纸说明": {
     "en": "Reading through the drawing to summarize it",
     "fr": "Lecture du dessin pour en rédiger un résumé"

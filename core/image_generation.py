@@ -109,7 +109,7 @@ PDF_IMAGE_TRANSLATION_PROMPT = PDF_IMAGE_TRANSLATION_BASE_PROMPT
 
 # 图像模型测试失败、看起来是模型选错时附在原因后面（maple 2026-10-21 定的说法）。
 IMAGE_MODEL_ADVICE = (
-    "PDF 与图片翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 "
+    "图像翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 "
     "ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。"
 )
 

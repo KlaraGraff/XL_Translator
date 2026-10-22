@@ -1295,13 +1295,13 @@
     "en": "The review model failed its last test",
     "fr": "Le modèle de vérification a échoué à son dernier test"
   },
-  "逐页审核已开启，但本机最近一次测试「PDF 与图片审核」模型时失败。如现在开始，页面将正常翻译，但审核步骤很可能在每一页都出错。": {
-    "en": "Page review is on, but the last test of the “PDF & image review” model on this computer failed. If you start now, pages will be translated normally, but the review step will likely fail on every page.",
-    "fr": "La vérification page par page est activée, mais le dernier test du modèle « Vérification PDF et images » sur cet ordinateur a échoué. En lançant maintenant, les pages seront traduites normalement, mais l'étape de vérification échouera probablement à chaque page."
+  "逐页审核已开启，但本机最近一次测试「图像翻译审核」模型时失败。如现在开始，页面将正常翻译，但审核步骤很可能在每一页都出错。": {
+    "en": "Page review is on, but the last test of the “Image translation review” model on this computer failed. If you start now, pages will be translated normally, but the review step will likely fail on every page.",
+    "fr": "La vérification page par page est activée, mais le dernier test du modèle « Vérification des images » sur cet ordinateur a échoué. En lançant maintenant, les pages seront traduites normalement, mais l'étape de vérification échouera probablement à chaque page."
   },
-  "建议先在「设置 → 模型服务 → PDF 与图片审核」中重新测试，或关闭逐页审核后再开始。": {
-    "en": "Retest it first in “Settings → Models → PDF & image review”, or turn off page review before starting.",
-    "fr": "Retestez-le d'abord dans « Paramètres → Modèles → Vérification PDF et images », ou désactivez la vérification page par page avant de lancer."
+  "建议先在「设置 → 模型服务 → 图像翻译审核」中重新测试，或关闭逐页审核后再开始。": {
+    "en": "Retest it first in “Settings → Models → Image translation review”, or turn off page review before starting.",
+    "fr": "Retestez-le d'abord dans « Paramètres → Modèles → Vérification des images », ou désactivez la vérification page par page avant de lancer."
   },
   "也可忽略测试结果直接开始：仅影响本次任务，设置不会被修改。": {
     "en": "You can also start anyway: this affects only this task, and your settings will not change.",

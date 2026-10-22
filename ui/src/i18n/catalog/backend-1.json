@@ -91,6 +91,10 @@
     "en": "Retry this page later, or check the API key, endpoint and provider status of the PDF & image translation model.",
     "fr": "Réessayez cette page plus tard, ou vérifiez la clé API, l'adresse du service et l'état du fournisseur du modèle de traduction PDF et images."
   },
+  "请稍后重试这一页，或检查图像翻译模型的 API 密钥、接口地址和服务商状态。": {
+    "en": "Retry this page later, or check the API key, endpoint and provider status of the image translation model.",
+    "fr": "Réessayez cette page plus tard, ou vérifiez la clé API, l'adresse du service et l'état du fournisseur du modèle de traduction d'images."
+  },
   "源页图像": {
     "en": "Source page image",
     "fr": "Image de la page source"
@@ -183,6 +187,10 @@
     "en": "The PDF & image translation model did not return a usable result this time.",
     "fr": "Le modèle de traduction PDF et images n'a pas renvoyé de résultat exploitable cette fois."
   },
+  "图像翻译模型本次未返回可用结果。": {
+    "en": "The image translation model did not return a usable result this time.",
+    "fr": "Le modèle de traduction d'images n'a pas renvoyé de résultat exploitable cette fois."
+  },
   "不是受支持的 PDF 或图片文件，或为系统临时文件。": {
     "en": "Not a supported PDF or image file, or it is a system temporary file.",
     "fr": "Ce n'est pas un fichier PDF ou image pris en charge, ou il s'agit d'un fichier temporaire du système."
@@ -246,6 +254,10 @@
   "PDF 与图片翻译模型的名称不能为空。": {
     "en": "The PDF & image translation model name cannot be empty.",
     "fr": "Le nom du modèle de traduction PDF et images ne peut pas être vide."
+  },
+  "图像翻译模型的名称不能为空。": {
+    "en": "The image translation model name cannot be empty.",
+    "fr": "Le nom du modèle de traduction d'images ne peut pas être vide."
   },
   "{0} 第 {1} 页的结果已发生变化，已取消本次重新生成。": {
     "en": "{0} page {1} has changed in the meantime, so this regeneration was canceled.",
@@ -351,9 +363,17 @@
     "en": "PDF & image translation model call succeeded.",
     "fr": "Appel au modèle de traduction PDF et images réussi."
   },
+  "图像翻译模型调用成功。": {
+    "en": "Image translation model call succeeded.",
+    "fr": "Appel au modèle de traduction d'images réussi."
+  },
   "PDF 与图片审核模型调用成功。": {
     "en": "PDF & image review model call succeeded.",
     "fr": "Appel au modèle de vérification PDF et images réussi."
+  },
+  "图像翻译审核模型调用成功。": {
+    "en": "Image translation review model call succeeded.",
+    "fr": "Appel au modèle de vérification des images réussi."
   },
   "[{0}] 第 {1} 页已生成失败占位页 {2}": {
     "en": "[{0}] Failure placeholder page generated for page {1}: {2}",
@@ -374,6 +394,10 @@
   "PDF 与图片审核模型的名称不能为空。": {
     "en": "The PDF & image review model name cannot be empty.",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide."
+  },
+  "图像翻译审核模型的名称不能为空。": {
+    "en": "The image translation review model name cannot be empty.",
+    "fr": "Le nom du modèle de vérification des images ne peut pas être vide."
   },
   "{0}已保留上一版译文页和输出文件，本次改动未生效。": {
     "en": "{0} The previous translated page and output files were kept; this change did not take effect.",
@@ -410,6 +434,10 @@
   "PDF 与图片翻译模型的名称不能为空": {
     "en": "The PDF & image translation model name cannot be empty",
     "fr": "Le nom du modèle de traduction PDF et images ne peut pas être vide"
+  },
+  "图像翻译模型的名称不能为空": {
+    "en": "The image translation model name cannot be empty",
+    "fr": "Le nom du modèle de traduction d'images ne peut pas être vide"
   },
   "状态：正在读取文件，准备输出文件夹…": {
     "en": "Status: Reading files and preparing the output folder…",
@@ -491,6 +519,10 @@
     "en": "The PDF & image translation model settings are unusable: ",
     "fr": "Les paramètres du modèle de traduction PDF et images sont inutilisables : "
   },
+  "图像翻译模型的设置不可用：": {
+    "en": "The image translation model settings are unusable: ",
+    "fr": "Les paramètres du modèle de traduction d'images sont inutilisables : "
+  },
   "页面重新生成后，未能重新生成输出文件。": {
     "en": "The output files could not be regenerated after regenerating the page.",
     "fr": "Les fichiers de sortie n'ont pas pu être régénérés après la régénération de la page."
@@ -559,6 +591,10 @@
     "en": "The PDF & image review model settings are unusable: ",
     "fr": "Les paramètres du modèle de vérification PDF et images sont inutilisables : "
   },
+  "图像翻译审核模型的设置不可用：": {
+    "en": "The image translation review model settings are unusable: ",
+    "fr": "Les paramètres du modèle de vérification des images sont inutilisables : "
+  },
   "换回上一版时出现了未预期的问题。": {
     "en": "An unexpected problem occurred while reverting to the previous version.",
     "fr": "Un problème inattendu est survenu lors du retour à la version précédente."
@@ -615,6 +651,10 @@
     "en": "The PDF & image translation model did not return a usable result this time. Try again later or switch to another connection in Settings.",
     "fr": "Le modèle de traduction PDF et images n'a pas renvoyé de résultat exploitable cette fois. Réessayez plus tard ou choisissez une autre connexion dans les paramètres."
   },
+  "图像翻译模型本次未返回可用结果，请稍后重试，或在设置中更换连接。": {
+    "en": "The image translation model did not return a usable result this time. Try again later or switch to another connection in Settings.",
+    "fr": "Le modèle de traduction d'images n'a pas renvoyé de résultat exploitable cette fois. Réessayez plus tard ou choisissez une autre connexion dans les paramètres."
+  },
   "{0}审核步骤出错，已保留本次译图并标记为需人工复核。": {
     "en": "{0}— the review step failed; this translated image was kept and flagged for manual review.",
     "fr": "{0}— l'étape de vérification a échoué ; cette image traduite a été conservée et signalée pour vérification manuelle."
@@ -626,6 +666,10 @@
   "请在设置中检查 PDF 与图片翻译模型的连接。": {
     "en": "Check the PDF & image translation model connection in Settings.",
     "fr": "Veuillez vérifier la connexion du modèle de traduction PDF et images dans les paramètres."
+  },
+  "请在设置中检查图像翻译模型的连接。": {
+    "en": "Check the image translation model connection in Settings.",
+    "fr": "Veuillez vérifier la connexion du modèle de traduction d'images dans les paramètres."
   },
   "PDF 翻译已结束，已生成的页面和报告保存在输出文件夹「{0}」。": {
     "en": "PDF translation has finished. Generated pages and the report are saved in the output folder “{0}”.",
@@ -671,6 +715,10 @@
     "en": "Check the PDF & image review model connection in Settings.",
     "fr": "Veuillez vérifier la connexion du modèle de vérification PDF et images dans les paramètres."
   },
+  "请在设置中检查图像翻译审核模型的连接。": {
+    "en": "Check the image translation review model connection in Settings.",
+    "fr": "Veuillez vérifier la connexion du modèle de vérification des images dans les paramètres."
+  },
   "无法修改页面存档中的文件。": {
     "en": "Files in the page archive cannot be modified.",
     "fr": "Les fichiers de l'archive des pages ne peuvent pas être modifiés."
@@ -690,6 +738,10 @@
   "PDF 与图片翻译模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
     "en": "The PDF & image translation model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
     "fr": "Le modèle de traduction PDF et images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
+  },
+  "图像翻译模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
+    "en": "The image translation model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
+    "fr": "Le modèle de traduction d'images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
   },
   "审核模型本次未返回可用结果。": {
     "en": "The review model did not return a usable result this time.",
@@ -726,6 +778,10 @@
   "请重试审核或更换 PDF 与图片审核模型。": {
     "en": "Retry the review or switch to a different PDF & image review model.",
     "fr": "Relancez la vérification ou changez de modèle de vérification PDF et images."
+  },
+  "请重试审核或更换图像翻译审核模型。": {
+    "en": "Retry the review or switch to a different image translation review model.",
+    "fr": "Relancez la vérification ou changez de modèle de vérification des images."
   },
   "这一页压缩时出错。": {
     "en": "An error occurred while compressing this page.",
@@ -1151,13 +1207,25 @@
     "en": "The PDF & image review model has no endpoint address yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore d'adresse de service"
   },
+  "图像翻译审核模型尚未填写接口地址": {
+    "en": "The image translation review model has no endpoint address yet",
+    "fr": "Le modèle de vérification des images n'a pas encore d'adresse de service"
+  },
   "PDF 与图片审核模型尚未填写 API 密钥": {
     "en": "The PDF & image review model has no API key yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore de clé API"
   },
+  "图像翻译审核模型尚未填写 API 密钥": {
+    "en": "The image translation review model has no API key yet",
+    "fr": "Le modèle de vérification des images n'a pas encore de clé API"
+  },
   "PDF 与图片审核模型的名称不能为空": {
     "en": "The PDF & image review model name cannot be empty",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide"
+  },
+  "图像翻译审核模型的名称不能为空": {
+    "en": "The image translation review model name cannot be empty",
+    "fr": "Le nom du modèle de vérification des images ne peut pas être vide"
   },
   "审核结果无法解析。": {
     "en": "The review result could not be parsed.",
@@ -1194,6 +1262,10 @@
   "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
     "en": "The PDF & image review model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
     "fr": "Le modèle de vérification PDF et images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
+  },
+  "图像翻译审核模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
+    "en": "The image translation review model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
+    "fr": "Le modèle de vérification des images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
   },
   "审核模型判定未通过，但未返回具体问题。": {
     "en": "The review model judged the page as failed but gave no specific issue.",
@@ -1234,6 +1306,10 @@
   "模型优化失败，请检查文档翻译模型配置。": {
     "en": "Model refinement failed. Check the document translation model settings.",
     "fr": "L'amélioration par le modèle a échoué. Vérifiez la configuration du modèle de traduction de documents."
+  },
+  "模型优化失败，请检查文本翻译模型配置。": {
+    "en": "Model refinement failed. Check the text translation model settings.",
+    "fr": "L'amélioration par le modèle a échoué. Vérifiez la configuration du modèle de traduction de texte."
   },
   "自定义提示词名称不能为空且不能与内置预设重名。": {
     "en": "The custom prompt name cannot be empty or identical to a built-in preset.",

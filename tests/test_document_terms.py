@@ -215,7 +215,7 @@ class PickerTests(unittest.TestCase):
         picker, logs = self._picker(cleaner, translator)
         self.assertEqual([term.target for term in picker(self.CANDIDATES, profile="")], ["fouille"])
         self.assertEqual(picker.engine_name, "translation/model")
-        self.assertTrue(any("改用文档翻译模型" in message for _level, message in logs))
+        self.assertTrue(any("改用文本翻译模型" in message for _level, message in logs))
 
     def test_logs_why_the_request_failed(self) -> None:
         import httpx
@@ -229,7 +229,7 @@ class PickerTests(unittest.TestCase):
         timeout = TextTransportError("read_timeout：请求超时，未确定服务是否已执行；不自动切换协议。", kind="read_timeout")
         picker, logs = self._picker(_ChatEngine("c", not_found), _ChatEngine("t", timeout))
         self.assertEqual(picker(self.CANDIDATES, profile=""), [])
-        self.assertIn("改用文档翻译模型。原因：接口上找不到此模型", logs[0][1])
+        self.assertIn("改用文本翻译模型。原因：接口上找不到此模型", logs[0][1])
         self.assertEqual(logs[-1][0], "WARN")
         self.assertIn("按常规方式继续翻译。原因：模型服务响应超时", logs[-1][1])
 

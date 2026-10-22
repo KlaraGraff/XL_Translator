@@ -30,7 +30,7 @@ const STEPS: StepSpec[] = localized(() => ([
   {
     iconName: "gear",
     title: t("配置翻译模型"),
-    body: t("填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文档翻译、PDF 与图片、记忆库清洗可分别使用不同的模型。"),
+    body: t("填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文本翻译、图像翻译、记忆库清洗可分别使用不同的模型。"),
     foot: (host) => {
       host.append(createButton({ label: t("打开模型配置"), size: "mini", onClick: () => navigate("settings", { page: "models" }) }));
     },
