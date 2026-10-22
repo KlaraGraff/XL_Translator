@@ -34,8 +34,9 @@ from core.prompt_cache import append_batch_block
 
 # 一段里最多加几对标记；再多说明格式很碎，模型放错的概率也高，按整段写法处理
 MAX_GROUPS_PER_UNIT = 12
-# 一段里最多几个占位符（相邻的已并成一个）；用制表符排成几列的段落常有七八个
-MAX_PLACEHOLDERS_PER_UNIT = 16
+# 一段里最多几个占位符（相邻的已并成一个）；用制表符排成几列的段落常有七八个，学术论文
+# 一段里的行内公式常有二三十个（反馈 #19）。模型弄丢几个时由 repair_marks 补回
+MAX_PLACEHOLDERS_PER_UNIT = 40
 
 _TAG_RE = re.compile(r"<\s*(/?)\s*g\s*(\d+)\s*>", re.IGNORECASE)
 _SLOT_RE = re.compile(r"<\s*x\s*(\d+)\s*/\s*>", re.IGNORECASE)
@@ -149,6 +150,9 @@ class ParagraphMarks:
         """带标记的译文拆成可写回的片段（占位符换成 Placeholder，前后接上段首段尾）；
         标记对不上返回 None。"""
         pieces = parse_marked(translation, self.groups, self.placeholders)
+        if pieces is None and self.groups and not _TAG_RE.search(translation):
+            # repair_marks 补救过的译文：格式标记整套去掉了，只按占位符写回，文字用主体格式
+            pieces = parse_marked(translation, (), self.placeholders)
         if pieces is None:
             return None
         resolved = [(self.placeholders[text.id] if isinstance(text, Slot) else text, group) for text, group in pieces]
@@ -659,6 +663,8 @@ class InlineMarkEngine:
         self._marked_sources = dict(marked_sources)
         self._lock = threading.Lock()
         self.marked_translations: dict[str, tuple[str, str]] = {}
+        # 标记没完整回来、经 repair_marks 补救过的：原文 → (带标记原文, 补救后的译文)
+        self.repaired_translations: dict[str, tuple[str, str]] = {}
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -673,13 +679,20 @@ class InlineMarkEngine:
         if sent is plain or sent == plain:
             return translation
         ok = marks_match(sent, translation)
-        if ok:
-            translation = add_boundary_spaces(translation, target_lang, placeholder_texts(sent, plain))
+        repaired = None if ok else repair_marks(sent, translation)
+        if ok or repaired is not None:
+            translation = add_boundary_spaces(repaired or translation, target_lang, placeholder_texts(sent, plain))
         with self._lock:
             if ok:
                 self.marked_translations[plain] = (sent, translation)
+                self.repaired_translations.pop(plain, None)
             else:
                 self.marked_translations.pop(plain, None)
+                if repaired is not None:
+                    # 补救的位置是估的：定稿后先请模型补标记（place_marks），补不上再用它
+                    self.repaired_translations[plain] = (sent, translation)
+                else:
+                    self.repaired_translations.pop(plain, None)
         return unmark(translation, sent, plain)
 
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
@@ -729,6 +742,132 @@ def marks_match(marked_source: str, translation: str) -> bool:
     )
 
 
+# 模型写走样的占位符：「<x1>」「</x1>」「<x 1 />」、转义成「&lt;x1/&gt;」、全角尖括号
+_LOOSE_SLOT_RE = re.compile(r"(?:<|&lt;|＜)\s*/?\s*x\s*(\d+)\s*/?\s*(?:>|&gt;|＞)", re.IGNORECASE)
+_SLOT_BOUNDARY_CHARS = frozenset(" \t\n,.;:!?)]}»，。；：！？、）】》」』")
+
+
+def _is_word_char(char: str) -> bool:
+    """西文的字母数字（中间不能插东西）；汉字、假名各自成词，前后都能插。"""
+    return char.isalnum() and ord(char) < 0x2E80
+
+
+def _scan_slots(line: str) -> tuple[int, list[int], dict[int, tuple[int, int]]]:
+    """(去掉标记后的字数, 每个可见位置在原串里的下标, 占位符 → (可见位置, 在原串里的下标))。
+    占位符本身不占位置。"""
+    raw_of: list[int] = []
+    slots: dict[int, tuple[int, int]] = {}
+    cursor = 0
+    for match in _ANY_MARK_RE.finditer(line):
+        raw_of.extend(range(cursor, match.start()))
+        cursor = match.end()
+        if match.group(3) is not None:
+            slots[int(match.group(3))] = (len(raw_of), match.start())
+    raw_of.extend(range(cursor, len(line)))
+    raw_of.append(len(line))
+    return len(raw_of) - 1, raw_of, slots
+
+
+def _repair_line(sent_line: str, line: str) -> str | None:
+    ids = _line_slots(sent_line)
+    seen: set[int] = set()
+    parts: list[str] = []
+    cursor = 0
+    for match in _LOOSE_SLOT_RE.finditer(line):
+        parts.append(line[cursor:match.start()])
+        cursor = match.end()
+        slot = int(match.group(1))
+        if slot in ids and slot not in seen:  # 重复的、原文没有的去掉
+            seen.add(slot)
+            parts.append(f"<x{slot}/>")
+    parts.append(line[cursor:])
+    fixed = "".join(parts)
+    missing = [slot for slot in ids if slot not in seen]
+    if not missing:
+        return fixed
+    if len(seen) * 2 < len(ids):
+        return None  # 丢了一半以上，猜不准位置，按整段写法
+    source_len, _raw, source_at = _scan_slots(sent_line)
+    for slot in missing:
+        plain_len, raw_of, at = _scan_slots(fixed)
+        plain = _TAG_RE.sub("", _SLOT_RE.sub("", fixed))
+        order = ids.index(slot)
+        before = next((ids[i] for i in range(order - 1, -1, -1) if ids[i] in at), None)
+        after = next((ids[i] for i in range(order + 1, len(ids)) if ids[i] in at), None)
+        src_a, tr_a = (source_at[before][0], at[before][0]) if before is not None else (0, 0)
+        src_b, tr_b = (source_at[after][0], at[after][0]) if after is not None else (source_len, plain_len)
+        if tr_b < tr_a:  # 译文语序和原文相反，就紧跟在前一个后面
+            target, tr_b, after = float(tr_a), tr_a, None
+        elif src_b > src_a:
+            target = tr_a + (source_at[slot][0] - src_a) / (src_b - src_a) * (tr_b - tr_a)
+        else:
+            target = float(tr_a)
+
+        def score(position: int) -> float:
+            # 离按比例算出的位置越近越好；紧跟在空格、标点后面的位置优先（紧跟在前一个占位符
+            # 后面的不算，那里前面挨着的是公式）
+            bonus = 0.75 if (
+                position > 0 and plain[position - 1] in _SLOT_BOUNDARY_CHARS
+                and not (before is not None and position == tr_a)
+            ) else 0.0
+            return abs(position - target) - bonus
+
+        # 落在词与词之间；空格前面能往后挪的挪到空格后面（「, <x2/> est」而不是「,<x2/> est」）
+        choices = [
+            position for position in range(tr_a, tr_b + 1)
+            if position in (0, plain_len)
+            or not (
+                (_is_word_char(plain[position - 1]) and _is_word_char(plain[position]))
+                or (plain[position].isspace() and position < tr_b)
+            )
+        ]
+        if not choices:
+            return None
+        position = min(choices, key=score)
+        # 和后一个占位符落在同一处时排在它前面，相邻的几个公式不换顺序
+        index = at[after][1] if after is not None and position == tr_b else raw_of[position]
+        # 西文里落在空格和下一个词之间：公式后面也留一个空格（「, <x2/> est」）
+        gap = " " if (
+            0 < position < plain_len and plain[position - 1].isspace() and _is_word_char(plain[position])
+        ) else ""
+        fixed = f"{fixed[:index]}<x{slot}/>{gap}{fixed[index:]}"
+    return fixed
+
+
+def _slots_match(marked_source: str, translation: str) -> bool:
+    """不看格式标记，只核对占位符：译文没有格式标记，每行的占位符和原文一一对应。"""
+    sent_lines = marked_source.split("\n")
+    lines = str(translation or "").split("\n")
+    return len(lines) == len(sent_lines) and not _TAG_RE.search(translation) and all(
+        parse_marked(line, (), _line_slots(sent_line)) is not None for line, sent_line in zip(lines, sent_lines)
+    )
+
+
+def repair_marks(marked_source: str, translation: str) -> str | None:
+    """模型弄丢、重复或写走样了几个占位符时尽量救回，免得整段退回写法、公式全挤到段末
+    （反馈 #19：一段里有十几个行内公式时常丢一两个）。只动占位符，文字一个不改：写走样的
+    改正，重复的和原文没有的去掉，丢了的按它在原文前后两个占位符之间的比例放进译文对应的
+    一截，落在词与词之间、优先紧跟标点。格式标记对不上时整套去掉（这段文字用主体格式），
+    占位符照样放回原处。原文没有占位符、行数对不上、一行里丢了一半以上的返回 None。"""
+    if not _SLOT_RE.search(marked_source):
+        return None
+    sent_lines = marked_source.split("\n")
+    lines = str(translation or "").split("\n")
+    if len(lines) != len(sent_lines):
+        return None
+    repaired_lines = []
+    for sent_line, line in zip(sent_lines, lines):
+        repaired = _repair_line(sent_line, line)
+        if repaired is None:
+            return None
+        repaired_lines.append(repaired)
+    repaired = "\n".join(repaired_lines)
+    if marks_match(marked_source, repaired):
+        return repaired
+    stripped = _TAG_RE.sub("", repaired)
+    return stripped if _slots_match(marked_source, stripped) else None
+
+
 PLACE_MARKS_BATCH = 20
 PLACE_MARKS_PROMPT = (
     "你是文档排版助手。下面 JSON 数组的每一项给出带 <g1>…</g1> 成对格式标记的原文和它已经定稿的译文。"
@@ -758,11 +897,12 @@ def _seed_slots(marked: str, translation: str, texts: dict[int, str]) -> str:
     return "".join(seeded)
 
 
-def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple[str, str]]:
+def place_marks(engine, items, *, should_stop=None, log=None, repaired=None) -> dict[str, tuple[str, str]]:
     """给已经定稿、但没有带标记版本的译文补上标记（记忆库直接套用的、夹杂多种语言那条路
     翻的、模型弄丢标记的、复查改过的）。只让模型插标记：插完去掉标记必须和定稿一字不差
     （只允许空白不同，见 same_text），否则放弃，按整段写法写回。
-    items: [(原文, 带标记原文, 定稿译文)]。"""
+    items: [(原文, 带标记原文, 定稿译文)]。给了 repaired（dict）时，模型这次又弄丢了几个
+    占位符的，经 repair_marks 补救后放进 repaired，由调用方决定要不要用。"""
     import json
 
     from engines.base_engine import engine_supports_chat, strip_markdown_json
@@ -798,11 +938,17 @@ def place_marks(engine, items, *, should_stop=None, log=None) -> dict[str, tuple
         if not isinstance(answers, list) or len(answers) != len(batch):
             continue
         for (source, marked, translation, _seeded, texts), answer in zip(batch, answers):
-            if not isinstance(answer, str) or not marks_match(marked, answer):
+            if not isinstance(answer, str):
                 continue
+            target = placed
+            if not marks_match(marked, answer):
+                answer = repair_marks(marked, answer) if repaired is not None else None
+                if answer is None:
+                    continue
+                target = repaired
             for candidate in (_settle_object_gaps(answer, translation, texts), answer):
                 if same_text(strip_marks(candidate, texts), translation):
-                    placed[source] = (marked, candidate)
+                    target[source] = (marked, candidate)
                     break
     return placed
 
