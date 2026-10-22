@@ -684,7 +684,7 @@ def create_failure_placeholder_page(
         ("问题描述", _localized_pdf_placeholder_problem(error_summary), body_font),
         (
             "处理建议",
-            "请稍后重试这一页，或检查 PDF 与图片翻译模型的 API 密钥、接口地址和服务商状态。",
+            "请稍后重试这一页，或检查图像翻译模型的 API 密钥、接口地址和服务商状态。",
             body_font,
         ),
         ("源页图像", str(source_image_path), path_font),
@@ -1433,7 +1433,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # 「自动识别场景」：读 PDF 文字层、请模型写一段文档说明的回调（见 core.document_profile）。
         # 不给就不做；每个文件的说明按源路径存在 _document_contexts 里，逐页带进翻译要求。
         self._profile_requester = profile_requester
-        # 各文件的文档说明互不依赖，按文档翻译模型的并发设置同时请求。
+        # 各文件的文档说明互不依赖，按文本翻译模型的并发设置同时请求。
         self._profile_concurrency = max(1, int(profile_concurrency or 1))
         self._document_contexts: dict[str, str] = {}
         self._source_root = Path(source_root) if source_root else None
@@ -1876,17 +1876,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
             logger.debug(f"[PDF] 单页重生成解析翻译模型配置失败原始错误：{exc!r}")
             raise PdfPageActionError(
-                "PDF 与图片翻译模型的设置不可用："
-                + user_facing_reason(exc, fallback="请在设置中检查 PDF 与图片翻译模型的连接。")
+                "图像翻译模型的设置不可用："
+                + user_facing_reason(exc, fallback="请在设置中检查图像翻译模型的连接。")
             ) from exc
         if not provider_supports_capability(model_config.provider, "image"):
             raise PdfPageActionError(
                 unsupported_capability_message(
-                    "PDF 与图片翻译模型", model_config.provider, "image"
+                    "图像翻译模型", model_config.provider, "image"
                 )
             )
         if not model_config.model:
-            raise PdfPageActionError("PDF 与图片翻译模型的名称不能为空。")
+            raise PdfPageActionError("图像翻译模型的名称不能为空。")
 
         review_model_config = None
         review_concurrency = 1
@@ -2814,17 +2814,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if not provider_supports_capability(model_config.provider, "image"):
                 raise ImageModelUnavailableError(
                     unsupported_capability_message(
-                        "PDF 与图片翻译模型", model_config.provider, "image"
+                        "图像翻译模型", model_config.provider, "image"
                     )
                 )
             if not model_config.model:
-                raise ImageModelUnavailableError("PDF 与图片翻译模型的名称不能为空")
+                raise ImageModelUnavailableError("图像翻译模型的名称不能为空")
             if image_optional and model_config.mode == "cloud" and not model_config.api_key:
-                raise ImageModelUnavailableError("PDF 与图片翻译模型还没有填写 API 密钥")
+                raise ImageModelUnavailableError("图像翻译模型还没有填写 API 密钥")
             # 自动组合时图像模型只是扫描页和保底用的：这套配置测过、没通过，就当没有，
             # 那些页保留原样，不让每一页都去试一遍再报错（也省掉白花的请求费）。
             if image_optional and model_config.availability_status == "unavailable":
-                raise ImageModelUnavailableError("PDF 与图片翻译模型的连接测试未通过")
+                raise ImageModelUnavailableError("图像翻译模型的连接测试未通过")
         except ImageModelUnavailableError as exc:
             message = str(exc)
             if image_optional:
@@ -2839,7 +2839,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     signature=model_signature,
                     checked_at=datetime.now().isoformat(timespec="seconds"),
                 )
-                self._queue.put(ErrorMsg(message=f"PDF 与图片翻译模型的设置不可用：{message}"))
+                self._queue.put(ErrorMsg(message=f"图像翻译模型的设置不可用：{message}"))
                 return
         except Exception as exc:  # noqa: BLE001 - init converted to UI error.
             logger.debug(f"[PDF] 解析翻译模型配置失败原始错误：{exc!r}")
@@ -2849,10 +2849,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             else:
                 self._queue.put(
                     ErrorMsg(
-                        message="PDF 与图片翻译模型的设置不可用："
+                        message="图像翻译模型的设置不可用："
                         + user_facing_reason(
                             exc,
-                            fallback="请在设置中检查 PDF 与图片翻译模型的连接。",
+                            fallback="请在设置中检查图像翻译模型的连接。",
                         )
                     )
                 )
@@ -5111,7 +5111,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
 
     def _submit_document_context(self, executor: ThreadPoolExecutor, path: Path) -> Future[str] | None:
-        """「自动识别场景」：读这份 PDF 的文字层，交给后台请文档翻译模型概括成一段文档说明。
+        """「自动识别场景」：读这份 PDF 的文字层，交给后台请文本翻译模型概括成一段文档说明。
 
         文字层在当前线程读（PDF 库不宜多线程同时用），只有模型请求放到后台。
         没有文字层就不请求，返回 None。
@@ -5215,7 +5215,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         user_facing_reason(
                             exc,
                             fallback=(
-                                "PDF 与图片翻译模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                                "图像翻译模型当前不可用，请在设置中检查此连接的 API 密钥、"
                                 "模型名称和账户额度。"
                             ),
                         )
@@ -5240,7 +5240,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
                 last_error = user_facing_reason(
                     exc,
-                    fallback="PDF 与图片翻译模型本次未返回可用结果，请稍后重试，或在设置中更换连接。",
+                    fallback="图像翻译模型本次未返回可用结果，请稍后重试，或在设置中更换连接。",
                 )
                 self._record_page_retrying(page_record)
                 self._log(
@@ -5793,7 +5793,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         record_image_model_availability(
             self._settings,
             ok=True,
-            message="PDF 与图片翻译模型调用成功。",
+            message="图像翻译模型调用成功。",
             checked_at=datetime.now().isoformat(timespec="seconds"),
         )
 
@@ -6578,7 +6578,7 @@ def _localized_pdf_placeholder_problem(error_summary: str) -> str:
             return sentence
     return user_facing_reason(
         raw,
-        fallback="PDF 与图片翻译模型本次未返回可用结果。",
+        fallback="图像翻译模型本次未返回可用结果。",
     )
 
 

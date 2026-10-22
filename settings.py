@@ -349,7 +349,8 @@ class ModelConnection(TextProtocolSettings):
     @property
     def display_label(self) -> str:
         if self.label:
-            return self.label
+            # 跟随连接没起名时，界面会把「跟随 + 用途名」存成连接名；用途改名后旧名照新说法显示。
+            return _RENAMED_FOLLOW_LABELS.get(self.label, self.label)
         # 没起名的连接以前直接显示 Base URL 或内部标识（custom_openai），设置页
         # 和任务中心里读起来像代码。改成服务商名，有地址时补上主机名好区分多条连接。
         name = _PROVIDER_DISPLAY_NAMES.get(self.provider, self.provider)
@@ -368,6 +369,12 @@ class ModelUpgradeState(BaseModel):
 
 
 _SEEDED_CONNECTION_PREFIX = "seed-"
+
+# V10.3.2 起「文档翻译」改称「文本翻译」，「PDF 与图片翻译」改称「图像翻译」。
+_RENAMED_FOLLOW_LABELS = {
+    "跟随文档翻译（Excel / Word / CAD）": "跟随文本翻译（Excel / Word / CAD）",
+    "跟随PDF 与图片翻译": "跟随图像翻译",
+}
 
 _PROVIDER_DISPLAY_NAMES = {
     **{value: label for label, value in {**CLOUD_ENGINES, **LOCAL_MODEL_PROVIDERS}.items()},
@@ -949,7 +956,7 @@ _RATE_FIELD_LIMITS: dict[str, tuple[int, int]] = {
 class SurfaceRateSettings(BaseModel):
     """一种文件类型的速率与重试（v38 起，「翻译参数」各页签里的同一组设置）。
 
-    None 表示没改过：按文档翻译模型是云端还是本地取默认值（core/surface_rate.py），
+    None 表示没改过：按文本翻译模型是云端还是本地取默认值（core/surface_rate.py），
     换成本地模型时跟着换成本地那一档。填了数就固定用这个数。
     """
 
@@ -1182,7 +1189,7 @@ class PdfSettings(BaseModel):
     # 以前的「大幅面起点」（A3 / A2 / A1 / A0）。2026-10-21 起自动组合先看内容再看尺寸
     # （见 core.pdf_routes），不再读这一项；字段留着，旧设置文件照常读写。
     oversized_page_threshold: Literal["A3", "A2", "A1", "A0"] = "A3"
-    # 「自动识别场景」：翻译前先用文档翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
+    # 「自动识别场景」：翻译前先用文本翻译模型读一遍 PDF 的文字层，写一段文档说明（什么
     # 文档、什么专业、有歧义的短词指什么），带进每页的翻译要求里。扫描件没有文字
     # 层时这一步自动跳过。v33 新增，默认开。
     smart_context: bool = True

@@ -34,6 +34,12 @@ class ConnectionDisplayLabelTests(unittest.TestCase):
     def test_user_given_name_wins(self) -> None:
         self.assertEqual(ModelConnection(provider="deepseek", label="主力").display_label, "主力")
 
+    def test_old_default_follow_names_show_the_renamed_uses(self) -> None:
+        old = ModelConnection(provider="deepseek", label="跟随文档翻译（Excel / Word / CAD）")
+        self.assertEqual(old.display_label, "跟随文本翻译（Excel / Word / CAD）")
+        self.assertEqual(old.label, "跟随文档翻译（Excel / Word / CAD）")
+        self.assertEqual(ModelConnection(label="跟随PDF 与图片翻译").display_label, "跟随图像翻译")
+
 
 if __name__ == "__main__":
     unittest.main()

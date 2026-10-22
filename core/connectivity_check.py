@@ -601,7 +601,7 @@ def check_connectivity(
 
     normalized_role = str(role or ROLE_TRANSLATION).strip()
     if normalized_role not in {ROLE_TRANSLATION, ROLE_CLEANER}:
-        raise ValueError("连接测试只支持文档翻译模型或记忆库清洗模型。")
+        raise ValueError("连接测试只支持文本翻译模型或记忆库清洗模型。")
     config = resolve_effective_model_config(
         settings,
         normalized_role,

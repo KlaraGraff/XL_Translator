@@ -119,9 +119,17 @@
     "en": "Harmonized terms: the document translation model set one translation for {0} recurring {0|word|words}; {0|it|they} will be sent with the batches",
     "fr": "Termes harmonisés : le modèle de traduction de documents a fixé une traduction unique pour {0} {0|terme récurrent|termes récurrents}, {0|envoyée|envoyées} avec les lots"
   },
+  "统一用词：文本翻译模型为文中反复出现的 {0} 个词确定了统一译法，将随批附上": {
+    "en": "Harmonized terms: the text translation model set one translation for {0} recurring {0|word|words}; {0|it|they} will be sent with the batches",
+    "fr": "Termes harmonisés : le modèle de traduction de texte a fixé une traduction unique pour {0} {0|terme récurrent|termes récurrents}, {0|envoyée|envoyées} avec les lots"
+  },
   "统一用词：记忆库清洗模型未能确定译法，改用文档翻译模型。原因：{0}": {
     "en": "Harmonized terms: the memory cleanup model could not set the translations; using the document translation model instead. Reason: {0}",
     "fr": "Termes harmonisés : le modèle de nettoyage de la mémoire n'a pas pu fixer les traductions ; le modèle de traduction de documents prend le relais. Raison : {0}"
+  },
+  "统一用词：记忆库清洗模型未能确定译法，改用文本翻译模型。原因：{0}": {
+    "en": "Harmonized terms: the memory cleanup model could not set the translations; using the text translation model instead. Reason: {0}",
+    "fr": "Termes harmonisés : le modèle de nettoyage de la mémoire n'a pas pu fixer les traductions ; le modèle de traduction de texte prend le relais. Raison : {0}"
   },
   "统一用词：未能确定译法，按常规方式继续翻译。原因：{0}": {
     "en": "Harmonized terms: no translations could be set; translation continues as usual. Reason: {0}",

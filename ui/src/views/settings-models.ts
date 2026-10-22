@@ -102,9 +102,9 @@ import { localeTag, t, tx, localized } from "../i18n";
 // 角色中文原名。settings.ts 的 MODEL_ROLE_LABELS 已随界面语言翻译，只能用于显示；
 // 跟随连接的默认名称要存进设置，必须用这份中文原文，显示时再 tx()。
 const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
-  translation: "文档翻译（Excel / Word / CAD）", // i18n-ignore 存进设置的值
+  translation: "文本翻译（Excel / Word / CAD）", // i18n-ignore 存进设置的值
   cleaner: "记忆库清洗", // i18n-ignore 存进设置的值
-  image: "PDF 与图片翻译", // i18n-ignore 存进设置的值
+  image: "图像翻译", // i18n-ignore 存进设置的值
   pdf_review: "PDF 与图片审核", // i18n-ignore 存进设置的值
 };
 
@@ -158,9 +158,9 @@ function accessFollowSource(role: string): string {
 
 // 用途的短名（分段控件、卡片标题、「X 当前使用的连接」里用）；全名带适用范围，见 MODEL_ROLE_LABELS。
 const MODEL_ROLE_SHORT_LABELS: Record<string, string> = localized(() => ({
-  translation: t("文档翻译"),
+  translation: t("文本翻译"),
   cleaner: t("记忆库清洗"),
-  image: t("PDF 与图片翻译"),
+  image: t("图像翻译"),
   pdf_review: t("PDF 与图片审核"),
 }));
 // 用途卡第二行开头的适用范围（跟随别的用途时改写「跟随…」）。

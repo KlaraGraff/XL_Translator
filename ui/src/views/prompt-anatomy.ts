@@ -84,11 +84,11 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
   const retries = Math.max(0, Math.trunc(input.termRetries));
   const steps = [
     t("任务开始时查找记忆库：整段与记忆库词条相同的内容直接套用，不发送给模型。"),
-    t("开启「自动识别场景」时，先由文档翻译模型通读整份文件，写一段文档说明，每份文件一次。"),
+    t("开启「自动识别场景」时，先由文本翻译模型通读整份文件，写一段文档说明，每份文件一次。"),
   ];
   if (withTerms) {
     steps.push(
-      t("开启「自动识别场景」且内容较多时，再找出文中反复出现的词，由记忆库清洗模型（未配置时由文档翻译模型）结合文档说明定下统一译法，每份文件一次。"),
+      t("开启「自动识别场景」且内容较多时，再找出文中反复出现的词，由记忆库清洗模型（未配置时由文本翻译模型）结合文档说明定下统一译法，每份文件一次。"),
       t("其余内容分批发送。每批发送前，查找本批实际出现的记忆库词条，随本批一起发送。"),
       retries > 0
         ? t("译文返回后核对「始终采用」的词条；未采用时附上改正说明重新翻译，最多 {0} 次，仍未采用的位置标记为需复核。", retries)
@@ -98,7 +98,7 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
       steps.push(t("本文档统一用词同样核对：未采用时随第一次重新翻译一并改正，仍未采用的不再重译，也不标记。"));
     }
   } else {
-    steps.push(t("其余内容分批发送给文档翻译模型。"));
+    steps.push(t("其余内容分批发送给文本翻译模型。"));
   }
   steps.push(input.surface === "word"
     ? t("译文为空或不完整时，按「单段最多重试次数」重新翻译；仍失败的段落保留原文，并标记为需复核。")
@@ -151,7 +151,7 @@ export function docPromptAnatomy(input: DocAnatomyInput): PromptAnatomy {
   if (withTerms) notes.push(t("记忆库中未在本批出现的词条不发送。"));
   return {
     steps,
-    heading: t("每批发送给文档翻译模型的内容"),
+    heading: t("每批发送给文本翻译模型的内容"),
     groups: [{ used: true, blocks }],
     notes,
   };
@@ -164,7 +164,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
   const wordUsed = auto && input.textRoute === "word";
   const inplaceUsed = auto && (input.textRoute === "inplace" || input.drawingRoute === "inplace");
 
-  const steps = [t("开启「自动识别场景」时，先读取 PDF 中的文字，由文档翻译模型写一段文档说明；扫描件没有可读文字时跳过。")];
+  const steps = [t("开启「自动识别场景」时，先读取 PDF 中的文字，由文本翻译模型写一段文档说明；扫描件没有可读文字时跳过。")];
   if (auto) {
     steps.push(t("按页面类型分别处理：扫描页、可提取文字的页、图纸和大图各按 PDF 页面「翻译方式」中的设定；某页无法使用所选方式时改用保底方式。"));
   }
@@ -175,7 +175,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
     steps.push(t("单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。"));
   }
   if (wordUsed) steps.push(t("转成 Word 的页：连续几页合成一份 Word，按 Word 的提示词设置和记忆库翻译，再转回 PDF。"));
-  if (inplaceUsed) steps.push(t("原位替换的页：取出页面上的文字发送给文档翻译模型，译文按原字号和颜色写回原位置。"));
+  if (inplaceUsed) steps.push(t("原位替换的页：取出页面上的文字发送给文本翻译模型，译文按原字号和颜色写回原位置。"));
   if (auto) steps.push(t("全部完成后，按原页序合成一份 PDF。"));
 
   const groupState = (used: boolean, fallback = false): string =>
@@ -198,7 +198,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
       ],
     },
     {
-      title: t("转成 Word · 发送给文档翻译模型"),
+      title: t("转成 Word · 发送给文本翻译模型"),
       state: groupState(wordUsed),
       used: wordUsed,
       blocks: [{
@@ -209,7 +209,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
       }],
     },
     {
-      title: t("原位替换 · 发送给文档翻译模型"),
+      title: t("原位替换 · 发送给文本翻译模型"),
       state: groupState(inplaceUsed),
       used: inplaceUsed,
       blocks: [

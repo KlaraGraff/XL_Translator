@@ -815,6 +815,10 @@
     "en": "Document translation model",
     "fr": "Modèle de traduction de documents"
   },
+  "文本翻译模型": {
+    "en": "Text translation model",
+    "fr": "Modèle de traduction de texte"
+  },
   "记忆库清洗模型": {
     "en": "Memory cleanup model",
     "fr": "Modèle de nettoyage de la mémoire"
@@ -827,6 +831,10 @@
     "en": "Same as document translation model",
     "fr": "Identique au modèle de traduction de documents"
   },
+  "跟随文本翻译模型": {
+    "en": "Same as text translation model",
+    "fr": "Identique au modèle de traduction de texte"
+  },
   "跟随记忆库清洗模型": {
     "en": "Same as memory cleanup model",
     "fr": "Identique au modèle de nettoyage de la mémoire"
@@ -835,9 +843,29 @@
     "en": "Same as PDF & image translation model",
     "fr": "Identique au modèle de traduction PDF et images"
   },
+  "跟随图像翻译模型": {
+    "en": "Same as image translation model",
+    "fr": "Identique au modèle de traduction d'images"
+  },
   "跟随 PDF 与图片审核模型": {
     "en": "Same as PDF & image review model",
     "fr": "Identique au modèle de vérification PDF et images"
+  },
+  "跟随文本翻译（Excel / Word / CAD）": {
+    "en": "Same as text translation (Excel / Word / CAD)",
+    "fr": "Identique à la traduction de texte (Excel / Word / CAD)"
+  },
+  "跟随文档翻译（Excel / Word / CAD）": {
+    "en": "Same as text translation (Excel / Word / CAD)",
+    "fr": "Identique à la traduction de texte (Excel / Word / CAD)"
+  },
+  "跟随图像翻译": {
+    "en": "Same as image translation",
+    "fr": "Identique à la traduction d'images"
+  },
+  "跟随PDF 与图片翻译": {
+    "en": "Same as image translation",
+    "fr": "Identique à la traduction d'images"
   },
   "翻译文字": {
     "en": "text translation",
@@ -874,6 +902,10 @@
   "{0}只能独立配置，不能与其他用途共用连接。\n原因：图像生成模型无法用于译文审核或文档翻译，共用连接会导致其中一方被发送到无法处理该请求的服务器。": {
     "en": "{0} must be configured separately and cannot share a connection with other uses.\nReason: image generation models cannot be used for translation review or document translation, so sharing a connection would send one of them to a server that cannot handle it.",
     "fr": "{0} doit être configuré de façon indépendante et ne peut pas partager sa connexion avec d'autres usages.\nMotif : les modèles de génération d'images ne servent ni à la vérification des traductions ni à la traduction de documents ; partager une connexion enverrait l'un des deux vers un serveur incapable de le traiter."
+  },
+  "{0}只能独立配置，不能与其他用途共用连接。\n原因：图像生成模型无法用于译文审核或文本翻译，共用连接会导致其中一方被发送到无法处理该请求的服务器。": {
+    "en": "{0} must be configured separately and cannot share a connection with other uses.\nReason: image generation models cannot be used for translation review or text translation, so sharing a connection would send one of them to a server that cannot handle it.",
+    "fr": "{0} doit être configuré de façon indépendante et ne peut pas partager sa connexion avec d'autres usages.\nMotif : les modèles de génération d'images ne servent ni à la vérification des traductions ni à la traduction de texte ; partager une connexion enverrait l'un des deux vers un serveur incapable de le traiter."
   },
   "{0}只支持云端模型。": {
     "en": "{0} only supports cloud models.",
@@ -934,6 +966,10 @@
   "PDF 与图片翻译需要支持图片生成的云端模型。": {
     "en": "PDF & image translation needs a cloud model that can generate images.",
     "fr": "La traduction PDF et images nécessite un modèle cloud capable de générer des images."
+  },
+  "图像翻译需要支持图片生成的云端模型。": {
+    "en": "Image translation needs a cloud model that can generate images.",
+    "fr": "La traduction d'images nécessite un modèle cloud capable de générer des images."
   },
   "PDF 与图片审核需要支持图片识别的云端模型。": {
     "en": "PDF & image review needs a cloud model that can read images.",
@@ -1227,9 +1263,17 @@
     "en": "Enter the name of the PDF & image translation model first.",
     "fr": "Saisissez d'abord le nom du modèle de traduction PDF et images."
   },
+  "请先填写图像翻译模型的名称。": {
+    "en": "Enter the name of the image translation model first.",
+    "fr": "Saisissez d'abord le nom du modèle de traduction d'images."
+  },
   "PDF 与图片翻译模型还没有填写 API 密钥。": {
     "en": "The PDF & image translation model has no API key yet.",
     "fr": "Aucune clé API n'a encore été saisie pour le modèle de traduction PDF et images."
+  },
+  "图像翻译模型还没有填写 API 密钥。": {
+    "en": "The image translation model has no API key yet.",
+    "fr": "Aucune clé API n'a encore été saisie pour le modèle de traduction d'images."
   },
   "已开启逐页审核，请先填写 PDF 与图片审核模型的名称。": {
     "en": "Page-by-page review is on. Enter the name of the PDF & image review model first.",
@@ -1247,9 +1291,17 @@
     "en": "The PDF & image translation model settings cannot be used: {0}",
     "fr": "Les paramètres du modèle de traduction PDF et images sont inutilisables : {0}"
   },
+  "图像翻译模型的设置不可用：{0}": {
+    "en": "The image translation model settings cannot be used: {0}",
+    "fr": "Les paramètres du modèle de traduction d'images sont inutilisables : {0}"
+  },
   "PDF 与图片翻译模型": {
     "en": "PDF & image translation model",
     "fr": "Modèle de traduction PDF et images"
+  },
+  "图像翻译模型": {
+    "en": "Image translation model",
+    "fr": "Modèle de traduction d'images"
   },
   "PDF 与图片审核模型的设置不可用：{0}": {
     "en": "The PDF & image review model settings cannot be used: {0}",

@@ -1,7 +1,7 @@
 {
-  "填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文档翻译、PDF 与图片、记忆库清洗可分别使用不同的模型。": {
-    "en": "Enter the provider, model and API key, then click “Test connection” to confirm the configuration works. Document translation, PDF & images and memory cleanup can each use a different model.",
-    "fr": "Renseignez le fournisseur, le modèle et la clé API, puis cliquez sur « Tester la connexion » pour vérifier que la configuration fonctionne. La traduction de documents, les PDF et images et le nettoyage de la mémoire peuvent chacun utiliser un modèle différent."
+  "填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文本翻译、图像翻译、记忆库清洗可分别使用不同的模型。": {
+    "en": "Enter the provider, model and API key, then click “Test connection” to confirm the configuration works. Text translation, image translation and memory cleanup can each use a different model.",
+    "fr": "Renseignez le fournisseur, le modèle et la clé API, puis cliquez sur « Tester la connexion » pour vérifier que la configuration fonctionne. La traduction de texte, la traduction d'images et le nettoyage de la mémoire peuvent chacun utiliser un modèle différent."
   },
   "打开模型配置": {
     "en": "Open model settings",

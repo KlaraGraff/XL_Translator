@@ -63,7 +63,7 @@ def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSig
 def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str, ...]:
     """Map one translation page to the model roles it will occupy."""
     normalized_page = str(page_key or "").strip()
-    # 运行时注册的类型（EXTENSION_PAGE_KEY）只翻文字，与 Excel、Word、CAD 一样只用文档翻译模型。
+    # 运行时注册的类型（EXTENSION_PAGE_KEY）只翻文字，与 Excel、Word、CAD 一样只用文本翻译模型。
     if normalized_page in {"excel_translate", "word_translate", "cad_translate", EXTENSION_PAGE_KEY}:
         return (ROLE_TRANSLATION,)
     if normalized_page == "tm_clean":
@@ -72,7 +72,7 @@ def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str
         roles = [ROLE_IMAGE]
         if bool(settings.pdf.review_enabled):
             roles.append(ROLE_PDF_REVIEW)
-        # 原位替换、转 Word（Beta 分支）用文档翻译模型翻文字
+        # 原位替换、转 Word（Beta 分支）用文本翻译模型翻文字
         if getattr(settings.pdf, "translation_route", "image") != "image":
             roles.append(ROLE_TRANSLATION)
         return tuple(roles)

@@ -104,10 +104,10 @@ class PdfSurface(Surface):
                 text_model = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             except Exception as exc:  # noqa: BLE001
                 raise TaskInputError(
-                    f"所选的 PDF 翻译方式要用文档翻译模型，它的设置不可用：{_model_config_reason(exc)}"
+                    f"所选的 PDF 翻译方式要用文本翻译模型，它的设置不可用：{_model_config_reason(exc)}"
                 ) from exc
             if not text_model.model:
-                raise TaskInputError("所选的 PDF 翻译方式要用文档翻译模型，请先在模型设置里填好它。")
+                raise TaskInputError("所选的 PDF 翻译方式要用文本翻译模型，请先在模型设置里填好它。")
         try:
             _validate_image_model(settings)
         except TaskInputError:
@@ -198,7 +198,7 @@ class PdfSurface(Surface):
 
 
 def _inplace_enabled(settings: AppSettings) -> bool:
-    """翻译方式不是整页图像翻译（原位替换、转 Word、自动组合都要用文档翻译模型）。"""
+    """翻译方式不是整页图像翻译（原位替换、转 Word、自动组合都要用文本翻译模型）。"""
     return getattr(settings.pdf, "translation_route", "image") != "image"
 
 
@@ -207,28 +207,28 @@ def _validate_image_model(settings: AppSettings) -> None:
         image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
     except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
         raise TaskInputError(
-            f"PDF 与图片翻译模型的设置不可用：{_model_config_reason(exc)}",
+            f"图像翻译模型的设置不可用：{_model_config_reason(exc)}",
             reason=REASON_IMAGE_MODEL_MISSING,
         ) from exc
     if not image_model.model:
         raise TaskInputError(
-            "请先填写 PDF 与图片翻译模型的名称。", reason=REASON_IMAGE_MODEL_MISSING
+            "请先填写图像翻译模型的名称。", reason=REASON_IMAGE_MODEL_MISSING
         )
     if not provider_supports_capability(image_model.provider, "image"):
         raise TaskInputError(
             unsupported_capability_message(
-                "PDF 与图片翻译模型", image_model.provider, "image"
+                "图像翻译模型", image_model.provider, "image"
             ),
             reason=REASON_IMAGE_MODEL_MISSING,
         )
     if image_model.mode == "cloud" and not image_model.api_key:
         raise TaskInputError(
-            "PDF 与图片翻译模型还没有填写 API 密钥。", reason=REASON_IMAGE_MODEL_MISSING
+            "图像翻译模型还没有填写 API 密钥。", reason=REASON_IMAGE_MODEL_MISSING
         )
 
 
 def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
-    """「原位替换文字（Beta）」：文档翻译模型 + 可选的文字识别组件。
+    """「原位替换文字（Beta）」：文本翻译模型 + 可选的文字识别组件。
 
     引擎在第一次用到时才建（在任务线程里，拿任务开始时的密钥快照）。引擎、分批请求
     和记忆库的接线在 core/text_translation_service.py，与 CAD 共用。
@@ -299,15 +299,15 @@ def _document_profile_concurrency(settings: AppSettings) -> int:
 
         return max(1, int(resolve_surface_rate(settings, "pdf_text").concurrency))
     except Exception as exc:  # noqa: BLE001 - fall back to one at a time.
-        logger.debug(f"[PDF] 读取文档翻译模型并发设置失败：{exc!r}")
+        logger.debug(f"[PDF] 读取文本翻译模型并发设置失败：{exc!r}")
         return 1
 
 
 def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str, ...]):
-    """「自动识别场景」：用文档翻译模型（不是生图模型）读 PDF 文字层、写文档说明。
+    """「自动识别场景」：用文本翻译模型（不是生图模型）读 PDF 文字层、写文档说明。
 
     引擎在第一次用到时才建，并在任务线程里建，这样拿到的是任务开始时的密钥快照；
-    建不起来（没配文档翻译模型）就记一行日志、不写说明，PDF 照常翻译。
+    建不起来（没配文本翻译模型）就记一行日志、不写说明，PDF 照常翻译。
     """
     from core.document_profile import request_document_profile
     from core.engine_dispatcher import build_role_engine
@@ -332,7 +332,7 @@ def _document_profile_requester(settings: AppSettings, connection_ids: tuple[str
                     engine = None
                 state["engine"] = engine if engine is not None and engine_supports_chat(engine) else None
                 if state["engine"] is None:
-                    log("WARN", "自动识别场景：文档翻译模型不可用，不生成文档说明，PDF 照常翻译")
+                    log("WARN", "自动识别场景：文本翻译模型不可用，不生成文档说明，PDF 照常翻译")
             engine = state["engine"]
         if engine is None:
             return ""

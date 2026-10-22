@@ -22,6 +22,10 @@
 
   **PDF in-place replacement: any target language, and Chinese source text**: In-place replacement used to translate foreign drawings into Chinese only. It now translates into other languages too (except scripts that need joined shaping, such as Arabic, Thai and Hindi, whose pages use the fallback with a notice), and Chinese, Japanese and Korean in the text layer are read and translated; CJK text drawn as strokes is not recognised yet and stays as it is. Translations that do not fit are narrowed, then shrunk, then wrapped, following CAD's write-back rules; PDF Advanced gains "In-place layout" (translation font, initial and minimum font scale). The translation font is a system font that covers the whole translation in the target language.
 
+- **模型用途改名：「文本翻译模型」和「图像翻译模型」**（反馈 #16）：「设置 → 模型服务」里的「文档翻译模型」改称「文本翻译模型」，「PDF 与图片翻译模型」改称「图像翻译模型」，提示、错误信息、帮助和英文、法文界面同步。以前名称里带「PDF」，容易让人以为翻译 PDF 都要在这里选模型；其实 PDF 的「转成 Word」「原位替换」用的是文本翻译模型，只有整页图像翻译和图片文件才用图像翻译模型。
+
+  **Model uses renamed: "Text translation model" and "Image translation model"** (feedback #16): Under Settings → Models, the "Document translation model" is now the "Text translation model" and the "PDF & image translation model" is now the "Image translation model", with hints, error messages, help and the English and French interface updated to match. The old name mentioned PDF, which suggested every PDF needed a model set there; in fact PDF "Convert to Word" and "In-place replacement" use the text translation model, and only full-page image translation and image files use the image translation model.
+
 - **其他改进**：PDF 报告计入原位替换和转 Word 部分的重试与降速次数；PDF 任务的原文语言记为「自动识别」，任务标题不再显示「中文 → 中文」；模型服务繁忙等提示写明是哪个页面（PDF、CAD、PPT）发出的；无法解析的模型回复不再写进运行日志，避免客户原文随任务包或反馈包传出。
 
   **Other improvements**: The PDF report counts retries and slowdowns from in-place and Word parts; PDF tasks record their source language as auto-detect, so the task header no longer reads "Chinese → Chinese"; notices such as "model service busy" now name the page that sent them (PDF, CAD, PPT); model replies that cannot be parsed are no longer written into the run log, so client text does not travel in task or feedback packages.

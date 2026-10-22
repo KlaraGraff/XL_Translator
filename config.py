@@ -146,7 +146,7 @@ OLLAMA_RECOMMENDED_MODELS = [
 ]
 
 # ── 翻译提示词（V10 起分两层）──────────────────────────────
-# 发给文档翻译模型的 system prompt 由程序拼成：
+# 发给文本翻译模型的 system prompt 由程序拼成：
 #   1. CORE_TRANSLATION_PROMPT —— 内置规则，用户看得到、改不了。底线（编号原样保留、
 #      日期单位换写法、只返回可直接放回原文的译文）都在这里，用户的补充要求怎么写都删不掉。
 #   2. 「自动识别场景」开着时，翻译前现写的文档说明（core/document_profile.py）。

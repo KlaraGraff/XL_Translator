@@ -432,8 +432,8 @@ function connectionSwitchText(task: TaskStatus): string {
 
 /** model_snapshot 里没给 label 的角色（老记录）才用得到的兜底名字。 */
 const ROLE_LABELS: Record<string, string> = localized(() => ({
-  translation: t("文档翻译模型"),
-  image: t("PDF 与图片翻译模型"),
+  translation: t("文本翻译模型"),
+  image: t("图像翻译模型"),
   pdf_review: t("PDF 与图片审核模型"),
   review: t("PDF 与图片审核模型"),
   cleaner: t("记忆库清洗模型"),

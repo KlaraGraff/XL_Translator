@@ -29,7 +29,7 @@
   "原位替换（保留矢量）": {"en": "Replace in place (keep vectors)", "fr": "Remplacement sur place (vecteurs conservés)"},
   "原来的做法：每页交给图像模型重画": {"en": "The original method: the image model redraws every page", "fr": "Méthode d'origine : le modèle d'image redessine chaque page"},
   "原样保留": {"en": "Keep as is", "fr": "Conserver tel quel"},
-  "图像翻译": {"en": "image translation", "fr": "traduction d'image"},
+  "图像翻译": {"en": "Image translation", "fr": "Traduction d'images"},
   "图纸和大图": {"en": "Drawings and large pages", "fr": "Plans et grands formats"},
   "尚未检测到文字识别组件。可打开官网、选择安装位置或重新检测。": {"en": "No text recognition component was found. Open the official site, select its install location, or detect again.", "fr": "Aucun composant de reconnaissance de texte détecté. Ouvrez le site officiel, sélectionnez son emplacement d'installation ou relancez la détection."},
   "尚未连接 PDF 转 Word 组件。可打开官网、选择安装位置或重新检测。": {"en": "The PDF-to-Word component is not connected. Open the official site, select its install location, or detect again.", "fr": "Le composant PDF vers Word n'est pas connecté. Ouvrez le site officiel, sélectionnez son emplacement d'installation ou relancez la détection."},
