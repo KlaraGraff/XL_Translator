@@ -2,7 +2,7 @@
 //
 // 同一组五项（同时请求数、每批条数、每批字符上限、失败重试次数、单段重试次数）
 // 按文件类型保存在 settings.rate.<类型>；PDF 整页图像翻译另有三项，存在
-// settings.pdf。留空（null）表示按文档翻译模型是云端还是本地取默认值，所以框里
+// settings.pdf。留空（null）表示按文本翻译模型是云端还是本地取默认值，所以框里
 // 显示的数、可填的上限都来自 GET /api/settings/rate，而不是在这里写死。
 
 import { createButton, createSwitch } from "../components";

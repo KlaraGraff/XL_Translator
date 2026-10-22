@@ -114,7 +114,7 @@ def register(app: FastAPI) -> None:
             result = str(engine.chat(system, user) or "").strip()
         except Exception as exc:
             logger.warning("domain prompt optimization failed for {}: {}", normalized, exc)
-            raise HTTPException(502, "模型优化失败，请检查文档翻译模型配置。") from exc
+            raise HTTPException(502, "模型优化失败，请检查文本翻译模型配置。") from exc
         if result.startswith("```") and result.endswith("```"):
             result = result.split("\n", 1)[1] if "\n" in result else result
             result = result.rsplit("```", 1)[0].strip()

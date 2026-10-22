@@ -168,7 +168,7 @@ class DeepSeekReviewTests(unittest.TestCase):
         with patch("core.model_roles.get_key", return_value="sk-test"):
             result = check_pdf_review_connectivity(self._settings("deepseek-v4-pro"), max_attempts=1)
         self.assertFalse(result.ok)
-        self.assertEqual(result.message, f"PDF 与图片审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
+        self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
 
 
 class ProviderDefaultsRouteTests(unittest.TestCase):

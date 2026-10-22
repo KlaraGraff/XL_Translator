@@ -227,7 +227,7 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         path = self._file("a.txt", "\n".join(lines) + "\n")
         engine = FakeEngine()
         settings = self._settings()
-        # 运行时注册的类型没有自己的一组速率：按文档翻译模型的吞吐量取。
+        # 运行时注册的类型没有自己的一组速率：按文本翻译模型的吞吐量取。
         batch = resolve_surface_rate(settings, ECHO_KEY).batch_items
         _runner, messages = self._run(engine, [path], settings=settings)
         assert sorted(len(call) for call in engine.calls) == sorted(

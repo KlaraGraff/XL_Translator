@@ -38,10 +38,10 @@ ROLE_PDF_REVIEW = "pdf_review"
 SOURCE_INDEPENDENT = "independent"
 
 MODEL_ROLE_LABELS = {
-    ROLE_TRANSLATION: "文档翻译模型",
+    ROLE_TRANSLATION: "文本翻译模型",
     ROLE_CLEANER: "记忆库清洗模型",
-    ROLE_IMAGE: "PDF 与图片翻译模型",
-    ROLE_PDF_REVIEW: "PDF 与图片审核模型",
+    ROLE_IMAGE: "图像翻译模型",
+    ROLE_PDF_REVIEW: "图像翻译审核模型",
 }
 
 MODEL_ROLE_CAPABILITIES = {
@@ -60,10 +60,10 @@ MODEL_ROLES = (
 
 FOLLOW_SOURCE_LABELS = {
     SOURCE_INDEPENDENT: "独立配置",
-    ROLE_TRANSLATION: "跟随文档翻译模型",
+    ROLE_TRANSLATION: "跟随文本翻译模型",
     ROLE_CLEANER: "跟随记忆库清洗模型",
-    ROLE_IMAGE: "跟随 PDF 与图片翻译模型",
-    ROLE_PDF_REVIEW: "跟随 PDF 与图片审核模型",
+    ROLE_IMAGE: "跟随图像翻译模型",
+    ROLE_PDF_REVIEW: "跟随图像翻译审核模型",
 }
 
 # 报错里给用户看的能力说法；内部能力代码（text / image / vision_text）不出现在句子里。
@@ -751,7 +751,7 @@ def _follow_rejection_message(role: str, source: str) -> str:
     if isolated in FOLLOW_ISOLATED_ROLES:
         return (
             f"{role_label(isolated)}只能独立配置，不能与其他用途共用连接。\n原因："
-            "图像生成模型无法用于译文审核或文档翻译，"
+            "图像生成模型无法用于译文审核或文本翻译，"
             "共用连接会导致其中一方被发送到无法处理该请求的服务器。"
         )
     return f"{role_label(role)}不能跟随{role_label(source)}，请改为独立配置。"
@@ -1153,8 +1153,8 @@ def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
     role_name = role_label(role)
     reason = {
         ROLE_CLEANER: "记忆库清洗需要云端文本模型。",
-        ROLE_IMAGE: "PDF 与图片翻译需要支持图片生成的云端模型。",
-        ROLE_PDF_REVIEW: "PDF 与图片审核需要支持图片识别的云端模型。",
+        ROLE_IMAGE: "图像翻译需要支持图片生成的云端模型。",
+        ROLE_PDF_REVIEW: "图像翻译审核需要支持图片识别的云端模型。",
     }.get(role, f"{role_name}只支持云端模型。")
     source_name = role_label(source_role) if source_role else "跟随来源"
     return (

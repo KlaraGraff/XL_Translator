@@ -102,10 +102,10 @@ import { localeTag, t, tx, localized } from "../i18n";
 // 角色中文原名。settings.ts 的 MODEL_ROLE_LABELS 已随界面语言翻译，只能用于显示；
 // 跟随连接的默认名称要存进设置，必须用这份中文原文，显示时再 tx()。
 const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
-  translation: "文档翻译（Excel / Word / CAD）", // i18n-ignore 存进设置的值
+  translation: "文本翻译（Excel / Word / CAD）", // i18n-ignore 存进设置的值
   cleaner: "记忆库清洗", // i18n-ignore 存进设置的值
-  image: "PDF 与图片翻译", // i18n-ignore 存进设置的值
-  pdf_review: "PDF 与图片审核", // i18n-ignore 存进设置的值
+  image: "图像翻译", // i18n-ignore 存进设置的值
+  pdf_review: "图像翻译审核", // i18n-ignore 存进设置的值
 };
 
 // 「改为转成 Word 翻译」：PDF 改成自动组合，能提取文字的页转成 Word 翻译，不用图像模型；
@@ -158,10 +158,10 @@ function accessFollowSource(role: string): string {
 
 // 用途的短名（分段控件、卡片标题、「X 当前使用的连接」里用）；全名带适用范围，见 MODEL_ROLE_LABELS。
 const MODEL_ROLE_SHORT_LABELS: Record<string, string> = localized(() => ({
-  translation: t("文档翻译"),
+  translation: t("文本翻译"),
   cleaner: t("记忆库清洗"),
-  image: t("PDF 与图片翻译"),
-  pdf_review: t("PDF 与图片审核"),
+  image: t("图像翻译"),
+  pdf_review: t("图像翻译审核"),
 }));
 // 用途卡第二行开头的适用范围（跟随别的用途时改写「跟随…」）。
 const MODEL_ROLE_SCOPES: Record<string, string> = localized(() => ({
@@ -169,6 +169,15 @@ const MODEL_ROLE_SCOPES: Record<string, string> = localized(() => ({
   cleaner: t("记忆库词条"),
   image: t("整页图像"),
   pdf_review: t("逐页审核"),
+}));
+
+// 「连接」一节说明里每种用途做什么、要什么能力的模型。图像翻译那张卡容易被当成
+// 「翻译 PDF 都要配」，写明转成 Word、原位替换用不到它（反馈 #16）。
+const MODEL_ROLE_PURPOSES: Record<string, string> = localized(() => ({
+  translation: t("用于翻译文字内容，包括 Excel、Word、PPT、CAD 及 PDF 的「转成 Word」「原位替换」；使用文字模型即可，无需识别图片。"),
+  cleaner: t("用于整理记忆库中的译文，以及为文中反复出现的词确定统一译法；建议选用能力较强的模型。"),
+  image: t("用于整页图像翻译和图片文件，需使用能生成图片的模型。PDF 使用「转成 Word」或「原位替换」翻译时无需设置此项。"),
+  pdf_review: t("用于逐页核对重新生成的译文图片与原页内容是否一致，需使用能识别图片的模型。"),
 }));
 
 /** 连接方式的选项。label 是完整说法（下拉、悬停提示），short 是分段控件里放得下的短说法。 */
@@ -309,7 +318,7 @@ export function renderModelsPage(host: HTMLElement): void {
   // ---- 连接：列表在上，所选连接的表单紧接在同一节里 ----
   const connSec = sec({
     title: t("连接"),
-    desc: t("{0}当前使用的连接。", MODEL_ROLE_SHORT_LABELS[role] || role),
+    desc: t("{0}当前使用的连接。", MODEL_ROLE_SHORT_LABELS[role] || role) + (MODEL_ROLE_PURPOSES[role] ?? ""),
     actions: [buildAddConnectionButton(role)],
   });
   let listCard = buildConnectionListCard(role);

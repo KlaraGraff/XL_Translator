@@ -160,8 +160,8 @@ function connectCard(executable: string, fallback: boolean): HTMLElement {
 }
 
 const MODEL_ROLES: { key: string; label: () => string }[] = [
-  { key: "translation", label: () => t("文档翻译（Excel / Word / CAD）") },
-  { key: "image", label: () => t("PDF 与图片翻译") },
+  { key: "translation", label: () => t("文本翻译（Excel / Word / CAD）") },
+  { key: "image", label: () => t("图像翻译") },
 ];
 
 function roleConfigured(role: RolePayload | undefined): boolean {

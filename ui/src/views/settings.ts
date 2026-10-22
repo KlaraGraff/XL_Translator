@@ -285,10 +285,10 @@ const NO_EXTRA_PROMPT = "无"; // i18n-ignore 发回后端的值
 const RESERVED_EXTRA_NAMES = new Set(["无", "自定义", "自动识别场景", "同步工程场景", "资料管理场景", "行政生活化场景"]); // i18n-ignore 与后端保留名比较
 
 export const MODEL_ROLE_LABELS: Record<string, string> = localized(() => ({
-  translation: t("文档翻译（Excel / Word / CAD）"),
+  translation: t("文本翻译（Excel / Word / CAD）"),
   cleaner: t("记忆库清洗"),
-  image: t("PDF 与图片翻译"),
-  pdf_review: t("PDF 与图片审核"),
+  image: t("图像翻译"),
+  pdf_review: t("图像翻译审核"),
 }));
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";
@@ -751,7 +751,7 @@ function renderDataHealthBanner(): void {
 
 async function loadAndRenderPage(token: number): Promise<void> {
   try {
-    // 速率的默认值和上限跟着文档翻译模型是云端还是本地走，每次进这一页都重新取。
+    // 速率的默认值和上限跟着文本翻译模型是云端还是本地走，每次进这一页都重新取。
     if (currentPage === "params") {
       await refreshRateOverview();
     }
@@ -1555,7 +1555,7 @@ function renderParamsPage(host: HTMLElement): void {
   if (isExtSurface(paramsTab)) {
     host.append(sec({
       title: t("速率与重试"),
-      desc: t("速率与重试：扩展类型不单独设置，按文档翻译模型（云端或本地）使用默认值。"),
+      desc: t("速率与重试：扩展类型不单独设置，按文本翻译模型（云端或本地）使用默认值。"),
     }).root);
   } else {
     const rate = renderRateSection(paramsTab);
@@ -1599,7 +1599,7 @@ function placeTabUnderline(tabs: HTMLElement, underline: HTMLElement, active: HT
   });
 }
 
-/** 运行时注册的类型的页签：目标语言和源语言（速率与重试那一节只放一句说明，这类类型按文档翻译模型取默认值）。 */
+/** 运行时注册的类型的页签：目标语言和源语言（速率与重试那一节只放一句说明，这类类型按文本翻译模型取默认值）。 */
 function renderExtParams(surface: ExtSurface): HTMLElement[] {
   const id = surface.slice("ext:".length);
   const saved = extParams(surface);
@@ -1802,7 +1802,7 @@ function renderPdfPromptCard(): HTMLDivElement {
   const { root: card, body } = sec({ className: "prompt-sec" });
   body.append(smartContextRow(
     pdfParamsSettings().smart_context !== false,
-    t("开启后，翻译前先让文档翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。"),
+    t("开启后，翻译前先让文本翻译模型读一遍 PDF 里的文字，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。每页翻译时附上这段说明。每份文件多调用一次模型；扫描件没有可读文字时自动跳过。"),
     (checked) => saveSettingPath("pdf.smart_context", checked),
   ));
   card.append(promptCardHead("pdf"), body);
@@ -1863,7 +1863,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   // ① 自动识别场景：开关。翻译前先通读文档写一段文档说明，随每批内容一起发送。
   body.append(smartContextRow(
     current.smartContext,
-    t("开启后，每次翻译前先让文档翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型；某批未采用统一译法时，再重新翻译一次。"),
+    t("开启后，每次翻译前先让文本翻译模型通读这份文档，写一段简短的文档说明：这是什么文档、属于哪个专业，以及「甲」「FM」这类单独出现的短词在这里指什么。这段说明随每批内容一起发送，所以同一个词在不同文档里会按各自的意思翻译。内容较多的文件，还会为文中反复出现的词定下统一译法，各批一致采用。每份文件多调用一到两次模型；某批未采用统一译法时，再重新翻译一次。"),
     (checked) => enqueueSave(async () => {
       await putDomain({ ...basePayload(), smart_context: checked });
       Object.assign(current, domainSettingsFor(surface));
@@ -1952,7 +1952,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   refinementInput.placeholder = t("例如：保留电气专业术语，不要增加解释");
   const refinementField = settingsFold("prompt-advanced", {
     title: t("高级"),
-    content: fieldWithHint(t("整理时的额外说明（可选）"), refinementInput, t("整理时，这些说明将一并发送给文档翻译模型。整理结果需经您确认后保存。")),
+    content: fieldWithHint(t("整理时的额外说明（可选）"), refinementInput, t("整理时，这些说明将一并发送给文本翻译模型。整理结果需经您确认后保存。")),
   });
   body.append(refinementField);
 

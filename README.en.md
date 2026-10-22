@@ -140,7 +140,7 @@ Besides Excel, Word, PowerPoint, PDF and CAD, other file types can be translated
 
 ## Model services
 
-Configure the provider, model name and API key under Settings → Models and test the connection before use. Document translation, PDF and image translation, and memory cleanup can each use a different model.
+Configure the provider, model name and API key under Settings → Models and test the connection before use. Text translation, image translation, and memory cleanup can each use a different model.
 
 If the service briefly fails or times out, the batch is resent automatically and moves to a backup connection if it still fails. For Excel and CAD, the number of resends can be set under Settings → Translation options (0 to 5, default 2). If the API key is rejected or the quota is exhausted, the job stops immediately with an explanation.
 

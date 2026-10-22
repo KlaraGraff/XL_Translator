@@ -336,7 +336,7 @@ class AdapterSurface(Surface):
         settings = request.settings
         options = self.resolve_options(settings, request.options)
         # 引擎、提示词、分批请求和记忆库的接线与 CAD、PDF 原位替换共用；速率与重试按
-        # 文档翻译模型的吞吐量取（core/surface_rate.py extension_rate）。
+        # 文本翻译模型的吞吐量取（core/surface_rate.py extension_rate）。
         service = TextTranslationService(
             settings,
             surface_key=self.key,

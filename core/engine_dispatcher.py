@@ -414,7 +414,7 @@ def get_system_prompt(
     page_key: str = "",
     default_core_prompt: str = "",
 ) -> str:
-    """拼出发给文档翻译模型的 System Prompt（不含返回格式，那段由引擎追加）。
+    """拼出发给文本翻译模型的 System Prompt（不含返回格式，那段由引擎追加）。
 
     内置规则（``core_prompt_for``：内置页面是 CORE_TRANSLATION_PROMPT、用户改不了；运行时
     注册的类型用户可以改，没改过时用 ``default_core_prompt``，即清单里的 ``prompt``）始终

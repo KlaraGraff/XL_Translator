@@ -201,7 +201,7 @@ def register(app: FastAPI) -> None:
         """「翻译参数」各页签的速率与重试：已存值、默认值、可填范围和当前实际用的值。
 
         保存走 PUT /api/settings（rate.<类型>.<项>，null 表示恢复默认值）。默认值和
-        范围按文档翻译模型是云端还是本地分档，界面据此显示占位和上限。
+        范围按文本翻译模型是云端还是本地分档，界面据此显示占位和上限。
         """
         return rate_overview(load_settings())
 

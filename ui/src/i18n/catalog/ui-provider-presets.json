@@ -19,17 +19,17 @@
     "en": "No usable image translation model: scanned pages and pages that need the safety net are kept as they are.",
     "fr": "Aucun modèle de traduction d'image utilisable : les pages numérisées et celles qui ont besoin de la solution de repli sont conservées telles quelles."
   },
-  "PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。": {
-    "en": "PDF and image review needs a model that can read images. Choose a model that accepts image input.",
-    "fr": "La vérification des PDF et des images nécessite un modèle capable de lire les images. Choisissez un modèle qui accepte des images en entrée."
+  "图像翻译审核需要能识别图片的模型，请换一个支持图片输入的模型。": {
+    "en": "Image translation review needs a model that can read images. Choose a model that accepts image input.",
+    "fr": "La vérification des images nécessite un modèle capable de lire les images. Choisissez un modèle qui accepte des images en entrée."
   },
-  "PDF 与图片翻译模型的连接测试未通过": {
-    "en": "The PDF and image translation model failed its connection test",
-    "fr": "Le modèle de traduction des PDF et des images a échoué au test de connexion"
+  "图像翻译模型的连接测试未通过": {
+    "en": "The image translation model failed its connection test",
+    "fr": "Le modèle de traduction d'images a échoué au test de connexion"
   },
-  "PDF 与图片翻译模型的连接测试未通过。": {
-    "en": "The PDF and image translation model failed its connection test.",
-    "fr": "Le modèle de traduction des PDF et des images a échoué au test de connexion."
+  "图像翻译模型的连接测试未通过。": {
+    "en": "The image translation model failed its connection test.",
+    "fr": "Le modèle de traduction d'images a échoué au test de connexion."
   },
   "改为转成 Word 翻译": {
     "en": "Switch to Convert to Word",
@@ -39,8 +39,8 @@
     "en": "Switched to Convert to Word: the PDF translation method is now “Automatic mix”, and pages with extractable text are translated through Word.",
     "fr": "Passage à Conversion en Word : la méthode de traduction PDF est désormais « Combinaison automatique » et les pages dont le texte peut être extrait sont traduites via Word."
   },
-  "PDF 与图片翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。": {
-    "en": "PDF and image translation requires an image model; text models are not suitable. In our tests, ChatGPT's image-2.5-flare currently performs best. Use this model, or switch to Convert to Word.",
-    "fr": "La traduction des PDF et des images nécessite un modèle d'image ; les modèles de texte ne conviennent pas. D'après nos essais, image-2.5-flare de ChatGPT donne actuellement les meilleurs résultats. Utilisez ce modèle, ou passez à Conversion en Word."
+  "图像翻译需使用图像模型，文字模型不适用。经实测，目前效果最佳的是 ChatGPT 的 image-2.5-flare，建议选用该模型，或改为转成 Word 翻译。": {
+    "en": "Image translation requires an image model; text models are not suitable. In our tests, ChatGPT's image-2.5-flare currently performs best. Use this model, or switch to Convert to Word.",
+    "fr": "La traduction d'images nécessite un modèle d'image ; les modèles de texte ne conviennent pas. D'après nos essais, image-2.5-flare de ChatGPT donne actuellement les meilleurs résultats. Utilisez ce modèle, ou passez à Conversion en Word."
   }
 }

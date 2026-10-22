@@ -149,13 +149,13 @@ class OpenAICompatiblePdfReviewClient:
         if not provider_supports_capability(model_config.provider, "vision_text"):
             raise PdfReviewModelUnavailableError(
                 unsupported_capability_message(
-                    "PDF 与图片审核模型", model_config.provider, "vision_text"
+                    "图像翻译审核模型", model_config.provider, "vision_text"
                 )
             )
         if not model_config.api_key:
-            raise PdfReviewModelUnavailableError("PDF 与图片审核模型尚未填写 API 密钥")
+            raise PdfReviewModelUnavailableError("图像翻译审核模型尚未填写 API 密钥")
         if not model_config.model:
-            raise PdfReviewModelUnavailableError("PDF 与图片审核模型的名称不能为空")
+            raise PdfReviewModelUnavailableError("图像翻译审核模型的名称不能为空")
 
         base_url = _normalize_base_url(model_config)
         from core.model_auto_upgrade import (
@@ -216,7 +216,7 @@ class OpenAICompatiblePdfReviewClient:
                     humanize_error(
                         str(exc),
                         fallback=(
-                            "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                            "图像翻译审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
                             "模型名称和账户额度。"
                         ),
                     )
@@ -331,7 +331,7 @@ def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
     )
 
 
-REVIEW_MODEL_ADVICE = "PDF 与图片审核需要能识别图片的模型，请换一个支持图片输入的模型。"
+REVIEW_MODEL_ADVICE = "图像翻译审核需要能识别图片的模型，请换一个支持图片输入的模型。"
 
 
 def check_pdf_review_connectivity(
@@ -411,7 +411,7 @@ def check_pdf_review_connectivity(
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
     base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
-        raise PdfReviewModelUnavailableError("PDF 与图片审核模型尚未填写接口地址")
+        raise PdfReviewModelUnavailableError("图像翻译审核模型尚未填写接口地址")
     return base_url
 
 

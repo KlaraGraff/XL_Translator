@@ -121,7 +121,7 @@
   （`orderedTypeKeys`；用户排过的顺序里各类型的先后不动，只把新类型插进去）。v39 升级时调过的 `order` 换成整张表的顺序，`pinned` 不沿用。
   不显示只影响侧栏：视图照常注册，任务中心「打开工作区」、命令行和 MCP 照常可用。`PUT /api/settings` 拒绝
   让全部类型都不显示（422），界面同样拦。
-- **模型与速率**：`page_key = "adapter"` 的任务只占文档翻译模型（`task_model_roles_for_page`）；
+- **模型与速率**：`page_key = "adapter"` 的任务只占文本翻译模型（`task_model_roles_for_page`）；
   速率与重试没有单独一组时按模型吞吐量取（`core/surface_rate.py`）。
 - **文本翻译**：`TextTranslationService` 把「按翻译参数取速率与重试、建文档翻译引擎、拼提示词
   （补充要求、文档说明、固定术语）、分批请求、记忆库整段复用与词条附批」接好；只需要「抽文字 →
@@ -203,7 +203,7 @@ adapters/<id>/
   2. 原文语言为「自动」时识别这个文件的原文语言（用于记忆库语言对和日志，提示词仍按「自动」）。
   3. 「自动识别场景」开启时读一遍生成文档说明。
   4. 记忆库整段命中的直接采用；其余把 `protected` 片段换成 `⟦n⟧` 标记，经 `TextTranslationService`
-     分批送模型（速率与重试按文档翻译模型的吞吐量，`core/surface_rate.py` 的 `extension_rate`）。带 `marked` 的
+     分批送模型（速率与重试按文本翻译模型的吞吐量，`core/surface_rate.py` 的 `extension_rate`）。带 `marked` 的
      单元由 `InlineMarkEngine` 换成带标记的原文发出（记忆库词条包在它外面，按纯文本查词核对）。
      仅译文模式下原文是中文时，「中文 + 外文」的内容先分出来，与 Excel、Word 同一套规则单独翻
      （`split_mixed_language_sources` / `translate_mixed_language_texts(translation_only=True)`，不用记忆库）：
