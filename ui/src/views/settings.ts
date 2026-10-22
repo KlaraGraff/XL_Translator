@@ -293,7 +293,7 @@ export const MODEL_ROLE_LABELS: Record<string, string> = localized(() => ({
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";
 
-export const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek"];
+export const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek", "xiaomi"];
 export const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
 const PROVIDER_LABELS: Record<string, string> = localized(() => ({
   custom_openai: t("自定义配置"),
@@ -303,6 +303,7 @@ const PROVIDER_LABELS: Record<string, string> = localized(() => ({
   dashscope: t("阿里百炼"),
   siliconflow: t("硅基流动"),
   deepseek: "DeepSeek",
+  xiaomi: t("小米 MiMo"),
   ollama: "Ollama",
   lm_studio: "LM Studio",
   custom_local: t("自定义本地服务"),

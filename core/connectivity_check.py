@@ -36,6 +36,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "lanyi",
     "siliconflow",
     "deepseek",
+    "xiaomi",
 }
 
 @dataclass(frozen=True)
