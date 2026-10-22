@@ -1,5 +1,11 @@
 # Translator 版本更新日志
 
+## V10.3.4
+
+- **公式多的 Word 段落，公式不再整段挤到段末**（反馈 #19）：一段里公式很多时，模型漏掉、重复或写错其中一个公式的位置标记，整段以前就退回整段写法，所有公式接在译文后面；一段超过 16 个公式时连标记都不加。现在写错的标记改正、多出的去掉，漏掉的按它在原文前后两个公式之间的位置放进译文对应的地方，其余公式照常留在原处；漏掉一半以上的仍接在译文后面。一段最多 40 个公式。
+
+  **Equations no longer all pile up at the end of equation-heavy Word paragraphs** (feedback #19): When a paragraph held many equations and the model dropped, repeated or garbled one equation's position mark, the whole paragraph used to fall back to plain writing with every equation after the translation, and paragraphs with more than 16 equations got no marks at all. Garbled marks are now corrected, extra ones removed, and a dropped one is placed in the translation between the same neighbours it had in the original, while the other equations stay in place; if more than half are lost, they still follow the translation. A paragraph can hold up to 40 equations.
+
 ## V10.3.3
 
 10.3.2 只作为预发布版给个别用户试用过，没有正式发布，其内容并入本版。
