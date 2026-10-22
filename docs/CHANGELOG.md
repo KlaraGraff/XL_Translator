@@ -1,5 +1,11 @@
 # Translator 版本更新日志
 
+## 未发布
+
+- **Word 公式不再从译文里消失**（反馈 #18）：段落里用 Word 公式编辑器写的公式（如 C₃A、CaF₂、7.0 MPa），以前双语版式的译文段里整个不见、句中留下空档；仅显示译文时公式都挤到段末。现在公式随原文一起标出位置，译文里放回句中对应的地方，双语版式的译文段里也有一份；个别段落放不回原处时，公式接在译文后面，不会丢。文末单独一行的公式也不再被当成空行删掉。
+
+  **Word equations no longer vanish from translations** (feedback #18): Equations written with Word's equation editor inside a paragraph (such as C₃A, CaF₂, 7.0 MPa) used to be missing from the translated line in bilingual layout, leaving gaps in the sentence; in translation-only output they all piled up at the end of the paragraph. Their positions are now marked along with the source text and the equations go back to the matching place in the translation, including the translated line in bilingual layout; if a paragraph's equations cannot be placed, they follow the translation instead of being lost. An equation alone on the last line of a document is no longer removed as an empty line.
+
 ## V10.3.3
 
 10.3.2 只作为预发布版给个别用户试用过，没有正式发布，其内容并入本版。
@@ -37,10 +43,6 @@
 - **模型服务新增「小米 MiMo」**（反馈 #17）：多数用户使用 Token Plan 套餐，选中后 Base URL 默认填为 Token Plan 国内地址 `https://token-plan-cn.xiaomimimo.com/v1`，「获取 ↗ API 密钥」指向套餐管理页。Base URL 旁的说明写明套餐与按量付费 API 地址不同，Base URL 可从下拉列表中选择 Token Plan 国内、新加坡、欧洲地址或按量付费 API 地址（`https://api.xiaomimimo.com/v1`），选按量付费时链接随之指向 API Keys 页。测试连接或获取模型列表因密钥被拒、接口不存在等失败时，额外提示检查 Base URL。不预填型号，「获取模型列表」只列对话模型（语音识别、语音合成模型不列）。可用于文本翻译、记忆库清洗和图像翻译审核（mimo-v2.6 系列能识别图片）；它不能生成图片，用作图像翻译模型时会提示不支持。
 
   **New model service: Xiaomi MiMo** (feedback #17): Most users have a Token Plan subscription, so selecting it fills Base URL with the Token Plan China address `https://token-plan-cn.xiaomimimo.com/v1`, and "Get ↗ API key" opens plan management. A note beside Base URL explains that Token Plan and the pay-as-you-go API use different addresses, and Base URL offers a dropdown with the Token Plan China, Singapore and Europe addresses and the pay-as-you-go API address (`https://api.xiaomimimo.com/v1`); choosing pay-as-you-go switches the link to the API Keys page. When Test connection or Fetch model list fails because the key is rejected or the endpoint does not exist, an extra line suggests checking the Base URL. No model name is prefilled, and Fetch model list shows chat models only (speech recognition and speech synthesis models are left out). It can be used for text translation, memory cleanup and image translation review (the mimo-v2.6 models read images); it cannot generate images, so choosing it as the image translation model shows that it is not supported.
-
-- **Word 公式不再从译文里消失**（反馈 #18）：段落里用 Word 公式编辑器写的公式（如 C₃A、CaF₂、7.0 MPa），以前双语版式的译文段里整个不见、句中留下空档；仅显示译文时公式都挤到段末。现在公式随原文一起标出位置，译文里放回句中对应的地方，双语版式的译文段里也有一份；个别段落放不回原处时，公式接在译文后面，不会丢。文末单独一行的公式也不再被当成空行删掉。
-
-  **Word equations no longer vanish from translations** (feedback #18): Equations written with Word's equation editor inside a paragraph (such as C₃A, CaF₂, 7.0 MPa) used to be missing from the translated line in bilingual layout, leaving gaps in the sentence; in translation-only output they all piled up at the end of the paragraph. Their positions are now marked along with the source text and the equations go back to the matching place in the translation, including the translated line in bilingual layout; if a paragraph's equations cannot be placed, they follow the translation instead of being lost. An equation alone on the last line of a document is no longer removed as an empty line.
 
 - **其他改进**：PDF 报告计入原位替换和转 Word 部分的重试与降速次数；PDF 任务的原文语言记为「自动识别」，任务标题不再显示「中文 → 中文」；模型服务繁忙等提示写明是哪个页面（PDF、CAD、PPT）发出的；无法解析的模型回复不再写进运行日志，避免客户原文随任务包或反馈包传出。
 
