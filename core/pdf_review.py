@@ -51,7 +51,9 @@ PDF_PAGE_REVIEW_PROMPT = (
 
 
 # 没有 OpenAI ``/responses`` 接口、只能走 ``/chat/completions`` 的服务商。
-CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow"})
+# DeepSeek 的图片输入以 /chat/completions 为准（官方视觉指南的首选写法），
+# 不去试 /v1/responses。
+CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow", "deepseek"})
 _ROUTE_PATHS = {"chat": "chat/completions", "responses": "responses"}
 
 
@@ -252,7 +254,7 @@ def _responses_review_payload(
 def _chat_review_payload(
     model: str, user_text: str, source_image_path: Path, translated_image_path: Path,
 ) -> dict[str, Any]:
-    # 只有 /chat/completions 的服务商（硅基流动）：同一组内容换成 chat 的 image_url 写法。
+    # 只走 /chat/completions 的服务商（硅基流动、DeepSeek）：同一组内容换成 chat 的 image_url 写法。
     return {
         "model": model,
         "messages": [

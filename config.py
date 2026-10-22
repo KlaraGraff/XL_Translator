@@ -35,10 +35,14 @@ IMAGE_GENERATION_MODEL_PROVIDERS = {
     "硅基流动": "siliconflow",
 }
 
+# 看图审核：能读图片输入的服务商。DeepSeek 自 2026-08-21 起 API 接受图片输入
+# （现为 deepseek-flash；deepseek-v4-pro 不支持，测试连接会如实报错）。它不能生成
+# 图片，所以不在上面的图像翻译名单里。
 VISION_TEXT_MODEL_PROVIDERS = {
     "OpenAI / ChatGPT": "openai",
     "自定义配置": "custom_openai",
     "硅基流动": "siliconflow",
+    "DeepSeek": "deepseek",
 }
 
 DEFAULT_CLOUD_PROVIDER = "custom_openai"
