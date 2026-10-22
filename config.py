@@ -61,9 +61,10 @@ LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
 ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-# 小米 MiMo 按量付费只有这一个地址（国内）。Token Plan 套餐用户的 Base URL 按订阅地区
-# 不同（token-plan-cn / -sgp / -ams），自己改成套餐页给的地址即可。
-XIAOMI_BASE_URL = "https://api.xiaomimimo.com/v1"
+# 小米 MiMo 的 Token Plan 套餐和按量付费 API 地址不同，密钥也不通用。多数用户买的是
+# Token Plan，默认填国内套餐地址；其他地区套餐（-sgp / -ams）和按量付费用户自己改。
+XIAOMI_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+XIAOMI_PAY_AS_YOU_GO_BASE_URL = "https://api.xiaomimimo.com/v1"
 CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "openai": OPENAI_BASE_URL,
     "claude": CLAUDE_BASE_URL,
@@ -73,6 +74,15 @@ CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "xiaomi": XIAOMI_BASE_URL,
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
+# 选中服务商时 Base URL 旁的说明（「?」提示），只给地址有讲究的服务商。
+CLOUD_PROVIDER_BASE_URL_HINTS = {
+    "xiaomi": (
+        # 网址放在句末、后面不跟标点：提示框里标点会被单独折到下一行。
+        "Token Plan 套餐与按量付费 API 使用不同的地址。此处默认填写 Token Plan 国内地址，"
+        "其他地区的套餐请填写套餐页提供的地址。使用按量付费 API 时，请将地址改为："
+        "https://api.xiaomimimo.com/v1"
+    ),
+}
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
 
 # 各家创建 API 密钥的控制台页面。设置页选中服务商时给一个「获取 ↗ API 密钥」链接。
@@ -84,15 +94,14 @@ CLOUD_PROVIDER_API_KEY_PAGES = {
     "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     "dashscope": "https://bailian.console.aliyun.com/?tab=model#/api-key",
     "siliconflow": "https://cloud.siliconflow.cn/account/ak",
-    "xiaomi": "https://platform.xiaomimimo.com/#/console/api-keys",
+    # Token Plan 的密钥（tp- 开头）在套餐管理页。
+    "xiaomi": "https://platform.xiaomimimo.com/#/console/plan-manage",
 }
 # 同一家国内站、国际站账号不通用：Base URL 落在国际站时，链接也指向国际站控制台。
 CLOUD_API_KEY_PAGES_BY_HOST = {
     "api.siliconflow.com": "https://cloud.siliconflow.com/account/ak",
-    # 小米 Token Plan 的密钥（tp- 开头）不在 API Keys 页，在套餐管理页。
-    "token-plan-cn.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
-    "token-plan-sgp.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
-    "token-plan-ams.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/plan-manage",
+    # 小米按量付费 API 的密钥（sk- 开头）在 API Keys 页。
+    "api.xiaomimimo.com": "https://platform.xiaomimimo.com/#/console/api-keys",
 }
 LOCAL_MODEL_PROVIDERS = {
     "Ollama": "ollama",

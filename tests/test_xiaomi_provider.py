@@ -1,7 +1,8 @@
 """小米 MiMo 预设（反馈 #17）：和 DeepSeek 同一条路，OpenAI 兼容、能看图、不能出图。
 
-官方文档（mimo.mi.com/docs）核对过的事实：按量付费地址 https://api.xiaomimimo.com/v1，
-支持 Bearer；GET /v1/models 可用，但把语音识别、语音合成模型和对话模型列在一起；
+官方文档（mimo.mi.com/docs）核对过的事实：Token Plan 套餐地址按地区
+https://token-plan-{cn,sgp,ams}.xiaomimimo.com/v1，按量付费地址 https://api.xiaomimimo.com/v1，
+两者密钥不通用；多数用户用 Token Plan，默认填国内套餐地址（maple 2026-10-22）。支持 Bearer；GET /v1/models 可用，但把语音识别、语音合成模型和对话模型列在一起；
 mimo-v2.6 系列读图走 /chat/completions 的 image_url，没有生成图片的模型。
 """
 
@@ -19,7 +20,9 @@ from api.app import create_app
 from config import (
     CLOUD_ENGINES,
     CLOUD_PROVIDER_API_KEY_PAGES,
+    CLOUD_PROVIDER_BASE_URL_HINTS,
     XIAOMI_BASE_URL,
+    XIAOMI_PAY_AS_YOU_GO_BASE_URL,
     cloud_provider_base_url_default,
     normalize_cloud_base_url,
 )
@@ -57,8 +60,9 @@ class XiaomiPresetTests(unittest.TestCase):
         self.assertEqual(CLOUD_ENGINES.get("小米 MiMo"), "xiaomi")
         self.assertEqual(provider_display_name("xiaomi"), "小米 MiMo")
 
-    def test_default_base_url_is_the_pay_as_you_go_endpoint(self) -> None:
-        self.assertEqual(XIAOMI_BASE_URL, "https://api.xiaomimimo.com/v1")
+    def test_default_base_url_is_the_token_plan_endpoint(self) -> None:
+        self.assertEqual(XIAOMI_BASE_URL, "https://token-plan-cn.xiaomimimo.com/v1")
+        self.assertEqual(XIAOMI_PAY_AS_YOU_GO_BASE_URL, "https://api.xiaomimimo.com/v1")
         self.assertEqual(cloud_provider_base_url_default("xiaomi"), XIAOMI_BASE_URL)
         self.assertEqual(normalize_cloud_base_url("xiaomi", ""), XIAOMI_BASE_URL)
 
@@ -84,8 +88,8 @@ class XiaomiPresetTests(unittest.TestCase):
 
         self.assertIsInstance(build_engine(settings), OpenAIEngine)
 
-    def test_key_console_links(self) -> None:
-        """按量付费的密钥在 API Keys 页；Token Plan（tp- 开头）的在套餐管理页。"""
+    def test_key_console_links_and_base_url_hint(self) -> None:
+        """Token Plan（tp- 开头）的密钥在套餐管理页；按量付费的在 API Keys 页。"""
         client = TestClient(create_app())
         payload = client.get("/api/models/provider-defaults").json()
 
@@ -93,14 +97,18 @@ class XiaomiPresetTests(unittest.TestCase):
         self.assertNotIn("model_defaults", payload)
         self.assertEqual(
             payload["api_key_pages"]["xiaomi"],
-            "https://platform.xiaomimimo.com/#/console/api-keys",
+            "https://platform.xiaomimimo.com/#/console/plan-manage",
         )
         self.assertEqual(payload["api_key_pages"], CLOUD_PROVIDER_API_KEY_PAGES)
-        for region in ("cn", "sgp", "ams"):
-            self.assertEqual(
-                payload["api_key_pages_by_host"][f"token-plan-{region}.xiaomimimo.com"],
-                "https://platform.xiaomimimo.com/#/console/plan-manage",
-            )
+        self.assertEqual(
+            payload["api_key_pages_by_host"]["api.xiaomimimo.com"],
+            "https://platform.xiaomimimo.com/#/console/api-keys",
+        )
+        # Base URL 旁的说明写明两种地址不同，并给出按量付费地址。
+        hint = payload["base_url_hints"]["xiaomi"]
+        self.assertEqual(payload["base_url_hints"], CLOUD_PROVIDER_BASE_URL_HINTS)
+        self.assertIn("Token Plan", hint)
+        self.assertIn(XIAOMI_PAY_AS_YOU_GO_BASE_URL, hint)
 
 
 class _FakeMiMo(BaseHTTPRequestHandler):

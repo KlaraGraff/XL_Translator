@@ -44,6 +44,7 @@ from config import (
     CLOUD_API_KEY_PAGES_BY_HOST,
     CLOUD_PROVIDER_API_KEY_PAGES,
     CLOUD_PROVIDER_BASE_URL_DISABLED,
+    CLOUD_PROVIDER_BASE_URL_HINTS,
     DISABLED_BASE_URL_PLACEHOLDER,
     is_valid_concurrency_unlock_code,
 )
@@ -93,7 +94,9 @@ def register(app: FastAPI) -> None:
 
         ``api_key_pages`` (by provider) and ``api_key_pages_by_host`` (by Base
         URL host, checked first) feed the form's link to each provider's key
-        console.  No model name is prefilled: presets go stale too quickly.
+        console.  ``base_url_hints`` explains the Base URL for providers whose
+        address depends on the plan (Chinese source, translated by the UI).
+        No model name is prefilled: presets go stale too quickly.
         """
         return {
             "base_url_defaults": dict(CLOUD_PROVIDER_BASE_URL_DEFAULTS),
@@ -101,6 +104,7 @@ def register(app: FastAPI) -> None:
             "disabled_placeholder": DISABLED_BASE_URL_PLACEHOLDER,
             "api_key_pages": dict(CLOUD_PROVIDER_API_KEY_PAGES),
             "api_key_pages_by_host": dict(CLOUD_API_KEY_PAGES_BY_HOST),
+            "base_url_hints": dict(CLOUD_PROVIDER_BASE_URL_HINTS),
         }
 
     @app.get("/api/models/roles")

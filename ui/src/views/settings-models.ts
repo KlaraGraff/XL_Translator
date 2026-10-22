@@ -31,6 +31,7 @@ import {
   apiKeyPageFor,
   applyProviderDerivedState,
   attachModelNameDropdown,
+  baseUrlHintFor,
   client,
   CLOUD_PROVIDERS,
   connRow,
@@ -410,10 +411,25 @@ export function renderModelsPage(host: HTMLElement): void {
     },
   );
   baseUrlField.input.id = "settings-model-base-url";
+  // 地址有讲究的服务商（小米 MiMo：套餐地址和按量付费地址不同）在 Base URL 旁挂一个
+  // 「?」说明，跟着所选服务商换；跟随别的用途、本地模型不显示。
+  const baseUrlLabel = baseUrlField.root.querySelector("label");
+  let baseUrlHint: HTMLElement | null = null;
+  const paintBaseUrlHint = (provider: string) => {
+    baseUrlHint?.remove();
+    baseUrlHint = null;
+    const hint = cloudMode && !following ? baseUrlHintFor(provider) : "";
+    if (hint && baseUrlLabel) {
+      baseUrlHint = hintBadge(hint);
+      baseUrlLabel.append(baseUrlHint);
+    }
+  };
+  paintBaseUrlHint(formProvider);
   // 只改 Base URL 的可填性和占位符，不动它的值——草稿回填时要按服务商重放这段联动，
   // 但绝不能把用户刚敲的 Base URL 冲掉。
   setApplyProviderDerivedState((value) => {
     if (!cloudMode) return;
+    paintBaseUrlHint(value);
     if (providerBaseUrlDisabled.has(value)) {
       baseUrlField.input.disabled = true;
       baseUrlField.input.placeholder = disabledBaseUrlPlaceholder();
