@@ -683,11 +683,9 @@ def _vertical_span(valign: int, y: float, height: float) -> tuple[float, float]:
 def _box(entity: _TextEntity) -> _TextBox:
     x, y = _local(entity)
     if entity.entity_type == "MTEXT":
-        lines = [line for line in entity.text.split("\n")] or [""]
-        width = max(estimate_text_width(line, entity.height, 1.0, entity.font_class) for line in lines)
-        if entity.ref_width > 0:
-            width = min(width, entity.ref_width)
-        total_height = entity.height * (1 + (len(lines) - 1) * _MTEXT_LINE_SPACING)
+        # 按宽度（组码 41）在词间换行：比宽度还长的单词 CAD 不断开，照样伸出去。
+        paragraphs = [(1.0, line) for line in entity.text.split("\n")] or [(1.0, "")]
+        width, total_height = _mtext_extent(paragraphs, entity.height, entity.ref_width, entity.font_class)
     else:
         width = estimate_text_width(entity.text, entity.height, entity.width_factor, entity.font_class)
         total_height = entity.height
@@ -1470,30 +1468,37 @@ def fit_table_cells(
         font_class = fonts.get(str(fields.get(7, "STANDARD")).strip().upper(), "shx")
         paragraphs = _mtext_paragraphs(raw, height)
         original = originals[entity_no]
-        limit = max(available, _cell_content_height([(1.0, original)], height, ref_width, font_class))
-        if _cell_content_height(paragraphs, height, ref_width, font_class) <= limit:
+        source_width, source_height = _mtext_extent([(1.0, original)], height, ref_width, font_class)
+        limit = max(available, _cell_content_height([(1.0, original)], height, ref_width, font_class), source_height)
+        # 格子宽度就是换行宽度：一个词比它还宽时 CAD 不断开，伸过竖线压到旁边的格子。
+        width_limit = max(ref_width, source_width) if ref_width > 0 else math.inf
+        can_narrow = not _MTEXT_WIDTH_CODE_RE.search(raw)
+
+        def overflow(split: tuple[float, float]) -> float:
+            """排好后比格子大多少倍（不大于 1 就放得下）。"""
+            height_scale, width_factor = split
+            width, _total = _mtext_extent(paragraphs, height * height_scale, ref_width, font_class, width_factor)
+            total = _cell_content_height(paragraphs, height * height_scale, ref_width / width_factor, font_class)
+            return max(width / width_limit, total / limit if limit > 0 else math.inf)
+
+        def fits(split: tuple[float, float]) -> bool:
+            return overflow(split) <= 1 + 1e-9
+
+        if fits((1.0, 1.0)):
             continue
         tiers = settings.tiers()
-        scale = next(
-            (tier for tier in tiers if _cell_content_height(paragraphs, height * tier, ref_width, font_class) <= limit),
-            None,
-        )
-        if scale is None:
-            scale = tiers[-1]
+        split = next((split for tier in tiers for split in _splits(tier, can_narrow) if fits(split)), None)
+        if split is None:
+            split = min(_splits(tiers[-1], can_narrow), key=overflow)
             if unresolved is not None and not any(item.get("entity") == entity_no for item in unresolved):
                 translation = " ".join(
                     text.strip() for _factor, text in paragraphs if text.strip() and text.strip() != original.strip()
                 )
                 unresolved.append({"source": original, "translation": translation or plain_text(raw), "entity": entity_no})
-        edits.append((start, end, height * scale))
+        edits.append((start, end, height * split[0], split[1]))
 
-    for start, end, new_height in sorted(edits, reverse=True):
-        for index in range(start + 1, end):
-            if records[index].code == 101:
-                break
-            if records[index].code == 40:
-                records[index] = replace(records[index], value=_format_number(new_height))
-                break
+    for start, end, new_height, width_factor in sorted(edits, reverse=True):
+        _write_mtext_size(records, start, end, new_height, None, width_factor)
     return len(edits)
 
 
@@ -1642,6 +1647,15 @@ def _write_mtext_size(
         _write_mtext_content(records, start, end, f"\\W{_format_number(width_factor)};" + _mtext_raw(records, start, end))
 
 
+def _splits(scale: float, can_narrow: bool) -> list[tuple[float, float]]:
+    """整体缩放 ``scale`` 可以怎么拆成 ``(字高比例, 压窄比例)``：先试和单行文字一样先压窄的拆法
+    （字高不变，和旁边对得齐），横向放得下、竖向放不下（双语多一行、折行）时再试只降字高。"""
+    splits = [scale_parts(scale)] if can_narrow else []
+    if (scale, 1.0) not in splits:
+        splits.append((scale, 1.0))
+    return splits
+
+
 @dataclass
 class _CellFit:
     entity: _TextEntity
@@ -1655,7 +1669,7 @@ class _CellFit:
 def _unify_cell_columns(fits: Sequence[_CellFit]) -> None:
     """同一列格子里的多行文字统一大小（和单行文字的 :func:`unify_column_heights` 一样）：
     对齐方式、插入点横坐标、原字高都相同、上下相邻的一列，有的缩了、有的没缩时，整列改成
-    其中最小的字高比例和压窄比例。只会让字变小，换行宽度不变，所以都还在格子里。原文以冒号
+    其中最小的字高比例和最小的整体缩放。只会让字变小，换行宽度不变，所以都还在格子里。原文以冒号
     结尾的（「备注：」这类标题）不算进列。"""
     columns: dict[tuple[Any, ...], list[_CellFit]] = {}
     for fit in fits:
@@ -1674,8 +1688,11 @@ def _unify_cell_columns(fits: Sequence[_CellFit]) -> None:
             last = index == len(members) - 1
             if last or _local(fit.entity)[1] - _local(members[index + 1].entity)[1] > _COLUMN_SPACING * fit.entity.height:
                 if len(run) > 1:
+                    # 字高取最小的，整体缩放（字高 × 压窄）也取最小的：每格的字都不比它自己算出来的
+                    # 更高、更宽，换行宽度不变就都还放得下。
                     height_scale = min(member.height_scale for member in run)
-                    width_factor = min(member.width_factor for member in run)
+                    overall = min(member.height_scale * member.width_factor for member in run)
+                    width_factor = min(1.0, overall / height_scale)
                     for member in run:
                         if member.can_narrow:
                             member.height_scale, member.width_factor = height_scale, width_factor
@@ -1759,26 +1776,28 @@ def fit_cell_mtext(
         # 先照原来的换行宽度，不行再换成格子给的宽度（没设宽度的原本不换行）。
         wraps = [ref] + ([room_width] if abs(room_width - ref) > 1e-6 * max(room_width, 1.0) else [])
 
-        def parts(scale: float, narrow: bool = can_narrow) -> tuple[float, float]:
-            return scale_parts(scale) if narrow else (scale, 1.0)
+        def overflow(split: tuple[float, float], wrap: float) -> float:
+            """排好后比格子大多少倍（不大于 1 就放得下）。"""
+            width, total = _mtext_extent(paragraphs, height * split[0], wrap, font, split[1])
+            return max(width / room_width, total / room_height)
 
-        def fits_in(scale: float, wrap: float) -> bool:
-            height_scale, width_factor = parts(scale)
-            width, total = _mtext_extent(paragraphs, height * height_scale, wrap, font, width_factor)
-            return width <= room_width * (1 + 1e-9) and total <= room_height * (1 + 1e-9)
+        def fits_in(split: tuple[float, float], wrap: float) -> bool:
+            return overflow(split, wrap) <= 1 + 1e-9
 
         scales = [1.0, *(tier for tier in settings.tiers() if tier < 1.0 - 1e-9)]
-        choice = next(((scale, wrap) for scale in scales for wrap in wraps if fits_in(scale, wrap)), None)
+        choice = next(((split, wrap) for scale in scales for split in _splits(scale, can_narrow) for wrap in wraps
+                       if fits_in(split, wrap)), None)
         if choice is None:
-            choice = (scales[-1], wraps[-1])
+            # 最小比例也放不下：取超出最少的拆法和换行宽度。
+            choice = min(((split, wrap) for split in _splits(scales[-1], can_narrow) for wrap in wraps),
+                         key=lambda item: overflow(*item))
             if unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
                 source_plain = plain_text(source)
                 translation = " ".join(
                     text.strip() for _factor, text in paragraphs if text.strip() and text.strip() != source_plain.strip()
                 )
                 unresolved.append({"source": source_plain, "translation": translation or entity.text, "entity": entity.entity_no})
-        scale, wrap = choice
-        height_scale, width_factor = parts(scale)
+        (height_scale, width_factor), wrap = choice
         fits.append(_CellFit(entity, plain_text(source), height_scale, width_factor, None if wrap == ref else wrap, can_narrow))
     _unify_cell_columns(fits)
     changed = [fit for fit in fits if fit.wrap is not None or fit.height_scale < 1.0 - 1e-9 or fit.width_factor < 1.0 - 1e-9]

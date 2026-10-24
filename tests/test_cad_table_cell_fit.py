@@ -4,7 +4,9 @@
 """
 from __future__ import annotations
 
-from core.cad_layout import FitSettings, _mtext_paragraphs, fit_table_cells
+import pytest
+
+from core.cad_layout import FitSettings, _mtext_paragraphs, estimate_text_width, fit_table_cells, mtext_narrowing
 from core.cad_translation import _parse_dxf, _plain_text
 from tests.test_cad_new_features import _drawing, _entities, _field, _translate
 
@@ -135,3 +137,18 @@ def test_bilingual_skips_codes_and_sizes_that_translate_to_themselves(tmp_path):
     table = _entities(output, "ACAD_TABLE")[0]
     assert {record.value for record in table if record.code == 1} >= {"M1", "护边角铁"}
     assert result.stats.changed == 1
+
+
+def test_one_long_word_is_shrunk_until_it_fits_the_cell_width(tmp_path):
+    # 地磅基础图材料表表头「数量」→「Quantity」：CAD 不会把一个词折开，以前按折成两行算高度，
+    # 判成放得下，单词照样伸过竖线压到旁边的表头。
+    _result, output, _messages = _translate(
+        tmp_path, _drawing(*_table(), blocks=_table_block()).replace("\nM1\n", "\n数量\n"),
+        {**TRANSLATIONS, "数量": "Quantity"}, display_mode="translation", translation_font="original",
+    )
+    body = next(body for body in _entities(output, "MTEXT") if "Quantity" in _field(body, 1))
+    raw = _field(body, 1)
+    width = estimate_text_width("Quantity", float(_field(body, 40)), mtext_narrowing(raw))
+    assert width <= 687.8
+    # 先压窄（字高降得少一些）。
+    assert mtext_narrowing(raw) == pytest.approx(0.7)

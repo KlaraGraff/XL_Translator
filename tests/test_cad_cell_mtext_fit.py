@@ -94,13 +94,14 @@ def test_wrapped_names_get_the_cell_width_and_stay_in_their_row(tmp_path, transl
         assert 18 < float(_field(body, 41)) <= COLUMNS[2] - COLUMNS[1]
         assert 37.5 - width / 2 > COLUMNS[1] and 37.5 + width / 2 < COLUMNS[2]
         assert total < ROW
-    # 放宽后「Neutral conductor rod」一行还差一点：和单行文字一样先压窄（到 0.7 才降字高）；同一列三格大小一致。
+    # 放宽后「Neutral conductor rod」一行还差一点：原字体时和单行文字一样先压窄、字高不变；
+    # 同一列三格大小一致。
     sizes = {(_field(cells[name], 40), mtext_narrowing(_raw(cells[name]))) for name in NAMES.values()}
     assert len(sizes) == 1
     height, narrowing = sizes.pop()
-    assert 0.7 <= narrowing < 1 and (float(height) == pytest.approx(HEIGHT) or narrowing == pytest.approx(0.7))
+    assert float(height) / HEIGHT * narrowing < 1
     if font_class == "shx":
-        assert float(height) == pytest.approx(HEIGHT)
+        assert float(height) == pytest.approx(HEIGHT) and 0.7 <= narrowing < 1
     assert result.stats.layout_unresolved == 0
     assert any("已缩小字宽或字高" in message for message in messages)
 
@@ -127,7 +128,6 @@ def test_text_that_cannot_fit_even_at_the_minimum_is_reported(tmp_path):
     )
     body = _cells(output)[long_name]
     assert _scale(body) == pytest.approx(0.5)
-    assert mtext_narrowing(_raw(body)) == pytest.approx(0.7)
     assert result.stats.layout_unresolved == 1
     assert any("缩到最小比例仍会压到旁边的文字或伸出图框" in message for message in messages)
 
