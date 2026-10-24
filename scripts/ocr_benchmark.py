@@ -6,7 +6,7 @@
   一遍，逐行和文字层比（中文、日文行和西文行分开算）。
 * 没有文字层的页（字画成线条）：没有标准答案，输出每页读到的文字和框（``*_reads.txt``、
   ``*_boxes.png``），给人看。
-* ``--tesseract``：西文行也用 Tesseract 读一遍（要已装「文字识别组件」的 Tesseract）。
+* ``--tesseract``：西文行也用 Tesseract 读一遍（同样装进临时目录），比一比两种引擎。
 
 识别模型和「PDF 处理组件」装进一个临时的应用数据目录（设了 TRANSLATOR_APP_DATA_DIR 时用它），
 不碰本机已装的组件和真实设置。结果全在 OUT_DIR 里（含图纸内容，别上传）；summary.json 只有数字。
@@ -67,8 +67,8 @@ def _matched_text(truth: dict, rows: list[dict]) -> str:
     return "".join(r["source_text"] for r in hits)
 
 
-def _install() -> None:
-    from core import pdf_component_install, ppocr_component_install
+def _install(tesseract: bool) -> None:
+    from core import ocr_component_install, pdf_component_install, ppocr_component_install
 
     if pdf_component_install.installed_site_dir() is None:
         print("installing the PDF component …", flush=True)
@@ -76,6 +76,9 @@ def _install() -> None:
     if ppocr_component_install.installed_dirs() is None:
         print("installing the recognition models …", flush=True)
         ppocr_component_install.install()
+    if tesseract and ocr_component_install.installed_executable() is None and ocr_component_install.manifest():
+        print("installing Tesseract …", flush=True)
+        ocr_component_install.install()
 
 
 def _pdfs(paths: list[str]) -> list[Path]:
@@ -95,7 +98,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if not os.environ.get("TRANSLATOR_APP_DATA_DIR"):
         os.environ["TRANSLATOR_APP_DATA_DIR"] = tempfile.mkdtemp(prefix="ocr-benchmark-")
-    _install()
+    _install(args.tesseract)
 
     from PIL import Image, ImageDraw
 
