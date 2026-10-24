@@ -42,6 +42,7 @@ from core.cad_layout import (  # noqa: E402
     _TextEntity,
     _to_local,
     _vertical_span,
+    mtext_narrowing,
 )
 from core.cad_translation import _parse_dxf, _plain_text  # noqa: E402
 
@@ -73,6 +74,7 @@ def _load(path: Path) -> tuple[list[_Text], dict]:
             raw = _mtext_raw(records, entity.start, entity.end)
             width, height = _mtext_extent(
                 _mtext_paragraphs(raw, entity.height), entity.height, entity.ref_width, entity.font_class,
+                mtext_narrowing(raw),
             )
             (left, right), (bottom, top) = (_horizontal_span(entity.halign, x, width),
                                             _vertical_span(entity.valign, y, height))

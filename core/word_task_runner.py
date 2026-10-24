@@ -357,6 +357,8 @@ _MARK_ORIGIN_LABELS = {
     "ok": "定稿后译文被改过",
     "repaired": "定稿后译文被改过",
     "lost": "翻译时占位符丢了一半以上",
+    "parts_edited": "超长段落：各块译文和定稿对不上",
+    "parts_lost": "超长段落：有一块的标记补不上",
 }
 _SLOT_RE_FOR_LOG = re.compile(r"<\s*x\s*\d+\s*/\s*>", re.IGNORECASE)
 _PLACE_REASON_LABELS = {"no_answer": "没拿到回答", "broken": "标记仍对不上", "text": "改了译文文字"}
@@ -2037,9 +2039,16 @@ class WordTaskRunner(BaseTaskRunner):
             return
         if self._inline_mark_engine is None:
             self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
-        known = self._inline_mark_engine.marked_translations
+        mark_engine = self._inline_mark_engine
+        known = mark_engine.marked_translations
+
+        def join(parts):
+            return _join_translated_parts(parts, target_lang=target_lang)
+
         items = []
         assembled = 0
+        split_pending: dict[str, tuple[str, str]] = {}  # 超长段落：先一块一块补标记，补完再拼
+        split_origins: dict[str, str] = {}
         for source, marked in self._marked_sources.items():
             value = global_translations.get(source)
             if not value:
@@ -2048,19 +2057,23 @@ class WordTaskRunner(BaseTaskRunner):
             translation = str(translation).strip()
             if not translation or translation == source:
                 continue
-            if source not in known and source in self._inline_mark_engine.parts:
+            if source not in known and source in mark_engine.parts:
                 # 超长段落切块翻的：各块带标记的译文拼回整段
-                joined = self._inline_mark_engine.assemble_parts(
-                    source, lambda parts: _join_translated_parts(parts, target_lang=target_lang)
-                )
+                joined = mark_engine.assemble_parts(source, join)
                 if joined is not None and same_text(unmark(joined[1], joined[0], source), translation):
                     known[source] = joined
                     assembled += 1
+                else:
+                    missing = mark_engine.parts_to_place(source, translation, join)
+                    if missing:
+                        split_pending[source] = (marked, translation)
+                        items.extend(missing)
+                        continue
+                    split_origins[source] = "parts_edited"
             entry = known.get(source)
             if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
                 continue
             items.append((source, marked, translation))
-        mark_engine = self._inline_mark_engine
         retries = mark_engine.retry_counts
         if any(retries.values()):
             logger.info(
@@ -2085,7 +2098,7 @@ class WordTaskRunner(BaseTaskRunner):
         # 模型补不上的，退而用估出位置的补救版（repair_marks）：先用翻译时那一版，对不上定稿
         # 再用补标记这次的。一段十几个公式丢了一两个时，其余公式仍留在句中，不全挤到段末
         repaired = 0
-        early = self._inline_mark_engine.repaired_translations
+        early = mark_engine.repaired_translations
         for source, _marked, translation in items:
             if source in placed:
                 continue
@@ -2095,9 +2108,25 @@ class WordTaskRunner(BaseTaskRunner):
                     repaired += 1
                     break
         logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处，估位补救 {repaired} 处")
-        failed = [(source, marked) for source, marked, _translation in items if source not in known]
+        # 超长段落缺的块补上了（补上的块已记进 known），整段再拼一次
+        late = 0
+        for source, (marked, translation) in split_pending.items():
+            joined = mark_engine.assemble_parts(source, join)
+            if joined is not None and same_text(unmark(joined[1], joined[0], source), translation):
+                known[source] = joined
+                late += 1
+            else:
+                split_origins[source] = "parts_lost"
+        if split_pending:
+            logger.info(f"Word 段内格式：超长段落按块补标记后拼回 {late}/{len(split_pending)} 处")
+        pieces = {piece for parts in mark_engine.parts.values() for piece, _marked_piece in parts}
+        failed = [
+            (source, marked) for source, marked, _translation in items
+            if source not in known and source not in pieces
+        ]
+        failed += [(source, marked) for source, (marked, _translation) in split_pending.items() if source not in known]
         if failed:
-            _log_unplaced_marks(failed, mark_engine.outcomes, reasons)
+            _log_unplaced_marks(failed, {**mark_engine.outcomes, **split_origins}, reasons)
 
     def _collect_file_texts(
         self,
