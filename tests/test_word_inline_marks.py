@@ -718,6 +718,16 @@ class FormulaPlacementTests(unittest.TestCase):
             self.assertEqual([comment.text for comment in comments], ["公式位置待核对"])
         self.assertEqual(issues, [{"kind": "formula_position", "location": "body.paragraph[0]", "source": source}])
 
+    def test_a_soft_line_break_does_not_split_the_paragraph_into_two_lines(self) -> None:
+        """本机实测：段里有软换行（占位内容就是换行）时，定稿译文按换行切成两行，和原文一行
+        对不上，整段的公式补不上。"""
+        marked = "第一行<x1/>第二行按<x2/>计算。"
+        source = "第一行\n第二行按计算。"
+        final = "Line one\nline two uses the formula."
+        engine = _GroupEngine({"<x2/>": "Line oneline two uses the formula<x2/>."})
+        placed = place_marks(engine, [(source, marked, final)], flags={})
+        self.assertEqual(placed[source], (marked, "Line one<x1/>line two uses the formula<x2/>."))
+
     def test_runner_groups_by_the_formula_batch_setting(self) -> None:
         runner = _bare_runner({self.PLAIN: self.MARKED})
         runner._rate.formula_batch = 2

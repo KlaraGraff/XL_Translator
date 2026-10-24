@@ -1378,7 +1378,9 @@ def place_marks(
         if texts is None:
             continue
         sent_lines = marked.split("\n")
-        target_lines = str(translation).split("\n")
+        # 软换行这类占位内容本身就是换行，先换回占位符再按行切，行数才和原文对得上（本机实测
+        # 反馈 #19：一段里有软换行时整段补不上）
+        target_lines = _seed_slots(marked, str(translation), texts).split("\n")
         if len(sent_lines) != len(target_lines):
             reasons[source] = "text"
             continue
@@ -1390,9 +1392,7 @@ def place_marks(
                 seed_lines = None
         work = []
         for index, (sent_line, target_line) in enumerate(zip(sent_lines, target_lines)):
-            current = _clean_line(sent_line, seed_lines[index]) if seed_lines else _seed_slots(
-                sent_line, target_line, texts
-            )
+            current = _clean_line(sent_line, seed_lines[index]) if seed_lines else target_line
             order = {name: position for position, (name, _p, _r) in enumerate(_mark_tokens(sent_line))
                      if not name.startswith("/")}
             line = _PlaceLine((source, index), sent_line, current, order, dict((hints or {}).get(source, {})), texts)
