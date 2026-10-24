@@ -11,6 +11,16 @@
   算出「读错了却会被翻译」的行有多少，以及把把握门槛提高后能拦下多少（``decisions``、
   ``sweep``）。没有文字层的页按分类和原因计数，单个汉字会被翻译的，列出是哪些字。
 
+* ``--det`` / ``--rec``：换检测 / 识别模型比一比。``small`` 是组件里装的那个；``medium``
+  （PP-OCRv6 medium）、``server5``（PP-OCRv5 server）从 ModelScope 下载（核对 SHA256）；也可以
+  给一个 .onnx 文件。
+* ``--vlm images,sheet``：有文字层的页，把每一行字的小块发给设置里的「图像翻译审核模型」读
+  （``images``：一块一张图；``sheet``：多块拼成一张编号的图），和识别模型、和「只把没把握的行
+  交给看图模型」（hybrid）一起算准确率、请求次数、用时和 token。这会把图纸的文字小块发给那个
+  模型服务，要先得到图纸主人同意；要读真实设置里的连接，用 TRANSLATOR_APP_DATA_DIR 指向
+  真实数据目录的一份副本。
+* 每种读法读错的行按原因分开数（``misses``）：没读到、和旁边的字读成一行、读短了、读错字。
+
 识别模型和「PDF 处理组件」装进一个临时的应用数据目录（设了 TRANSLATOR_APP_DATA_DIR 时用它），
 不碰本机已装的组件和真实设置。结果全在 OUT_DIR 里（含图纸内容，别上传）；summary.json 只有数字
 （和会被翻译的单个汉字）。
@@ -18,15 +28,21 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
+import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +113,279 @@ def _decide(rows: list[dict], lang: str, target: str) -> None:
 
 
 SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
+# 「没把握」的行：和原位替换的中日文门槛一样（core.pdf_vector.classify）
+UNSURE_SCORE, UNSURE_CHAR = 0.9, 0.6
+
+
+def _miss_kind(want: str, got: str) -> str:
+    """一行读错的原因：没读到 / 和旁边的字读成一行 / 读短了 / 读错字。"""
+    if not got:
+        return "missed"
+    if want in got:
+        return "merged"
+    if got in want:
+        return "truncated"
+    return "misread"
+
+
+# ---------------------------------------------------------------- 大号识别模型
+
+# RapidOCR 3.10.0 模型清单里的 ONNX（ModelScope），SHA256 也取自那份清单
+_MODELSCOPE = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/"
+CANDIDATES = {
+    ("det", "medium"): ("PP-OCRv6/det/PP-OCRv6_det_medium.onnx",
+                        "92078b7355007ccfffcd4c8cd441a3afd4538904d06881b29a155e1e679907c2"),
+    ("det", "server5"): ("PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
+                         "0f8846b1d4bba223a2a2f9d9b44022fbc22cc019051a602b41a7fda9667e4cad"),
+    ("rec", "medium"): ("PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
+                        "eef444829dbbe18d7fea59a3f6eb75647518d2b3a9568d27c92e42940204894b"),
+    ("rec", "server5"): ("PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
+                         "e09385400eaaaef34ceff54aeb7c4f0f1fe014c27fa8b9905d4709b65746562a"),
+}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fetch_model(kind: str, name: str, cache: Path) -> Path | None:
+    """small：组件里装的那个（None）；medium / server5：下载并核对；其他当 .onnx 文件路径。"""
+    if name == "small":
+        return None
+    if (kind, name) not in CANDIDATES:
+        path = Path(name).expanduser()
+        if not path.is_file():
+            raise SystemExit(f"--{kind} {name}: not small / medium / server5 and not a file")
+        return path
+    relative, sha = CANDIDATES[(kind, name)]
+    dest = cache / Path(relative).name
+    if dest.is_file() and _sha256(dest) == sha:
+        return dest
+    import httpx
+
+    cache.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(".part")
+    print(f"downloading {relative} …", flush=True)
+    with httpx.stream("GET", _MODELSCOPE + relative, follow_redirects=True, timeout=120) as resp:
+        resp.raise_for_status()
+        with part.open("wb") as fh:
+            for chunk in resp.iter_bytes(1 << 20):
+                fh.write(chunk)
+    if _sha256(part) != sha:
+        part.unlink()
+        raise SystemExit(f"{relative}: SHA256 does not match")
+    part.replace(dest)
+    return dest
+
+
+def _use_models(det: Path | None, rec: Path | None, out: Path) -> dict[str, float]:
+    """这次运行的识别进程改用给定的模型；返回用到的两个模型各多少 MB。"""
+    from core import ppocr_component
+    from core.ppocr_component_install import DET_MODEL, REC_MODEL
+
+    paths = ppocr_component.reader_paths()
+    if paths is None:
+        return {}
+    site, models, numpy_site = paths
+    chosen = {DET_MODEL: det or models / DET_MODEL, REC_MODEL: rec or models / REC_MODEL}
+    sizes = {"det_mb": round(chosen[DET_MODEL].stat().st_size / 1e6, 1),
+             "rec_mb": round(chosen[REC_MODEL].stat().st_size / 1e6, 1)}
+    if det is None and rec is None:
+        return sizes
+    folder = out / "_models"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, source in chosen.items():
+        shutil.copyfile(source, folder / name)
+    ppocr_component.reader_paths = lambda: (site, folder, numpy_site)
+    return sizes
+
+
+# ---------------------------------------------------------------- 看图模型读字
+
+VLM_PROMPT = (
+    "You transcribe text from small crops of engineering drawings. Each crop holds one label "
+    "or one line of text, usually Chinese, Japanese, English or French, often with digits, units "
+    "and symbols. Transcribe exactly what is printed: the same characters in the same order, "
+    "keeping digits, units, punctuation and symbols such as ±, Φ, °, ×, ≥. Do not translate, "
+    "correct, complete or explain. A tall crop may hold Chinese characters written top to "
+    "bottom: give them in reading order. If a crop has no readable text, give an empty string. "
+    "Answer with strict JSON only: an object mapping every crop number (as a string) to its text."
+)
+VLM_MIN_HEIGHT = 48      # 小字放大到至少这么高（像素）
+VLM_MAX_SIDE = 1600
+SHEET_MAX_HEIGHT = 2400
+
+
+def _row_crop(gray, row: dict):
+    """一行字的小块，转正（竖排的中文列保持竖着），小字放大。"""
+    from PIL import Image
+
+    x0, y0, x1, y1 = (float(v) for v in row["display_box"])
+    rot = int(row.get("display_rotation", 0))
+    thick = (y1 - y0) if rot == 0 else (x1 - x0)
+    pad = max(4.0, 0.25 * thick)
+    crop = gray.crop((int(max(0, x0 - pad)), int(max(0, y0 - pad)),
+                      int(min(gray.width, x1 + pad)), int(min(gray.height, y1 + pad))))
+    if not row.get("vertical_column"):
+        if rot == 90:
+            crop = crop.rotate(-90, expand=True)
+        elif rot == 270:
+            crop = crop.rotate(90, expand=True)
+    short = min(crop.size) if row.get("vertical_column") else crop.height
+    scale = max(1.0, VLM_MIN_HEIGHT / max(1, short))
+    scale = min(scale, VLM_MAX_SIDE / max(crop.size))
+    if abs(scale - 1.0) > 0.01:
+        crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
+                           Image.Resampling.LANCZOS)
+    return crop
+
+
+def _png_url(image) -> str:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _sheet(crops: list) -> object:
+    """多块拼成一张：每块左边写编号，块与块之间留白。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=30)
+    margin, gap = 90, 20
+    width = min(VLM_MAX_SIDE + margin, margin + max(c.width for c in crops))
+    fitted = []
+    for c in crops:
+        if c.width > width - margin:
+            k = (width - margin) / c.width
+            c = c.resize((width - margin, max(1, round(c.height * k))))
+        fitted.append(c)
+    height = sum(c.height for c in fitted) + gap * (len(fitted) + 1)
+    sheet = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(sheet)
+    y = gap
+    for n, c in enumerate(fitted, 1):
+        draw.text((8, y + max(0, c.height // 2 - 16)), f"{n}.", fill=0, font=font)
+        sheet.paste(c, (margin, y))
+        y += c.height + gap
+    return sheet
+
+
+class VisionReader:
+    """用设置里的「图像翻译审核模型」读字（和审核同一个连接、同一种接口）。"""
+
+    def __init__(self, connection_id: str = "", model: str = "", workers: int = 4) -> None:
+        from config import normalize_cloud_base_url
+        from core.model_roles import ROLE_PDF_REVIEW, resolve_effective_model_config
+        from core.pdf_review import review_routes
+        from settings import load_settings
+
+        self.cfg = resolve_effective_model_config(load_settings(), ROLE_PDF_REVIEW, connection_id=connection_id)
+        if not self.cfg.api_key or not (model or self.cfg.model):
+            raise SystemExit("the 图像翻译审核模型 connection has no key or no model")
+        self.model = model or self.cfg.model
+        self.base = normalize_cloud_base_url(self.cfg.provider, self.cfg.base_url)
+        self.routes = review_routes(self.cfg)
+        self.workers = workers
+        self.stats: Counter = Counter()
+        self._lock = threading.Lock()
+
+    def describe(self) -> dict:
+        return {"provider": self.cfg.provider, "model": self.model}
+
+    def _payload(self, route: str, text: str, parts: list) -> dict:
+        if route == "chat":
+            content = [{"type": "text", "text": text}]
+            for label, image in parts:
+                if label:
+                    content.append({"type": "text", "text": label})
+                content.append({"type": "image_url", "image_url": {"url": _png_url(image)}})
+            return {"model": self.model, "stream": False,
+                    "messages": [{"role": "system", "content": VLM_PROMPT}, {"role": "user", "content": content}]}
+        content = [{"type": "input_text", "text": text}]
+        for label, image in parts:
+            if label:
+                content.append({"type": "input_text", "text": label})
+            content.append({"type": "input_image", "image_url": _png_url(image)})
+        return {"model": self.model, "instructions": VLM_PROMPT, "store": False, "stream": False,
+                "input": [{"role": "user", "content": content}]}
+
+    def _ask(self, text: str, parts: list) -> dict:
+        import httpx
+
+        from core.pdf_review import _extract_json_object, _extract_response_text
+        from core.text_transport import extract_chat_text
+
+        headers = {"Authorization": f"Bearer {self.cfg.api_key}", "Content-Type": "application/json"}
+        for attempt in range(3):
+            route = self.routes[0]
+            started = time.monotonic()
+            try:
+                with httpx.Client(timeout=240) as client:
+                    resp = client.post(f"{self.base}/{'chat/completions' if route == 'chat' else 'responses'}",
+                                       headers=headers, json=self._payload(route, text, parts))
+                if resp.status_code in (404, 405) and len(self.routes) > 1:
+                    with self._lock:
+                        if self.routes[0] == route:
+                            self.routes = self.routes[1:]
+                    continue
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                payload = resp.json()
+                answer = extract_chat_text(payload) if route == "chat" else _extract_response_text(payload)
+                usage = payload.get("usage") or {}
+                with self._lock:
+                    self.stats["requests"] += 1
+                    self.stats["request_seconds"] += time.monotonic() - started
+                    self.stats["tokens_in"] += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                    self.stats["tokens_out"] += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+                return _extract_json_object(answer) or {}
+            except Exception as exc:  # noqa: BLE001 - count it and try again
+                with self._lock:
+                    self.stats["errors"] += 1
+                    self.stats[f"error {type(exc).__name__}"] += 1
+                time.sleep(3)
+        with self._lock:
+            self.stats["failed_requests"] += 1
+        return {}
+
+    def read(self, crops: list, layout: str, batch: int) -> list[str | None]:
+        """每块读出的字；请求失败或没答的块是 None。"""
+        groups: list[list[int]] = []
+        current: list[int] = []
+        height = 0
+        for i, c in enumerate(crops):
+            if current and (len(current) >= batch or (layout == "sheet" and height + c.height > SHEET_MAX_HEIGHT)):
+                groups.append(current)
+                current, height = [], 0
+            current.append(i)
+            height += c.height + 20
+        if current:
+            groups.append(current)
+
+        def one(group: list[int]) -> tuple[list[int], dict]:
+            if layout == "sheet":
+                text = (f"The image stacks {len(group)} numbered crops, one under another; "
+                        "the number is at the left of each crop.")
+                return group, self._ask(text, [("", _sheet([crops[i] for i in group]))])
+            text = f"{len(group)} crops follow, each after its number."
+            return group, self._ask(text, [(f"Crop {n}:", crops[i]) for n, i in enumerate(group, 1)])
+
+        out: list[str | None] = [None] * len(crops)
+        with ThreadPoolExecutor(self.workers) as pool:
+            for group, answer in pool.map(one, groups):
+                for n, i in enumerate(group, 1):
+                    value = answer.get(str(n))
+                    out[i] = value if isinstance(value, str) else None
+        with self._lock:
+            self.stats["crops"] += len(crops)
+            self.stats["unanswered"] += sum(1 for v in out if v is None)
+        return out
 
 
 def _install(tesseract: bool) -> None:
@@ -127,10 +416,25 @@ def main(argv: list[str]) -> int:
     parser.add_argument("pdfs", nargs="+")
     parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument("--tesseract", action="store_true")
+    parser.add_argument("--det", default="small", help="small / medium / server5 / an .onnx file")
+    parser.add_argument("--rec", default="small", help="small / medium / server5 / an .onnx file")
+    parser.add_argument("--vlm", default="", help="images, sheet or images,sheet")
+    parser.add_argument("--vlm-batch", type=int, default=20)
+    parser.add_argument("--vlm-workers", type=int, default=4)
+    parser.add_argument("--vlm-connection", default="", help="a 图像翻译审核模型 connection id (default: the first)")
+    parser.add_argument("--vlm-model", default="", help="another model name on that connection")
     args = parser.parse_args(argv)
+    layouts = [x for x in args.vlm.replace(" ", "").split(",") if x]
+    if any(x not in ("images", "sheet") for x in layouts):
+        parser.error("--vlm takes images, sheet or images,sheet")
     if not os.environ.get("TRANSLATOR_APP_DATA_DIR"):
         os.environ["TRANSLATOR_APP_DATA_DIR"] = tempfile.mkdtemp(prefix="ocr-benchmark-")
     _install(args.tesseract)
+    out = Path(args.out).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    cache = Path(os.environ["TRANSLATOR_APP_DATA_DIR"]) / "ocr-benchmark-models"
+    model_sizes = _use_models(_fetch_model("det", args.det, cache), _fetch_model("rec", args.rec, cache), out)
+    vision = {layout: VisionReader(args.vlm_connection, args.vlm_model, args.vlm_workers) for layout in layouts}
 
     from PIL import Image, ImageDraw
 
@@ -150,9 +454,13 @@ def main(argv: list[str]) -> int:
         exe = resolve_tesseract()
         tesseract = str(exe) if exe else None
         print(f"tesseract: {tesseract or 'not found'}")
-    out = Path(args.out).expanduser()
-    out.mkdir(parents=True, exist_ok=True)
     totals: dict[str, dict[str, float]] = {}
+    # 每种读法（ppocr、vlm_<layout>、hybrid_<layout>）：逐行准确率和读错的原因
+    variant_totals: dict[str, dict[str, dict[str, float]]] = {}
+    variant_misses: dict[str, dict[str, Counter]] = {}
+    row_agreement: dict[str, Counter] = {}
+    unsure_rows = all_rows = 0
+    vlm_rows_log = []
     pages_summary = []
     mismatches = []
     judged: list[dict] = []          # rows of text-layer pages with their decision and whether they read right
@@ -208,6 +516,46 @@ def main(argv: list[str]) -> int:
                         blind.get(f"{kind} {r['decision']} {r['decision_reason']}", 0) + 1
                     if r["decision"] == "translate" and len(letters) == 1 and _CJK.search(letters[0]):
                         single[letters[0]] = single.get(letters[0], 0) + 1
+            if truth:
+                texts = {"ppocr": [r["source_text"] for r in rows]}
+                unsure = [(r.get("ocr_score") or 0.0) < UNSURE_SCORE or _min_char(r) < UNSURE_CHAR for r in rows]
+                unsure_rows += sum(unsure)
+                all_rows += len(rows)
+                if vision:
+                    crops = [_row_crop(gray, r) for r in rows]
+                    for layout, vr in vision.items():
+                        began = time.monotonic()
+                        read = vr.read(crops, layout, args.vlm_batch)
+                        vr.stats["wall_seconds"] += time.monotonic() - began
+                        texts[f"vlm_{layout}"] = [v if v is not None else "" for v in read]
+                        texts[f"hybrid_{layout}"] = [
+                            (v if (u and v is not None) else r["source_text"]) for r, u, v in zip(rows, unsure, read)]
+                        for r, u, v in zip(rows, unsure, read):
+                            hits = _overlapping(r, truth)
+                            if not hits:
+                                continue
+                            want = "".join(_norm(t["source_text"]) for t in sorted(
+                                hits, key=lambda t: (round(t["display_box"][1] / 20), t["display_box"][0])))
+                            p_ok, v_ok = _norm(r["source_text"]) == want, _norm(v or "") == want
+                            agree = _norm(r["source_text"]) == _norm(v or "")
+                            row_agreement.setdefault(layout, Counter())[
+                                f"{'agree' if agree else 'differ'}_ppocr_{'right' if p_ok else 'wrong'}"
+                                f"_vlm_{'right' if v_ok else 'wrong'}{'_unsure' if u else ''}"] += 1
+                            vlm_rows_log.append({"page": tag, "layout": layout, "unsure": u,
+                                                 "truth": want, "ppocr": r["source_text"], "vlm": v})
+                for name, values in texts.items():
+                    variant_rows = [dict(r, source_text=t) for r, t in zip(rows, values)]
+                    for line in truth:
+                        kind = "cjk" if _CJK.search(line["source_text"]) else "latin"
+                        want = _norm(line["source_text"])
+                        got = _norm(_matched_text(line, variant_rows))
+                        total = variant_totals.setdefault(name, {}).setdefault(
+                            kind, {"lines": 0, "exact": 0, "char_acc": 0.0})
+                        total["lines"] += 1
+                        total["exact"] += int(got == want)
+                        total["char_acc"] += max(0.0, 1 - _lev(want, got) / max(1, len(want)))
+                        if got != want:
+                            variant_misses.setdefault(name, {}).setdefault(kind, Counter())[_miss_kind(want, got)] += 1
             tess_rows = []
             if tesseract and truth:
                 raw = extract.ocr_rows(gray, "fra+eng", (0, 90, 270), max(2, (os.cpu_count() or 4) - 2), tesseract)
@@ -264,6 +612,22 @@ def main(argv: list[str]) -> int:
         for j in judged if j["single"] and j["kind"] == "cjk" and j["decision"] == "translate"))
     summary["no_text_layer_pages"] = dict(sorted(blind.items(), key=lambda kv: -kv[1]))
     summary["no_text_layer_single_chars_translated"] = dict(sorted(single.items(), key=lambda kv: -kv[1]))
+    summary["variants"] = {
+        name: {**{kind: {"lines": int(t["lines"]), "exact": round(t["exact"] / t["lines"], 3),
+                         "char_acc": round(t["char_acc"] / t["lines"], 3)}
+                  for kind, t in kinds.items() if t["lines"]},
+               "misses": {kind: dict(c) for kind, c in variant_misses.get(name, {}).items()}}
+        for name, kinds in variant_totals.items()}
+    summary["models"] = {"det": args.det, "rec": args.rec, **model_sizes}
+    summary["unsure_rows"] = [unsure_rows, all_rows]
+    if vision:
+        summary["vlm"] = {layout: {**vr.describe(), **{k: (round(v, 1) if isinstance(v, float) else v)
+                                                       for k, v in vr.stats.items()}}
+                          for layout, vr in vision.items()}
+        summary["vlm_row_agreement"] = {layout: dict(c) for layout, c in row_agreement.items()}
+        with (out / "vlm_rows.jsonl").open("w", encoding="utf-8") as fh:
+            for item in vlm_rows_log:
+                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
     summary["pages"] = len(pages_summary)
     summary["seconds_per_page"] = round(sum(p["seconds"] for p in pages_summary) / max(1, len(pages_summary)), 1)
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
