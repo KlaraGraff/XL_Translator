@@ -1,10 +1,12 @@
 // 插件管理视图 —— 管理三种可选插件的安装、检测与连接：
 // 1. 图纸转换工具（ODA File Converter，翻译 DWG 需要）：一键安装从 ODA 官网下载（先确认 ODA 的
 //    使用条款，核对 ODA 的数字签名）；
-// 2. 文字识别组件（Tesseract OCR，PDF「原位替换文字」需要）：一键安装取 conda-forge 的固定版本；
+// 2. 文字识别组件（PP-OCR 识别模型，PDF「原位替换文字」需要）：一键安装取 PyPI 的固定版本，
+//    要先装「PDF 处理组件」；以前装的 Tesseract 只认西文，显示「更新」；
 // 3. PDF 处理组件（PyMuPDF + pdf2docx，PDF「自动组合」的原位替换、页面判断和转 Word）：
 //    一键安装取 PyPI 的固定版本。
-// 三者都保留「选择安装位置」，连接用户自行安装的版本。
+// 都保留「选择安装位置」，连接用户自行安装的版本（文字识别组件只在不能一键安装或已连接
+// 自装的 Tesseract 时显示）。
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,7 +19,7 @@ import { motionAllowed } from "../motion";
 import { currentLocale, t, tx } from "../i18n";
 import "./plugins.css";
 
-const OFFICIAL_OCR_URL = "https://github.com/tesseract-ocr/tesseract";
+const OFFICIAL_OCR_URL = "https://github.com/PaddlePaddle/PaddleOCR";
 const OFFICIAL_PDF2DOCX_URL = "https://github.com/ArtifexSoftware/pdf2docx";
 
 let mounted = false;
@@ -361,7 +363,7 @@ function ocrStatusLabel(): string {
 function ocrStatusTone(): "idle" | "ok" | "warn" | "danger" {
   if (!ocrCapability) return "idle";
   if (ocrInstalling()) return "idle";
-  if (ocrCapability.state === "connected") return "ok";
+  if (ocrCapability.state === "connected") return ocrCapability.engine === "ppocr" && ocrCapability.needs_pdf_component ? "warn" : "ok";
   if (ocrCapability.state === "invalid") return "danger";
   return "warn";
 }
@@ -510,6 +512,11 @@ async function removeOcrComponent(): Promise<void> {
   }
 }
 
+/** 连着的是只认西文的 Tesseract（以前一键安装的或用户自己装的）：可以更新成识别模型。 */
+function ocrCanUpdate(): boolean {
+  return ocrCapability?.engine === "tesseract" && ocrCapability.one_click_supported !== false;
+}
+
 function ocrActionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
@@ -518,15 +525,19 @@ function ocrActionButtons(): HTMLElement {
     actions.append(createButton({ label: t("取消安装"), onClick: () => void cancelOcrInstall() }));
     return actions;
   }
-  if (ocrCapability?.one_click_supported !== false && ocrCapability?.source !== "managed") {
+  const oneClick = ocrCapability?.one_click_supported !== false;
+  if (oneClick && (!connected || ocrCanUpdate())) {
     actions.append(createButton({
-      label: t("一键安装"),
-      variant: connected ? "default" : "primary",
-      disabled: ocrBusy || !ocrCapability,
+      label: ocrCanUpdate() ? t("更新") : t("一键安装"),
+      variant: "primary",
+      // 识别模型用「PDF 处理组件」里的 NumPy、OpenCV：没装它时按钮不可用，提示里说明
+      disabled: ocrBusy || !ocrCapability || Boolean(ocrCapability.needs_pdf_component),
       onClick: () => void startOcrInstall(),
     }));
   }
-  actions.append(createButton({ label: t("选择安装位置"), onClick: () => void chooseTesseract() }));
+  if (!oneClick || ocrCapability?.source === "manual") {
+    actions.append(createButton({ label: t("选择安装位置"), onClick: () => void chooseTesseract() }));
+  }
   if (!connected) {
     actions.append(createButton({ label: t("项目主页"), disabled: ocrBusy, onClick: () => void openOcrOfficialUrl() }));
   }
@@ -560,7 +571,7 @@ function renderOcrCard(): HTMLElement {
   betaTag.textContent = t("Beta");
   title.append(betaTag);
   const sizeMb = megabytes(ocrCapability?.download_bytes ?? 0);
-  title.append(createHintBadge(t("软件名称：Tesseract OCR（开源，Apache-2.0）。一键安装：从 conda-forge 下载固定版本的程序（含英语、法语、德语、西班牙语、意大利语、葡萄牙语的识别数据，约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。也可以自行安装，再选择它的安装位置；装在系统默认位置的会自动找到。未安装时：「原位替换」只处理图纸里本来就能提取的文字，画成线条的字保留原样。项目主页：{1}", sizeMb, OFFICIAL_OCR_URL)));
+  title.append(createHintBadge(t("识别模型：PP-OCRv6（PaddleOCR，开源，Apache-2.0），由 ONNX Runtime（开源，MIT）在本机运行，可识别中文、日文和英文、法文等西方文字，需要先安装「PDF 处理组件」。一键安装：下载固定版本的识别模型和运行库（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。未安装时：「原位替换」只处理图纸里本来就能提取的文字，画成线条的字保留原样。项目主页：{1}", sizeMb, OFFICIAL_OCR_URL)));
   const desc = document.createElement("p");
   desc.textContent = t("识别 PDF 图纸里画成线条的文字，供「原位替换文字」使用。只在本机运行，不上传图纸。");
   copy.append(title, desc);
@@ -570,7 +581,7 @@ function renderOcrCard(): HTMLElement {
   body.append(titleRow);
 
   const installNotice = componentInstallNotice(ocrCapability?.install, ocrCapability?.state === "connected",
-    (error) => t("{0}可重试一键安装，或自行安装 Tesseract OCR 后选择它的安装位置。", error));
+    (error) => t("{0}可重试一键安装。", error));
   if (ocrErrorText) {
     const error = document.createElement("div");
     error.className = "plugins-notice danger";
@@ -578,11 +589,24 @@ function renderOcrCard(): HTMLElement {
     body.append(error);
   } else if (installNotice) {
     body.append(installNotice);
+  } else if (ocrCanUpdate()) {
+    const warn = document.createElement("div");
+    warn.className = "plugins-notice warn";
+    warn.textContent = ocrCapability?.needs_pdf_component
+      ? t("当前的文字识别组件只能识别英文、法文等西方文字。新版还可识别中文和日文：请先安装下方的「PDF 处理组件」，再点「更新」。")
+      : t("当前的文字识别组件只能识别英文、法文等西方文字。点「更新」换成新版后，还可识别中文和日文（约 {0} MB）。", sizeMb);
+    body.append(warn);
   } else if (ocrCapability?.state === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
     const languageCount = String(ocrCapability.languages.length);
-    if (ocrCapability.source === "managed") {
+    if (ocrCapability.engine === "ppocr" && ocrCapability.needs_pdf_component) {
+      // 识别模型装着，但「PDF 处理组件」后来被卸载了：读不了线条字
+      ok.className = "plugins-notice warn";
+      ok.textContent = t("文字识别组件要用「PDF 处理组件」才能运行，请安装下方的「PDF 处理组件」。");
+    } else if (ocrCapability.engine === "ppocr") {
+      ok.textContent = t("文字识别组件已安装，可识别中文、日文和英文、法文等文字。");
+    } else if (ocrCapability.source === "managed") {
       ok.textContent = ocrCapability.version
         ? t("文字识别组件已安装（Tesseract {0}，{1} 种语言）。", ocrCapability.version, languageCount)
         : t("文字识别组件已安装（{0} 种语言）。", languageCount);
@@ -602,7 +626,9 @@ function renderOcrCard(): HTMLElement {
     warn.className = "plugins-notice warn";
     warn.textContent = ocrCapability.one_click_supported === false
       ? t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。")
-      : t("尚未检测到文字识别组件。可一键安装，或选择自行安装的 Tesseract OCR 的位置。");
+      : ocrCapability.needs_pdf_component
+        ? t("尚未检测到文字识别组件。请先安装下方的「PDF 处理组件」，再一键安装。")
+        : t("尚未检测到文字识别组件，可一键安装。");
     body.append(warn);
   }
   card.append(body);

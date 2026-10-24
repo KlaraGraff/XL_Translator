@@ -899,7 +899,14 @@ def determine_pdf_task_status(
 
 
 # 原文是中日韩文字的页不跑识别（识别数据只有西文的）：画成线条的字保留原样。
-_INPLACE_CJK_OCR_NOTE = "（画成线条的中文、日文、韩文暂不能识别，保留原样）"
+# 画成线条的中文、日文要「文字识别组件」的识别模型来读（以前一键安装的 Tesseract 只认西文）；
+# 识别模型不认韩文。
+_INPLACE_CJK_OCR_NOTE = "（画成线条的中文、日文未识别，保留原样；在「扩展 → 组件」安装或更新「文字识别组件」后可识别）"
+_INPLACE_KO_OCR_NOTE = "（画成线条的韩文暂不能识别，保留原样）"
+
+
+def _inplace_cjk_ocr_note(result: Any) -> str:
+    return _INPLACE_KO_OCR_NOTE if getattr(result, "source_lang", "") == "ko" else _INPLACE_CJK_OCR_NOTE
 
 
 def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, cjk_ocr_skipped: bool = False) -> str:
@@ -919,7 +926,7 @@ def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, 
     if kept:
         return f"识别到的 {kept} 处都是数字和编号等不需要翻译的内容，这一页保留原样"
     if cjk_ocr_skipped:
-        return f"没有找到可以替换的文字{_INPLACE_CJK_OCR_NOTE}，这一页保留原样"
+        return f"没有找到可以替换的文字{_inplace_cjk_ocr_note(result)}，这一页保留原样"
     if ocr_missing:
         return "没有找到可以替换的文字（没有安装文字识别组件，画成线条的字未识别），这一页保留原样"
     return "没有找到可以替换的文字，这一页保留原样"
@@ -4574,7 +4581,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page.inplace_pdf_path = result.output_pdf
             note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
             if getattr(result, "ocr_skipped_cjk", False):
-                note = _INPLACE_CJK_OCR_NOTE
+                note = _inplace_cjk_ocr_note(result)
             page.inplace_message = (
                 f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                 f"{page.inplace_review} 处认不准保留原文{note}"

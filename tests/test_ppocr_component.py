@@ -355,3 +355,59 @@ def test_worker_rows_are_plain_json():
     text = json.dumps([{"display_box": [np.float32(1.5), np.int64(2)], "score": np.float64(0.25)}],
                       default=ppocr_component._plain)
     assert json.loads(text) == [{"display_box": [1.5, 2], "score": 0.25}]
+
+
+# ── 插件页 ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the old fake tesseract is a shell script")
+def test_one_click_install_updates_the_old_tesseract_through_the_api(hermetic, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from api import ocr_plugin
+    from api.app import create_app
+    from core import ocr_component_install as tesseract_installer
+    from core import ocr_engine
+    from tests.test_ocr_component import _fake_install_sources
+
+    monkeypatch.setattr(ocr_engine, "_known_locations", lambda: [])
+    monkeypatch.setattr(ocr_engine.shutil, "which", lambda name: None)
+    # 以前一键安装的 Tesseract：只认西文
+    _fake_install_sources(monkeypatch)
+    tesseract_installer.install()
+    client = TestClient(create_app())
+    status = client.get("/api/plugins/ocr").json()
+    assert status["engine"] == "tesseract" and status["source"] == "managed"
+    assert status["one_click_supported"] is True and status["needs_pdf_component"] is False
+    assert status["download_bytes"] == installer.download_size()
+
+    _fake_sources(monkeypatch)
+    monkeypatch.setattr(ppocr_component, "probe_in_subprocess", lambda *args: (True, "9.9.9", ""))
+    started = client.post("/api/plugins/ocr/one-click-install").json()
+    assert started["running"] is True
+    for _ in range(200):
+        progress = client.get("/api/plugins/ocr/install-progress").json()
+        if not progress["running"]:
+            break
+        threading.Event().wait(0.05)
+    assert progress["phase"] == "done", progress
+    status = client.get("/api/plugins/ocr").json()
+    assert status["state"] == "connected" and status["source"] == "managed" and status["engine"] == "ppocr"
+    # 换上识别模型后，以前一键安装的 Tesseract 删掉
+    assert tesseract_installer.installed_executable() is None
+
+    removed = client.post("/api/plugins/ocr/uninstall", json={"target": "managed"}).json()
+    assert removed["state"] == "missing" and removed["managed_installed"] is False
+    assert installer.installed_dirs() is None and ocr_plugin.install_progress()["running"] is False
+
+
+def test_one_click_install_asks_for_the_pdf_component_first(hermetic, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    monkeypatch.setattr(ppocr_component, "numpy_site_dir", lambda: None)
+    client = TestClient(create_app())
+    assert client.get("/api/plugins/ocr").json()["needs_pdf_component"] is True
+    response = client.post("/api/plugins/ocr/one-click-install")
+    assert response.status_code == 422 and "PDF 处理组件" in response.json()["detail"]

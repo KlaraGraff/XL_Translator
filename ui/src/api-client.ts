@@ -71,7 +71,7 @@ export type CadCapabilityStatus = {
   install?: ComponentInstallProgress;
 };
 
-/** 文字识别组件（Tesseract OCR）状态；后端未提供时前端按 unavailable 处理。 */
+/** 文字识别组件状态；后端未提供时前端按 unavailable 处理。 */
 export type OcrPluginStatus = {
   state: "connected" | "missing" | "invalid";
   /** managed：一键安装；manual：用户选的安装位置；system：系统里自动找到的。 */
@@ -84,6 +84,10 @@ export type OcrPluginStatus = {
   managed_installed?: boolean;
   one_click_supported?: boolean;
   download_bytes?: number;
+  /** ppocr：一键安装的识别模型（中文、日文、西文）；tesseract：只认西文，可更新。 */
+  engine?: "ppocr" | "tesseract" | "";
+  /** 识别模型要用「PDF 处理组件」里的 NumPy、OpenCV：没装它时不能一键安装。 */
+  needs_pdf_component?: boolean;
   install?: ComponentInstallProgress;
 };
 

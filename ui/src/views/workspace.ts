@@ -3793,7 +3793,7 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   }));
   wrap.append(buildRouteRow({
     label: t("图纸和大图"),
-    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留；遇到画成线条的字要先识别，会慢一些，画成线条的中文、日文、韩文暂不能识别，保留原样。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
+    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留；遇到画成线条的字要先用「文字识别组件」识别，会慢一些；画成线条的韩文暂不能识别，保留原样。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
     options: [
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
       { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },

@@ -302,6 +302,21 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
         self.assertFalse(result.ocr_used)
         self.assertTrue(result.ocr_skipped_cjk)
 
+    def test_the_page_note_says_what_would_read_the_strokes(self):
+        from types import SimpleNamespace
+
+        from core.pdf_image_translation import _inplace_nothing_written_message
+
+        def message(lang):
+            result = SimpleNamespace(review_items=[], kept=0, source_lang=lang)
+            return _inplace_nothing_written_message(result, cjk_ocr_skipped=True)
+
+        # 中文、日文：装上（或更新）文字识别组件就能读；韩文：识别模型不认
+        self.assertIn("安装或更新「文字识别组件」", message("zh"))
+        self.assertIn("安装或更新「文字识别组件」", message("ja"))
+        self.assertIn("韩文暂不能识别", message("ko"))
+        self.assertNotIn("韩文", message("zh"))
+
 
 @unittest.skipUnless(find_cjk_font() and _latin_font(), "no CJK or Latin font on this machine")
 class FitTests(_PageCase):
