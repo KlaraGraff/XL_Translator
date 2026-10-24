@@ -20,6 +20,7 @@ import {
   createEmptyState,
   createProgressBar,
   flashCopied,
+  reserveCopied,
   openMenu,
   openModal,
   showToast,
@@ -1937,12 +1938,13 @@ function renderDetail(): void {
       if (label === t("输出位置")) {
         const copyLink = document.createElement("span");
         copyLink.className = "linklike";
-        copyLink.textContent = " " + t("复制路径");
+        copyLink.textContent = t("复制路径");
+        reserveCopied(copyLink);
         copyLink.addEventListener("click", (event) => {
           event.stopPropagation();
           void copyTaskPath(value, copyLink);
         });
-        dd.append(copyLink);
+        dd.append(" ", copyLink);
       }
       kv.append(dt, dd);
     }

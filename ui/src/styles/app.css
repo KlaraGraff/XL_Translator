@@ -197,8 +197,15 @@ svg.ic.lg { width: 22px; height: 22px; }
 .linklike:hover { text-decoration: underline; }
 /* 复制成功的「✓ 已复制」（components.ts flashCopied）：对勾带一点回弹地弹出，文字跟着淡入；
    2.5 秒后脚本换回原内容。按钮、文字链接共用。 */
-.copied-mark { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); white-space: nowrap; }
-.copied-mark .ic { stroke-width: 2.4; animation: copied-pop 360ms var(--ease-spring) both; }
+/* 原内容和「✓ 已复制」叠在同一格（reserveCopied）：宽度取两者较宽者，换字时不变宽、不改行高。 */
+.copy-swap { display: inline-grid; }
+.copy-swap > * { grid-area: 1 / 1; justify-self: center; white-space: nowrap; }
+.copy-swap > .copy-now { display: inline-flex; align-items: center; gap: inherit; }
+.copied-mark { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); visibility: hidden; }
+.is-copied > .copy-swap > .copy-now { visibility: hidden; }
+.is-copied > .copy-swap > .copied-mark { visibility: visible; }
+.copied-mark .ic { stroke-width: 2.4; }
+.is-copied .copied-mark .ic { animation: copied-pop 360ms var(--ease-spring) both; }
 @keyframes copied-pop { from { opacity: 0; transform: scale(.4); } 60% { opacity: 1; transform: scale(1.15); } to { opacity: 1; transform: none; } }
 .btn.pri .copied-mark { color: inherit; }
 .linklike.is-copied, .linklike.is-copied:hover { text-decoration: none; cursor: default; }

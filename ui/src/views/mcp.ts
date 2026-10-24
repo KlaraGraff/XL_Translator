@@ -7,7 +7,7 @@
 
 import { clearElement, navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { createButton, createCard, createStatus, flashCopied, showToast } from "../components";
+import { createButton, createCard, createStatus, flashCopied, reserveCopied, showToast } from "../components";
 import { icon } from "../icons";
 import { t } from "../i18n";
 import { ApiClient, sidecarExecutable } from "../api-client";
@@ -90,7 +90,7 @@ function codeBlock(label: string, text: string): HTMLElement {
   head.className = "mcp-code-head";
   const title = document.createElement("span");
   title.textContent = label;
-  head.append(title, createButton({ label: t("复制"), size: "mini", onClick: (event) => void copyText(text, event.currentTarget as HTMLElement) }));
+  head.append(title, reserveCopied(createButton({ label: t("复制"), size: "mini", onClick: (event) => void copyText(text, event.currentTarget as HTMLElement) })));
   const pre = document.createElement("pre");
   pre.className = "mcp-code-body";
   const code = document.createElement("code");
@@ -137,11 +137,11 @@ function connectCard(executable: string, fallback: boolean): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "mcp-actions";
   actions.append(
-    createButton({
+    reserveCopied(createButton({
       label: t("复制接入说明"),
       variant: "primary",
       onClick: (event) => void copyText(prompt, event.currentTarget as HTMLElement, t("已复制接入说明，请粘贴发送给智能体。")),
-    }),
+    })),
   );
   body.append(actions);
 

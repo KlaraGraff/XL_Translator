@@ -22,9 +22,9 @@
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
-  /* 聚焦光圈有 3px，滚动容器会把它裁掉，留出这点余量。 */
-  padding: 3px;
-  margin: -3px;
+  /* 聚焦光圈外扩 4px（app.css 的双环，键盘焦点框同样 2px + 2px 间隔），滚动容器会把它裁掉，留出这点余量。 */
+  padding: 4px;
+  margin: -4px;
 }
 .ws-main > * {
   flex: none;
@@ -51,10 +51,11 @@
   overflow-x: hidden;
   /* 滚动条的位置一直留着（scroll 而不是 auto），「高级」展开、内容变长冒出滚动条时，右栏宽度不变，
      上面的配方句不会突然换行。右边距往外多伸 8px（滚动条宽度，见 app.css ::-webkit-scrollbar），
-     把留出的这条补回来，内容宽度与没有滚动条时相同。不可滚动时轨道透明、没有滑块，看不出来。 */
+     把留出的这条补回来，内容宽度与没有滚动条时相同。不可滚动时轨道透明、没有滑块，看不出来。
+     四周 4px 内边距给聚焦光圈留位置，再用负外边距抵掉。 */
   overflow-y: scroll;
-  padding: 3px 3px 8px;
-  margin: -3px -11px 0 -3px;
+  padding: 4px 4px 8px;
+  margin: -4px -12px 0 -4px;
 }
 /* 接近最小窗口（1080）时右栏收窄一点，把宽度让给文件表格，状态列不被挤出去。 */
 @media (max-width: 1199px) {
@@ -65,7 +66,7 @@
   .ws { flex-direction: column; overflow-y: auto; }
   .ws-main { overflow: visible; }
   .ws-side { width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 16px 0 0; }
-  .ws-side-scroll { overflow: visible; margin: -3px -3px 0; }
+  .ws-side-scroll { overflow: visible; margin: -4px -4px 0; }
 }
 
 .ws-note {

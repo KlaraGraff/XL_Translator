@@ -213,33 +213,39 @@ export function createButton(options: ButtonOptions): HTMLButtonElement {
 
 /** 小对勾停留多久：2.5 秒后自动换回原样，不长期占着位置。 */
 export const COPIED_HOLD_MS = 2500;
-const copiedState = new WeakMap<HTMLElement, { timer: number; original: ChildNode[] }>();
+const copiedTimers = new WeakMap<HTMLElement, number>();
+
+/**
+ * 给复制按钮或文字链接预留「✓ 已复制」的位置：原内容和「✓ 已复制」叠在同一格里，
+ * 宽度一开始就取两者中较宽的那个，换字时按钮不变宽、旁边的东西不挪，行高也不变。
+ * 创建按钮时就调用；漏调用时 flashCopied 会补上（那样第一次点会跳一下宽度）。
+ */
+export function reserveCopied<T extends HTMLElement>(target: T): T {
+  if (target.querySelector(":scope > .copy-swap")) return target;
+  const now = el("span", { className: "copy-now" });
+  now.append(...Array.from(target.childNodes));
+  const mark = el("span", { className: "copied-mark" });
+  mark.setAttribute("aria-hidden", "true");
+  mark.append(icon("check", { size: "sm" }), document.createTextNode(t("已复制")));
+  const swap = el("span", { className: "copy-swap" });
+  swap.append(now, mark);
+  target.append(swap);
+  return target;
+}
 
 /**
  * 复制成功：按钮或文字链接原地换成「✓ 已复制」，对勾带一点回弹地弹出来，2.5 秒后换回原来的内容。
  * 连点时只重新计时，不会叠出两个对勾。
  */
 export function flashCopied(target: HTMLElement): void {
-  const state = copiedState.get(target);
-  if (state) window.clearTimeout(state.timer);
-  const original = state?.original ?? Array.from(target.childNodes);
-  if (!state) {
-    // 换字前先按原宽度撑住，「复制」变「✓ 已复制」时旁边的东西不跟着挪。
-    target.style.minWidth = `${target.offsetWidth}px`;
-    const mark = el("span", { className: "copied-mark" });
-    mark.append(icon("check", { size: "sm" }), document.createTextNode(t("已复制")));
-    clearElement(target);
-    target.append(mark);
-    target.classList.add("is-copied");
-  }
-  const timer = window.setTimeout(() => {
-    copiedState.delete(target);
+  reserveCopied(target);
+  const timer = copiedTimers.get(target);
+  if (timer !== undefined) window.clearTimeout(timer);
+  target.classList.add("is-copied");
+  copiedTimers.set(target, window.setTimeout(() => {
+    copiedTimers.delete(target);
     target.classList.remove("is-copied");
-    target.style.minWidth = "";
-    clearElement(target);
-    target.append(...original);
-  }, COPIED_HOLD_MS);
-  copiedState.set(target, { timer, original });
+  }, COPIED_HOLD_MS));
 }
 
 // ---------------------------------------------------------------------------
