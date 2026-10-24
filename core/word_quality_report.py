@@ -154,7 +154,7 @@ def _word_formula_position_issue(*, file_name: str, info: dict) -> dict:
         "section_path": "",
         "snippet": _build_source_excerpt(str(info.get("source") or "")),
         "problem": "公式位置待核对",
-        "status": "这一句里有公式没能放回原来的位置，已放在句末，并在译文中标黄、添加批注，请对照原文调整。",
+        "status": "该句中有公式未能放回原位，已放在句末，并在译文中标黄、添加批注，请对照原文调整。",
         "severity": "needs_review",
     }
 
