@@ -1439,6 +1439,10 @@
     "en": "{0} of them {0|is|are} entirely A3+ and nothing was translated",
     "fr": "dont {0} entièrement en A3+, sans rien de traduit"
   },
+  "其中 {0} 个文件未翻译任何内容": {
+    "en": "nothing was translated in {0} of them",
+    "fr": "dont {0} sans rien de traduit"
+  },
   "保护开头 {0} 段未翻译": {
     "en": "{0} opening {0|paragraph|paragraphs} protected and not translated",
     "fr": "{0} {0|paragraphe|paragraphes} de début {0|protégé|protégés}, non {0|traduit|traduits}"

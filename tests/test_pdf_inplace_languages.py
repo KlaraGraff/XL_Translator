@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,6 +177,19 @@ class ChineseToFrenchTests(_PageCase):
         self.assertIn("Fosse d'équipement", text)
         self.assertIn("Plan du rez-de-chaussée", text)
         self.assertNotIn("设备基坑", text)
+
+    @unittest.skipUnless(shutil.which("tesseract"), "tesseract not installed")
+    def test_strokes_with_unknown_source_are_flagged(self):
+        # 反馈 #20：没有文字层、原文语言自动识别时只能按西文识别，结果要带上标记好照实告诉用户。
+        def build(page):
+            page.draw_line((40, 60), (800, 60), color=(0, 0, 0), width=1)
+            page.draw_rect(fitz.Rect(60, 90, 300, 140), color=(0, 0, 0), width=0.8)
+
+        result, _prompts = self._run(build, {}, "en", tesseract=shutil.which("tesseract"))
+        self.assertTrue(result.ocr_used)
+        self.assertTrue(result.ocr_source_unknown)
+        result, _prompts = self._run(self._build, ZH_FR, "fr", tesseract=shutil.which("tesseract"))
+        self.assertFalse(result.ocr_source_unknown)          # the text layer tells: Chinese
 
     def test_a_translation_still_holding_chinese_is_not_written(self):
         result, _prompts = self._run(self._build, {**ZH_FR, "设备基坑": "Fosse 设备"}, "fr")
