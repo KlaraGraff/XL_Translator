@@ -28,7 +28,7 @@ from PIL import Image
 
 from core.ocr_engine import png_bytes, tesseract_options
 
-from .common import fitz, norm_text, sha256, write_json
+from .common import fitz, join_words, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
 TILE, STEP = 1800, 1560
@@ -423,7 +423,7 @@ def split_at_rules(rows, V, Hs):
             if i in cuts or i == len(ws) - 1:
                 box = [min(z["box"][0] for z in part), min(z["box"][1] for z in part),
                        max(z["box"][2] for z in part), max(z["box"][3] for z in part)]
-                out.append({**r, "source_text": norm_text(" ".join(z["text"] for z in part)), "display_box": box,
+                out.append({**r, "source_text": norm_text(join_words(part)), "display_box": box,
                             "words": part, "ocr_score": sum(z["score"] for z in part) / len(part),
                             "split_from_rule": True})
                 part = []
@@ -749,10 +749,14 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
 # ------------------------------------------------------------- main
 
 def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers: int,
-        tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None) -> dict:
-    """Rows for page 1 of ``source``.  Without ``tesseract`` only the native
-    text layer is read (outline lettering is then counted, not translated).
-    ``progress(done, total)`` follows the OCR tiles."""
+        tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None,
+        reader: Callable[..., list[dict]] | None = None) -> dict:
+    """Rows for page 1 of ``source``.  Outline lettering is read by ``reader``
+    (``reader(gray, progress) -> rows``: the PP-OCR models of the text recognition
+    component, Chinese, Japanese and Latin script; see core.pdf_vector.cjk_ocr) when given,
+    else by ``tesseract``; with neither only the native text layer is read (outline
+    lettering is then counted, not translated).  ``progress(done, total)``
+    follows the OCR tiles."""
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(source)
     if len(doc) != 1:
@@ -770,11 +774,15 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
     pix = tp.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
     gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
     tmp.close()
-    raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
+    if reader is not None:
+        raw = reader(gray, progress)
+    else:
+        raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
     ocr, dropped = dedup(raw)
     V, Hs = rules(page, dpi)
     ocr, n_split = split_at_rules(ocr, V, Hs)
-    extra = reocr_neighbours(page, nat + ocr, dpi, langs, tesseract) if tesseract else []
+    # the second look at missed lines is Tesseract's (Latin script, French / English word lists)
+    extra = reocr_neighbours(page, nat + ocr, dpi, langs, tesseract) if tesseract and reader is None else []
     if extra:
         # weak reads of the same strokes give way to the clean second look
         eb = [fitz.Rect(e["display_box"]) for e in extra]
@@ -793,7 +801,9 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
     for i, r in enumerate(rows, 1):
         r["id"] = f"R{i:04d}"
     info = {
-        "source": str(source), "source_sha256": sha256(source), "dpi": dpi, "langs": langs, "ocr": bool(tesseract),
+        "source": str(source), "source_sha256": sha256(source), "dpi": dpi, "langs": langs,
+        "ocr": bool(tesseract or reader is not None),
+        "ocr_engine": "ppocr" if reader is not None else "tesseract" if tesseract else "",
         "page_rect": list(page.rect), "page_rotation": page.rotation,
         "display_size_px": list(gray.size),
         "counts": {"native_lines": len(nat), "ocr_raw": len(raw), "ocr_dedup_dropped": dropped,

@@ -4543,6 +4543,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                        hooks.profile),
                 tesseract=hooks.tesseract,
                 tesseract_languages=hooks.tesseract_languages,
+                ocr_reader=getattr(hooks, "ocr_reader", None),
                 source_lang=hooks.source_lang,
                 log=self._log,
                 native_only=native_only,

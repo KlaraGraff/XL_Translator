@@ -235,6 +235,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     """
     from core.ocr_engine import resolve_tesseract, tesseract_languages
     from core.pdf_vector import InplaceHooks
+    from core.ppocr_component import make_reader
     from core.pdf_vector.classify import target_language_name
     from core.text_translation_service import TextTranslationService
     from engines.base_engine import engine_supports_chat
@@ -284,6 +285,8 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         profile=profile,
         tesseract=str(exe) if exe else None,
         tesseract_languages=tesseract_languages(exe) if exe else None,
+        # 装了中文识别模型时中文、日文、西文的线条字都用它认（core.ppocr_component）。
+        ocr_reader=make_reader(),
         source_lang="auto",
         ocr_wanted=True,
         memory=memory,

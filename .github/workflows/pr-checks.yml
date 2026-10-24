@@ -101,7 +101,8 @@ jobs:
 
   # 「PDF 处理组件」「文字识别组件」一键安装：从 PyPI / conda-forge 真下载、解压、试运行。
   # 依赖外部网站，同样只在手动触发时跑；改了 core/component_download.py、
-  # core/pdf_component_install.py、core/ocr_component_install.py 时跑一遍。
+  # core/pdf_component_install.py、core/ocr_component_install.py、
+  # core/ppocr_component_install.py 时跑一遍。
   # Windows 上模拟一台「干净」的电脑：系统目录里没有 VC++ 运行库，数据目录带中文和空格
   # （英文系统的代码页写不出这几个字）。
   component-install:

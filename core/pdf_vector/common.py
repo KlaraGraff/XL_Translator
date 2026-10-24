@@ -144,3 +144,15 @@ def numbers(s: str, *, dates: bool = False) -> list[str]:
     text = _NUMERIC_DATE_RE.sub(r"\1 \3 \4", _month_numbers(text))
     return [n.replace(",", ".") if any(c in n for c in ".,") else (n.lstrip("0") or "0")
             for n in NUMBER_RE.findall(text)]
+
+
+def join_words(words: list[dict]) -> str:
+    """Words of one line back into text.  Tesseract's words are separated by spaces;
+    PP-OCR's carry ``sp`` (Chinese and Japanese characters are words of their own,
+    written without spaces)."""
+    out = ""
+    for w in words:
+        if out and w.get("sp", True):
+            out += " "
+        out += w["text"]
+    return out

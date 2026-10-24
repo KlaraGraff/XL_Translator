@@ -40,6 +40,12 @@ def _run() -> int:
 
         return convert_main(sys.argv[2], sys.argv[3], sys.argv[4])
 
+    if len(sys.argv) >= 5 and sys.argv[1] == "--ppocr-worker":
+        # 原位替换识别中文、日文线条字：NumPy、OpenCV、ONNX Runtime 只进这个子进程。
+        from core.ppocr_component import worker_main
+
+        return worker_main(sys.argv[2], sys.argv[3], sys.argv[4])
+
     if "--smoke-test" in sys.argv[1:]:
         from scripts.frozen_smoke import run_smoke_test
 

@@ -147,6 +147,10 @@ def em_from_box(src: str, thick_pt: float) -> float:
     letters = [c for c in src if c.isalpha()]
     if not letters:
         return thick_pt / 0.72
+    if has_cjk(src):
+        # Chinese and Japanese characters fill about nine tenths of the em, taller
+        # than Latin capitals; they set the height of a mixed line
+        return thick_pt / 0.9
     has_desc = any(c in "gjpqyQ,;()[]" for c in src)
     has_lower_asc = any(c in "bdfhklt" for c in src) or any(c.isupper() for c in src)
     all_caps = all(not c.islower() for c in letters)
