@@ -667,6 +667,10 @@ class InlineMarkEngine:
         # 排查用（只进 app.log，不含原文）：每段最后一次的结果 ok / repaired / lost，重试的次数
         self.outcomes: dict[str, str] = {}
         self.retry_counts: dict[str, int] = {"alone": 0, "split": 0, "failed": 0}
+        # 超长段落按句子切成的几块：原文 → [(这块的纯文本, 带标记的这块)]；见 split_long_sources
+        self.parts: dict[str, list[tuple[str, str]]] = {}
+        self._part_texts: set[str] = set()
+        self._part_plain_results: dict[str, str] = {}
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -677,7 +681,54 @@ class InlineMarkEngine:
             return sent, system_prompt
         return sent, append_batch_block(system_prompt, MARK_PROMPT_RULE)
 
+    def split_long_sources(self, split) -> None:
+        """word_batching 把超长段落按句子切成几块分别发（split 和它切法相同）。这几块原样发出
+        就没有标记，公式全靠定稿后补标记，一段二三十个公式时常补不上、全挤到段末（反馈
+        #19）。这里把带标记的原文按同样的位置切开，每块也换成带标记的发出，定稿后再拼回
+        （assemble_parts）。切不准的段落照旧。"""
+        for plain, marked in list(self._marked_sources.items()):
+            if plain in self.parts or plain in self._part_texts:
+                continue
+            pieces = split(plain)
+            if len(pieces) <= 1:
+                continue
+            marked_pieces = split_marked_parts(marked, plain, pieces)
+            if marked_pieces is None:
+                continue
+            self.parts[plain] = list(zip(pieces, marked_pieces))
+            for piece, marked_piece in zip(pieces, marked_pieces):
+                self._part_texts.add(piece)
+                if marked_piece != piece:
+                    self._marked_sources.setdefault(piece, marked_piece)
+
+    def assemble_parts(self, source: str, join) -> tuple[str, str] | None:
+        """超长段落各块带标记的译文按 join（和 word_batching 拼译文的方式相同）拼回整段：
+        (带标记原文, 带标记译文)；有一块缺了返回 None。"""
+        pieces = self.parts.get(source)
+        marked = self._marked_sources.get(source)
+        if not pieces or marked is None:
+            return None
+        translated = []
+        for piece, marked_piece in pieces:
+            if marked_piece == piece:
+                text = self._part_plain_results.get(piece)
+            else:
+                entry = self.marked_translations.get(piece) or self.repaired_translations.get(piece)
+                text = entry[1] if entry is not None and entry[0] == marked_piece else None
+            if not text:
+                return None
+            translated.append(text.strip())
+        # 切开时跨块的那对标记各块各包一截，拼回时接缝处合成一对
+        joined = _SEAM_RE.sub(r"\2", join(translated))
+        if marks_match(marked, joined):
+            return marked, joined
+        repaired = repair_marks(marked, joined)
+        return (marked, repaired) if repaired is not None else None
+
     def _receive(self, plain: str, sent: str, translation: str, target_lang: str) -> str:
+        if plain in self._part_texts and (sent is plain or sent == plain):
+            with self._lock:
+                self._part_plain_results[plain] = translation
         if sent is plain or sent == plain:
             return translation
         ok = marks_match(sent, translation)
@@ -797,6 +848,90 @@ def _no_word_spaces(target_lang) -> bool:
 # 句末：中文句号类直接断；西文句号类后面要有空格，且下一个字是大写字母、数字、汉字或标记，
 # 免得在「e.g. the」「Fig. 3」这种地方断开（「Fig. 3」仍可能断，只影响拆在哪儿，不影响结果）
 _SENTENCE_END_RE = re.compile(r"[。！？；]\s*|[.!?;]\s+(?=[A-ZÀ-ÖØ-Þ0-9<\u4e00-\u9fff])")
+
+
+_SEAM_RE = re.compile(r"<\s*/\s*g\s*(\d+)\s*>(\s*)<\s*g\s*\1\s*>", re.IGNORECASE)
+
+
+_PART_SENTENCE_ENDS = frozenset("。！？；.!?;")
+
+
+def split_marked_parts(marked: str, plain: str, parts: list[str]) -> list[str] | None:
+    """带标记原文按纯文本的切块（word_batching 按句子切的，每块去掉首尾空白）切成对应的
+    几块。块之间的空白不要；夹在块边界上的标记：闭标记归前一块，开标记归后一块，占位符
+    紧贴前一块的末字时归前一块（前一块以句末标点结尾时归后一块），否则归后一块。一对格式标记跨两块时各块各包一截（同一个
+    编号）。对不上返回 None。"""
+    texts = placeholder_texts(marked, plain)
+    if texts is None:
+        return None
+    tokens: list[tuple[str, str, int, int]] = []  # (种类 char/open/close/slot, 原串, 纯文本起点, 终点)
+    position = cursor = 0
+    for match in _ANY_MARK_RE.finditer(marked):
+        for char in marked[cursor:match.start()]:
+            tokens.append(("char", char, position, position + 1))
+            position += 1
+        cursor = match.end()
+        if match.group(3) is not None:
+            width = len(texts.get(int(match.group(3)), ""))
+            tokens.append(("slot", match.group(0), position, position + width))
+            position += width
+        else:
+            tokens.append(("close" if match.group(1) == "/" else "open", match.group(0), position, position))
+    for char in marked[cursor:]:
+        tokens.append(("char", char, position, position + 1))
+        position += 1
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for part in parts:
+        found = plain.find(part, start)
+        if found < 0:
+            return None
+        spans.append((found, found + len(part)))
+        start = found + len(part)
+
+    def owner(kind: str, at: int, until: int) -> int | None:
+        if until > at:  # 占字符的：整个落在一块里才行
+            return next((index for index, (begin, end) in enumerate(spans) if begin <= at and until <= end), None)
+        for index, (begin, end) in enumerate(spans):
+            if begin < at < end:
+                return index
+            nxt = spans[index + 1][0] if index + 1 < len(spans) else None
+            if at == begin:
+                return index - 1 if kind == "close" and index > 0 else index
+            if at == end:
+                # 句末之后紧跟的占位符属于下一句（中文句子之间没有空白）
+                ends_sentence = kind == "slot" and plain[end - 1:end] in _PART_SENTENCE_ENDS
+                return index + 1 if kind in ("open", "slot") and nxt is not None and (kind == "open" or ends_sentence) else index
+            if nxt is not None and end < at < nxt:
+                return index if kind == "close" else index + 1
+        return 0 if at < spans[0][0] else len(spans) - 1
+
+    chunks: list[list[str]] = [[] for _ in parts]
+    for kind, raw, at, until in tokens:
+        index = owner(kind, at, until)
+        if index is None:
+            if kind == "char" and raw.isspace():
+                # 块之间的空白不要，除非前面已经有归到下一块的占位符（"<x2/> is" 的空格）
+                following = next((i for i, (begin, _end) in enumerate(spans) if begin > at), None)
+                if following is not None and chunks[following]:
+                    chunks[following].append(raw)
+                continue
+            return None
+        chunks[index].append(raw)
+    out: list[str] = []
+    carried: str | None = None  # 上一块结尾还开着的那个格式标记
+    for part, chunk in zip(parts, chunks):
+        text = (carried or "") + "".join(chunk)
+        opened = None
+        for match in _TAG_RE.finditer(text):
+            opened = None if match.group(1) == "/" else match.group(2)
+        carried = f"<g{opened}>" if opened is not None else None
+        if opened is not None:
+            text += f"</g{opened}>"
+        if strip_marks(text, texts).strip() != part:
+            return None
+        out.append(text)
+    return out
 
 
 def split_marked(marked: str) -> tuple[str, str] | None:

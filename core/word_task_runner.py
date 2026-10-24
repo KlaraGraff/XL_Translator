@@ -167,6 +167,8 @@ from core.word_inline_marks import InlineMarkEngine, place_marks, same_text, unm
 from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_batching import (
     WordBatchRunStats,
+    _join_translated_parts,
+    _split_long_word_text,
     estimate_api_request_weight,
     translate_word_texts,
 )
@@ -1173,6 +1175,15 @@ class WordTaskRunner(BaseTaskRunner):
                 self._inline_mark_engine = (
                     InlineMarkEngine(engine, self._marked_sources) if self._marked_sources else None
                 )
+                if self._inline_mark_engine is not None:
+                    # 超长段落 word_batching 会按句子切块发，每块也带上标记（反馈 #19）
+                    self._inline_mark_engine.split_long_sources(
+                        lambda text: _split_long_word_text(
+                            text,
+                            split_threshold=self._word_batch.max_chars_per_batch,
+                            part_char_budget=self._word_batch.max_chars_per_batch,
+                        )
+                    )
                 mark_engine = self._inline_mark_engine or engine
                 # 记忆库词条包在最外层：按原文（不带格式标记）查词、核对和重译。
                 term_engine = term_session.wrap(mark_engine)
@@ -1740,7 +1751,7 @@ class WordTaskRunner(BaseTaskRunner):
                 else:
                     raise TaskStopped("任务已停止，未获得可写入的 Word 翻译结果。")
 
-            self._place_missing_inline_marks(engine, global_translations)
+            self._place_missing_inline_marks(engine, global_translations, target_lang=target_lang)
 
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word…"))
             self._file_progress.emit_many("waiting", "generate")
@@ -2019,7 +2030,7 @@ class WordTaskRunner(BaseTaskRunner):
                     )
                 )
 
-    def _place_missing_inline_marks(self, engine, global_translations: dict[str, str]) -> None:
+    def _place_missing_inline_marks(self, engine, global_translations: dict[str, str], *, target_lang: str = "") -> None:
         """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
         语言、模型弄丢标记、复查改过），让模型只补标记。失败的按整段写法写回。"""
         if not self._marked_sources or self._stop_event.is_set():
@@ -2028,6 +2039,7 @@ class WordTaskRunner(BaseTaskRunner):
             self._inline_mark_engine = InlineMarkEngine(engine, self._marked_sources)
         known = self._inline_mark_engine.marked_translations
         items = []
+        assembled = 0
         for source, marked in self._marked_sources.items():
             value = global_translations.get(source)
             if not value:
@@ -2036,6 +2048,14 @@ class WordTaskRunner(BaseTaskRunner):
             translation = str(translation).strip()
             if not translation or translation == source:
                 continue
+            if source not in known and source in self._inline_mark_engine.parts:
+                # 超长段落切块翻的：各块带标记的译文拼回整段
+                joined = self._inline_mark_engine.assemble_parts(
+                    source, lambda parts: _join_translated_parts(parts, target_lang=target_lang)
+                )
+                if joined is not None and same_text(unmark(joined[1], joined[0], source), translation):
+                    known[source] = joined
+                    assembled += 1
             entry = known.get(source)
             if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
                 continue
@@ -2047,6 +2067,8 @@ class WordTaskRunner(BaseTaskRunner):
                 f"Word 段内格式：占位符重试，单独重问成功 {retries['alone']} 处，拆两半成功 {retries['split']} 处，"
                 f"仍不完整 {retries['failed']} 处"
             )
+        if assembled:
+            logger.info(f"Word 段内格式：超长段落切块翻译后按标记拼回 {assembled} 处")
         if not items:
             return
         loose: dict[str, tuple[str, str]] = {}
