@@ -5381,8 +5381,16 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 后端为此把这种文件的 success 判成 false（见 _file_record_to_result），也在
   // _record_needs_review 里把它算作需复核；界面只说「跳过 N 页」的话，用户会以为
   // 那是一份翻好的文件里少翻了几页，而实际上整份都没动。
-  if (untranslatedFiles > 0) {
-    clauses.push(t("其中 {0} 个文件全部为 A3+ 页面，未翻译任何内容", untranslatedFiles));
+  // 「全部为 A3+」只说真被幅面跳过的文件。原位替换一处没换上、转 Word 失败等别的原因整份没翻的，
+  // 只说没翻，原因在文件行和任务报告里——以前一律说成 A3+，A3 图纸识别失败也被说成幅面问题（反馈 #20）。
+  const oversizeOnlyFiles = terminalFileResults(result).filter(
+    (entry) => fileResultProduced(entry) && fileResultAllOversize(entry),
+  ).length;
+  if (oversizeOnlyFiles > 0) {
+    clauses.push(t("其中 {0} 个文件全部为 A3+ 页面，未翻译任何内容", oversizeOnlyFiles));
+  }
+  if (untranslatedFiles > oversizeOnlyFiles) {
+    clauses.push(t("其中 {0} 个文件未翻译任何内容", untranslatedFiles - oversizeOnlyFiles));
   }
   if (protectedParagraphs > 0) clauses.push(t("保护开头 {0} 段未翻译", protectedParagraphs));
   if (review > 0) clauses.push(t("{0} 处需复核", review));
@@ -5635,7 +5643,12 @@ function fileResultProduced(item: JsonObject): boolean {
  *  `_record_is_fully_skipped_oversize`），可它有输出路径，`fileResultProduced` 仍会算「已生成」。
  *  不单独认出来的话，这一行就是干干净净一句「已生成」，而任务中心给同一份文件挂着「需复核」。 */
 function fileResultUntranslated(item: JsonObject): boolean {
-  if (item.all_pages_skipped_oversize === true || item.untranslated === true) return true;
+  return item.untranslated === true || fileResultAllOversize(item);
+}
+
+/** 整份每一页都因幅面被跳过（`fileResultUntranslated` 的一种，横幅单独点名幅面）。 */
+function fileResultAllOversize(item: JsonObject): boolean {
+  if (item.all_pages_skipped_oversize === true) return true;
   const pages = num(item.page_count);
   return pages > 0 && num(item.skipped_oversize_page_count) >= pages;
 }
