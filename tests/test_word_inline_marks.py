@@ -20,6 +20,8 @@ from core.language_preflight import TranslationLanguageResult
 from core.word_document import extract_word_segments, write_bilingual_docx
 from core.word_inline_marks import (
     MARK_PROMPT_RULE,
+    PLACE_MARKS_PROMPT,
+    clean_marks,
     InlineMarkEngine,
     add_boundary_spaces,
     marks_match,
@@ -27,8 +29,6 @@ from core.word_inline_marks import (
     parse_marked,
     place_marks,
     placeholder_texts,
-    repair_marks,
-    split_marked,
     split_marked_parts,
     strip_marks,
     unmark,
@@ -315,6 +315,24 @@ class ParseMarkedTests(unittest.TestCase):
         self.assertFalse(marks_match("<g1>注：</g1>甲\n乙", "Note : A\n<g1>B</g1>"))
 
 
+def _bare_runner(marked_sources, *, retries: int = 3):
+    """只够跑 _place_missing_inline_marks 的 WordTaskRunner。"""
+    import threading
+    from types import SimpleNamespace
+
+    from core.word_task_runner import WordTaskRunner
+
+    runner = WordTaskRunner.__new__(WordTaskRunner)
+    runner._marked_sources = dict(marked_sources)
+    runner._slot_hints = {}
+    runner._formula_flags = {}
+    runner._stop_event = threading.Event()
+    runner._inline_mark_engine = None
+    runner._word_batch = SimpleNamespace(strict_retry_attempts=retries)
+    runner._rate = SimpleNamespace(concurrency=1)
+    return runner
+
+
 class _FakeEngine:
     engine_name = "fake"
 
@@ -456,10 +474,11 @@ class PlaceMarksTests(unittest.TestCase):
         self.assertEqual(placed["1.2\t施工范围见附图。"][1], "1.2<x1/><g1>Périmètre</g1><x2/> : voir plan.")
         self.assertIn("1.2<x1/>Périmètre : voir plan.", engine.prompts[0][1])
 
-    def test_moved_tab_is_rejected(self) -> None:
+    def test_a_tab_the_model_moves_stays_where_the_final_text_has_it(self) -> None:
+        """只取这次要插的标记的位置，已经放好的（按定稿找到的制表符）不跟着模型挪。"""
         engine = _ChatEngine('["1.2 <g1>Périmètre</g1><x1/><x2/>: voir plan."]')
         items = [("1.2\t施工范围见附图。", "1.2<x1/><g1>施工范围</g1><x2/>见附图。", "1.2\tPérimètre : voir plan.")]
-        self.assertEqual(place_marks(engine, items), {})
+        self.assertEqual(place_marks(engine, items)["1.2\t施工范围见附图。"][1], "1.2<x1/><g1>Périmètre</g1><x2/> : voir plan.")
 
     def test_placeholder_may_replace_the_space_a_stored_translation_has_for_a_tab(self) -> None:
         """记忆库里的定稿把制表符存成了空格：占位符顶替这个空格也算没改译文。"""
@@ -468,9 +487,10 @@ class PlaceMarksTests(unittest.TestCase):
                   "1.2 Portée des travaux : voir le dessin annexe.")]
         placed = place_marks(engine, items)
         self.assertEqual(placed["1.2\t施工范围见附图。"][1], "1.2<x1/><g1>Portée des travaux</g1> : voir le dessin annexe.")
-        # 只差空白可以，改了字不行
+        # 模型顺手改了别处的字也不要紧：只取标记的位置，文字仍是定稿
         engine = _ChatEngine('["1.2<x1/><g1>Portée des travaux</g1> : voir le dessin."]')
-        self.assertEqual(place_marks(engine, items), {})
+        self.assertEqual(place_marks(engine, items)["1.2\t施工范围见附图。"][1],
+                         "1.2<x1/><g1>Portée des travaux</g1> : voir le dessin annexe.")
 
     def test_note_reference_that_took_the_space_between_two_words_still_lands_in_the_sentence(self) -> None:
         """模型把脚注编号插在空格上（「béton<x1/>doit」「béton <x1/>doit」）：编号留在句中，后面补回空格。"""
@@ -502,8 +522,12 @@ class PlaceMarksTests(unittest.TestCase):
         placed = place_marks(_ChatEngine('["<g1>Note</g1> <x1/>: unités en mm."]'),
                              [("注图：单位毫米。", "<g1>注</g1>图<x1/>：单位毫米。", "Note : unités en mm.")])
         self.assertEqual(placed["注图：单位毫米。"][1], "<g1>Note</g1><x1/> : unités en mm.")
-        # 改了字的照样不收
+        # 模型多写了几个字：标记位置照样换算到定稿上
         placed = place_marks(_ChatEngine('["Comme indiqué sur la figure <x1/>, il est <g1>strictement interdit</g1> de stocker."]'),
+                             [(source, marked, translation)])
+        self.assertEqual(placed[source][1], "Comme indiqué sur la figure<x1/>, <g1>strictement interdit</g1> de stocker.")
+        # 改得太多（和定稿差得远）的不收
+        placed = place_marks(_ChatEngine('["Il est <g1>interdit</g1> de stocker quoi que ce soit ici <x1/>."]'),
                              [(source, marked, translation)])
         self.assertEqual(placed, {})
 
@@ -516,159 +540,183 @@ class PlaceMarksTests(unittest.TestCase):
         self.assertEqual(place_marks(NoChat(), self.ITEMS), {})
 
 
-class RepairMarksTests(unittest.TestCase):
-    """反馈 #19：一段里有十几个行内公式时，模型常弄丢、重复或写走样一两个占位符。整段退回
-    写法会把所有公式都挤到段末；补救后其余公式留在原处，丢的那个按前后位置估出来。"""
+class _GroupEngine(_FakeEngine):
+    """补标记时按「插入」里列出的标记，从 answers（标记 → 插好这一个标记的定稿译文）里取位置
+    插进这次的译文；refuse 里的标记每次都不放（回原样的译文）。"""
 
-    MARKED = "where <x1/> is the stress, <x2/> is the strain and <x3/> is the modulus."
+    def __init__(self, answers, refuse=()):
+        super().__init__(lambda t: t)
+        self.answers = answers
+        self.refuse = set(refuse)
+        self.requests = []
 
-    def test_lost_placeholder_goes_between_its_neighbours(self) -> None:
-        translation = "其中<x1/>为应力，为应变，<x3/>为模量。"
-        self.assertEqual(repair_marks(self.MARKED, translation), "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
+    def chat(self, system, user):
+        from core.word_inline_marks import _insert_mark, _mark_tokens
 
-    def test_french_placeholder_lands_between_words(self) -> None:
-        translation = "où <x1/> est la contrainte, est la déformation et <x3/> est le module."
-        repaired = repair_marks(self.MARKED, translation)
-        self.assertEqual(repaired, "où <x1/> est la contrainte, <x2/> est la déformation et <x3/> est le module.")
-        self.assertTrue(marks_match(self.MARKED, repaired))
-
-    def test_duplicates_unknown_and_malformed_placeholders_are_cleaned(self) -> None:
-        translation = "其中<x1/>为应力，<x2>为应变，<x3/>为模量<x3/><x9/>。"
-        self.assertEqual(repair_marks(self.MARKED, translation), "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
-        self.assertEqual(repair_marks(self.MARKED, "其中&lt;x1/&gt;为应力，<x2/>为应变，<x3/>为模量。"),
-                         "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
-
-    def test_adjacent_formulas_keep_their_order(self) -> None:
-        # 相邻的三个公式中间那个丢了：补在第一个之后、第三个之前
-        self.assertEqual(repair_marks("令<x1/>、<x2/>、<x3/>表示各项。", "Let <x1/>, <x3/> denote the terms."),
-                         "Let <x1/>, <x2/><x3/> denote the terms.")
-
-    def test_broken_format_tags_are_dropped_but_formulas_stay(self) -> None:
-        marked = "<g1>Note</g1>: <x1/> and <x2/> are constants."
-        repaired = repair_marks(marked, "<g1>注</g1>：<x1/>和<x2/>为常数</g1>。")
-        self.assertEqual(repaired, "注：<x1/>和<x2/>为常数。")
-
-    def test_too_much_lost_or_nothing_to_repair_gives_up(self) -> None:
-        self.assertIsNone(repair_marks(self.MARKED, "其中<x1/>为应力，为应变，为模量。"))
-        self.assertIsNone(repair_marks("<g1>注：</g1>单位毫米。", "注：单位毫米。"))
-        self.assertIsNone(repair_marks("a<x1/>b\nc", "a<x1/>b"))
-
-    def test_mark_engine_keeps_the_repaired_version_aside(self) -> None:
-        plain = "where  is the stress,  is the strain and  is the modulus."
-        inner = _FakeEngine(lambda t: "où <x1/> est la contrainte, est la déformation et <x3/> est le module.")
-        engine = InlineMarkEngine(inner, {plain: self.MARKED})
-        result = engine.translate_batch([plain], "fr", "SYS")
-        self.assertEqual(result[plain], "où  est la contrainte,  est la déformation et  est le module.")
-        self.assertNotIn(plain, engine.marked_translations)
-        self.assertEqual(engine.repaired_translations[plain][1],
-                         "où <x1/> est la contrainte, <x2/> est la déformation et <x3/> est le module.")
-
-    def test_place_marks_hands_back_repaired_answers_separately(self) -> None:
-        source = "where  is the stress,  is the strain and  is the modulus."
-        translation = "其中为应力，为应变，为模量。"
-        engine = _ChatEngine(json.dumps(["其中<x1/>为应力，为应变，<x3/>为模量。"], ensure_ascii=False))
-        loose: dict = {}
-        self.assertEqual(place_marks(engine, [(source, self.MARKED, translation)], repaired=loose), {})
-        self.assertEqual(loose, {source: (self.MARKED, "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")})
-
-    def test_runner_falls_back_to_the_repaired_version(self) -> None:
-        """定稿后补标记：模型这次又弄丢了占位符，就用翻译时补救的那一版。"""
-        import threading
-
-        from core.word_task_runner import WordTaskRunner
-
-        source = "where  is the stress,  is the strain and  is the modulus."
-        runner = WordTaskRunner.__new__(WordTaskRunner)
-        runner._marked_sources = {source: self.MARKED}
-        runner._stop_event = threading.Event()
-        runner._inline_mark_engine = InlineMarkEngine(
-            _ChatEngine('["其中为应力，为应变，为模量。"]'), runner._marked_sources
-        )
-        runner._inline_mark_engine.repaired_translations[source] = (
-            self.MARKED, "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。"
-        )
-        runner._place_missing_inline_marks(runner._inline_mark_engine.inner, {source: "其中为应力，为应变，为模量。"})
-        self.assertEqual(runner._inline_mark_engine.marked_translations[source][1],
-                         "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。")
-        # 定稿被复查改过、对不上补救版的不用
-        runner._inline_mark_engine.marked_translations.clear()
-        runner._place_missing_inline_marks(runner._inline_mark_engine.inner, {source: "其中应力为，应变为，模量为。"})
-        self.assertNotIn(source, runner._inline_mark_engine.marked_translations)
+        assert system == PLACE_MARKS_PROMPT
+        items = json.loads(user)
+        self.requests.append(items)
+        out = []
+        for item in items:
+            text = item["译文"]
+            for mark in item["插入"].split("、"):
+                if mark in self.refuse:
+                    continue
+                for name, position, raw in _mark_tokens(self.answers[mark]):
+                    text = _insert_mark(text, position, raw, name, {})
+            out.append(text)
+        return json.dumps(out, ensure_ascii=False)
 
 
-class RetryMarksTests(unittest.TestCase):
-    """maple 的思路（反馈 #19）：占位符没完整回来就当译文出错重试——先单独问这一段，再按
-    句子拆成两半问，最后才估位置。"""
+class FormulaPlacementTests(unittest.TestCase):
+    """反馈 #19 新方案（maple 10-24）：整句带标记翻一次，标记没回齐时译文不动，缺的标记按分句
+    分组、每组几个，让模型只说位置；一组放不进去按「单段重试次数」重试（第 1 次原样、第 2 次
+    拆两半、之后再问），试满仍不行的公式放到所在那一句的句末，写回时标黄加批注。"""
 
-    PLAIN = "where  is the stress. Then  is the strain and  is the modulus."
-    MARKED = "where <x1/> is the stress. Then <x2/> is the strain and <x3/> is the modulus."
-    GOOD = "其中<x1/>为应力。<x2/>为应变，<x3/>为模量。"
-    LOST = "其中<x1/>为应力。为应变，<x3/>为模量。"
+    MARKED = ("where <x1/> is the stress, <x2/> is the strain, <x3/> is the modulus. "
+              "Then <g1>we</g1> have <x4/> and <x5/>, so <x6/>.")
+    PLAIN = strip_marks(MARKED)
+    FINAL = "其中为应力，为应变，为模量。于是我们有和，所以。"
+    ANSWERS = {
+        "<x1/>": "其中<x1/>为应力，为应变，为模量。于是我们有和，所以。",
+        "<x2/>": "其中为应力，<x2/>为应变，为模量。于是我们有和，所以。",
+        "<x3/>": "其中为应力，为应变，<x3/>为模量。于是我们有和，所以。",
+        "<g1>…</g1>": "其中为应力，为应变，为模量。于是<g1>我们</g1>有和，所以。",
+        "<x4/>": "其中为应力，为应变，为模量。于是我们有<x4/>和，所以。",
+        "<x5/>": "其中为应力，为应变，为模量。于是我们有和<x5/>，所以。",
+        "<x6/>": "其中为应力，为应变，为模量。于是我们有和，所以<x6/>。",
+    }
+    PLACED = "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。于是<g1>我们</g1>有<x4/>和<x5/>，所以<x6/>。"
 
-    def _engine(self, answer):
-        inner = _FakeEngine(answer)
-        return inner, InlineMarkEngine(inner, {self.PLAIN: self.MARKED})
+    def test_garbled_marks_are_cleaned_and_lost_ones_are_not_guessed(self) -> None:
+        self.assertEqual(clean_marks(self.MARKED, "其中<x1>为应力，<x2/><x2/>为应变，<x9/>为模量。于是<g1>我们有。"),
+                         "其中<x1/>为应力，<x2/>为应变，为模量。于是我们有。")
+        self.assertEqual(clean_marks("a<x1/>b\nc", "a<x1/>b"), "ab")  # 行数对不上：全部去掉
 
-    def test_split_marked_cuts_at_a_sentence_end_outside_format_tags(self) -> None:
-        self.assertEqual(split_marked(self.MARKED),
-                         ("where <x1/> is the stress.", "Then <x2/> is the strain and <x3/> is the modulus."))
-        self.assertEqual(split_marked("其中<x1/>为应力。<x2/>为应变；<x3/>为模量。"),
-                         ("其中<x1/>为应力。", "<x2/>为应变；<x3/>为模量。"))
-        self.assertIsNone(split_marked("<g1>Note. Here</g1> <x1/> is."))
-        self.assertIsNone(split_marked("e.g. only <x1/> one sentence."))
-        self.assertIsNone(split_marked("第一行<x1/>。\n第二行。"))
-
-    def test_lost_placeholder_in_a_batch_is_asked_again_alone(self) -> None:
-        def answer(text):
-            if text == self.MARKED:
-                return self.LOST if len(inner.calls) == 1 else self.GOOD
-            return "Autre."
-        inner, engine = self._engine(answer)
-        result = engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
-        self.assertEqual(result[self.PLAIN], "其中为应力。为应变，为模量。")
-        self.assertEqual([calls for calls, _prompt in inner.calls][1], [self.MARKED])
-        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
-
-    def test_still_lost_alone_is_split_into_two_halves(self) -> None:
-        halves = {"where <x1/> is the stress.": "其中<x1/>为应力。",
-                  "Then <x2/> is the strain and <x3/> is the modulus.": "<x2/>为应变，<x3/>为模量。"}
-        inner, engine = self._engine(lambda text: halves.get(text, self.LOST))
-        engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
-        self.assertEqual([calls for calls, _prompt in inner.calls][2], list(halves))
-        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
-
-    def test_french_halves_are_joined_with_a_space(self) -> None:
-        halves = {"where <x1/> is the stress.": "où <x1/> est la contrainte.",
-                  "Then <x2/> is the strain and <x3/> is the modulus.": "Puis <x2/> est la déformation et <x3/> le module."}
-        inner, engine = self._engine(lambda text: halves.get(text, "où <x1/> est la contrainte. Puis la déformation."))
-        result = engine.translate_batch([self.PLAIN], "fr", "SYS")
-        # 只有一段：不再单独问一次，直接拆
-        self.assertEqual(len(inner.calls), 2)
-        self.assertEqual(result[self.PLAIN], "où  est la contrainte. Puis  est la déformation et  le module.")
-
-    def test_failed_retries_fall_back_to_estimated_positions(self) -> None:
-        def answer(text):
-            if len(inner.calls) > 1:
-                raise RuntimeError("timeout")
-            return self.LOST
-        inner, engine = self._engine(answer)
-        engine.translate_batch([self.PLAIN, "其他。"], "zh", "SYS")
-        self.assertNotIn(self.PLAIN, engine.marked_translations)
-        self.assertEqual(engine.repaired_translations[self.PLAIN][1], "其中<x1/>为应力。<x2/>为应变，<x3/>为模量。")
-
-    def test_source_language_protocol_retries_too(self) -> None:
-        def answer(text):
-            return self.LOST if len(inner.calls) == 1 else self.GOOD
-        inner, engine = self._engine(answer)
-        results = engine.translate_batch_with_sources([self.PLAIN, "其他。"], "zh", "SYS")
-        self.assertEqual(results[0].source_text, self.PLAIN)
-        self.assertEqual(engine.marked_translations[self.PLAIN], (self.MARKED, self.GOOD))
-
-    def test_format_only_paragraphs_are_not_retried(self) -> None:
-        marked = {"注意：施工前必须完成技术交底。": "<g1>注意：</g1>施工前必须完成技术交底。"}
-        inner = _FakeEngine(lambda t: "Attention : briefing.")
-        InlineMarkEngine(inner, marked).translate_batch(list(marked) + ["其他。"], "fr", "SYS")
+    def test_lost_marks_are_not_translated_again(self) -> None:
+        inner = _FakeEngine(lambda text: "其中<x1/>为应力，为应变，<x3/>为模量。于是我们有和，所以。")
+        engine = InlineMarkEngine(inner, {self.PLAIN: self.MARKED})
+        result = engine.translate_batch([self.PLAIN], "zh", "SYS")
+        self.assertEqual(result[self.PLAIN], self.FINAL)
         self.assertEqual(len(inner.calls), 1)
+        self.assertEqual(engine.partial_translations[self.PLAIN][1],
+                         "其中<x1/>为应力，为应变，<x3/>为模量。于是我们有和，所以。")
+        self.assertNotIn(self.PLAIN, engine.marked_translations)
+
+    def test_missing_marks_are_grouped_and_packed(self) -> None:
+        engine = _GroupEngine(self.ANSWERS)
+        stats: dict = {}
+        placed = place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], group_size=3, request_marks=3,
+                             stats=stats)
+        self.assertEqual(placed[self.PLAIN][1], self.PLACED)
+        # 每组最多 3 个，在分句处断开；一次请求只放一组
+        self.assertEqual([[item["插入"] for item in request] for request in engine.requests],
+                         [["<x1/>、<x2/>、<x3/>"], ["<g1>…</g1>、<x4/>、<x5/>"], ["<x6/>"]])
+        engine = _GroupEngine(self.ANSWERS)
+        place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], group_size=3, request_marks=20)
+        self.assertEqual(len(engine.requests), 1)
+        self.assertEqual(len(engine.requests[0]), 3)
+
+    def test_marks_that_came_back_are_kept_and_only_the_rest_asked(self) -> None:
+        engine = _GroupEngine(self.ANSWERS)
+        seed = "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。于是<g1>我们</g1>有<x4/>和<x5/>，所以。"
+        placed = place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], seeds={self.PLAIN: seed})
+        self.assertEqual(placed[self.PLAIN][1], self.PLACED)
+        self.assertEqual([item["插入"] for item in engine.requests[0]], ["<x6/>"])
+
+    def test_formula_text_is_shown_to_the_model(self) -> None:
+        engine = _GroupEngine(self.ANSWERS)
+        place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], hints={self.PLAIN: {1: "公式 σ=M/W"}})
+        self.assertEqual(engine.requests[0][0]["说明"], {"<x1/>": "公式 σ=M/W"})
+
+    def test_retry_then_split_then_retry_then_settle_at_the_sentence_end(self) -> None:
+        engine = _GroupEngine(self.ANSWERS, refuse={"<x2/>"})
+        flags: dict = {}
+        stats: dict = {}
+        placed = place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], group_size=3, request_marks=20,
+                             retries=3, flags=flags, stats=stats)
+        asked = [[item["插入"] for item in request] for request in engine.requests]
+        self.assertEqual(asked, [
+            ["<x1/>、<x2/>、<x3/>", "<g1>…</g1>、<x4/>、<x5/>", "<x6/>"],
+            ["<x2/>"],  # 放好的不再问；第 1 次重试：原样
+            ["<x2/>"],  # 第 2 次：只剩一个，拆不开
+            ["<x2/>"],  # 第 3 次
+        ])
+        # 其余都放好了；x2 放在它所在那一句的句末（句号前），这一句标出来
+        self.assertEqual(placed[self.PLAIN][1],
+                         "其中<x1/>为应力，为应变，<x3/>为模量<x2/>。于是<g1>我们</g1>有<x4/>和<x5/>，所以<x6/>。")
+        self.assertEqual(flags, {self.PLAIN: [(0, 0, 14)]})
+        self.assertEqual(stats["settled"], 1)
+        # 不给 flags（Excel、扩展）时放不全的不算补上
+        engine = _GroupEngine(self.ANSWERS, refuse={"<x2/>"})
+        self.assertEqual(place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], retries=1), {})
+
+    def test_a_group_the_model_cannot_do_at_once_is_split(self) -> None:
+        class Picky(_GroupEngine):
+            def chat(self, system, user):
+                items = json.loads(user)
+                if any("、" in item["插入"] for item in items):
+                    self.requests.append(items)
+                    return json.dumps([item["译文"] for item in items], ensure_ascii=False)
+                return super().chat(system, user)
+
+        engine = Picky(self.ANSWERS)
+        marked, plain = "where <x1/> is the stress, <x2/> is the strain.", "where  is the stress,  is the strain."
+        placed = place_marks(engine, [(plain, marked, "其中为应力，为应变。")], retries=3, flags={})
+        self.assertEqual([[item["插入"] for item in request] for request in engine.requests],
+                         [["<x1/>、<x2/>"], ["<x1/>、<x2/>"], ["<x1/>", "<x2/>"]])  # 第 2 次重试拆成两组
+        self.assertEqual(placed[plain][1], "其中<x1/>为应力，<x2/>为应变。")
+
+    def test_format_marks_that_never_fit_are_dropped(self) -> None:
+        engine = _GroupEngine(self.ANSWERS, refuse={"<g1>…</g1>"})
+        flags: dict = {}
+        placed = place_marks(engine, [(self.PLAIN, self.MARKED, self.FINAL)], retries=0, flags=flags)
+        self.assertEqual(placed[self.PLAIN][1], self.PLACED.replace("<g1>", "").replace("</g1>", ""))
+        self.assertEqual(flags, {})
+
+    def test_math_is_written_as_linear_text(self) -> None:
+        from docx.oxml import parse_xml
+
+        from core.word_inline_marks import _math_linear
+
+        m = f'xmlns:m="{_MATH_NS}"'
+        node = parse_xml(
+            f'<m:oMath {m}><m:r><m:t>σ=</m:t></m:r><m:f><m:num><m:r><m:t>M</m:t></m:r></m:num>'
+            f'<m:den><m:r><m:t>W</m:t></m:r></m:den></m:f><m:r><m:t>+</m:t></m:r>'
+            f'<m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>'
+        )
+        self.assertEqual(_math_linear(node), "σ=M/W+x^2")
+
+    def test_runner_flags_the_sentence_and_the_writer_marks_it(self) -> None:
+        source = "混凝土强度按计算，取值见表。"
+        marked = "混凝土强度按<x1/>计算，取值见表。"
+        final = "La résistance du béton est calculée, voir le tableau."
+        runner = _bare_runner({source: marked}, retries=1)
+        engine = _GroupEngine({}, refuse={"<x1/>"})
+        runner._place_missing_inline_marks(engine, {source: final}, target_lang="fr")
+        entry = runner._inline_mark_engine.marked_translations[source]
+        self.assertEqual(entry[1], "La résistance du béton est calculée, voir le tableau<x1/>.")
+        self.assertEqual(runner._formula_flags, {source: [(0, 0, len(final))]})
+        doc = Document()
+        _formula_paragraph(doc).runs[1].text = "计算，取值见表。"
+        issues = []
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "src.docx"
+            doc.save(path)
+            out = write_bilingual_docx(
+                source_path=path, output_dir=Path(temporary) / "out", translations={source: final},
+                target_lang="fr", source_lang="zh", output_translation_only=True,
+                marked_translations={source: entry}, formula_flags=runner._formula_flags,
+                issue_callback=issues.append,
+            )
+            written = Document(str(out))
+            paragraph = written.paragraphs[0]
+            self.assertEqual(_with_math(paragraph), "La résistance du béton est calculée, voir le tableau{f=N/A}.")
+            highlights = [run.font.highlight_color for run in paragraph.runs if run.text]
+            self.assertTrue(highlights and all(color == 7 for color in highlights), highlights)  # 7 = YELLOW
+            comments = list(written.comments)
+            self.assertEqual([comment.text for comment in comments], ["公式位置待核对"])
+        self.assertEqual(issues, [{"kind": "formula_position", "location": "body.paragraph[0]", "source": source}])
 
 
 class LongParagraphPartsTests(unittest.TestCase):
@@ -729,10 +777,8 @@ class LongParagraphPartsTests(unittest.TestCase):
     def test_a_part_that_lost_its_marks_gets_them_back_on_its_own(self) -> None:
         """本机第四轮：24 个公式那段有一块的标记丢了，整段拼不回，整段二十几个公式一起补又
         补不上。现在只把缺的那一块交给模型补，补完再拼回。"""
-        import threading
 
         from core.word_batching import _join_translated_parts
-        from core.word_task_runner import WordTaskRunner
 
         plain = strip_marks(self.MARKED)
         part2 = "Then <g1>we have <x2/> and. More</g1> <x3/> is x."
@@ -744,9 +790,7 @@ class LongParagraphPartsTests(unittest.TestCase):
                 return json.dumps(["<g1>于是有<x2/>。还有</g1><x3/>为x。"], ensure_ascii=False)
 
         inner = Engine(lambda text: {"where <x1/> is the stress.": "其中<x1/>为应力。", part2: "于是有。还有为x。"}[text])
-        runner = WordTaskRunner.__new__(WordTaskRunner)
-        runner._marked_sources = {plain: self.MARKED}
-        runner._stop_event = threading.Event()
+        runner = _bare_runner({plain: self.MARKED})
         runner._inline_mark_engine = engine = InlineMarkEngine(inner, runner._marked_sources)
         engine.split_long_sources(lambda text: ["where  is the stress.", "Then we have  and. More  is x."])
         out = engine.translate_batch([piece for piece, _marked in engine.parts[plain]], "zh", "SYS")
