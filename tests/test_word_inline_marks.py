@@ -726,6 +726,37 @@ class LongParagraphPartsTests(unittest.TestCase):
         self.assertEqual(joined, "Où <x1/> est la contrainte. Puis <g1>on a <x2/> et. Encore</g1> <x3/> vaut x.")
         self.assertTrue(marks_match(self.MARKED, joined))
 
+    def test_a_part_that_lost_its_marks_gets_them_back_on_its_own(self) -> None:
+        """本机第四轮：24 个公式那段有一块的标记丢了，整段拼不回，整段二十几个公式一起补又
+        补不上。现在只把缺的那一块交给模型补，补完再拼回。"""
+        import threading
+
+        from core.word_batching import _join_translated_parts
+        from core.word_task_runner import WordTaskRunner
+
+        plain = strip_marks(self.MARKED)
+        part2 = "Then <g1>we have <x2/> and. More</g1> <x3/> is x."
+        asked = []
+
+        class Engine(_FakeEngine):
+            def chat(self, system, user):
+                asked.append(json.loads(user))
+                return json.dumps(["<g1>于是有<x2/>。还有</g1><x3/>为x。"], ensure_ascii=False)
+
+        inner = Engine(lambda text: {"where <x1/> is the stress.": "其中<x1/>为应力。", part2: "于是有。还有为x。"}[text])
+        runner = WordTaskRunner.__new__(WordTaskRunner)
+        runner._marked_sources = {plain: self.MARKED}
+        runner._stop_event = threading.Event()
+        runner._inline_mark_engine = engine = InlineMarkEngine(inner, runner._marked_sources)
+        engine.split_long_sources(lambda text: ["where  is the stress.", "Then we have  and. More  is x."])
+        out = engine.translate_batch([piece for piece, _marked in engine.parts[plain]], "zh", "SYS")
+        final = _join_translated_parts(list(out.values()), target_lang="zh")
+        self.assertIsNone(engine.assemble_parts(plain, lambda parts: _join_translated_parts(parts, target_lang="zh")))
+        runner._place_missing_inline_marks(inner, {plain: final}, target_lang="zh")
+        self.assertEqual([item["原文"] for item in asked[0]], [part2])
+        self.assertEqual(engine.marked_translations[plain],
+                         (self.MARKED, "其中<x1/>为应力。<g1>于是有<x2/>。还有</g1><x3/>为x。"))
+
 
 class WriteBackTests(unittest.TestCase):
     SOURCE = "注意：施工前必须完成技术交底。"
