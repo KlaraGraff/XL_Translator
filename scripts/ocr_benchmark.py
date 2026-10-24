@@ -128,6 +128,52 @@ def _miss_kind(want: str, got: str) -> str:
     return "misread"
 
 
+def _why_single(r: dict, rows: list[dict], V, Hs) -> tuple[str, str]:
+    """一个没和邻字合起来的单个汉字：最近的同一行邻字为什么没合（对照 extract.join_spaced_cjk）。"""
+    from core.pdf_vector.extract import SPACED_GAP_H, _spaced_candidate
+
+    if not _spaced_candidate(r):
+        return "self_not_candidate", f"rot={r.get('display_rotation')} col={bool(r.get('vertical_column'))}"
+    a = r["display_box"]
+    ha = a[3] - a[1]
+    best = None
+    for o in rows:
+        if o is r:
+            continue
+        b = o["display_box"]
+        hb = b[3] - b[1]
+        if min(a[3], b[3]) - max(a[1], b[1]) < 0.6 * min(ha, hb):
+            continue
+        gap = b[0] - a[2] if b[0] >= a[0] else a[0] - b[2]
+        if gap < -0.2 * ha or gap > 8 * ha:
+            continue
+        if best is None or gap < best[0]:
+            best = (gap, o)
+    if best is None:
+        return "no_neighbor_on_line", ""
+    gap, o = best
+    b = o["display_box"]
+    hb = b[3] - b[1]
+    left, right = (a, b) if b[0] >= a[0] else (b, a)
+    size = max(ha, hb)
+    info = f"neighbor={o['source_text']!r} gap/h={gap / size:.2f} size={max(ha, hb) / max(1, min(ha, hb)):.2f}"
+    if not _spaced_candidate(o):
+        return "neighbor_not_candidate", info + f" rot={o.get('display_rotation')} engine={o.get('engine')}"
+    if max(ha, hb) > 1.35 * min(ha, hb):
+        return "size_ratio", info
+    if gap > SPACED_GAP_H * size:
+        return "gap_too_wide", info
+    y0, y1 = max(a[1], b[1]), min(a[3], b[3])
+    if any(left[2] - 1 <= x <= right[0] + 1 and s0 <= y0 + 0.2 * size and s1 >= y1 - 0.2 * size for x, s0, s1 in V):
+        return "rule_between", info
+    if any(q is not o and q is not r and q["display_box"][0] < right[0] - 1 and q["display_box"][2] > left[2] + 1
+           and q["display_box"][1] < y1 and q["display_box"][3] > y0 for q in rows):
+        return "box_between", info
+    if len(o["source_text"].replace(" ", "")) > 1:
+        return "neighbor_is_word_or_fork", info
+    return "not_mutual_nearest", info
+
+
 # ---------------------------------------------------------------- 大号识别模型
 
 # RapidOCR 3.10.0 模型清单里的 ONNX（ModelScope），SHA256 也取自那份清单
@@ -466,6 +512,8 @@ def main(argv: list[str]) -> int:
     judged: list[dict] = []          # rows of text-layer pages with their decision and whether they read right
     blind: dict[str, int] = {}       # rows of pages without a text layer: decision / reason counts
     single: dict[str, int] = {}      # lone Chinese / Japanese characters that would be translated
+    single_why: Counter = Counter()  # ... and why each was not joined with its neighbour
+    single_log: list[str] = []
 
     from core.pdf_vector.runner import guess_language
 
@@ -516,6 +564,9 @@ def main(argv: list[str]) -> int:
                         blind.get(f"{kind} {r['decision']} {r['decision_reason']}", 0) + 1
                     if r["decision"] == "translate" and len(letters) == 1 and _CJK.search(letters[0]):
                         single[letters[0]] = single.get(letters[0], 0) + 1
+                        why, detail = _why_single(r, done, V, Hs)
+                        single_why[why] += 1
+                        single_log.append(f"{tag} {r['source_text']!r} {r.get('ocr_score', 0):.2f} {why} {detail}")
             if truth:
                 texts = {"ppocr": [r["source_text"] for r in rows]}
                 unsure = [(r.get("ocr_score") or 0.0) < UNSURE_SCORE or _min_char(r) < UNSURE_CHAR for r in rows]
@@ -628,6 +679,8 @@ def main(argv: list[str]) -> int:
         with (out / "vlm_rows.jsonl").open("w", encoding="utf-8") as fh:
             for item in vlm_rows_log:
                 fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+    summary["no_text_layer_single_chars_why"] = dict(single_why.most_common())
+    (out / "single_chars.txt").write_text("\n".join(single_log), encoding="utf-8")
     summary["pages"] = len(pages_summary)
     summary["seconds_per_page"] = round(sum(p["seconds"] for p in pages_summary) / max(1, len(pages_summary)), 1)
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
