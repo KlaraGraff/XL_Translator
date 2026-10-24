@@ -83,6 +83,13 @@ class SurfaceRateDefaultsTests(unittest.TestCase):
         self.assertEqual(rate.item_retry, 1)
         self.assertEqual(rate_bounds("word", "cloud", unlocked=True)["batch_items"], (1, 8))
 
+    def test_word_formula_batch_defaults_to_five_and_stays_in_range(self) -> None:
+        self.assertEqual(resolve_surface_rate(AppSettings(), "word", mode="cloud").formula_batch, 5)
+        for stored, expected in ((3, 3), (40, 10), (0, 1)):
+            with self.subTest(stored=stored):
+                settings = AppSettings.model_validate({"rate": {"word": {"formula_batch": stored}}})
+                self.assertEqual(resolve_surface_rate(settings, "word", mode="local").formula_batch, expected)
+
     def test_blank_and_bool_values_mean_default(self) -> None:
         settings = AppSettings.model_validate({"rate": {"excel": {"concurrency": "", "batch_items": True}}})
         self.assertIsNone(settings.rate.excel.concurrency)

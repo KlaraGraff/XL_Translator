@@ -1,7 +1,8 @@
 """速率与重试：按文件类型保存的批次、并发和重试设置（v38 起）。
 
 「翻译参数」的 Excel、Word、PDF、CAD 页签各有一组同样的五项：同时请求数、每批条数、
-每批字符上限、失败重试次数、单段重试次数。存在 ``settings.rate.<类型>``，None 表示
+每批字符上限、失败重试次数、单段重试次数；Word 另有一项每批最多公式数（反馈 #19，其他类型
+不显示、不使用）。存在 ``settings.rate.<类型>``，None 表示
 没改过，按文本翻译模型是云端还是本地取默认值。PDF 整页图像翻译另有三项（同时生成
 页数、单页重试次数、同时审核页数），存在 ``settings.pdf``。
 
@@ -33,6 +34,9 @@ from config import (
     RATE_BATCH_CHARS_LOCAL_DEFAULT,
     RATE_BATCH_CHARS_MAX,
     RATE_BATCH_CHARS_MIN,
+    RATE_FORMULA_BATCH_DEFAULT,
+    RATE_FORMULA_BATCH_MAX,
+    RATE_FORMULA_BATCH_MIN,
     RATE_ITEM_RETRY_DEFAULT,
     RATE_ITEM_RETRY_MAX,
     RATE_ITEM_RETRY_MIN,
@@ -61,6 +65,7 @@ RATE_FIELDS: tuple[str, ...] = (
     "batch_chars",
     "request_retry",
     "item_retry",
+    "formula_batch",
 )
 PDF_IMAGE_FIELDS: tuple[str, ...] = (
     "page_generation_concurrency",
@@ -81,6 +86,7 @@ class SurfaceRate:
     batch_chars: int
     request_retry: int
     item_retry: int
+    formula_batch: int = RATE_FORMULA_BATCH_DEFAULT  # 只有 Word 用，见 config.RATE_FORMULA_BATCH_DEFAULT
 
     def word_batch_settings(self) -> WordBatchSettings:
         """Word 分批器的参数：段数、字符上限和单段重试都取自这里。"""
@@ -116,6 +122,7 @@ def rate_defaults(surface: str, mode: str) -> dict[str, int]:
         "batch_chars": RATE_BATCH_CHARS_LOCAL_DEFAULT if local else RATE_BATCH_CHARS_CLOUD_DEFAULT,
         "request_retry": REQUEST_RETRY_ATTEMPTS_DEFAULT,
         "item_retry": RATE_ITEM_RETRY_DEFAULT,
+        "formula_batch": RATE_FORMULA_BATCH_DEFAULT,
     }
 
 
@@ -135,6 +142,7 @@ def rate_bounds(surface: str, mode: str, *, unlocked: bool = False) -> dict[str,
         "request_retry": (REQUEST_RETRY_ATTEMPTS_MIN, REQUEST_RETRY_ATTEMPTS_MAX),
         # Word 的单段重试是逐段恢复的轮数，至少一轮才能把空译文、残缺译文找出来重发。
         "item_retry": (max(1, RATE_ITEM_RETRY_MIN) if surface == "word" else RATE_ITEM_RETRY_MIN, RATE_ITEM_RETRY_MAX),
+        "formula_batch": (RATE_FORMULA_BATCH_MIN, RATE_FORMULA_BATCH_MAX),
     }
 
 
@@ -204,6 +212,7 @@ def extension_rate(settings: AppSettings, surface: str, *, mode: str | None = No
         batch_chars=defaults["batch_chars"],
         request_retry=defaults["request_retry"],
         item_retry=defaults["item_retry"],
+        formula_batch=defaults["formula_batch"],
     )
 
 

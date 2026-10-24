@@ -58,6 +58,8 @@ from config import (
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    RATE_FORMULA_BATCH_MAX,
+    RATE_FORMULA_BATCH_MIN,
     RATE_ITEM_RETRY_MAX,
     RATE_ITEM_RETRY_MIN,
     REQUEST_RETRY_ATTEMPTS_MAX,
@@ -962,6 +964,7 @@ _RATE_FIELD_LIMITS: dict[str, tuple[int, int]] = {
     "batch_chars": (1, 2**31 - 1),
     "request_retry": (REQUEST_RETRY_ATTEMPTS_MIN, REQUEST_RETRY_ATTEMPTS_MAX),
     "item_retry": (RATE_ITEM_RETRY_MIN, RATE_ITEM_RETRY_MAX),
+    "formula_batch": (RATE_FORMULA_BATCH_MIN, RATE_FORMULA_BATCH_MAX),
 }
 
 
@@ -977,6 +980,8 @@ class SurfaceRateSettings(BaseModel):
     batch_chars: int | None = None
     request_retry: int | None = None
     item_retry: int | None = None
+    # 只有 Word 用：补公式位置时每组最多几个公式（反馈 #19）
+    formula_batch: int | None = None
 
     @model_validator(mode="before")
     @classmethod

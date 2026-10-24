@@ -718,6 +718,17 @@ class FormulaPlacementTests(unittest.TestCase):
             self.assertEqual([comment.text for comment in comments], ["公式位置待核对"])
         self.assertEqual(issues, [{"kind": "formula_position", "location": "body.paragraph[0]", "source": source}])
 
+    def test_runner_groups_by_the_formula_batch_setting(self) -> None:
+        runner = _bare_runner({self.PLAIN: self.MARKED})
+        runner._rate.formula_batch = 2
+        engine = _GroupEngine(self.ANSWERS)
+        runner._place_missing_inline_marks(engine, {self.PLAIN: self.FINAL}, target_lang="zh")
+        sizes = [len(item["插入"].split("、")) for request in engine.requests for item in request]
+        self.assertTrue(sizes and max(sizes) <= 2, sizes)
+        self.assertEqual(sum(sizes), 7)
+        self.assertEqual(runner._inline_mark_engine.marked_translations[self.PLAIN][1],
+                         "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。于是<g1>我们</g1>有<x4/>和<x5/>，所以<x6/>。")
+
 
 class LongParagraphPartsTests(unittest.TestCase):
     """反馈 #19 第三轮本机实测：超过 800 字的段落 word_batching 按句子切块发，块不在带标记

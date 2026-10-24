@@ -370,21 +370,6 @@ _SLOT_RE_FOR_LOG = re.compile(r"<\s*x\s*\d+\s*/\s*>", re.IGNORECASE)
 _PLACE_REASON_LABELS = {"no_answer": "没拿到回答", "broken": "标记仍对不上", "text": "改了译文文字"}
 
 
-def _formula_mark_limits() -> tuple[int, int]:
-    """补标记每组最多几个、每次请求最多几个标记。
-
-    TODO(反馈 #19)：本机对比实验期间可用环境变量 XL_FORMULA_GROUP / XL_FORMULA_REQUEST
-    临时调整，定下默认值后改成设置项。"""
-    def read(name: str, default: int) -> int:
-        try:
-            return max(1, int(os.environ.get(name, "") or default))
-        except ValueError:
-            return default
-
-    group = read("XL_FORMULA_GROUP", PLACE_MARKS_GROUP)
-    return group, max(group, read("XL_FORMULA_REQUEST", PLACE_MARKS_REQUEST))
-
-
 def _log_unplaced_marks(failed, outcomes: dict[str, str], reasons: dict[str, str]) -> None:
     """放不回原位、按整段写法写回的段落：只记来源、原因和占位符个数（排查用，不含原文）。"""
     origins = Counter(_MARK_ORIGIN_LABELS[outcomes.get(source)] for source, _marked in failed)
@@ -2111,7 +2096,9 @@ class WordTaskRunner(BaseTaskRunner):
         reasons: dict[str, str] = {}
         flags: dict[str, list[tuple[int, int, int]]] = {}
         stats: dict[str, int] = {}
-        group_size, request_marks = _formula_mark_limits()
+        # 每组最多几个公式按「翻译参数 → Word → 每批最多公式数」；几组打包成一次请求
+        group_size = max(1, int(getattr(self._rate, "formula_batch", 0) or PLACE_MARKS_GROUP))
+        request_marks = max(group_size, PLACE_MARKS_REQUEST)
         placed = place_marks(
             engine,
             items,
