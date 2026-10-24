@@ -670,7 +670,7 @@ class InlineMarkEngine:
         # 超长段落按句子切成的几块：原文 → [(这块的纯文本, 带标记的这块)]；见 split_long_sources
         self.parts: dict[str, list[tuple[str, str]]] = {}
         self._part_texts: set[str] = set()
-        self._part_plain_results: dict[str, str] = {}
+        self._part_results: dict[str, str] = {}  # 超长段落各块最后交回的译文（去掉标记的）
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -711,7 +711,7 @@ class InlineMarkEngine:
         translated = []
         for piece, marked_piece in pieces:
             if marked_piece == piece:
-                text = self._part_plain_results.get(piece)
+                text = self._part_results.get(piece)
             else:
                 entry = self.marked_translations.get(piece) or self.repaired_translations.get(piece)
                 text = entry[1] if entry is not None and entry[0] == marked_piece else None
@@ -725,10 +725,33 @@ class InlineMarkEngine:
         repaired = repair_marks(marked, joined)
         return (marked, repaired) if repaired is not None else None
 
+    def parts_to_place(self, source: str, translation: str, join) -> list[tuple[str, str, str]] | None:
+        """拼不回整段时，哪几块缺带标记的译文：[(块原文, 带标记块原文, 块译文)]，交给
+        place_marks 一块一块补，比整段二三十个公式一起补容易得多。各块译文拼起来和定稿
+        对不上（定稿后又改过）、或有块没交回译文的返回 None。"""
+        pieces = self.parts.get(source)
+        if not pieces:
+            return None
+        results = [self._part_results.get(piece) for piece, _marked_piece in pieces]
+        if any(not result for result in results) or not same_text(join([r.strip() for r in results]), translation):
+            return None
+        missing = []
+        for (piece, marked_piece), result in zip(pieces, results):
+            if marked_piece == piece:
+                continue
+            entry = self.marked_translations.get(piece) or self.repaired_translations.get(piece)
+            if entry is None or entry[0] != marked_piece or not same_text(unmark(entry[1], marked_piece, piece), result):
+                missing.append((piece, marked_piece, result.strip()))
+        return missing
+
     def _receive(self, plain: str, sent: str, translation: str, target_lang: str) -> str:
-        if plain in self._part_texts and (sent is plain or sent == plain):
+        result = self._receive_one(plain, sent, translation, target_lang)
+        if plain in self._part_texts:
             with self._lock:
-                self._part_plain_results[plain] = translation
+                self._part_results[plain] = result
+        return result
+
+    def _receive_one(self, plain: str, sent: str, translation: str, target_lang: str) -> str:
         if sent is plain or sent == plain:
             return translation
         ok = marks_match(sent, translation)

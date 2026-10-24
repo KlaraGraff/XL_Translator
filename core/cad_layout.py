@@ -683,11 +683,9 @@ def _vertical_span(valign: int, y: float, height: float) -> tuple[float, float]:
 def _box(entity: _TextEntity) -> _TextBox:
     x, y = _local(entity)
     if entity.entity_type == "MTEXT":
-        lines = [line for line in entity.text.split("\n")] or [""]
-        width = max(estimate_text_width(line, entity.height, 1.0, entity.font_class) for line in lines)
-        if entity.ref_width > 0:
-            width = min(width, entity.ref_width)
-        total_height = entity.height * (1 + (len(lines) - 1) * _MTEXT_LINE_SPACING)
+        # 按宽度（组码 41）在词间换行：比宽度还长的单词 CAD 不断开，照样伸出去。
+        paragraphs = [(1.0, line) for line in entity.text.split("\n")] or [(1.0, "")]
+        width, total_height = _mtext_extent(paragraphs, entity.height, entity.ref_width, entity.font_class)
     else:
         width = estimate_text_width(entity.text, entity.height, entity.width_factor, entity.font_class)
         total_height = entity.height
@@ -1470,28 +1468,340 @@ def fit_table_cells(
         font_class = fonts.get(str(fields.get(7, "STANDARD")).strip().upper(), "shx")
         paragraphs = _mtext_paragraphs(raw, height)
         original = originals[entity_no]
-        limit = max(available, _cell_content_height([(1.0, original)], height, ref_width, font_class))
-        if _cell_content_height(paragraphs, height, ref_width, font_class) <= limit:
+        source_width, source_height = _mtext_extent([(1.0, original)], height, ref_width, font_class)
+        limit = max(available, _cell_content_height([(1.0, original)], height, ref_width, font_class), source_height)
+        # 格子宽度就是换行宽度：一个词比它还宽时 CAD 不断开，伸过竖线压到旁边的格子。
+        width_limit = max(ref_width, source_width) if ref_width > 0 else math.inf
+        can_narrow = not _MTEXT_WIDTH_CODE_RE.search(raw)
+
+        def overflow(split: tuple[float, float]) -> float:
+            """排好后比格子大多少倍（不大于 1 就放得下）。"""
+            height_scale, width_factor = split
+            width, _total = _mtext_extent(paragraphs, height * height_scale, ref_width, font_class, width_factor)
+            total = _cell_content_height(paragraphs, height * height_scale, ref_width / width_factor, font_class)
+            return max(width / width_limit, total / limit if limit > 0 else math.inf)
+
+        def fits(split: tuple[float, float]) -> bool:
+            return overflow(split) <= 1 + 1e-9
+
+        if fits((1.0, 1.0)):
             continue
         tiers = settings.tiers()
-        scale = next(
-            (tier for tier in tiers if _cell_content_height(paragraphs, height * tier, ref_width, font_class) <= limit),
-            None,
-        )
-        if scale is None:
-            scale = tiers[-1]
+        split = next((split for tier in tiers for split in _splits(tier, can_narrow) if fits(split)), None)
+        if split is None:
+            split = min(_splits(tiers[-1], can_narrow), key=overflow)
             if unresolved is not None and not any(item.get("entity") == entity_no for item in unresolved):
                 translation = " ".join(
                     text.strip() for _factor, text in paragraphs if text.strip() and text.strip() != original.strip()
                 )
                 unresolved.append({"source": original, "translation": translation or plain_text(raw), "entity": entity_no})
-        edits.append((start, end, height * scale))
+        edits.append((start, end, height * split[0], split[1]))
 
-    for start, end, new_height in sorted(edits, reverse=True):
+    for start, end, new_height, width_factor in sorted(edits, reverse=True):
+        _write_mtext_size(records, start, end, new_height, None, width_factor)
+    return len(edits)
+
+
+# ── 用线画的表格里的多行文字 ─────────────────────────────────
+#
+# 明细表、材料表很多不是 ACAD_TABLE，而是用线画出格子、每格放一段多行文字（MTEXT）。
+# 多行文字设了宽度（组码 41）时 CAD 按这个宽度自动换行：中文四五个字的宽度，换成英文要
+# 折成三四行，一路压到下一行格子里；没设宽度（或宽度比格子还宽）的不换行，一直往右伸过
+# 格线。这里和单行文字一样认原文四周的格线：先把换行宽度改成格子能给的宽度（不越过格线），
+# 还放不下再按档位整段缩小字高；到最小比例仍放不下的记进报告。
+
+
+def _wrap_tokens(text: str) -> list[tuple[str, bool]]:
+    """``[(词, 前面是不是空格)]``：西文按空格分词，汉字一个字一个词（CAD 在汉字之间也能换行）。"""
+    tokens: list[tuple[str, bool]] = []
+    word: list[str] = []
+    space = False
+
+    def flush() -> None:
+        nonlocal space
+        if word:
+            tokens.append(("".join(word), space))
+            word.clear()
+            space = False
+
+    for char in text:
+        if char.isspace():
+            flush()
+            space = bool(tokens)
+        elif unicodedata.east_asian_width(char) in {"W", "F"}:
+            flush()
+            tokens.append((char, space))
+            space = False
+        else:
+            word.append(char)
+    flush()
+    return tokens
+
+
+def _wrap_lines(text: str, height: float, wrap: float, font_class: str) -> tuple[int, float]:
+    """按宽度 ``wrap`` 自动换行后 ``(行数, 最宽一行的宽度)``；``wrap`` 不大于 0 时不换行。
+
+    一个词比 ``wrap`` 还宽时 CAD 不会从中间断开，那一行就是这个词的宽度。
+    """
+    if wrap <= 0:
+        return 1, estimate_text_width(text, height, 1.0, font_class)
+    space = estimate_text_width(" ", height, 1.0, font_class)
+    # 估算宁可偏宽：换行宽度按略窄算，多算出来的行只会让字多缩一点。
+    limit = wrap / _WRAP_SLACK
+    count, line, widest = 1, 0.0, 0.0
+    for token, after_space in _wrap_tokens(text):
+        width = estimate_text_width(token, height, 1.0, font_class)
+        extra = width + (space if line and after_space else 0.0)
+        if line and line + extra > limit:
+            widest = max(widest, line)
+            count, line = count + 1, width
+        else:
+            line += extra
+    return count, max(widest, line)
+
+
+def _mtext_extent(
+    paragraphs: Sequence[tuple[float, str]], height: float, wrap: float, font_class: str, width_factor: float = 1.0,
+) -> tuple[float, float]:
+    """一段多行文字按宽度 ``wrap`` 排好后大约 ``(多宽, 多高)``；``width_factor`` 是整段压窄的比例。"""
+    lines: list[float] = []
+    widest = 0.0
+    for factor, text in paragraphs:
+        line_height = height * factor
+        # 压窄 w 倍的字在宽度 wrap 里排，和原宽的字在 wrap / w 里排一样。
+        count, width = _wrap_lines(text, line_height, wrap / width_factor if wrap > 0 else 0.0, font_class)
+        widest = max(widest, width * width_factor)
+        lines.extend([line_height] * count)
+    if not lines:
+        return 0.0, 0.0
+    return widest, lines[0] + _MTEXT_LINE_SPACING * sum(lines[1:])
+
+
+def _mtext_raw(records: Sequence[Any], start: int, end: int) -> str:
+    parts: list[str] = []
+    for record in records[start + 1:end]:
+        if record.code == 101:
+            break
+        if record.code in {1, 3}:
+            parts.append(record.value)
+    return "".join(parts)
+
+
+# 多行文字的内容超过 250 个字符时分成几条组码 3，最后一条是组码 1。
+_MTEXT_CHUNK = 250
+_MTEXT_CHUNK_TOKEN_RE = re.compile(r"\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|.", re.DOTALL)
+# 内容里已经有压窄/放宽的格式码时不再整段压窄（会被里面的码盖掉，估算也对不上）。
+_MTEXT_WIDTH_CODE_RE = re.compile(r"\\[wW]")
+
+
+def mtext_narrowing(raw: str) -> float:
+    """缩字时写在多行文字内容最前面的整段压窄比例（``\\W0.7;``），没有就是 1。"""
+    match = re.match(r"\\W([0-9.]+);", raw)
+    return _float(match.group(1), 1.0) if match else 1.0
+
+
+def _write_mtext_content(records: list[Any], start: int, end: int, raw: str) -> None:
+    """把多行文字的内容（组码 3…、1）换成 ``raw``，按 250 个字符分段，转义不拆开。"""
+    indices: list[int] = []
+    for index in range(start + 1, end):
+        if records[index].code == 101:
+            break
+        if records[index].code in {1, 3}:
+            indices.append(index)
+    if not indices:
+        return
+    chunks: list[str] = []
+    current = ""
+    for token in _MTEXT_CHUNK_TOKEN_RE.findall(raw):
+        if current and len(current) + len(token) > _MTEXT_CHUNK:
+            chunks.append(current)
+            current = ""
+        current += token
+    chunks.append(current)
+    template = records[indices[0]]
+    code_text = template.code_text or ""
+    texts = [replace(template, code=3, value=chunk, code_text="3".rjust(len(code_text)) if code_text else "3")
+             for chunk in chunks[:-1]]
+    texts.append(replace(template, code=1, value=chunks[-1], code_text="1".rjust(len(code_text)) if code_text else "1"))
+    for index in reversed(indices):
+        del records[index]
+    records[indices[0]:indices[0]] = texts
+
+
+def _write_mtext_size(
+    records: list[Any], start: int, end: int, height: float, wrap: float | None, width_factor: float = 1.0,
+) -> None:
+    """改多行文字的字高（组码 40），``wrap`` 不为 ``None`` 时连同换行宽度（组码 41）；
+    ``width_factor`` 小于 1 时在内容前加压窄的格式码 ``\\W``。"""
+    if wrap is None:
         for index in range(start + 1, end):
             if records[index].code == 101:
                 break
             if records[index].code == 40:
-                records[index] = replace(records[index], value=_format_number(new_height))
+                records[index] = replace(records[index], value=_format_number(height))
                 break
-    return len(edits)
+    else:
+        _write_size(records, start, end, height, wrap)
+    if width_factor < 1.0 - 1e-9:
+        end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
+        _write_mtext_content(records, start, end, f"\\W{_format_number(width_factor)};" + _mtext_raw(records, start, end))
+
+
+def _splits(scale: float, can_narrow: bool) -> list[tuple[float, float]]:
+    """整体缩放 ``scale`` 可以怎么拆成 ``(字高比例, 压窄比例)``：先试和单行文字一样先压窄的拆法
+    （字高不变，和旁边对得齐），横向放得下、竖向放不下（双语多一行、折行）时再试只降字高。"""
+    splits = [scale_parts(scale)] if can_narrow else []
+    if (scale, 1.0) not in splits:
+        splits.append((scale, 1.0))
+    return splits
+
+
+@dataclass
+class _CellFit:
+    entity: _TextEntity
+    source: str
+    height_scale: float
+    width_factor: float
+    wrap: float | None
+    can_narrow: bool
+
+
+def _unify_cell_columns(fits: Sequence[_CellFit]) -> None:
+    """同一列格子里的多行文字统一大小（和单行文字的 :func:`unify_column_heights` 一样）：
+    对齐方式、插入点横坐标、原字高都相同、上下相邻的一列，有的缩了、有的没缩时，整列改成
+    其中最小的字高比例和最小的整体缩放。只会让字变小，换行宽度不变，所以都还在格子里。原文以冒号
+    结尾的（「备注：」这类标题）不算进列。"""
+    columns: dict[tuple[Any, ...], list[_CellFit]] = {}
+    for fit in fits:
+        entity = fit.entity
+        if fit.source.rstrip().endswith((":", "：")):
+            continue
+        x, _y = _local(entity)
+        key = (entity.container, round(entity.rotation, 1), entity.font_class, entity.halign,
+               round(x / (0.1 * entity.height)), round(entity.height, 3))
+        columns.setdefault(key, []).append(fit)
+    for members in columns.values():
+        members.sort(key=lambda fit: -_local(fit.entity)[1])
+        run: list[_CellFit] = []
+        for index, fit in enumerate(members):
+            run.append(fit)
+            last = index == len(members) - 1
+            if last or _local(fit.entity)[1] - _local(members[index + 1].entity)[1] > _COLUMN_SPACING * fit.entity.height:
+                if len(run) > 1:
+                    # 字高取最小的，整体缩放（字高 × 压窄）也取最小的：每格的字都不比它自己算出来的
+                    # 更高、更宽，换行宽度不变就都还放得下。
+                    height_scale = min(member.height_scale for member in run)
+                    overall = min(member.height_scale * member.width_factor for member in run)
+                    width_factor = min(1.0, overall / height_scale)
+                    for member in run:
+                        if member.can_narrow:
+                            member.height_scale, member.width_factor = height_scale, width_factor
+                        else:
+                            member.height_scale = min(member.height_scale, height_scale * width_factor)
+                run = []
+
+
+def fit_cell_mtext(
+    records: list[Any],
+    originals: Mapping[int, str],
+    plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
+) -> int:
+    """Keep translated MTEXT inside the cell of lines drawn around its source text.
+
+    ``originals`` maps the ordinal of each translated MTEXT entity to its source text; MTEXT in an
+    ACAD_TABLE display block is left to :func:`fit_table_cells`, MTEXT without solid lines on all
+    four sides is left alone. The wrapping width (group 41) is first changed to what the cell
+    allows; if the text still does not fit it is shrunk by the usual tiers, narrowed first (an
+    inline ``\\W`` code, down to 0.7) and then lowered (group 40), as :func:`scale_parts` splits
+    them for single-line text. Cells of one column end up the same size. Returns how many
+    entities were changed.
+    """
+    if not originals:
+        return 0
+    settings = (settings or FitSettings()).normalized()
+    table_blocks = _table_block_names(records)
+    entities = _collect_entities(records, plain_text)
+    extents: dict[tuple[tuple[str, str], float], list[float]] = {}
+    for entity in entities:
+        box = _box(entity)
+        key = (entity.container, round(entity.rotation, 1))
+        extent = extents.setdefault(key, [box.left, box.right, box.bottom, box.top])
+        extent[:] = [min(extent[0], box.left), max(extent[1], box.right), min(extent[2], box.bottom), max(extent[3], box.top)]
+    segments: dict[tuple[str, str], list[_Segment]] | None = None
+    cell_indexes: dict[tuple[tuple[str, str], float], _CellIndex] = {}
+    fits: list[_CellFit] = []
+    for entity in entities:
+        source = originals.get(entity.entity_no)
+        if source is None or entity.entity_type != "MTEXT":
+            continue
+        if entity.container[0] == "BLOCK" and entity.container[1] in table_blocks:
+            continue
+        height, ref, font = entity.height, max(entity.ref_width, 0.0), entity.font_class
+        x, y = _local(entity)
+        source_paragraphs = [(1.0, line) for line in plain_text(source).split("\n")]
+        source_width, source_height = _mtext_extent(source_paragraphs, height, ref, font)
+        left, right = _horizontal_span(entity.halign, x, source_width)
+        bottom, top = _vertical_span(entity.valign, y, source_height)
+        key = (entity.container, round(entity.rotation, 1))
+        if key not in cell_indexes:
+            if segments is None:
+                segments = _line_segments(records)
+            cell_indexes[key] = _CellIndex(segments.get(entity.container, ()), entity.rotation, tuple(extents[key]))
+        cell = cell_indexes[key].cell(_TextBox(entity.entity_no, left, right, bottom, top))
+        if cell is None:
+            continue
+        pad = _PAD_EM * height
+        if entity.halign == 1:
+            room_width = 2 * min(cell.right - x, x - cell.left) - pad
+        elif entity.halign == 2:
+            room_width = x - cell.left - pad
+        else:
+            room_width = cell.right - x - pad
+        if entity.valign == 2:
+            room_height = 2 * min(y - cell.bottom, cell.top - y)
+        elif entity.valign == 1:
+            room_height = cell.top - y
+        else:
+            room_height = y - cell.bottom
+        room_height -= pad / 2
+        if room_width <= 0 or room_height <= 0:
+            continue
+        # 原文本来就放不下的格子按原文的大小算，不为译文多缩。
+        room_width, room_height = max(room_width, source_width), max(room_height, source_height)
+        raw = _mtext_raw(records, entity.start, entity.end)
+        paragraphs = _mtext_paragraphs(raw, height)
+        can_narrow = not _MTEXT_WIDTH_CODE_RE.search(raw)
+        # 先照原来的换行宽度，不行再换成格子给的宽度（没设宽度的原本不换行）。
+        wraps = [ref] + ([room_width] if abs(room_width - ref) > 1e-6 * max(room_width, 1.0) else [])
+
+        def overflow(split: tuple[float, float], wrap: float) -> float:
+            """排好后比格子大多少倍（不大于 1 就放得下）。"""
+            width, total = _mtext_extent(paragraphs, height * split[0], wrap, font, split[1])
+            return max(width / room_width, total / room_height)
+
+        def fits_in(split: tuple[float, float], wrap: float) -> bool:
+            return overflow(split, wrap) <= 1 + 1e-9
+
+        scales = [1.0, *(tier for tier in settings.tiers() if tier < 1.0 - 1e-9)]
+        choice = next(((split, wrap) for scale in scales for split in _splits(scale, can_narrow) for wrap in wraps
+                       if fits_in(split, wrap)), None)
+        if choice is None:
+            # 最小比例也放不下：取超出最少的拆法和换行宽度。
+            choice = min(((split, wrap) for split in _splits(scales[-1], can_narrow) for wrap in wraps),
+                         key=lambda item: overflow(*item))
+            if unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
+                source_plain = plain_text(source)
+                translation = " ".join(
+                    text.strip() for _factor, text in paragraphs if text.strip() and text.strip() != source_plain.strip()
+                )
+                unresolved.append({"source": source_plain, "translation": translation or entity.text, "entity": entity.entity_no})
+        (height_scale, width_factor), wrap = choice
+        fits.append(_CellFit(entity, plain_text(source), height_scale, width_factor, None if wrap == ref else wrap, can_narrow))
+    _unify_cell_columns(fits)
+    changed = [fit for fit in fits if fit.wrap is not None or fit.height_scale < 1.0 - 1e-9 or fit.width_factor < 1.0 - 1e-9]
+    for fit in sorted(changed, key=lambda fit: fit.entity.start, reverse=True):
+        entity = fit.entity
+        _write_mtext_size(records, entity.start, entity.end, entity.height * fit.height_scale, fit.wrap, fit.width_factor)
+    return len(changed)
