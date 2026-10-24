@@ -139,19 +139,27 @@ def _column_strip(crop: np.ndarray) -> np.ndarray:
     return np.concatenate(cells, axis=1)
 
 
-def _words(read, box: _Box, mode: str, crop_len: float) -> list[dict]:
-    """Per-word boxes in page px from the character positions of one reading."""
+def _words(read, box: _Box, mode: str, crop_len: float, cuts: tuple[float, ...] = ()) -> list[dict]:
+    """Per-word boxes in page px from the character positions of one reading.
+
+    ``cuts`` are positions along the crop where a rule crosses the line: the
+    character after one starts a new word marked ``cut`` (two cells read as one
+    line, often without a space between them)."""
     words: list[dict] = []
     cur: dict | None = None
     space = False
+    prev_mid = None
     for ch, p, a, b in read.chars:
         if ch.isspace():
             space = True
             cur = None
             continue
+        mid = (a + b) / 2
+        cut = prev_mid is not None and any(prev_mid < c < mid for c in cuts)
+        prev_mid = mid
         cjk = bool(_CJK.match(ch))
-        if cur is None or cjk or cur["cjk"]:
-            cur = {"text": ch, "probs": [p], "a": a, "b": b, "cjk": cjk, "sp": space and bool(words)}
+        if cur is None or cjk or cur["cjk"] or cut:
+            cur = {"text": ch, "probs": [p], "a": a, "b": b, "cjk": cjk, "sp": space and bool(words), "cut": cut}
             words.append(cur)
         else:
             cur["text"] += ch
@@ -184,7 +192,7 @@ def _words(read, box: _Box, mode: str, crop_len: float) -> list[dict]:
             cell = box.x1 - box.x0
             bx = [box.x0, box.y0 + a / max(cell, 1) * cell, box.x1, box.y0 + b / max(cell, 1) * cell]
         out.append({"text": _norm(w["text"]), "score": min(w["probs"]), "box": [round(v, 1) for v in bx],
-                    "sp": w["sp"]})
+                    "sp": w["sp"], **({"cut": True} if w.get("cut") else {})})
     return [w for w in out if w["text"]]
 
 
@@ -354,6 +362,9 @@ def split_at_gaps(words: list[dict], mode: str, em: float) -> list[list[dict]]:
     gaps = [_gap(a, b, mode) for a, b in zip(words, words[1:])]
     cuts = []
     for i, g in enumerate(gaps):
+        if words[i + 1].get("cut"):
+            cuts.append(i)
+            continue
         others = sorted(x for j, x in enumerate(gaps) if j != i)
         typical = others[len(others) // 2] if others else 0.0
         if g > SPLIT_GAP * em and g > SPLIT_OUTLIER * max(typical, 0.25 * em):
@@ -363,7 +374,8 @@ def split_at_gaps(words: list[dict], mode: str, em: float) -> list[list[dict]]:
         parts.append(words[start:i + 1])
         start = i + 1
     parts.append(words[start:])
-    return [[{**part[0], "sp": False}, *part[1:]] for part in parts]
+    return [[{k: v for k, v in {**w, "sp": w["sp"] and n > 0}.items() if k != "cut"} for n, w in enumerate(part)]
+            for part in parts]
 
 
 def _part_box(b: _Box, part: list[dict], mode: str, em: float) -> _Box:
@@ -381,6 +393,87 @@ def _part_box(b: _Box, part: list[dict], mode: str, em: float) -> _Box:
     sub = _Box(quad, b.score, b.clipped)
     sub.tall = b.tall
     return sub
+
+
+def _rules_across(g: np.ndarray, box: _Box, mode: str) -> tuple[float, ...]:
+    """Positions along the crop where a straight stroke runs right across the line
+    (a table wall between two cells).  Detection boxes leave a margin above and
+    below the letters, so no glyph stroke spans one."""
+    if mode == "col":
+        return ()
+    from core.ppocr_engine import _cv2
+
+    vertical = mode != "h"
+    thick = (box.x1 - box.x0) if vertical else (box.y1 - box.y0)
+    over = 0.1 * thick                 # table rows are often not much taller than their text
+    if vertical:
+        x0, x1 = int(max(0, box.x0 - over)), int(min(g.shape[1], box.x1 + over + 1))
+        y0, y1 = int(max(0, box.y0)), int(min(g.shape[0], box.y1 + 1))
+    else:
+        x0, x1 = int(max(0, box.x0)), int(min(g.shape[1], box.x1 + 1))
+        y0, y1 = int(max(0, box.y0 - over)), int(min(g.shape[0], box.y1 + over + 1))
+    mask = (g[y0:y1, x0:x1] < INK).astype(np.uint8)
+    if mask.size == 0:
+        return ()
+    span = mask.shape[1] if vertical else mask.shape[0]
+    kernel = np.ones((1, max(3, int(0.9 * span))) if vertical else (max(3, int(0.9 * span)), 1), np.uint8)
+    lines = _cv2().morphologyEx(mask, _cv2().MORPH_OPEN, kernel)
+    hit = lines.any(axis=1) if vertical else lines.any(axis=0)
+    idx = np.nonzero(hit)[0]
+    if not idx.size:
+        return ()
+    runs = np.split(idx, np.nonzero(np.diff(idx) > 1)[0] + 1)
+    pos = [float(r.mean()) + (y0 if vertical else x0) for r in runs]
+    if mode == "h":
+        return tuple(x - box.x0 for x in pos)
+    if mode == "up":
+        return tuple(box.y1 - y for y in pos)
+    return tuple(y - box.y0 for y in pos)
+
+
+def _extended(g: np.ndarray, b: _Box, boxes: list[_Box]) -> _Box | None:
+    """A horizontal box that detection ended inside the lettering ('Worksh' of
+    'Workshop'): the box grown over the ink that runs on past its ends, up to the
+    next detected box.  None when the lettering stops inside the box."""
+    if b.tall:
+        return None
+    thick = b.y1 - b.y0
+    em = thick / 1.35
+    edge, reach = max(2, int(0.15 * em)), int(8 * em)
+    y0, y1 = int(max(0, b.y0 + 0.2 * thick)), int(min(g.shape[0], b.y1 - 0.2 * thick + 1))
+    lo, hi = int(max(0, b.x0 - reach)), int(min(g.shape[1], b.x1 + reach + 1))
+    if y1 <= y0 or hi <= lo:
+        return None
+    probe = _Box(np.array([[lo, b.y0], [hi, b.y0], [hi, b.y1], [lo, b.y1]], np.float32), b.score, False)
+    mask = _ink(g, probe, thick, False)
+    mask = mask[int(y0 - max(0, b.y0)):int(y1 - max(0, b.y0)), :]
+    proj = mask.any(axis=0) if mask.size else np.zeros(0, bool)
+    if not proj.size:
+        return None
+    left, right = int(b.x0) - lo, int(b.x1) - lo
+    # neighbours on the same line: the box never grows into another detected box
+    for o in boxes:
+        if o is b or o.tall or min(o.y1, b.y1) - max(o.y0, b.y0) < 0.5 * min(thick, o.y1 - o.y0):
+            continue
+        if o.x0 >= b.x1 - edge:
+            proj[max(0, int(o.x0) - lo):] = False
+        elif o.x1 <= b.x0 + edge:
+            proj[:max(0, int(o.x1) - lo)] = False
+    cut_right = proj[max(0, right - edge):right].any() and proj[right:right + edge].any()
+    cut_left = proj[left:left + edge].any() and proj[max(0, left - edge):left].any()
+    if not (cut_right or cut_left):
+        return None
+    start, stop = _grow(proj, left + edge if cut_left else left, right - edge if cut_right else right,
+                        max(2, int(0.5 * em)))
+    pad = 0.3 * em
+    x0 = lo + start - pad if cut_left else b.x0
+    x1 = lo + stop + pad if cut_right else b.x1
+    if x1 - b.x1 < 0.3 * em and b.x0 - x0 < 0.3 * em:
+        return None
+    quad = np.array([[x0, b.y0], [x1, b.y0], [x1, b.y1], [x0, b.y1]], np.float32)
+    grown = _Box(quad, b.score, b.clipped)
+    grown.tall = False
+    return grown
 
 
 # Hatching and fill patterns read as a run of one or two letters ('mmmmmm', 'nnnn'):
@@ -415,12 +508,19 @@ def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None 
         if progress:
             progress(n, total)
     boxes = merge_tiles(boxes)
+    # detection sometimes ends a box inside the lettering: the box grown over the ink
+    # that runs on is read too, and its reading wins when it reads more ('Worksh')
+    grown = {i: e for i, b in enumerate(boxes) if (e := _extended(g, b, boxes)) is not None}
     crops, plan = [], []
     for i, b in enumerate(boxes):
         c = crop_quad(g, b.quad)
         if not b.tall:
             plan.append((i, "h", len(crops), c.shape[1]))
             crops.append(c)
+            if i in grown:
+                c = crop_quad(g, grown[i].quad)
+                plan.append((i, "grown", len(crops), c.shape[1]))
+                crops.append(c)
             continue
         plan.append((i, "up", len(crops), c.shape[0]))
         crops.append(np.ascontiguousarray(np.rot90(c, k=-1)))
@@ -431,9 +531,13 @@ def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None 
         crops.append(strip)
     reads = engine.recognize(crops)
     best: dict[int, tuple] = {}
+    longer: dict[int, tuple] = {}
     for i, mode, k, length in plan:
         r = reads[k]
         if not r.text.strip():
+            continue
+        if mode == "grown":
+            longer[i] = (r, length)
             continue
         # upright columns are a Chinese / Japanese way of writing: Latin letters read
         # one under the other come out as confident junk ('MCF 1H' -> 'HFM')
@@ -443,10 +547,16 @@ def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None 
         key = (r.score * min(1.0, 0.5 + 0.25 * len(r.text.strip())), r.score)
         if i not in best or key > best[i][0]:
             best[i] = (key, mode, r, length)
+    for i, (r, length) in longer.items():
+        if i in best and best[i][1] == "h":
+            short = best[i][2]
+            if len(r.text.strip()) > len(short.text.strip()) and r.score >= short.score - 0.05:
+                best[i] = (best[i][0], "h", r, length)
+                boxes[i] = grown[i]
     rows = []
     for i, (_key, mode, r, length) in best.items():
         b = boxes[i]
-        words = trim_marks(_words(r, b, mode, length))
+        words = trim_marks(_words(r, b, mode, length, _rules_across(g, b, mode)))
         if not words:
             continue
         em = ((b.y1 - b.y0) if mode == "h" else (b.x1 - b.x0)) / 1.35

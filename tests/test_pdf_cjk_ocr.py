@@ -183,3 +183,50 @@ def test_fill_patterns_read_as_repeated_letters_are_not_rows():
     chars = [("m", 0.6, 9 * n, 9 * n + 8) for n in range(6)]
     assert _horizontal((100, 100, 300, 127), LineRead("mmmmmm", 0.6, chars)) == []
     assert cjk_ocr._hatch_read("mnmn mnmn") and not cjk_ocr._hatch_read("Mme") and not cjk_ocr._hatch_read("1111")
+
+
+def _letters(x0, x1, y0=104, y1=122, step=14):
+    """Letter-sized blocks of ink, so they are not taken for drawing lines."""
+    return [(x, y0, x + 10, y1) for x in range(x0, x1 - 9, step)]
+
+
+def test_two_cells_read_as_one_word_are_cut_at_the_wall_between_them():
+    from PIL import Image
+
+    # 'Area' | 'Circulating': a table wall runs across the line and on past it
+    page = _page_with_ink(rects=[*_letters(102, 180), *_letters(212, 400), (199, 80, 201, 150)])
+    chars = [(c, 0.95, 20 * n, 20 * n + 12) for n, c in enumerate("Area")]
+    chars += [(c, 0.95, 110 + 18 * n, 122 + 18 * n) for n, c in enumerate("Circulating")]
+    engine = _FakeEngine((100, 100, 410, 127), [LineRead("AreaCirculating", 0.95, chars)])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
+    assert [r["source_text"] for r in rows] == ["Area", "Circulating"]
+    # a glyph's own stroke stays inside the line: no cut
+    page = _page_with_ink(rects=[*_letters(102, 180), *_letters(212, 400), (199, 103, 201, 123)])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), _FakeEngine((100, 100, 410, 127),
+                                                                 [LineRead("AreaCirculating", 0.95, chars)]))
+    assert [r["source_text"] for r in rows] == ["AreaCirculating"]
+
+
+class _CountingEngine(_FakeEngine):
+    def recognize(self, crops):
+        self.widths = [c.shape[1] for c in crops]
+        return super().recognize(crops)
+
+
+def test_a_box_that_ends_inside_the_lettering_is_read_again_grown():
+    from PIL import Image
+
+    # the letters run from 110 to 400 but detection stopped at 300
+    page = _page_with_ink(rects=_letters(110, 400))
+    short = LineRead("Worksh", 0.93, [(c, 0.93, 30 * n, 30 * n + 20) for n, c in enumerate("Worksh")])
+    whole = LineRead("Workshop", 0.95, [(c, 0.95, 36 * n, 36 * n + 24) for n, c in enumerate("Workshop")])
+    engine = _CountingEngine((100, 100, 300, 127), [short, whole])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
+    assert [r["source_text"] for r in rows] == ["Workshop"]
+    assert len(engine.widths) == 2 and engine.widths[1] > engine.widths[0]
+    assert rows[0]["display_box"][2] >= 395
+    # letters that stop inside the box: read once, as detected
+    page = _page_with_ink(rects=_letters(110, 280))
+    engine = _CountingEngine((100, 100, 300, 127), [short])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
+    assert len(engine.widths) == 1 and [r["source_text"] for r in rows] == ["Worksh"]

@@ -183,9 +183,11 @@ def main(argv: list[str]) -> int:
             started = time.monotonic()
             rows, _dropped = extract.dedup(reader(gray))
             seconds = time.monotonic() - started
-            # the same steps as 原位替换 after reading: split at table rules, join paragraphs
+            # the same steps as 原位替换 after reading: join letter-spaced labels, split at
+            # table rules, join paragraphs
             V, Hs = extract.rules(page, DPI)
-            done, _n = extract.split_at_rules(copy.deepcopy(rows), V, Hs)
+            done = extract.join_spaced_cjk(copy.deepcopy(rows), [], V, Hs)
+            done, _n = extract.split_at_rules(done, V, Hs)
             done = extract.group_paragraphs(done, V, Hs)
             lang = guess_language([r["source_text"] for r in truth] or [r["source_text"] for r in done],
                                   fallback="zh")

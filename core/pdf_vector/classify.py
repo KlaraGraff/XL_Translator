@@ -101,12 +101,15 @@ def in_lexicon(tok: str, lang: str) -> bool:
 # PP-OCR reads (core.pdf_vector.cjk_ocr) of Chinese / Japanese lines: the model's
 # own character probabilities stand in for the word lists used on Latin script.
 CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
-CJK_MIN_SCORE = 0.6         # whole line
-CJK_MIN_CHAR = 0.3          # any one character
-CJK_ROTATED_MIN = 0.8       # a turned line: a sideways read of upright text scores lower
+# Measured on real drawings with a text layer as the answer (2026-10): of the lines
+# that would be translated, those under 0.9 were mostly misread (5 of 8), and a
+# character under 0.6 marks a likely look-alike (「压」 read as 「分」).
+CJK_MIN_SCORE = 0.9         # whole line
+CJK_MIN_CHAR = 0.6          # any one character
+CJK_SINGLE_MIN = 0.95       # a lone character: as often a symbol read as one
 OPERATOR_MIN = 0.9
-# a lone character that is as likely a drawing symbol (a square, a cross, a bar)
-SYMBOL_LIKE = set("口囗回田日目一二三十丁丨工土士王干川人八入乙了卜冂凵匚亅中")
+# a lone character that is as likely a drawing symbol (a square, a cross, a bar, an arrow)
+SYMBOL_LIKE = set("口囗回田日目一二三十丁丨工土士王干川人八入乙了卜冂凵匚亅中个丫")
 
 
 def _classify_cjk_read(row: dict, t: str) -> tuple[str, str]:
@@ -119,7 +122,7 @@ def _classify_cjk_read(row: dict, t: str) -> tuple[str, str]:
     if len(letters) == 1:
         if letters[0] in SYMBOL_LIKE:
             return "keep_source", "retained_identifier"
-        if score < 0.9:
+        if score < CJK_SINGLE_MIN:
             return "review", "ocr_short_fragment"
     if re.search(r"[<>≤≥]", t):
         signs = [w["score"] for w in words if re.search(r"[<>≤≥]", w["text"])]
@@ -129,8 +132,6 @@ def _classify_cjk_read(row: dict, t: str) -> tuple[str, str]:
         tok = w["text"]
         if any(c.isdigit() for c in tok) and any(c.isalpha() or c in "x×%*" for c in tok) and w["score"] < CODE_MIN_SCORE:
             return "review", "ocr_code_uncertain"
-    if int(row.get("display_rotation", 0)) % 180 != 0 and score < CJK_ROTATED_MIN:
-        return "review", "ocr_rotated_unverified"
     return "translate", "candidate"
 
 
