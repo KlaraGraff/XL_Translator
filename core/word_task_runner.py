@@ -165,7 +165,6 @@ from core.word_document import (
 )
 from core.word_inline_marks import (
     PLACE_MARKS_GROUP,
-    PLACE_MARKS_REQUEST,
     InlineMarkEngine,
     place_marks,
     same_text,
@@ -2096,9 +2095,10 @@ class WordTaskRunner(BaseTaskRunner):
         reasons: dict[str, str] = {}
         flags: dict[str, list[tuple[int, int, int]]] = {}
         stats: dict[str, int] = {}
-        # 每组最多几个公式按「翻译参数 → Word → 每批最多公式数」；几组打包成一次请求
+        # 每组最多几个公式按「翻译参数 → Word → 每批最多公式数」，一组一次请求：本机用真模型
+        # 对比过（反馈 #19，gpt-6-luna，267 个公式），几组打包成一次请求时放准的少了、也更慢
         group_size = max(1, int(getattr(self._rate, "formula_batch", 0) or PLACE_MARKS_GROUP))
-        request_marks = max(group_size, PLACE_MARKS_REQUEST)
+        request_marks = group_size
         placed = place_marks(
             engine,
             items,

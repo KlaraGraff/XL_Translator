@@ -177,7 +177,7 @@ class _CountingEngine:
 
 
 def stress(engine, reference, group, request, concurrency, retries, mismatches):
-    from core.word_inline_marks import place_marks, unmark
+    from core.word_inline_marks import placeholder_texts, place_marks, unmark
 
     items, hints = [], {}
     for row in reference:
@@ -191,10 +191,19 @@ def stress(engine, reference, group, request, concurrency, retries, mismatches):
                          concurrency=concurrency, flags=flags, stats=stats, reasons=reasons)
     seconds = round(time.monotonic() - started, 1)
     totals = {"same": 0, "near": 0, "far": 0, "missing": 0}
-    for row in reference:
+    missing_detail = []  # 没放的段落为什么没放（只有数字和原因，不含原文）
+    for row, (_key, _marked, plain) in zip(reference, items):
         entry = placed.get(row["key"])
         if entry is None:
             totals["missing"] += len(slot_offsets(row["marked"]))
+            missing_detail.append({
+                "reason": reasons.get(row["key"], "skipped"),
+                "formulas": len(slot_offsets(row["marked"])),
+                "lines": row["marked"].count("\n") + 1,
+                "translation_lines": plain.count("\n") + 1,
+                "placeholder_texts_ok": placeholder_texts(row["marked"], row["key"]) is not None,
+                "chars": len(row["key"]),
+            })
             continue
         result = compare(row["translation"], entry[1])
         for name, count in result.items():
@@ -203,7 +212,7 @@ def stress(engine, reference, group, request, concurrency, retries, mismatches):
             mismatches.append(f"[{group}x{request}] 参照：{row['translation']}\n           补的：{entry[1]}\n")
     return {"seconds": seconds, **stats, **totals, "sent_chars": engine.sent, "received_chars": engine.received,
             "flagged_formulas": sum(len(spans) for spans in flags.values()),
-            "unplaced_paragraphs": len(items) - len(placed)}
+            "unplaced_paragraphs": len(items) - len(placed), "missing_detail": missing_detail}
 
 
 def main(argv=None):

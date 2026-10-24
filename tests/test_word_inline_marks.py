@@ -725,6 +725,7 @@ class FormulaPlacementTests(unittest.TestCase):
         runner._place_missing_inline_marks(engine, {self.PLAIN: self.FINAL}, target_lang="zh")
         sizes = [len(item["插入"].split("、")) for request in engine.requests for item in request]
         self.assertTrue(sizes and max(sizes) <= 2, sizes)
+        self.assertTrue(all(len(request) == 1 for request in engine.requests))  # 一组一次请求，不打包
         self.assertEqual(sum(sizes), 7)
         self.assertEqual(runner._inline_mark_engine.marked_translations[self.PLAIN][1],
                          "其中<x1/>为应力，<x2/>为应变，<x3/>为模量。于是<g1>我们</g1>有<x4/>和<x5/>，所以<x6/>。")
