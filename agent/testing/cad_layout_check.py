@@ -34,9 +34,14 @@ from core.cad_layout import (  # noqa: E402
     _box,
     _collect_entities,
     _geometry,
+    _horizontal_span,
     _local,
+    _mtext_extent,
+    _mtext_paragraphs,
+    _mtext_raw,
     _TextEntity,
     _to_local,
+    _vertical_span,
 )
 from core.cad_translation import _parse_dxf, _plain_text  # noqa: E402
 
@@ -62,8 +67,17 @@ def _load(path: Path) -> tuple[list[_Text], dict]:
     for entity in _collect_entities(records, _plain_text):
         box = _box(entity)
         x, y = _local(entity)
+        left, right, bottom, top = box.left, box.right, box.bottom, box.top
+        if entity.entity_type == "MTEXT":
+            # 多行文字按宽度（组码 41）自动换行：译文折成几行就有几行高。
+            raw = _mtext_raw(records, entity.start, entity.end)
+            width, height = _mtext_extent(
+                _mtext_paragraphs(raw, entity.height), entity.height, entity.ref_width, entity.font_class,
+            )
+            (left, right), (bottom, top) = (_horizontal_span(entity.halign, x, width),
+                                            _vertical_span(entity.valign, y, height))
         key = (entity.container, round(entity.rotation, 1), round(x, 1), round(y, 1))
-        texts.append(_Text(entity, key, box.left, box.right, box.bottom, box.top))
+        texts.append(_Text(entity, key, left, right, bottom, top))
     lines, curves = _geometry(records)
     return texts, {key: lines.get(key, []) + curves.get(key, []) for key in set(lines) | set(curves)}
 
