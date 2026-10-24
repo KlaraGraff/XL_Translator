@@ -406,34 +406,20 @@ def test_inplace_ocr_runs_the_managed_program_with_its_language_data(hermetic, m
 
 
 @posix_only
-def test_one_click_install_through_the_api(hermetic, monkeypatch):
+def test_a_chosen_tesseract_through_the_api(hermetic, monkeypatch):
+    # 一键安装现在装的是识别模型（tests/test_ppocr_component.py）；自己装的 Tesseract 照旧能连接、断开。
     from api.app import create_app
-    from api import ocr_plugin
 
-    _fake_install_sources(monkeypatch)
     own = hermetic / "own" / "tesseract"
     own.parent.mkdir()
     own.write_bytes(b'#!/bin/sh\n[ "$1" = "--version" ] && echo "tesseract 5.3.0" && exit 0\nexit 0\n')
     own.chmod(0o755)
     client = TestClient(create_app())
     status = client.post("/api/plugins/ocr/install", json={"path": str(own)}).json()
-    assert status["source"] == "manual" and status["one_click_supported"] is True
-
-    started = client.post("/api/plugins/ocr/one-click-install").json()
-    assert started["running"] is True
-    for _ in range(200):
-        progress = client.get("/api/plugins/ocr/install-progress").json()
-        if not progress["running"]:
-            break
-        threading.Event().wait(0.05)
-    assert progress["phase"] == "done", progress
-    status = client.get("/api/plugins/ocr").json()
-    # 一键装好就用装好的：之前选的位置不再优先。
-    assert status["state"] == "connected" and status["source"] == "managed"
-
-    removed = client.post("/api/plugins/ocr/uninstall", json={"target": "managed"}).json()
-    assert removed["state"] == "missing" and removed["managed_installed"] is False
-    assert ocr_plugin.install_progress()["running"] is False
+    assert status["state"] == "connected" and status["source"] == "manual" and status["engine"] == "tesseract"
+    removed = client.post("/api/plugins/ocr/uninstall", json={"target": "manual"}).json()
+    assert removed["state"] == "missing" and removed["engine"] == ""
+    assert own.exists(), "never delete the user's own install"
 
 
 def test_frozen_smoke_checks_the_decompressor():

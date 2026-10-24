@@ -28,7 +28,7 @@ from PIL import Image
 
 from core.ocr_engine import png_bytes, tesseract_options
 
-from .common import fitz, norm_text, sha256, write_json
+from .common import fitz, join_words, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
 TILE, STEP = 1800, 1560
@@ -423,11 +423,128 @@ def split_at_rules(rows, V, Hs):
             if i in cuts or i == len(ws) - 1:
                 box = [min(z["box"][0] for z in part), min(z["box"][1] for z in part),
                        max(z["box"][2] for z in part), max(z["box"][3] for z in part)]
-                out.append({**r, "source_text": norm_text(" ".join(z["text"] for z in part)), "display_box": box,
+                out.append({**r, "source_text": norm_text(join_words(part)), "display_box": box,
                             "words": part, "ocr_score": sum(z["score"] for z in part) / len(part),
                             "split_from_rule": True})
                 part = []
     return out, n_split
+
+
+# ------------------------------------------------- letter-spaced Chinese labels
+
+_CJK_ONLY = re.compile(r"[぀-ヿ㐀-鿿豈-﫿]+")
+SPACED_GAP_H = 3.5      # along a line: up to this many character heights apart
+SPACED_GAP_V = 2.0      # stacked one under the other
+
+
+def _spaced_candidate(r) -> bool:
+    return (r.get("origin") == "ocr" and r.get("engine") == "ppocr" and not r.get("vertical_column")
+            and int(r.get("display_rotation", 0)) == 0
+            and bool(_CJK_ONLY.fullmatch(r["source_text"].replace(" ", ""))))
+
+
+def join_spaced_cjk(rows, others, V, Hs):
+    """Letter-spaced Chinese / Japanese labels (「姓　名」「给 排 水」 in a title block)
+    come out of detection one character per box, and a character translated on its
+    own means something else.  Characters of one size on one line (or stacked in a
+    narrow column), a few character heights apart, with no rule and no other text
+    between them, are joined into one label."""
+    cand = [i for i, r in enumerate(rows) if _spaced_candidate(r)]
+    if len(cand) < 2:
+        return rows
+    boxes = [r["display_box"] for r in rows] + [o["display_box"] for o in others]
+
+    def clear(x0, y0, x1, y1, skip) -> bool:
+        if x1 <= x0 or y1 <= y0:
+            return True
+        return not any(k not in skip and b[0] < x1 and b[2] > x0 and b[1] < y1 and b[3] > y0
+                       for k, b in enumerate(boxes))
+
+    def pair(i, j, across: bool):
+        a, b = rows[i]["display_box"], rows[j]["display_box"]
+        ha, hb = a[3] - a[1], b[3] - b[1]
+        wa, wb = a[2] - a[0], b[2] - b[0]
+        if not across:      # side by side on one line
+            size = max(ha, hb)
+            if max(ha, hb) > 1.35 * min(ha, hb) or min(a[3], b[3]) - max(a[1], b[1]) < 0.6 * min(ha, hb):
+                return None
+            gap = b[0] - a[2]
+            if not -0.2 * size <= gap <= SPACED_GAP_H * size:
+                return None
+            y0, y1 = max(a[1], b[1]), min(a[3], b[3])
+            if any(a[2] - 1 <= x <= b[0] + 1 and s0 <= y0 + 0.2 * size and s1 >= y1 - 0.2 * size for x, s0, s1 in V):
+                return None
+            return gap if clear(a[2] + 1, y0, b[0] - 1, y1, {i, j}) else None
+        size = max(wa, wb)   # one under the other
+        if max(wa, wb) > 1.35 * min(wa, wb) or min(a[2], b[2]) - max(a[0], b[0]) < 0.6 * min(wa, wb):
+            return None
+        if len(rows[i]["source_text"].strip()) != 1 or len(rows[j]["source_text"].strip()) != 1:
+            return None
+        gap = b[1] - a[3]
+        if not -0.2 * size <= gap <= SPACED_GAP_V * size:
+            return None
+        x0, x1 = max(a[0], b[0]), min(a[2], b[2])
+        if any(a[3] - 1 <= y <= b[1] + 1 and s0 <= x0 + 0.2 * size and s1 >= x1 - 0.2 * size for y, s0, s1 in Hs):
+            return None
+        return gap if clear(x0, a[3] + 1, x1, b[1] - 1, {i, j}) else None
+
+    used: set[int] = set()
+    out_groups: list[tuple[list[int], bool]] = []
+    for across in (False, True):
+        order = sorted((i for i in cand if i not in used),
+                       key=lambda i: (rows[i]["display_box"][0], rows[i]["display_box"][1]) if across
+                       else (rows[i]["display_box"][1], rows[i]["display_box"][0]))
+        nxt: dict[int, int] = {}
+        for i in order:
+            best = None
+            for j in order:
+                if j == i:
+                    continue
+                a, b = rows[i]["display_box"], rows[j]["display_box"]
+                if (b[1] if across else b[0]) <= (a[1] if across else a[0]):
+                    continue
+                gap = pair(i, j, across)
+                if gap is not None and (best is None or gap < best[0]):
+                    best = (gap, j)
+            if best is not None:
+                nxt[i] = best[1]
+        # the nearest neighbour of each, kept only when it is mutual (no forks)
+        prev = {}
+        for i, j in nxt.items():
+            if j in prev:
+                prev[j] = None
+            else:
+                prev[j] = i
+        heads = [i for i in order if i in nxt and prev.get(i) is None and i not in prev]
+        for h in heads:
+            chain = [h]
+            while chain[-1] in nxt and prev.get(nxt[chain[-1]]) == chain[-1]:
+                chain.append(nxt[chain[-1]])
+            texts = [rows[k]["source_text"].replace(" ", "") for k in chain]
+            # a pair of two-character words is two labels; one of them must be a lone character
+            if len(chain) < 2 or not any(len(t) == 1 for t in texts):
+                continue
+            used.update(chain)
+            out_groups.append((chain, across))
+    if not out_groups:
+        return rows
+    out = [r for i, r in enumerate(rows) if i not in used]
+    for chain, across in out_groups:
+        mem = [rows[k] for k in chain]
+        bx = [m["display_box"] for m in mem]
+        scores = [m["ocr_score"] for m in mem if m.get("ocr_score") is not None]
+        words = None
+        if not across:
+            words = [{**w, "sp": False} for m in mem for w in (m.get("words") or [])] or None
+        out.append({**mem[0],
+                    "source_text": "".join(m["source_text"].replace(" ", "") for m in mem),
+                    "display_box": [min(b[0] for b in bx), min(b[1] for b in bx),
+                                    max(b[2] for b in bx), max(b[3] for b in bx)],
+                    "display_rotation": 90 if across else 0, "words": words,
+                    "ocr_score": min(scores) if scores else None,
+                    "source_passes": sorted({p for m in mem for p in m["source_passes"]} | {"ppocr_spaced"}),
+                    "joined_spaced": True, **({"vertical_column": True} if across else {})})
+    return out
 
 
 # ------------------------------------------------------------- paragraphs
@@ -749,10 +866,14 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
 # ------------------------------------------------------------- main
 
 def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers: int,
-        tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None) -> dict:
-    """Rows for page 1 of ``source``.  Without ``tesseract`` only the native
-    text layer is read (outline lettering is then counted, not translated).
-    ``progress(done, total)`` follows the OCR tiles."""
+        tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None,
+        reader: Callable[..., list[dict]] | None = None) -> dict:
+    """Rows for page 1 of ``source``.  Outline lettering is read by ``reader``
+    (``reader(gray, progress) -> rows``: the PP-OCR models of the text recognition
+    component, Chinese, Japanese and Latin script; see core.pdf_vector.cjk_ocr) when given,
+    else by ``tesseract``; with neither only the native text layer is read (outline
+    lettering is then counted, not translated).  ``progress(done, total)``
+    follows the OCR tiles."""
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(source)
     if len(doc) != 1:
@@ -770,11 +891,17 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
     pix = tp.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
     gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
     tmp.close()
-    raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
+    if reader is not None:
+        raw = reader(gray, progress)
+    else:
+        raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
     ocr, dropped = dedup(raw)
     V, Hs = rules(page, dpi)
+    if reader is not None:
+        ocr = join_spaced_cjk(ocr, nat, V, Hs)
     ocr, n_split = split_at_rules(ocr, V, Hs)
-    extra = reocr_neighbours(page, nat + ocr, dpi, langs, tesseract) if tesseract else []
+    # the second look at missed lines is Tesseract's (Latin script, French / English word lists)
+    extra = reocr_neighbours(page, nat + ocr, dpi, langs, tesseract) if tesseract and reader is None else []
     if extra:
         # weak reads of the same strokes give way to the clean second look
         eb = [fitz.Rect(e["display_box"]) for e in extra]
@@ -793,7 +920,9 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
     for i, r in enumerate(rows, 1):
         r["id"] = f"R{i:04d}"
     info = {
-        "source": str(source), "source_sha256": sha256(source), "dpi": dpi, "langs": langs, "ocr": bool(tesseract),
+        "source": str(source), "source_sha256": sha256(source), "dpi": dpi, "langs": langs,
+        "ocr": bool(tesseract or reader is not None),
+        "ocr_engine": "ppocr" if reader is not None else "tesseract" if tesseract else "",
         "page_rect": list(page.rect), "page_rotation": page.rotation,
         "display_size_px": list(gray.size),
         "counts": {"native_lines": len(nat), "ocr_raw": len(raw), "ocr_dedup_dropped": dropped,

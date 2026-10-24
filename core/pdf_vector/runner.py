@@ -6,7 +6,8 @@
 
 译成哪种语言都行，只要那种文字是一个字一个字从左往右写的（fonts.target_supported）；
 放不下时按 CAD 的那套比例缩小、再换行（core.cad_layout.FitSettings）。原文能从文字层
-读到的，中文也照样翻；画成线条的字只认拉丁字母（Tesseract 只带了西文的识别数据），
+读到的，中文也照样翻。画成线条的字：文字识别组件装的是 PP-OCR 时中文、日文和西文都认
+（core.ppocr_component）；只有 Tesseract 时只认拉丁字母（只带了西文的识别数据），
 原文是中日韩文字的页不跑识别。
 
 PDF 的读写用 PyMuPDF（AGPL-3.0，沿用其原许可，见 THIRD_PARTY_NOTICES.md），它属于「PDF 处理组件」，不随安装包分发。
@@ -38,6 +39,7 @@ _OCR_LANGS = {"fr": "fra+eng", "en": "eng", "es": "spa+eng", "de": "deu+eng", "i
 
 # 原文是这几种文字时不跑识别：识别数据只有西文的，读画成线条的汉字只会读出乱码。
 _CJK_SOURCES = frozenset({"zh", "ja", "ko"})
+_READER_UNSUPPORTED = frozenset({"ko"})
 
 
 def ocr_languages(source_lang: str, installed: list[str] | None) -> str:
@@ -58,6 +60,9 @@ class InplaceHooks:
     tesseract_languages: list[str] | None = None
     source_lang: str = "auto"
     ocr_wanted: bool = True
+    # 文字识别组件里的 PP-OCR（中文、日文和西文）：``reader(gray, progress) -> rows``，
+    # 见 core.ppocr_component。有它时不用 Tesseract。
+    ocr_reader: Callable[..., list[dict]] | None = None
     # 记忆库（core.term_session.DocumentTermMemory）：与 Excel / Word 同一套规则。
     memory: object | None = None
 
@@ -156,13 +161,17 @@ def translate_page_inplace(
     font_style: str = SANS,
     fit: FitSettings | None = None,
     fallback_lang: str = "fr",
+    ocr_reader: Callable[..., list[dict]] | None = None,
 ) -> InplaceResult:
     """Translate one page in place; the result PDF holds that single page.
 
     ``font_style`` and ``fit`` are the page's 「译文字体」 and shrink scales (defaults:
     sans, and CAD's scales for ``target_lang``); ``font_path`` forces one font.
     ``fallback_lang`` is the source language when the page itself has no text to
-    tell (the rest of the document's language)."""
+    tell (the rest of the document's language).  ``ocr_reader`` reads outline
+    lettering of any script the component knows (Chinese, Japanese, Latin) and is
+    used instead of ``tesseract``; with it an automatic source language is decided
+    from what the page says, text layer and lettering together."""
     def say(level: str, message: str) -> None:
         if log:
             log(level, message)
@@ -181,19 +190,29 @@ def translate_page_inplace(
         one.save(page_pdf)
         one.close()
 
-    if source_lang in ("", "auto", None):
+    auto_source = source_lang in ("", "auto", None)
+    if auto_source:
         with fitz.open(page_pdf) as one_doc:
             source_lang = guess_language([one_doc[0].get_text()], fallback=fallback_lang or "fr")
     cjk_source = source_lang in _CJK_SOURCES
-    langs = ocr_languages(source_lang, tesseract_languages) if tesseract and not native_only and not cjk_source else ""
+    # PP-OCR 的识别模型认中文、日文和拉丁字母，不认韩文
+    use_reader = ocr_reader is not None and not native_only and source_lang not in _READER_UNSUPPORTED
+    langs = ""
+    if tesseract and not native_only and not cjk_source and not use_reader:
+        langs = ocr_languages(source_lang, tesseract_languages)
     exe = tesseract if langs else None
     started = time.monotonic()
     info = extract.run(page_pdf, work_dir / "extract", 200, langs or "eng", (0, 90, 270),
                        max(2, (os.cpu_count() or 4) - 2), exe,
-                       progress=lambda done, total: tell("ocr", done, total))
+                       progress=lambda done, total: tell("ocr", done, total),
+                       reader=ocr_reader if use_reader else None)
     rows = info["rows"]
+    if use_reader and auto_source:
+        # 画成线条的字也读出来了：原文语言按整页（文字层 + 识别结果）定，文字层只有
+        # 编号、或只有图框里几行英文的中文图纸不再按西文翻
+        source_lang = guess_language([r["source_text"] for r in rows], fallback=source_lang)
     tell("read", 1, 1, rows=len(rows), native=sum(1 for r in rows if r.get("origin") == "native"),
-         ocr=bool(exe), seconds=time.monotonic() - started)
+         ocr=bool(exe) or use_reader, seconds=time.monotonic() - started)
     prefix = f"{memory_location}：" if memory_location else ""
     summary = classify_and_translate(
         rows, translate=translate, profile=profile, source_lang=source_lang,
@@ -241,8 +260,8 @@ def translate_page_inplace(
         untranslated=len(missing),
         not_written=len(decided_write - written_ids),
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
-        ocr_used=bool(exe),
-        ocr_skipped_cjk=bool(cjk_source and not native_only),
+        ocr_used=bool(exe) or use_reader,
+        ocr_skipped_cjk=bool(cjk_source and not native_only and not use_reader),
         source_lang=source_lang,
         unrecognized_regions=int((check.get("unrecognized_text") or {}).get("candidates") or 0),
         scene_profile=summary.get("scene_profile", ""),

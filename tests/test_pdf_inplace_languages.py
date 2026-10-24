@@ -213,6 +213,175 @@ class ChineseToFrenchTests(_PageCase):
         self.assertEqual(result.kept, 4)
 
 
+def _strokes(page, x, y, chars, size=12):
+    """画成线条的字：每个字几笔短线（没有文字层），像 CAD 导出的图纸。"""
+    for n in range(chars):
+        x0 = x + n * size
+        page.draw_line((x0 + 1, y + 2), (x0 + size - 1, y + 2), color=(0, 0, 0), width=0.6)
+        page.draw_line((x0 + size / 2, y + 1), (x0 + size / 2, y + size - 1), color=(0, 0, 0), width=0.6)
+        page.draw_line((x0 + 2, y + size - 2), (x0 + size - 2, y + size - 2), color=(0, 0, 0), width=0.6)
+
+
+def _ocr_row(text, x, y, size=12, score=0.98):
+    """PP-OCR 读出的一行（core.pdf_vector.cjk_ocr 的格式，显示像素，200 dpi）。"""
+    k = 200 / 72
+    words = [{"text": ch, "score": score, "box": [(x + n * size) * k, y * k, (x + (n + 1) * size) * k, (y + size) * k],
+              "sp": False} for n, ch in enumerate(text)]
+    return {"origin": "ocr", "source_text": text, "display_box": [x * k, y * k, (x + len(text) * size) * k, (y + size) * k],
+            "display_rotation": 0, "words": words, "ocr_score": score, "source_passes": ["ppocr_h"],
+            "clipped": False, "engine": "ppocr"}
+
+
+class ChineseLetteringReadByTheComponentTests(_PageCase):
+    """线条字由文字识别组件里的 PP-OCR 读（#20：Windows 上中文图纸认成一串西文乱码）。"""
+
+    LABELS = (("设备基坑", 100, 100), ("坑底标高", 100, 160))
+
+    def _build(self, page, title=""):
+        if title:
+            page.insert_text((600, 560), title, fontsize=9)
+        for text, x, y in self.LABELS:
+            _strokes(page, x, y, len(text))
+        page.draw_line((40, 300), (800, 300), color=(1, 0, 0), width=1)
+
+    def _reader(self, calls):
+        def read(gray, progress=None):
+            calls.append(gray.size)
+            if progress:
+                progress(1, 1)
+            return [_ocr_row(text, x, y) for text, x, y in self.LABELS]
+
+        return read
+
+    @unittest.skipUnless(_latin_font(), "no Latin font on this machine")
+    def test_chinese_strokes_are_read_and_translated(self):
+        calls: list = []
+        # 文字层只有图框里一行英文：以前按英文去认，中文线条读成乱码
+        result, prompts = self._run(lambda page: self._build(page, "DRAWING NO. E-101 SCALE 1:100"), ZH_FR, "fr",
+                                    tesseract="/no/tesseract/here", ocr_reader=self._reader(calls))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(calls, [(round(842 * 200 / 72), round(595 * 200 / 72))])
+        self.assertEqual(result.source_lang, "zh")
+        self.assertTrue(result.ocr_used)
+        self.assertFalse(result.ocr_skipped_cjk)
+        self.assertEqual(result.written, 2, result.review_items)
+        self.assertIn("把每条中文原文逐条翻译成法文工程术语", prompts[0])
+        with fitz.open(result.output_pdf) as out:
+            text = out[0].get_text()
+            lines = [d for d in out[0].get_drawings() if d["rect"].width > 500]
+            strokes = [d for d in out[0].get_drawings() if fitz.Rect(95, 95, 155, 177).contains(d["rect"])]
+        self.assertIn("Fosse d'équipement", text)
+        self.assertIn("Cote du fond de fosse", text)
+        self.assertEqual(len(lines), 1)   # the red line crossing the sheet survives
+        self.assertEqual(strokes, [])     # the Chinese strokes are gone
+
+    @unittest.skipUnless(_latin_font(), "no Latin font on this machine")
+    def test_a_letter_spaced_label_is_translated_as_one_word(self):
+        def build(page):
+            _strokes(page, 100, 100, 1)
+            _strokes(page, 130, 100, 1)
+
+        def read(gray, progress=None):
+            return [_ocr_row("姓", 100, 100), _ocr_row("名", 130, 100)]
+
+        seen: list = []
+
+        def translate(texts, prompt, **_extra):
+            seen.extend(texts)
+            return {t: {"姓名": "Nom"}.get(t, t) for t in texts}
+
+        from core.pdf_vector import translate_page_inplace
+
+        source = self.root / "source.pdf"
+        doc = fitz.open()
+        build(doc.new_page(width=842, height=595))
+        doc.save(source)
+        result = translate_page_inplace(source, 0, self.root / "work", translate=translate, source_lang="zh",
+                                        target_lang="fr", ocr_reader=read)
+        self.assertEqual(seen, ["姓名"])
+        self.assertEqual(result.written, 1, result.review_items)
+
+    def test_an_unsure_character_is_kept_for_review(self):
+        def read(gray, progress=None):
+            row = _ocr_row("设备基坑", 100, 100)
+            row["words"][2]["score"] = 0.2
+            return [row]
+
+        result, _prompts = self._run(self._build, ZH_FR, "fr", ocr_reader=read)
+        self.assertEqual(result.written, 0)
+        self.assertEqual(result.review, 1)
+
+    def test_korean_pages_are_not_given_to_the_reader(self):
+        calls: list = []
+
+        def build(page):
+            self._build(page)
+            font = find_cjk_font()
+            if font:
+                page.insert_font(fontname="ko", fontfile=str(font))
+            page.insert_text((400, 60), "도면 번호", fontname="ko" if font else "helv", fontsize=12)
+
+        result, _prompts = self._run(build, {}, "fr", ocr_reader=self._reader(calls))
+        if result.source_lang != "ko":
+            self.skipTest("no font with Hangul on this machine")
+        self.assertEqual(calls, [])
+        self.assertFalse(result.ocr_used)
+        self.assertTrue(result.ocr_skipped_cjk)
+
+    def test_the_page_note_says_what_would_read_the_strokes(self):
+        from types import SimpleNamespace
+
+        from core.pdf_image_translation import _inplace_nothing_written_message
+
+        def message(lang):
+            result = SimpleNamespace(review_items=[], kept=0, source_lang=lang)
+            return _inplace_nothing_written_message(result, cjk_ocr_skipped=True)
+
+        # 中文、日文：装上（或更新）文字识别组件就能读；韩文：识别模型不认
+        self.assertIn("安装或更新「文字识别组件」", message("zh"))
+        self.assertIn("安装或更新「文字识别组件」", message("ja"))
+        self.assertIn("韩文暂不能识别", message("ko"))
+        self.assertNotIn("韩文", message("zh"))
+
+
+class LetterSpacedLabelTests(unittest.TestCase):
+    """图签里拉开字距的「姓　名」「给 排 水」：检测时一个字一个框，单独翻译意思就变了。"""
+
+    def _join(self, rows, V=(), Hs=(), others=()):
+        from core.pdf_vector.extract import join_spaced_cjk
+
+        return sorted(join_spaced_cjk(rows, list(others), list(V), list(Hs)), key=lambda r: r["display_box"][0])
+
+    def test_characters_spaced_out_on_one_line_are_one_label(self):
+        rows = self._join([_ocr_row("姓", 100, 100), _ocr_row("名", 130, 100, score=0.96)])
+        self.assertEqual([r["source_text"] for r in rows], ["姓名"])
+        self.assertEqual(rows[0]["display_rotation"], 0)
+        self.assertEqual(rows[0]["ocr_score"], 0.96)
+        self.assertEqual([w["text"] for w in rows[0]["words"]], ["姓", "名"])
+        rows = self._join([_ocr_row("给", 100, 100), _ocr_row("排", 125, 100), _ocr_row("水", 150, 100)])
+        self.assertEqual([r["source_text"] for r in rows], ["给排水"])
+
+    def test_a_table_wall_other_text_or_a_wide_gap_keeps_them_apart(self):
+        k = 200 / 72
+        pair = [_ocr_row("是", 100, 100), _ocr_row("否", 130, 100)]
+        wall = [(121 * k, 95 * k, 118 * k)]          # x, from y, to y: runs across the line
+        self.assertEqual(len(self._join(pair, V=wall)), 2)
+        self.assertEqual(len(self._join(pair, others=[_ocr_row("KL1", 116, 100, size=4)])), 2)
+        self.assertEqual(len(self._join([_ocr_row("上", 100, 100), _ocr_row("下", 160, 100)])), 2)
+        # two words side by side are two labels; joining needs a lone character
+        self.assertEqual(len(self._join([_ocr_row("建筑", 100, 100), _ocr_row("结构", 140, 100)])), 2)
+        # another size or another line
+        self.assertEqual(len(self._join([_ocr_row("姓", 100, 100), _ocr_row("名", 130, 100, size=24)])), 2)
+        self.assertEqual(len(self._join([_ocr_row("姓", 100, 100), _ocr_row("名", 130, 140)])), 2)
+
+    def test_characters_stacked_in_a_narrow_column_read_top_down(self):
+        rows = self._join([_ocr_row("计", 100, 130), _ocr_row("设", 100, 100)])
+        self.assertEqual([r["source_text"] for r in rows], ["设计"])
+        self.assertEqual(rows[0]["display_rotation"], 90)
+        self.assertTrue(rows[0]["vertical_column"])
+        self.assertIsNone(rows[0]["words"])
+
+
 @unittest.skipUnless(find_cjk_font() and _latin_font(), "no CJK or Latin font on this machine")
 class FitTests(_PageCase):
     LONG = {"配电室": "Local de distribution électrique basse tension", "水泵房": "Salle des pompes"}
@@ -326,6 +495,35 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(outcome("2026年3月24日", "24 avril 2026"), ("review", "numeric_mismatch"))
         # a word that only looks like a month counts only next to a number
         self.assertEqual(numbers("Le mur mai", dates=True), [])
+
+    def test_chinese_lettering_read_by_the_component_is_judged_by_its_scores(self):
+        def decide(text, score=0.98, char=0.98, rotation=0):
+            row = _ocr_row(text, 100, 100, score=score)
+            row["display_rotation"] = rotation
+            for word in row["words"]:
+                word["score"] = min(word["score"], char)
+            return ct.classify(row, 0.45, "zh", target_lang="fr")
+
+        self.assertEqual(decide("低压配电间"), ("translate", "candidate"))
+        # 真实图纸上整行把握不到 0.9 的大多读错了，有一个字不到 0.6 的多是形近字
+        self.assertEqual(decide("低压配电间", score=0.85), ("review", "low_ocr_confidence"))
+        self.assertEqual(decide("压实度", char=0.5), ("review", "low_ocr_confidence"))
+        # 一个像图例符号的字（方框、十字、箭头）当作符号保留；别的单字要读得很准才翻
+        self.assertEqual(decide("口"), ("keep_source", "retained_identifier"))
+        self.assertEqual(decide("个"), ("keep_source", "retained_identifier"))
+        self.assertEqual(decide("井", score=0.93), ("review", "ocr_short_fragment"))
+        self.assertEqual(decide("井"), ("translate", "candidate"))
+        self.assertEqual(decide("风管≥800", char=0.8), ("review", "ocr_operator_uncertain"))
+        self.assertEqual(decide("竖排说明", score=0.7, rotation=90), ("review", "low_ocr_confidence"))
+        self.assertEqual(decide("竖排说明", rotation=90), ("translate", "candidate"))
+
+    def test_chinese_words_join_without_spaces(self):
+        from core.pdf_vector.common import join_words
+
+        words = [{"text": "配", "sp": False}, {"text": "电", "sp": False}, {"text": "TN3000", "sp": True}]
+        self.assertEqual(join_words(words), "配电 TN3000")
+        # Tesseract 的词没有 sp：照旧用空格隔开
+        self.assertEqual(join_words([{"text": "Plan"}, {"text": "de"}, {"text": "masse"}]), "Plan de masse")
 
     def test_target_name_in_the_prompt(self):
         self.assertEqual(ct.target_language_name("zh"), "简体中文")

@@ -33,6 +33,9 @@ _CRITICAL_IMPORTS = (
     "core.format_adapter",
     # 一键安装「文字识别组件」靠它解压；它是原生扩展，冻结时漏掉只会在用户点安装时才暴露。
     "zstandard",
+    # 中文识别模型的安装和识别子进程的入口（NumPy、ONNX Runtime 只在子进程里从组件加载）。
+    "core.ppocr_component",
+    "core.ppocr_component_install",
 )
 
 #: Translation types shipped in adapters/ that GET /api/surfaces must list.

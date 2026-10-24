@@ -11,7 +11,10 @@ review          source stays and a human should look (bad OCR, model issue)
 The target language is any language whose text is written letter after letter
 (core/pdf_vector/fonts.py); whether a line is already in the target language
 follows CAD (core.cad_language.classify_text_language).  The source may be any
-language the PDF text layer holds, Chinese included; OCR reads Latin script only.
+language the PDF text layer holds, Chinese included.  Outline lettering is read
+by Tesseract (Latin script, checked against word lists) or by the PP-OCR models
+of the text recognition component (Chinese, Japanese and Latin script; Chinese and
+Japanese lines are checked on the model's own character probabilities).
 
 translation_source: model | memory | glossary | retained_identifier | retained_numeric
                     | retained_by_model | none
@@ -95,6 +98,43 @@ def in_lexicon(tok: str, lang: str) -> bool:
     return strip_accents(tok.casefold()) in lexicon(lang)
 
 
+# PP-OCR reads (core.pdf_vector.cjk_ocr) of Chinese / Japanese lines: the model's
+# own character probabilities stand in for the word lists used on Latin script.
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
+# Measured on real drawings with a text layer as the answer (2026-10): of the lines
+# that would be translated, those under 0.9 were mostly misread (5 of 8), and a
+# character under 0.6 marks a likely look-alike (「压」 read as 「分」).
+CJK_MIN_SCORE = 0.9         # whole line
+CJK_MIN_CHAR = 0.6          # any one character
+CJK_SINGLE_MIN = 0.95       # a lone character: as often a symbol read as one
+OPERATOR_MIN = 0.9
+# a lone character that is as likely a drawing symbol (a square, a cross, a bar, an arrow)
+SYMBOL_LIKE = set("口囗回田日目一二三十丁丨工土士王干川人八入乙了卜冂凵匚亅中个丫")
+
+
+def _classify_cjk_read(row: dict, t: str) -> tuple[str, str]:
+    words = row.get("words") or []
+    score = row.get("ocr_score") or 0.0
+    probs = [w["score"] for w in words if CJK_RE.search(w["text"])]
+    if score < CJK_MIN_SCORE or (probs and min(probs) < CJK_MIN_CHAR):
+        return "review", "low_ocr_confidence"
+    letters = [c for c in t if c.isalpha()]
+    if len(letters) == 1:
+        if letters[0] in SYMBOL_LIKE:
+            return "keep_source", "retained_identifier"
+        if score < CJK_SINGLE_MIN:
+            return "review", "ocr_short_fragment"
+    if re.search(r"[<>≤≥]", t):
+        signs = [w["score"] for w in words if re.search(r"[<>≤≥]", w["text"])]
+        if not signs or min(signs) < OPERATOR_MIN:
+            return "review", "ocr_operator_uncertain"
+    for w in words:
+        tok = w["text"]
+        if any(c.isdigit() for c in tok) and any(c.isalpha() or c in "x×%*" for c in tok) and w["score"] < CODE_MIN_SCORE:
+            return "review", "ocr_code_uncertain"
+    return "translate", "candidate"
+
+
 def classify(row: dict, min_ocr: float, lang: str = "fr", strong_texts: set | None = None,
              target_lang: str = "zh") -> tuple[str, str]:
     t = row["source_text"]
@@ -106,6 +146,8 @@ def classify(row: dict, min_ocr: float, lang: str = "fr", strong_texts: set | No
     if classify_text_language(t, target_lang) == TARGET:
         # 已是目标语言（中文图纸译成中文时的中文标注、法文图纸里的法文）；拿不准的照常翻译
         return "keep_source", "already_target"
+    if row.get("origin") == "ocr" and row.get("engine") == "ppocr" and CJK_RE.search(t):
+        return _classify_cjk_read(row, t)
     if row.get("origin") == "ocr":
         score = row.get("ocr_score") or 0.0
         bad = sum(garbage_word(w) for w in words)

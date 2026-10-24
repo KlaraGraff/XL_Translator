@@ -181,6 +181,9 @@ a = Analysis(
         # 连接的 pdf2docx 环境里加载（core/pdf_component.py）。构建机为了跑测试装了它，
         # 这里显式排除，scripts/build_tauri_package.py 打包后还会再查一遍。
         "fitz", "pymupdf",
+        # 识别中文线条字的 ONNX Runtime 和它要的 OpenCV 也只在组件里（core/ppocr_component.py
+        # 在子进程里加载）；core/ppocr_engine.py 里有 import，构建机装着时不能被顺手收进来。
+        "cv2", "onnxruntime",
     ],
     noarchive=False,
     optimize=0,
