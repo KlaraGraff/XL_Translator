@@ -259,7 +259,9 @@ VLM_PROMPT = (
     "and symbols. Transcribe exactly what is printed: the same characters in the same order, "
     "keeping digits, units, punctuation and symbols such as ±, Φ, °, ×, ≥. Do not translate, "
     "correct, complete or explain. A tall crop may hold Chinese characters written top to "
-    "bottom: give them in reading order. If a crop has no readable text, give an empty string. "
+    "bottom: give them in reading order. Neighbouring labels are blanked out of each crop: "
+    "transcribe only the line in the crop, and copy every digit exactly as printed, never "
+    "guessing one. If a crop has no readable text, give an empty string. "
     "Answer with strict JSON only: an object mapping every crop number (as a string) to its text."
 )
 VLM_MIN_HEIGHT = 48      # 小字放大到至少这么高（像素）
@@ -267,16 +269,43 @@ VLM_MAX_SIDE = 1600
 SHEET_MAX_HEIGHT = 2400
 
 
-def _row_crop(gray, row: dict):
-    """一行字的小块，转正（竖排的中文列保持竖着），小字放大。"""
-    from PIL import Image
+def _row_crop(gray, row: dict, others: list[dict] = (), k: float = 1.0):
+    """一行字的小块，转正（竖排的中文列保持竖着），小字放大。``gray`` 是识别模型看的那张图
+    （``k`` 倍于行框的像素）；挤进小块的别的行涂白，看图模型只看到这一行。"""
+    from PIL import Image, ImageDraw
 
-    x0, y0, x1, y1 = (float(v) for v in row["display_box"])
+    x0, y0, x1, y1 = (float(v) * k for v in row["display_box"])
     rot = int(row.get("display_rotation", 0))
+    if rot == 0:
+        # lines packed tighter than their boxes: each box gives up half of the overlap
+        oy0, oy1 = y0, y1
+        for o in others:
+            if o is row or int(o.get("display_rotation", 0)) != 0:
+                continue
+            bx0, by0, bx1, by1 = (float(v) * k for v in o["display_box"])
+            if min(x1, bx1) - max(x0, bx0) < 0.3 * min(x1 - x0, bx1 - bx0):
+                continue
+            if by0 < oy0 < by1 < oy1:
+                y0 = max(y0, (oy0 + by1) / 2)
+            elif oy0 < by0 < oy1 < by1:
+                y1 = min(y1, (by0 + oy1) / 2)
     thick = (y1 - y0) if rot == 0 else (x1 - x0)
-    pad = max(4.0, 0.25 * thick)
-    crop = gray.crop((int(max(0, x0 - pad)), int(max(0, y0 - pad)),
-                      int(min(gray.width, x1 + pad)), int(min(gray.height, y1 + pad))))
+    pad = max(3.0, 0.15 * thick)
+    cx0, cy0 = int(max(0, x0 - pad)), int(max(0, y0 - pad))
+    cx1, cy1 = int(min(gray.width, x1 + pad)), int(min(gray.height, y1 + pad))
+    crop = gray.crop((cx0, cy0, cx1, cy1))
+    mask = Image.new("L", crop.size, 0)
+    draw = ImageDraw.Draw(mask)
+    for o in others:
+        if o is row:
+            continue
+        ox0, oy0, ox1, oy1 = (float(v) * k for v in o["display_box"])
+        if ox0 < cx1 and ox1 > cx0 and oy0 < cy1 and oy1 > cy0:
+            m = 0.2 * min(ox1 - ox0, oy1 - oy0)   # tight boxes stop just inside the glyphs
+            draw.rectangle((ox0 - cx0 - m, oy0 - cy0 - m, ox1 - cx0 + m, oy1 - cy0 + m), fill=255)
+    if mask.getbbox():
+        draw.rectangle((x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0), fill=0)
+        crop.paste(255, mask=mask)
     if not row.get("vertical_column"):
         if rot == 90:
             crop = crop.rotate(-90, expand=True)
@@ -581,7 +610,13 @@ def main(argv: list[str]) -> int:
                 unsure_rows += sum(unsure)
                 all_rows += len(rows)
                 if vision:
-                    crops = [_row_crop(gray, r) for r in rows]
+                    # 小块从识别模型看的那张（更清楚的）图上裁
+                    res = extract.ocr_resolution(page, dpi, args.ocr_dpi)
+                    sharp = page.get_pixmap(matrix=fitz.Matrix(res / 72, res / 72), colorspace=fitz.csGRAY,
+                                            alpha=False)
+                    sharp = Image.frombytes("L", (sharp.width, sharp.height), sharp.samples)
+                    crops = [_row_crop(sharp, r, rows, res / dpi) for r in rows]
+                    del sharp
                     for layout, vr in vision.items():
                         began = time.monotonic()
                         read = vr.read(crops, layout, args.vlm_batch)
