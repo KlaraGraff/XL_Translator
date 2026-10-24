@@ -282,13 +282,6 @@ table.review-tbl { table-layout: fixed; }
 .fold-h .fold-meta { font-weight: 400; color: var(--ink-3); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fold-h svg { margin-left: auto; color: var(--ink-3); transition: transform var(--t-base) var(--ease-out); }
 .fold-b { padding: 2px 0 6px; }
-/* 展开 / 收起：外层网格的行高在 0fr 和 1fr 之间过渡，不用脚本量高度；收起后整块 visibility:hidden，
-   里面的控件 Tab 不到。旧版 WKWebView 不支持行高过渡，直接开合。 */
-.fold-x { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--t-base) var(--ease-out); }
-.fold-x > .fold-clip { min-height: 0; overflow: hidden; }
-.fold:not(.open) > .fold-x { grid-template-rows: 0fr; visibility: hidden; transition: grid-template-rows var(--t-base) var(--ease-out), visibility 0s linear var(--t-base); }
-/* 展开到位以后不再裁剪：里面的下拉、焦点光圈要能伸出去。 */
-.fold.open.settled > .fold-x > .fold-clip { overflow: visible; }
 .rp-foot { flex: none; padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 /* 分段控件（双语对照 / 仅译文、源文件旁 / 自定义）：白色滑块滑到选中项下面。 */
 .seg { position: relative; display: flex; background: var(--surface-2); border-radius: var(--r-sm); padding: 3px; isolation: isolate; }
