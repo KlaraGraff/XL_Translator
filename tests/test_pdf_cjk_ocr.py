@@ -147,3 +147,39 @@ def test_latin_letters_are_not_read_as_an_upright_column():
     engine = _FakeEngine((100, 100, 136, 200), [_read("回电配", 0.7), _read("配电回", 0.6), _read("配电间", 0.98)])
     rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
     assert [(r["source_text"], r.get("vertical_column")) for r in rows] == [("配电间", True)]
+
+
+def _horizontal(page_box, read):
+    from PIL import Image
+
+    engine = _FakeEngine(page_box, [read])
+    return cjk_ocr.ppocr_rows(Image.fromarray(_page_with_ink()), engine)
+
+
+def test_two_labels_read_as_one_line_are_split_at_the_wide_blank():
+    # 「配电间」 and a code three character heights further on: two labels, two rows
+    chars = [(c, 0.98, 20 * n, 20 * n + 18) for n, c in enumerate("配电间")]
+    chars += [(c, 0.97, 140 + 10 * n, 148 + 10 * n) for n, c in enumerate("KL1")]
+    rows = _horizontal((100, 100, 300, 127), LineRead("配电间KL1", 0.97, chars))
+    assert [r["source_text"] for r in rows] == ["配电间", "KL1"]
+    assert all(r.get("split_from_gap") for r in rows)
+    first, second = (r["display_box"] for r in rows)
+    assert first[2] < second[0]
+
+
+def test_an_evenly_spaced_title_stays_one_row():
+    # 「总 平 面 图」 letter-spaced: every blank is wide, none stands out
+    chars = [(c, 0.98, 70 * n, 70 * n + 18) for n, c in enumerate("总平面图")]
+    rows = _horizontal((100, 100, 400, 127), LineRead("总平面图", 0.98, chars))
+    assert [r["source_text"] for r in rows] == ["总平面图"]
+    # words with ordinary spaces stay together too
+    words = "Salle de repos"
+    chars = [(c, 0.95, 8 * n, 8 * n + 7) for n, c in enumerate(words)]
+    rows = _horizontal((100, 100, 300, 127), LineRead(words, 0.95, chars))
+    assert [r["source_text"] for r in rows] == ["Salle de repos"]
+
+
+def test_fill_patterns_read_as_repeated_letters_are_not_rows():
+    chars = [("m", 0.6, 9 * n, 9 * n + 8) for n in range(6)]
+    assert _horizontal((100, 100, 300, 127), LineRead("mmmmmm", 0.6, chars)) == []
+    assert cjk_ocr._hatch_read("mnmn mnmn") and not cjk_ocr._hatch_read("Mme") and not cjk_ocr._hatch_read("1111")

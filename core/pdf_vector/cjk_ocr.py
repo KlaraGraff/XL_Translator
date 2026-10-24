@@ -332,6 +332,65 @@ def trim_marks(words: list[dict]) -> list[dict]:
     return words
 
 
+# Two labels side by side (neighbouring table columns, a room name next to a code)
+# can come out of detection as one line.  A blank this many characters long between
+# two words, standing out from the line's other gaps, separates two labels.
+SPLIT_GAP = 2.5          # in character heights
+SPLIT_OUTLIER = 3.0      # times the line's typical gap (evenly spaced titles stay whole)
+
+
+def _gap(a: dict, b: dict, mode: str) -> float:
+    if mode == "h":
+        return b["box"][0] - a["box"][2]
+    if mode == "up":                      # reading from the bottom up
+        return a["box"][1] - b["box"][3]
+    return b["box"][1] - a["box"][3]
+
+
+def split_at_gaps(words: list[dict], mode: str, em: float) -> list[list[dict]]:
+    """Words of one read line, cut where a wide blank separates two labels."""
+    if mode == "col" or len(words) < 2:
+        return [words]
+    gaps = [_gap(a, b, mode) for a, b in zip(words, words[1:])]
+    cuts = []
+    for i, g in enumerate(gaps):
+        others = sorted(x for j, x in enumerate(gaps) if j != i)
+        typical = others[len(others) // 2] if others else 0.0
+        if g > SPLIT_GAP * em and g > SPLIT_OUTLIER * max(typical, 0.25 * em):
+            cuts.append(i)
+    parts, start = [], 0
+    for i in cuts:
+        parts.append(words[start:i + 1])
+        start = i + 1
+    parts.append(words[start:])
+    return [[{**part[0], "sp": False}, *part[1:]] for part in parts]
+
+
+def _part_box(b: _Box, part: list[dict], mode: str, em: float) -> _Box:
+    """The detection box narrowed along the line to one part's characters."""
+    pad = 0.4 * em
+    if mode == "h":
+        x0 = max(b.x0, min(w["box"][0] for w in part) - pad)
+        x1 = min(b.x1, max(w["box"][2] for w in part) + pad)
+        y0, y1 = b.y0, b.y1
+    else:
+        y0 = max(b.y0, min(w["box"][1] for w in part) - pad)
+        y1 = min(b.y1, max(w["box"][3] for w in part) + pad)
+        x0, x1 = b.x0, b.x1
+    quad = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
+    sub = _Box(quad, b.score, b.clipped)
+    sub.tall = b.tall
+    return sub
+
+
+# Hatching and fill patterns read as a run of one or two letters ('mmmmmm', 'nnnn'):
+# not lettering, so not listed for review either.
+def _hatch_read(text: str) -> bool:
+    letters = [c.casefold() for c in text if not c.isspace()]
+    return (len(letters) >= 4 and all(c.isalpha() and not _CJK.match(c) for c in letters)
+            and len(set(letters)) <= 2)
+
+
 def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None = None) -> list[dict]:
     """Rows of ``gray`` (PIL image, mode L); ``progress(done, total)`` follows the tiles."""
     g = np.asarray(gray, dtype=np.uint8)
@@ -390,17 +449,24 @@ def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None 
         words = trim_marks(_words(r, b, mode, length))
         if not words:
             continue
-        text = _norm(join_words(words))
-        box = _tighten(g, b, words, vertical=mode != "h")
-        # a column of upright characters is written back turned (bottom to top) like
-        # other vertical labels; its words are dropped so nothing re-joins them backwards
-        rot = {"h": 0, "up": 90, "down": 270, "col": 90}[mode]
-        rows.append({
-            "origin": "ocr", "source_text": text, "display_box": box, "display_rotation": rot,
-            "words": None if mode == "col" else words, "ocr_score": float(r.score),
-            "source_passes": [f"ppocr_{mode}"], "clipped": False, "engine": "ppocr",
-            **({"vertical_column": True} if mode == "col" else {}),
-        })
+        em = ((b.y1 - b.y0) if mode == "h" else (b.x1 - b.x0)) / 1.35
+        parts = split_at_gaps(words, mode, em)
+        for part in parts:
+            text = _norm(join_words(part))
+            if not text or _hatch_read(text):
+                continue
+            sub = b if len(parts) == 1 else _part_box(b, part, mode, em)
+            box = _tighten(g, sub, part, vertical=mode != "h")
+            # a column of upright characters is written back turned (bottom to top) like
+            # other vertical labels; its words are dropped so nothing re-joins them backwards
+            rot = {"h": 0, "up": 90, "down": 270, "col": 90}[mode]
+            rows.append({
+                "origin": "ocr", "source_text": text, "display_box": box, "display_rotation": rot,
+                "words": None if mode == "col" else part, "ocr_score": float(r.score),
+                "source_passes": [f"ppocr_{mode}"], "clipped": False, "engine": "ppocr",
+                **({"vertical_column": True} if mode == "col" else {}),
+                **({"split_from_gap": True} if len(parts) > 1 else {}),
+            })
     if progress:
         progress(total, total)
     return rows
