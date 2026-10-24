@@ -7,8 +7,16 @@ from __future__ import annotations
 
 import pytest
 
-from core.cad_layout import _mtext_extent, _mtext_paragraphs, _wrap_lines, estimate_text_width
-from core.cad_translation import _plain_text
+from core.cad_layout import (
+    _mtext_extent,
+    _mtext_paragraphs,
+    _mtext_raw,
+    _wrap_lines,
+    _write_mtext_size,
+    estimate_text_width,
+    mtext_narrowing,
+)
+from core.cad_translation import _parse_dxf, _plain_text
 from tests.test_cad_new_features import _drawing, _entities, _field, _translate
 
 ROW = 8.0
@@ -52,7 +60,18 @@ def _cells(path):
 def _extent(body, font_class="shx"):
     raw = "".join(r.value for r in body if r.code in {1, 3})
     height = float(_field(body, 40))
-    return _mtext_extent(_mtext_paragraphs(raw, height), height, float(_field(body, 41, 0.0)), font_class)
+    return _mtext_extent(
+        _mtext_paragraphs(raw, height), height, float(_field(body, 41, 0.0)), font_class, mtext_narrowing(raw),
+    )
+
+
+def _raw(body):
+    return "".join(r.value for r in body if r.code in {1, 3})
+
+
+def _scale(body):
+    """整体缩放：字高比例 × 压窄比例。"""
+    return float(_field(body, 40)) / HEIGHT * mtext_narrowing(_raw(body))
 
 
 def _translate_schedule(tmp_path, drawing=None, **options):
@@ -75,8 +94,14 @@ def test_wrapped_names_get_the_cell_width_and_stay_in_their_row(tmp_path, transl
         assert 18 < float(_field(body, 41)) <= COLUMNS[2] - COLUMNS[1]
         assert 37.5 - width / 2 > COLUMNS[1] and 37.5 + width / 2 < COLUMNS[2]
         assert total < ROW
-    # 放宽就放得下的不缩字（simplex 的西文更宽，一行要缩一点才放得下，否则折两行高出这一行）。
-    assert float(_field(cells["Oil sampling valve"], 40)) == pytest.approx(HEIGHT if font_class == "shx" else HEIGHT * 0.8)
+    # 放宽后「Neutral conductor rod」一行还差一点：原字体时和单行文字一样先压窄、字高不变；
+    # 同一列三格大小一致。
+    sizes = {(_field(cells[name], 40), mtext_narrowing(_raw(cells[name]))) for name in NAMES.values()}
+    assert len(sizes) == 1
+    height, narrowing = sizes.pop()
+    assert float(height) / HEIGHT * narrowing < 1
+    if font_class == "shx":
+        assert float(height) == pytest.approx(HEIGHT) and 0.7 <= narrowing < 1
     assert result.stats.layout_unresolved == 0
     assert any("已缩小字宽或字高" in message for message in messages)
 
@@ -89,7 +114,8 @@ def test_unwrapped_remark_is_shrunk_inside_the_outer_frame(tmp_path):
         width, total = _extent(body)
         assert 76.0 + width < COLUMNS[-1]
         assert total < ROW
-        assert float(_field(body, 40)) < HEIGHT
+        # 一个词放不下：先压窄，字高不变。
+        assert mtext_narrowing(_raw(body)) < 1 and float(_field(body, 40)) == pytest.approx(HEIGHT)
     assert result.stats.layout_unresolved == 0
 
 
@@ -101,7 +127,7 @@ def test_text_that_cannot_fit_even_at_the_minimum_is_reported(tmp_path):
         target_lang="en", fit_default_scale=1.0, fit_min_scale=0.5,
     )
     body = _cells(output)[long_name]
-    assert float(_field(body, 40)) == pytest.approx(HEIGHT * 0.5)
+    assert _scale(body) == pytest.approx(0.5)
     assert result.stats.layout_unresolved == 1
     assert any("缩到最小比例仍会压到旁边的文字或伸出图框" in message for message in messages)
 
@@ -142,3 +168,29 @@ def test_wrap_counts_lines_by_words_and_chinese_characters():
     # 一个词比宽度还宽时不从中间断开。
     assert count == 3 and widest == pytest.approx(estimate_text_width("sampling", 1, 1.0))
     assert _wrap_lines("油样活门", 1, estimate_text_width("油样", 1, 1.0) * 1.1, "shx")[0] == 2
+
+
+def test_text_with_its_own_width_code_only_gets_lower(tmp_path):
+    # 原文自己带了 \\W 码：整段压窄会被它盖掉，只降字高。
+    drawing = _drawing(
+        *(record for x in (15, 60) for record in _line(x, 0, x, -ROW)),
+        *_line(15, 0, 60, 0), *_line(15, -ROW, 60, -ROW),
+        *_mtext("30", "\\W1.2;中性点导电杆", x=37.5, y=-ROW / 2, width=18.0),
+    )
+    _result, output, _messages = _translate(tmp_path, drawing, {"中性点导电杆": "Neutral conductor rod assembly"},
+                                            target_lang="en", fit_default_scale=1.0, fit_min_scale=0.3)
+    body = _entities(output, "MTEXT")[0]
+    assert _raw(body).startswith("\\W1.2;") and float(_field(body, 40)) < HEIGHT
+
+
+def test_narrowing_code_is_written_before_long_content_split_in_chunks():
+    text = "Lettering plate " * 20
+    records = _parse_dxf(_drawing(*_mtext("30", text[:250], x=0, y=0)[:-2], (3, text[:250]), (1, text[250:]),
+                                  (7, "Standard")))
+    start = next(i for i, r in enumerate(records) if r.code == 0 and r.value == "MTEXT")
+    end = next(i for i in range(start + 1, len(records)) if records[i].code == 0)
+    _write_mtext_size(records, start, end, 2.0, None, 0.7)
+    end = next(i for i in range(start + 1, len(records)) if records[i].code == 0)
+    chunks = [r for r in records[start + 1:end] if r.code in {1, 3}]
+    assert all(len(r.value) <= 250 for r in chunks) and chunks[-1].code == 1
+    assert _mtext_raw(records, start, end) == "\\W0.7;" + text
