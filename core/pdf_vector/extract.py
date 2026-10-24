@@ -865,6 +865,41 @@ def reocr_neighbours(page: fitz.Page, rows: list[dict], dpi: float, langs: str,
 
 # ------------------------------------------------------------- main
 
+# Outline lettering is read from a sharper raster than the rest of the page uses: on
+# real drawings 300 dpi found faint grey and small labels that 200 dpi missed (Chinese
+# lines read right 87.7% -> 90.6%).  A sheet larger than A0 is read a little coarser so
+# the raster stays under OCR_MAX_PIXELS (the reader peaked at about 0.8 GB there).
+OCR_DPI = 300.0
+OCR_MAX_PIXELS = 150e6
+
+
+def ocr_resolution(page, dpi: float, ocr_dpi: float = OCR_DPI) -> float:
+    """The resolution the reader sees ``page`` at: ``ocr_dpi``, capped by size, never below ``dpi``."""
+    inches = max(1e-6, page.rect.width / 72 * page.rect.height / 72)
+    return max(dpi, min(ocr_dpi, math.sqrt(OCR_MAX_PIXELS / inches)))
+
+
+def scale_rows(rows: list[dict], k: float) -> list[dict]:
+    """Reader rows from a raster ``k`` times this one's resolution, in this one's pixels."""
+    if abs(k - 1.0) < 1e-9:
+        return rows
+    for r in rows:
+        r["display_box"] = [v * k for v in r["display_box"]]
+        for w in r.get("words") or []:
+            w["box"] = [round(v * k, 1) for v in w["box"]]
+    return rows
+
+
+def read_outlines(page, dpi: float, reader: Callable[..., list[dict]],
+                  progress: Callable[[int, int], None] | None = None, ocr_dpi: float = OCR_DPI) -> list[dict]:
+    """``reader`` rows of ``page`` read at ``ocr_resolution`` and returned in ``dpi`` pixels."""
+    res = ocr_resolution(page, dpi, ocr_dpi)
+    pix = page.get_pixmap(matrix=fitz.Matrix(res / 72, res / 72), colorspace=fitz.csGRAY, alpha=False)
+    gray = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    del pix
+    return scale_rows(reader(gray, progress), dpi / res)
+
+
 def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers: int,
         tesseract: str | None = "tesseract", progress: Callable[[int, int], None] | None = None,
         reader: Callable[..., list[dict]] | None = None) -> dict:
@@ -888,13 +923,17 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
         tp.add_redact_annot(rr, fill=False)
     if nat:
         tp.apply_redactions(images=0, graphics=0, text=0)
-    pix = tp.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
-    gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
-    tmp.close()
+    ir = (tp.rect * fitz.Matrix(dpi / 72, dpi / 72)).irect
+    size = [ir.width, ir.height]
     if reader is not None:
-        raw = reader(gray, progress)
+        raw = read_outlines(tp, dpi, reader, progress)
+    elif tesseract:
+        pix = tp.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
+        gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+        raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress)
     else:
-        raw = ocr_rows(gray, langs, rotations, workers, tesseract, progress) if tesseract else []
+        raw = []
+    tmp.close()
     ocr, dropped = dedup(raw)
     V, Hs = rules(page, dpi)
     if reader is not None:
@@ -924,7 +963,7 @@ def run(source: Path, out_dir: Path, dpi: float, langs: str, rotations, workers:
         "ocr": bool(tesseract or reader is not None),
         "ocr_engine": "ppocr" if reader is not None else "tesseract" if tesseract else "",
         "page_rect": list(page.rect), "page_rotation": page.rotation,
-        "display_size_px": list(gray.size),
+        "display_size_px": size,
         "counts": {"native_lines": len(nat), "ocr_raw": len(raw), "ocr_dedup_dropped": dropped,
                    "ocr_after_dedup": len(ocr), "split_at_rules": n_split, "neighbour_reocr_added": len(extra), "rows": len(rows),
                    "paragraphs": sum(1 for r in rows if r.get("line_boxes")),

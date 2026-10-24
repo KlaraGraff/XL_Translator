@@ -11,6 +11,7 @@
   算出「读错了却会被翻译」的行有多少，以及把把握门槛提高后能拦下多少（``decisions``、
   ``sweep``）。没有文字层的页按分类和原因计数，单个汉字会被翻译的，列出是哪些字。
 
+* ``--dpi`` / ``--ocr-dpi``：整页和识别模型看到的分辨率（原位替换用 200 和 300），可换着比。
 * ``--det`` / ``--rec``：换检测 / 识别模型比一比。``small`` 是组件里装的那个；``medium``
   （PP-OCRv6 medium）、``server5``（PP-OCRv5 server）从 ModelScope 下载（核对 SHA256）；也可以
   给一个 .onnx 文件。
@@ -462,6 +463,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("pdfs", nargs="+")
     parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument("--tesseract", action="store_true")
+    parser.add_argument("--dpi", type=float, default=DPI, help="page resolution (原位替换 uses 200)")
+    parser.add_argument("--ocr-dpi", type=float, default=None,
+                        help="resolution the recognition models read at (default: 原位替换's, 300)")
     parser.add_argument("--det", default="small", help="small / medium / server5 / an .onnx file")
     parser.add_argument("--rec", default="small", help="small / medium / server5 / an .onnx file")
     parser.add_argument("--vlm", default="", help="images, sheet or images,sheet")
@@ -470,6 +474,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--vlm-connection", default="", help="a 图像翻译审核模型 connection id (default: the first)")
     parser.add_argument("--vlm-model", default="", help="another model name on that connection")
     args = parser.parse_args(argv)
+    dpi = args.dpi
+    from core.pdf_vector.extract import OCR_DPI
+
+    args.ocr_dpi = args.ocr_dpi or OCR_DPI
     layouts = [x for x in args.vlm.replace(" ", "").split(",") if x]
     if any(x not in ("images", "sheet") for x in layouts):
         parser.error("--vlm takes images, sheet or images,sheet")
@@ -532,16 +540,16 @@ def main(argv: list[str]) -> int:
         for pno in range(min(len(doc), args.max_pages)):
             page = doc[pno]
             tag = f"{len(pages_summary) + 1:03d}"
-            truth = [r for r in extract.native_rows(page, DPI)
+            truth = [r for r in extract.native_rows(page, dpi)
                      if sum(c.isalnum() for c in r["source_text"]) >= 2 and not r.get("oblique")]
-            pix = page.get_pixmap(matrix=fitz.Matrix(DPI / 72, DPI / 72), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
             gray = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
             started = time.monotonic()
-            rows, _dropped = extract.dedup(reader(gray))
+            rows, _dropped = extract.dedup(extract.read_outlines(page, dpi, reader, ocr_dpi=args.ocr_dpi))
             seconds = time.monotonic() - started
             # the same steps as 原位替换 after reading: join letter-spaced labels, split at
             # table rules, join paragraphs
-            V, Hs = extract.rules(page, DPI)
+            V, Hs = extract.rules(page, dpi)
             done = extract.join_spaced_cjk(copy.deepcopy(rows), [], V, Hs)
             done, _n = extract.split_at_rules(done, V, Hs)
             done = extract.group_paragraphs(done, V, Hs)
@@ -669,7 +677,7 @@ def main(argv: list[str]) -> int:
                   for kind, t in kinds.items() if t["lines"]},
                "misses": {kind: dict(c) for kind, c in variant_misses.get(name, {}).items()}}
         for name, kinds in variant_totals.items()}
-    summary["models"] = {"det": args.det, "rec": args.rec, **model_sizes}
+    summary["models"] = {"det": args.det, "rec": args.rec, "dpi": dpi, "ocr_dpi": args.ocr_dpi, **model_sizes}
     summary["unsure_rows"] = [unsure_rows, all_rows]
     if vision:
         summary["vlm"] = {layout: {**vr.describe(), **{k: (round(v, 1) if isinstance(v, float) else v)
