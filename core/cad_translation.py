@@ -33,6 +33,7 @@ from core.cad_cache import CadDxfCache
 from core.cad_layout import (
     FitSettings,
     fit_added_lines,
+    fit_cell_mtext,
     fit_table_cells,
     fit_translated_texts,
     short_text_rows,
@@ -2315,6 +2316,15 @@ class CadTranslationPipeline:
                 handles.finish()
                 # 表格格子不会跟着译文变高：双语多出的一行、折成几行的英文按格子高度整段缩小。
                 stats.layout_fitted += fit_table_cells(
+                    records,
+                    {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
+                    _plain_text,
+                    FitSettings(options.fit_default_scale, options.fit_min_scale),
+                    layout_unresolved,
+                )
+                # 用线画的明细表里每格一段多行文字：英文按原宽度自动换行会压到下一行格子，
+                # 不换行的伸过格线。换行宽度改成格子给的宽度，仍放不下再缩字高。
+                stats.layout_fitted += fit_cell_mtext(
                     records,
                     {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
                     _plain_text,
