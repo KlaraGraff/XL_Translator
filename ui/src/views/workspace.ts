@@ -3304,11 +3304,16 @@ function buildRecipe(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   const box = el("div", "recipe");
   box.append(icon("spark", { size: "sm" }));
   const body = el("div");
-  const lead = el("b");
+  const lead = el("b", "rc-seg");
   const recipe = recipeParts(surface, st);
   lead.textContent = recipe.lead;
   body.append(lead);
-  for (const part of recipe.parts) body.append(document.createTextNode(` · ${part}`));
+  // 每段各自成块，段与段之间用空格隔开：放不下时只在这里换行（见 workspace.css .rc-seg）。
+  for (const part of recipe.parts) {
+    const seg = el("span", "rc-seg");
+    seg.textContent = `· ${part}`;
+    body.append(document.createTextNode(" "), seg);
+  }
   // 设置从哪来：单独一行，与配方句文字左对齐，上面一条细线隔开，不跟在配方句后面显得半截。
   const fromDefaults = pageUsesDefaults(surface);
   if (active || fromDefaults !== null) {

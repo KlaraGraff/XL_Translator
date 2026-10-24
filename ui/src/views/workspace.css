@@ -47,9 +47,14 @@
 .ws-side-scroll {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* 只上下滚，永远不左右滑：里面再宽的内容也不能把右栏撑出横向滚动。 */
+  overflow-x: hidden;
+  /* 滚动条的位置一直留着（scroll 而不是 auto），「高级」展开、内容变长冒出滚动条时，右栏宽度不变，
+     上面的配方句不会突然换行。右边距往外多伸 8px（滚动条宽度，见 app.css ::-webkit-scrollbar），
+     把留出的这条补回来，内容宽度与没有滚动条时相同。不可滚动时轨道透明、没有滑块，看不出来。 */
+  overflow-y: scroll;
   padding: 3px 3px 8px;
-  margin: -3px -3px 0;
+  margin: -3px -11px 0 -3px;
 }
 /* 接近最小窗口（1080）时右栏收窄一点，把宽度让给文件表格，状态列不被挤出去。 */
 @media (max-width: 1199px) {
@@ -60,7 +65,7 @@
   .ws { flex-direction: column; overflow-y: auto; }
   .ws-main { overflow: visible; }
   .ws-side { width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 16px 0 0; }
-  .ws-side-scroll { overflow: visible; }
+  .ws-side-scroll { overflow: visible; margin: -3px -3px 0; }
 }
 
 .ws-note {
@@ -624,6 +629,12 @@
 .recipe b {
   font-weight: var(--fw-650);
 }
+/* 配方句一段一个整体（「自动识别 → 英文」「· 双语对照」），放不下时只在两段之间换行，不把词从中间拆开；
+   单独一段比整行还长时才在段内折行。 */
+.recipe .rc-seg {
+  display: inline-block;
+  max-width: 100%;
+}
 .recipe > div {
   flex: 1;
   min-width: 0;
@@ -1005,8 +1016,10 @@ tr.hid {
 .selrow .dropdown.compact {
   margin-left: auto;
   width: 146px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 112px;
 }
+/* 英文、法文的「翻译方式」名称较长，右栏窄时下拉可以收一点，不把右栏撑出横向滚动。 */
 .selrow .dropdown.compact.wide {
   width: 168px;
 }

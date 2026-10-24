@@ -1577,33 +1577,22 @@ export function createFold(options: FoldOptions): FoldHandle {
   header.append(chevron);
   const body = el("div", { className: "fold-b" });
   body.append(options.content);
-  // .fold-x 是开合用的网格（行高 0fr ↔ 1fr），.fold-clip 在过渡期间裁掉露出的部分，见 app.css。
-  const clip = el("div", { className: "fold-clip" });
-  clip.append(body);
-  const shell = el("div", { className: "fold-x" });
-  shell.append(clip);
 
+  // 开合不做动画：行高过渡在 WKWebView 里每帧都要把整栏重排一遍，右栏控件多时一顿一顿的（2026-10 maple 实测）。
   let open = Boolean(options.open);
-  let settleTimer = 0;
-  const applyState = (animate: boolean) => {
+  const applyState = () => {
     root.classList.toggle("open", open);
     header.setAttribute("aria-expanded", String(open));
     chevron.style.transform = open ? "rotate(180deg)" : "";
-    // 展开到位以后（.settled）才放开裁剪，让里面的焦点光圈、浮层能伸出去；收起时立刻裁。
-    window.clearTimeout(settleTimer);
-    if (!open || !animate || !motionAllowed()) root.classList.toggle("settled", open);
-    else {
-      root.classList.remove("settled");
-      settleTimer = window.setTimeout(() => root.classList.toggle("settled", open), T_BASE);
-    }
+    body.style.display = open ? "" : "none";
   };
-  applyState(false);
+  applyState();
 
   header.setAttribute("role", "button");
   header.tabIndex = 0;
   const toggle = () => {
     open = !open;
-    applyState(true);
+    applyState();
     options.onToggle?.(open);
   };
   header.addEventListener("click", toggle);
@@ -1613,8 +1602,8 @@ export function createFold(options: FoldOptions): FoldHandle {
     toggle();
   });
 
-  root.append(header, shell);
-  return { root, setOpen: (next: boolean) => { open = next; applyState(true); } };
+  root.append(header, body);
+  return { root, setOpen: (next: boolean) => { open = next; applyState(); } };
 }
 
 // ---------------------------------------------------------------------------
