@@ -267,6 +267,11 @@ RATE_BATCH_CHARS_MAX           = WORD_BATCH_CHARS_MAX
 RATE_ITEM_RETRY_DEFAULT = 3
 RATE_ITEM_RETRY_MIN     = 0
 RATE_ITEM_RETRY_MAX     = 8
+# 每批最多公式数（Word）：译文里公式位置没回齐时，补位置按分句分组，每组最多几个公式
+# 一起问模型（反馈 #19）。
+RATE_FORMULA_BATCH_DEFAULT = 5
+RATE_FORMULA_BATCH_MIN     = 1
+RATE_FORMULA_BATCH_MAX     = 10
 
 # 任务过程文件（APP_DATA_DIR/logs/process 下每次任务一个目录：运行摘要、断点、CAD 译文
 # 对照表、PDF 单页重跑用的页面文件）的自动保留上限，在「设置 → 数据与维护」里可调。

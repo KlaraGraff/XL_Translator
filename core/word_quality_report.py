@@ -143,10 +143,28 @@ def _word_textbox_overflow_issue(*, file_name: str, info: dict) -> dict:
     }
 
 
+def _word_formula_position_issue(*, file_name: str, info: dict) -> dict:
+    """补标记试满次数仍放不回原位的公式：放在所在那一句的句末，译文里标黄加了批注。"""
+    location = str(info.get("location") or "")
+    return {
+        "file": file_name,
+        "kind": "formula_position",
+        "location": location,
+        "location_label": _format_location_label(location) if location else "",
+        "section_path": "",
+        "snippet": _build_source_excerpt(str(info.get("source") or "")),
+        "problem": "公式位置待核对",
+        "status": "该句中有公式未能放回原位，已放在句末，并在译文中标黄、添加批注，请对照原文调整。",
+        "severity": "needs_review",
+    }
+
+
 def _word_write_issue(*, file_name: str, info: dict) -> dict:
     """写入器回报的问题，按种类分给对应的报告条目。"""
     if info.get("kind") == "textbox_overflow":
         return _word_textbox_overflow_issue(file_name=file_name, info=info)
+    if info.get("kind") == "formula_position":
+        return _word_formula_position_issue(file_name=file_name, info=info)
     return _word_cell_line_mismatch_issue(file_name=file_name, info=info)
 
 

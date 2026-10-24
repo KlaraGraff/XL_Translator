@@ -267,6 +267,8 @@ class WordSegment:
     section_path: str = ""
     # 段内有局部格式时带 <g1>…</g1> 标记的原文（core/word_inline_marks.py），否则为空
     marked_source: str = ""
+    # 占位符编号 → 说明（公式的线性文字），补标记时给模型看：((编号, 说明), ...)
+    slot_hints: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -471,6 +473,7 @@ def extract_word_segments(
                 location=f"body.paragraph[{index}]",
                 section_path=_format_section_path(section_stack),
                 marked_source=marks.marked_text if marks is not None and marks.is_marked else "",
+                slot_hints=tuple(sorted(marks.slot_hints.items())) if marks is not None and marks.is_marked else (),
             )
         )
 
@@ -496,6 +499,7 @@ def extract_word_segments(
                     location=f"table[{table_index}].cell[{cell_index}]",
                     section_path=f"表格 {table_index + 1}",
                     marked_source=marks.marked_text if marks is not None else "",
+                    slot_hints=tuple(sorted(marks.slot_hints.items())) if marks is not None else (),
                 )
             )
 
@@ -1090,8 +1094,12 @@ def write_bilingual_docx(
     translate_headers_footers: bool = False,
     output_translation_only: bool = False,
     marked_translations: dict[str, tuple[str, str]] | None = None,
+    formula_flags: dict[str, list[tuple[int, int, int]]] | None = None,
 ) -> Path:
     """Write a bilingual Word document to the output directory.
+
+    ``formula_flags``：原文 → [(第几行, 开始, 结束)]，补标记时放不回原位、放到句末的公式
+    所在那一句（去掉标记后的位置）。按标记写回的译文里这几句标黄并加批注「公式位置待核对」。
 
     ``marked_translations``：原文 → (发出的带标记原文, 带标记的译文)，见
     core/word_inline_marks.py。对得上的段落和单元格按标记拆成多个 run，保留段内格式。
@@ -1188,6 +1196,17 @@ def write_bilingual_docx(
     cell_line_mismatch_count = 0
     marked_write_count = 0
     marked_unused: dict[str, int] = {}
+    flagged_count = 0
+
+    def flag_formulas(paragraph: Paragraph, marks, source: str, line: int = 0, location: str = "") -> None:
+        nonlocal flagged_count
+        spans = [(begin, end) for index, begin, end in (formula_flags or {}).get(source, ()) if index == line]
+        if not spans:
+            return
+        count = _flag_formula_sentences(doc, paragraph, spans, _lead_length(marks))
+        flagged_count += count
+        if count and issue_callback:
+            issue_callback({"kind": "formula_position", "location": location, "source": source})
     highlight_count = 0
     highlight_skip_count = 0
 
@@ -1239,6 +1258,7 @@ def write_bilingual_docx(
         if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
             if pieces:
                 _write_marked_runs(paragraph, pieces, marks.groups, marks.base_rpr, target_lang=target_lang)
+                flag_formulas(paragraph, marks, source, location=f"body.paragraph[{paragraph_index}]")
             else:
                 _replace_paragraph_text(
                     paragraph,
@@ -1282,6 +1302,7 @@ def write_bilingual_docx(
             )
             if pieces:
                 _rewrite_translation_paragraph(translation_paragraph, pieces, marks, target_lang=target_lang)
+                flag_formulas(translation_paragraph, marks, source, location=f"body.paragraph[{paragraph_index}]")
             else:
                 _copy_math_to_translation([paragraph], translation_paragraph)
             if review_mark:
@@ -1323,6 +1344,8 @@ def write_bilingual_docx(
         cell_marked = _usable_marked_pieces(cell_mark, (marked_translations or {}).get(source), resolved.text)
         if cell_marked and (resolved.replace_only or output_translation_only):
             _replace_cell_text_marked(cell, cell_marked, cell_mark, target_lang=target_lang)
+            for line, (paragraph, paragraph_mark) in enumerate(zip(_cell_text_paragraphs(cell), cell_mark.paragraphs)):
+                flag_formulas(paragraph, paragraph_mark, source, line, location=cell_locations.get(id(cell), ""))
             marked_write_count += 1
         elif cell_marked and len(cell_mark.paragraphs) == 1:
             translation_paragraph = _append_translation_to_cell(cell, resolved.text, target_lang=target_lang)
@@ -1330,6 +1353,7 @@ def write_bilingual_docx(
             _rewrite_translation_paragraph(
                 translation_paragraph, only.pieces_for(cell_marked), only, target_lang=target_lang
             )
+            flag_formulas(translation_paragraph, only, source, location=cell_locations.get(id(cell), ""))
             marked_write_count += 1
         elif resolved.replace_only or output_translation_only:
             if not _replace_cell_text(cell, resolved.text, target_lang=target_lang):
@@ -1393,6 +1417,10 @@ def write_bilingual_docx(
     doc.save(str(out_path))
     if marked_write_count:
         logger.info(f"Word 写回：{out_path.name} 有 {marked_write_count} 处按标记保留了段内格式")
+    if flagged_count:
+        logger.warning(
+            f"Word 写回：{out_path.name} 有 {flagged_count} 句的公式放不回原位，已放在句末，标黄并加批注「{FORMULA_FLAG_COMMENT}」"
+        )
     if marked_unused:
         logger.info(
             f"Word 写回：{out_path.name} 有带标记的译文没用上："
@@ -1756,6 +1784,71 @@ def _apply_leading_prefix(text: str, prefix: str) -> str:
 def _cell_text_paragraphs(cell: _Cell) -> list[Paragraph]:
     """拼成单元格原文的那几段（见 _cell_source_text）。"""
     return [paragraph for paragraph in _iter_cell_direct_paragraphs(cell) if _paragraph_source_text(paragraph)]
+
+
+FORMULA_FLAG_COMMENT = "公式位置待核对"
+FORMULA_FLAG_AUTHOR = "Translator"
+
+
+def _lead_length(marks) -> int:
+    """段首不发给模型、写回时原样接回的文字有几个字（标出范围的位置要往后挪这么多）。"""
+    return sum(len(text) for text, _group in getattr(marks, "lead", ()) if isinstance(text, str))
+
+
+def _split_text_run(run, offset: int):
+    """把只有一段文字的 run 在 offset 处拆成两个，返回后一个。"""
+    texts = run.findall(qn("w:t"))
+    if len(texts) != 1:
+        return None
+    text = texts[0].text or ""
+    tail = deepcopy(run)
+    texts[0].text = text[:offset]
+    tail.find(qn("w:t")).text = text[offset:]
+    for node in (texts[0], tail.find(qn("w:t"))):
+        node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    run.addnext(tail)
+    return tail
+
+
+def _flag_formula_sentences(doc, paragraph: Paragraph, spans: list[tuple[int, int]], lead: int) -> int:
+    """按标记写回的译文段里，公式放不回原位的那几句（去掉标记后的位置）标黄，并在每句上
+    加一条批注「公式位置待核对」。返回标出的句数。"""
+    from docx.enum.text import WD_COLOR_INDEX
+
+    flagged = 0
+    for begin, end in spans:
+        begin, end = begin + lead, end + lead
+        if end <= begin:
+            continue
+        covered = []
+        position = 0
+        for run in list(paragraph._p.iter(qn("w:r"))):
+            length = sum(len(node.text or "") for node in run.findall(qn("w:t")))
+            if not length:
+                continue
+            start, stop = position, position + length
+            position = stop
+            if stop <= begin or start >= end:
+                continue
+            if start < begin:
+                tail = _split_text_run(run, begin - start)
+                if tail is not None:
+                    run, start = tail, begin
+            if stop > end:
+                _split_text_run(run, end - start)
+            covered.append(run)
+        if not covered:
+            continue
+        runs = [Run(run, paragraph) for run in covered]
+        for run in runs:
+            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        if hasattr(doc, "add_comment"):
+            try:
+                doc.add_comment(runs, text=FORMULA_FLAG_COMMENT, author=FORMULA_FLAG_AUTHOR, initials="TR")
+            except Exception as exc:  # noqa: BLE001 - 批注加不上时仍保留标黄
+                logger.warning(f"Word 写回：公式待核对批注没加上：{exc!r}")
+        flagged += 1
+    return flagged
 
 
 def _usable_marked_pieces(marks, entry, text: str):

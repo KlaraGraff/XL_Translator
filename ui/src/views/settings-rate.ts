@@ -1,6 +1,7 @@
 // 设置 · 翻译参数：各文件类型的「速率与重试」（v38 起），以及记忆库卡片。
 //
-// 同一组五项（同时请求数、每批条数、每批字符上限、失败重试次数、单段重试次数）
+// 同一组五项（同时请求数、每批条数、每批字符上限、失败重试次数、单段重试次数），Word 另有
+// 「每批最多公式数」；
 // 按文件类型保存在 settings.rate.<类型>；PDF 整页图像翻译另有三项，存在
 // settings.pdf。留空（null）表示按文本翻译模型是云端还是本地取默认值，所以框里
 // 显示的数、可填的上限都来自 GET /api/settings/rate，而不是在这里写死。
@@ -47,7 +48,9 @@ const HINT_CHARS = () => t("一批内容的原文总字数上限（不含提示�
 const HINT_REQUEST_RETRY = () => t("模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数。默认 2，范围 0–5。仍失败的内容保留原文，并在结果中标记。");
 const HINT_ITEM_RETRY = () => t("模型返回的译文缺失或不完整、拆分为更小的批次后仍未获得译文时，该条内容单独重新翻译的最多次数。默认 3，范围 0–8；设为 0 时不单独重试，直接保留原文并标记需复核。");
 
-type RateFieldKey = "concurrency" | "batch_items" | "batch_chars" | "request_retry" | "item_retry";
+const HINT_FORMULA_BATCH = () => t("译文中的公式位置未完整返回时，将按分句分组请模型补全，每组最多包含的公式数。数值越小，位置越准确，但请求次数越多。默认 5，范围 1–10。");
+
+type RateFieldKey = "concurrency" | "batch_items" | "batch_chars" | "request_retry" | "item_retry" | "formula_batch";
 type FieldDef = { key: string; label: string; hint: string };
 
 function textRateFields(surface: RateSurface): FieldDef[] {
@@ -65,17 +68,20 @@ function textRateFields(surface: RateSurface): FieldDef[] {
   }[surface];
   const itemHint = {
     excel: HINT_ITEM_RETRY(),
-    word: t("译文为空、明显不完整或未通过质量检查时，段落自动重新翻译的最多次数。默认 3，范围 1–8。"),
+    word: t("译文为空、不完整（包括公式位置缺失）或未通过质量检查时，该段重新翻译的最多次数。默认 3，范围 1–8。"),
     pdf_text: t("模型返回的译文缺失或不完整、拆分为更小的批次后仍未获得译文时，该条内容单独重新翻译的最多次数。默认 3，范围 0–8；设为 0 时不单独重试，直接保留原文并标记需复核。转 Word 处理的页面至少重新翻译 1 次。"),
     cad: HINT_ITEM_RETRY(),
   }[surface];
-  return [
+  const fields: FieldDef[] = [
     { key: "concurrency", label: t("同时请求数"), hint: HINT_CONCURRENCY() },
     { key: "batch_items", label: t("每批条数"), hint: batchHint },
     { key: "batch_chars", label: t("每批字符上限"), hint: charsHint },
     { key: "request_retry", label: t("失败重试次数"), hint: HINT_REQUEST_RETRY() },
     { key: "item_retry", label: t("单段重试次数"), hint: itemHint },
   ];
+  // 反馈 #19：公式位置没回齐时按分句分组补，每组最多几个公式。只有 Word 用。
+  if (surface === "word") fields.push({ key: "formula_batch", label: t("每批最多公式数"), hint: HINT_FORMULA_BATCH() });
+  return fields;
 }
 
 function pdfImageFields(): FieldDef[] {
@@ -88,7 +94,7 @@ function pdfImageFields(): FieldDef[] {
 
 // 只在没拿到概览时兜底，和 core/surface_rate.py 的云端默认值一致。
 const FALLBACK_TEXT: Record<RateFieldKey, number> = {
-  concurrency: 30, batch_items: 20, batch_chars: 1000, request_retry: 2, item_retry: 3,
+  concurrency: 30, batch_items: 20, batch_chars: 1000, request_retry: 2, item_retry: 3, formula_batch: 5,
 };
 const FALLBACK_PDF: Record<string, number> = {
   page_generation_concurrency: 10, page_retry_attempts: 1, review_concurrency: 10,

@@ -163,7 +163,13 @@ from core.word_document import (
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
-from core.word_inline_marks import InlineMarkEngine, place_marks, same_text, unmark
+from core.word_inline_marks import (
+    PLACE_MARKS_GROUP,
+    InlineMarkEngine,
+    place_marks,
+    same_text,
+    unmark,
+)
 from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_batching import (
     WordBatchRunStats,
@@ -355,8 +361,7 @@ def _translation_in_unexpected_cjk(source: str, translation: str | None, target_
 _MARK_ORIGIN_LABELS = {
     None: "没经过带标记的翻译（记忆库、夹杂多种语言等）",
     "ok": "定稿后译文被改过",
-    "repaired": "定稿后译文被改过",
-    "lost": "翻译时占位符丢了一半以上",
+    "partial": "翻译时标记没回齐",
     "parts_edited": "超长段落：各块译文和定稿对不上",
     "parts_lost": "超长段落：有一块的标记补不上",
 }
@@ -418,6 +423,10 @@ class WordTaskRunner(BaseTaskRunner):
         self._allow_doc_fallback = bool(allow_doc_fallback)
         # 段内有局部格式的原文 → 带标记的原文；翻译时由 InlineMarkEngine 换上（core/word_inline_marks.py）
         self._marked_sources: dict[str, str] = {}
+        # 原文 → {占位符编号: 说明}（公式的线性文字），补标记时给模型看
+        self._slot_hints: dict[str, dict[int, str]] = {}
+        # 补标记试满仍放不进去、放到句末的公式：原文 → [(第几行, 开始, 结束)]，写回时标黄加批注
+        self._formula_flags: dict[str, list[tuple[int, int, int]]] = {}
         self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # 同一批任务共用的输出文件夹；设了就不再新建自己的。
@@ -2034,7 +2043,9 @@ class WordTaskRunner(BaseTaskRunner):
 
     def _place_missing_inline_marks(self, engine, global_translations: dict[str, str], *, target_lang: str = "") -> None:
         """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
-        语言、模型弄丢标记、复查改过），让模型只补标记。失败的按整段写法写回。"""
+        语言、模型弄丢标记、复查改过），让模型只补标记：译文文字不动，缺的标记按分句分组、
+        每组几个，放不进去的按「单段重试次数」重试（反馈 #19）。试满仍放不进去的公式放到
+        所在那一句的句末，写回时标黄加批注；文字对不上定稿的按整段写法写回。"""
         if not self._marked_sources or self._stop_event.is_set():
             return
         if self._inline_mark_engine is None:
@@ -2046,6 +2057,7 @@ class WordTaskRunner(BaseTaskRunner):
             return _join_translated_parts(parts, target_lang=target_lang)
 
         items = []
+        hints: dict[str, dict[int, str]] = {}
         assembled = 0
         split_pending: dict[str, tuple[str, str]] = {}  # 超长段落：先一块一块补标记，补完再拼
         split_origins: dict[str, str] = {}
@@ -2068,50 +2080,51 @@ class WordTaskRunner(BaseTaskRunner):
                     if missing:
                         split_pending[source] = (marked, translation)
                         items.extend(missing)
+                        hints.update((piece, self._slot_hints.get(source, {})) for piece, _m, _t in missing)
                         continue
                     split_origins[source] = "parts_edited"
             entry = known.get(source)
             if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
                 continue
             items.append((source, marked, translation))
-        retries = mark_engine.retry_counts
-        if any(retries.values()):
-            logger.info(
-                f"Word 段内格式：占位符重试，单独重问成功 {retries['alone']} 处，拆两半成功 {retries['split']} 处，"
-                f"仍不完整 {retries['failed']} 处"
-            )
+            hints[source] = self._slot_hints.get(source, {})
         if assembled:
             logger.info(f"Word 段内格式：超长段落切块翻译后按标记拼回 {assembled} 处")
         if not items:
             return
-        loose: dict[str, tuple[str, str]] = {}
         reasons: dict[str, str] = {}
+        flags: dict[str, list[tuple[int, int, int]]] = {}
+        stats: dict[str, int] = {}
+        # 每组最多几个公式按「翻译参数 → Word → 每批最多公式数」，一组一次请求：本机用真模型
+        # 对比过（反馈 #19，gpt-6-luna，267 个公式），几组打包成一次请求时放准的少了、也更慢
+        group_size = max(1, int(getattr(self._rate, "formula_batch", 0) or PLACE_MARKS_GROUP))
+        request_marks = group_size
         placed = place_marks(
             engine,
             items,
             should_stop=self.stop_requested,
             log=lambda message: logger.info(message),
-            repaired=loose,
             reasons=reasons,
+            seeds={source: entry[1] for source, entry in mark_engine.partial_translations.items()},
+            hints=hints,
+            retries=self._word_batch.strict_retry_attempts,
+            group_size=group_size,
+            request_marks=request_marks,
+            concurrency=max(1, int(getattr(self._rate, "concurrency", 1) or 1)),
+            flags=flags,
+            stats=stats,
         )
         known.update(placed)
-        # 模型补不上的，退而用估出位置的补救版（repair_marks）：先用翻译时那一版，对不上定稿
-        # 再用补标记这次的。一段十几个公式丢了一两个时，其余公式仍留在句中，不全挤到段末
-        repaired = 0
-        early = mark_engine.repaired_translations
-        for source, _marked, translation in items:
-            if source in placed:
-                continue
-            for entry in (early.get(source), loose.get(source)):
-                if entry is not None and same_text(unmark(entry[1], entry[0], source), translation):
-                    known[source] = entry
-                    repaired += 1
-                    break
-        logger.info(f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处，估位补救 {repaired} 处")
+        logger.info(
+            f"Word 段内格式：补标记 {len(placed)}/{len(items)} 处（每组最多 {group_size} 个、每次请求最多 "
+            f"{request_marks} 个；请求 {stats.get('requests', 0)} 次，共 {stats.get('groups', 0)} 组：首次放好 "
+            f"{stats.get('first', 0)}，重试放好 {stats.get('retried', 0)}，拆开放好 {stats.get('split', 0)}；"
+            f"放到句末待核对的公式 {stats.get('settled', 0)} 个，去掉的格式标记 {stats.get('dropped', 0)} 对）"
+        )
         # 超长段落缺的块补上了（补上的块已记进 known），整段再拼一次
         late = 0
         for source, (marked, translation) in split_pending.items():
-            joined = mark_engine.assemble_parts(source, join)
+            joined = mark_engine.assemble_parts(source, join, flags=flags)
             if joined is not None and same_text(unmark(joined[1], joined[0], source), translation):
                 known[source] = joined
                 late += 1
@@ -2120,6 +2133,7 @@ class WordTaskRunner(BaseTaskRunner):
         if split_pending:
             logger.info(f"Word 段内格式：超长段落按块补标记后拼回 {late}/{len(split_pending)} 处")
         pieces = {piece for parts in mark_engine.parts.values() for piece, _marked_piece in parts}
+        self._formula_flags.update((source, spans) for source, spans in flags.items() if source not in pieces)
         failed = [
             (source, marked) for source, marked, _translation in items
             if source not in known and source not in pieces
@@ -2478,6 +2492,8 @@ class WordTaskRunner(BaseTaskRunner):
                 for segment in segments:
                     if segment.marked_source:
                         self._marked_sources.setdefault(segment.source, segment.marked_source)
+                        if segment.slot_hints:
+                            self._slot_hints.setdefault(segment.source, dict(segment.slot_hints))
                 _remember_segment_locations(
                     segment_locations,
                     _file_result_identity(file_item, self._source_root),
@@ -3276,6 +3292,7 @@ class WordTaskRunner(BaseTaskRunner):
                     marked_translations=(
                         self._inline_mark_engine.marked_translations if self._inline_mark_engine else None
                     ),
+                    formula_flags=self._formula_flags or None,
                 )
             residual_count = _append_post_write_coverage_issues(
                 issues=quality_issues,

@@ -95,10 +95,6 @@
     "en": "When the model's translation is missing or incomplete and splitting into smaller batches still returns none, the maximum number of times the item is retranslated on its own. Default 3, range 0–8. With 0, the item is not retried; it keeps the source text and is marked for review. Pages processed via Word are retranslated at least once.",
     "fr": "Lorsque la traduction du modèle manque ou est incomplète et qu'un découpage en lots plus petits n'en donne toujours pas, nombre maximal de nouvelles traductions de l'élément seul. Par défaut 3, plage 0–8. Avec 0, l'élément n'est pas retenté : il conserve le texte source et est marqué à vérifier. Les pages traitées via Word sont retraduites au moins une fois."
   },
-  "译文为空、明显不完整或未通过质量检查时，段落自动重新翻译的最多次数。默认 3，范围 1–8。": {
-    "en": "Maximum number of automatic retranslations for a paragraph whose result is empty, clearly incomplete or fails the quality check. Default 3, range 1–8.",
-    "fr": "Nombre maximal de nouvelles traductions automatiques d'un paragraphe dont le résultat est vide, manifestement incomplet ou refusé par le contrôle qualité. Par défaut 3, plage 1–8."
-  },
   "每次请求最多包含的单元格数。默认：云端模型 20，本地模型 10。范围：云端 10–30，本地 5–20。": {
     "en": "Maximum number of cells in one request. Default: 20 for cloud models, 10 for local models. Range: 10–30 cloud, 5–20 local.",
     "fr": "Nombre maximal de cellules par requête. Par défaut : 20 pour les modèles cloud, 10 pour les modèles locaux. Plage : 10–30 en cloud, 5–20 en local."
@@ -158,5 +154,17 @@
   "按文件类型设置同时发送的请求数、每批大小与重试次数。": {
     "en": "Set, per file type, how many requests are sent at once, the batch size and the number of retries.",
     "fr": "Réglez, par type de fichier, le nombre de requêtes simultanées, la taille des lots et le nombre de nouvelles tentatives."
+  },
+  "译文为空、不完整（包括公式位置缺失）或未通过质量检查时，该段重新翻译的最多次数。默认 3，范围 1–8。": {
+    "en": "Maximum number of retranslations for a paragraph whose result is empty, incomplete (including missing formula positions) or fails the quality check. Default 3, range 1–8.",
+    "fr": "Nombre maximal de nouvelles traductions d'un paragraphe dont le résultat est vide, incomplet (y compris des positions de formules manquantes) ou refusé par le contrôle qualité. Par défaut 3, plage 1–8."
+  },
+  "每批最多公式数": {
+    "en": "Formulas per batch",
+    "fr": "Formules par lot"
+  },
+  "译文中的公式位置未完整返回时，将按分句分组请模型补全，每组最多包含的公式数。数值越小，位置越准确，但请求次数越多。默认 5，范围 1–10。": {
+    "en": "When formula positions are not fully returned in a translation, they are completed by the model clause by clause. This is the maximum number of formulas in each group. Smaller values place formulas more accurately but need more requests. Default 5, range 1–10.",
+    "fr": "Lorsque les positions des formules ne sont pas toutes renvoyées dans une traduction, le modèle les complète proposition par proposition. Ce réglage fixe le nombre maximal de formules par groupe. Une valeur plus faible améliore la précision mais demande plus de requêtes. Par défaut 5, plage 1–10."
   }
 }
