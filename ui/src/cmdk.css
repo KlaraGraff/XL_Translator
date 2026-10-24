@@ -12,14 +12,14 @@
 .cmdk .in input.cmdk-q::placeholder { color: var(--ink-3); opacity: 1; }
 .cmdk .in kbd { flex: none; font-family: var(--font); font-size: 10.5px; line-height: 1.5; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink-3); }
 .cmdk .ls { flex: 1; min-height: 0; max-height: 380px; overflow: auto; padding: 6px; overscroll-behavior: contain; }
-.cmdk .ck-grp { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--ink-3); padding: 8px 10px 4px; text-transform: uppercase; }
+.cmdk .ck-grp { font-size: 11px; font-weight: var(--fw-600); letter-spacing: .06em; color: var(--ink-3); padding: 8px 10px 4px; text-transform: uppercase; }
 .cmdk .it { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; text-align: left; color: var(--ink); cursor: pointer; }
 .cmdk .it:hover { background: var(--surface-2); }
 .cmdk .it .ic { flex: none; color: var(--ink-3); }
 .cmdk .it .lb { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk .it .lb code { font-family: var(--mono); font-size: 12px; }
 .cmdk .it .sub { flex: 0 3 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
-.cmdk .it mark { background: transparent; color: var(--accent-ink); font-weight: 700; }
+.cmdk .it mark { background: transparent; color: var(--accent-ink); font-weight: var(--fw-700); }
 .cmdk .it.on { background: var(--tint); color: var(--tint-ink); }
 .cmdk .it.on .ic, .cmdk .it.on .sub, .cmdk .it.on mark { color: var(--tint-ink); }
 .cmdk .it:focus-visible { outline: none; }

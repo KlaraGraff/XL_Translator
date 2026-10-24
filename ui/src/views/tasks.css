@@ -65,7 +65,7 @@
   background: var(--tint);
   border-color: var(--tint-line);
   color: var(--tint-ink);
-  font-weight: 600;
+  font-weight: var(--fw-600);
 }
 .content.tasks .tk-search {
   flex: 1 1 120px;
@@ -111,7 +111,7 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  font-weight: 600;
+  font-weight: var(--fw-600);
   font-size: 13px;
 }
 .content.tasks .tk-row .r1 > svg {
@@ -160,7 +160,7 @@
   flex: 1 1 200px;
   min-width: 0;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   letter-spacing: -.01em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -217,7 +217,7 @@
 .content.tasks .kpi b {
   display: block;
   font-size: 18px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   letter-spacing: -.02em;
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
@@ -235,7 +235,7 @@
 }
 .content.tasks .sub-h {
   font-size: 13px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   margin-bottom: -6px;
   display: flex;
   align-items: baseline;

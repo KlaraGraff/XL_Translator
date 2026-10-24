@@ -93,6 +93,24 @@
   --ease-out: cubic-bezier(.2, 0, 0, 1);
   --ease-in: cubic-bezier(.4, 0, 1, 1);
   --ease-spring: cubic-bezier(.3, 1.25, .5, 1);
+  /* 动效分性格（2026-10）：「吸附到位」的位移（导航高亮块、分段控件滑块、拖放松手）要干脆，
+     用 --ease-snap，不过冲、不回弹；「成功反馈」（复制后的对勾、完成标记）才用 --ease-spring 带一点回弹。 */
+  --ease-snap: cubic-bezier(.2, .8, .2, 1);
+
+  /* 字重。浅色主题按原值；深色主题浅字压在深底上，人眼的光晕会让笔画看着粗 10%–15%，
+     所以 [data-theme="dark"] 把每一档往下调一点（见下方深色块和 [data-os="mac"]）。
+     正文 400 不动：苹方、微软雅黑没有 300–400 之间的字重，再往下就直接掉到细体。 */
+  --fw-500: 500;
+  --fw-550: 550;
+  --fw-600: 600;
+  --fw-650: 650;
+  --fw-700: 700;
+
+  /* 输入框聚焦：不用一圈刺眼的主色亮线，而是边框换成柔和的主色，外面两圈半透明的光
+     （内圈 1px 较深、外圈 4px 很淡）一起加深，像是「咬合」进去。其余方案没有专门的值时沿用焦点圈色。 */
+  --focus-edge: var(--ring);
+  --focus-ring-in: var(--ring-soft);
+  --focus-ring-out: var(--ring-soft);
 
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
@@ -142,7 +160,25 @@
   --dot: rgb(255 255 255 / 18%);
   --sheen: rgb(255 255 255 / 35%);
 
+  /* 深色字重：Windows 上 Segoe UI 的粗体降到半粗，雅黑只有常规和粗体两档，>500 的仍是粗体，
+     不会一下子掉成常规体；macOS 另见下一块。 */
+  --fw-500: 480;
+  --fw-550: 520;
+  --fw-600: 560;
+  --fw-650: 600;
+  --fw-700: 600;
+
   --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);
   --sh-lg: 0 2px 4px rgb(0 0 0 / 45%), 0 24px 48px -22px rgb(0 0 0 / 65%);
+}
+
+/* macOS 深色：SF 是可变字重，苹方有 500/600 两档，每档都能真的往下调一级（半粗 → 中粗）。
+   data-os 由 app.ts 启动时按平台写上。 */
+:root[data-theme="dark"][data-os="mac"] {
+  --fw-500: 450;
+  --fw-550: 500;
+  --fw-600: 500;
+  --fw-650: 560;
+  --fw-700: 600;
 }

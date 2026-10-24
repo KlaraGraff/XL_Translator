@@ -104,14 +104,48 @@ export interface TaskLogOptions {
   limit?: number;
 }
 
+// 新日志行的「晕开」进场（app.css .log .ink）。日志区每来一个事件就整块重画，所以按行号记下每行
+// 第一次出现的时刻：重画时还没播完的行接着播（负的 animation-delay），播完的不再播。
+// 行号全局唯一（workspace.ts 的发号器），不用再按任务分。
+const INK_MS = 280;
+/** 同一批里相邻两行错开多久；一批最多错开 INK_WAVE_MAX 行，再多的同时出现，不让最后一行等太久。 */
+const INK_STAGGER_MS = 40;
+const INK_WAVE_MAX = 6;
+const inkSeen = new Map<number, number>();
+
+/** 每行第一次出现的时刻（含错开）。一次全是没见过的行（刚展开日志、换了任务）时当作原有内容，不播。 */
+function inkStarts(seqs: number[]): Map<number, number> {
+  const now = performance.now();
+  const fresh = seqs.filter((seq) => !inkSeen.has(seq));
+  const isBacklog = fresh.length === seqs.length && seqs.length > 3;
+  fresh.forEach((seq, index) => {
+    const wave = Math.max(0, index - Math.max(0, fresh.length - INK_WAVE_MAX));
+    inkSeen.set(seq, isBacklog ? -Infinity : now + wave * INK_STAGGER_MS);
+  });
+  if (inkSeen.size > 4000) {
+    for (const seq of Array.from(inkSeen.keys()).slice(0, inkSeen.size - 2000)) inkSeen.delete(seq);
+  }
+  return inkSeen;
+}
+
 /** .log：运行日志的逐行内容，放在进行中状态区的「运行日志」折叠块里。 */
 export function createTaskLogLines(options: TaskLogOptions): HTMLElement {
   const log = document.createElement("div");
   log.className = "log";
-  const entries = options.entries ?? [];
-  for (const entry of entries.slice(-(options.limit ?? 200))) {
+  const entries = (options.entries ?? []).slice(-(options.limit ?? 200));
+  const starts = inkStarts(entries.flatMap((entry) => (entry.seq === undefined ? [] : [entry.seq])));
+  const now = performance.now();
+  for (const entry of entries) {
     const line = document.createElement("div");
-    if (entry.seq !== undefined) line.dataset.seq = String(entry.seq);
+    if (entry.seq !== undefined) {
+      line.dataset.seq = String(entry.seq);
+      const offset = (starts.get(entry.seq) ?? -Infinity) - now;
+      if (offset > -INK_MS) {
+        line.className = "ink";
+        // 写成 --*-elapsed：原地更新（morph.ts）比较属性时不看它，留下的行不会被改得跳一截。
+        line.style.setProperty("--ink-elapsed", `${Math.round(-offset)}ms`);
+      }
+    }
     const time = document.createElement("span");
     time.className = "t";
     time.textContent = entry.time ?? "";

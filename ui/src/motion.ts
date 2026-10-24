@@ -18,8 +18,12 @@ export function motionAllowed(): boolean {
   return typeof Element.prototype.animate === "function";
 }
 
-/** 同 tokens.css 的 --ease-spring：滑块、高亮块这类「滑到位」的位移用它。 */
+/** 同 tokens.css 的 --ease-spring：成功反馈（复制后的对勾）这类「弹出来」的小动作用它。 */
 export const EASE_SPRING = "cubic-bezier(.3, 1.25, .5, 1)";
+/** 同 tokens.css 的 --ease-snap：吸附到位的位移（分段控件滑块）用它，干脆、不回弹。 */
+export const EASE_SNAP = "cubic-bezier(.2, .8, .2, 1)";
+/** 同 tokens.css 的 --t-base。 */
+export const T_BASE = 200;
 /** 同 tokens.css 的 --t-page。 */
 export const T_PAGE = 260;
 

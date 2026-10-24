@@ -189,8 +189,13 @@ export function dragOverAt(clientX: number, clientY: number): void {
   }
 }
 
-/** 拖动结束（松手、离开窗口或取消）。 */
+/** 拖动结束（松手、离开窗口或取消）：投放区立即归位，不慢慢淡出（.snap 只挂两帧）。 */
 export function dragEnded(): void {
+  const zone = dragZone;
+  if (zone) {
+    zone.classList.add("snap");
+    requestAnimationFrame(() => requestAnimationFrame(() => zone.classList.remove("snap")));
+  }
   dragStop();
 }
 

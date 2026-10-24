@@ -5,7 +5,7 @@
 
 import { fmtNum, t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
-import { EASE_SPRING, T_PAGE, motionAllowed } from "./motion";
+import { EASE_SNAP, T_BASE, motionAllowed } from "./motion";
 import { morphChildren, setReusableClick, syncAttributes } from "./morph";
 
 /** 清空一个元素的子节点；不用 replaceChildren（Safari 15.1 不支持）。 */
@@ -205,6 +205,41 @@ export function createButton(options: ButtonOptions): HTMLButtonElement {
     else button.addEventListener("click", options.onClick);
   }
   return button;
+}
+
+// ---------------------------------------------------------------------------
+// copy confirmation（复制成功后的小对勾）
+// ---------------------------------------------------------------------------
+
+/** 小对勾停留多久：2.5 秒后自动换回原样，不长期占着位置。 */
+export const COPIED_HOLD_MS = 2500;
+const copiedState = new WeakMap<HTMLElement, { timer: number; original: ChildNode[] }>();
+
+/**
+ * 复制成功：按钮或文字链接原地换成「✓ 已复制」，对勾带一点回弹地弹出来，2.5 秒后换回原来的内容。
+ * 连点时只重新计时，不会叠出两个对勾。
+ */
+export function flashCopied(target: HTMLElement): void {
+  const state = copiedState.get(target);
+  if (state) window.clearTimeout(state.timer);
+  const original = state?.original ?? Array.from(target.childNodes);
+  if (!state) {
+    // 换字前先按原宽度撑住，「复制」变「✓ 已复制」时旁边的东西不跟着挪。
+    target.style.minWidth = `${target.offsetWidth}px`;
+    const mark = el("span", { className: "copied-mark" });
+    mark.append(icon("check", { size: "sm" }), document.createTextNode(t("已复制")));
+    clearElement(target);
+    target.append(mark);
+    target.classList.add("is-copied");
+  }
+  const timer = window.setTimeout(() => {
+    copiedState.delete(target);
+    target.classList.remove("is-copied");
+    target.style.minWidth = "";
+    clearElement(target);
+    target.append(...original);
+  }, COPIED_HOLD_MS);
+  copiedState.set(target, { timer, original });
 }
 
 // ---------------------------------------------------------------------------
@@ -1542,21 +1577,33 @@ export function createFold(options: FoldOptions): FoldHandle {
   header.append(chevron);
   const body = el("div", { className: "fold-b" });
   body.append(options.content);
+  // .fold-x 是开合用的网格（行高 0fr ↔ 1fr），.fold-clip 在过渡期间裁掉露出的部分，见 app.css。
+  const clip = el("div", { className: "fold-clip" });
+  clip.append(body);
+  const shell = el("div", { className: "fold-x" });
+  shell.append(clip);
 
   let open = Boolean(options.open);
-  const applyState = () => {
+  let settleTimer = 0;
+  const applyState = (animate: boolean) => {
     root.classList.toggle("open", open);
     header.setAttribute("aria-expanded", String(open));
     chevron.style.transform = open ? "rotate(180deg)" : "";
-    body.style.display = open ? "" : "none";
+    // 展开到位以后（.settled）才放开裁剪，让里面的焦点光圈、浮层能伸出去；收起时立刻裁。
+    window.clearTimeout(settleTimer);
+    if (!open || !animate || !motionAllowed()) root.classList.toggle("settled", open);
+    else {
+      root.classList.remove("settled");
+      settleTimer = window.setTimeout(() => root.classList.toggle("settled", open), T_BASE);
+    }
   };
-  applyState();
+  applyState(false);
 
   header.setAttribute("role", "button");
   header.tabIndex = 0;
   const toggle = () => {
     open = !open;
-    applyState();
+    applyState(true);
     options.onToggle?.(open);
   };
   header.addEventListener("click", toggle);
@@ -1566,8 +1613,8 @@ export function createFold(options: FoldOptions): FoldHandle {
     toggle();
   });
 
-  root.append(header, body);
-  return { root, setOpen: (next: boolean) => { open = next; applyState(); } };
+  root.append(header, shell);
+  return { root, setOpen: (next: boolean) => { open = next; applyState(true); } };
 }
 
 // ---------------------------------------------------------------------------
@@ -1627,7 +1674,7 @@ export function createSegmented(options: SegmentedOptions): HTMLDivElement {
     const to = `translateX(${index * 100}%)`;
     thumb.style.transform = to;
     if (from !== undefined && from !== index && motionAllowed()) {
-      const slide = thumb.animate([{ transform: `translateX(${from * 100}%)` }, { transform: to }], { duration: T_PAGE, easing: EASE_SPRING });
+      const slide = thumb.animate([{ transform: `translateX(${from * 100}%)` }, { transform: to }], { duration: T_BASE, easing: EASE_SNAP });
       slide.currentTime = elapsed;
     }
     buttons.forEach((button, i) => {
@@ -1637,7 +1684,7 @@ export function createSegmented(options: SegmentedOptions): HTMLDivElement {
   };
   const slide = options.motionKey ? segSlides.get(options.motionKey) : undefined;
   const elapsed = slide ? performance.now() - slide.started : Infinity;
-  if (slide && elapsed < T_PAGE && slide.to === indexOf(current) && slide.count === options.options.length) paint(slide.from, elapsed);
+  if (slide && elapsed < T_BASE && slide.to === indexOf(current) && slide.count === options.options.length) paint(slide.from, elapsed);
   else paint();
   return root;
 

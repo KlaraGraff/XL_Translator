@@ -44,7 +44,7 @@
 .hero h2 {
   margin: 0;
   font-size: 18px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   letter-spacing: -.01em;
   color: var(--ink);
 }
@@ -102,7 +102,7 @@
 }
 .home .h3 {
   font-size: 14px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -111,7 +111,7 @@
 }
 .home .h3 .more {
   margin-left: auto;
-  font-weight: 500;
+  font-weight: var(--fw-500);
   font-size: 12px;
   background: none;
   border: 0;
@@ -151,7 +151,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 550;
+  font-weight: var(--fw-550);
 }
 .home .row .meta {
   color: var(--ink-3);
@@ -168,7 +168,7 @@
   background: none;
 }
 .home .ready .row .nm {
-  font-weight: 500;
+  font-weight: var(--fw-500);
   color: var(--ink-2);
   /* 右栏窄、法语名称长（「Modèle de traduction de documents」），名称换行，值不让位。 */
   white-space: normal;
@@ -242,7 +242,7 @@
   color: var(--tint-ink);
 }
 .bc-head b {
-  font-weight: 650;
+  font-weight: var(--fw-650);
 }
 .bc-from {
   color: var(--ink-3);
@@ -304,7 +304,7 @@
   justify-content: center;
 }
 .bc-nm b {
-  font-weight: 600;
+  font-weight: var(--fw-600);
 }
 .bc-ct,
 .bc-set {

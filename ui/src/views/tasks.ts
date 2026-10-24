@@ -19,6 +19,7 @@ import {
   createButton,
   createEmptyState,
   createProgressBar,
+  flashCopied,
   openMenu,
   openModal,
   showToast,
@@ -1352,7 +1353,7 @@ async function exportTaskDiagnostic(taskId: string): Promise<void> {
   }
 }
 
-async function copyTaskPath(path: string): Promise<void> {
+async function copyTaskPath(path: string, link: HTMLElement): Promise<void> {
   const trimmed = path.trim();
   if (!trimmed) return;
   // WKWebView 在窗口失焦（比如系统保存对话框正开着）时会拒绝写剪贴板，Promise 直接 reject；
@@ -1361,7 +1362,7 @@ async function copyTaskPath(path: string): Promise<void> {
   try {
     if (!navigator.clipboard?.writeText) throw new Error(t("当前环境不支持写入剪贴板"));
     await navigator.clipboard.writeText(trimmed);
-    showToast({ message: t("路径已复制。") });
+    flashCopied(link);
   } catch {
     showToast({ message: t("复制失败，请手动复制：{0}", trimmed), error: true });
   }
@@ -1939,7 +1940,7 @@ function renderDetail(): void {
         copyLink.textContent = " " + t("复制路径");
         copyLink.addEventListener("click", (event) => {
           event.stopPropagation();
-          void copyTaskPath(value);
+          void copyTaskPath(value, copyLink);
         });
         dd.append(copyLink);
       }
