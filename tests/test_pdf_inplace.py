@@ -176,27 +176,6 @@ class InplaceTaskTests(unittest.TestCase):
         self.assertEqual(snap["inplace_status"], "kept_original")
         self.assertIn("旋转的文字未能确认", snap["inplace_message"])
 
-    def test_page_without_text_layer_says_cjk_strokes_cannot_be_read(self):
-        # 反馈 #20：原文语言「自动识别」、页面没有文字层，画成线条的中文被当作西文识别成乱码，
-        # 全被筛掉。要照实说文字识别只支持西文，不能只列「识别结果像乱码」让人摸不着头脑。
-        from core.pdf_vector import InplaceResult
-
-        garbage = InplaceResult(ok=True, written=0, kept=3, review=2, ocr_used=True, ocr_source_unknown=True,
-                                review_items=[
-                                    {"text": "fevvpevee", "reason": "识别结果像乱码", "box_px": [0, 0, 1, 1]},
-                                    {"text": "Ans", "reason": "识别结果像乱码", "box_px": [0, 0, 1, 1]},
-                                ])
-        with patch("core.pdf_vector.translate_page_inplace", return_value=garbage):
-            _runner, record, _client = self._run(sizes=(A2,), text=(True,))
-        page = record.pages[0]
-        self.assertEqual(page.inplace_status, "kept_original")
-        self.assertEqual(
-            page.inplace_message,
-            "识别到 2 处文字，均未替换（识别结果像乱码）；另有 3 处数字和编号等不需要翻译，这一页保留原样。"
-            "此页没有文字层，文字识别目前只支持西文，画成线条的中文、日文、韩文暂不能识别",
-        )
-        self.assertIn("画成线条的中文、日文、韩文暂不能识别。", record.error)
-
     def test_failed_page_flags_the_file_for_review_and_is_not_retried_on_rerun(self):
         calls = []
 

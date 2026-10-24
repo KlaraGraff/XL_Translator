@@ -900,19 +900,10 @@ def determine_pdf_task_status(
 
 # 原文是中日韩文字的页不跑识别（识别数据只有西文的）：画成线条的字保留原样。
 _INPLACE_CJK_OCR_NOTE = "（画成线条的中文、日文、韩文暂不能识别，保留原样）"
-# 原文语言「自动识别」、页面又没有文字层时，只能按西文识别：照实说中日韩文字认不了（反馈 #20）。
-_INPLACE_LATIN_OCR_ONLY_NOTE = "此页没有文字层，文字识别目前只支持西文，画成线条的中文、日文、韩文暂不能识别"
 
 
 def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, cjk_ocr_skipped: bool = False) -> str:
     """原位替换一处都没写：照实说认出了什么、为什么没换，不能笼统说「没有找到文字」。"""
-    message = _inplace_nothing_written_reason(result, ocr_missing=ocr_missing, cjk_ocr_skipped=cjk_ocr_skipped)
-    if getattr(result, "ocr_source_unknown", False):
-        message += f"。{_INPLACE_LATIN_OCR_ONLY_NOTE}"
-    return message
-
-
-def _inplace_nothing_written_reason(result: Any, *, ocr_missing: bool, cjk_ocr_skipped: bool) -> str:
     items = [item for item in (getattr(result, "review_items", None) or []) if item.get("kind") != "term"]
     kept = int(getattr(result, "kept", 0) or 0)
     if items:

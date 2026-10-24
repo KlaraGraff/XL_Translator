@@ -101,9 +101,6 @@ class InplaceResult:
     ocr_used: bool = False
     # 原文是中日韩文字，画成线条的字没有去识别（只有西文的识别数据）
     ocr_skipped_cjk: bool = False
-    # 原文语言是「自动识别」、这一页又读不到文字层：画成线条的字只能按西文去认，
-    # 原文其实是中日韩文字的话认出来的全是乱码（反馈 #20）。
-    ocr_source_unknown: bool = False
     source_lang: str = ""
     unrecognized_regions: int = 0
     error: str = ""
@@ -184,12 +181,9 @@ def translate_page_inplace(
         one.save(page_pdf)
         one.close()
 
-    page_text = ""
-    auto_source = source_lang in ("", "auto", None)
-    if auto_source:
+    if source_lang in ("", "auto", None):
         with fitz.open(page_pdf) as one_doc:
-            page_text = one_doc[0].get_text()
-        source_lang = guess_language([page_text], fallback=fallback_lang or "fr")
+            source_lang = guess_language([one_doc[0].get_text()], fallback=fallback_lang or "fr")
     cjk_source = source_lang in _CJK_SOURCES
     langs = ocr_languages(source_lang, tesseract_languages) if tesseract and not native_only and not cjk_source else ""
     exe = tesseract if langs else None
@@ -249,7 +243,6 @@ def translate_page_inplace(
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe),
         ocr_skipped_cjk=bool(cjk_source and not native_only),
-        ocr_source_unknown=bool(exe and auto_source and not page_text.strip()),
         source_lang=source_lang,
         unrecognized_regions=int((check.get("unrecognized_text") or {}).get("candidates") or 0),
         scene_profile=summary.get("scene_profile", ""),
