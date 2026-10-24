@@ -1000,7 +1000,7 @@ function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmati
   ];
   if (active.length) {
     const heading = document.createElement("p");
-    heading.style.fontWeight = "600";
+    heading.style.fontWeight = "var(--fw-600)";
     heading.textContent = t("正在运行的任务");
     body.push(heading);
     const list = document.createElement("ul");
@@ -1339,7 +1339,7 @@ function openCleanReviewModal(): void {
 
     mbody.innerHTML = "";
     const summary = document.createElement("p");
-    summary.style.fontWeight = "600";
+    summary.style.fontWeight = "var(--fw-600)";
     summary.textContent = parts.length ? t("{0}。", parts.join(t("；"))) : t("没有条目被处理。");
     mbody.append(summary);
 

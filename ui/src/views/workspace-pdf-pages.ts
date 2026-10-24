@@ -1229,7 +1229,7 @@ function buildVersionToggle(onPick: (kind: "translated" | "previous") => void): 
   root.append(current, previous);
   const paint = (pill: HTMLElement, on: boolean) => {
     pill.style.cssText = on
-      ? "padding:2px 10px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer;background:var(--accent);color:var(--on-accent)"
+      ? "padding:2px 10px;border-radius:99px;font-size:11.5px;font-weight:var(--fw-600);cursor:pointer;background:var(--accent);color:var(--on-accent)"
       : "padding:2px 10px;border-radius:99px;font-size:11.5px;cursor:pointer;color:var(--ink-2)";
   };
   return {

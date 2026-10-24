@@ -7,11 +7,11 @@
 /* 欢迎区：左上角一抹 --tint 渐变。 */
 .hhero { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; padding: 22px 24px; border: 1px solid var(--line); border-radius: var(--r-lg); background: linear-gradient(135deg, var(--tint), transparent 70%); }
 .hhero-copy { flex: 1 1 320px; min-width: 0; }
-.hhero h2 { margin: 0 0 4px; font-size: 17px; font-weight: 650; letter-spacing: -.01em; color: var(--ink); }
+.hhero h2 { margin: 0 0 4px; font-size: 17px; font-weight: var(--fw-650); letter-spacing: -.01em; color: var(--ink); }
 .hhero p { margin: 0; max-width: 560px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
 .hhero .acts { flex: none; display: flex; gap: 8px; margin-left: auto; }
 
-.help-h { margin: 22px 0 10px; font-size: 14px; font-weight: 650; color: var(--ink); }
+.help-h { margin: 22px 0 10px; font-size: 14px; font-weight: var(--fw-650); color: var(--ink); }
 
 /* 三步开始：三张卡错落浮现。 */
 .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
@@ -19,7 +19,7 @@
 .xcard:hover { border-color: var(--line-2); transform: translateY(-1px); box-shadow: var(--sh-md); }
 .xcard .top { display: flex; align-items: center; gap: 10px; }
 .xcard .xi { flex: none; width: 30px; height: 30px; border-radius: 8px; background: var(--tint); color: var(--tint-ink); display: grid; place-items: center; }
-.xcard .top b { min-width: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.xcard .top b { min-width: 0; font-size: 13px; font-weight: var(--fw-600); color: var(--ink); }
 .xcard p { flex: 1; margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-3); }
 .xcard .foot, .help-faq-b .foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 /* 法语按钮文字长（« Ouvrir la configuration des modèles »），卡片窄时允许按钮内换行，不撑破固定高度。 */

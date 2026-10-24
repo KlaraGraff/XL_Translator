@@ -2918,7 +2918,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
         dimCell.append(document.createTextNode(" · "));
         const span = el("span");
         span.style.color = note.warn ? "var(--warn)" : "var(--ink-3)";
-        if (note.warn) span.style.fontWeight = "600";
+        if (note.warn) span.style.fontWeight = "var(--fw-600)";
         span.textContent = note.text;
         dimCell.append(span);
       }

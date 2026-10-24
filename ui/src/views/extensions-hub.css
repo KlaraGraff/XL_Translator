@@ -3,7 +3,7 @@
 .xhub-tabs { position: relative; flex: none; display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
 .xhub-tab { height: 36px; padding: 0 12px; border: 0; background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 7px; cursor: pointer; border-radius: var(--r-sm) var(--r-sm) 0 0; transition: color var(--t-fast) var(--ease-out); }
 .xhub-tab:hover { color: var(--ink); }
-.xhub-tab[aria-selected="true"] { color: var(--ink); font-weight: 600; }
+.xhub-tab[aria-selected="true"] { color: var(--ink); font-weight: var(--fw-600); }
 .xhub-ul { position: absolute; left: 0; bottom: -1px; height: 2px; width: 0; background: var(--accent); border-radius: 2px; }
 .xhub-ul.ready { transition: transform var(--t-page) var(--ease-out), width var(--t-page) var(--ease-out); }
 .xhub-panel { flex: 1; min-height: 0; display: flex; }

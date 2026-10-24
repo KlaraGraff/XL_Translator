@@ -27,8 +27,10 @@
   --ink: #101828;
   --ink-2: #475467;
   --ink-3: #5e697d;
-  --line: #e5e7ec;
-  --line-2: #d0d4dc;
+  /* 线条（2026-10 调淡）：卡片边和分隔线只比白底深 1%–3% 的样子，层次主要靠底色拉开；
+     输入框和按钮的边 --line-2 仍保持看得出是个框。 */
+  --line: #eaecf0;
+  --line-2: #d8dce3;
   --accent: #2563eb;
   --accent-strong: #1d4ed8;
   --on-accent: #ffffff;
@@ -56,6 +58,9 @@
   --line-3: #b5bfce;
   --sel: rgb(37 99 235 / 20%);
   --sheen: rgb(255 255 255 / 55%);
+  --focus-edge: #8aaef3;
+  --focus-ring-in: rgb(37 99 235 / 16%);
+  --focus-ring-out: rgb(37 99 235 / 7%);
 }
 
 :root[data-palette="liuguang"][data-theme="dark"] {
@@ -98,6 +103,9 @@
   --line-3: #3b4963;
   --sel: rgb(77 132 245 / 40%);
   --sheen: rgb(255 255 255 / 35%);
+  --focus-edge: #3d64b8;
+  --focus-ring-in: rgb(77 132 245 / 30%);
+  --focus-ring-out: rgb(77 132 245 / 12%);
 }
 
 /* 冷调柔光：保留 V9 的蓝灰气质，只降亮度、提对比。 */

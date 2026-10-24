@@ -6,8 +6,8 @@
 .plugins-copy { flex: 1; min-width: 0; }
 .plugins-copy h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 7px; }
 .plugins-copy p { margin: 5px 0 0; color: var(--ink-3); font-size: 12.5px; }
-.plugins-copy h2 .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: 600; }
-.plugins-beta-tag { font-size: 10.5px; font-weight: 600; color: var(--tint-ink); background: var(--tint); border-radius: 99px; padding: 1px 7px; line-height: 1.5; flex: none; }
+.plugins-copy h2 .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: var(--fw-600); }
+.plugins-beta-tag { font-size: 10.5px; font-weight: var(--fw-600); color: var(--tint-ink); background: var(--tint); border-radius: 99px; padding: 1px 7px; line-height: 1.5; flex: none; }
 .plugins-actions { margin-top: 0; margin-left: auto; align-items: center; }
 .plugins-notice { margin-top: 14px; padding: 10px 12px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.55; }
 .plugins-notice.ok { color: var(--ok); background: var(--ok-t); }

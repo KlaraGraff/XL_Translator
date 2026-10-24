@@ -23,6 +23,7 @@ import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems } from 
 import type { SurfaceDescriptor } from "./api-client";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 import { installCmdk } from "./cmdk";
+import { isMac, isWindows } from "./platform";
 
 import * as homeView from "./views/home";
 import * as excelView from "./views/excel";
@@ -64,6 +65,8 @@ function applyTheme(preference: ThemePreference): void {
  * 同步写回 localStorage(THEME_STORAGE_KEY)，保证下次启动前的首屏渲染不用等后端。
  */
 function initTheme(): void {
+  // 深色主题的字重按平台的字体各调一档（tokens.css 的 --fw-*）。
+  document.documentElement.dataset.os = isMac() ? "mac" : isWindows() ? "win" : "other";
   applyTheme(readStoredThemePreference());
   settingsView.applyStoredMotionPreference();
   initPalettes();

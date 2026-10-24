@@ -7,7 +7,7 @@
 
 import { clearElement, navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { createButton, createCard, createStatus, showToast } from "../components";
+import { createButton, createCard, createStatus, flashCopied, showToast } from "../components";
 import { icon } from "../icons";
 import { t } from "../i18n";
 import { ApiClient, sidecarExecutable } from "../api-client";
@@ -71,11 +71,13 @@ export function agentPrompt(executable: string): string {
   ].join("\n");
 }
 
-async function copyText(text: string, done: string): Promise<void> {
+/** 复制成功时按钮原地打勾；done 给了才另外弹提示（需要告诉用户下一步做什么的时候）。 */
+async function copyText(text: string, button: HTMLElement, done?: string): Promise<void> {
   try {
     if (!navigator.clipboard?.writeText) throw new Error(t("当前环境不支持写入剪贴板"));
     await navigator.clipboard.writeText(text);
-    showToast({ message: done });
+    flashCopied(button);
+    if (done) showToast({ message: done });
   } catch {
     showToast({ message: t("复制失败，请手动复制：{0}", text), error: true });
   }
@@ -88,7 +90,7 @@ function codeBlock(label: string, text: string): HTMLElement {
   head.className = "mcp-code-head";
   const title = document.createElement("span");
   title.textContent = label;
-  head.append(title, createButton({ label: t("复制"), size: "mini", onClick: () => void copyText(text, t("已复制。")) }));
+  head.append(title, createButton({ label: t("复制"), size: "mini", onClick: (event) => void copyText(text, event.currentTarget as HTMLElement) }));
   const pre = document.createElement("pre");
   pre.className = "mcp-code-body";
   const code = document.createElement("code");
@@ -138,7 +140,7 @@ function connectCard(executable: string, fallback: boolean): HTMLElement {
     createButton({
       label: t("复制接入说明"),
       variant: "primary",
-      onClick: () => void copyText(prompt, t("已复制接入说明，请粘贴发送给智能体。")),
+      onClick: (event) => void copyText(prompt, event.currentTarget as HTMLElement, t("已复制接入说明，请粘贴发送给智能体。")),
     }),
   );
   body.append(actions);

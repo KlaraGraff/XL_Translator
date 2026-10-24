@@ -96,7 +96,7 @@
 .prompt-optimization-column label {
   color: var(--ink-2);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--fw-600);
 }
 .prompt-optimization-column.result label { color: var(--accent-ink); }
 .prompt-optimization-column .btn { align-self: flex-start; }
@@ -158,7 +158,7 @@
 .pal-opt { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px 11px; cursor: pointer; background: var(--surface); min-width: 0; }
 .pal-opt:hover { border-color: var(--line-2); }
 .pal-opt:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.pal-opt b { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.pal-opt b { font-size: 13px; font-weight: var(--fw-600); margin-top: 6px; }
 .pal-opt span:not(.pal-swatch):not(.pal-card) { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; }
 .pal-opt.on { border-color: var(--tint-line); background: var(--tint); }
 .pal-opt.on b { color: var(--tint-ink); }
@@ -168,7 +168,7 @@
 .pal-card i:nth-child(1) { top: 8px; width: 46%; }
 .pal-card i:nth-child(2) { top: 16px; width: 30%; }
 .pal-card i.pal-btn { top: auto; left: auto; right: 7px; bottom: 6px; width: 22px; height: 9px; border-radius: 3px; }
-.pal-row-label { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 4px 0 6px; }
+.pal-row-label { font-size: 12px; font-weight: var(--fw-600); color: var(--ink-2); margin: 4px 0 6px; }
 .pal-grid + .pal-row-label { margin-top: 14px; }
 
 /* 提示词设置：内置规则只读展示，自动识别场景的说明也用灰字，和可编辑的补充要求区分开。 */
@@ -199,13 +199,13 @@
 .ret-name { display: flex; flex-direction: column; color: var(--ink-3); }
 .ret-name small { font-size: 11px; }
 .ret-ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
-.ret-ctl input[type="number"] { width: 72px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 6px; text-align: right; }
+.ret-ctl input[type="number"] { width: 72px; height: 28px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: var(--fw-600); padding: 0 6px; text-align: right; }
 
 /* 翻译参数 · 速率与重试（settings-rate.ts）：三列一行；组标题一行放说明和右侧的
  * 「恢复默认值」。 */
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; }
 .rp-sec.rate-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; }
-.rp-sec.rate-head .btn { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 500; }
+.rp-sec.rate-head .btn { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: var(--fw-500); }
 .rp-sec .rate-sub { margin-left: 8px; font-size: 11.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
 .rate-tm-grid { margin-top: 8px; }
 
@@ -217,11 +217,11 @@
 /* 选中项的淡蓝底是一块会滑的 .set-ind（settings.ts 按选中项位置移动），和应用侧栏的 .side-ind 同一种；
    第一次放到位不带过渡，到位后才加 .ready。各项自己只变字色。 */
 .set-row .set-nav .set-ind { position: absolute; left: 0; right: 0; top: 0; height: 32px; border-radius: var(--r-sm); background: var(--tint); pointer-events: none; opacity: 0; }
-.set-row .set-nav .set-ind.ready { transition: transform var(--t-page) var(--ease-spring), height var(--t-base) var(--ease-out), opacity var(--t-fast) var(--ease-out); }
+.set-row .set-nav .set-ind.ready { transition: transform var(--t-base) var(--ease-snap), height var(--t-base) var(--ease-out), opacity var(--t-fast) var(--ease-out); }
 .set-row .set-nav .si { position: relative; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
 .set-row .set-nav .si svg { flex: none; }
 .set-row .set-nav .si:hover { background: var(--surface-2); color: var(--ink); }
-.set-row .set-nav .si.on, .set-row .set-nav .si.on:hover { background: transparent; color: var(--tint-ink); font-weight: 600; }
+.set-row .set-nav .si.on, .set-row .set-nav .si.on:hover { background: transparent; color: var(--tint-ink); font-weight: var(--fw-600); }
 .set-row .set-nav .si:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .set-row .si-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 正文自己滚动；Windows 常驻 8px 滚动条，右侧留 2px 免得内容贴着滚动条。 */
@@ -233,7 +233,7 @@
 .set-body .sec:first-child { border-top: 0; padding-top: 4px; }
 .set-body .sh { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .set-body .sh-copy { flex: 1; min-width: 0; }
-.set-body .sh h3 { margin: 0; font-size: 14px; font-weight: 650; color: var(--ink); }
+.set-body .sh h3 { margin: 0; font-size: 14px; font-weight: var(--fw-650); color: var(--ink); }
 .set-body .sh .desc { font-size: 12.5px; color: var(--ink-3); margin-top: 2px; line-height: 1.55; max-width: 640px; }
 .set-body .sh .acts { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .set-body .sec-b { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -241,9 +241,9 @@
 .set-body .sec-b > .field { margin-bottom: 0; }
 /* 提示词那一节的标题由 promptCardHead（.tc-head）产出，外观对齐 .sh。 */
 .set-body .sec > .tc-head { padding: 0; border: 0; margin-bottom: 12px; gap: 8px; }
-.set-body .sec > .tc-head b { font-size: 14px; font-weight: 650; }
+.set-body .sec > .tc-head b { font-size: 14px; font-weight: var(--fw-650); }
 /* 节内的小标题：不再是全大写的小字。 */
-.set-body .rp-sec { margin: 6px 0 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink-2); }
+.set-body .rp-sec { margin: 6px 0 0; font-size: 12.5px; font-weight: var(--fw-600); letter-spacing: 0; text-transform: none; color: var(--ink-2); }
 .set-body .rp-sec:first-child { margin-top: 0; }
 .set-body .sec-note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-3); }
 
@@ -268,7 +268,7 @@
 .set-body .tabs { position: relative; display: flex; flex-wrap: wrap; gap: 4px; padding: 0; border-bottom: 1px solid var(--line); }
 .set-body .tabs .tab { height: 36px; padding: 0 12px; margin: 0; border: 0; background: none; font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer; transition: color var(--t-fast) var(--ease-out); }
 .set-body .tabs .tab:hover { color: var(--ink); }
-.set-body .tabs .tab.on { color: var(--ink); font-weight: 600; }
+.set-body .tabs .tab.on { color: var(--ink); font-weight: var(--fw-600); }
 .set-body .tabs .tab:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
 .set-body .tabs .ul { position: absolute; left: 0; top: 0; width: 0; height: 2px; border-radius: 2px; background: var(--accent); pointer-events: none; transition: transform var(--t-page) var(--ease-out), width var(--t-page) var(--ease-out); }
 .set-body .tabs .ul.still { transition: none; }
@@ -289,11 +289,11 @@
 .set-body .role { min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
 .set-body .role:hover { border-color: var(--line-2); }
 .set-body .role:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.set-body .role b { display: block; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .role b { display: block; font-size: 12.5px; font-weight: var(--fw-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-body .role-sub { display: flex; gap: 6px; min-width: 0; margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
 .set-body .role-sub i { font-style: normal; flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 摘要先省略；卡片窄到连标记也放不下时（法语「Nom du modèle manquant」）标记再省略，全文在 title 里。 */
-.set-body .role-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .role-sub em { font-style: normal; font-weight: var(--fw-600); color: var(--warn); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-body .role.on { border-color: var(--tint-line); background: var(--tint); }
 .set-body .role.on b { color: var(--tint-ink); }
 .set-body .role.on .role-sub { color: var(--ink-2); }
@@ -306,7 +306,7 @@
 .set-body .conn .cd { width: 8px; height: 8px; border-radius: 99px; flex: none; background: var(--ink-3); }
 .set-body .conn .cd.ok { background: var(--ok); }
 .set-body .conn .cd.warn { background: var(--warn); }
-.set-body .conn > b { flex: 0 1 auto; min-width: 0; max-width: 45%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .conn > b { flex: 0 1 auto; min-width: 0; max-width: 45%; font-weight: var(--fw-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-body .conn-meta { flex: 1 1 60px; min-width: 0; font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-body .conn > .acts { margin-left: auto; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
@@ -329,7 +329,7 @@
 .set-body .diag-table { overflow-x: auto; }
 .set-body .sec.danger-sec { margin-top: 6px; padding: 14px 16px; border: 1px solid var(--danger-l); border-radius: var(--r-lg); background: var(--danger-t); }
 .set-body .danger-sec .sh .desc { color: var(--ink-2); }
-.set-body .license-name { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.set-body .license-name { margin: 0; font-size: 13px; font-weight: var(--fw-600); color: var(--ink); }
 .set-body .about-version .sec-b { gap: 8px; }
 
 /* 窄窗口（浏览器预览、将来更小的最小窗口）：子导航折成一行，用途卡两列，表单单列。 */

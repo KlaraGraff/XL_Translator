@@ -201,5 +201,6 @@
   "更新已安装，建议先重启": {"en": "Update installed — restart recommended", "fr": "Mise à jour installée : redémarrage conseillé"},
   "新版本的程序文件已替换完成，但当前运行的仍是旧版本。": {"en": "The new version's files are in place, but the old version is still running.", "fr": "Les fichiers de la nouvelle version sont en place, mais l'ancienne version est toujours en cours d'exécution."},
   "正在进行的任务不受影响，但此时开始新任务可能意外失败。建议先重启以完成更新，再开始新任务。": {"en": "Running tasks are not affected, but a new task started now may fail unexpectedly. Restart to finish the update before starting new tasks.", "fr": "Les tâches en cours ne sont pas affectées, mais une nouvelle tâche lancée maintenant peut échouer sans raison apparente. Redémarrez pour terminer la mise à jour avant d'en lancer une nouvelle."},
-  "仍要开始": {"en": "Start anyway", "fr": "Démarrer quand même"}
+  "仍要开始": {"en": "Start anyway", "fr": "Démarrer quand même"},
+  "已复制": {"en": "Copied", "fr": "Copié"}
 }
