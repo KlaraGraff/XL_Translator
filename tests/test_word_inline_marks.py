@@ -29,6 +29,7 @@ from core.word_inline_marks import (
     placeholder_texts,
     repair_marks,
     split_marked,
+    split_marked_parts,
     strip_marks,
     unmark,
 )
@@ -668,6 +669,62 @@ class RetryMarksTests(unittest.TestCase):
         inner = _FakeEngine(lambda t: "Attention : briefing.")
         InlineMarkEngine(inner, marked).translate_batch(list(marked) + ["其他。"], "fr", "SYS")
         self.assertEqual(len(inner.calls), 1)
+
+
+class LongParagraphPartsTests(unittest.TestCase):
+    """反馈 #19 第三轮本机实测：超过 800 字的段落 word_batching 按句子切块发，块不在带标记
+    原文表里，原样发出、没有占位符，四段公式最多的（24、13、9、6 个）全挤到段末。"""
+
+    MARKED = "where <x1/> is the stress. Then <g1>we have <x2/> and. More</g1> <x3/> is x."
+
+    def test_marked_source_is_cut_where_the_plain_text_was_cut(self) -> None:
+        plain = strip_marks(self.MARKED)
+        parts = ["where  is", "the stress.", "Then we have  and.", "More  is x."]
+        self.assertEqual(
+            split_marked_parts(self.MARKED, plain, parts),
+            ["where <x1/> is", "the stress.", "Then <g1>we have <x2/> and.</g1>", "<g1>More</g1> <x3/> is x."],
+        )
+        self.assertIsNone(split_marked_parts(self.MARKED, plain, ["where  is the stress.", "nope"]))
+
+    def test_placeholder_at_a_cut_goes_with_its_own_side(self) -> None:
+        marked = "公式如下<x1/>。<x2/>为应力。"
+        plain = strip_marks(marked)
+        self.assertEqual(split_marked_parts(marked, plain, ["公式如下。", "为应力。"]), ["公式如下<x1/>。", "<x2/>为应力。"])
+        marked = "Value is <x1/>. <x2/> is next."
+        self.assertEqual(split_marked_parts(marked, strip_marks(marked), ["Value is .", "is next."]),
+                         ["Value is <x1/>.", "<x2/> is next."])
+
+    def test_parts_go_out_marked_and_are_joined_back(self) -> None:
+        from core.word_batching import _join_translated_parts
+
+        plain = strip_marks(self.MARKED)
+        answers = {
+            "where <x1/> is the stress.": "其中<x1/>为应力。",
+            "Then <g1>we have <x2/> and. More</g1> <x3/> is x.": "<g1>于是有<x2/>。还有</g1><x3/>为x。",
+        }
+        inner = _FakeEngine(lambda text: answers.get(text, text))
+        engine = InlineMarkEngine(inner, {plain: self.MARKED})
+        engine.split_long_sources(lambda text: ["where  is the stress.", "Then we have  and. More  is x."])
+        pieces = [piece for piece, _marked in engine.parts[plain]]
+        self.assertEqual(pieces, ["where  is the stress.", "Then we have  and. More  is x."])
+        engine.translate_batch(pieces, "zh", "SYS")
+        self.assertEqual(inner.calls[0][0], list(answers))
+        marked, joined = engine.assemble_parts(plain, lambda parts: _join_translated_parts(parts, target_lang="zh"))
+        self.assertEqual((marked, joined), (self.MARKED, "其中<x1/>为应力。<g1>于是有<x2/>。还有</g1><x3/>为x。"))
+
+    def test_format_tag_split_across_parts_is_merged_at_the_seam(self) -> None:
+        from core.word_batching import _join_translated_parts
+
+        plain = strip_marks(self.MARKED)
+        engine = InlineMarkEngine(_FakeEngine(lambda text: {
+            "where <x1/> is the stress. Then <g1>we have <x2/> and.</g1>": "Où <x1/> est la contrainte. Puis <g1>on a <x2/> et.</g1>",
+            "<g1>More</g1> <x3/> is x.": "<g1>Encore</g1> <x3/> vaut x.",
+        }.get(text, text)), {plain: self.MARKED})
+        engine.split_long_sources(lambda text: ["where  is the stress. Then we have  and.", "More  is x."])
+        engine.translate_batch([piece for piece, _marked in engine.parts[plain]], "fr", "SYS")
+        _marked, joined = engine.assemble_parts(plain, lambda parts: _join_translated_parts(parts, target_lang="fr"))
+        self.assertEqual(joined, "Où <x1/> est la contrainte. Puis <g1>on a <x2/> et. Encore</g1> <x3/> vaut x.")
+        self.assertTrue(marks_match(self.MARKED, joined))
 
 
 class WriteBackTests(unittest.TestCase):
