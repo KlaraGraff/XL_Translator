@@ -222,14 +222,19 @@ def _strokes(page, x, y, chars, size=12):
         page.draw_line((x0 + 2, y + size - 2), (x0 + size - 2, y + size - 2), color=(0, 0, 0), width=0.6)
 
 
-def _ocr_row(text, x, y, size=12, score=0.98):
-    """PP-OCR 读出的一行（core.pdf_vector.cjk_ocr 的格式，显示像素，200 dpi）。"""
-    k = 200 / 72
+def _ocr_row(text, x, y, size=12, score=0.98, dpi=200):
+    """PP-OCR 读出的一行（core.pdf_vector.cjk_ocr 的格式，显示像素，默认 200 dpi）。"""
+    k = dpi / 72
     words = [{"text": ch, "score": score, "box": [(x + n * size) * k, y * k, (x + (n + 1) * size) * k, (y + size) * k],
               "sp": False} for n, ch in enumerate(text)]
     return {"origin": "ocr", "source_text": text, "display_box": [x * k, y * k, (x + len(text) * size) * k, (y + size) * k],
             "display_rotation": 0, "words": words, "ocr_score": score, "source_passes": ["ppocr_h"],
             "clipped": False, "engine": "ppocr"}
+
+
+def _raster_dpi(gray, page_width=842):
+    """识别模型看到的图的分辨率（原位替换给它的图比整页更清楚，见 extract.OCR_DPI）。"""
+    return gray.size[0] * 72 / page_width
 
 
 class ChineseLetteringReadByTheComponentTests(_PageCase):
@@ -249,7 +254,7 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
             calls.append(gray.size)
             if progress:
                 progress(1, 1)
-            return [_ocr_row(text, x, y) for text, x, y in self.LABELS]
+            return [_ocr_row(text, x, y, dpi=_raster_dpi(gray)) for text, x, y in self.LABELS]
 
         return read
 
@@ -260,7 +265,9 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
         result, prompts = self._run(lambda page: self._build(page, "DRAWING NO. E-101 SCALE 1:100"), ZH_FR, "fr",
                                     tesseract="/no/tesseract/here", ocr_reader=self._reader(calls))
         self.assertTrue(result.ok, result.error)
-        self.assertEqual(calls, [(round(842 * 200 / 72), round(595 * 200 / 72))])
+        # 线条字按 300 dpi 读（比整页的 200 dpi 清楚），读出的框再换回 200 dpi
+        sharp = (fitz.Rect(0, 0, 842, 595) * fitz.Matrix(300 / 72, 300 / 72)).irect
+        self.assertEqual(calls, [(sharp.width, sharp.height)])
         self.assertEqual(result.source_lang, "zh")
         self.assertTrue(result.ocr_used)
         self.assertFalse(result.ocr_skipped_cjk)
@@ -282,7 +289,7 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
             _strokes(page, 130, 100, 1)
 
         def read(gray, progress=None):
-            return [_ocr_row("姓", 100, 100), _ocr_row("名", 130, 100)]
+            return [_ocr_row("姓", 100, 100, dpi=_raster_dpi(gray)), _ocr_row("名", 130, 100, dpi=_raster_dpi(gray))]
 
         seen: list = []
 
@@ -303,7 +310,7 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
 
     def test_an_unsure_character_is_kept_for_review(self):
         def read(gray, progress=None):
-            row = _ocr_row("设备基坑", 100, 100)
+            row = _ocr_row("设备基坑", 100, 100, dpi=_raster_dpi(gray))
             row["words"][2]["score"] = 0.2
             return [row]
 
@@ -342,6 +349,43 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
         self.assertIn("安装或更新「文字识别组件」", message("ja"))
         self.assertIn("韩文暂不能识别", message("ko"))
         self.assertNotIn("韩文", message("zh"))
+
+
+class SharperRasterTests(unittest.TestCase):
+    """线条字从更清楚的图上读（真实图纸上 200 dpi 漏掉的淡灰小字，300 dpi 能找到）。"""
+
+    def test_resolution_is_300_dpi_up_to_an_a0_sheet_and_capped_beyond(self):
+        from core.pdf_vector import extract
+
+        a3 = fitz.open().new_page(width=1191, height=842)
+        a0 = fitz.open().new_page(width=2384, height=3370)
+        huge = fitz.open().new_page(width=4768, height=3370)
+        self.assertEqual(extract.ocr_resolution(a3, 200), 300)
+        self.assertEqual(extract.ocr_resolution(a0, 200), 300)
+        capped = extract.ocr_resolution(huge, 200)
+        self.assertLess(capped, 300)
+        self.assertLessEqual(4768 / 72 * capped * 3370 / 72 * capped, extract.OCR_MAX_PIXELS * 1.0001)
+        # never coarser than the page itself
+        self.assertEqual(extract.ocr_resolution(fitz.open().new_page(width=40000, height=40000), 200), 200)
+
+    def test_rows_come_back_in_page_pixels(self):
+        from core.pdf_vector import extract
+
+        page = fitz.open().new_page(width=842, height=595)
+        seen = []
+
+        def read(gray, progress=None):
+            seen.append(gray.size)
+            return [_ocr_row("设备", 100, 100, dpi=_raster_dpi(gray))]
+
+        rows = extract.read_outlines(page, 200, read)
+        self.assertGreater(seen[0][0], 842 * 200 / 72)
+        want = _ocr_row("设备", 100, 100)
+        for got, exp in zip(rows[0]["display_box"], want["display_box"]):
+            self.assertAlmostEqual(got, exp, delta=0.5)
+        for gw, ew in zip(rows[0]["words"], want["words"]):
+            for got, exp in zip(gw["box"], ew["box"]):
+                self.assertAlmostEqual(got, exp, delta=0.5)
 
 
 class LetterSpacedLabelTests(unittest.TestCase):
