@@ -191,7 +191,7 @@ def _words(read, box: _Box, mode: str, crop_len: float) -> list[dict]:
 INK = 160             # gray level counted as lettering ink when tightening boxes
 
 
-def _ink(g: np.ndarray, box: _Box, thick: float, vertical: bool) -> np.ndarray:
+def _ink(g: np.ndarray, box: _Box, thick: float, vertical: bool, level: int = INK) -> np.ndarray:
     """Ink mask of the box region without the lines running through it.
 
     A detection box is about a third of a character larger than the letters on
@@ -204,7 +204,7 @@ def _ink(g: np.ndarray, box: _Box, thick: float, vertical: bool) -> np.ndarray:
     cv2 = _cv2()
     x0, y0 = int(max(0, box.x0)), int(max(0, box.y0))
     x1, y1 = int(min(g.shape[1], box.x1 + 1)), int(min(g.shape[0], box.y1 + 1))
-    mask = (g[y0:y1, x0:x1] < INK).astype(np.uint8)
+    mask = (g[y0:y1, x0:x1] < level).astype(np.uint8)
     if mask.size == 0:
         return mask
     em = thick / 1.35                     # detection boxes are ~1.35 character heights thick
@@ -236,51 +236,65 @@ def _grow(proj: np.ndarray, lo: int, hi: int, gap: int) -> tuple[int, int]:
     return lo, hi
 
 
+# light grey lettering (annotations drawn in grey, ~160 on white) is ink too when
+# black ink alone does not cover the letters that were read
+_INK_LEVELS = (INK, 215)
+
+
 def _tighten(g: np.ndarray, box: _Box, words: list[dict], vertical: bool) -> list[float]:
     """Shrink the row box and the word boxes onto the letters; returns the row box.
 
     Along the line the box runs from the first to the last character read and on
     over ink that continues without a gap, so a mark set apart from the label (and
-    dropped by ``trim_marks``) stays out of the box and is not erased with it."""
+    dropped by ``trim_marks``) stays out of the box and is not erased with it.  When
+    the ink found does not span the characters that were read (grey lettering, a
+    label on a dark fill), the detection box stays as it is."""
     thick = (box.x1 - box.x0) if vertical else (box.y1 - box.y0)
-    mask = _ink(g, box, thick, vertical)
-    ox, oy = int(max(0, box.x0)), int(max(0, box.y0))
     full = [round(v, 1) for v in (box.x0, box.y0, box.x1, box.y1)]
-    if not mask.any() or not words:
+    if not words:
         return full
+    ox, oy = int(max(0, box.x0)), int(max(0, box.y0))
     em = thick / 1.35
-    if vertical:
-        proj = mask.any(axis=1)
-        lo = int(min(w["box"][1] for w in words) - oy)
-        hi = int(max(w["box"][3] for w in words) - oy) + 1
-    else:
-        proj = mask.any(axis=0)
-        lo = int(min(w["box"][0] for w in words) - ox)
-        hi = int(max(w["box"][2] for w in words) - ox) + 1
-    lo, hi = _grow(proj, lo, hi, max(2, int(0.6 * em)))
-    if vertical:
-        mask[:lo, :] = 0
-        mask[hi:, :] = 0
-    else:
-        mask[:, :lo] = 0
-        mask[:, hi:] = 0
-    if not mask.any():
-        return full
-    ys, xs = np.nonzero(mask)
-    row = [float(xs.min() + ox), float(ys.min() + oy), float(xs.max() + 1 + ox), float(ys.max() + 1 + oy)]
-    for w in words:
-        b = list(w["box"])
+    a, b = (1, 3) if vertical else (0, 2)
+    lo = int(min(w["box"][a] for w in words) - (oy if vertical else ox))
+    hi = int(max(w["box"][b] for w in words) - (oy if vertical else ox)) + 1
+    for level in _INK_LEVELS:
+        mask = _ink(g, box, thick, vertical, level)
+        if not mask.any():
+            continue
+        proj = mask.any(axis=1) if vertical else mask.any(axis=0)
+        start, stop = _grow(proj, lo, hi, max(2, int(0.6 * em)))
         if vertical:
-            sub = mask[int(max(0, b[1] - oy)):int(max(0, b[3] - oy)), :]
-            idx = np.nonzero(sub.any(axis=0))[0]
-            b[0], b[2] = (float(idx.min() + ox), float(idx.max() + 1 + ox)) if idx.size else (row[0], row[2])
-            b[1], b[3] = max(b[1], row[1]), min(b[3], row[3])
+            mask[:start, :] = 0
+            mask[stop:, :] = 0
         else:
-            sub = mask[:, int(max(0, b[0] - ox)):int(max(0, b[2] - ox))]
+            mask[:, :start] = 0
+            mask[:, stop:] = 0
+        if not mask.any():
+            continue
+        ys, xs = np.nonzero(mask)
+        row = [float(xs.min() + ox), float(ys.min() + oy), float(xs.max() + 1 + ox), float(ys.max() + 1 + oy)]
+        span = (row[3] - row[1]) if vertical else (row[2] - row[0])
+        across = (row[2] - row[0]) if vertical else (row[3] - row[1])
+        if span >= 0.6 * (hi - lo) and across >= 0.45 * em:
+            break
+    else:
+        return full
+    for w in words:
+        wb = list(w["box"])
+        if vertical:
+            sub = mask[int(max(0, wb[1] - oy)):int(max(0, wb[3] - oy)), :]
+            idx = np.nonzero(sub.any(axis=0))[0]
+            wb[0], wb[2] = (float(idx.min() + ox), float(idx.max() + 1 + ox)) if idx.size else (row[0], row[2])
+            wb[1], wb[3] = max(wb[1], row[1]), min(wb[3], row[3])
+        else:
+            sub = mask[:, int(max(0, wb[0] - ox)):int(max(0, wb[2] - ox))]
             idx = np.nonzero(sub.any(axis=1))[0]
-            b[1], b[3] = (float(idx.min() + oy), float(idx.max() + 1 + oy)) if idx.size else (row[1], row[3])
-            b[0], b[2] = max(b[0], row[0]), min(b[2], row[2])
-        w["box"] = [round(v, 1) for v in b]
+            wb[1], wb[3] = (float(idx.min() + oy), float(idx.max() + 1 + oy)) if idx.size else (row[1], row[3])
+            wb[0], wb[2] = max(wb[0], row[0]), min(wb[2], row[2])
+        if wb[2] <= wb[0] or wb[3] <= wb[1]:
+            continue                      # a word outside the ink keeps its reading box
+        w["box"] = [round(v, 1) for v in wb]
     return [round(v, 1) for v in row]
 
 
@@ -361,6 +375,10 @@ def ppocr_rows(gray, engine: PPOCR, progress: Callable[[int, int], None] | None 
     for i, mode, k, length in plan:
         r = reads[k]
         if not r.text.strip():
+            continue
+        # upright columns are a Chinese / Japanese way of writing: Latin letters read
+        # one under the other come out as confident junk ('MCF 1H' -> 'HFM')
+        if mode == "col" and 2 * sum(1 for c in r.text if _CJK.match(c)) < len(r.text.replace(" ", "")):
             continue
         # a reading must have more than one character to beat another direction on score alone
         key = (r.score * min(1.0, 0.5 + 0.25 * len(r.text.strip())), r.score)

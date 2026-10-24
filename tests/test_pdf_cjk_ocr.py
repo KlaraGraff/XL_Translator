@@ -88,3 +88,62 @@ def test_turned_lines_map_back_onto_the_page():
 
 def test_full_width_letters_and_digits_become_ascii():
     assert cjk_ocr._norm("ＫＬ１（２）　配电") == "KL1（2） 配电"
+
+
+def _page_with_ink(w=1000, h=900, level=0, rects=()):
+    page = np.full((h, w), 255, np.uint8)
+    for x0, y0, x1, y1 in rects:
+        page[y0:y1, x0:x1] = level
+    return page
+
+
+def test_grey_lettering_still_gets_a_tight_box():
+    # 字是浅灰色（约 160）：只按黑色找笔画时框会缩成一点，写回时译文没地方放
+    letters = [(110 + 30 * n, 108, 130 + 30 * n, 128) for n in range(4)]
+    for level in (0, 160):
+        page = _page_with_ink(level=level, rects=letters)
+        box = _box(100, 100, 230, 136)
+        words = [{"text": c, "score": 0.99, "box": [110.0 + 30 * n, 100.0, 130.0 + 30 * n, 136.0], "sp": False}
+                 for n, c in enumerate("配电间房")]
+        row = cjk_ocr._tighten(page, box, words, vertical=False)
+        assert row == [110.0, 108.0, 220.0, 128.0], (level, row)
+        assert all(w["box"][0] < w["box"][2] and w["box"][1] < w["box"][3] for w in words)
+
+
+def test_without_ink_under_the_reading_the_detection_box_stays():
+    page = _page_with_ink(level=230, rects=[(110, 108, 220, 128)])   # too faint to count as ink
+    box = _box(100, 100, 230, 136)
+    words = [{"text": "配", "score": 0.99, "box": [110.0, 100.0, 140.0, 136.0], "sp": False}]
+    assert cjk_ocr._tighten(page, box, words, vertical=False) == [100.0, 100.0, 230.0, 136.0]
+
+
+class _FakeEngine:
+    """整页一块（不大于 1024 像素）：检测出一个竖排的框，三种读法按 up、down、col 的顺序给出。"""
+
+    def __init__(self, box, reads):
+        self.box, self.reads = box, reads
+
+    def detect(self, sub):
+        return [(np.array([[self.box[0], self.box[1]], [self.box[2], self.box[1]], [self.box[2], self.box[3]],
+                           [self.box[0], self.box[3]]], np.float32), 0.9)]
+
+    def recognize(self, crops):
+        return self.reads[:len(crops)]
+
+
+def _read(text, score):
+    step = 100 / max(1, len(text))
+    return LineRead(text, score, [(c, score, n * step, (n + 1) * step) for n, c in enumerate(text)])
+
+
+def test_latin_letters_are_not_read_as_an_upright_column():
+    from PIL import Image
+
+    page = _page_with_ink(rects=[(108, 105, 128, 195)])
+    engine = _FakeEngine((100, 100, 136, 200), [_read("MCF 1H", 0.95), _read("MCF1H", 0.7), _read("HFM", 0.99)])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
+    assert [(r["source_text"], r["display_rotation"]) for r in rows] == [("MCF 1H", 90)]
+    # 中文竖写（一个字一个字往下排）照旧按列读
+    engine = _FakeEngine((100, 100, 136, 200), [_read("回电配", 0.7), _read("配电回", 0.6), _read("配电间", 0.98)])
+    rows = cjk_ocr.ppocr_rows(Image.fromarray(page), engine)
+    assert [(r["source_text"], r.get("vertical_column")) for r in rows] == [("配电间", True)]
