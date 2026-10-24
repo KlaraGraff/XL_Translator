@@ -9,10 +9,12 @@
 .content.tasks {
   gap: 0 20px;
 }
+/* 四周留 4px 给聚焦光圈（滚动容器会裁掉外扩的部分），宽度和左、上外边距一起补回，内容位置不变。 */
 .content.tasks .tk-list {
-  width: 320px;
+  width: 326px;
   gap: 8px;
-  padding-right: 2px;
+  padding: 4px 4px 0;
+  margin: -4px 0 0 -4px;
 }
 .content.tasks .tk-rows {
   display: flex;
@@ -32,7 +34,7 @@
 }
 @media (max-width: 1279px) {
   .content.tasks .tk-list {
-    width: 280px;
+    width: 286px;
   }
 }
 

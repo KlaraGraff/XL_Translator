@@ -225,7 +225,8 @@
 .set-row .set-nav .si:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .set-row .si-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 正文自己滚动；Windows 常驻 8px 滚动条，右侧留 2px 免得内容贴着滚动条。 */
-.set-row .set-body { display: block; min-width: 0; min-height: 0; overflow: auto; padding-right: 2px; }
+/* 内边距给聚焦光圈（外扩 4px）留位置，负外边距抵掉，内容位置不变；贴边的输入框左右两侧不再被裁。 */
+.set-row .set-body { display: block; min-width: 0; min-height: 0; overflow: auto; padding: 0 6px 4px 5px; margin: 0 -6px -4px -5px; }
 .set-body > .empty { min-height: 240px; }
 
 /* 节：标题 + 灰色说明 + 右上角小按钮，节间一条发丝线，首节无线。 */
