@@ -2409,7 +2409,8 @@ function outsideCellStat(stats: OutsideCellStats, st: SurfaceState): StatCell {
   // 这几个字段在整批文件上都不存在（不是数出来是 0，例如还没扫描、扫描失败）——不该显示
   // 「0 / 0 / 0」把「不知道」说成「没有」，写「—」。
   if (stats.presentFiles === 0) return { label, value: "—", dim: true };
-  return { label, value: "0 / 0 / 0", dim: true, sub: t("无") };
+  // 「0 / 0 / 0」本身已说明没有，不再在下面另起一行写「无」（单独一行显得空，maple 2026-10-25）。
+  return { label, value: "0 / 0 / 0", dim: true };
 }
 
 // ---------------------------------------------------------------------------
