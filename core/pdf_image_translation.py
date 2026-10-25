@@ -903,14 +903,25 @@ def determine_pdf_task_status(
 # 识别模型不认韩文。
 _INPLACE_CJK_OCR_NOTE = "（画成线条的中文、日文未识别，保留原样；在「扩展 → 组件」安装或更新「文字识别组件」后可识别）"
 _INPLACE_KO_OCR_NOTE = "（画成线条的韩文暂不能识别，保留原样）"
+# 从旧版升级上来、还没在组件页点「更新」的：原文语言「自动识别」时线条中文按西文读成乱码
+_INPLACE_LATIN_OCR_HINT = (
+    "当前的文字识别组件只能识别英文、法文等西方文字，画成线条的中文、日文需在"
+    "「扩展 → 组件」中更新「文字识别组件」后才能识别"
+)
+_GARBAGE_REASON = "识别结果像乱码"
 
 
 def _inplace_cjk_ocr_note(result: Any) -> str:
     return _INPLACE_KO_OCR_NOTE if getattr(result, "source_lang", "") == "ko" else _INPLACE_CJK_OCR_NOTE
 
 
-def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, cjk_ocr_skipped: bool = False) -> str:
-    """原位替换一处都没写：照实说认出了什么、为什么没换，不能笼统说「没有找到文字」。"""
+def _inplace_nothing_written_message(
+    result: Any, *, ocr_missing: bool = False, cjk_ocr_skipped: bool = False, latin_ocr_only: bool = False,
+) -> str:
+    """原位替换一处都没写：照实说认出了什么、为什么没换，不能笼统说「没有找到文字」。
+
+    ``latin_ocr_only``：画成线条的字只用旧的西文识别读过，补一句去更新组件。"""
+    tail = f"；{_INPLACE_LATIN_OCR_HINT}，这一页保留原样" if latin_ocr_only else "，这一页保留原样"
     items = [item for item in (getattr(result, "review_items", None) or []) if item.get("kind") != "term"]
     kept = int(getattr(result, "kept", 0) or 0)
     if items:
@@ -922,14 +933,14 @@ def _inplace_nothing_written_message(result: Any, *, ocr_missing: bool = False, 
         message = f"识别到 {len(items)} 处文字，均未替换（{reasons}）"
         if kept:
             message += f"；另有 {kept} 处数字和编号等不需要翻译"
-        return message + "，这一页保留原样"
+        return message + tail
     if kept:
-        return f"识别到的 {kept} 处都是数字和编号等不需要翻译的内容，这一页保留原样"
+        return f"识别到的 {kept} 处都是数字和编号等不需要翻译的内容{tail}"
     if cjk_ocr_skipped:
         return f"没有找到可以替换的文字{_inplace_cjk_ocr_note(result)}，这一页保留原样"
     if ocr_missing:
         return "没有找到可以替换的文字（没有安装文字识别组件，画成线条的字未识别），这一页保留原样"
-    return "没有找到可以替换的文字，这一页保留原样"
+    return f"没有找到可以替换的文字{tail}"
 
 
 def _record_needs_review(record: PdfFileRecord) -> bool:
@@ -4582,6 +4593,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             note = "" if result.ocr_used or not hooks.ocr_wanted or native_only else "（没有安装文字识别组件，画成线条的字未识别）"
             if getattr(result, "ocr_skipped_cjk", False):
                 note = _inplace_cjk_ocr_note(result)
+            elif getattr(result, "ocr_latin_only", False) and any(
+                item.get("reason") == _GARBAGE_REASON for item in result.review_items
+            ):
+                # 西文译好了，旁边画成线条的中文读成了乱码
+                note = f"（{_INPLACE_LATIN_OCR_HINT}）"
             page.inplace_message = (
                 f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                 f"{page.inplace_review} 处认不准保留原文{note}"
@@ -4596,6 +4612,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page.inplace_message = result.error or _inplace_nothing_written_message(
                 result, ocr_missing=not (result.ocr_used or not hooks.ocr_wanted or native_only),
                 cjk_ocr_skipped=bool(getattr(result, "ocr_skipped_cjk", False)),
+                latin_ocr_only=bool(getattr(result, "ocr_latin_only", False)),
             )
             self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 

@@ -350,6 +350,33 @@ class ChineseLetteringReadByTheComponentTests(_PageCase):
         self.assertIn("韩文暂不能识别", message("ko"))
         self.assertNotIn("韩文", message("zh"))
 
+    def test_auto_source_with_only_the_old_latin_ocr_is_flagged(self):
+        # 只装了旧 Tesseract、原文「自动识别」：结果要带上标记，页面说明据此提示更新组件。
+        from unittest.mock import patch
+
+        from core.pdf_vector import extract
+
+        real_run = extract.run
+
+        def run_without_tesseract(*args, **kwargs):
+            seen.append(args[6])           # 实际交给识别的程序
+            return real_run(*args[:6], None, *args[7:], **kwargs)
+
+        def build(page):
+            page.insert_text((60, 60), "PLAN DE MASSE", fontsize=14)
+
+        seen: list = []
+        with patch("core.pdf_vector.runner.ocr_languages", return_value="fra"), \
+                patch.object(extract, "run", side_effect=run_without_tesseract):
+            result, _prompts = self._run(build, {"PLAN DE MASSE": "总平面图"}, "zh", tesseract="/old/tesseract")
+        self.assertEqual(seen, ["/old/tesseract"])
+        self.assertTrue(result.ocr_latin_only)
+        # 有新识别模型时不标
+        with patch("core.pdf_vector.runner.ocr_languages", return_value="fra"):
+            result, _prompts = self._run(build, {"PLAN DE MASSE": "总平面图"}, "zh", tesseract="/old/tesseract",
+                                         ocr_reader=lambda gray, progress=None: [])
+        self.assertFalse(result.ocr_latin_only)
+
 
 class SharperRasterTests(unittest.TestCase):
     """线条字从更清楚的图上读（真实图纸上 200 dpi 漏掉的淡灰小字，300 dpi 能找到）。"""

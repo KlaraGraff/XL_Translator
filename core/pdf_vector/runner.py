@@ -106,6 +106,9 @@ class InplaceResult:
     ocr_used: bool = False
     # 原文是中日韩文字，画成线条的字没有去识别（只有西文的识别数据）
     ocr_skipped_cjk: bool = False
+    # 原文语言为「自动识别」，画成线条的字只交给了旧的 Tesseract（只认西文）：
+    # 页面是画成线条的中文、日文时一处都读不对，要提示更新文字识别组件
+    ocr_latin_only: bool = False
     source_lang: str = ""
     unrecognized_regions: int = 0
     error: str = ""
@@ -262,6 +265,7 @@ def translate_page_inplace(
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe) or use_reader,
         ocr_skipped_cjk=bool(cjk_source and not native_only and not use_reader),
+        ocr_latin_only=bool(auto_source and exe and not use_reader),
         source_lang=source_lang,
         unrecognized_regions=int((check.get("unrecognized_text") or {}).get("candidates") or 0),
         scene_profile=summary.get("scene_profile", ""),
