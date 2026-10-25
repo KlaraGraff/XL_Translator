@@ -145,6 +145,42 @@ class InplaceTaskTests(unittest.TestCase):
         with fitz.open(record.translated_pdf_path) as out:
             self.assertIn("Plan de toiture", out[1].get_text())
 
+    def test_old_latin_only_ocr_with_auto_source_says_to_update_the_component(self):
+        # 从旧版升级、还没点「更新」：原文「自动识别」时线条中文交给旧 Tesseract 读成乱码，
+        # 页面和整份文件都要说去更新「文字识别组件」，不能只说「识别结果像乱码」。
+        from core.pdf_vector import InplaceResult
+
+        garbled = InplaceResult(ok=True, written=0, review=2, ocr_used=True, ocr_latin_only=True, review_items=[
+            {"text": "fevvpevee", "reason": "识别结果像乱码", "box_px": [0, 0, 1, 1]},
+            {"text": "Ans", "reason": "识别结果像乱码", "box_px": [0, 0, 1, 1]},
+        ])
+        with patch("core.pdf_vector.translate_page_inplace", return_value=garbled):
+            _runner, record, _client = self._run(sizes=(A2,), text=(True,))
+        page = record.pages[0]
+        self.assertEqual(page.inplace_status, "kept_original")
+        self.assertEqual(
+            page.inplace_message,
+            "识别到 2 处文字，均未替换（识别结果像乱码）；当前的文字识别组件只能识别英文、法文等西方文字，"
+            "画成线条的中文、日文需在「扩展 → 组件」中更新「文字识别组件」后才能识别，这一页保留原样",
+        )
+        self.assertIn("更新「文字识别组件」", record.error)
+
+    def test_old_latin_only_ocr_hint_only_when_strokes_came_out_garbled(self):
+        from core.pdf_vector import InplaceResult
+
+        def message(items):
+            result = InplaceResult(ok=True, written=3, kept=1, review=len(items), ocr_used=True,
+                                   ocr_latin_only=True, review_items=items)
+            with patch("core.pdf_vector.translate_page_inplace", return_value=result):
+                _runner, record, _client = self._run(sizes=(A2,), text=(True,))
+            return record.pages[0].inplace_message
+
+        # 西文图纸译好了，只有一处看不清：不提示更新
+        self.assertNotIn("更新", message([{"text": "N1VEAU", "reason": "识别把握不大", "box_px": [0, 0, 1, 1]}]))
+        # 西文译好了，旁边的线条中文读成乱码：提示更新
+        self.assertIn("更新「文字识别组件」后才能识别",
+                      message([{"text": "fevvpevee", "reason": "识别结果像乱码", "box_px": [0, 0, 1, 1]}]))
+
     def test_large_page_where_only_rotated_text_was_found_says_so(self):
         # 只有一页大幅面图纸，识别到的字都是旋转的、没能确认：页面和整份文件都要照实说，
         # 不能说成「全部页面因幅面过大被跳过，请关闭「跳过 A3 及更大的页面」」。
