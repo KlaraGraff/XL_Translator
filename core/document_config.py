@@ -11,7 +11,7 @@ at a time.
 Two things are left out on purpose:
 
 * secrets — there are none in here, and none may ever be added;
-* machine-local paths — ``custom_output_dir`` and the remembered source folders
+* machine-local paths — ``custom_output_dir``, ``fallback_output_dir`` and the remembered source folders
   point at directories that do not exist on the machine importing the file.  A
   bundle that silently repoints someone's output at a missing path is worse
   than one that leaves their own choice alone.
@@ -59,7 +59,7 @@ DOCUMENT_CONFIG_SECTIONS = (
 )
 # Dropped from every exported section: a path from another machine.
 DOCUMENT_CONFIG_LOCAL_PATH_FIELDS = frozenset(
-    {"use_custom_output_dir", "custom_output_dir"}
+    {"use_custom_output_dir", "custom_output_dir", "fallback_output_dir"}
 )
 # v4 及以前的包里 pdf 节的速率项，导入时丢掉（见上面 v5 的说明）。
 _PRE_V5_PDF_RATE_KEYS = ("page_generation_concurrency", "page_retry_attempts")

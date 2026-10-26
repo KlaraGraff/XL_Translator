@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>紧凑输出设置 · 静态样张</title>
+  <style>
+    :root { color-scheme: light; --ink:#20252d; --muted:#69727d; --line:#dde3ea; --panel:#fff; --soft:#f5f7fa; --accent:#315f9f; --accent-soft:#eef4ff; --warn:#8d5b11; --warn-soft:#fff7e6; --danger:#a23c3c; --danger-soft:#fff0f0; --shadow:0 14px 38px rgba(28,40,58,.10); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#eef1f5; color:var(--ink); font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Noto Sans CJK SC",sans-serif; }
+    .page { max-width:1040px; margin:32px auto 56px; padding:0 24px; }
+    .mast { margin-bottom:20px; display:flex; justify-content:space-between; align-items:end; gap:16px; }
+    h1 { margin:0; font-size:24px; letter-spacing:-.02em; }
+    .mast p { color:var(--muted); margin:5px 0 0; }
+    .badge { color:var(--accent); background:#f7faff; border:1px solid #cbd8e8; border-radius:99px; padding:3px 8px; font-size:12px; white-space:nowrap; }
+    .grid { display:grid; grid-template-columns:minmax(330px,390px) minmax(0,1fr); gap:18px; align-items:start; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:15px; box-shadow:var(--shadow); overflow:hidden; }
+    .head { padding:16px 18px 12px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; }
+    .head h2 { margin:0; font-size:16px; }
+    .head p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+    .body { padding:16px 18px 18px; }
+    .field { margin-bottom:15px; }
+    .label { display:flex; justify-content:flex-start; align-items:center; gap:6px; color:var(--muted); font-size:12px; margin-bottom:6px; }
+    .help { color:var(--accent); font-weight:700; border:1px solid #c8d7ea; border-radius:50%; width:17px; height:17px; display:inline-flex; align-items:center; justify-content:center; font-size:11px; }
+    .seg { display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:3px; border:1px solid #cdd5df; border-radius:9px; background:var(--soft); }
+    .seg button { border:0; border-radius:6px; padding:7px 8px; background:transparent; color:var(--muted); font:inherit; cursor:default; }
+    .seg button.on { color:var(--accent); background:#fff; box-shadow:0 1px 4px rgba(28,40,58,.13); font-weight:600; }
+    .path { display:flex; gap:7px; }
+    .input { min-width:0; flex:1; border:1px solid #cdd5df; border-radius:8px; padding:8px 9px; color:#303945; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .button { border:1px solid #c9d3df; border-radius:8px; padding:7px 10px; background:#fff; color:var(--accent); font:inherit; white-space:nowrap; }
+    .hint { color:var(--muted); font-size:11px; margin-top:5px; }
+    .line { border-top:1px solid var(--line); margin:15px 0; }
+    .check { display:flex; align-items:center; gap:8px; color:var(--ink); font-size:13px; }
+    .check input { accent-color:var(--accent); width:15px; height:15px; margin:0; }
+    .callout { padding:10px 11px; border-radius:9px; background:var(--accent-soft); color:#38516e; border:1px solid #d8e3f2; font-size:11px; }
+    .callout.warn { background:var(--warn-soft); color:var(--warn); border-color:#ead7ad; }
+    .callout.danger { background:var(--danger-soft); color:var(--danger); border-color:#edcaca; }
+    .states { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .empty { border:1px dashed #bcc7d4; border-radius:8px; padding:12px; text-align:center; color:var(--muted); font-size:12px; background:#fbfcfd; }
+    .result { grid-column:1 / -1; }
+    .modal-backdrop { background:rgba(27,35,48,.28); padding:22px; }
+    .modal { max-width:410px; margin:auto; background:#fff; border-radius:12px; padding:18px; box-shadow:0 20px 60px rgba(12,22,38,.24); }
+    .modal h3 { margin:0 0 5px; font-size:15px; }
+    .modal p { margin:0; color:var(--muted); font-size:12px; }
+    .actions { display:flex; justify-content:flex-end; gap:7px; margin-top:15px; }
+    .danger-btn { color:#fff; background:var(--danger); border-color:var(--danger); }
+    code { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+    @media (max-width:800px) { .grid,.states { grid-template-columns:1fr; } .result { grid-column:auto; } .mast { display:block; } .badge { display:inline-flex; margin-top:10px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="mast">
+      <div><h1>紧凑输出设置</h1><p>右栏只保留必要选择；详细说明放在问号提示和结果提示里。</p></div>
+      <span class="badge">面向新用户 · 2026-10-26</span>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <div class="head"><div><h2>翻译页右栏实际样式</h2><p>放在“高级”折叠区内，不拉长右侧栏。</p></div><span class="badge">推荐</span></div>
+        <div class="body">
+          <div class="field">
+            <div class="label"><span>译文存放</span><span class="help">?</span></div>
+            <div class="seg"><button class="on">单独的翻译文件夹</button><button>直接放回源文件夹</button></div>
+          </div>
+          <div class="field">
+            <div class="label"><span>首选位置</span><span class="help">?</span></div>
+            <div class="seg"><button class="on">源文件旁</button><button>指定位置</button></div>
+          </div>
+          <div class="field">
+            <div class="label"><span>备用输出文件夹（可选）</span><span class="help">?</span></div>
+            <div class="path"><div class="input">未设置，失败时使用桌面</div><button class="button">选择</button></div>
+          </div>
+          <div class="line"></div>
+          <div class="hint">备用输出文件夹对上面两种译文存放方式都生效；翻译参数会自动写入文件属性。</div>
+        </div>
+      </article>
+
+      <div class="states">
+        <article class="card">
+          <div class="head"><div><h2>指定位置时</h2><p>只多显示一个路径框。</p></div><span class="badge">展开</span></div>
+          <div class="body">
+            <div class="field"><div class="label"><span>首选位置</span><span class="help">?</span></div><div class="path"><div class="input">/Users/maple/Documents/翻译结果</div><button class="button">选择</button></div></div>
+            <div class="field"><div class="label"><span>备用输出文件夹（可选）</span><span class="help">?</span></div><div class="path"><div class="input">/Users/maple/Desktop/翻译备用</div><button class="button">选择</button></div></div>
+            <div class="callout">实际顺序：首选位置 → 备用输出文件夹 → 桌面。</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head"><div><h2>空态 / 检查中</h2><p>没有备用位置也能正常工作。</p></div><span class="badge">状态</span></div>
+          <div class="body">
+            <div class="empty">未设置备用输出文件夹<br><small>首选位置失败时使用桌面。</small></div>
+            <div class="line"></div>
+            <div class="hint">正在检查首选位置……</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head"><div><h2>直接放回源文件夹</h2><p>只换首项，备用位置保持显示。</p></div><span class="badge">选择后</span></div>
+          <div class="body">
+            <div class="seg"><button>单独的翻译文件夹</button><button class="on">直接放回源文件夹</button></div>
+            <div class="callout" style="margin-top:12px">源文件不会覆盖；源文件夹无法写入时，仍按备用输出文件夹 → 桌面处理。</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head"><div><h2>结果提示</h2><p>只在发生兜底时提示实际位置。</p></div><span class="badge">完成后</span></div>
+          <div class="body">
+            <div class="callout warn"><strong>已改用备用输出文件夹。</strong><br>文件已生成到 <code>/Users/maple/Desktop/翻译备用/报价单_翻译输出_20261026_143015</code></div>
+          </div>
+        </article>
+      </div>
+
+      <article class="card result">
+        <div class="head"><div><h2>危险操作确认</h2><p>弹窗不占用右栏高度。</p></div><span class="badge">确认态</span></div>
+        <div class="modal-backdrop">
+          <div class="modal">
+            <h3>确认直接放回源文件夹？</h3>
+            <p>译文会和源文件放在一起。源文件不会被覆盖；写入失败时仍会使用备用输出文件夹和桌面。</p>
+            <div class="actions"><button class="button">取消</button><button class="button danger-btn">继续使用</button></div>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

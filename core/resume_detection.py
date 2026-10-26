@@ -21,6 +21,7 @@ from core.bilingual_writer import _sanitize_filename_fragment as _sanitize_bilin
 from core.excel_coverage import build_excel_coverage_plan, workbook_sheet_titles
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.language_registry import get_target_lang_display
+from core.output_metadata import read_translation_metadata
 from core.pdf_image_translation import (
     read_pdf_resume_manifest,
     reusable_pdf_pages,
@@ -264,6 +265,78 @@ def match_previous_output(
                 return found
         return None
 
+    return None
+
+
+def _metadata_matches_source(
+    path: Path,
+    *,
+    source_path: Path,
+    target_lang: str,
+    surface: str,
+) -> bool:
+    """Use file attributes when present to confirm a source-folder output.
+
+    Older outputs have no attributes and remain name-compatible.  A present
+    record with a different source or language is rejected so a similarly named
+    file cannot become a false resume baseline.
+    """
+    metadata = read_translation_metadata(path)
+    if metadata is None:
+        return True
+    if str(metadata.get("surface") or "") != surface:
+        return False
+    recorded_target = str(metadata.get("target_lang") or "")
+    if recorded_target and target_lang and recorded_target != target_lang:
+        return False
+    recorded_name = str(metadata.get("source_name") or "")
+    if recorded_name and recorded_name != source_path.name:
+        return False
+    recorded_path = str(metadata.get("source_path") or "")
+    if recorded_path:
+        try:
+            if Path(recorded_path).expanduser().resolve() != source_path.expanduser().resolve():
+                return False
+        except OSError:
+            pass
+    return True
+
+
+def match_source_folder_output(
+    source_path: str | Path,
+    target_lang: str,
+    surface: str,
+) -> Path | None:
+    """Find a generated sibling file when ``source_folder`` mode is enabled."""
+    source = Path(source_path)
+    root = source.parent
+    if surface in ("excel", "word"):
+        basename = source.name
+        if surface == "word":
+            basename = _normalize_word_output_name(basename)
+        elif basename.lower().endswith(".xls"):
+            basename = basename[:-4] + ".xlsx"
+        lang_display = _sanitize_bilingual_fragment(
+            get_target_lang_display(target_lang, include_optional=True)
+        )
+        candidates = [
+            root / bilingual_output_name(basename, lang_display, translation_only=False),
+            root / bilingual_output_name(basename, lang_display, translation_only=True),
+        ]
+        for candidate in candidates:
+            if candidate.is_file() and _metadata_matches_source(
+                candidate, source_path=source, target_lang=target_lang, surface=surface
+            ):
+                return candidate
+        return None
+    if surface == "pdf":
+        for variant_label in (None, "压缩", "高清"):
+            base_name = _pdf_base_name(source.name, target_lang, variant_label)
+            found = _find_highest_revision(root, Path(base_name).stem, Path(base_name).suffix)
+            if found is not None and _metadata_matches_source(
+                found, source_path=source, target_lang=target_lang, surface=surface
+            ):
+                return found
     return None
 
 
@@ -813,6 +886,7 @@ def detect_previous_output(
     source_lang: str | None = None,
     preferred_dir: str | None = None,
     formula_display_value_backfill: bool = True,
+    output_mode: str = "task_folder",
 ) -> dict[str, Any] | None:
     """检测扫描输入是否已有历史翻译产物；检测失败一律返回 None（绝不抛给调用方）。"""
     try:
@@ -825,6 +899,7 @@ def detect_previous_output(
             source_lang,
             preferred_dir,
             formula_display_value_backfill,
+            output_mode,
         )
     except Exception:  # noqa: BLE001 - 检测是可选增强，绝不能拖垮扫描主流程。
         logger.warning("[续译检测] detect_previous_output 内部异常，按未检测到处理。", exc_info=True)
@@ -840,6 +915,7 @@ def _detect_previous_output_impl(
     source_lang: str | None,
     preferred_dir: str | None,
     formula_display_value_backfill: bool = True,
+    output_mode: str = "task_folder",
 ) -> dict[str, Any] | None:
     resolved_source_lang = source_lang or _DEFAULT_SOURCE_LANG
     roots = _normalize_scan_roots(scan_roots)
@@ -848,13 +924,27 @@ def _detect_previous_output_impl(
 
     custom_root = Path(custom_output_root).expanduser() if custom_output_root else None
 
+    source_folder_mode = output_mode == "source_folder"
     per_root_dirs: dict[str, list[Path]] = {}
-    for root in roots:
-        per_root_dirs[str(root)] = _sort_dirs_newest_first(_root_output_dirs(root, custom_root))
+    if not source_folder_mode:
+        for root in roots:
+            per_root_dirs[str(root)] = _sort_dirs_newest_first(_root_output_dirs(root, custom_root))
 
     valid_preferred = _is_valid_preferred_dir(preferred_dir)
 
-    has_any_candidate = valid_preferred is not None or any(per_root_dirs.values())
+    source_folder_hits = (
+        any(
+            match_source_folder_output(Path(raw_path), target_lang, surface)
+            for item in items
+            for raw_path in [_item_path(item)]
+            if raw_path
+        )
+        if source_folder_mode
+        else False
+    )
+    has_any_candidate = (
+        source_folder_hits if source_folder_mode else valid_preferred is not None or any(per_root_dirs.values())
+    )
     if not has_any_candidate:
         return None
 
@@ -863,7 +953,19 @@ def _detect_previous_output_impl(
     candidates: list[dict[str, str]] = []
     selected_dir: Path | None = None
 
-    if single_root:
+    if source_folder_mode:
+        # The source folder itself is the read-only baseline for a source-folder
+        # task.  It is also the output root for the next run; writers resolve a
+        # fresh revision/file name and never replace the source file.
+        selected_dir = roots[0] if single_root else None
+        candidates = [
+            {
+                "dir": str(roots[0]),
+                "label": "源文件夹",
+                "timestamp": _dir_timestamp(roots[0]).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        ] if single_root else []
+    elif single_root:
         dirs = per_root_dirs[str(roots[0])]
         candidates = [
             {
@@ -883,6 +985,8 @@ def _detect_previous_output_impl(
             selected_dir = valid_preferred
 
     def resume_dir_for_root(root: Path) -> Path | None:
+        if source_folder_mode:
+            return root
         if valid_preferred is not None:
             return valid_preferred
         dirs = per_root_dirs[str(root)]
@@ -918,7 +1022,23 @@ def _detect_previous_output_impl(
             if resume_dir is not None and root is not None:
                 rel_dir, source_filename = _relative_dir_and_name(item_path, root)
 
-                if surface == "pdf":
+                if source_folder_mode:
+                    matched = match_source_folder_output(item_path, target_lang, surface)
+                    entry["matched_output"] = str(matched) if matched else None
+                    if matched and surface in {"excel", "word"}:
+                        status, untranslated = _classify_excel_or_word(
+                            surface,
+                            matched,
+                            item_path=item_path,
+                            target_lang=target_lang,
+                            source_lang=resolved_source_lang,
+                            formula_display_value_backfill=formula_display_value_backfill,
+                        )
+                        entry["status"] = status
+                        entry["untranslated_count"] = untranslated
+                    else:
+                        entry["status"] = "found" if matched else "none"
+                elif surface == "pdf":
                     relative_path_str = str(rel_dir / source_filename) if str(rel_dir) != "." else source_filename
                     result = _classify_pdf(
                         resume_dir,

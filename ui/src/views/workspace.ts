@@ -505,8 +505,12 @@ interface SurfaceState {
   targetLang: string;
   sourceLang: string;
   domainPreset: string;
+  /** 译文存放方式：单独建任务文件夹，或把译文放回源文件夹。 */
+  outputMode: "task_folder" | "source_folder";
   useCustomOutputDir: boolean;
   customOutputDir: string;
+  /** 首选位置不可用时尝试的备用输出根目录；最终再退回桌面。 */
+  fallbackOutputDir: string;
   task: LocalTask | null;
   /** Older persisted tasks omit source paths; their results remain viewable but cannot start a new run. */
   historyOnly: boolean;
@@ -599,8 +603,10 @@ function freshState(surface: Surface): SurfaceState {
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: NO_EXTRA_PROMPT,
+    outputMode: "task_folder",
     useCustomOutputDir: false,
     customOutputDir: "",
+    fallbackOutputDir: "",
     task: null,
     historyOnly: false,
     hasEverCompleted: false,
@@ -945,8 +951,10 @@ function applySettingsToStates(): void {
       st.toggles.set("excelAutofit", false);
     }
     const outputSettings = outputRecord(surface);
+    st.outputMode = oneOf(text(outputSettings.output_mode), ["task_folder", "source_folder"] as const, "task_folder");
     st.useCustomOutputDir = Boolean(outputSettings.use_custom_output_dir);
     st.customOutputDir = text(outputSettings.custom_output_dir);
+    st.fallbackOutputDir = text(outputSettings.fallback_output_dir);
   }
   for (const [surface, st] of states) {
     if (isExtSurface(surface)) applyExtSettings(surface, st);
@@ -971,6 +979,8 @@ function applyExtSettings(surface: ExtSurface, st: SurfaceState): void {
   st.domainPreset = text(saved.domain_preset, NO_EXTRA_PROMPT);
   st.useCustomOutputDir = Boolean(saved.use_custom_output_dir);
   st.customOutputDir = text(saved.custom_output_dir);
+  st.outputMode = oneOf(text(saved.output_mode), ["task_folder", "source_folder"] as const, "task_folder");
+  st.fallbackOutputDir = text(saved.fallback_output_dir);
 }
 
 /** 运行时注册的类型的目标语言、源语言和补充要求也能在「设置 · 翻译参数」里该类型的页签改，
@@ -1037,7 +1047,7 @@ let settingsDefaults: { app: JsonObject; extension: JsonObject } | null = null;
 /** 内置页右栏里能改的设置，按 `<页面>_<后缀>` 存；PDF 页的设置在 settings.pdf 一处。 */
 const PAGE_SETTING_SUFFIXES = ["source_lang", "target_lang", "domain_preset", "smart_context", "output", "review", "conversion"];
 /** 运行时注册类型的设置里，右栏能改的几项。 */
-const EXT_PAGE_SETTING_KEYS = ["source_lang", "target_lang", "domain_preset", "smart_context", "options", "use_custom_output_dir", "custom_output_dir"];
+const EXT_PAGE_SETTING_KEYS = ["source_lang", "target_lang", "domain_preset", "smart_context", "options", "use_custom_output_dir", "custom_output_dir", "output_mode", "fallback_output_dir"];
 /** settings.pdf 里不在 PDF 页右栏、而在「设置 · 翻译参数」里改的几项（重试、并发）。 */
 const PDF_NON_PAGE_KEY = /retry|concurrency/;
 
@@ -3608,17 +3618,62 @@ function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): st
   return options;
 }
 
-/** 输出位置：「源文件旁 / 自定义」，选自定义时下面出现路径框和「浏览」。 */
+/** 输出位置：先选译文放在单独任务文件夹还是源文件夹，再选单独任务文件夹的首选根目录。
+ * 首选位置失效时，备用根目录和桌面由后端自动接管；备用位置对两种译文存放方式都生效。 */
 function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
   const container = el("div");
-  container.append(createSegmented({
+  const outputMode = createSegmented({
+    options: [
+      { value: "task_folder", label: t("单独的翻译文件夹") },
+      { value: "source_folder", label: t("直接放回源文件夹") },
+    ],
+    value: st.outputMode,
+    disabled: active,
+    ariaLabel: t("译文存放"),
+    onChange: (choice) => {
+      const value = choice as SurfaceState["outputMode"];
+      const apply = (): void => {
+        const prev = st.outputMode;
+        st.outputMode = value;
+        rerender(surface);
+        void persistSettingsOrRevert(
+          surface,
+          outputSettingPatch(surface, "output_mode", value),
+          () => { st.outputMode = prev; },
+          t("译文存放"),
+        );
+      };
+      if (value === "source_folder" && st.outputMode !== value) {
+        openModal({
+          tone: "warn",
+          icon: "warn",
+          title: t("确认直接放回源文件夹？"),
+          body: [
+            t("译文会和源文件放在一起，源文件不会被覆盖。"),
+            t("源文件夹无法写入时，仍会使用备用输出文件夹，最后退回桌面。"),
+          ],
+          actions: [
+            { label: t("取消") },
+            { label: t("继续使用"), variant: "primary", onClick: apply },
+          ],
+        });
+      } else {
+        apply();
+      }
+    },
+  });
+  const outputField = createField(t("译文存放"), outputMode);
+  outputField.querySelector("label")?.append(createHintBadge(t("选择单独的翻译文件夹，或把译文放回源文件夹；源文件始终不会被覆盖。")));
+  container.append(outputField);
+
+  const preferred = createSegmented({
     options: [
       { value: "source", label: t("源文件旁") },
-      { value: "custom", label: t("自定义") },
+      { value: "custom", label: t("指定位置") },
     ],
     value: st.useCustomOutputDir ? "custom" : "source",
-    disabled: active,
-    ariaLabel: t("输出位置"),
+    disabled: active || st.outputMode === "source_folder",
+    ariaLabel: t("首选位置"),
     onChange: (choice) => {
       const value = choice === "custom";
       const prev = st.useCustomOutputDir;
@@ -3628,11 +3683,19 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
         surface,
         outputSettingPatch(surface, "use_custom_output_dir", value),
         () => { st.useCustomOutputDir = prev; },
-        t("输出位置"),
+        t("首选位置"),
       );
     },
-  }));
-  if (st.useCustomOutputDir) {
+  });
+  const preferredField = createField(t("首选位置"), preferred);
+  preferredField.querySelector("label")?.append(createHintBadge(t("单独的翻译文件夹会建在源文件旁，或建在你指定的位置。直接放回源文件夹时，这项不参与选择。")));
+  container.append(preferredField);
+
+  if (st.outputMode === "source_folder") {
+    const note = el("div", "hint");
+    note.textContent = t("当前会直接放回源文件夹；写入失败时使用下面的备用输出文件夹，最后退回桌面。");
+    container.append(note);
+  } else if (st.useCustomOutputDir) {
     const { root, input } = createTextField({
       label: "",
       value: st.customOutputDir,
@@ -3683,6 +3746,57 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
     line.append(root, browseBtn);
     container.append(line);
   }
+
+  const fallback = el("div", "out-dir-fallback");
+  const fallbackLabel = el("div", "hint");
+  fallbackLabel.append(document.createTextNode(t("备用输出文件夹")), createHintBadge(t("首选位置无法创建或写入时使用；如果这里也不可用，程序会自动退回桌面。")));
+  const fallbackInput = createTextField({
+    label: "",
+    value: st.fallbackOutputDir,
+    placeholder: t("未设置，失败时使用桌面"),
+    disabled: active,
+    onInput: (value) => { st.fallbackOutputDir = value; },
+  });
+  const saveFallbackDir = (): void => {
+    const prevDir = text(outputRecord(surface).fallback_output_dir);
+    void persistSettingsOrRevert(
+      surface,
+      outputSettingPatch(surface, "fallback_output_dir", st.fallbackOutputDir),
+      () => { st.fallbackOutputDir = prevDir; },
+      t("备用输出文件夹"),
+    );
+  };
+  fallbackInput.input.addEventListener("change", saveFallbackDir);
+  const relayoutFallback = showPathWithMiddleEllipsis(fallbackInput.input, () => st.fallbackOutputDir);
+  const browseFallback = createButton({
+    label: t("选择"),
+    icon: "folder",
+    size: "mini",
+    disabled: active,
+    onClick: () => void (async () => {
+      let picked: unknown;
+      try {
+        picked = await open({ title: t("选择备用输出文件夹"), directory: true, multiple: false, defaultPath: st.fallbackOutputDir.trim() || undefined });
+      } catch (error) {
+        showToast({ message: redactedText((error as Error)?.message, t("选择备用输出文件夹失败。")), error: true });
+        return;
+      }
+      if (typeof picked !== "string" || !picked.trim()) return;
+      st.fallbackOutputDir = picked;
+      fallbackInput.input.value = picked;
+      relayoutFallback();
+      saveFallbackDir();
+    })(),
+  });
+  fallback.append(fallbackLabel);
+  const fallbackLine = el("div", "out-dir");
+  fallbackLine.append(fallbackInput.root, browseFallback);
+  fallback.append(fallbackLine);
+  container.append(fallback);
+
+  const metadataHint = el("div", "hint");
+  metadataHint.textContent = t("翻译参数会自动写入输出文件属性，方便以后直接识别和继续翻译。");
+  container.append(metadataHint);
   return container;
 }
 

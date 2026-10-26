@@ -41,6 +41,7 @@ from core.task_runner import (
     user_facing_reason,
 )
 from core.process_artifacts import ProcessArtifacts, find_process_dirs
+from core.output_metadata import build_translation_metadata, write_translation_metadata
 
 
 # 每个图纸内部的 5 步，归到所有翻译页面共用的阶段名（读取文件 / 翻译 / 生成文件）
@@ -589,6 +590,21 @@ class CadTaskRunner(BaseTaskRunner):
                     if prior_output.is_file() and prior_manifest.is_file():
                         output.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(prior_output, output)
+                        write_translation_metadata(
+                            output,
+                            build_translation_metadata(
+                                surface="cad",
+                                source_path=source,
+                                target_lang=self._options.target_lang,
+                                source_lang=self._options.source_lang,
+                                parameters={
+                                    "pipeline": pipeline_options_snapshot(self._options),
+                                    "translation": self._translation_identity,
+                                },
+                                output_mode=str(self._translation_identity.get("output_mode") or "task_folder"),
+                                fallback_used=str(self._translation_identity.get("fallback_used") or ""),
+                            ),
+                        )
                         copied_paths: dict[str, str] = {}
                         try:
                             output_relative = output.relative_to(self._publication_dir)
@@ -658,6 +674,20 @@ class CadTaskRunner(BaseTaskRunner):
                     stop_requested=self._stop_event.is_set,
                 )
                     result = self._publish_result(result, output)
+                    metadata = build_translation_metadata(
+                        surface="cad",
+                        source_path=source,
+                        target_lang=self._options.target_lang,
+                        source_lang=self._options.source_lang,
+                        parameters={
+                            "pipeline": pipeline_options_snapshot(self._options),
+                            "translation": self._translation_identity,
+                        },
+                        output_mode=str(self._translation_identity.get("output_mode") or "task_folder"),
+                        fallback_used=str(self._translation_identity.get("fallback_used") or ""),
+                    )
+                    if not write_translation_metadata(result.output, metadata):
+                        logger.debug("CAD 输出不支持写入 XL_Translator 文件属性：%s", result.output)
                     if self._options.copy_related_files:
                         for related in source.parent.glob(f"{source.stem}.*"):
                             if related == source or related.suffix.lower() in {".dwg", ".dxf"}:

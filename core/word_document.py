@@ -48,6 +48,7 @@ from core.word_inline_marks import (
     strip_marks,
 )
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
+from core.output_metadata import is_translation_output
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
@@ -387,6 +388,8 @@ def scan_word_sources(path: str | Path) -> WordScanResult:
         return result
 
     if source.is_file():
+        if is_translation_output(source):
+            return result
         _scan_one_word_file(source, source.parent, result)
     elif source.is_dir():
         for candidate in sorted(source.rglob("*")):
@@ -401,6 +404,8 @@ def scan_word_sources(path: str | Path) -> WordScanResult:
             if _is_generated_output(Path(relative)):
                 continue
             if candidate.suffix.lower() not in SUPPORTED_WORD_SUFFIXES:
+                continue
+            if is_translation_output(candidate):
                 continue
             _scan_one_word_file(candidate, source, result)
     else:

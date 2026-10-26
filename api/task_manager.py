@@ -363,12 +363,15 @@ class TranslationTaskManager:
                 raise TaskInputError("请先选择要翻译的文件或文件夹。")
             source = Path(normalized).expanduser().resolve()
             roots.append(source if source.is_dir() else source.parent)
+        share_batch_output = True
         external_owners: list[str] = []
         for surface, _, _, options in items:
             spec = get_surface(surface)
             settings = self._settings_loader().model_copy(deep=True)
             activate_translation_surface(settings, spec.key)
             _apply_target_lang(settings, spec, options.target_lang)
+            if surface_setting(settings, spec.key, "output_mode", "task_folder") != "task_folder":
+                share_batch_output = False
             context = task_api_context_for_page(
                 settings, spec.page_key, busy_connection_ids=self._busy_connection_ids()
             )
@@ -393,9 +396,13 @@ class TranslationTaskManager:
                 )
             return {"requires_confirmation": True, "shared_with": labels}
 
-        common = Path(os.path.commonpath([str(root) for root in roots]))
-        output_dir = bilingual_writer.build_output_dir(common)
-        output_dir.mkdir(parents=True, exist_ok=False)
+        output_dir: Path | None = None
+        if share_batch_output:
+            common = Path(os.path.commonpath([str(root) for root in roots]))
+            output_dir = bilingual_writer.resolve_output_directory(
+                common,
+                output_mode=bilingual_writer.OUTPUT_MODE_TASK_FOLDER,
+            ).output_dir
         started: list[dict[str, Any]] = []
         failed: list[dict[str, str]] = []
         for surface, source_path, selected_paths, options in items:
@@ -404,7 +411,10 @@ class TranslationTaskManager:
                     surface=surface,
                     source_path=source_path,
                     selected_paths=selected_paths,
-                    options=replace(options, batch_output_dir=str(output_dir)),
+                    options=replace(
+                        options,
+                        batch_output_dir=str(output_dir) if output_dir is not None else "",
+                    ),
                 )
                 started.append(self._start_prepared(prepared, expected_revision=None))
             except (TaskInputError, TaskConflictError) as exc:
@@ -424,14 +434,14 @@ class TranslationTaskManager:
                         "reason": "",
                     }
                 )
-        if not started:
+        if not started and output_dir is not None:
             try:
                 output_dir.rmdir()
             except OSError:
                 pass
         return {
             "requires_confirmation": False,
-            "output_dir": str(output_dir) if started else "",
+            "output_dir": str(output_dir) if started and output_dir is not None else "",
             "tasks": started,
             "failed": failed,
         }

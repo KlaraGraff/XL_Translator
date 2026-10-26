@@ -119,6 +119,7 @@ def register(app: FastAPI) -> None:
                 target_lang=target_lang,
                 source_lang=source_lang,
                 preferred_dir=request.preferred_resume_dir,
+                output_mode=str(getattr(output_settings, "output_mode", "task_folder") or "task_folder"),
                 # Excel 的补译计划按这个开关决定公式格进不进待译集合，检测层
                 # 必须同一套口径，否则弹窗数字和任务实际行为对不上。
                 formula_display_value_backfill=(

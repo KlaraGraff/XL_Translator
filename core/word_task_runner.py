@@ -33,7 +33,12 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
-from core.bilingual_writer import get_custom_output_dir_error
+from core import bilingual_writer
+from core.output_metadata import (
+    build_translation_metadata,
+    metadata_parameters,
+    write_translation_metadata,
+)
 from core.coverage_arbitration import RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
 from core.translation_coverage import format_ignored_coverage_report
@@ -103,6 +108,7 @@ from core.residual_repair import (
 from core.resume_detection import (
     baseline_missing_source_texts,
     describe_baseline_divergence,
+    match_source_folder_output,
     match_previous_output,
 )
 from core.task_logger import TaskLogger
@@ -153,7 +159,7 @@ from core.word_document import (
     WordFileItem,
     WordFrontMatterBoundary,
     WordSegment,
-    build_word_output_dir,
+    build_word_output_dir,  # noqa: F401 - retained as a patch seam for legacy tests/plugins
     detect_hidden_word_content,
     docx_has_possible_automatic_numbering,
     extract_word_header_footer_segments,
@@ -522,13 +528,20 @@ class WordTaskRunner(BaseTaskRunner):
             # report_英文_双语.docx 这种不可能存在的路径，生产环境恒定失配——
             # 必须先取父目录。
             rel_dir = Path(file_item.relative_path).parent if file_item.relative_path else Path(".")
-            candidate = match_previous_output(
-                self._resume_output_dir,
-                str(rel_dir),
-                file_item.path.name,
-                target_lang,
-                "word",
-            )
+            if self._settings.word_output.output_mode == "source_folder":
+                candidate = match_source_folder_output(
+                    file_item.path,
+                    target_lang,
+                    "word",
+                )
+            else:
+                candidate = match_previous_output(
+                    self._resume_output_dir,
+                    str(rel_dir),
+                    file_item.path.name,
+                    target_lang,
+                    "word",
+                )
         except Exception as exc:
             logger.debug(f"续译底稿定位失败原始错误 {file_item.name}：{exc!r}")
             self._log(
@@ -849,13 +862,22 @@ class WordTaskRunner(BaseTaskRunner):
         custom_output_dir = (
             word_output.custom_output_dir if word_output.use_custom_output_dir else None
         )
+        fallback_output_dir = word_output.fallback_output_dir.strip() or None
         try:
-            if word_output.use_custom_output_dir:
-                output_error = get_custom_output_dir_error(custom_output_dir)
-                if output_error is not None:
-                    raise ValueError(output_error)
-            output_dir = self._batch_output_dir or build_word_output_dir(root_for_output, custom_output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            output_resolution = bilingual_writer.resolve_output_directory(
+                root_for_output,
+                custom_output_dir=custom_output_dir,
+                fallback_output_dir=fallback_output_dir,
+                output_mode=word_output.output_mode,
+                batch_output_dir=self._batch_output_dir,
+                primary_output_dir=(
+                    build_word_output_dir(root_for_output, custom_output_dir)
+                    if word_output.output_mode == "task_folder" and not self._batch_output_dir
+                    else None
+                ),
+            )
+            output_dir = output_resolution.output_dir
+            self._output_resolution = output_resolution
         except Exception as exc:
             logger.debug(f"Word 输出目录初始化失败原始错误：{exc!r}")
             self._file_progress.emit_many("unstarted", "not_started")
@@ -869,6 +891,13 @@ class WordTaskRunner(BaseTaskRunner):
                 )
             )
             return
+
+        if output_resolution.fallback_used:
+            self._log(
+                "WARN",
+                "首选输出位置不可用，已改用"
+                + ("备用输出文件夹。" if output_resolution.fallback_used == "fallback" else "桌面。"),
+            )
 
         process_artifacts: ProcessArtifacts | None = None
         process_finished = False
@@ -3347,6 +3376,17 @@ class WordTaskRunner(BaseTaskRunner):
             }
             _publish_word_file(out_path, final_path)
             committed_out_path = final_path
+            metadata = build_translation_metadata(
+                surface="word",
+                source_path=file_item.path,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                parameters=metadata_parameters(settings, "word"),
+                output_mode=word_output.output_mode,
+                fallback_used=getattr(getattr(self, "_output_resolution", None), "fallback_used", ""),
+            )
+            if not write_translation_metadata(final_path, metadata):
+                logger.debug("Word 输出文件不支持写入 XL_Translator 文件属性：%s", final_path)
             file_results.append(success_record)
             self._file_progress.emit(
                 file_item.path, "generated", "generate",

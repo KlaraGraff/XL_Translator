@@ -17,7 +17,6 @@ from api.surfaces.base import (
     suffixes,
 )
 from api.task_contracts import REASON_NEEDS_CONFIRMATION, Runner, TaskInputError, TaskOptions
-from core import bilingual_writer
 from core.file_scanner import SUPPORTED_EXCEL_SUFFIXES, scan_excel_sources, scan_path
 from core.task_runner import TaskRunner
 from core.xls_converter import (
@@ -64,14 +63,6 @@ class ExcelSurface(Surface):
         """Fail before task creation for deterministic Excel input/settings issues."""
         require_target_lang(settings.target_lang, "Excel")
         require_translation_model(settings)
-        excel_output = settings.excel_output
-        if excel_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                excel_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
-
         xls_files = [item for item in files if file_format(item) == "xls"]
         if not xls_files or options.allow_xls_fallback:
             return

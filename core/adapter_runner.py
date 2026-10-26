@@ -49,6 +49,7 @@ from typing import Any
 from loguru import logger
 
 from core.bilingual_writer import bilingual_output_name
+from core.output_metadata import build_translation_metadata, write_translation_metadata
 from core.document_profile import append_profile
 from core.file_progress import FileProgressReporter, file_progress_id
 from core.format_adapter import TARGET_LANG_OPTION_KEY, AdapterError, AdapterHost
@@ -233,6 +234,10 @@ class AdapterTaskRunner(BaseTaskRunner):
         options: Mapping[str, Any] | None = None,
         key_overrides: dict[str, str] | None = None,
         label: str = "",
+        translation_parameters: Mapping[str, Any] | None = None,
+        output_mode: str = "task_folder",
+        fallback_used: str = "",
+        surface_key: str = "extension",
     ) -> None:
         self._init_runner_shell()
         self._files = list(files)
@@ -247,6 +252,10 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._options = {**dict(options or {}), TARGET_LANG_OPTION_KEY: target_lang}
         self._key_overrides = dict(key_overrides or {})
         self._label = label
+        self._translation_parameters = dict(translation_parameters or {})
+        self._output_mode = str(output_mode or "task_folder")
+        self._fallback_used = str(fallback_used or "")
+        self._surface_key = str(surface_key or "extension")
         self._pause_event = threading.Event()
         self._file_progress = FileProgressReporter(self._queue, self._files, self._source_root)
         weights = [1.0 + self._size_kb(item) / 50 for item in self._files] or [1.0]
@@ -489,6 +498,17 @@ class AdapterTaskRunner(BaseTaskRunner):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             output = self._host.write(path, written, self._mode, out_path, self._options)
+            metadata = build_translation_metadata(
+                surface=self._surface_key,
+                source_path=path,
+                target_lang=self._target_lang,
+                source_lang=self._source_lang,
+                parameters=self._translation_parameters,
+                output_mode=self._output_mode,
+                fallback_used=self._fallback_used,
+            )
+            if not write_translation_metadata(output.path, metadata):
+                logger.debug("扩展输出不支持写入 XL_Translator 文件属性：%s", output.path)
         except (AdapterError, OSError) as exc:
             self._forget_review(path)
             return self._failed(item, exc, fallback="无法写出此文件。")

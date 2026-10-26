@@ -17,6 +17,7 @@ import shutil
 import stat
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,113 @@ from core.user_facing_errors import humanize_error
 from core.xlsx_patcher import merged_rows_by_sheet, write_bilingual_workbook
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+OUTPUT_MODE_TASK_FOLDER = "task_folder"
+OUTPUT_MODE_SOURCE_FOLDER = "source_folder"
+
+
+@dataclass(frozen=True)
+class OutputDirectoryResolution:
+    """实际用于本次任务的输出根目录及其兜底信息。"""
+
+    output_dir: Path
+    requested_mode: str
+    fallback_used: str = ""
+    attempts: tuple[str, ...] = ()
+
+
+def _probe_output_directory(path: Path) -> None:
+    """创建并实际写入一个短暂探针，确认目录不是“看起来可用”。"""
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / f".xlt-output-probe-{uuid.uuid4().hex}"
+    try:
+        with probe.open("xb") as stream:
+            stream.write(b"ok")
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            # A transient cleanup failure (for example, a locked probe on
+            # Windows) does not mean the directory cannot receive outputs.
+            # The probe is hidden and the actual output path remains usable.
+            pass
+
+
+def desktop_output_root() -> Path:
+    """Return the user's Desktop when available, with home as a last OS fallback."""
+    desktop = Path.home() / "Desktop"
+    try:
+        if desktop.exists() and desktop.is_dir():
+            return desktop
+    except OSError:
+        pass
+    return Path.home()
+
+
+def resolve_output_directory(
+    source_root: str | Path,
+    *,
+    custom_output_dir: str | Path | None = None,
+    fallback_output_dir: str | Path | None = None,
+    output_mode: str = OUTPUT_MODE_TASK_FOLDER,
+    batch_output_dir: str | Path | None = None,
+    primary_output_dir: str | Path | None = None,
+) -> OutputDirectoryResolution:
+    """Choose a writable output root without turning a bad path into task failure.
+
+    The primary location is tried first.  A configured fallback root is tried
+    next, and a task folder on the Desktop is always the final candidate.  In
+    ``source_folder`` mode the source root itself is the primary location;
+    fallback candidates are task folders so a failed source folder does not
+    scatter files across the Desktop.
+    """
+    source = Path(source_root).expanduser()
+    mode = output_mode if output_mode in {OUTPUT_MODE_TASK_FOLDER, OUTPUT_MODE_SOURCE_FOLDER} else OUTPUT_MODE_TASK_FOLDER
+    attempts: list[str] = []
+    candidates: list[tuple[str, Path]] = []
+
+    if batch_output_dir:
+        candidates.append(("batch", Path(batch_output_dir).expanduser()))
+    elif mode == OUTPUT_MODE_SOURCE_FOLDER:
+        candidates.append(("source", source))
+    else:
+        candidates.append(
+            (
+                "primary",
+                Path(primary_output_dir).expanduser()
+                if primary_output_dir is not None
+                else build_output_dir(source, custom_output_dir),
+            )
+        )
+
+    if fallback_output_dir:
+        candidates.append(("fallback", build_output_dir(source, fallback_output_dir)))
+    desktop_root = desktop_output_root()
+    candidates.append(("desktop", build_output_dir(source, desktop_root)))
+
+    seen: set[str] = set()
+    for label, candidate in candidates:
+        try:
+            key = str(candidate.expanduser().resolve())
+        except OSError:
+            key = str(candidate.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            _probe_output_directory(candidate)
+            return OutputDirectoryResolution(
+                output_dir=candidate,
+                requested_mode=mode,
+                fallback_used="" if label in {"primary", "source", "batch"} else label,
+                attempts=tuple(attempts),
+            )
+        except (OSError, ValueError) as exc:
+            attempts.append(f"{label}: {exc}")
+
+    raise OSError("首选位置、备用输出文件夹和桌面均无法写入")
 
 
 def _ensure_owner_writable(path: Path) -> None:

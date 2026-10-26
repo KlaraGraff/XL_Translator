@@ -22,6 +22,7 @@ from loguru import logger
 from lxml import etree
 
 from core.user_facing_errors import humanize_error
+from core.output_metadata import is_translation_output
 from core.xlsx_patcher import (
     NS_A,
     NS_XDR,
@@ -189,6 +190,8 @@ def scan_excel_sources(path: str | Path) -> ExcelScanResult:
         return result
 
     if source.is_file():
+        if is_translation_output(source):
+            return result
         _scan_one_excel_file(source, source.parent, result)
     elif source.is_dir():
         for candidate in sorted(source.rglob("*")):
@@ -203,6 +206,8 @@ def scan_excel_sources(path: str | Path) -> ExcelScanResult:
             if _is_generated_output(Path(relative)):
                 continue
             if candidate.suffix.lower() not in SUPPORTED_EXCEL_SUFFIXES:
+                continue
+            if is_translation_output(candidate):
                 continue
             _scan_one_excel_file(candidate, source, result)
     else:

@@ -13,7 +13,7 @@ import pytest
 
 from api.surfaces.adapter import AdapterSurface
 from api.surfaces.base import RunnerRequest
-from api.task_contracts import TaskInputError, TaskOptions
+from api.task_contracts import TaskOptions
 from core.document_config import build_document_config_export_payload
 from core import tm_manager
 from core.adapter_subprocess_host import SubprocessAdapterHost
@@ -101,14 +101,18 @@ def test_the_page_writes_to_its_own_output_location(tmp_path: Path):
     assert surface.build_runner(_runner_request(settings, source))._output_dir.parent == source
 
 
-def test_an_unusable_output_location_stops_the_task_before_it_starts(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("api.surfaces.adapter.require_translation_model", lambda settings: None)
+def test_an_unusable_output_location_uses_the_configured_fallback(tmp_path: Path):
     blocker = tmp_path / "a-file"
     blocker.write_text("x", encoding="utf-8")
+    fallback = tmp_path / "fallback"
     settings = AppSettings(target_lang="fr")
-    settings.extensions["echo"] = ExtensionSettings(use_custom_output_dir=True, custom_output_dir=str(blocker))
-    with pytest.raises(TaskInputError, match="是文件而非文件夹"):
-        _surface().validate_preflight(files=[object()], settings=settings, options=TaskOptions())
+    settings.extensions["echo"] = ExtensionSettings(
+        use_custom_output_dir=True,
+        custom_output_dir=str(blocker),
+        fallback_output_dir=str(fallback),
+    )
+    runner = _surface().build_runner(_runner_request(settings, tmp_path / "docs"))
+    assert runner._output_dir.parent == fallback
 
 
 def test_old_settings_files_read_without_the_new_fields():

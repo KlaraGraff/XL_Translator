@@ -29,6 +29,8 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from core.output_metadata import is_translation_output
+
 from core.cad_cache import CadDxfCache
 from core.cad_layout import (
     FitSettings,
@@ -557,6 +559,7 @@ def list_cad_files(paths: Iterable[str | Path]) -> list[Path]:
                 for candidate in sorted(path.rglob("*"))
                 if candidate.is_file()
                 and candidate.suffix.lower() in CAD_SUPPORTED_EXTENSIONS
+                and not is_translation_output(candidate)
                 and not any(
                     part in {"CAD翻译输出", ".cad-work", ".cad-review"}
                     or part.endswith("_翻译输出")
@@ -564,7 +567,11 @@ def list_cad_files(paths: Iterable[str | Path]) -> list[Path]:
                     for part in candidate.relative_to(path).parts
                 )
             )
-        elif path.is_file() and path.suffix.lower() in CAD_SUPPORTED_EXTENSIONS:
+        elif (
+            path.is_file()
+            and path.suffix.lower() in CAD_SUPPORTED_EXTENSIONS
+            and not is_translation_output(path)
+        ):
             files.append(path)
     return list(dict.fromkeys(files))
 

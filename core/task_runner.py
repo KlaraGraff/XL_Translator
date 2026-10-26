@@ -23,6 +23,11 @@ from loguru import logger
 from lxml import etree
 
 from core import bilingual_writer
+from core.output_metadata import (
+    build_translation_metadata,
+    metadata_parameters,
+    write_translation_metadata,
+)
 from core.excel_sheet_naming import rename_worksheets
 from core.phase_progress import PhaseProgress
 from core.request_log import BatchRequestLog
@@ -526,14 +531,17 @@ class TaskRunner(BaseTaskRunner):
             if excel_output.use_custom_output_dir
             else None
         )
+        fallback_output_dir = excel_output.fallback_output_dir.strip() or None
         try:
-            if excel_output.use_custom_output_dir:
-                output_dir_error = bilingual_writer.get_custom_output_dir_error(custom_output_dir)
-                if output_dir_error is not None:
-                    raise ValueError(output_dir_error)
-
-            output_dir = self._batch_output_dir or bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            output_resolution = bilingual_writer.resolve_output_directory(
+                root_for_output,
+                custom_output_dir=custom_output_dir,
+                fallback_output_dir=fallback_output_dir,
+                output_mode=excel_output.output_mode,
+                batch_output_dir=self._batch_output_dir,
+            )
+            output_dir = output_resolution.output_dir
+            self._output_resolution = output_resolution
         except Exception as e:
             logger.debug(f"输出目录初始化失败原始错误：{e!r}")
             self._file_progress.emit_many("unstarted", "not_started")
@@ -547,6 +555,13 @@ class TaskRunner(BaseTaskRunner):
                 )
             )
             return
+
+        if output_resolution.fallback_used:
+            self._log(
+                "WARN",
+                "首选输出位置不可用，已改用"
+                + ("备用输出文件夹。" if output_resolution.fallback_used == "fallback" else "桌面。"),
+            )
 
         process_artifacts: ProcessArtifacts | None = None
         process_finished = False
@@ -2306,15 +2321,23 @@ class TaskRunner(BaseTaskRunner):
                 from core.resume_detection import (
                     baseline_missing_source_texts,
                     describe_baseline_divergence,
+                    match_source_folder_output,
                     match_previous_output,
                 )
-                candidate = match_previous_output(
-                    self._resume_output_dir,
-                    str(rel_dir),
-                    naming_source_name,
-                    target_lang,
-                    "excel",
-                )
+                if excel_output.output_mode == "source_folder":
+                    candidate = match_source_folder_output(
+                        process_path,
+                        target_lang,
+                        "excel",
+                    )
+                else:
+                    candidate = match_previous_output(
+                        self._resume_output_dir,
+                        str(rel_dir),
+                        naming_source_name,
+                        target_lang,
+                        "excel",
+                    )
             except Exception as e:
                 candidate = None
                 logger.debug(f"续译底稿匹配失败原始错误 {file_item.name}：{e!r}")
@@ -2866,6 +2889,17 @@ class TaskRunner(BaseTaskRunner):
                         })
                 else:
                     self._log("INFO", f"[{file_item.name}] 工作表名称无可用译名，保留原名。")
+            metadata = build_translation_metadata(
+                surface="excel",
+                source_path=file_item.path,
+                target_lang=target_lang,
+                source_lang=file_source_langs.get(str(file_item.path), source_lang),
+                parameters=metadata_parameters(self._settings, "excel"),
+                output_mode=excel_output.output_mode,
+                fallback_used=getattr(getattr(self, "_output_resolution", None), "fallback_used", ""),
+            )
+            if not write_translation_metadata(out_path, metadata):
+                logger.debug("Excel 输出文件不支持写入 XL_Translator 文件属性：%s", out_path)
             write_elapsed = (datetime.now() - t0).total_seconds()
             self._task_logger.file_write_done(file_item.name, write_elapsed)
 

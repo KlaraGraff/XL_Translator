@@ -782,6 +782,10 @@ class OutputSettings(BaseModel):
     formula_display_value_backfill: bool = True
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
+    # 任务文件夹（当前默认）或直接把译文放回源文件夹。旧设置没有此字段时按任务文件夹补齐。
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    # 首选位置无法创建或写入时使用；再失败由运行时退回桌面。
+    fallback_output_dir: str = ""
     enable_excel_autofit: bool = False
     lock_row_height: bool = True
 
@@ -801,6 +805,8 @@ class ExcelOutputSettings(BaseModel):
     formula_display_value_backfill: bool = True
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    fallback_output_dir: str = ""
     enable_excel_autofit: bool = False
     lock_row_height: bool = False
     # 批注（V10.1 起）。旧版 settings.json 没有这个键时按默认值补齐（加法改动，无需迁移）：
@@ -821,6 +827,8 @@ class WordOutputSettings(BaseModel):
     use_custom_output_dir: bool = False
     translate_output_filename: bool = False
     custom_output_dir: str = ""
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    fallback_output_dir: str = ""
     output_translation_only: bool = False
 
 
@@ -834,6 +842,8 @@ class PdfOutputSettings(BaseModel):
     use_custom_output_dir: bool = False
     translate_output_filename: bool = False
     custom_output_dir: str = ""
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    fallback_output_dir: str = ""
 
 
 class CadOutputSettings(BaseModel):
@@ -841,6 +851,8 @@ class CadOutputSettings(BaseModel):
 
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    fallback_output_dir: str = ""
     translate_output_filename: bool = False
     # 以下三项是 CAD 页右栏「本类型选项」的开关，和 Excel/Word/PDF 一样改了就存。
     # 旧版 settings.json 没有这几个键时按默认值补齐（加法改动，无需迁移）。
@@ -1389,6 +1401,8 @@ class ExtensionSettings(BaseModel):
     # 输出位置（与 Word 页的 word_output 同两项）：关着时写在来源文件夹里。加法改动，旧文件读时补默认值。
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
+    output_mode: Literal["task_folder", "source_folder"] = "task_folder"
+    fallback_output_dir: str = ""
 
 
 class TranslationTypesSettings(BaseModel):

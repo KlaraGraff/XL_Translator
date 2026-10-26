@@ -1874,5 +1874,77 @@
   "通过「浏览」选择文件或文件夹后将自动扫描，找到的{0}将列于此处，可逐个勾选。": {
     "en": "Select files or a folder with “Browse” to scan them automatically. The {0} found are listed here and can be selected individually.",
     "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les {0} trouvés s'affichent ici et peuvent être cochés un par un."
+  },
+  "译文存放": {
+    "en": "Translation placement",
+    "fr": "Emplacement de la traduction"
+  },
+  "单独的翻译文件夹": {
+    "en": "Separate translation folder",
+    "fr": "Dossier de traduction séparé"
+  },
+  "直接放回源文件夹": {
+    "en": "Put beside source files",
+    "fr": "Placer avec les fichiers source"
+  },
+  "确认直接放回源文件夹？": {
+    "en": "Put translations beside the source files?",
+    "fr": "Placer les traductions avec les fichiers source ?"
+  },
+  "译文会和源文件放在一起，源文件不会被覆盖。": {
+    "en": "Translations will be beside the source files; the source files will not be overwritten.",
+    "fr": "Les traductions seront placées avec les fichiers source, qui ne seront pas écrasés."
+  },
+  "源文件夹无法写入时，仍会使用备用输出文件夹，最后退回桌面。": {
+    "en": "If the source folder cannot be written, the backup output folder is used, then the Desktop.",
+    "fr": "Si le dossier source ne peut pas être écrit, le dossier de sortie de secours sera utilisé, puis le Bureau."
+  },
+  "继续使用": {
+    "en": "Continue",
+    "fr": "Continuer"
+  },
+  "首选位置": {
+    "en": "Preferred location",
+    "fr": "Emplacement préféré"
+  },
+  "指定位置": {
+    "en": "Choose a location",
+    "fr": "Choisir un emplacement"
+  },
+  "选择单独的翻译文件夹，或把译文放回源文件夹；源文件始终不会被覆盖。": {
+    "en": "Use a separate translation folder or place translations beside the source files; source files are never overwritten.",
+    "fr": "Utilisez un dossier de traduction séparé ou placez les traductions avec les fichiers source ; les fichiers source ne sont jamais écrasés."
+  },
+  "单独的翻译文件夹会建在源文件旁，或建在你指定的位置。直接放回源文件夹时，这项不参与选择。": {
+    "en": "A separate translation folder is created beside the source files or at the location you choose. It does not apply when translations are placed beside the source files.",
+    "fr": "Un dossier de traduction séparé est créé près des fichiers source ou à l’emplacement choisi. Cette option ne s’applique pas lorsque les traductions sont placées avec les fichiers source."
+  },
+  "备用输出文件夹": {
+    "en": "Backup output folder",
+    "fr": "Dossier de sortie de secours"
+  },
+  "首选位置无法创建或写入时使用；如果这里也不可用，程序会自动退回桌面。": {
+    "en": "Used when the preferred location cannot be created or written; if this also fails, the app automatically uses the Desktop.",
+    "fr": "Utilisé si l’emplacement préféré ne peut pas être créé ou écrit ; en cas d’échec également, l’application utilise automatiquement le Bureau."
+  },
+  "未设置，失败时使用桌面": {
+    "en": "Not set; use the Desktop if needed",
+    "fr": "Non défini ; utiliser le Bureau en cas de besoin"
+  },
+  "选择备用输出文件夹": {
+    "en": "Choose backup output folder",
+    "fr": "Choisir le dossier de sortie de secours"
+  },
+  "选择备用输出文件夹失败。": {
+    "en": "Could not choose the backup output folder.",
+    "fr": "Impossible de choisir le dossier de sortie de secours."
+  },
+  "当前会直接放回源文件夹；写入失败时使用下面的备用输出文件夹，最后退回桌面。": {
+    "en": "Translations will be placed beside the source files. If writing fails, the backup output folder below is used, then the Desktop. ",
+    "fr": "Les traductions seront placées avec les fichiers source. En cas d’échec, le dossier de sortie de secours ci-dessous sera utilisé, puis le Bureau. "
+  },
+  "翻译参数会自动写入输出文件属性，方便以后直接识别和继续翻译。": {
+    "en": "Translation parameters are written to the output file attributes so future runs can identify and resume them. ",
+    "fr": "Les paramètres de traduction sont écrits dans les attributs du fichier de sortie pour permettre son identification et sa reprise ultérieures. "
   }
 }

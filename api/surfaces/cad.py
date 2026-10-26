@@ -34,6 +34,7 @@ from core.cad_translation import (
 )
 from core.cad_cache import default_cad_cache
 from core.document_terms import make_term_picker
+from core.output_metadata import is_translation_output
 from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
 from core.file_progress import file_progress_id
@@ -189,6 +190,7 @@ class CadSurface(Surface):
                 for candidate in sorted(root.rglob("*"))
                 if candidate.is_file()
                 and candidate.suffix.lower() in {".dwg", ".dxf"}
+                and not is_translation_output(candidate)
                 and not under(candidate, output_root)
                 and not any(
                     part in {"CAD翻译输出", ".cad-work", ".cad-review"}
@@ -376,11 +378,22 @@ class CadSurface(Surface):
         configured_output_dir = options.cad_output_dir
         if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
             configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
-        output_dir = (
-            Path(options.batch_output_dir)
-            if options.batch_output_dir
-            else bilingual_writer.build_output_dir(request.source_root, configured_output_dir)
+        output_resolution = bilingual_writer.resolve_output_directory(
+            request.source_root,
+            custom_output_dir=configured_output_dir,
+            fallback_output_dir=(
+                str(getattr(cad_output, "fallback_output_dir", "") or "").strip() or None
+                if cad_output is not None
+                else None
+            ),
+            output_mode=(
+                str(getattr(cad_output, "output_mode", "task_folder") or "task_folder")
+                if cad_output is not None
+                else "task_folder"
+            ),
+            batch_output_dir=options.batch_output_dir,
         )
+        output_dir = output_resolution.output_dir
         # 引擎、提示词、分批请求和记忆库的接线在 core/text_translation_service.py，与 PDF「原位
         # 替换」共用。速率与重试按「翻译参数 → CAD」（core/surface_rate.py）。
         service = TextTranslationService(
@@ -504,6 +517,8 @@ class CadSurface(Surface):
                 "provider": getattr(settings.engine, "cloud_provider", ""),
                 "target_lang": settings.target_lang,
                 "source_lang": source_lang,
+                "output_mode": output_resolution.requested_mode,
+                "fallback_used": output_resolution.fallback_used,
             },
         )
 

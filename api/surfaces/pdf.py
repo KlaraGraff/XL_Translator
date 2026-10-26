@@ -16,7 +16,6 @@ from api.task_contracts import (
     TaskInputError,
     TaskOptions,
 )
-from core import bilingual_writer
 from core.language_registry import get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
@@ -92,13 +91,6 @@ class PdfSurface(Surface):
             raise TaskInputError("请至少选择一个 PDF 或图片文件。")
         if not str(settings.pdf.target_lang or "").strip():
             raise TaskInputError("请先选择 PDF 与图片翻译的目标语言。")
-        pdf_output = settings.pdf_output
-        if pdf_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                pdf_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
         if _inplace_enabled(settings):
             try:
                 text_model = resolve_effective_model_config(settings, ROLE_TRANSLATION)

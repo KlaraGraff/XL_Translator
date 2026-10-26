@@ -46,6 +46,7 @@ from core.format_adapter import (
     discover_adapters,
 )
 from core.language_registry import get_target_lang_display
+from core.output_metadata import is_translation_output
 from core.surface_settings import EXTENSION_PAGE_KEY, extension_settings
 from core.task_runner import user_facing_reason
 from core.text_translation_service import TextTranslationService
@@ -139,7 +140,12 @@ def list_files(root: Path, extensions: tuple[str, ...]) -> list[tuple[Path, str]
         subdirectories[:] = sorted(name for name in subdirectories if not _is_output_or_hidden(name))
         for filename in sorted(filenames):
             path = Path(directory) / filename
-            if filename.startswith(".") or _is_office_lock_file(filename) or path.suffix.lower() not in wanted:
+            if (
+                filename.startswith(".")
+                or _is_office_lock_file(filename)
+                or path.suffix.lower() not in wanted
+                or is_translation_output(path)
+            ):
                 continue
             found.append((path, str(path.relative_to(root))))
     return found
@@ -292,11 +298,6 @@ class AdapterSurface(Surface):
             raise TaskInputError(f"没有可翻译的{self.file_noun.get('zh', '文件')}。")
         require_target_lang(settings.target_lang, self.display_label.get("zh", self.key))
         require_translation_model(settings)
-        saved = extension_settings(settings, self.key)
-        if saved.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(saved.custom_output_dir)
-            if output_error:
-                raise TaskInputError(output_error)
 
     def snapshot(self, *, settings: AppSettings, files: list[Any], options: TaskOptions) -> dict[str, object]:
         return {
@@ -350,22 +351,32 @@ class AdapterSurface(Surface):
         )
         saved = extension_settings(settings, self.key)
         custom_output_dir = saved.custom_output_dir.strip() if saved.use_custom_output_dir else ""
+        output_resolution = bilingual_writer.resolve_output_directory(
+            request.source_root,
+            custom_output_dir=custom_output_dir or None,
+            fallback_output_dir=saved.fallback_output_dir.strip() or None,
+            output_mode=saved.output_mode,
+            batch_output_dir=request.options.batch_output_dir,
+        )
         return AdapterTaskRunner(
             request.files,
             host=self.host,
             service=service,
             source_root=request.source_root,
-            output_dir=(
-                Path(request.options.batch_output_dir)
-                if request.options.batch_output_dir
-                else bilingual_writer.build_output_dir(request.source_root, custom_output_dir or None)
-            ),
+            output_dir=output_resolution.output_dir,
             target_lang=settings.target_lang,
             source_lang=request.source_lang,
             bilingual=self.write_bilingual(options),
             options=options,
             key_overrides=request.key_overrides,
             label=self.display_label.get("zh", self.key),
+            translation_parameters={
+                "adapter": self.key,
+                "options": options,
+            },
+            output_mode=saved.output_mode,
+            fallback_used=output_resolution.fallback_used,
+            surface_key=self.key,
         )
 
 

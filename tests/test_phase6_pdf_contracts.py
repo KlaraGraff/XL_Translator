@@ -23,9 +23,10 @@ from PIL import Image
 
 from api.app import create_app
 from api.surfaces import get_surface
-from api.task_manager import TaskInputError, TaskOptions, TranslationTaskManager
+from api.task_manager import TaskOptions, TranslationTaskManager
 from core.model_api_identity import TaskApiContext
 from core.model_roles import SOURCE_INDEPENDENT
+from core.bilingual_writer import resolve_output_directory
 from core.pdf_image_translation import (
     PDF_MANIFEST_FILENAME,
     PDF_REPORT_FILENAME,
@@ -337,7 +338,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
             self.assertEqual(accepted.status_code, 202, accepted.text)
             self.assertTrue(captured["options"].allow_known_review_failure)
 
-    def test_pdf_preflight_rejects_a_custom_output_path_that_is_a_file(self) -> None:
+    def test_pdf_preflight_allows_a_blocked_custom_output_path_for_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings = _pdf_settings(root)
@@ -347,12 +348,19 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
             files = [PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1)]
 
             with patch("core.model_roles.get_key", return_value="pdf-route-secret"):
-                with self.assertRaisesRegex(TaskInputError, "是文件而非文件夹"):
-                    get_surface("pdf").validate_preflight(
-                        files=files,
-                        settings=settings,
-                        options=TaskOptions(),
-                    )
+                get_surface("pdf").validate_preflight(
+                    files=files,
+                    settings=settings,
+                    options=TaskOptions(),
+                )
+            with patch("core.bilingual_writer.desktop_output_root", return_value=root / "desktop"):
+                resolved = resolve_output_directory(
+                    root,
+                    custom_output_dir=output_file,
+                    output_mode="task_folder",
+                )
+            self.assertEqual(resolved.fallback_used, "desktop")
+            self.assertEqual(resolved.output_dir.parent, root / "desktop")
 
 
 class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):

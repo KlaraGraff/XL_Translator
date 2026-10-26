@@ -17,7 +17,6 @@ from api.surfaces.base import (
     suffixes,
 )
 from api.task_contracts import REASON_NEEDS_CONFIRMATION, Runner, TaskInputError, TaskOptions
-from core import bilingual_writer
 from core.word_converter import get_local_word_automation_availability
 from core.word_document import SUPPORTED_WORD_SUFFIXES, scan_word_path, scan_word_sources
 from core.word_task_runner import WordTaskRunner
@@ -69,14 +68,6 @@ class WordSurface(Surface):
         """
         require_target_lang(settings.target_lang, "Word")
         require_translation_model(settings)
-        word_output = settings.word_output
-        if word_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                word_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
-
         doc_files = [item for item in files if file_format(item) == "doc"]
         if not doc_files or options.allow_doc_fallback:
             return

@@ -39,6 +39,12 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.output_metadata import (
+    build_translation_metadata,
+    is_translation_output,
+    metadata_parameters,
+    write_translation_metadata,
+)
 from core.runner_base import BaseTaskRunner
 from core.output_name_translation import translate_output_stem
 from core.file_progress import FileProgressReporter
@@ -310,7 +316,7 @@ def scan_pdf_sources(path: str | Path, *, include_images: bool = False) -> PdfSc
         return result
 
     if source.is_file():
-        if not _should_skip_scanned_input(Path(source.name)):
+        if not _should_skip_scanned_input(Path(source.name)) and not is_translation_output(source):
             _scan_one_pdf_source(source, source.parent, result)
     elif source.is_dir():
         for candidate in sorted(source.rglob("*")):
@@ -318,6 +324,8 @@ def scan_pdf_sources(path: str | Path, *, include_images: bool = False) -> PdfSc
                 continue
             relative = _relative_scan_path(candidate, source)
             if _should_skip_scanned_input(Path(relative)):
+                continue
+            if is_translation_output(candidate):
                 continue
             suffix = candidate.suffix.lower()
             if suffix in SUPPORTED_PDF_SUFFIXES:
@@ -1455,6 +1463,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._profile_concurrency = max(1, int(profile_concurrency or 1))
         self._document_contexts: dict[str, str] = {}
         self._source_root = Path(source_root) if source_root else None
+        self._output_resolution = None
         # 「接着上次继续」选中的历史输出目录。只读：本次任务写的永远是自己的新目录。
         self._resume_output_dir = str(resume_output_dir).strip() if resume_output_dir else ""
         # 同一批任务共用的输出文件夹；设了就不再新建自己的。
@@ -2926,10 +2935,23 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if pdf_output.use_custom_output_dir
             else None
         )
+        fallback_output_dir = pdf_output.fallback_output_dir.strip() or None
 
         try:
-            output_dir = self._batch_output_dir or build_pdf_output_dir(root_for_output, custom_output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            output_resolution = bilingual_writer.resolve_output_directory(
+                root_for_output,
+                custom_output_dir=custom_output_dir,
+                fallback_output_dir=fallback_output_dir,
+                output_mode=pdf_output.output_mode,
+                batch_output_dir=self._batch_output_dir,
+                primary_output_dir=(
+                    build_pdf_output_dir(root_for_output, custom_output_dir)
+                    if pdf_output.output_mode == "task_folder" and not self._batch_output_dir
+                    else None
+                ),
+            )
+            output_dir = output_resolution.output_dir
+            self._output_resolution = output_resolution
             app_managed = is_app_managed_pdf_output_dir(output_dir)
             self._process_artifacts = ProcessArtifacts.create(
                 "pdf", output_dir, run_id=self.task_id
@@ -2954,6 +2976,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             )
             self._queue.put(ProgressMsg(1, 4, "读取文件", 0, max(1, len(self._files))))
             self._queue.put(StatusMsg("状态：正在读取文件，准备输出文件夹…"))
+            if output_resolution.fallback_used:
+                self._log(
+                    "WARN",
+                    "首选输出位置不可用，已改用"
+                    + ("备用输出文件夹。" if output_resolution.fallback_used == "fallback" else "桌面。"),
+                )
             image_file_count = sum(1 for item in self._files if item.source_type == SOURCE_TYPE_IMAGE)
             pdf_file_count = len(self._files) - image_file_count
             self._log("INFO", f"扫描到 {pdf_file_count} 个 PDF 文件、{image_file_count} 个图片文件")
@@ -4215,6 +4243,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._refresh_file_record_counts(record)
         try:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)
+            metadata = build_translation_metadata(
+                surface="pdf",
+                source_path=record.source_path,
+                target_lang=self._settings.pdf.target_lang,
+                source_lang=getattr(self._settings, "source_lang", "auto"),
+                parameters=metadata_parameters(self._settings, "pdf"),
+                output_mode=getattr(self._settings.pdf_output, "output_mode", "task_folder"),
+                fallback_used=getattr(getattr(self, "_output_resolution", None), "fallback_used", ""),
+            )
+            if not write_translation_metadata(prepared.translated_pdf_path, metadata):
+                logger.debug("PDF 输出不支持写入 XL_Translator 文件属性：%s", prepared.translated_pdf_path)
             record.translated_pdf_path = str(prepared.translated_pdf_path)
             self._save_word_copy(record, prepared)
             record.high_quality_pdf_size_bytes = _safe_file_size(prepared.translated_pdf_path)
@@ -4230,6 +4269,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         prepared.compressed_pdf_path,
                         compressed=True,
                     )
+                    if not write_translation_metadata(prepared.compressed_pdf_path, metadata):
+                        logger.debug("PDF 压缩输出不支持写入 XL_Translator 文件属性：%s", prepared.compressed_pdf_path)
                     record.compressed_pdf_path = str(prepared.compressed_pdf_path)
                     record.compressed_pdf_size_bytes = _safe_file_size(
                         prepared.compressed_pdf_path
@@ -4290,6 +4331,18 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         target = Path(prepared.translated_pdf_path).with_suffix(".docx")
         try:
             shutil.copy2(done[0]["docx_path"], target)
+            write_translation_metadata(
+                target,
+                build_translation_metadata(
+                    surface="pdf",
+                    source_path=record.source_path,
+                    target_lang=self._settings.pdf.target_lang,
+                    source_lang=getattr(self._settings, "source_lang", "auto"),
+                    parameters=metadata_parameters(self._settings, "pdf"),
+                    output_mode=getattr(self._settings.pdf_output, "output_mode", "task_folder"),
+                    fallback_used=getattr(getattr(self, "_output_resolution", None), "fallback_used", ""),
+                ),
+            )
         except OSError as exc:
             self._log("WARN", f"[{record.name}] 另存 Word 失败：" + user_facing_reason(exc, fallback="无法写入输出文件夹。"))
             return
@@ -4671,6 +4724,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     logger.debug(f"[PDF] 清理未完成的译图临时文件失败：{temp_path}：{cleanup_exc!r}")
                 raise
             os.replace(temp_path, output_path)
+            metadata = build_translation_metadata(
+                surface="pdf",
+                source_path=record.source_path,
+                target_lang=self._settings.pdf.target_lang,
+                source_lang=getattr(self._settings, "source_lang", "auto"),
+                parameters=metadata_parameters(self._settings, "pdf"),
+                output_mode=getattr(self._settings.pdf_output, "output_mode", "task_folder"),
+                fallback_used=getattr(getattr(self, "_output_resolution", None), "fallback_used", ""),
+            )
+            if not write_translation_metadata(output_path, metadata):
+                logger.debug("PDF 图片输出不支持写入 XL_Translator 文件属性：%s", output_path)
             record.translated_image_path = str(output_path)
             record.translated_image_format = _image_format_from_path(output_path)
             record.high_quality_pdf_size_bytes = _safe_file_size(output_path)
