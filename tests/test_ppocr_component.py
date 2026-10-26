@@ -20,6 +20,7 @@ import pytest
 from PIL import Image
 
 from core import pdf_component, ppocr_component
+from core import pdf_component_install
 from core import ppocr_component_install as installer
 from core.component_download import RemoteFile
 
@@ -375,13 +376,14 @@ def test_one_click_install_updates_the_old_tesseract_through_the_api(hermetic, m
     # 以前一键安装的 Tesseract：只认西文
     _fake_install_sources(monkeypatch)
     tesseract_installer.install()
+    # 这个测试模拟发布包的 Python 3.11 清单；开发机可能是别的 Python 版本。
+    _fake_sources(monkeypatch)
     client = TestClient(create_app())
     status = client.get("/api/plugins/ocr").json()
     assert status["engine"] == "tesseract" and status["source"] == "managed"
     assert status["one_click_supported"] is True and status["needs_pdf_component"] is False
     assert status["download_bytes"] == installer.download_size()
 
-    _fake_sources(monkeypatch)
     monkeypatch.setattr(ppocr_component, "probe_in_subprocess", lambda *args: (True, "9.9.9", ""))
     started = client.post("/api/plugins/ocr/one-click-install").json()
     assert started["running"] is True
@@ -401,13 +403,71 @@ def test_one_click_install_updates_the_old_tesseract_through_the_api(hermetic, m
     assert installer.installed_dirs() is None and ocr_plugin.install_progress()["running"] is False
 
 
-def test_one_click_install_asks_for_the_pdf_component_first(hermetic, monkeypatch):
+def test_one_click_install_automatically_installs_the_pdf_component_first(hermetic, monkeypatch):
     from fastapi.testclient import TestClient
 
+    from api import ocr_plugin
     from api.app import create_app
+    from core import pdf_component_install as pdf_installer
 
     monkeypatch.setattr(ppocr_component, "numpy_site_dir", lambda: None)
+    # 模拟两份发布清单，避免测试依赖当前开发机的 Python 版本。
+    monkeypatch.setattr(installer, "manifest_files", lambda: (object(),))
+    monkeypatch.setattr(installer, "download_size", lambda: 10)
+    monkeypatch.setattr(pdf_installer, "manifest_files", lambda: (object(),))
+    monkeypatch.setattr(pdf_installer, "download_size", lambda: 20)
+    ready = False
+    calls: list[str] = []
+
+    def numpy_site():
+        return hermetic / "pdf-site" if ready else None
+
+    monkeypatch.setattr(ppocr_component, "numpy_site_dir", numpy_site)
+
+    def fake_pdf_install(*, progress=None, cancel=None):
+        nonlocal ready
+        calls.append("pdf")
+        if progress:
+            progress("download", 20, 20)
+            progress("extract", 1, 1)
+            progress("verify", 1, 1)
+        (hermetic / "pdf-site").mkdir()
+        ready = True
+        return {"installed": True}
+
+    def fake_ocr_install(*, progress=None, cancel=None):
+        calls.append("ocr")
+        if progress:
+            progress("download", 10, 10)
+            progress("extract", 1, 1)
+            progress("verify", 1, 1)
+        return {"installed": True}
+
+    monkeypatch.setattr(pdf_installer, "install", fake_pdf_install)
+    monkeypatch.setattr(installer, "install", fake_ocr_install)
     client = TestClient(create_app())
     assert client.get("/api/plugins/ocr").json()["needs_pdf_component"] is True
+    status = client.get("/api/plugins/ocr").json()
+    assert status["one_click_supported"] is True
     response = client.post("/api/plugins/ocr/one-click-install")
-    assert response.status_code == 422 and "PDF 处理组件" in response.json()["detail"]
+    assert response.status_code == 200 and response.json()["total"] == 30
+    for _ in range(100):
+        progress = client.get("/api/plugins/ocr/install-progress").json()
+        if not progress["running"]:
+            break
+        threading.Event().wait(0.01)
+    assert progress["phase"] == "done" and calls == ["pdf", "ocr"]
+    assert ocr_plugin.install_progress()["running"] is False
+
+
+def test_ocr_status_exposes_runtime_and_dependency_diagnostics(hermetic, monkeypatch):
+    from api import ocr_plugin
+
+    monkeypatch.setattr(installer, "manifest_files", lambda: ())
+    monkeypatch.setattr(pdf_component_install, "manifest_files", lambda: ())
+    monkeypatch.setattr(ppocr_component, "numpy_site_dir", lambda: None)
+    status = ocr_plugin.probe_status()
+    assert status["one_click_supported"] is False
+    assert status["dependency_one_click_supported"] is False
+    assert status["runtime_python"] and status["runtime_platform"] and status["runtime_architecture"]
+    assert "当前运行环境" in status["one_click_reason"]

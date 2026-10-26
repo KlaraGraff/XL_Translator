@@ -2,7 +2,7 @@
 // 1. 图纸转换工具（ODA File Converter，翻译 DWG 需要）：一键安装从 ODA 官网下载（先确认 ODA 的
 //    使用条款，核对 ODA 的数字签名）；
 // 2. 文字识别组件（PP-OCR 识别模型，PDF「原位替换文字」需要）：一键安装取 PyPI 的固定版本，
-//    要先装「PDF 处理组件」；以前装的 Tesseract 只认西文，显示「更新」；
+//    缺少「PDF 处理组件」时一键链路会先自动补齐；以前装的 Tesseract 只认西文，显示「更新」；
 // 3. PDF 处理组件（PyMuPDF + pdf2docx，PDF「自动组合」的原位替换、页面判断和转 Word）：
 //    一键安装取 PyPI 的固定版本。
 // 都保留「选择安装位置」，连接用户自行安装的版本（文字识别组件只在不能一键安装或已连接
@@ -393,6 +393,9 @@ function pollOcrInstall(): void {
         return;
       }
       ocrCapability = await client.getOcrCapability();
+      // OCR 的一键链路可能刚刚自动装好了 PDF 处理组件；同步刷新下面的卡片，
+      // 不要让它继续显示「未安装」直到用户手动刷新。
+      wordCapability = await client.getPdf2DocxCapability();
       ocrErrorText = "";
       if (progress.phase === "done") {
         showToast({ message: t("文字识别组件已安装。") });
@@ -514,7 +517,12 @@ async function removeOcrComponent(): Promise<void> {
 
 /** 连着的是只认西文的 Tesseract（以前一键安装的或用户自己装的）：可以更新成识别模型。 */
 function ocrCanUpdate(): boolean {
-  return ocrCapability?.engine === "tesseract" && ocrCapability.one_click_supported !== false;
+  return ocrCapability?.engine === "tesseract" && ocrCanOneClick();
+}
+
+function ocrCanOneClick(): boolean {
+  if (!ocrCapability || ocrCapability.one_click_supported === false) return false;
+  return !ocrCapability.needs_pdf_component || ocrCapability.dependency_one_click_supported !== false;
 }
 
 function ocrActionButtons(): HTMLElement {
@@ -525,13 +533,13 @@ function ocrActionButtons(): HTMLElement {
     actions.append(createButton({ label: t("取消安装"), onClick: () => void cancelOcrInstall() }));
     return actions;
   }
-  const oneClick = ocrCapability?.one_click_supported !== false;
+  const oneClick = ocrCanOneClick();
   if (oneClick && (!connected || ocrCanUpdate())) {
     actions.append(createButton({
       label: ocrCanUpdate() ? t("更新") : t("一键安装"),
       variant: "primary",
-      // 识别模型用「PDF 处理组件」里的 NumPy、OpenCV：没装它时按钮不可用，提示里说明
-      disabled: ocrBusy || !ocrCapability || Boolean(ocrCapability.needs_pdf_component),
+      // 缺少 PDF 处理组件时，后端会在同一个可取消的安装链路里先补齐它。
+      disabled: ocrBusy || !ocrCapability,
       onClick: () => void startOcrInstall(),
     }));
   }
@@ -571,7 +579,7 @@ function renderOcrCard(): HTMLElement {
   betaTag.textContent = t("Beta");
   title.append(betaTag);
   const sizeMb = megabytes(ocrCapability?.download_bytes ?? 0);
-  title.append(createHintBadge(t("识别模型：PP-OCRv6（PaddleOCR，开源，Apache-2.0），由 ONNX Runtime（开源，MIT）在本机运行，可识别中文、日文和英文、法文等西方文字，需要先安装「PDF 处理组件」。一键安装：下载固定版本的识别模型和运行库（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。未安装时：「原位替换」只处理图纸里本来就能提取的文字，画成线条的字保留原样。项目主页：{1}", sizeMb, OFFICIAL_OCR_URL)));
+  title.append(createHintBadge(t("识别模型：PP-OCRv6（PaddleOCR，开源，Apache-2.0），由 ONNX Runtime（开源，MIT）在本机运行，可识别中文、日文和英文、法文等西方文字，缺少时一键安装会先自动安装「PDF 处理组件」。一键安装：下载固定版本的识别模型和运行库（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。未安装时：「原位替换」只处理图纸里本来就能提取的文字，画成线条的字保留原样。项目主页：{1}", sizeMb, OFFICIAL_OCR_URL)));
   const desc = document.createElement("p");
   desc.textContent = t("识别 PDF 图纸里画成线条的文字，供「原位替换文字」使用。只在本机运行，不上传图纸。");
   copy.append(title, desc);
@@ -593,7 +601,7 @@ function renderOcrCard(): HTMLElement {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
     warn.textContent = ocrCapability?.needs_pdf_component
-      ? t("当前的文字识别组件只能识别英文、法文等西方文字。新版还可识别中文和日文：请先安装下方的「PDF 处理组件」，再点「更新」。")
+      ? t("当前的文字识别组件只能识别英文、法文等西方文字。新版还可识别中文和日文：一键安装会先补齐下方的「PDF 处理组件」，再点「更新」。")
       : t("当前的文字识别组件只能识别英文、法文等西方文字。点「更新」换成新版后，还可识别中文和日文（约 {0} MB）。", sizeMb);
     body.append(warn);
   } else if (ocrCapability?.state === "connected") {
@@ -624,11 +632,16 @@ function renderOcrCard(): HTMLElement {
   } else if (ocrCapability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = ocrCapability.one_click_supported === false
-      ? t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。")
-      : ocrCapability.needs_pdf_component
-        ? t("尚未检测到文字识别组件。请先安装下方的「PDF 处理组件」，再一键安装。")
-        : t("尚未检测到文字识别组件，可一键安装。");
+    if (ocrCapability.one_click_supported === false) {
+      const reason = ocrCapability.one_click_reason || ocrCapability.dependency_one_click_reason || "";
+      warn.textContent = ocrCapability.needs_pdf_component && ocrCapability.dependency_one_click_supported === false
+        ? `${t("尚未检测到文字识别组件。当前系统不能自动安装 PDF 处理组件，请自行安装后选择它的安装位置。")}${reason ? ` ${tx(reason)}` : ""}`
+        : `${t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。")}${reason ? ` ${tx(reason)}` : ""}`;
+    } else if (ocrCapability.needs_pdf_component) {
+      warn.textContent = t("尚未检测到文字识别组件。一键安装会先自动安装下方的「PDF 处理组件」，然后安装识别模型。");
+    } else {
+      warn.textContent = t("尚未检测到文字识别组件，可一键安装。");
+    }
     body.append(warn);
   }
   card.append(body);
@@ -850,7 +863,18 @@ function componentInstallNotice(
     box.className = "plugins-notice plugins-progress";
     const text = document.createElement("div");
     let percent = 0;
-    if (job.phase === "download" && job.total <= 0) {
+    if (job.phase === "dependency_download" && job.total <= 0) {
+      text.textContent = t("正在准备 PDF 处理组件…");
+    } else if (job.phase === "dependency_download") {
+      percent = (job.done / job.total) * 90;
+      text.textContent = t("正在准备 PDF 处理组件：{0} / {1} MB", megabytes(job.done), megabytes(job.total));
+    } else if (job.phase === "dependency_extract") {
+      percent = Math.max(70, (job.done / Math.max(1, job.total)) * 90);
+      text.textContent = t("正在安装 PDF 处理组件，完成后继续安装文字识别组件…");
+    } else if (job.phase === "dependency_verify") {
+      percent = Math.max(75, (job.done / Math.max(1, job.total)) * 90);
+      text.textContent = t("正在检查 PDF 处理组件能否在本机运行…");
+    } else if (job.phase === "download" && job.total <= 0) {
       text.textContent = t("正在下载组件…");
     } else if (job.phase === "download") {
       percent = (job.done / job.total) * 90;

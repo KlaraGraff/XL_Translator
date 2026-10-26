@@ -88,13 +88,23 @@ export type OcrPluginStatus = {
   engine?: "ppocr" | "tesseract" | "";
   /** 识别模型要用「PDF 处理组件」里的 NumPy、OpenCV：没装它时不能一键安装。 */
   needs_pdf_component?: boolean;
+  /** 缺少 PDF 处理组件时，一键安装是否能自动补齐它。 */
+  dependency_one_click_supported?: boolean;
+  dependency_one_click_reason?: string;
+  /** 当前 sidecar 的运行时信息；用于解释为什么当前环境不能自动安装。 */
+  recognition_one_click_supported?: boolean;
+  one_click_reason?: string;
+  runtime_python?: string;
+  runtime_platform?: string;
+  runtime_architecture?: string;
   install?: ComponentInstallProgress;
 };
 
 /** 插件页「一键安装」的进度（后台安装，页面轮询）。 */
 export type ComponentInstallProgress = {
   running: boolean;
-  phase: "" | "download" | "extract" | "verify" | "done" | "failed";
+  phase: "" | "download" | "dependency_download" | "dependency_extract" | "dependency_verify"
+    | "extract" | "verify" | "done" | "failed";
   done: number;
   total: number;
   error: string;
