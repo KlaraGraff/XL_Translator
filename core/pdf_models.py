@@ -229,6 +229,8 @@ class PdfPageRecord:
     inplace_written: int = 0
     inplace_kept: int = 0
     inplace_review: int = 0
+    # 译文因空间不足仍写入，已标记需复核。
+    inplace_overflow: int = 0
     # 接口放弃、没拿到译文而保留原文的处数（与 CAD「未获得译文」同类，也列在 inplace_review_items，
     # kind 为 untranslated）；有就要复核。
     inplace_untranslated: int = 0

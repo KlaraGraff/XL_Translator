@@ -103,6 +103,7 @@ class InplaceResult:
     untranslated: int = 0       # the service gave up on it: source kept, listed for review
     term_review: int = 0        # written, but a set translation from the memory was not used
     not_written: int = 0        # translated but could not be placed safely
+    overflow_written: int = 0    # written despite insufficient verified space
     ocr_used: bool = False
     # 原文是中日韩文字，画成线条的字没有去识别（只有西文的识别数据）
     ocr_skipped_cjk: bool = False
@@ -132,6 +133,7 @@ _REASON_TEXT = {
     "operator_mismatch": "译文里的比较符号和原文不一致",
     "source_not_removable": "原文删不干净（可能在图片里）",
     "no_fit": "空间不够，放不下译文",
+    "overflow": "空间不够，仍写入译文，需复核",
     "term_not_applied": "未采用记忆库中的设定译法",
     "residual_source": "译文中仍有原文",
     "font_missing_glyph": "本机字体缺少译文中的字",
@@ -165,6 +167,7 @@ def translate_page_inplace(
     fit: FitSettings | None = None,
     fallback_lang: str = "fr",
     ocr_reader: Callable[..., list[dict]] | None = None,
+    overflow_policy: str = "write_translation",
 ) -> InplaceResult:
     """Translate one page in place; the result PDF holds that single page.
 
@@ -230,7 +233,10 @@ def translate_page_inplace(
     out_pdf = work_dir / "page_inplace.pdf"
     report_path = work_dir / "writeback.json"
     tell("write", 0, 2)
-    rep = writeback.run(page_pdf, manifest, out_pdf, work_dir / "preview.png", report_path, fonts=fonts, fit=fit)
+    rep = writeback.run(
+        page_pdf, manifest, out_pdf, work_dir / "preview.png", report_path,
+        fonts=fonts, fit=fit, overflow_policy=overflow_policy,
+    )
     tell("write", 1, 2)
     check = qa.run(page_pdf, out_pdf, manifest, report_path, work_dir / "qa.json", work_dir / "ledger.csv")
     tell("write", 2, 2)
@@ -253,6 +259,16 @@ def translate_page_inplace(
         for r in rows
         if r.get("term_review") and r["id"] in written_ids
     ]
+    overflow_written = sum(1 for item in rep["written"] if item.get("fit") == "overflow")
+    review_items += [
+        {"text": r["source_text"], "reason": reason_text("overflow"),
+         "kind": "overflow", "box_px": r["display_box"]}
+        for r in rows
+        if r["id"] in written_ids and next(
+            (item.get("fit") == "overflow" for item in rep["written"] if item["id"] == r["id"]),
+            False,
+        )
+    ]
     result = InplaceResult(
         ok=check.get("status") == "pass",
         output_pdf=str(out_pdf),
@@ -262,6 +278,7 @@ def translate_page_inplace(
         review=sum(1 for r in rows if r["decision"] == "review") - len(missing),
         untranslated=len(missing),
         not_written=len(decided_write - written_ids),
+        overflow_written=overflow_written,
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),
         ocr_used=bool(exe) or use_reader,
         ocr_skipped_cjk=bool(cjk_source and not native_only and not use_reader),
@@ -286,7 +303,7 @@ def _qa_reason(check: dict) -> str:
         return "删掉了文字以外的线条"
     if (check.get("numbers") or {}).get("failures"):
         return "数字不一致"
-    if check.get("written_collisions"):
+    if check.get("unexpected_written_collisions", check.get("written_collisions")):
         return "译文互相重叠"
     return "检查未通过"
 

@@ -344,11 +344,13 @@ def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
         return []
     done = [page for page in pages if page.inplace_status == "done"]
     untranslated = sum(page.inplace_untranslated for page in pages)
+    overflow = sum(getattr(page, "inplace_overflow", 0) for page in pages)
     lines = [
         f"- 原位替换文字（Beta）：{len(done)}/{len(pages)} 页已替换，"
         f"共替换 {sum(page.inplace_written for page in done)} 处，"
         f"保留原文 {sum(page.inplace_review for page in done)} 处"
         + (f"，未获得译文 {untranslated} 处（需复核）" if untranslated else "")
+        + (f"，空间不足仍写入译文 {overflow} 处（需复核）" if overflow else "")
     ]
     for page in sorted(pages, key=lambda item: item.page_number):
         lines.append(f"  - 第 {page.page_number} 页：{page.inplace_message or page.inplace_status}")
@@ -357,6 +359,8 @@ def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
                 lines.append(f"    - 需复核「{item.get('text', '')}」：{item.get('detail') or item.get('reason', '')}")
             elif item.get("kind") == "untranslated":
                 lines.append(f"    - 未获得译文「{item.get('text', '')}」：保留原文，需复核")
+            elif item.get("kind") == "overflow":
+                lines.append(f"    - 空间不足仍写入译文「{item.get('text', '')}」：需复核")
             else:
                 lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
     return lines

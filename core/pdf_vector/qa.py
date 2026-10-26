@@ -249,6 +249,10 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
             if rects[i][0] != rects[j][0] and min(a[2], b[2]) - max(a[0], b[0]) > 1 and min(a[3], b[3]) - max(a[1], b[1]) > 1:
                 coll.append([rects[i][0], rects[j][0]])
     res["written_collisions"] = coll
+    overflow_ids = {w["id"] for w in written if w.get("fit") == "overflow"}
+    res["unexpected_written_collisions"] = [
+        pair for pair in coll if not (pair[0] in overflow_ids or pair[1] in overflow_ids)
+    ]
     res["unrecognized_text"] = uncovered_text(sp, man["rows"], dpi, Path(out).with_name("unrecognized_overlay.png"))
     res["chinese_chars_output"] = len(re.findall(r"[一-鿿]", op.get_text()))
     res["fonts"] = sorted({f[3] for f in op.get_fonts(full=True)})
@@ -260,7 +264,7 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
                                                         if rows.get(s["id"], {}).get("decision") == "write")}
     res["fit_modes"] = rep["metrics"]["fit_modes"]
     res["status"] = "pass" if (res["qpdf"]["ok"] and res["page"]["same"] and res["images"]["identical"]
-                               and not unexpected and not num_fail and not coll) else "review"
+                               and not unexpected and not num_fail and not res["unexpected_written_collisions"]) else "review"
     write_json(out, res)
     wset = {w["id"]: w for w in written}
     with open(ledger, "w", newline="", encoding="utf-8-sig") as f:

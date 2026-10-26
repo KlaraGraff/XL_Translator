@@ -6152,7 +6152,19 @@ function persistPdfSetting(key: string, value: unknown, what: string): void {
 function buildPdfInplaceFields(st: SurfaceState, active: boolean): HTMLElement[] {
   const sec = el("div", "rp-sec");
   sec.textContent = t("原位替换排版");
-  sec.append(createHintBadge(t("译文比原文长、会压到旁边的文字或伸出格子时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」；缩到最小仍放不下的，写到下方的空白处换行；还放不下的保留原文，列入报告请人工复核。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。")));
+  sec.append(createHintBadge(t("译文比原文长、会压到旁边的文字或伸出格子时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」；之后按「放不下时」的选择处理，并在结果中列出需复核的位置。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。")));
+
+  const overflowPolicy = createSelectField({
+    label: t("放不下时"),
+    hint: t("先压窄、缩小或换行；仍放不下时，选择继续写入译文，或优先保持版式并保留原文。两种选择都会在结果中标记需复核的位置。"),
+    options: [
+      { value: "write_translation", label: t("优先写入译文"), description: t("仍放不下也写入，结果中标记建议复核") },
+      { value: "preserve_original", label: t("优先保持版式（保持原文）"), description: t("仍放不下时保留原文，结果中标记建议复核") },
+    ],
+    value: text(pdfSettingValue("inplace_overflow_policy"), "write_translation"),
+    disabled: active,
+    onChange: (value) => persistPdfSetting("inplace_overflow_policy", value, t("放不下时")),
+  });
 
   const fontValue = pdfSettingValue("inplace_font");
   const font = createSelectField({
@@ -6199,7 +6211,7 @@ function buildPdfInplaceFields(st: SurfaceState, active: boolean): HTMLElement[]
     onChange: (value) => persistPdfSetting(minKey, Number(value), t("最小字号比例")),
   });
   row.append(first.root, last.root);
-  return [sec, font.root, row];
+  return [sec, overflowPolicy.root, font.root, row];
 }
 
 function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {

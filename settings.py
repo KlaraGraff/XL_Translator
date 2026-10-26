@@ -1224,10 +1224,13 @@ class PdfSettings(BaseModel):
     smart_context: bool = True
     # 原位替换写回译文（2026-10-21 起支持中文以外的目标语言）：与 CAD「译文写回」同一套规则。
     # 译文字体：sans 无衬线字体；original 接近原文字体（原文是衬线字体时用衬线字体）。
-    # 放不下时先缩到初始比例、再按 0.1 一档缩到最小比例，仍放不下就往下方空白处换行
-    # （core.cad_layout.FitSettings）。比例按目标语言分两套，``*_zh`` 那对用于中文，默认值
-    # 与 CAD 相同（core.cad_layout.default_fit_settings）。加法字段，旧文件按默认值补齐，不升版本号。
+    # 放不下时先缩到初始比例、再按 0.1 一档缩到最小比例，仍放不下就按下面的策略处理。
+    # 比例按目标语言分两套，``*_zh`` 那对用于中文，默认值与 CAD 相同
+    # （core.cad_layout.default_fit_settings）。加法字段，旧文件按默认值补齐，不升版本号。
     inplace_font: Literal["sans", "original"] = "sans"
+    # write_translation：有译文就写入，超出原位的项目列入复核；
+    # preserve_original：版式优先，放不下时保留原文。
+    inplace_overflow_policy: Literal["write_translation", "preserve_original"] = "write_translation"
     inplace_fit_default_scale: float = 0.7
     inplace_fit_min_scale: float = 0.4
     inplace_fit_default_scale_zh: float = 1.0
@@ -1285,6 +1288,7 @@ _PDF_ROUTE_CHOICES: dict[str, tuple[str, ...]] = {
     "auto_fallback": ("image", "skip"),
     "oversized_page_threshold": ("A3", "A2", "A1", "A0"),
     "inplace_font": ("sans", "original"),
+    "inplace_overflow_policy": ("write_translation", "preserve_original"),
 }
 
 

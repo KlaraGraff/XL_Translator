@@ -663,7 +663,16 @@ def _band_below(box, union, rot, off, thick_scale=1.0):
     return (x0 - ux * off, y0 - uy * off, x1 - ux * off, y1 - uy * off)
 
 
-def layout_row(row, layout, page, dpi, all_rows, fit: FitSettings | None = None):
+def layout_row(
+    row,
+    layout,
+    page,
+    dpi,
+    all_rows,
+    fit: FitSettings | None = None,
+    *,
+    overflow_policy: str = "write_translation",
+):
     fit = (fit or DEFAULT_FIT_SETTINGS_ZH).normalized()
     font = row["_font"].font
     rot = int(row.get("display_rotation", 0))
@@ -789,6 +798,22 @@ def layout_row(row, layout, page, dpi, all_rows, fit: FitSettings | None = None)
                     break
         if chosen:
             break
+    if chosen is None and overflow_policy == "write_translation":
+        # The user chose translation-first.  At this point every verified blank
+        # slot has been exhausted, so forcing the text into the original first
+        # slot is deliberate: the translation must remain searchable and visible
+        # even when it overlaps nearby drawing content.  The result is marked
+        # ``overflow`` and the review UI calls out the location.
+        height_scale, squeeze = scale_parts(fit.min_scale)
+        fs = max(MIN_FONT_PT, target * height_scale)
+        slot = slots[0]
+        chosen = (
+            fit.min_scale,
+            fs,
+            squeeze,
+            [(text, slot["start"], slot["center"])],
+            "overflow",
+        )
     if chosen is None:
         return None, "no_fit"
     scale, fs, squeeze, placements, how = chosen
@@ -827,7 +852,8 @@ def pick_fonts(rows, fonts: FontSet) -> dict[str, str]:
 
 
 def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path, font_path: Path | None = None,
-        trial_preview: Path | None = None, *, fonts: FontSet | None = None, fit: FitSettings | None = None) -> dict:
+        trial_preview: Path | None = None, *, fonts: FontSet | None = None, fit: FitSettings | None = None,
+        overflow_policy: str = "write_translation") -> dict:
     """Write the manifest's translations into ``output``.  ``fonts`` picks the font of
     each line (``font_path`` forces one font for all); ``fit`` is the shrink ladder
     (default: the Chinese one, full size first)."""
@@ -904,7 +930,7 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     # big text first so titles keep their size when space is contested
     for r in sorted(ok, key=lambda r: -max(slot_geometry(b, int(r.get("display_rotation", 0)))[3]
                                            for b in (r.get("line_boxes") or [r["display_box"]]))):
-        plan, why = layout_row(r, layout, page, dpi, cand, fit)
+        plan, why = layout_row(r, layout, page, dpi, cand, fit, overflow_policy=overflow_policy)
         if plan is None:
             failed.append(r)
             skipped[r["id"]] = why
@@ -928,7 +954,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     if failed:
         doc.close()
         keep_ids = {r["id"] for r in placed}
-        return run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit)
+        return run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit,
+                              overflow_policy)
 
     written: dict[str, tuple[object, set[str]]] = {}
     for r in placed:
@@ -952,6 +979,7 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
             "skipped": len(skipped), "drawings_source": n_draw_src, "drawings_output": n_draw_out,
             "images_source": n_img_src, "images_output": out_info["images"], "paths_restored": n_restored,
             "fit_modes": _count(p["_plan"]["how"] for p in placed),
+            "overflow_written": sum(1 for p in placed if p["_plan"]["how"] == "overflow"),
             "font_ratio_median": statistics.median(p["_plan"]["fontsize"] / p["_plan"]["target"] for p in placed) if placed else None,
             "scale_median": statistics.median(p["_plan"]["scale"] for p in placed) if placed else None,
             "fonts": sorted({p["_font"].path.name for p in placed}),
@@ -974,7 +1002,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     return rep
 
 
-def run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit):
+def run_restricted(source, manifest, output, preview, report, keep_ids, skipped, data, fonts, fit,
+                   overflow_policy="write_translation"):
     rows = data["rows"]
     for r in rows:
         if r.get("decision") == "write" and r["id"] not in keep_ids:
@@ -985,7 +1014,7 @@ def run_restricted(source, manifest, output, preview, report, keep_ids, skipped,
             del r[key]
     tmp = Path(report).with_name(Path(report).stem + "_restricted_manifest.json")
     write_json(tmp, data)
-    rep = run(source, tmp, output, preview, report, fonts=fonts, fit=fit)
+    rep = run(source, tmp, output, preview, report, fonts=fonts, fit=fit, overflow_policy=overflow_policy)
     return rep
 
 

@@ -69,6 +69,7 @@ class _PageCase(unittest.TestCase):
 
 @unittest.skipUnless(_latin_font(), "no Latin font on this machine")
 class FrenchToEnglishTests(_PageCase):
+    OVERFLOW_TRANSLATION = "RoofTranslationThatCannotFitInAnyVerifiedBlankSlot" * 8
     def _build(self, page):
         page.insert_text((60, 60), "Plan de toiture", fontsize=20)
         page.draw_rect(fitz.Rect(55, 90, 230, 130), color=(0, 0, 0), width=0.8)
@@ -147,6 +148,33 @@ class FrenchToEnglishTests(_PageCase):
         self.assertEqual(read(doc), "1\xadhour\xa0fire\xa0wall")
         set_to_unicode(doc, page, {"XLT0": (font, set(text))})
         self.assertEqual(read(doc), text)
+
+    def _build_tight_label(self, page):
+        page.draw_rect(fitz.Rect(55, 50, 160, 82), color=(0, 0, 0), fill=(0, 0, 0), width=0.8)
+        page.insert_text((60, 70), "Plan de toiture", fontsize=10, color=(1, 1, 1))
+
+    def test_default_overflow_policy_writes_translation_and_marks_review(self):
+        result, _prompts = self._run(self._build_tight_label, {"Plan de toiture": self.OVERFLOW_TRANSLATION}, "en",
+                                     fit=FitSettings(0.4, 0.4))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.written, 1)
+        self.assertEqual(result.overflow_written, 1)
+        self.assertEqual(result.not_written, 0)
+        self.assertEqual(result.review_items[0]["kind"], "overflow")
+        with fitz.open(result.output_pdf) as out:
+            self.assertIn(self.OVERFLOW_TRANSLATION, out[0].get_text())
+            self.assertNotIn("Plan de toiture", out[0].get_text())
+
+    def test_preserve_original_policy_keeps_translation_when_it_does_not_fit(self):
+        result, _prompts = self._run(self._build_tight_label, {"Plan de toiture": self.OVERFLOW_TRANSLATION}, "en",
+                                     fit=FitSettings(0.4, 0.4), overflow_policy="preserve_original")
+        self.assertEqual(result.written, 0)
+        self.assertEqual(result.overflow_written, 0)
+        self.assertEqual(result.not_written, 1)
+        self.assertEqual(result.review_items[0]["reason"], "空间不够，放不下译文")
+        with fitz.open(result.output_pdf) as out:
+            self.assertIn("Plan de toiture", out[0].get_text())
+            self.assertNotIn(self.OVERFLOW_TRANSLATION, out[0].get_text())
 
 
 @unittest.skipUnless(find_cjk_font() and _latin_font(), "no CJK or Latin font on this machine")
@@ -491,7 +519,7 @@ class FitTests(_PageCase):
         # 最小比例设成 100%：放不下的不缩，只换行；换行也放不下的保留原文、列进复核
         result, _ = self._run(self._build, {"配电室": "Local de distribution électrique basse tension "
                                                      "et salle des transformateurs principaux du bâtiment"},
-                              "fr", fit=FitSettings(1.0, 1.0))
+                              "fr", fit=FitSettings(1.0, 1.0), overflow_policy="preserve_original")
         self.assertEqual(result.written, 0)
         self.assertEqual(result.not_written, 1)
         self.assertEqual(result.review_items[0]["reason"], "空间不够，放不下译文")
@@ -646,6 +674,7 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_follow_cad_per_target(self):
         pdf = PdfSettings()
         self.assertEqual(pdf.inplace_font, "sans")
+        self.assertEqual(pdf.inplace_overflow_policy, "write_translation")
         self.assertEqual(pdf.inplace_fit("zh"), DEFAULT_FIT_SETTINGS_ZH)
         self.assertEqual(pdf.inplace_fit("fr"), DEFAULT_FIT_SETTINGS)
 
@@ -660,3 +689,7 @@ class SettingsTests(unittest.TestCase):
     def test_old_settings_files_get_the_defaults(self):
         pdf = PdfSettings.model_validate({"target_lang": "fr", "translation_route": "auto"})
         self.assertEqual(pdf.inplace_fit(), DEFAULT_FIT_SETTINGS)
+
+    def test_overflow_policy_accepts_preserve_original(self):
+        pdf = PdfSettings.model_validate({"inplace_overflow_policy": "preserve_original"})
+        self.assertEqual(pdf.inplace_overflow_policy, "preserve_original")

@@ -964,6 +964,8 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
                for page in record.pages)
         # 原位替换的页里有接口放弃、没拿到译文的文字（与 CAD「未获得译文」一样要复核）。
         or any(page.inplace_untranslated for page in record.pages)
+        # 空间不足仍写入译文的处数也必须提示复核。
+        or any(page.inplace_overflow for page in record.pages)
         # 要整页图像翻译、但没有设置图像模型而保留原样的页
         or any(page.kept_reason for page in record.pages)
         # 转 Word 翻译后 Word 流程报出的待复核处
@@ -2405,6 +2407,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             "inplace_written": int(page.inplace_written) if page is not None else 0,
             "inplace_kept": int(page.inplace_kept) if page is not None else 0,
             "inplace_review": int(page.inplace_review) if page is not None else 0,
+            "inplace_overflow": int(page.inplace_overflow) if page is not None else 0,
             "inplace_untranslated": int(page.inplace_untranslated) if page is not None else 0,
             "inplace_term_review": int(page.inplace_term_review) if page is not None else 0,
             "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
@@ -4626,6 +4629,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 font_style=str(getattr(pdf_settings, "inplace_font", "sans") or "sans"),
                 fit=pdf_settings.inplace_fit(target_lang),
+                overflow_policy=str(getattr(pdf_settings, "inplace_overflow_policy", "write_translation") or "write_translation"),
                 fallback_lang=self._document_source_lang(record, target_lang),
             )
         except Exception as exc:  # noqa: BLE001 - one page only costs that page
@@ -4637,6 +4641,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page.inplace_written = result.written
         page.inplace_kept = result.kept
         page.inplace_review = result.review + result.not_written
+        page.inplace_overflow = int(getattr(result, "overflow_written", 0) or 0)
         page.inplace_untranslated = int(getattr(result, "untranslated", 0) or 0)
         page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
         page.inplace_review_items = result.review_items
@@ -4655,6 +4660,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 f"已替换 {result.written} 处，数字和编号等 {result.kept} 处不需要翻译，"
                 f"{page.inplace_review} 处认不准保留原文{note}"
             )
+            if page.inplace_overflow:
+                page.inplace_message += f"；{page.inplace_overflow} 处空间不足仍写入译文，需复核"
             if page.inplace_untranslated:
                 page.inplace_message += f"；{page.inplace_untranslated} 处未获得译文，需复核"
             if page.inplace_term_review:

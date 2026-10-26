@@ -283,6 +283,8 @@ export type PdfPage = {
   inplace_written?: number;
   inplace_kept?: number;
   inplace_review?: number;
+  /** 空间不足仍写入译文、已标记复核的处数。 */
+  inplace_overflow?: number;
   /** 接口放弃、没拿到译文而保留原文的处数（也在 inplace_review_items 里，kind 为 untranslated）。 */
   inplace_untranslated?: number;
   /** 译文已写入、但未采用记忆库中设定的译法的处数（也在 inplace_review_items 里，kind 为 term）。 */
