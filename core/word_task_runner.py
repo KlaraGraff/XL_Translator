@@ -1794,6 +1794,8 @@ class WordTaskRunner(BaseTaskRunner):
             if numbered_fills:
                 global_translations.update(numbered_fills)
                 self._log("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
+            else:
+                logger.info("Word 页眉页脚页码：没有需要统一写法的行")
 
             # ── 只输出译文时，表格一格里译文行数和原文段数对不上，写回只能保留原文、
             # 把译文追加在下面（成了双语）。写盘前先把这几格单独重译、要求逐行对应。

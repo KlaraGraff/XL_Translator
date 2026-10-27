@@ -5,9 +5,22 @@
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
 
-from core.word_task_runner import _fill_numbered_line, _numbered_header_footer_fills
+from docx import Document
+from docx.enum.section import WD_SECTION
+
+from core.task_runner import LogMsg
+from core.word_document import WordFileItem
+from core.word_task_runner import WordTaskRunner, _fill_numbered_line, _numbered_header_footer_fills
+from engines.base_engine import TranslationEngine
+from settings import AppSettings
+from tests import test_word_resume as word_helpers
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 FOOTER = [{"kind": "footer"}]
 
@@ -55,6 +68,57 @@ class NumberedHeaderFooterFillTests(unittest.TestCase):
         translations = {"Page 1": "第一页", "Page 2": "第2页"}
         locations = dict.fromkeys(translations, FOOTER)
         self.assertEqual(_numbered_header_footer_fills(translations, locations), {})
+
+
+class InconsistentPageEngine(TranslationEngine):
+    @property
+    def engine_name(self) -> str:
+        return "fake/page-numbers"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        results = {}
+        for text in texts:
+            if text.startswith("Page "):
+                number = text.split()[-1]
+                results[text] = f"第 {number} 页" if number == "1" else f"第{number}页"
+            else:
+                results[text] = "施工内容"
+        return results
+
+
+class NumberedFooterRunnerTests(IsolatedAppDataTestCase):
+    def test_each_section_footer_uses_the_first_page_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "pages.docx"
+            doc = Document()
+            for index in range(3):
+                if index:
+                    doc.add_section(WD_SECTION.NEW_PAGE)
+                section = doc.sections[-1]
+                section.footer.is_linked_to_previous = False
+                section.footer.paragraphs[0].text = f"Page {index + 1}"
+                doc.add_paragraph("Contenu des travaux")
+            doc.save(path)
+            settings = AppSettings(source_lang="fr", target_lang="zh")
+            settings.word_output.output_translation_only = True
+            runner = WordTaskRunner(
+                [WordFileItem(path=path, name=path.name, size_kb=1.0)],
+                settings,
+                source_root=root,
+                source_lang="fr",
+                translate_headers_footers=True,
+            )
+            with ExitStack() as stack:
+                word_helpers.WordResumeTests._runner_patches(self, stack, root=root)
+                stack.enter_context(patch("core.word_task_runner.build_engine", return_value=InconsistentPageEngine()))
+                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", return_value={}))
+                runner._run()
+            output = next((root / "out").rglob("*.docx"))
+            footers = [section.footer.paragraphs[0].text for section in Document(output).sections]
+        self.assertEqual(footers, ["第 1 页", "第 2 页", "第 3 页"])
+        logs = [m.message for m in runner._queue.queue if isinstance(m, LogMsg)]
+        self.assertTrue([line for line in logs if "2 行页码已按第一页的写法统一" in line], logs)
 
 
 if __name__ == "__main__":
