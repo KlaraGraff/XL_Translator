@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections import Counter
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -250,6 +251,392 @@ def _join_soft_breaks(paragraph) -> int:
     return joined
 
 
+def _join_wrapped_tabs(paragraph) -> int:
+    """pdf2docx 把列表项的折行（第二行和第一行的正文对齐、比「•」靠右）写成一个制表符：
+    「…si elle<tab>est prévue au programme.」。一句话被切成两截，Word 按译文重排时制表符
+    把后半截推到奇怪的位置，模型也会把后半截当成另一句（本机实测这里译出了一个俄文词）。
+    前面是没说完的半句、后面接小写字母的，换成空格；「名称<tab>数值」这类对齐用的照旧保留。
+    以「•」开头的段落改用悬挂缩进，折行仍然和第一行的正文对齐。"""
+    from docx.oxml.ns import qn
+
+    joined = 0
+    for tab in list(paragraph._p.iter(qn("w:tab"))):
+        run = tab.getparent()
+        if run is None or run.tag != qn("w:r"):
+            continue  # 段落属性里的制表位定义
+        before, after = [], []
+        seen = False
+        for node in paragraph._p.iter(qn("w:t"), qn("w:tab"), qn("w:br")):
+            if node is tab:
+                seen = True
+                continue
+            if node.tag != qn("w:t"):
+                if seen:
+                    break
+                before.clear()
+                continue
+            (after if seen else before).append(node.text or "")
+        raw_head, raw_tail = "".join(before), "".join(after)
+        head, tail = raw_head.rstrip(), raw_tail.lstrip()
+        if not re.search(r"[^\W\d_],?$", head) or not tail[:1].isalpha() or not tail[:1].islower():
+            continue
+        t = run.makeelement(qn("w:t"), {})
+        t.text = "" if raw_head[-1:].isspace() or raw_tail[:1].isspace() else " "
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        run.replace(tab, t)
+        joined += 1
+    if joined and _BULLET_START.match(paragraph.text):
+        _hang_after_bullet(paragraph)
+    return joined
+
+
+def _hang_after_bullet(paragraph) -> None:
+    """「•」段落：段落里唯一的制表位就是原来折行的位置，改成悬挂缩进到那里。"""
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph._p.pPr
+    if p_pr is None:
+        return
+    stops = [tab for tab in p_pr.iter(qn("w:tab")) if tab.get(qn("w:val")) not in ("clear", "bar")]
+    ind = p_pr.find(qn("w:ind"))
+    if len(stops) != 1 or ind is None or ind.get(qn("w:hanging")):
+        return
+    try:
+        position = int(stops[0].get(qn("w:pos")))
+        left = int(ind.get(qn("w:left")) or ind.get(qn("w:start")) or 0)
+        first_line = int(ind.get(qn("w:firstLine")) or 0)
+    except (TypeError, ValueError):
+        return
+    if first_line or position <= left:
+        return
+    ind.set(qn("w:left"), str(position))
+    ind.set(qn("w:hanging"), str(position - left))
+    for name in ("w:start", "w:firstLine"):
+        if ind.get(qn(name)) is not None:
+            del ind.attrib[qn(name)]
+
+
+# 列表项开头的符号。只认不会出现在正文中间的那几个：「-」「–」也常用作连字符、破折号。
+_BULLET_CHARS = "•▪●◦■○‣⁃\uf0b7\uf0a7\uf0d8\uf076"
+_BULLET_START = re.compile(f"^\\s*[{_BULLET_CHARS}]")
+# 同一段里一句话结束、紧接着另一个列表符号：「…programme validé.• Enregistrement…」
+_GLUED_BULLET = re.compile(f"(?<=[.!?;:。！？；：])\\s*(?=[{_BULLET_CHARS}])")
+
+
+def _split_run_at(run, offset: int):
+    """把 run 在第 offset 个字处切成两个格式相同的 run，返回后一个。"""
+    import copy
+
+    from docx.oxml.ns import qn
+
+    clone = copy.deepcopy(run)
+    text_nodes = run.findall(qn("w:t"))
+    clone_nodes = clone.findall(qn("w:t"))
+    head_text = "".join(node.text or "" for node in text_nodes)
+    for node in text_nodes[1:]:
+        run.remove(node)
+    for node in clone_nodes[1:]:
+        clone.remove(node)
+    for node, text in ((text_nodes[0], head_text[:offset].rstrip()), (clone_nodes[0], head_text[offset:])):
+        node.text = text
+        node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    run.addnext(clone)
+    return clone
+
+
+def _split_glued_bullets_in(paragraph) -> int:
+    """pdf2docx 把相邻两条「•」（PDF 里各占一行、各是一块）合进了同一段，Word 里接着排成
+    「…programme validé.• Enregistrement…」。只输出译文时这一格行数就和译文对不上
+    （模型会把两条拆回两行）。前一条以句末标点结束、后一条以列表符号开头的，拆回两段。"""
+    import copy
+
+    from docx.oxml.ns import qn
+
+    runs = [child for child in paragraph._p if child.tag == qn("w:r")]
+    if len(runs) != len(paragraph._p.findall(f".//{qn('w:r')}")):
+        return 0  # 超链接、域里的 run 不动
+    # 只有纯文字的 run 才拆，图片、制表符、换行不跟着搬家
+    if any(el.tag not in (qn("w:rPr"), qn("w:t")) for run in runs for el in run):
+        return 0
+    # 一个 run 里就粘着两条的，先在列表符号前把 run 切开
+    for run in list(runs):
+        text = "".join(node.text or "" for node in run.findall(qn("w:t")))
+        cuts = [match.end() for match in _GLUED_BULLET.finditer(text) if match.end() < len(text)]
+        for offset in reversed(cuts):
+            if text[:offset].strip():
+                _split_run_at(run, offset)
+    runs = [child for child in paragraph._p if child.tag == qn("w:r")]
+    starts: list[int] = []
+    head = ""
+    for index, run in enumerate(runs):
+        text = "".join(node.text or "" for node in run.findall(qn("w:t")))
+        if index and head.strip() and _BULLET_START.match(text) and (
+            head.rstrip().endswith(_SENTENCE_END) or _BULLET_START.match(head)
+        ):
+            starts.append(index)
+        head += text
+    if not starts:
+        return 0
+    bounds = [0, *starts, len(runs)]
+    anchor = paragraph._p
+    p_pr = anchor.pPr
+    for begin, end in zip(bounds[1:-1], bounds[2:]):
+        piece = anchor.makeelement(qn("w:p"), {})
+        if p_pr is not None:
+            piece.append(copy.deepcopy(p_pr))
+        for run in runs[begin:end]:
+            piece.append(run)
+        anchor.addnext(piece)
+        anchor = piece
+    pieces = [paragraph._p]
+    node = paragraph._p
+    for _ in starts:
+        node = node.getnext()
+        pieces.append(node)
+    # 分节符只能留在最后一段上；段前距只给第一段、段后距只给最后一段
+    for index, piece in enumerate(pieces):
+        piece_pr = piece.pPr
+        if piece_pr is None:
+            continue
+        if index < len(pieces) - 1:
+            for sect in piece_pr.findall(qn("w:sectPr")):
+                piece_pr.remove(sect)
+        spacing = piece_pr.find(qn("w:spacing"))
+        if spacing is not None:
+            if index > 0:
+                spacing.set(qn("w:before"), "0")
+            if index < len(pieces) - 1:
+                spacing.set(qn("w:after"), "0")
+            for name in ("w:beforeAutospacing", "w:afterAutospacing", "w:beforeLines", "w:afterLines"):
+                if spacing.get(qn(name)) is not None:
+                    del spacing.attrib[qn(name)]
+    return len(starts)
+
+
+def split_glued_bullets(path: Path) -> int:
+    from docx import Document
+
+    doc = Document(str(path))
+    count = sum(_split_glued_bullets_in(p) for p in list(doc.paragraphs))
+    for table in _all_tables(doc.tables):
+        for row in table.rows:
+            for cell in row.cells:
+                count += sum(_split_glued_bullets_in(p) for p in list(cell.paragraphs))
+    if count:
+        doc.save(str(path))
+    return count
+
+
+# 页脚：pdf2docx 不生成页眉页脚，PDF 每页底部的页脚是正文里的最后一行（常是一行表格），
+# 前面垫一个固定行高的空段把它顶到页底。译文只要比原文高一点，垫高的空段加页脚就挤到
+# 下一页，一页变两页（本机实测 3 页变 6 页）。
+_FOOTER_MAX_CHARS = 200
+
+
+def _has_visible_content(element) -> bool:
+    from docx.oxml.ns import qn
+
+    if "".join(node.text or "" for node in element.iter(qn("w:t"))).strip():
+        return True
+    return any(True for _ in element.iter(qn("w:drawing"), qn("w:pict"), qn("w:object")))
+
+
+def _section_blocks(body) -> list[tuple[list, object]]:
+    """正文按节切开：[(这一节的元素, 这一节的 sectPr)]。"""
+    from docx.oxml.ns import qn
+
+    blocks: list[tuple[list, object]] = []
+    current: list = []
+    for child in body:
+        if child.tag == qn("w:sectPr"):
+            blocks.append((current, child))
+            current = []
+            continue
+        current.append(child)
+        p_pr = child.find(qn("w:pPr")) if child.tag == qn("w:p") else None
+        sect = p_pr.find(qn("w:sectPr")) if p_pr is not None else None
+        if sect is not None:
+            blocks.append((current, sect))
+            current = []
+    return blocks
+
+
+def _trailing_footer(children: list):
+    """这一节末尾的页脚：最后一个有内容的元素（短短一段，或一两行的小表格），后面只剩空段。
+    返回 (页脚元素, 前面垫高用的空段或 None)。"""
+    from docx.oxml.ns import qn
+
+    for index in range(len(children) - 1, -1, -1):
+        element = children[index]
+        if not _has_visible_content(element):
+            if element.tag != qn("w:p"):
+                return None
+            continue
+        if any(True for _ in element.iter(qn("w:drawing"), qn("w:pict"), qn("w:object"))):
+            return None
+        if element.tag == qn("w:tbl"):
+            if len(element.findall(qn("w:tr"))) > 2 or element.find(f".//{qn('w:tbl')}") is not None:
+                return None
+        elif element.tag != qn("w:p"):
+            return None
+        if len("".join(node.text or "" for node in element.iter(qn("w:t")))) > _FOOTER_MAX_CHARS:
+            return None
+        spacer = children[index - 1] if index else None
+        if spacer is not None and not _is_exact_spacer(spacer):
+            spacer = None
+        return element, spacer
+    return None
+
+
+def _is_exact_spacer(element) -> bool:
+    from docx.oxml.ns import qn
+
+    if element.tag != qn("w:p") or _has_visible_content(element):
+        return False
+    p_pr = element.find(qn("w:pPr"))
+    if p_pr is None or p_pr.find(qn("w:sectPr")) is not None:
+        return False
+    spacing = p_pr.find(qn("w:spacing"))
+    return spacing is not None and spacing.get(qn("w:lineRule")) == "exact"
+
+
+def _footer_key(element) -> str:
+    """同一句页脚在各页只差页码：去掉数字、空白和大小写再比。"""
+    from docx.oxml.ns import qn
+
+    text = "".join(node.text or "" for node in element.iter(qn("w:t")))
+    return re.sub(r"[\d\s]+", "", text).casefold()
+
+
+def _tiny_paragraph(parent):
+    """页脚以表格结尾时 Word 要求后面再有一段；给它最小的行高，免得把页脚顶高。"""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    return parse_xml(
+        f'<w:p {nsdecls("w")}><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/>'
+        '<w:rPr><w:sz w:val="2"/></w:rPr></w:pPr></w:p>'
+    )
+
+
+def _shrink_paragraph(paragraph) -> None:
+    """只剩段落标记的空段：行高压到最小，不再占一行。"""
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = paragraph.makeelement(qn("w:pPr"), {})
+        paragraph.insert(0, p_pr)
+    spacing = p_pr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = p_pr.makeelement(qn("w:spacing"), {})
+        # w:spacing 在 pPr 里要排在分节符、段落标记格式之前
+        anchor = next((child for child in p_pr if child.tag in (qn("w:ind"), qn("w:jc"), qn("w:rPr"), qn("w:sectPr"))), None)
+        if anchor is not None:
+            anchor.addprevious(spacing)
+        else:
+            p_pr.append(spacing)
+    for name, value in (("w:before", "0"), ("w:after", "0"), ("w:line", "20"), ("w:lineRule", "exact")):
+        spacing.set(qn(name), value)
+    for name in ("w:beforeLines", "w:afterLines", "w:beforeAutospacing", "w:afterAutospacing"):
+        if spacing.get(qn(name)) is not None:
+            del spacing.attrib[qn(name)]
+
+
+def _trim_section_tail(children: list, body) -> None:
+    """页脚挪走以后，这一节末尾只剩几个空段（pdf2docx 用来占位、或带着分节符）。页面
+    排满时它们会单独挤到下一页（本机实测第 2 页多出一张只有页脚的空白页）。带分节符的
+    那段把分节符交给最后一段正文；最后是表格时留一个压到最小的空段（表格后面必须有段落）。"""
+    from docx.oxml.ns import qn
+
+    last = max((index for index, child in enumerate(children) if _has_visible_content(child)), default=-1)
+    if last < 0:
+        return
+    tail = [child for child in children[last + 1:] if child.tag == qn("w:p")]
+    if not tail:
+        return
+    content = children[last]
+    sect = None
+    for paragraph in tail:
+        p_pr = paragraph.find(qn("w:pPr"))
+        found = p_pr.find(qn("w:sectPr")) if p_pr is not None else None
+        if found is not None:
+            sect = (paragraph, found)
+    keep = None
+    if content.tag == qn("w:p") and sect is not None:
+        p_pr = content.find(qn("w:pPr"))
+        if p_pr is None:
+            p_pr = content.makeelement(qn("w:pPr"), {})
+            content.insert(0, p_pr)
+        if p_pr.find(qn("w:sectPr")) is None:
+            change = p_pr.find(qn("w:pPrChange"))
+            if change is not None:
+                change.addprevious(sect[1])
+            else:
+                p_pr.append(sect[1])
+    elif content.tag == qn("w:tbl"):
+        keep = sect[0] if sect is not None else tail[-1]
+    elif sect is not None:
+        keep = sect[0]
+    for paragraph in tail:
+        if paragraph is keep:
+            _shrink_paragraph(paragraph)
+        elif paragraph.getparent() is body:
+            body.remove(paragraph)
+
+
+def move_running_footers(path: Path) -> int:
+    """每页底部同一句页脚（各页只差页码）挪进这一页（一节）的页脚里，前面垫高的空段去掉。
+    页脚放在页脚区，正文长短不再把它挤到下一页。只有一页有、或各页不一样的不动。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(str(path))
+    body = doc.element.body
+    blocks = _section_blocks(body)
+    found = [_trailing_footer(children) for children, _sect in blocks]
+    keys = Counter(_footer_key(item[0]) for item in found if item)
+    if not any(item and keys[_footer_key(item[0])] >= 2 for item in found):
+        return 0
+    sections = {id(section._sectPr): section for section in doc.sections}
+    if any(sect.find(qn("w:titlePg")) is not None or sect.find(qn("w:footerReference")) is not None
+           for _children, sect in blocks):
+        return 0  # 已经有页脚、或首页另设页脚的不碰
+    moved = 0
+    for (children, sect), item in zip(blocks, found):
+        section = sections.get(id(sect))
+        if section is None:
+            continue
+        footer = section.footer
+        # 每节都给一个自己的页脚：没挪页脚的那一节也要有（空的），否则 Word 让它沿用上一节的
+        footer.is_linked_to_previous = False
+        ftr = footer._element
+        if not item or keys[_footer_key(item[0])] < 2:
+            continue
+        element, spacer = item
+        for child in list(ftr):
+            ftr.remove(child)
+        ftr.append(element)
+        if element.tag == qn("w:tbl"):
+            ftr.append(_tiny_paragraph(ftr))
+        if spacer is not None and spacer.getparent() is body:
+            body.remove(spacer)
+        _trim_section_tail([child for child in children if child.getparent() is body], body)
+        # 页脚放回原来的高度：页脚到页底的距离用原来的下边距（pdf2docx 写的 720 偏高，
+        # 页脚区一高，正文就少几行）。
+        margins = sect.find(qn("w:pgMar"))
+        if margins is not None and margins.get(qn("w:bottom")) and margins.get(qn("w:footer")):
+            try:
+                bottom = int(margins.get(qn("w:bottom")))
+                if int(margins.get(qn("w:footer"))) > bottom:
+                    margins.set(qn("w:footer"), str(max(bottom, 0)))
+            except ValueError:
+                pass
+        moved += 1
+    doc.save(str(path))
+    return moved
+
+
 # 相邻两段文字之间补空格的条件：前一段以西文字母、数字或句读结尾，后一段以西文字母、
 # 数字或左括号、左引号开头。中日韩文字不在里面，不会被插进空格。
 _SPACE_BEFORE = re.compile(r"[A-Za-z0-9.,;:!?)\]’'\"”%]$")
@@ -351,12 +738,12 @@ def merge_wrapped_lines(path: Path) -> int:
 
     doc = Document(str(path))
     count = _merge_paragraph_pairs(doc.paragraphs)
-    count += sum(_join_soft_breaks(p) for p in doc.paragraphs)
+    count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in doc.paragraphs)
     for table in _all_tables(doc.tables):
         for row in table.rows:
             for cell in row.cells:
                 count += _merge_paragraph_pairs(cell.paragraphs)
-                count += sum(_join_soft_breaks(p) for p in cell.paragraphs)
+                count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in cell.paragraphs)
     if count:
         doc.save(str(path))
     return count
@@ -416,6 +803,8 @@ def convert_pdf_to_docx(
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
+    split_glued_bullets(docx_path)
+    move_running_footers(docx_path)
 
 
 def translate_pdf_via_word(
@@ -475,7 +864,9 @@ def translate_pdf_via_word(
     runner = WordTaskRunner(items, word_settings, source_root=work_dir, source_lang=source_lang,
                             key_overrides=key_overrides,
                             term_file_paths=term_file_paths or [pdf_path],
-                            document_profile=document_profile)
+                            document_profile=document_profile,
+                            # 每页底部的页脚转换时挪进了页脚区（move_running_footers），要一起翻
+                            translate_headers_footers=True)
     runner.start()
     stop_sent = False
     done = None

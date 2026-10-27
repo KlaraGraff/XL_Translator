@@ -1100,8 +1100,12 @@ def write_bilingual_docx(
     output_translation_only: bool = False,
     marked_translations: dict[str, tuple[str, str]] | None = None,
     formula_flags: dict[str, list[tuple[int, int, int]]] | None = None,
+    layout_only_cells: set[str] | None = None,
 ) -> Path:
     """Write a bilingual Word document to the output directory.
+
+    ``layout_only_cells``：译文行数和单元格段数对不上、但复查判定意思一致的那些单元格原文。
+    只输出译文时这几格整格写译文（见 ``_replace_cell_text_whole``），不再保留原文。
 
     ``formula_flags``：原文 → [(第几行, 开始, 结束)]，补标记时放不回原位、放到句末的公式
     所在那一句（去掉标记后的位置）。按标记写回的译文里这几句标黄并加批注「公式位置待核对」。
@@ -1360,6 +1364,9 @@ def write_bilingual_docx(
             )
             flag_formulas(translation_paragraph, only, source, location=cell_locations.get(id(cell), ""))
             marked_write_count += 1
+        elif (resolved.replace_only or output_translation_only) and source in (layout_only_cells or ()):
+            if not _replace_cell_text(cell, resolved.text, target_lang=target_lang, keep_source=False):
+                logger.info(f"Word 单元格行数不齐，复查意思一致，整格写入译文：{cell_locations.get(id(cell), '')}")
         elif resolved.replace_only or output_translation_only:
             if not _replace_cell_text(cell, resolved.text, target_lang=target_lang):
                 cell_line_mismatch_count += 1
@@ -3375,7 +3382,31 @@ def _locate_unique_field_result(text: str, marker: str) -> int | None:
     return positions[0]
 
 
-def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> bool:
+def cell_line_groups(lines: list[str], sources: list[str]) -> list[str] | None:
+    """把译文各行分给单元格里的各段原文：一段一行；段内有软换行（原文一段占几行）的，
+    按原文每段的行数分，分到同一段的几行仍用换行连着（写回时是段内换行）。
+
+    模型多给的空行不算一行。行数怎么分都对不上时返回 None。
+    """
+    candidates = [lines]
+    kept = [line for line in lines if line.strip()]
+    if len(kept) != len(lines):
+        candidates.append(kept)
+    sizes = [source.count("\n") + 1 for source in sources]
+    for candidate in candidates:
+        if len(candidate) == len(sources):
+            return list(candidate)
+        if sum(sizes) == len(candidate):
+            groups: list[str] = []
+            start = 0
+            for size in sizes:
+                groups.append("\n".join(candidate[start:start + size]))
+                start += size
+            return groups
+    return None
+
+
+def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str, keep_source: bool = True) -> bool:
     """逐段改写单元格文本，保留嵌套表格、多段落与段落内的局部格式。
 
     ``cell.text = ...`` 会把整个 ``w:tc`` 清空、只留下一个纯文本段落：单元格里的
@@ -3396,17 +3427,41 @@ def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> bool:
         _replace_paragraph_text(target, text, target_lang=target_lang)
         return True
 
-    lines = str(text or "").split("\n")
-    if len(lines) == len(paragraphs):
-        for paragraph, line in zip(paragraphs, lines):
-            _replace_paragraph_text(paragraph, line, target_lang=target_lang)
+    groups = cell_line_groups(
+        str(text or "").split("\n"),
+        [_paragraph_source_text(paragraph) for paragraph in paragraphs],
+    )
+    if groups is not None:
+        for paragraph, group in zip(paragraphs, groups):
+            _replace_paragraph_text(paragraph, group, target_lang=target_lang)
         return True
 
     # 行数对不上（模型合并、拆分或干脆丢了行）时不再猜哪一行对应哪一段，也不能清空
     # 源文段：行数不齐正说明译文未必覆盖了每一段，把没对上的原文抹掉，漏译的内容就
     # 从文档里无声消失了。改为整格保留原文、译文按双语版式追加在末尾，交人工核对。
-    _append_translation_to_cell(cell, text, target_lang=target_lang)
+    # 只有复查确认译文意思完整（keep_source=False）时才整格换成译文。
+    if keep_source:
+        _append_translation_to_cell(cell, text, target_lang=target_lang)
+    else:
+        _replace_cell_text_whole(paragraphs, [line for line in str(text or "").split("\n") if line.strip()],
+                                 target_lang=target_lang)
     return False
+
+
+def _replace_cell_text_whole(paragraphs: list[Paragraph], lines: list[str], *, target_lang: str) -> None:
+    """行数对不上、但意思一致的译文整格写回：前面几段一段一行，多出来的行都放进最后一段
+    （段内换行）；行比段少时，多出来的段只清掉文字，清空后什么都不剩的段删掉。"""
+    if not lines:
+        return
+    count = min(len(paragraphs), len(lines))
+    for index, paragraph in enumerate(paragraphs[:count]):
+        line = "\n".join(lines[index:]) if index == count - 1 else lines[index]
+        _replace_paragraph_text(paragraph, line, target_lang=target_lang)
+    for paragraph in paragraphs[count:]:
+        _replace_paragraph_text(paragraph, "", target_lang=target_lang)
+        element = paragraph._p
+        if _is_removable_empty_paragraph_element(element) and element.getparent() is not None:
+            element.getparent().remove(element)
 
 
 def _trim_trailing_empty_body_paragraphs(doc) -> None:
