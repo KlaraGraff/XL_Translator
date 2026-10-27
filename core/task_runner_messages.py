@@ -73,6 +73,8 @@ class LogMsg:
     message: str
     ts:      str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     visible: bool = True
+    # 这个任务嵌在别的任务里跑（PDF「转成 Word」）时，外层也要转给用户看的说明。
+    relay:   bool = False
 
 
 @dataclass

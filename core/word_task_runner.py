@@ -59,7 +59,7 @@ from core.document_profile import (
     is_context_sensitive,
     request_document_profile,
 )
-from core.document_terms import make_term_picker
+from core.document_terms import _LATIN_STOP, _cjk_ok, make_term_picker
 from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.term_session import TaskTermSession
 from core.language_registry import (
@@ -1789,11 +1789,22 @@ class WordTaskRunner(BaseTaskRunner):
                 concurrency=concurrency if settings.engine.mode != "local" else 1,
             )
 
+            # ── 大标题、小标题、页眉页脚里含同一个词的几句，请模型复查译法是否一致
+            self._review_title_terms(
+                engine=engine,
+                global_translations=global_translations,
+                segment_locations=segment_locations,
+                document_note=document_profile,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+            )
+
             # ── 页眉页脚里只差数字的几行（各页页码），按第一页的写法统一（0 API）
             numbered_fills = _numbered_header_footer_fills(global_translations, segment_locations)
             if numbered_fills:
                 global_translations.update(numbered_fills)
-                self._log("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
+                self._log_relayed("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
             else:
                 logger.info("Word 页眉页脚页码：没有需要统一写法的行")
 
@@ -2185,6 +2196,14 @@ class WordTaskRunner(BaseTaskRunner):
                     )
                 )
 
+    def _log_relayed(self, level: str, message: str) -> None:
+        """写盘前几步修正（译法统一、表格行数、页码）的说明。
+
+        PDF「转成 Word」时，外层只转内层 Word 任务的警告和逐批请求行；这几行说的是
+        译文本身改了什么，也要让用户在 PDF 任务日志里看到（本机实测之前看不到）。
+        """
+        self._log(level, message, relay=True)
+
     def _retranslate_each(
         self,
         sources: list[str],
@@ -2255,7 +2274,7 @@ class WordTaskRunner(BaseTaskRunner):
         if not conflicts:
             return
         example_source, example_target = next(iter(conflicts.values()))[0]
-        self._log(
+        self._log_relayed(
             "INFO",
             f"有 {len(conflicts)} 段与文中同一句短文字的译法不一致（例如「{example_source}」已译作"
             f"「{example_target}」），正在按同一译法单独重译这几段。",
@@ -2277,7 +2296,103 @@ class WordTaskRunner(BaseTaskRunner):
         global_translations.update(accepted)
         logger.info(f"Word 短文字译法统一：{len(accepted)}/{len(sources)} 段重译后用上了同一译法")
         if accepted:
-            self._log("OK", f"{len(accepted)} 段已按同一译法重译。")
+            self._log_relayed("OK", f"{len(accepted)} 段已按同一译法重译。")
+
+    def _review_title_terms(
+        self,
+        *,
+        engine,
+        global_translations: dict[str, str],
+        segment_locations: dict[str, list[dict]],
+        document_note: str,
+        target_lang: str,
+        source_lang: str,
+        api_scheduler,
+    ) -> None:
+        """标题类文字里含同一个词的几句，连同译文请模型复查一次译法是否一致、有没有用错意思。
+
+        正文不在其中：同一个词放在句子里本来会随上下文换说法（本机实测「avant intervention」
+        译「进场作业前」是对的）。模型没回、回得不对，或改动没通过译文检查的，保持原样。
+        """
+        if self._stop_event.is_set() or not engine_supports_chat(engine):
+            return
+        groups = _title_term_groups(
+            global_translations, segment_locations, skip=lambda source: source in self._marked_sources
+        )
+        if not groups:
+            return
+        sources: list[str] = []
+        shared_words = []
+        for word, members in groups.items():
+            if len(set(sources) | set(members)) > _TITLE_REVIEW_MAX_TEXTS:
+                continue
+            sources.extend(member for member in members if member not in sources)
+            shared_words.append((word, members))
+        ids = {source: index + 1 for index, source in enumerate(sources)}
+        self._log_relayed(
+            "INFO",
+            f"标题、页眉页脚：{len(sources)} 句含有相同的词，正在请模型复查这些句子的译法是否一致。",
+        )
+        system_prompt = _build_title_review_prompt(target_lang)
+        user_payload = json.dumps(
+            {
+                "document_note": document_note or "",
+                "source_language": source_lang,
+                "target_language": target_lang,
+                "shared_words": [
+                    {"word": word, "ids": [ids[member] for member in members]} for word, members in shared_words
+                ],
+                "items": [
+                    {"id": ids[source], "source": source, "translation": str(global_translations[source]).strip()}
+                    for source in sources
+                ],
+            },
+            ensure_ascii=False,
+        )
+        try:
+            if api_scheduler is None:
+                raw = engine.chat(system_prompt, user_payload)
+            else:
+                weight = estimate_api_request_weight([user_payload], system_prompt)
+                with api_scheduler.slot(
+                    weight, category=API_REQUEST_CATEGORY_RECOVERY, should_stop=self.stop_requested
+                ):
+                    raw = engine.chat(system_prompt, user_payload)
+            payload = json.loads(strip_markdown_json(raw))
+        except ApiKeyTemporarilyUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - optional review, translations stay as they are
+            if self._stop_event.is_set():
+                return
+            logger.warning(f"Word 标题译法复查失败（保持原译文）：{exc!r}")
+            self._log_relayed("WARN", "标题、页眉页脚的译法复查没有完成，保持原译文。")
+            return
+        changes = payload.get("changes") if isinstance(payload, dict) else None
+        by_id = {index: source for source, index in ids.items()}
+        changed = 0
+        for item in changes if isinstance(changes, list) else ():
+            if not isinstance(item, dict):
+                continue
+            try:
+                source = by_id.get(int(item.get("id")))
+            except (TypeError, ValueError):
+                continue
+            candidate = str(item.get("translation") or "").strip()
+            if source is None or not _title_review_change_ok(
+                source,
+                str(global_translations[source]),
+                candidate,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ):
+                continue
+            logger.info(f"Word 标题译法复查：{source!r} {global_translations[source]!r} → {candidate!r}")
+            global_translations[source] = candidate
+            changed += 1
+        if changed:
+            self._log_relayed("OK", f"{changed} 句已改为与其他标题一致的译法。")
+        else:
+            self._log_relayed("INFO", "复查完成，这些句子的译法无需修改。")
 
     def _realign_cell_lines(
         self,
@@ -2312,7 +2427,7 @@ class WordTaskRunner(BaseTaskRunner):
         pending = _cell_line_mismatches(global_translations, segment_locations)
         if not pending:
             return
-        self._log("INFO", f"有 {len(pending)} 格表格译文的行数与原文不一致，正在单独重译这几格，要求逐行对应。")
+        self._log_relayed("INFO", f"有 {len(pending)} 格表格译文的行数与原文不一致，正在单独重译这几格，要求逐行对应。")
         retry_prompt = _build_word_retry_prompt(system_prompt)
         accepted = self._retranslate_each(
             pending,
@@ -2329,7 +2444,7 @@ class WordTaskRunner(BaseTaskRunner):
         logger.info(f"Word 表格行数对齐：{fixed}/{len(pending)} 格重译后逐行对上")
         unfixed = [source for source in pending if source not in accepted]
         if not unfixed:
-            self._log("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
+            self._log_relayed("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
             return
 
         def judge(source: str):
@@ -2360,7 +2475,7 @@ class WordTaskRunner(BaseTaskRunner):
             message += f"，{len(same_meaning)} 格经复查意思一致、只是分行不同，整格写入译文"
         if kept:
             message += f"，{len(kept)} 格保留原文并在下方附上译文，已标出底色并列入报告待复核"
-        self._log("WARN" if kept else "OK", message + "。")
+        self._log_relayed("WARN" if kept else "OK", message + "。")
 
     def _place_missing_inline_marks(self, engine, global_translations: dict[str, str], *, target_lang: str = "") -> None:
         """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
@@ -5290,6 +5405,122 @@ def _numbered_header_footer_fills(
             if filled is not None and filled != global_translations[source]:
                 fills[source] = filled
     return fills
+
+
+# 「标题类文字」：大标题、各节小标题、页眉页脚。它们分在不同批里翻，同一个词前后
+# 可能译成两种说法（本机实测：大标题和页脚「Méthodologie d’intervention」译「施工方法」，
+# 第 2 节小标题「Planning prévisionnel des interventions」那批却译成「干预预安排」）。
+_TITLE_MAX_CHARS = 80
+_TITLE_MAX_WORDS = 10
+_TITLE_MAX_CJK = 30
+_TITLE_SENTENCE_END = tuple(".;:!?。；：！？,，")
+_TITLE_BULLETS = tuple("•▪●◦■○‣⁃-–—*")
+_TITLE_WORD_MAX_TEXTS = 8  # 出现在更多标题里的多半是泛称
+_TITLE_REVIEW_MAX_TEXTS = 60
+_TITLE_CJK_SHARED_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]{2,}")
+
+
+def _is_title_like(source: str, kinds: set[str]) -> bool:
+    text = str(source or "").strip()
+    if not text or "\n" in text or len(text) > _TITLE_MAX_CHARS:
+        return False
+    if kinds & set(_HEADER_FOOTER_KINDS):
+        return True
+    if "paragraph" not in kinds or text.endswith(_TITLE_SENTENCE_END) or text.startswith(_TITLE_BULLETS):
+        return False
+    if _CJK_RE.search(text):
+        return len(_HAN_RE.findall(text)) <= _TITLE_MAX_CJK
+    return 1 <= len(_WORD_TOKEN_RE.findall(text)) <= _TITLE_MAX_WORDS
+
+
+def _title_content_words(source: str) -> set[str]:
+    """标题里可以拿来比对的词：拉丁文字取四个字母以上的实词（去掉复数 s/x），中文取两字以上的连续汉字。"""
+    folded = _fold_for_terms(source)
+    words = set()
+    for token in _WORD_TOKEN_RE.findall(folded):
+        token = token.split("'")[-1]
+        if len(token) < 4 or token in _LATIN_STOP:
+            continue
+        if len(token) >= 5 and token[-1] in "sx":
+            token = token[:-1]
+        words.add(token)
+    return words
+
+
+def _cjk_shared_words(titles: list[str]) -> dict[str, set[str]]:
+    """中文标题之间共有的、两个字以上的连续汉字（只留最长的那种说法）。"""
+    pieces: dict[str, set[str]] = {}
+    for source in titles:
+        found = set()
+        for run in _TITLE_CJK_SHARED_RE.findall(source):
+            for start in range(len(run)):
+                for end in range(start + 2, min(len(run), start + 8) + 1):
+                    found.add(run[start:end])
+        for piece in found:
+            pieces.setdefault(piece, set()).add(source)
+    shared = {piece: sources for piece, sources in pieces.items() if len(sources) >= 2 and _cjk_ok(piece)}
+    return {
+        piece: sources
+        for piece, sources in shared.items()
+        if not any(piece != other and piece in other and shared[other] == sources for other in shared)
+    }
+
+
+def _title_term_groups(
+    global_translations: dict[str, str],
+    segment_locations: dict[str, list[dict]],
+    *,
+    skip: Callable[[str], bool] = lambda _source: False,
+) -> dict[str, list[str]]:
+    """{共同的原文词: [含这个词的标题类原文]}，只收至少两句、译文可以整句替换的。"""
+    titles = []
+    # 按在文档里出现的先后排（segment_locations 按抽取顺序记录），模型看到的就是从上到下的标题。
+    for source in [*segment_locations, *(key for key in global_translations if key not in segment_locations)]:
+        value = global_translations.get(source)
+        translation = str(value or "").strip()
+        if not translation or is_replace_translation(value) or translation == source.strip() or skip(source):
+            continue
+        kinds = {str(item.get("kind") or "") for item in segment_locations.get(source) or ()}
+        if _is_title_like(source, kinds):
+            titles.append(source)
+    groups: dict[str, set[str]] = {}
+    for source in titles:
+        for word in _title_content_words(source):
+            groups.setdefault(word, set()).add(source)
+    groups.update(_cjk_shared_words([source for source in titles if _CJK_RE.search(source)]))
+    return {
+        word: sorted(sources, key=titles.index)
+        for word, sources in groups.items()
+        if 2 <= len(sources) <= _TITLE_WORD_MAX_TEXTS
+    }
+
+
+def _build_title_review_prompt(target_lang: str) -> str:
+    return (
+        "你是翻译审校助手。下面是同一份文档里的大标题、小标题和页眉页脚，以及它们的译文"
+        f"（目标语言：{target_lang}）。它们分在不同批次翻译，同一个原文词可能被译成了不同的说法，"
+        "或者用错了意思。请结合文档说明检查：\n"
+        "1. 「共同的词」在这几句里指同一件事时，译法要一致，选最符合文档领域的说法；"
+        "确实指不同的事时可以不同。\n"
+        "2. 译文用错了意思，或有明显的错字、重复字的，改正。\n"
+        "3. 其余内容不要改：编号、数字和标点格式保持原样，不要增删内容。\n"
+        "4. 没有问题的句子不要返回，拿不准就不改。\n"
+        "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
+        '{"changes":[{"id":编号,"translation":"修改后的完整译文"}]}；没有要改的输出 {"changes":[]}。'
+    )
+
+
+def _title_review_change_ok(
+    source: str, previous: str, candidate: str, *, source_lang: str, target_lang: str
+) -> bool:
+    candidate = candidate.strip()
+    if not candidate or candidate == previous.strip() or "\n" in candidate:
+        return False
+    if _DIGIT_RUN_RE.findall(candidate) != _DIGIT_RUN_RE.findall(previous):
+        return False
+    return _evaluate_word_translation(
+        source, candidate, source_lang=source_lang, target_lang=target_lang, allow_recovery=True
+    ).accepted
 
 
 # 「短文字」：两到六个词（中日韩文字三到十五个字）、不带数字、不跨行的一句话。

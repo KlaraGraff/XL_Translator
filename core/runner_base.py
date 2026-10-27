@@ -91,8 +91,8 @@ class BaseTaskRunner:
         except queue.Empty:
             return None
 
-    def _log(self, level: str, message: str) -> None:
-        self._queue.put(LogMsg(level=level, message=message))
+    def _log(self, level: str, message: str, *, relay: bool = False) -> None:
+        self._queue.put(LogMsg(level=level, message=message, relay=relay))
         logger.info(f"[{level}] {message}")
 
     def _retire_stale_terms(self) -> None:
