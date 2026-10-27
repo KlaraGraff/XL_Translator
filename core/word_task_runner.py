@@ -1804,7 +1804,7 @@ class WordTaskRunner(BaseTaskRunner):
             numbered_fills = _numbered_header_footer_fills(global_translations, segment_locations)
             if numbered_fills:
                 global_translations.update(numbered_fills)
-                self._log("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
+                self._log_relayed("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
             else:
                 logger.info("Word 页眉页脚页码：没有需要统一写法的行")
 
@@ -2196,6 +2196,14 @@ class WordTaskRunner(BaseTaskRunner):
                     )
                 )
 
+    def _log_relayed(self, level: str, message: str) -> None:
+        """写盘前几步修正（译法统一、表格行数、页码）的说明。
+
+        PDF「转成 Word」时，外层只转内层 Word 任务的警告和逐批请求行；这几行说的是
+        译文本身改了什么，也要让用户在 PDF 任务日志里看到（本机实测之前看不到）。
+        """
+        self._log(level, message, relay=True)
+
     def _retranslate_each(
         self,
         sources: list[str],
@@ -2266,7 +2274,7 @@ class WordTaskRunner(BaseTaskRunner):
         if not conflicts:
             return
         example_source, example_target = next(iter(conflicts.values()))[0]
-        self._log(
+        self._log_relayed(
             "INFO",
             f"有 {len(conflicts)} 段与文中同一句短文字的译法不一致（例如「{example_source}」已译作"
             f"「{example_target}」），正在按同一译法单独重译这几段。",
@@ -2288,7 +2296,7 @@ class WordTaskRunner(BaseTaskRunner):
         global_translations.update(accepted)
         logger.info(f"Word 短文字译法统一：{len(accepted)}/{len(sources)} 段重译后用上了同一译法")
         if accepted:
-            self._log("OK", f"{len(accepted)} 段已按同一译法重译。")
+            self._log_relayed("OK", f"{len(accepted)} 段已按同一译法重译。")
 
     def _review_title_terms(
         self,
@@ -2321,7 +2329,7 @@ class WordTaskRunner(BaseTaskRunner):
             sources.extend(member for member in members if member not in sources)
             shared_words.append((word, members))
         ids = {source: index + 1 for index, source in enumerate(sources)}
-        self._log(
+        self._log_relayed(
             "INFO",
             f"标题、页眉页脚：{len(sources)} 句含有相同的词，正在请模型复查这些句子的译法是否一致。",
         )
@@ -2357,7 +2365,7 @@ class WordTaskRunner(BaseTaskRunner):
             if self._stop_event.is_set():
                 return
             logger.warning(f"Word 标题译法复查失败（保持原译文）：{exc!r}")
-            self._log("WARN", "标题、页眉页脚的译法复查没有完成，保持原译文。")
+            self._log_relayed("WARN", "标题、页眉页脚的译法复查没有完成，保持原译文。")
             return
         changes = payload.get("changes") if isinstance(payload, dict) else None
         by_id = {index: source for source, index in ids.items()}
@@ -2382,9 +2390,9 @@ class WordTaskRunner(BaseTaskRunner):
             global_translations[source] = candidate
             changed += 1
         if changed:
-            self._log("OK", f"{changed} 句已改为与其他标题一致的译法。")
+            self._log_relayed("OK", f"{changed} 句已改为与其他标题一致的译法。")
         else:
-            self._log("INFO", "复查完成，这些句子的译法无需修改。")
+            self._log_relayed("INFO", "复查完成，这些句子的译法无需修改。")
 
     def _realign_cell_lines(
         self,
@@ -2419,7 +2427,7 @@ class WordTaskRunner(BaseTaskRunner):
         pending = _cell_line_mismatches(global_translations, segment_locations)
         if not pending:
             return
-        self._log("INFO", f"有 {len(pending)} 格表格译文的行数与原文不一致，正在单独重译这几格，要求逐行对应。")
+        self._log_relayed("INFO", f"有 {len(pending)} 格表格译文的行数与原文不一致，正在单独重译这几格，要求逐行对应。")
         retry_prompt = _build_word_retry_prompt(system_prompt)
         accepted = self._retranslate_each(
             pending,
@@ -2436,7 +2444,7 @@ class WordTaskRunner(BaseTaskRunner):
         logger.info(f"Word 表格行数对齐：{fixed}/{len(pending)} 格重译后逐行对上")
         unfixed = [source for source in pending if source not in accepted]
         if not unfixed:
-            self._log("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
+            self._log_relayed("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
             return
 
         def judge(source: str):
@@ -2467,7 +2475,7 @@ class WordTaskRunner(BaseTaskRunner):
             message += f"，{len(same_meaning)} 格经复查意思一致、只是分行不同，整格写入译文"
         if kept:
             message += f"，{len(kept)} 格保留原文并在下方附上译文，已标出底色并列入报告待复核"
-        self._log("WARN" if kept else "OK", message + "。")
+        self._log_relayed("WARN" if kept else "OK", message + "。")
 
     def _place_missing_inline_marks(self, engine, global_translations: dict[str, str], *, target_lang: str = "") -> None:
         """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种

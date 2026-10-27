@@ -881,9 +881,12 @@ def translate_pdf_via_word(
         if message is None:
             continue
         if isinstance(message, LogMsg):
-            # Word 流程自己的读取、生成等说明不转（说的是临时转出的 Word）；警告、错误和
-            # 逐批请求日志（分几批、每批返回和用时）照转，和直接翻 Word 时看到的一样。
-            if message.level in ("WARN", "ERROR") or (message.visible and is_request_log_line(message.message)):
+            # Word 流程自己的读取、生成等说明不转（说的是临时转出的 Word）；警告、错误、
+            # 逐批请求日志（分几批、每批返回和用时）和写盘前修正译文的说明（relay）照转，
+            # 和直接翻 Word 时看到的一样。
+            if message.level in ("WARN", "ERROR") or (
+                message.visible and (message.relay or is_request_log_line(message.message))
+            ):
                 log(message.level, f"{prefix}{message.message}")
             continue
         if isinstance(message, ProgressMsg):

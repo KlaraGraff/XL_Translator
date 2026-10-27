@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from docx import Document
 
-from core.task_runner import LogMsg
+from core.pdf_word_route import translate_pdf_via_word
+from core.task_runner import DoneMsg, LogMsg
 from core.word_document import WordFileItem
 from core.word_task_runner import WordTaskRunner, _is_title_like, _title_review_change_ok, _title_term_groups
 from engines.base_engine import TranslationEngine
@@ -132,6 +133,67 @@ class TitleReviewRunnerTests(IsolatedAppDataTestCase):
     def test_change_that_drops_the_numbering_is_ignored(self) -> None:
         texts, _logs = self._run(ReviewingEngine(json.dumps({"changes": [{"id": 2, "translation": "施工计划安排"}]})))
         self.assertIn("2. 干预预安排", texts)
+
+
+class FakeWordRunner:
+    """Stands in for the Word run inside a PDF task: three log lines, then done."""
+
+    def __init__(self, items, settings, **_kwargs) -> None:
+        self.output = Path(settings.word_output.custom_output_dir) / "out.docx"
+        self.messages = [
+            LogMsg(level="INFO", message="读取完成：全部文档合计 4 处待翻译文本"),
+            LogMsg(level="INFO", message="标题、页眉页脚：2 句含有相同的词，正在请模型复查这些句子的译法是否一致。", relay=True),
+            LogMsg(level="OK", message="1 句已改为与其他标题一致的译法。", relay=True),
+        ]
+
+    def start(self) -> None:
+        Document().save(self.output)
+        self.messages.append(
+            DoneMsg(
+                output_dir=str(self.output.parent),
+                file_results=[{"success": True, "output": str(self.output)}],
+                elapsed_sec=0.0,
+                tm_hit_count=0,
+                api_call_count=0,
+            )
+        )
+
+    def needs_poll(self) -> bool:
+        return bool(self.messages)
+
+    def get_message(self, timeout: float = 0.0):
+        return self.messages.pop(0) if self.messages else None
+
+    def stop(self) -> None:
+        pass
+
+
+class PdfRouteRelayTests(unittest.TestCase):
+    def test_pdf_task_log_shows_the_title_review_lines(self) -> None:
+        logged: list[str] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def fake_convert(pdf_path, docx, **_kwargs):
+                doc = Document()
+                doc.add_paragraph(TITLE)
+                doc.save(docx)
+
+            with patch("core.pdf_word_route.convert_pdf_to_docx", fake_convert), \
+                    patch("core.word_task_runner.WordTaskRunner", FakeWordRunner):
+                result = translate_pdf_via_word(
+                    root / "plan.pdf",
+                    root / "work",
+                    root / "final.docx",
+                    AppSettings(source_lang="fr", target_lang="zh"),
+                    source_lang="fr",
+                    should_stop=lambda: False,
+                    log=lambda level, message: logged.append(message),
+                )
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("1 句已改为与其他标题一致的译法。", logged)
+        self.assertTrue(any("正在请模型复查" in line for line in logged), logged)
+        self.assertFalse(any("读取完成" in line for line in logged), "内层 Word 的读取说明照旧不转")
 
 
 if __name__ == "__main__":
