@@ -456,7 +456,9 @@ table.review-tbl { table-layout: fixed; }
   pointer-events: none; animation: tip-in 120ms ease-out;
 }
 .tip .tip-url { display: block; text-align: left; }
-/* 中文不两端对齐：WebKit 会把中文行按字拉开（「三 种 方 式…」），中文本来在任意字间可断，左对齐右边也齐。 */
+/* 中文不两端对齐：WebKit 会把中文行按字拉开（「三 种 方 式…」），中文本来在任意字间可断，左对齐右边也齐。
+   浮层不用全局的 text-wrap: pretty：WebKit 会把中文两行平衡成一半一半，在词中间断开。 */
+.tip { text-wrap: wrap; }
 .tip:lang(zh) { text-align: start; }
 /* 末尾带蓝色链接的提示（「查看图文说明」）：浮层要能点。点「?」钉住后才够得着。 */
 .tip.has-link { pointer-events: auto; }
