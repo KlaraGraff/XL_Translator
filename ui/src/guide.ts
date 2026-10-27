@@ -506,7 +506,7 @@ function buildCadBody(body: HTMLElement, go: Go): void {
   const cards = el("div", "g-cards");
   cards.append(
     card({ ill: illCadDisplay(), name: t("译文的显示方式"), text: t("默认只保留译文。需要双语图纸时，在右侧「输出」中选择「双语对照」，再选原文在上或译文在上。") }),
-    card({ ill: illCadFit(), name: t("译文过长时自动缩小"), text: t("放不下时先压窄字形，再逐步缩小字号，最小为原字号的 40%；仍放不下的位置列入报告，请人工复核。") }),
+    card({ ill: illCadFit(), name: t("译文过长时自动缩小"), text: t("放不下时先压窄字形，再逐步缩小字号，最小为原字号的 40%；仍放不下时照样写入译文（停在最小字号），并列入报告，请人工复核。") }),
     card({ ill: illCadLock(), name: t("图框等内容保持原样"), text: t("图框、标题栏、会签栏和公司标志通常无需翻译。在「高级 → 锁定不翻译」中填写图块名或图层名，或点击「从图纸中挑选」直接勾选。") }),
   );
 

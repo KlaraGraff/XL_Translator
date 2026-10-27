@@ -147,10 +147,6 @@
     "en": "Long translations shrink to fit",
     "fr": "Réduction des traductions trop longues"
   },
-  "放不下时先压窄字形，再逐步缩小字号，最小为原字号的 40%；仍放不下的位置列入报告，请人工复核。": {
-    "en": "When text does not fit, characters are first narrowed and then reduced step by step, down to 40% of the original size. Places that still do not fit are listed in the report for manual review.",
-    "fr": "Si le texte ne tient pas, les caractères sont d'abord resserrés, puis réduits progressivement jusqu'à 40 % de la taille d'origine. Les emplacements qui ne tiennent toujours pas sont listés dans le rapport pour vérification manuelle."
-  },
   "缩小前": {
     "en": "Before",
     "fr": "Avant"
@@ -234,5 +230,9 @@
   "只替换文字，线条和尺寸不变，过长的译文自动缩小。可供阅读，尚不适合正式对外交付。": {
     "en": "Only the text is replaced; lines and dimensions stay unchanged, and long translations shrink to fit. The layout is suitable for reading but not yet for formal delivery.",
     "fr": "Seul le texte est remplacé ; les traits et les cotes restent inchangés et les traductions trop longues sont réduites. La mise en page convient à la lecture, mais pas encore à une remise officielle."
+  },
+  "放不下时先压窄字形，再逐步缩小字号，最小为原字号的 40%；仍放不下时照样写入译文（停在最小字号），并列入报告，请人工复核。": {
+    "en": "When text does not fit, characters are first narrowed and then reduced step by step, down to 40% of the original size. If it still does not fit, the translation is written anyway at the minimum size and listed in the report for manual review.",
+    "fr": "Si le texte ne tient pas, les caractères sont d'abord resserrés, puis réduits progressivement jusqu'à 40 % de la taille d'origine. S'il ne tient toujours pas, la traduction est tout de même écrite à la taille minimale et listée dans le rapport pour vérification manuelle."
   }
 }

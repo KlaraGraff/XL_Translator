@@ -55,11 +55,11 @@
 /* 窗口较矮时插图压低一些，中文在最小窗口 1080×700 也能一屏看完。 */
 @media (max-height: 820px) {
   .modal.guide { padding-top: 16px; padding-bottom: 14px; }
-  .guide .g-ill { height: 76px; }
-  .guide .g-card { gap: 6px; }
-  .guide .g-foot { margin-top: 10px; }
-  .guide .g-lead { margin-bottom: 10px; }
-  .modal.guide > .g-body { gap: 10px; }
+  .guide .g-ill { height: 70px; }
+  .guide .g-card { gap: 5px; padding: 8px 12px 10px; }
+  .guide .g-foot { margin-top: 8px; }
+  .guide .g-lead { margin-bottom: 8px; }
+  .modal.guide > .g-body { gap: 8px; }
 }
 
 /* 顶栏「使用说明」：模型药丸左边的蓝色文字按钮。 */

@@ -80,7 +80,7 @@ An illustrated guide, shown below, appears the first time the CAD page is opened
 
 Output, on the right of the page, can be set to Translation only (the default) or Bilingual; in bilingual mode, the source or the translation can be placed on top, and the translation is placed on the same layer as the source. The other write-back options are under Advanced:
 - Translation font: translations are written in AutoCAD's built-in fonts by default, so they display correctly on other computers; the original font can be kept instead.
-- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is listed in the report for review.
+- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is written anyway at the minimum size and listed in the report for review.
 - Do not translate: text in specified blocks and layers, such as title blocks and frames, is left unchanged. Names can be typed in or picked from the drawings.
 - Layout: long translations are shrunk automatically so they do not extend past the drawing frame or out of table cells, or overlap nearby text, door swings and arrows; translations that do not fit in a narrow cell wrap onto two lines; translations in the same column of notes keep the same text height.
 
