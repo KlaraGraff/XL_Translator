@@ -50,7 +50,11 @@ When a translation is longer than the source and does not fit, Layout preference
 
 ### PDF and images
 
-Each page is redrawn in the target language by an image model, preserving the original layout and graphics as closely as possible. Supported image formats are PNG, JPG, WebP, BMP and TIFF. A review model can optionally check each page; individual pages can be regenerated after translation, and a compressed copy of the PDF can be saved.
+PDF files offer three translation methods: Convert to Word suits pages with selectable text, Replace in place suits engineering drawings, and Full-page image translation suits scans and photos, with each page regenerated in the target language by an image model while preserving the original layout and graphics as closely as possible. With Automatic mix, the type of each page is detected and the matching method is used, and the pages are then combined into one PDF in their original order. Image files are handled with full-page image translation; supported formats are PNG, JPG, WebP, BMP and TIFF. A review model can optionally check each page; individual pages can be regenerated after translation, and a compressed copy of the PDF can be saved.
+
+An illustrated guide, shown below, appears the first time the PDF page is opened. It can be reopened with How it works at the top right of the page or from the Help page.
+
+![Illustrated guide to the PDF translation methods](docs/images/readme/guide-pdf-en.png)
 
 ![PDF translation with per-page results](docs/images/readme/app-pdf.png)
 
@@ -70,11 +74,13 @@ Each page is redrawn in the target language by an image model, preserving the or
 
 DXF files are translated directly. DWG files require ODA File Converter, installed as the Drawing converter under Extensions → Components; conversion runs as part of the job. Text inside blocks can be included. Legacy drawings in GBK or other Chinese encodings are read and written correctly, including Chinese text saved in the special encoding used by older CAD software.
 
-How translations are written back is set under Writing translations on the right of the page:
+An illustrated guide, shown below, appears the first time the CAD page is opened. It covers three common settings: how translations are shown, auto-shrinking long translations, and keeping title blocks unchanged. It can be reopened with How it works at the top right of the page or from the Help page.
 
-- Display: Translation only, Source above translation, or Translation above source. In bilingual mode, the translation is placed on the same layer as the source.
+![Illustrated guide to CAD translation](docs/images/readme/guide-cad-en.png)
+
+Output, on the right of the page, can be set to Translation only (the default) or Bilingual; in bilingual mode, the source or the translation can be placed on top, and the translation is placed on the same layer as the source. The other write-back options are under Advanced:
 - Translation font: translations are written in AutoCAD's built-in fonts by default, so they display correctly on other computers; the original font can be kept instead.
-- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is listed in the report for review.
+- Auto-shrink long translations: when a translation would overlap neighboring text, it is first narrowed and then reduced in size (to 70% first, down to 40% at most). Anything that still does not fit is written anyway at the minimum size and listed in the report for review.
 - Do not translate: text in specified blocks and layers, such as title blocks and frames, is left unchanged. Names can be typed in or picked from the drawings.
 - Layout: long translations are shrunk automatically so they do not extend past the drawing frame or out of table cells, or overlap nearby text, door swings and arrows; translations that do not fit in a narrow cell wrap onto two lines; translations in the same column of notes keep the same text height.
 

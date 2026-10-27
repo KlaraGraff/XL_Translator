@@ -81,6 +81,7 @@ let topbarStatusHost: HTMLDivElement | null = null;
 let topbarSubEl: HTMLDivElement | null = null;
 let taskPillHost: HTMLDivElement | null = null;
 let modelPillHost: HTMLDivElement | null = null;
+let guideHost: HTMLDivElement | null = null;
 let toastHost: HTMLDivElement | null = null;
 /** 卡片位：每个具名位是栈里的一格，一直存在（空着不占高度），所以更新卡片重画时
  *  不会跳到临时提示的下面去。 */
@@ -300,11 +301,13 @@ export function mountShell(root: HTMLElement): ShellHandle {
 
   const tbRight = document.createElement("div");
   tbRight.className = "tb-right";
+  guideHost = document.createElement("div");
+  guideHost.style.display = "contents";
   taskPillHost = document.createElement("div");
   taskPillHost.style.display = "contents";
   modelPillHost = document.createElement("div");
   modelPillHost.style.display = "contents";
-  tbRight.append(taskPillHost, modelPillHost);
+  tbRight.append(guideHost, taskPillHost, modelPillHost);
   topbar.append(tbRight);
 
   stage.append(topbar);
@@ -451,4 +454,20 @@ export function setModelPill(config: ModelPillConfig): void {
   modelPillHost.append(
     createPill({ label: config.label, dotColor, onClick: () => navigate("settings", { page: "models", role: config.role }) }),
   );
+}
+
+/**
+ * 顶栏右侧、药丸左边的蓝色「使用说明」（PDF / CAD 页的图文指引入口，见 guide.ts）。
+ * 进页面时挂上、离开时传 null 拿掉；label 由调用方按当前语言给。
+ */
+export function setGuideEntry(entry: { label: string; onClick: () => void } | null): void {
+  if (!guideHost) return;
+  guideHost.innerHTML = "";
+  if (!entry) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tb-guide";
+  button.append(icon("book", { size: "sm" }), document.createTextNode(entry.label));
+  button.addEventListener("click", entry.onClick);
+  guideHost.append(button);
 }

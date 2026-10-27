@@ -35,7 +35,14 @@ async function ensureConnected(): Promise<void> {
   return connectPromise;
 }
 
-async function updatePreferences(patch: JsonObject): Promise<JsonObject> {
+/** 已连上后台的同一个客户端（guide.ts 查组件状态也用它）。 */
+export async function connectedClient(): Promise<ApiClient> {
+  await ensureConnected();
+  return client;
+}
+
+/** PDF / CAD 图文指引（guide.ts）的「看过」标志也走这个端点，和快速开始同一套。 */
+export async function updatePreferences(patch: JsonObject): Promise<JsonObject> {
   await ensureConnected();
   return client.request<JsonObject>("/api/updates/preferences", {
     method: "PUT",
@@ -43,7 +50,26 @@ async function updatePreferences(patch: JsonObject): Promise<JsonObject> {
   });
 }
 
+/** 后端设置里的偏好（quick_start_completed、pdf_guide_seen、cad_guide_seen 等）。 */
+export async function readPreferences(): Promise<JsonObject> {
+  await ensureConnected();
+  const state = await client.request<JsonObject>("/api/updates/state");
+  return state.preferences && typeof state.preferences === "object" ? (state.preferences as JsonObject) : {};
+}
+
 let activeHandle: ModalHandle | null = null;
+const closeListeners = new Set<() => void>();
+
+/** 快速开始还开着：PDF / CAD 指引等它关掉再弹，不叠两层弹窗。 */
+export function isQuickStartOpen(): boolean {
+  return activeHandle !== null;
+}
+
+/** 快速开始关掉后通知一次（指引据此补弹）。返回取消订阅函数。 */
+export function onQuickStartClosed(listener: () => void): () => void {
+  closeListeners.add(listener);
+  return () => closeListeners.delete(listener);
+}
 
 function buildStep(title: string, body: string, actions?: HTMLElement[]): HTMLDivElement {
   const step = document.createElement("div");
@@ -66,6 +92,7 @@ function finish(destination?: QuickStartDestination): void {
   activeHandle?.close();
   activeHandle = null;
   void updatePreferences({ quick_start_completed: true }).catch(() => undefined);
+  for (const listener of [...closeListeners]) listener();
   if (destination === "config") {
     navigate("settings", { page: "models" });
   } else if (destination) {
@@ -134,11 +161,7 @@ export async function showQuickStart(): Promise<void> {
 
 /** 首次启动检查：app.ts 启动时调用一次；quick_start_completed 为 false 时自动弹出。 */
 export async function checkFirstLaunch(): Promise<void> {
-  await ensureConnected();
-  const state = await client.request<JsonObject>("/api/updates/state");
-  const preferences = state.preferences && typeof state.preferences === "object"
-    ? (state.preferences as JsonObject)
-    : {};
+  const preferences = await readPreferences();
   if (!preferences.quick_start_completed) {
     openQuickStartModal();
   }

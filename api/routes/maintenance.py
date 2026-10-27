@@ -81,6 +81,10 @@ def register(app: FastAPI) -> None:
             ).strip()
         if "quick_start_completed" in changed:
             settings.onboarding.quick_start_completed = bool(payload.quick_start_completed)
+        if "pdf_guide_seen" in changed:
+            settings.onboarding.pdf_guide_seen = bool(payload.pdf_guide_seen)
+        if "cad_guide_seen" in changed:
+            settings.onboarding.cad_guide_seen = bool(payload.cad_guide_seen)
         save_settings(settings)
         return _update_state_payload(settings)
 
@@ -251,6 +255,8 @@ def _update_state_payload(settings: AppSettings) -> dict[str, Any]:
             "ignored_release_version": settings.update.ignored_release_version,
             "last_background_check_at": settings.update.last_background_check_at,
             "quick_start_completed": settings.onboarding.quick_start_completed,
+            "pdf_guide_seen": settings.onboarding.pdf_guide_seen,
+            "cad_guide_seen": settings.onboarding.cad_guide_seen,
         },
         "background_due": _background_update_deferred(settings) is None,
     }

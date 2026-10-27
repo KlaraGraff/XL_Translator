@@ -1339,6 +1339,10 @@ class OnboardingSettings(BaseModel):
     """State for the local quick-start flow; no legacy data is consulted."""
 
     quick_start_completed: bool = False
+    # PDF / CAD 页的图文指引看过没有。旧设置文件没有这两项，读进来是 False：
+    # 升级上来的老用户进这两页时也会自动弹一次（maple 2026-10-27 定的）。
+    pdf_guide_seen: bool = False
+    cad_guide_seen: bool = False
 
 
 UI_LANGUAGES = ("zh", "en", "fr")

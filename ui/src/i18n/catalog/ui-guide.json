@@ -1,0 +1,238 @@
+{
+  "使用说明": {
+    "en": "How it works",
+    "fr": "Mode d'emploi"
+  },
+  "查看图文说明": {
+    "en": "View illustrated guide",
+    "fr": "Voir le guide illustré"
+  },
+  "PDF 翻译方式一览": {
+    "en": "PDF translation methods at a glance",
+    "fr": "Aperçu des méthodes de traduction PDF"
+  },
+  "PDF 中常见三类页面：可以选中文字的页面、工程图纸和扫描件。三类页面适合的翻译方式不同，效果和费用也不同。": {
+    "en": "PDF files usually contain three kinds of pages: pages with selectable text, engineering drawings and scans. Each kind suits a different method, with different results and costs.",
+    "fr": "Un PDF contient généralement trois types de pages : des pages au texte sélectionnable, des plans techniques et des numérisations. Chaque type convient à une méthode différente, avec un résultat et un coût différents."
+  },
+  "CAD 图纸翻译一览": {
+    "en": "CAD translation at a glance",
+    "fr": "Aperçu de la traduction CAO"
+  },
+  "Translator 直接修改图纸中的文字，线条、尺寸和图层保持不变。下面三项设置的默认值适用于大多数图纸。": {
+    "en": "Translator changes only the text in the drawing; lines, dimensions and layers stay unchanged. The defaults of the three settings below suit most drawings.",
+    "fr": "Translator modifie uniquement le texte du plan ; les traits, les cotes et les calques restent inchangés. Les valeurs par défaut des trois réglages ci-dessous conviennent à la plupart des plans."
+  },
+  "之后可点击页面右上角的「使用说明」再次查看。": {
+    "en": "You can reopen this guide with “How it works” at the top right of the page.",
+    "fr": "Vous pouvez rouvrir ce guide avec « Mode d'emploi » en haut à droite de la page."
+  },
+  "适合": {
+    "en": "Best for",
+    "fr": "Idéal pour"
+  },
+  "效果": {
+    "en": "Result",
+    "fr": "Résultat"
+  },
+  "可以选中文字的页面，如由 Word 导出的报告、合同、说明书。": {
+    "en": "Pages with selectable text, such as reports, contracts and manuals exported from Word.",
+    "fr": "Pages au texte sélectionnable, comme les rapports, contrats et manuels exportés depuis Word."
+  },
+  "保留大部分排版，可另存一份 Word；费用较低。由于各语言篇幅不同，译文的页数可能多于或少于原文。": {
+    "en": "Keeps most of the layout and can also save a Word file. Lower cost. Because text length differs between languages, the translation may have more or fewer pages than the original.",
+    "fr": "Conserve l'essentiel de la mise en page et peut aussi enregistrer un fichier Word. Coût réduit. La longueur du texte variant selon la langue, la traduction peut compter plus ou moins de pages que l'original."
+  },
+  "工程图纸和 A3 及以上的大幅面页面。": {
+    "en": "Engineering drawings and pages of A3 or larger.",
+    "fr": "Plans techniques et pages au format A3 ou plus grand."
+  },
+  "大型工程图纸如有 DWG 原图，建议在「CAD 图纸」页翻译后重新导出 PDF，效果更好。": {
+    "en": "For large drawings with the original DWG file, translating it on the CAD drawings page and exporting the PDF again gives a better result.",
+    "fr": "Pour un grand plan dont vous avez le fichier DWG d'origine, traduisez-le dans la page Plans CAO puis exportez de nouveau le PDF : le résultat sera meilleur."
+  },
+  "扫描件、拍照件、签字盖章页。": {
+    "en": "Scans, photos, and signed or stamped pages.",
+    "fr": "Numérisations, photos, pages signées ou tamponnées."
+  },
+  "整页由图像模型重新生成为图片，译文无法编辑；页面越大越模糊，费用较高。": {
+    "en": "The image model redraws the whole page as a picture, so the translation cannot be edited. Larger pages become blurrier. Higher cost.",
+    "fr": "Le modèle d'image redessine toute la page sous forme d'image ; la traduction n'est pas modifiable. Plus la page est grande, plus elle est floue. Coût plus élevé."
+  },
+  "混有多种页面时，选择「自动组合」": {
+    "en": "For mixed pages, choose “Automatic mix”",
+    "fr": "Pages mixtes : choisissez « Combinaison automatique »"
+  },
+  "程序逐页判断页面类型，分别使用对应方式翻译，最后按原页序合成一份 PDF。某种方式在本机不可用时，该页改用「保底方式」，完成后单独列出。": {
+    "en": "Each page is classified and translated with the matching method, then all pages are combined into one PDF in the original order. If a method is unavailable on this computer, that page uses the safety net and is listed separately afterwards.",
+    "fr": "Chaque page est analysée puis traduite avec la méthode adaptée, et toutes les pages sont réunies dans un seul PDF, dans l'ordre d'origine. Si une méthode n'est pas disponible sur cet ordinateur, la page utilise la solution de repli et est signalée à part à la fin."
+  },
+  "文字页": {
+    "en": "Text",
+    "fr": "Texte"
+  },
+  "表格页": {
+    "en": "Table",
+    "fr": "Tableau"
+  },
+  "合成一份 PDF": {
+    "en": "One PDF",
+    "fr": "Un seul PDF"
+  },
+  "示意图：可选中文字的页面翻译前后": {
+    "en": "Illustration: a page with selectable text, before and after",
+    "fr": "Illustration : page au texte sélectionnable, avant et après"
+  },
+  "示意图：图纸原位替换前后": {
+    "en": "Illustration: a drawing before and after in-place replacement",
+    "fr": "Illustration : plan avant et après remplacement sur place"
+  },
+  "示意图：扫描件整页图像翻译前后": {
+    "en": "Illustration: a scanned page before and after image translation",
+    "fr": "Illustration : page numérisée avant et après traduction d'image"
+  },
+  "本机可以使用": {
+    "en": "Ready on this computer",
+    "fr": "Disponible sur cet ordinateur"
+  },
+  "需先安装「PDF 处理组件」": {
+    "en": "Requires the PDF processing component",
+    "fr": "Nécessite le composant de traitement PDF"
+  },
+  "需要电脑上安装 Microsoft Word 或 LibreOffice": {
+    "en": "Requires Microsoft Word or LibreOffice on this computer",
+    "fr": "Nécessite Microsoft Word ou LibreOffice sur cet ordinateur"
+  },
+  "「PDF 处理组件」无法加载，需重新安装": {
+    "en": "The PDF processing component cannot be loaded and must be reinstalled",
+    "fr": "Le composant de traitement PDF ne peut pas être chargé et doit être réinstallé"
+  },
+  "重新安装": {
+    "en": "Reinstall",
+    "fr": "Réinstaller"
+  },
+  "已配置「图像翻译」模型，可以使用": {
+    "en": "Image translation model configured; ready to use",
+    "fr": "Modèle de traduction d'image configuré ; prêt à l'emploi"
+  },
+  "需先配置「图像翻译」模型": {
+    "en": "Configure an image translation model first",
+    "fr": "Configurez d'abord un modèle de traduction d'image"
+  },
+  "去设置": {
+    "en": "Settings",
+    "fr": "Paramètres"
+  },
+  "译文的显示方式": {
+    "en": "How translations are shown",
+    "fr": "Affichage des traductions"
+  },
+  "默认只保留译文。需要双语图纸时，在右侧「输出」中选择「双语对照」，再选原文在上或译文在上。": {
+    "en": "By default, only the translation is kept. For bilingual drawings, choose “Bilingual” under “Output” on the right, then choose whether the source or the translation goes on top.",
+    "fr": "Par défaut, seule la traduction est conservée. Pour un plan bilingue, choisissez « Bilingue » sous « Sortie » à droite, puis indiquez si l'original ou la traduction figure au-dessus."
+  },
+  "原文在上": {
+    "en": "Source on top",
+    "fr": "Original au-dessus"
+  },
+  "译文在上": {
+    "en": "Translation on top",
+    "fr": "Traduction au-dessus"
+  },
+  "双语排列": {
+    "en": "Bilingual order",
+    "fr": "Ordre bilingue"
+  },
+  "译文过长时自动缩小": {
+    "en": "Long translations shrink to fit",
+    "fr": "Réduction des traductions trop longues"
+  },
+  "缩小前": {
+    "en": "Before",
+    "fr": "Avant"
+  },
+  "缩小后": {
+    "en": "After",
+    "fr": "Après"
+  },
+  "图框等内容保持原样": {
+    "en": "Title blocks stay unchanged",
+    "fr": "Cartouches conservés tels quels"
+  },
+  "图框、标题栏、会签栏和公司标志通常无需翻译。在「高级 → 锁定不翻译」中填写图块名或图层名，或点击「从图纸中挑选」直接勾选。": {
+    "en": "Frames, title blocks, approval blocks and company logos usually do not need translating. Enter block or layer names under “Advanced → Do not translate”, or click “Pick from drawings” to tick them directly.",
+    "fr": "Les cadres, cartouches, cases de visa et logos n'ont généralement pas besoin d'être traduits. Saisissez les noms de blocs ou de calques dans « Avancé → Ne pas traduire », ou cliquez sur « Choisir dans les plans » pour les cocher directement."
+  },
+  "DWG 图纸需要「图纸转换工具」": {
+    "en": "DWG drawings require the drawing converter",
+    "fr": "Les plans DWG nécessitent le convertisseur de plans"
+  },
+  "DXF 图纸可直接翻译。DWG 图纸需通过免费的「图纸转换工具」读写，安装后返回本页重新读取即可。": {
+    "en": "DXF drawings can be translated directly. DWG drawings are read and written through the free drawing converter; after installing it, return to this page and reload.",
+    "fr": "Les plans DXF se traduisent directement. Les plans DWG sont lus et écrits au moyen du convertisseur de plans gratuit ; après l'installation, revenez sur cette page et relancez la lecture."
+  },
+  "「图纸转换工具」已就绪": {
+    "en": "Drawing converter ready",
+    "fr": "Convertisseur de plans prêt"
+  },
+  "尚未连接「图纸转换工具」": {
+    "en": "Drawing converter not connected",
+    "fr": "Convertisseur de plans non connecté"
+  },
+  "翻译完成后，可在「任务」中打开「查看与修改译文」，逐条修改后重新写回图纸，无需再次调用模型。": {
+    "en": "After translation, open “Review and edit translations” in Tasks to edit entries one by one and write them back into the drawing, without calling the model again.",
+    "fr": "Après la traduction, ouvrez « Consulter et modifier les traductions » dans Tâches pour modifier les entrées une à une et les réécrire dans le plan, sans rappeler le modèle."
+  },
+  "三种方式适合的页面不同；自动组合会逐页选用合适的方式。": {
+    "en": "Each method suits different pages; Automatic mix picks the right method page by page.",
+    "fr": "Chaque méthode convient à des pages différentes ; la combinaison automatique choisit la méthode adaptée page par page."
+  },
+  "每页由图像模型重新生成，适合扫描件和照片": {
+    "en": "Each page is redrawn by the image model; suited to scans and photos",
+    "fr": "Chaque page est redessinée par le modèle d'image ; adapté aux numérisations et aux photos"
+  },
+  "这些页面默认原样保留。如需翻译图纸，请改用「自动组合」。": {
+    "en": "These pages are kept as is by default. To translate drawings, switch to “Automatic mix”.",
+    "fr": "Ces pages sont conservées telles quelles par défaut. Pour traduire les plans, passez à « Combinaison automatique »."
+  },
+  "改用自动组合": {
+    "en": "Switch to Automatic mix",
+    "fr": "Passer à la combinaison automatique"
+  },
+  "PDF 的三种翻译方式": {
+    "en": "The three PDF translation methods",
+    "fr": "Les trois méthodes de traduction PDF"
+  },
+  "可以选中文字的页面、工程图纸和扫描件适合不同的翻译方式。图文说明列出各方式适合的页面、效果和费用，以及本机是否可以使用。": {
+    "en": "Pages with selectable text, engineering drawings and scans suit different translation methods. The illustrated guide lists what each method suits, its results and cost, and whether it is ready on this computer.",
+    "fr": "Les pages au texte sélectionnable, les plans techniques et les numérisations conviennent à des méthodes différentes. Le guide illustré indique pour chaque méthode les pages adaptées, le résultat, le coût et sa disponibilité sur cet ordinateur."
+  },
+  "CAD 图纸翻译的常用设置": {
+    "en": "Common settings for CAD translation",
+    "fr": "Réglages courants de la traduction CAO"
+  },
+  "图文说明介绍译文的显示方式、过长译文的自动缩小、图框等内容的锁定，以及 DWG 图纸所需的「图纸转换工具」。": {
+    "en": "The illustrated guide covers how translations are shown, how long translations shrink to fit, how to keep title blocks unchanged, and the drawing converter needed for DWG drawings.",
+    "fr": "Le guide illustré présente l'affichage des traductions, la réduction des traductions trop longues, la conservation des cartouches et le convertisseur de plans nécessaire aux plans DWG."
+  },
+  "已测试多种图像模型，目前仅建议使用 ChatGPT 的 Images 2.5 或 Images 2.0，模型名为 gpt-image-2.5-flare、gpt-image-2.5-sunburst 或 gpt-image-2。": {
+    "en": "We tested many image models and currently recommend only ChatGPT Images 2.5 or Images 2.0, with the model name gpt-image-2.5-flare, gpt-image-2.5-sunburst or gpt-image-2.",
+    "fr": "Après avoir testé de nombreux modèles d'image, nous ne recommandons actuellement que ChatGPT Images 2.5 ou Images 2.0, avec le nom de modèle gpt-image-2.5-flare, gpt-image-2.5-sunburst ou gpt-image-2."
+  },
+  "导出为线条的文字另需「文字识别组件」": {
+    "en": "Text exported as lines also requires the text recognition component",
+    "fr": "Le texte exporté sous forme de traits nécessite aussi le composant de reconnaissance de texte"
+  },
+  "SHX 字体（如 txt.shx）的文字在 CAD 导出 PDF 时默认变为线条，需由「文字识别组件」识别；TrueType 字体可直接提取。": {
+    "en": "Text in SHX fonts (such as txt.shx) becomes lines by default when CAD exports a PDF and needs the text recognition component. TrueType fonts can be extracted directly.",
+    "fr": "Le texte en polices SHX (comme txt.shx) devient par défaut des traits à l'export PDF depuis la CAO et nécessite le composant de reconnaissance de texte. Les polices TrueType s'extraient directement."
+  },
+  "只替换文字，线条和尺寸不变，过长的译文自动缩小。可供阅读，尚不适合正式对外交付。": {
+    "en": "Only the text is replaced; lines and dimensions stay unchanged, and long translations shrink to fit. The layout is suitable for reading but not yet for formal delivery.",
+    "fr": "Seul le texte est remplacé ; les traits et les cotes restent inchangés et les traductions trop longues sont réduites. La mise en page convient à la lecture, mais pas encore à une remise officielle."
+  },
+  "放不下时先压窄字形，再逐步缩小字号，最小为原字号的 40%；仍放不下时照样写入译文（停在最小字号），并列入报告，请人工复核。": {
+    "en": "When text does not fit, characters are first narrowed and then reduced step by step, down to 40% of the original size. If it still does not fit, the translation is written anyway at the minimum size and listed in the report for manual review.",
+    "fr": "Si le texte ne tient pas, les caractères sont d'abord resserrés, puis réduits progressivement jusqu'à 40 % de la taille d'origine. S'il ne tient toujours pas, la traduction est tout de même écrite à la taille minimale et listée dans le rapport pour vérification manuelle."
+  }
+}

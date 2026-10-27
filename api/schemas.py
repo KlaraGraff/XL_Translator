@@ -384,6 +384,8 @@ class UpdatePreferencesRequest(BaseModel):
     notifications_paused: bool | None = None
     ignored_release_version: str | None = Field(default=None, max_length=64)
     quick_start_completed: bool | None = None
+    pdf_guide_seen: bool | None = None
+    cad_guide_seen: bool | None = None
 
 
 class MaintenanceClearRequest(BaseModel):

@@ -8,6 +8,7 @@ import { setTopbar } from "../shell";
 import { createButton, createFold } from "../components";
 import { icon, type IconName } from "../icons";
 import { showQuickStart } from "../quickstart";
+import { openGuide } from "../guide";
 import { t, localized } from "../i18n";
 import { isMac } from "../platform";
 import "./help.css";
@@ -67,6 +68,21 @@ function faqs(): FaqSpec[] {
       body: t("不同类型的任务可同时进行。两个任务使用同一条模型连接时，将先提示可能出现变慢、排队或超时，且两项任务均会计费；确认后才会开始第二个任务。"),
       foot: (host) => {
         host.append(createButton({ label: t("打开任务"), size: "mini", onClick: () => navigate("tasks") }));
+      },
+    },
+    // PDF / CAD 图文指引的另一个入口（第一次进那两页时会自动弹一次，见 guide.ts）。
+    {
+      title: t("PDF 的三种翻译方式"),
+      body: t("可以选中文字的页面、工程图纸和扫描件适合不同的翻译方式。图文说明列出各方式适合的页面、效果和费用，以及本机是否可以使用。"),
+      foot: (host) => {
+        host.append(createButton({ label: t("查看图文说明"), size: "mini", onClick: () => openGuide("pdf") }));
+      },
+    },
+    {
+      title: t("CAD 图纸翻译的常用设置"),
+      body: t("图文说明介绍译文的显示方式、过长译文的自动缩小、图框等内容的锁定，以及 DWG 图纸所需的「图纸转换工具」。"),
+      foot: (host) => {
+        host.append(createButton({ label: t("查看图文说明"), size: "mini", onClick: () => openGuide("cad") }));
       },
     },
     {

@@ -57,7 +57,8 @@ import {
 } from "../components";
 import { icon, type IconName } from "../icons";
 import { navigate, type ViewParams } from "../router";
-import { setTopbar } from "../shell";
+import { setGuideEntry, setTopbar } from "../shell";
+import { maybeAutoShowGuide, openGuide } from "../guide";
 import { stopConfirmBody, taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
@@ -254,7 +255,7 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
-  { key: "cadFitLayout", label: t("超长译文自动缩小"), hint: t("译文比原文长、会压到旁边的文字或伸出图框时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。"), default: true, pathKind: "output", path: "fit_layout" },
+  { key: "cadFitLayout", label: t("超长译文自动缩小"), hint: t("译文比原文长、会压到旁边的文字或伸出图框时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下时照样写入译文，并列入报告，请人工复核。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。"), default: true, pathKind: "output", path: "fit_layout" },
 ]));
 
 const TOGGLES: Record<BuiltinSurface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
@@ -1119,6 +1120,8 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   const taskId = text(params.taskId);
   st.renderer = () => renderInto(container, surface);
   if (surface === "pdf") pdfRouteCapsStale = true;
+  // PDF / CAD 页顶栏的「使用说明」：随时再打开图文指引。
+  if (surface === "pdf" || surface === "cad") setGuideEntry({ label: t("使用说明"), onClick: () => openGuide(surface) });
   // 中途切走再回来时任务还在跑（st.task 是模块级状态），静默计时器得跟着这一屏重新起。
   if (st.task && !st.task.task.terminal) startSilenceTicker(surface);
   renderLoading(container, surface);
@@ -1145,9 +1148,18 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
       // 后台读取时攒下的续译弹窗：人到了这一页才弹（读取还没完的话，读完时 runScan 自己弹）。
+      let resumeShown = false;
       if (st.resumePromptPending && !scanBusy.has(surface)) {
         st.resumePromptPending = false;
-        if (st.resumeInfo) void showResumeModal(surface, st);
+        if (st.resumeInfo) {
+          resumeShown = true;
+          void showResumeModal(surface, st);
+        }
+      }
+      // 第一次进这一页自动弹图文指引；任务状态到这里才确定。有任务在跑、或刚弹了续译
+      // 弹窗时这次不弹，等下次进入。
+      if ((surface === "pdf" || surface === "cad") && !resumeShown) {
+        void maybeAutoShowGuide(surface, () => !isCurrent() || Boolean(st.task && !st.task.task.terminal));
       }
     })
     .catch((error) => {
@@ -1177,6 +1189,7 @@ function cadConverterReady(st: SurfaceState): boolean {
 
 export function unmountWorkspace(surface: Surface): void {
   nextToken(mountTokens, surface);
+  setGuideEntry(null);
   stateOf(surface).renderer = null;
   // 离开这一屏后没人看那句「已等待 N 秒」，计时器再走就是白转（rerender 也已经是空操作）。
   // 任务本身不受影响：事件流由 watchTask 维护，回到这一屏时 startSilenceTicker 会重新起。
@@ -2614,7 +2627,9 @@ function oversizedPageStat(stats: OversizedPageStats): StatCell | null {
       label,
       value: fmtNum(stats.pages),
       attn: true,
-      sub: unknownNote || t("开启跳过后不翻译，原样保留"),
+      // 「图纸没翻译、以为程序出错」最直接的原因在这里：直接给出切换到自动组合的入口。
+      sub: unknownNote || t("这些页面默认原样保留。如需翻译图纸，请改用「自动组合」。"),
+      link: unknownNote ? undefined : { label: t("改用自动组合"), onClick: () => void handlePdfRouteChange(stateOf("pdf"), "pdfRoute", "pdf.translation_route", "auto") },
     };
   }
   // 一页都没数出来时不能写 0——那是「确认没有」的说法。
@@ -3368,6 +3383,7 @@ function refreshRecipe(surface: Surface, st: SurfaceState): void {
 
 /** 「输出：双语对照 / 仅译文」。从开关「仅显示译文」提上来做成分段控件；没有这个开关的类型不显示。 */
 function buildOutputModeField(surface: Surface, st: SurfaceState, active: boolean): HTMLElement | null {
+  if (surface === "cad") return buildCadOutputField(active);
   const toggle = surfaceToggles(surface).find((item) => item.key === "translationOnly");
   if (!toggle) return null;
   const seg = createSegmented({
@@ -3382,6 +3398,48 @@ function buildOutputModeField(surface: Surface, st: SurfaceState, active: boolea
   });
   const field = createField(t("输出"), seg);
   field.querySelector("label")?.append(createHintBadge(toggle.hint));
+  return field;
+}
+
+/**
+ * CAD「输出：双语对照 / 仅译文」，和 Excel、Word 同一个控件；选双语时下面再出「原文在上 /
+ * 译文在上」。存的仍是 cad_output.display_mode 的三个值（translation / source_first /
+ * translation_first），以前它在「高级 → 显示方式」里，用户找不到（maple 2026-10-27）。
+ */
+function buildCadOutputField(active: boolean): HTMLElement {
+  const mode = cadChoice("display_mode", CAD_DISPLAY_MODES, "translation");
+  const seg = createSegmented({
+    options: [
+      { value: "bilingual", label: t("双语对照") },
+      { value: "only", label: t("仅译文") },
+    ],
+    value: mode === "translation" ? "only" : "bilingual",
+    disabled: active,
+    ariaLabel: t("输出"),
+    motionKey: "cad-output",
+    onChange: (value) => {
+      const next = value === "only" ? "translation" : "source_first";
+      if (next !== mode) persistCadOutput("display_mode", next, t("输出"));
+    },
+  });
+  const field = createField(t("输出"), seg);
+  field.querySelector("label")?.append(createHintBadge(t("双语时译文与原文在同一图层：单行文字在原文下方（或上方）另起一行、字高为原文的 0.8 倍；多行文字、标注和引线在同一个框里换行；块属性写成「原文 / 译文」。再次翻译同一张图时会先清掉上次写入的译文。")));
+  if (mode === "translation") return field;
+  const order = createSegmented({
+    options: [
+      { value: "source_first", label: t("原文在上") },
+      { value: "translation_first", label: t("译文在上") },
+    ],
+    value: mode,
+    disabled: active,
+    ariaLabel: t("双语排列"),
+    motionKey: "cad-output-order",
+    onChange: (value) => persistCadOutput("display_mode", value, t("输出")),
+  });
+  // 只在双语时出现，缩进挂在「输出」下面，读起来是它的下级。
+  const sub = el("div", "cad-order");
+  sub.append(order);
+  field.append(sub);
   return field;
 }
 
@@ -3839,6 +3897,8 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], fallback:
 function buildRouteRow(opts: {
   label: string;
   hint: string;
+  /** 提示末尾的蓝色链接（「翻译方式」的「查看图文说明」）。 */
+  hintAction?: { label: string; onClick: () => void };
   options: SelectFieldOption[];
   value: string;
   disabled: boolean;
@@ -3849,7 +3909,7 @@ function buildRouteRow(opts: {
   const row = el("div", opts.sub ? "selrow sub" : "selrow");
   const name = el("span", "selrow-label");
   name.textContent = opts.label;
-  row.append(name, createHintBadge(opts.hint));
+  row.append(name, createHintBadge(opts.hint, "hint", opts.hintAction));
   const dropdown = createDropdown({
     options: opts.options,
     value: opts.value,
@@ -3873,9 +3933,11 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
 
   wrap.append(buildRouteRow({
     label: t("翻译方式"),
-    hint: t("三种方式适用的页面不同。整页图像翻译：每页交给图像模型重画，各类页面均可处理；译文为图片，受像素限制，大幅面页面清晰度下降，费用较高。转成 Word：适用于可提取文字的页，尤其是由 Word 导出的文件，可保留大部分排版；不使用图像模型，费用较低。原位替换：适用于大型图纸，只替换文字，线条、尺寸等矢量细节保持不变；画成线条的字需先识别，耗时较长。自动组合按每一页的类型分别选择方式，最后按原页序合成一份 PDF。"),
+    // 细节交给图文指引（guide.ts），问号里只留一句话。
+    hint: t("三种方式适合的页面不同；自动组合会逐页选用合适的方式。"),
+    hintAction: { label: t("查看图文说明"), onClick: () => openGuide("pdf") },
     options: [
-      { value: "image", label: imageLabel, description: t("原来的做法：每页交给图像模型重画") },
+      { value: "image", label: imageLabel, description: t("每页由图像模型重新生成，适合扫描件和照片") },
       { value: "auto", label: t("自动组合"), tag: beta, description: t("按每一页的类型分别选方式，合成一份 PDF") },
     ],
     value: st.pdfRoute,
@@ -3903,7 +3965,8 @@ function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
     label: t("可提取文字的页"),
     hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
-      { value: "word", label: t("转成 Word"), tag: beta, description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
+      // 转成 Word 已可正式使用，不再标 Beta（maple 2026-10-27）；原位替换、自动组合仍标。
+      { value: "word", label: t("转成 Word"), description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变；放不下的译文自动缩小或换行") },
       { value: "image", label: imageLabel, description: imageDesc },
     ],
@@ -6047,20 +6110,7 @@ function buildCadWritebackFields(st: SurfaceState, active: boolean): HTMLElement
   sec.textContent = t("译文写回");
   nodes.push(sec);
 
-  const display = createSelectField({
-    label: t("显示方式"),
-    hint: t("双语时译文与原文在同一图层：单行文字在原文下方（或上方）另起一行、字高为原文的 0.8 倍；多行文字、标注和引线在同一个框里换行；块属性写成「原文 / 译文」。再次翻译同一张图时会先清掉上次写入的译文。"),
-    options: [
-      { value: "translation", label: t("仅译文") },
-      { value: "source_first", label: t("原文在上，译文在下") },
-      { value: "translation_first", label: t("译文在上，原文在下") },
-    ],
-    value: cadChoice("display_mode", CAD_DISPLAY_MODES, "translation"),
-    disabled: active,
-    onChange: (value) => persistCadOutput("display_mode", value, t("显示方式")),
-  });
-  nodes.push(display.root);
-
+  // 显示方式已挪到右栏上方的「输出」（buildCadOutputField）。
   const font = createSelectField({
     label: t("译文字体"),
     hint: t("图纸里的字体常常缺法文重音字母或中文。选「AutoCAD 自带字体」时，译文改用每台装了 AutoCAD 的电脑都有的字体写入（西文 simplex，中文 gbenor + gbcbig），在别人的电脑上也能正常显示；没翻译的文字不改。"),
