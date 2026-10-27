@@ -1035,6 +1035,12 @@ tr.hid {
   color: var(--ink-2);
   padding-left: 10px;
 }
+/* CAD「输出」选双语时下面的「原文在上 / 译文在上」：和「高级」里的从属选项同一种缩进。 */
+.cad-order {
+  margin: 8px 0 0 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-2);
+}
 .selrow .dropdown.compact {
   margin-left: auto;
   width: 146px;

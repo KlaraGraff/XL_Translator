@@ -316,6 +316,12 @@ let tipListenersInstalled = false;
 
 /** 每个「?」角标对应的提示文字。视图重绘后靠它找到「同一个」角标的新节点。 */
 const badgeMessages = new WeakMap<HTMLElement, string>();
+/** 提示末尾的蓝色链接（例如「查看图文说明」）。点一下「?」钉住浮层后才点得到。 */
+export interface HintAction {
+  label: string;
+  onClick: () => void;
+}
+const badgeActions = new WeakMap<HTMLElement, HintAction>();
 
 /** 关闭当前提示浮层；没有打开时是空操作。视图重建前也可以主动调用。 */
 export function hideHint(): void {
@@ -375,6 +381,8 @@ function installTipListeners(): void {
     if (!activeTip) return;
     const target = event.target as Node | null;
     if (target && activeTip.anchor.contains(target)) return;
+    // 浮层里带链接时，点链接不能先把浮层关掉。
+    if (target && activeTip.element.contains(target)) return;
     hideHint();
   }, true);
   // 换绑后的新角标收不到旧角标的 mouseleave；悬停提示改由这里兜底：鼠标离开角标就关。
@@ -382,6 +390,7 @@ function installTipListeners(): void {
     if (!activeTip || activeTip.pinned) return;
     const target = event.target as Node | null;
     if (target && activeTip.anchor.contains(target)) return;
+    if (target && activeTip.element.contains(target)) return;
     hideHint();
   }, true);
   new MutationObserver(() => followAnchor()).observe(document.body, { childList: true, subtree: true });
@@ -452,7 +461,23 @@ function showHint(anchor: HTMLElement, message: string, pinned: boolean): void {
   hideHint();
   const tip = el("div", { className: "tip" });
   appendTipText(tip, message);
-  tip.setAttribute("role", "tooltip");
+  const action = badgeActions.get(target);
+  if (action) {
+    tip.append(" ");
+    const link = el("button", { className: "linklike tip-link", text: action.label });
+    link.type = "button";
+    // 按下时不抢焦点：角标失焦会把浮层关掉，click 就落空了。
+    link.addEventListener("mousedown", (event) => event.preventDefault());
+    link.addEventListener("click", (event) => {
+      event.stopPropagation();
+      hideHint();
+      action.onClick();
+    });
+    tip.append(link);
+    tip.classList.add("has-link");
+  } else {
+    tip.setAttribute("role", "tooltip");
+  }
   document.body.append(tip);
   activeTip = { element: tip, anchor: target, message, pinned, anchorRect: { left: 0, top: 0 } };
   placeTip(activeTip);
@@ -462,13 +487,14 @@ function showHint(anchor: HTMLElement, message: string, pinned: boolean): void {
  * 「?」提示角标。className 用来复用两套等价皮肤：右栏开关行用 "hint"，
  * 设置页 label 里用 "swrow-hint"。
  */
-export function createHintBadge(message: string, className = "hint"): HTMLSpanElement {
+export function createHintBadge(message: string, className = "hint", action?: HintAction): HTMLSpanElement {
   const badge = el("span", { className, text: "?" });
   badge.tabIndex = 0;
   badge.setAttribute("role", "button");
   badge.setAttribute("aria-label", t("说明：{0}", message));
   badge.dataset.hintBadge = "";
   badgeMessages.set(badge, message);
+  if (action) badgeActions.set(badge, action);
 
   const isOpen = () => activeTip?.message === message && activeTip.anchor === badge;
   const toggle = () => {
@@ -506,8 +532,11 @@ export function createHintBadge(message: string, className = "hint"): HTMLSpanEl
     }
   });
   // 延到微任务再判断：被重绘移走的角标可能也会触发 blur，那时浮层已换绑到新角标，不该关。
-  badge.addEventListener("blur", () => {
+  badge.addEventListener("blur", (event) => {
+    // 焦点移到浮层里的链接（键盘 Tab 过去）时不关。
+    const next = event.relatedTarget as Node | null;
     queueMicrotask(() => {
+      if (next && activeTip?.element.contains(next)) return;
       if (isOpen()) hideHint();
     });
   });

@@ -21,7 +21,7 @@
   "保底方式": {"en": "Safety net", "fr": "Solution de repli"},
   "保留原文的地方：{0}{1}": {"en": "Original text kept at: {0}{1}", "fr": "Texte d'origine conservé : {0}{1}"},
   "保留原样": {"en": "Kept as is", "fr": "Conservée telle quelle"},
-  "原位替换": {"en": "Replaced in place", "fr": "Remplacé sur place"},
+  "原位替换": {"en": "Replace in place", "fr": "Remplacement sur place"},
   "原位替换 · {0} 处保留原文": {"en": "Replaced in place · {0} {0|label|labels} kept", "fr": "Remplacé sur place · {0} {0|étiquette conservée|étiquettes conservées}"},
   "原位替换 · {0} 处需复核": {"en": "Replaced in place · {0} {0|label needs|labels need} review", "fr": "Remplacé sur place · {0} {0|étiquette à vérifier|étiquettes à vérifier}"},
   "原位替换文字（保留矢量）": {"en": "Replace text in place (keep vectors)", "fr": "Remplacer le texte sur place (conserver les vecteurs)"},

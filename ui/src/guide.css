@@ -1,0 +1,85 @@
+/* PDF / CAD 首次使用图文指引（guide.ts）。外壳沿用 .overlay > .modal，只把宽度放到 1120，
+   正文（三张卡片 + 下方条带）单独滚动，标题和「知道了」始终留在视口内。
+   插图配色全部走主题变量，深色模式自动跟随。 */
+
+.modal.guide { width: min(1120px, calc(100vw - 48px)); padding: 22px 26px 18px; }
+.modal.guide > * { flex-shrink: 0; }
+.guide .g-x { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border-radius: 8px; border: 0; background: none; color: var(--ink-3); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.guide .g-x:hover { background: var(--surface-2); color: var(--ink); }
+.guide h3 { margin-bottom: 4px; padding-right: 32px; }
+.guide .g-lead { font-size: 13px; color: var(--ink-2); margin: 0 0 14px; line-height: 1.6; }
+.modal.guide > .g-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; }
+.guide .g-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.guide .g-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.guide .g-ill { border-radius: 9px; background: var(--surface-2); display: block; width: 100%; height: 118px; }
+.guide .g-name { font-size: 14px; font-weight: var(--fw-650); color: var(--ink); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.guide .g-tag { font-size: 10.5px; font-weight: var(--fw-600); padding: 1px 7px; border-radius: 99px; background: var(--warn-t); color: var(--warn); }
+.guide dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 8px; font-size: 12.5px; line-height: 1.55; }
+.guide dt { color: var(--ink-3); white-space: nowrap; }
+.guide dd { margin: 0; color: var(--ink-2); }
+.guide .g-note { display: flex; gap: 7px; align-items: flex-start; font-size: 12px; line-height: 1.55; color: var(--warn); background: var(--warn-t); border-radius: 8px; padding: 6px 9px; }
+.guide .g-nw { white-space: nowrap; }
+.guide .g-card p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.guide .g-stats { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; min-height: 27px; }
+.guide .g-stats:empty { border-top-color: transparent; }
+.guide .g-stat { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+.guide .g-stat > span:nth-child(2) { flex: 1; min-width: 0; }
+.guide .g-stat.warn > span:nth-child(2) { color: var(--warn); }
+.guide .g-stat.idle > span:nth-child(2) { color: var(--ink-3); }
+.guide .g-dot { flex: none; width: 15px; height: 15px; border-radius: 99px; display: flex; align-items: center; justify-content: center; margin-top: 1.5px; }
+.guide .g-dot svg { width: 10px; height: 10px; }
+.guide .g-dot.ok { background: var(--ok-t); color: var(--ok); }
+.guide .g-dot.warn { background: var(--warn-t); color: var(--warn); }
+.guide .g-dot.idle { background: var(--surface-3); color: var(--ink-3); }
+.guide .g-link { color: var(--accent-ink); background: none; border: 0; padding: 0; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; flex: none; }
+.guide .g-link:hover { text-decoration: underline; }
+.guide .g-band { border: 1px solid var(--tint-line); background: var(--tint); border-radius: var(--r-md); padding: 11px 14px; display: grid; grid-template-columns: minmax(0, 44%) minmax(0, 1fr); gap: 16px; align-items: center; }
+.guide .g-band h4, .guide .g-strip h4 { margin: 0 0 3px; font-size: 13.5px; font-weight: var(--fw-650); color: var(--ink); }
+.guide .g-band p, .guide .g-strip p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.guide .g-flow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.guide .g-pages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; flex: 1; min-width: 0; }
+.guide .g-pg { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; }
+.guide .g-pg svg { width: 34px; height: 44px; }
+.guide .g-pg small { font-size: 11px; color: var(--ink-3); text-align: center; line-height: 1.3; }
+.guide .g-chip { font-size: 11px; font-weight: var(--fw-600); padding: 1px 8px; border-radius: 99px; background: var(--surface); border: 1px solid var(--tint-line); color: var(--tint-ink); text-align: center; max-width: 100%; }
+.guide .g-arrow { color: var(--ink-3); font-size: 16px; flex: none; }
+.guide .g-out { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: none; }
+.guide .g-out svg { width: 34px; height: 44px; }
+.guide .g-out small { font-size: 11px; color: var(--ink-2); font-weight: var(--fw-600); text-align: center; line-height: 1.3; max-width: 84px; }
+.guide .g-strip { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; }
+.guide .g-strip .g-stat { font-size: 12.5px; }
+.guide .g-tip { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); background: var(--ok-t); border: 1px solid var(--ok-l); border-radius: var(--r-md); padding: 8px 12px; }
+.guide .g-tip .ic { color: var(--ok); flex: none; margin-top: 2px; }
+.guide .g-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; }
+.guide .g-foot small { font-size: 12px; color: var(--ink-3); }
+/* 窗口较矮时插图压低一些，中文在最小窗口 1080×700 也能一屏看完。 */
+@media (max-height: 820px) {
+  .guide .g-ill { height: 100px; }
+  .guide .g-lead { margin-bottom: 10px; }
+  .modal.guide > .g-body { gap: 10px; }
+}
+
+/* 顶栏「使用说明」：模型药丸左边的蓝色文字按钮。 */
+.tb-guide { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border: 0; border-radius: 8px; background: none; color: var(--accent-ink); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.tb-guide:hover { background: var(--tint); }
+
+/* 插图 */
+.gi-paper { fill: var(--surface); stroke: var(--line-3); stroke-width: 1; }
+.gi-scan { fill: var(--surface-3); stroke: var(--line-3); stroke-width: 1; }
+.gi-bar { fill: var(--line-2); }
+.gi-t { fill: var(--ink-2); }
+.gi-tb { fill: var(--ink); font-weight: 600; }
+.gi-a { fill: var(--accent-ink); font-weight: 600; }
+.gi-l { stroke: var(--ink-3); stroke-width: 1.1; fill: none; }
+.gi-wall { stroke: var(--ink-2); stroke-width: 2; fill: none; }
+.gi-thin { stroke: var(--line-3); stroke-width: .8; fill: none; }
+.gi-grid { stroke: var(--ink-3); stroke-width: 1; fill: none; }
+.gi-arr { stroke: var(--ink-3); stroke-width: 1.4; fill: none; }
+.gi-arrh { fill: var(--ink-3); }
+/* 印章固定用红色：深浅色下都认得出是盖章。 */
+.gi-red { stroke: #d14343; fill: none; }
+.gi-redf { fill: #d14343; }
+.gi-bad { stroke: var(--danger); stroke-width: 1.2; fill: none; stroke-dasharray: 3 2; }
+.gi-chip { fill: var(--surface); stroke: var(--line-2); }
+.gi-cap { fill: var(--ink-3); font-size: 9.5px; }
+.gi-lock { fill: var(--surface); stroke: var(--ink-2); stroke-width: 1.3; }

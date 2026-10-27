@@ -247,6 +247,34 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "available")
         self.assertTrue(response.json()["notification_suppressed"])
 
+    def test_pdf_and_cad_guide_flags_round_trip_and_default_to_unseen(self) -> None:
+        """The first-use guides pop once per page; upgraded users have no flags yet."""
+        # 旧版设置文件里没有这两项：读进来按「没看过」处理，不升设置版本。
+        settings = settings_module.load_settings()
+        settings.onboarding.quick_start_completed = True
+        settings_module.save_settings(settings)
+        raw = json.loads(settings_module.SETTINGS_PATH.read_text(encoding="utf-8"))
+        raw["onboarding"].pop("pdf_guide_seen", None)
+        raw["onboarding"].pop("cad_guide_seen", None)
+        settings_module.SETTINGS_PATH.write_text(json.dumps(raw), encoding="utf-8")
+
+        client = TestClient(create_app(task_manager=_TaskManager(active_count=0)))
+        prefs = client.get("/api/updates/state").json()["preferences"]
+        self.assertTrue(prefs["quick_start_completed"])
+        self.assertFalse(prefs["pdf_guide_seen"])
+        self.assertFalse(prefs["cad_guide_seen"])
+
+        updated = client.put("/api/updates/preferences", json={"pdf_guide_seen": True}).json()
+        self.assertTrue(updated["preferences"]["pdf_guide_seen"])
+        self.assertFalse(updated["preferences"]["cad_guide_seen"])
+        # 只改传了的那一项，其余偏好原样保留。
+        self.assertTrue(updated["preferences"]["quick_start_completed"])
+
+        client.put("/api/updates/preferences", json={"cad_guide_seen": True})
+        reloaded = settings_module.load_settings()
+        self.assertTrue(reloaded.onboarding.pdf_guide_seen)
+        self.assertTrue(reloaded.onboarding.cad_guide_seen)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
