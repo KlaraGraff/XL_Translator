@@ -1789,6 +1789,14 @@ class WordTaskRunner(BaseTaskRunner):
                 concurrency=concurrency if settings.engine.mode != "local" else 1,
             )
 
+            # ── 页眉页脚里只差数字的几行（各页页码），按第一页的写法统一（0 API）
+            numbered_fills = _numbered_header_footer_fills(global_translations, segment_locations)
+            if numbered_fills:
+                global_translations.update(numbered_fills)
+                self._log("INFO", f"页眉页脚：{len(numbered_fills)} 行页码已按第一页的写法统一。")
+            else:
+                logger.info("Word 页眉页脚页码：没有需要统一写法的行")
+
             # ── 只输出译文时，表格一格里译文行数和原文段数对不上，写回只能保留原文、
             # 把译文追加在下面（成了双语）。写盘前先把这几格单独重译、要求逐行对应。
             self._realign_cell_lines(
@@ -2022,6 +2030,7 @@ class WordTaskRunner(BaseTaskRunner):
                         tm_hit_count=tm_hit_count,
                         api_call_count=api_call_count,
                         translate_headers_footers=self._translate_headers_footers,
+                        translation_only=settings.word_output.output_translation_only,
                     )
                 except Exception as exc:  # report output must not fail a usable task
                     logger.debug(f"Word 翻译质量报告写入失败原始错误：{exc!r}")
@@ -5218,6 +5227,69 @@ def _cell_line_mismatches(
         if not _cell_lines_match(source, translation):
             pending.append(source)
     return pending
+
+
+# 页眉页脚里只差数字的几行（「Page 1」「Page 2」「Page 3」）：每页各自翻，模型每次写法
+# 略有不同（本机实测「第 1 页」「第2页」「第3页」）。取第一页的译文当样板，其余页换上
+# 各自的数字。
+_DIGIT_RUN_RE = re.compile(r"\d+")
+
+
+def _numbered_line_key(source: str) -> str | None:
+    if not _DIGIT_RUN_RE.search(source):
+        return None
+    return " ".join(_DIGIT_RUN_RE.sub("#", source).split())
+
+
+def _fill_numbered_line(source: str, translation: str, other: str) -> str | None:
+    """按 ``source`` → ``translation`` 的写法，给只差数字的 ``other`` 写出译文。
+
+    样板里每个数字都要在译文里原样出现一次、译文里也不能多出别的数字（模型写成
+    「第一页」这类就对不上），否则返回 None，让这一行保留它自己的译文。
+    """
+    source_numbers = [int(run) for run in _DIGIT_RUN_RE.findall(source)]
+    other_runs = _DIGIT_RUN_RE.findall(other)
+    if len(other_runs) != len(source_numbers) or len(set(source_numbers)) != len(source_numbers):
+        return None
+    translation_numbers = [int(run) for run in _DIGIT_RUN_RE.findall(translation)]
+    if sorted(translation_numbers) != sorted(source_numbers):
+        return None
+    return _DIGIT_RUN_RE.sub(lambda match: other_runs[source_numbers.index(int(match.group()))], translation)
+
+
+def _numbered_header_footer_fills(
+    global_translations: dict[str, str],
+    segment_locations: dict[str, list[dict]],
+) -> dict[str, str]:
+    """页眉页脚里只差数字的各行，按其中数字最小那行的译文统一写法；返回要改的那些。"""
+    groups: dict[str, list[str]] = {}
+    for source, value in global_translations.items():
+        if not value or is_replace_translation(value):
+            continue
+        if not any(item.get("kind") in _HEADER_FOOTER_KINDS for item in segment_locations.get(source) or ()):
+            continue
+        key = _numbered_line_key(source)
+        if key is not None:
+            groups.setdefault(key, []).append(source)
+    fills: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        candidates = [
+            source for source in members
+            if len(set(numbers := _DIGIT_RUN_RE.findall(source))) == len(numbers)
+        ]
+        if not candidates:
+            continue
+        leader = min(candidates, key=lambda source: [int(run) for run in _DIGIT_RUN_RE.findall(source)])
+        template = str(global_translations[leader]).strip()
+        for source in members:
+            if source == leader:
+                continue
+            filled = _fill_numbered_line(leader, template, source)
+            if filled is not None and filled != global_translations[source]:
+                fills[source] = filled
+    return fills
 
 
 # 「短文字」：两到六个词（中日韩文字三到十五个字）、不带数字、不跨行的一句话。

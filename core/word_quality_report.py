@@ -509,6 +509,7 @@ def _build_translation_scope_lines(
     file_results: list[dict],
     *,
     translate_headers_footers: bool = False,
+    translation_only: bool = False,
 ) -> list[str]:
     """报告里明写翻译范围，用户不该翻到那一页才发现某处没翻。"""
     header_footer_files: list[str] = []
@@ -527,7 +528,9 @@ def _build_translation_scope_lines(
     listed = "、".join(header_footer_files[:5])
     if len(header_footer_files) > 5:
         listed += f" 等 {len(header_footer_files)} 个文件"
-    if translate_headers_footers:
+    if translate_headers_footers and translation_only:
+        header_footer_line = f"- 页眉、页脚已翻译，译文已替换原文：{listed}。"
+    elif translate_headers_footers:
         header_footer_line = (
             f"- 页眉、页脚已翻译，译文紧接在同一行原文之后（不另起一行，以免增加页眉页脚高度）：{listed}。"
         )
@@ -561,6 +564,7 @@ def _write_word_quality_report(
     tm_hit_count: int,
     api_call_count: int,
     translate_headers_footers: bool = False,
+    translation_only: bool = False,
 ) -> Path | None:
     try:
         report_path = output_dir / "word_translation_report.md"
@@ -607,6 +611,7 @@ def _write_word_quality_report(
             _build_translation_scope_lines(
                 file_results,
                 translate_headers_footers=translate_headers_footers,
+                translation_only=translation_only,
             )
         )
 
