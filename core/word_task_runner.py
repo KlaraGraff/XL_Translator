@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import threading
+import unicodedata
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -127,6 +128,7 @@ from core.task_runner import (
     user_facing_reason,
 )
 from core.translation_filter import (
+    VALIDATION_STATUS_FAIL,
     VALIDATION_STATUS_SOFT_PASS_REVIEW,
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
@@ -165,6 +167,7 @@ from core.word_document import (
     extract_word_header_footer_segments,
     extract_word_segments,
     extract_word_story_segments,
+    cell_line_groups,
     find_word_front_matter_boundary_for_path,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
@@ -364,6 +367,71 @@ def _translation_in_unexpected_cjk(source: str, translation: str | None, target_
     return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
 
 
+# 译文里不该出现的文字：原文没有、目标语言也不用的（法译中的译文里冒出一个俄文词
+# 「предусмотр」）。拉丁字母和汉字不在这里查（专名、型号、单位常用拉丁字母；汉字由
+# _translation_in_unexpected_cjk 和残留中文检查管）。
+_FOREIGN_SCRIPTS = {
+    "cyrillic": "\u0400-\u052f",
+    "greek": "\u0370-\u03ff\u1f00-\u1fff",
+    "arabic": "\u0600-\u06ff\u0750-\u077f",
+    "hebrew": "\u0590-\u05ff",
+    "thai": "\u0e00-\u0e7f",
+    "devanagari": "\u0900-\u097f",
+    "hangul": "\uac00-\ud7af\u1100-\u11ff",
+    "kana": "\u3040-\u309f\u30a0-\u30fa",
+    "armenian": "\u0530-\u058f",
+    "georgian": "\u10a0-\u10ff",
+}
+# 目标语言自己用的文字。不在表里的（自定义目标语言）不查。
+_TARGET_SCRIPTS = {
+    **{lang: () for lang in (
+        "zh", "en", "fr", "de", "es", "it", "pt", "nl", "pl", "cs", "sk", "ro", "hu", "tr", "vi", "id", "ms",
+        "sv", "da", "no", "nb", "fi", "et", "lv", "lt", "sl", "hr", "bs", "sq", "ca", "eu", "gl", "ga", "is",
+        "tl", "sw", "az", "uz",
+    )},
+    **{lang: ("cyrillic",) for lang in ("ru", "uk", "be", "bg", "mk", "kk", "ky", "mn", "tg")},
+    "sr": ("cyrillic",),
+    "el": ("greek",),
+    **{lang: ("arabic",) for lang in ("ar", "fa", "ur", "ps")},
+    "he": ("hebrew",),
+    "th": ("thai",),
+    **{lang: ("devanagari",) for lang in ("hi", "mr", "ne")},
+    "ko": ("hangul",),
+    "ja": ("kana",),
+    "hy": ("armenian",),
+    "ka": ("georgian",),
+}
+_FOREIGN_SCRIPT_RES = {name: re.compile(f"[{chars}]") for name, chars in _FOREIGN_SCRIPTS.items()}
+# 连着两个字以上才算一个词：单个 μ、Ω 是单位符号
+_FOREIGN_RUN_RES = {
+    name: re.compile(f"[{chars}][{chars}\u0300-\u036f'’-]*[{chars}]") for name, chars in _FOREIGN_SCRIPTS.items()
+}
+
+
+def _unexpected_script_fragments(source: str, translation: str | None, target_lang: str) -> list[str]:
+    """译文里原文没有、目标语言也不用的那种文字的词（如法译中译文里的俄文词）。"""
+    target = str(target_lang or "").strip().lower().replace("_", "-")
+    allowed = _TARGET_SCRIPTS.get(target, _TARGET_SCRIPTS.get(target.split("-")[0]))
+    text = str(translation or "")
+    if allowed is None or not text:
+        return []
+    source_text = str(source or "")
+    fragments: list[str] = []
+    for name, run_re in _FOREIGN_RUN_RES.items():
+        if name in allowed or _FOREIGN_SCRIPT_RES[name].search(source_text):
+            continue
+        fragments.extend(match.group(0) for match in run_re.finditer(text))
+    return list(dict.fromkeys(fragments))
+
+
+def _unexpected_script_issue(fragments: list[str]) -> TranslationValidationIssue:
+    return TranslationValidationIssue(
+        code="unexpected_script",
+        message="译文夹杂了原文和目标语言都不用的文字。",
+        fragments=tuple(fragments),
+    )
+
+
 _MARK_ORIGIN_LABELS = {
     None: "没经过带标记的翻译（记忆库、夹杂多种语言等）",
     "ok": "定稿后译文被改过",
@@ -433,6 +501,8 @@ class WordTaskRunner(BaseTaskRunner):
         self._slot_hints: dict[str, dict[int, str]] = {}
         # 补标记试满仍放不进去、放到句末的公式：原文 → [(第几行, 开始, 结束)]，写回时标黄加批注
         self._formula_flags: dict[str, list[tuple[int, int, int]]] = {}
+        # 行数对不上、但复查判定译文与原文意思一致的表格格子：整格只写译文
+        self._layout_only_cells: set[str] = set()
         self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # 同一批任务共用的输出文件夹；设了就不再新建自己的。
@@ -961,6 +1031,8 @@ class WordTaskRunner(BaseTaskRunner):
             formula_display_value_backfill=False,
             enable_excel_autofit=False,
             lock_row_height=False,
+            # 不传就记成 False：PDF 转 Word 固定只输出译文，日志却写「仅显示译文=False」
+            output_translation_only=settings.word_output.output_translation_only,
         )
         # 只写进 app.log：路径和内部参数对排查有用，但不该出现在用户看的运行日志里。
         logger.info(f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
@@ -1699,6 +1771,33 @@ class WordTaskRunner(BaseTaskRunner):
                 api_scheduler=api_scheduler,
             )
 
+            # ── 同一句短文字（标题、表头）在别的段落里译法不一致的，按同一译法重译
+            self._unify_short_text_terms(
+                engine=term_session.wrap(self._inline_mark_engine or engine),
+                global_translations=global_translations,
+                system_prompt=system_prompt,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                concurrency=concurrency if settings.engine.mode != "local" else 1,
+            )
+
+            # ── 只输出译文时，表格一格里译文行数和原文段数对不上，写回只能保留原文、
+            # 把译文追加在下面（成了双语）。写盘前先把这几格单独重译、要求逐行对应。
+            self._realign_cell_lines(
+                engine=term_session.wrap(self._inline_mark_engine or engine),
+                judge_engine=engine,
+                global_translations=global_translations,
+                segment_locations=segment_locations,
+                review_marks=review_marks,
+                system_prompt=system_prompt,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                concurrency=concurrency if settings.engine.mode != "local" else 1,
+                translation_only=settings.word_output.output_translation_only,
+            )
+
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
             # 只有聚在一起才看得出来。多数派可确定性改写时直接改词典。
             heading_majority = self._normalize_heading_style(
@@ -2069,6 +2168,183 @@ class WordTaskRunner(BaseTaskRunner):
                         output_dir=str(output_dir),
                     )
                 )
+
+    def _retranslate_each(
+        self,
+        sources: list[str],
+        *,
+        engine,
+        prompt_for: Callable[[str], str],
+        accept: Callable[[str, str], bool],
+        target_lang: str,
+        source_lang: str,
+        api_scheduler,
+        concurrency: int,
+    ) -> dict[str, str]:
+        """逐段单独重译（每段最多「单段重试次数」轮），返回 ``accept`` 认可、也通过译文检查的那些。"""
+        batch_settings = self._word_batch.model_copy(update={"max_paragraphs_per_batch": 1})
+        attempts = max(1, int(self._word_batch.strict_retry_attempts or 1))
+
+        def retranslate(source: str) -> str | None:
+            prompt = prompt_for(source)
+            for _attempt in range(attempts):
+                if self.stop_requested():
+                    return None
+                result = translate_word_texts(
+                    [source],
+                    engine,
+                    target_lang,
+                    prompt,
+                    batch_settings,
+                    concurrency=1,
+                    should_stop=self.stop_requested,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    request_category=API_REQUEST_CATEGORY_RECOVERY,
+                )
+                candidate = str(result.get(source) or "").strip()
+                if not candidate or not accept(source, candidate):
+                    continue
+                if _evaluate_word_translation(
+                    source, candidate, source_lang=source_lang, target_lang=target_lang, allow_recovery=True
+                ).accepted:
+                    return candidate
+            return None
+
+        results = map_concurrently(retranslate, sources, max_workers=max(1, int(concurrency or 1)))
+        return {source: candidate for source, candidate in zip(sources, results) if candidate}
+
+    def _unify_short_text_terms(
+        self,
+        *,
+        engine,
+        global_translations: dict[str, str],
+        system_prompt: str,
+        target_lang: str,
+        source_lang: str,
+        api_scheduler,
+        concurrency: int,
+    ) -> None:
+        """一句短短的文字（标题、表头）整句又出现在别的段落里，两处译法要一致。
+
+        本机实测：第 1 页大标题「MÉTHODOLOGIE D’INTERVENTION」译成「实施方法」，每页页脚
+        「Méthodologie d’intervention – Expertise structurelle」却是「干预方法——……」。两句分在
+        不同批里翻，各批互相看不到；这个词组只出现在两段文字里，够不上「统一用词」的门槛。
+        这里找出译文里没用上那句短文字译法的段落，告诉模型这句已经怎么译、单独重译；重译后
+        用上了的才换上，否则保持原样。
+        """
+        if self._stop_event.is_set():
+            return
+        conflicts = _short_text_term_conflicts(global_translations)
+        if not conflicts:
+            return
+        example_source, example_target = next(iter(conflicts.values()))[0]
+        self._log(
+            "INFO",
+            f"有 {len(conflicts)} 段与文中同一句短文字的译法不一致（例如「{example_source}」已译作"
+            f"「{example_target}」），正在按同一译法单独重译这几段。",
+        )
+        retry_prompt = _build_word_retry_prompt(system_prompt)
+        sources = list(conflicts)
+        accepted = self._retranslate_each(
+            sources,
+            engine=engine,
+            prompt_for=lambda source: _build_term_unify_prompt(retry_prompt, conflicts[source]),
+            accept=lambda source, candidate: _uses_short_text_terms(
+                candidate, conflicts[source], previous=global_translations.get(source, "")
+            ),
+            target_lang=target_lang,
+            source_lang=source_lang,
+            api_scheduler=api_scheduler,
+            concurrency=concurrency,
+        )
+        global_translations.update(accepted)
+        logger.info(f"Word 短文字译法统一：{len(accepted)}/{len(sources)} 段重译后用上了同一译法")
+        if accepted:
+            self._log("OK", f"{len(accepted)} 段已按同一译法重译。")
+
+    def _realign_cell_lines(
+        self,
+        *,
+        engine,
+        judge_engine,
+        global_translations: dict[str, str],
+        segment_locations: dict[str, list[dict]],
+        review_marks: dict[str, str],
+        system_prompt: str,
+        target_lang: str,
+        source_lang: str,
+        api_scheduler,
+        concurrency: int,
+        translation_only: bool,
+    ) -> None:
+        """表格里译文行数与原文段数对不上的格子：先单独重译、要求一行对一段；仍对不上的，
+        把原文和译文交给模型复查意思是否一致。
+
+        只输出译文时，单元格按「译文一行写回一段」替换（见 word_document._replace_cell_text）。
+        PDF 转来的表格里常见两条「•」挤在一段里，模型顺手拆成两行，行数一多就对不上，
+        以前写回只能整格保留原文、译文追加在下面，这一格就成了双语。
+
+        1. 按「单段重试次数」重译，行数对上、译文也通过检查的换上；
+        2. 仍对不上的复查：意思一致（只是分行不同）的，整格写译文（记进 _layout_only_cells）；
+        3. 判定不一致或拿不准的，才保留原文、追加译文，并标「保留原文复核」底色、写进报告。
+
+        双语输出不按行替换，不需要这一步。
+        """
+        if not translation_only or self._stop_event.is_set():
+            return
+        pending = _cell_line_mismatches(global_translations, segment_locations)
+        if not pending:
+            return
+        self._log("INFO", f"有 {len(pending)} 格表格译文的行数与原文不一致，正在单独重译这几格，要求逐行对应。")
+        retry_prompt = _build_word_retry_prompt(system_prompt)
+        accepted = self._retranslate_each(
+            pending,
+            engine=engine,
+            prompt_for=lambda source: _build_cell_lines_retry_prompt(retry_prompt, len(_nonblank_lines(source))),
+            accept=_cell_lines_match,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            api_scheduler=api_scheduler,
+            concurrency=concurrency,
+        )
+        global_translations.update(accepted)
+        fixed = len(accepted)
+        logger.info(f"Word 表格行数对齐：{fixed}/{len(pending)} 格重译后逐行对上")
+        unfixed = [source for source in pending if source not in accepted]
+        if not unfixed:
+            self._log("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
+            return
+
+        def judge(source: str):
+            return _run_semantic_arbitration(
+                judge_engine,
+                source,
+                global_translations.get(source, ""),
+                target_lang=target_lang,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                error_callback=lambda message: self._log("INFO", message),
+                should_stop=self.stop_requested,
+            )
+
+        can_judge = engine_supports_chat(judge_engine) and not self._stop_event.is_set()
+        verdicts = map_concurrently(judge, unfixed, max_workers=max(1, int(concurrency or 1))) if can_judge else []
+        same_meaning = [source for source, verdict in zip(unfixed, verdicts) if verdict.equivalent]
+        self._layout_only_cells.update(same_meaning)
+        kept = [source for source in unfixed if source not in self._layout_only_cells]
+        for source in kept:
+            _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+        logger.info(
+            f"Word 表格行数对齐：复查 {len(verdicts)} 格，意思一致 {len(same_meaning)} 格，"
+            f"保留原文 {len(kept)} 格"
+        )
+        message = f"{len(pending)} 格表格译文的行数与原文不一致：{fixed} 格重译后已对齐"
+        if same_meaning:
+            message += f"，{len(same_meaning)} 格经复查意思一致、只是分行不同，整格写入译文"
+        if kept:
+            message += f"，{len(kept)} 格保留原文并在下方附上译文，已标出底色并列入报告待复核"
+        self._log("WARN" if kept else "OK", message + "。")
 
     def _place_missing_inline_marks(self, engine, global_translations: dict[str, str], *, target_lang: str = "") -> None:
         """带局部格式的段落里，定稿译文还没有对得上的带标记版本的（记忆库套用、夹杂多种
@@ -3322,6 +3598,7 @@ class WordTaskRunner(BaseTaskRunner):
                         self._inline_mark_engine.marked_translations if self._inline_mark_engine else None
                     ),
                     formula_flags=self._formula_flags or None,
+                    layout_only_cells=self._layout_only_cells or None,
                 )
             residual_count = _append_post_write_coverage_issues(
                 issues=quality_issues,
@@ -3907,7 +4184,9 @@ def _evaluate_word_translation(
         residual_needs_retry = residual.blocking or (
             CATEGORY_TERM_FRAGMENT in residual.categories
         )
-    if strict_validation.is_pass and not residual_needs_retry:
+    # 夹杂了别的文字（法译中冒出俄文词）：首次译文一律重译；重译后仍有的照用，但标出来请人看。
+    foreign = _unexpected_script_fragments(source_text, translated_text, target_lang)
+    if strict_validation.is_pass and not residual_needs_retry and not foreign:
         return _WordRetryEvaluation(True, strict_validation)
 
     if allow_recovery:
@@ -3919,9 +4198,21 @@ def _evaluate_word_translation(
             profile=VALIDATION_PROFILE_WORD_RECOVERY,
         )
         if not recovery_validation.is_fail:
+            if foreign:
+                recovery_validation = TranslationValidationResult(
+                    status=VALIDATION_STATUS_SOFT_PASS_REVIEW,
+                    issues=(*recovery_validation.issues, _unexpected_script_issue(foreign)),
+                )
             return _WordRetryEvaluation(True, recovery_validation)
         return _WordRetryEvaluation(False, recovery_validation)
 
+    if foreign and strict_validation.is_pass:
+        return _WordRetryEvaluation(
+            False,
+            TranslationValidationResult(
+                status=VALIDATION_STATUS_FAIL, issues=(_unexpected_script_issue(foreign),)
+            ),
+        )
     return _WordRetryEvaluation(False, strict_validation)
 
 
@@ -4494,6 +4785,13 @@ class _WordRecoveryPool:
             last_candidate = state.last_candidate if state else ""
         if not last_candidate:
             return self._retry_prompt
+        foreign = _unexpected_script_fragments(source, last_candidate, self._target_lang)
+        if foreign:
+            fragments = "、".join(f"«{text}»" for text in foreign)
+            return (
+                f"{self._retry_prompt}\n5. 上一稿译文夹杂了原文和目标语言都不用的文字：{fragments}。"
+                "本稿必须把整段完整翻译成目标语言，不得出现这类文字。"
+            )
         residual = summarize_residuals(last_candidate, target_lang=self._target_lang)
         if not residual.spans:
             return self._retry_prompt
@@ -4889,6 +5187,126 @@ def _semantic_review_validation(
     return TranslationValidationResult(
         status=VALIDATION_STATUS_SOFT_PASS_REVIEW,
         issues=tuple(issues),
+    )
+
+
+def _nonblank_lines(text: str) -> list[str]:
+    return [line for line in str(text or "").split("\n") if line.strip()]
+
+
+def _cell_lines_match(source: str, translation: str) -> bool:
+    """译文能不能按行写回这一格：行数与原文一致（多出来的空行不算）。"""
+    return cell_line_groups(str(translation or "").split("\n"), _nonblank_lines(source)) is not None
+
+
+def _cell_line_mismatches(
+    global_translations: dict[str, str],
+    segment_locations: dict[str, list[dict]],
+) -> list[str]:
+    """表格单元格里，译文行数和原文对不上、写回时会退成「原文 + 译文」的那些原文。
+
+    夹杂多种语言的格子（替换式译文）走的是逐段拼接，不在这里重译。
+    """
+    pending: list[str] = []
+    for source, value in global_translations.items():
+        if "\n" not in source or not value or is_replace_translation(value):
+            continue
+        if not any(item.get("kind") == "table_cell" for item in segment_locations.get(source) or ()):
+            continue
+        translation = str(value).strip()
+        if not translation or translation == source.strip():
+            continue
+        if not _cell_lines_match(source, translation):
+            pending.append(source)
+    return pending
+
+
+# 「短文字」：两到六个词（中日韩文字三到十五个字）、不带数字、不跨行的一句话。
+_SHORT_TEXT_MAX_CHARS = 60
+_SHORT_TEXT_MAX_OCCURRENCES = 5  # 出现在更多段落里的多半是泛称，交给「统一用词」
+_SHORT_TEXT_MAX_RETRIES = 30
+_WORD_TOKEN_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
+_CJK_SHORT_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff]{3,15}$")
+_TERM_EDGE_PUNCT = " \t.,;:!?。，；：！？、·•-–—\"'“”‘’«»()（）[]【】"
+
+
+def _fold_for_terms(text: str) -> str:
+    folded = unicodedata.normalize("NFC", str(text or "")).replace("’", "'").replace("‘", "'").casefold()
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def _short_text_key(source: str) -> str:
+    """能当「一句短文字」比对的原文，返回比对用的写法；不能的返回空串。"""
+    text = str(source or "").strip()
+    if not text or "\n" in text or len(text) > _SHORT_TEXT_MAX_CHARS or re.search(r"\d", text):
+        return ""
+    folded = _fold_for_terms(text).strip(_TERM_EDGE_PUNCT)
+    if _CJK_SHORT_RE.match(folded):
+        return folded
+    tokens = _WORD_TOKEN_RE.findall(folded)
+    if not 2 <= len(tokens) <= 6 or _CJK_RE.search(folded):
+        return ""
+    return folded
+
+
+def _short_text_term_conflicts(global_translations: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
+    """{段落原文: [(其中整句出现的短文字, 那句短文字的译文)]}，只收译文里没用上那句译法的段落。"""
+    values = {
+        source: str(value).strip()
+        for source, value in global_translations.items()
+        if value and not is_replace_translation(value) and str(value).strip() != source.strip()
+    }
+    shorts = {}
+    for source, translation in values.items():
+        key = _short_text_key(source)
+        target = translation.strip(_TERM_EDGE_PUNCT)
+        if key and target and "\n" not in target:
+            shorts[source] = (key, target)
+    if not shorts:
+        return {}
+    folded_sources = {source: _fold_for_terms(source) for source in values}
+    conflicts: dict[str, list[tuple[str, str]]] = {}
+    for short, (key, target) in shorts.items():
+        if _CJK_SHORT_RE.match(key):
+            pattern = re.compile(re.escape(key))
+        else:
+            pattern = re.compile(rf"(?<!\w){re.escape(key)}(?!\w)")
+        containing = [
+            source for source, folded in folded_sources.items()
+            if source != short and len(folded) > len(key) and pattern.search(folded)
+        ]
+        if not containing or len(containing) > _SHORT_TEXT_MAX_OCCURRENCES:
+            continue
+        folded_target = _fold_for_terms(target)
+        for source in containing:
+            if folded_target not in _fold_for_terms(values[source]):
+                conflicts.setdefault(source, []).append((short.strip(), target))
+    return dict(list(conflicts.items())[:_SHORT_TEXT_MAX_RETRIES])
+
+
+def _uses_short_text_terms(candidate: str, terms: list[tuple[str, str]], *, previous: str) -> bool:
+    folded = _fold_for_terms(candidate)
+    if not all(_fold_for_terms(target) in folded for _source, target in terms):
+        return False
+    # 表格里的多行格子，重译不能把行数改了
+    return len(_nonblank_lines(candidate)) == len(_nonblank_lines(previous))
+
+
+def _build_term_unify_prompt(retry_prompt: str, terms: list[tuple[str, str]]) -> str:
+    pairs = "；".join(f"「{source}」已译作「{target}」" for source, target in terms)
+    return (
+        f"{retry_prompt}\n"
+        f"5. 统一译法：本文档里{pairs}。本段中的这些原文必须用同样的译法（大小写可随句子调整），"
+        "其余内容照常完整翻译。"
+    )
+
+
+def _build_cell_lines_retry_prompt(retry_prompt: str, line_count: int) -> str:
+    return (
+        f"{retry_prompt}\n"
+        f"5. 当前输入是表格的一格，原文共 {line_count} 行（以换行分隔）。译文必须正好 {line_count} 行，"
+        "按顺序一行对一行：不要把一行拆成几行，也不要把几行并成一行；原文同一行里有几个条目"
+        "（例如两个「•」），译文也留在同一行。"
     )
 
 
