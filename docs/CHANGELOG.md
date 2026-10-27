@@ -1,5 +1,27 @@
 # Translator 版本更新日志
 
+## V10.4.0
+
+- **PDF、CAD 页首次使用图文指引**（#236）：第一次进入 PDF 页、CAD 页时各弹出一次图文说明（老用户升级后也弹一次），PDF 介绍转成 Word、原位替换、整页图像翻译三种方式和自动组合，CAD 介绍显示方式、过长译文自动缩小和图框锁定；卡片底部实时显示本机所需组件是否就绪，缺少时给出安装入口。之后可从顶栏「使用说明」、帮助页常见问题或 PDF「翻译方式」问号再次打开。CAD 页「高级 → 显示方式」改为右栏上方的「输出：双语对照 / 仅译文」，选双语时再选原文在上或译文在上。
+
+  **First-use illustrated guides for the PDF and CAD pages** (#236): The first visit to the PDF or CAD page (including after upgrading) shows an illustrated guide once. The PDF guide covers Convert to Word, Replace in place, full-page image translation and Automatic mix; the CAD guide covers display mode, automatic shrinking of long translations and title-block locking. Each card shows live whether the needed components are ready, with an install link when one is missing. The guide can be reopened from "How it works" in the top bar, the Help page FAQ or the PDF Translation method hint. On the CAD page, Advanced → Display mode becomes "Output: Bilingual / Translation only" at the top of the right panel, with original-above or translation-above under Bilingual.
+
+- **输出位置无效时自动保底，译文可直接放回源文件夹**：各翻译页「高级 → 输出位置」新增「译文存放」（单独的翻译文件夹 / 直接放回源文件夹，源文件不会被覆盖）和「备用输出文件夹」。首选位置无法创建或写入时改用备用文件夹，再不行退回桌面，翻译文件不再因路径无效而丢失。译文文件写入翻译参数（文件属性，不含密钥），放回源文件夹时据此识别上次的输出并续译。
+
+  **Fallback when the output location is invalid; translations can go beside the source files**: Advanced → Output location on every translation page gains "Translation placement" (a separate translation folder, or beside the source files, which are never overwritten) and "Backup output folder". When the preferred location cannot be created or written, the backup folder is used, then the Desktop, so a translated file is no longer lost to an invalid path. Output files carry the translation parameters as file attributes (never keys), used to recognize earlier outputs beside the source for resuming.
+
+- **PDF 原位替换：放不下的译文默认照常写入**：压窄、缩小、换行后仍放不下的译文以前一律保留原文。PDF「高级」新增「放不下时」：「优先写入译文」（默认，在原位置写入并列入复核）或「优先保持版式（保持原文）」；两种方式都在结果中标出需复核的位置。
+
+  **PDF in-place replacement: translations that do not fit are written by default**: A translation that still did not fit after narrowing, shrinking and wrapping used to be left in the original language. PDF Advanced gains "When it does not fit": "Write the translation first" (default; written in place and listed for review) or "Preserve the layout (keep the original)"; both mark the locations for review.
+
+- **一键安装「文字识别组件」时自动补齐「PDF 处理组件」**：识别模型需要「PDF 处理组件」里的 NumPy、OpenCV，以前没装时安装按钮不可用，要先手动装 PDF 处理组件。现在一键安装在同一个可取消的流程里先装好它，再装识别模型；系统不支持一键安装时写明原因（需要的 Python 版本与平台）。
+
+  **One-click Text recognition install adds the PDF processing component**: The recognition model uses NumPy and OpenCV from the PDF processing component, and its install button used to stay disabled until that component was installed by hand. One-click install now installs it first in the same cancellable flow, then the model; when one-click install is unsupported, the reason (required Python version and platform) is shown.
+
+- **PDF 转成 Word 并只输出译文时，不再留下双语格子，页脚不再挤到下一页**（#237）：pdf2docx 把两条「•」并成一段、模型又拆回两行时，表格格子以前只能原文加译文保底。现在先把粘连的列表项拆回两段；行数仍对不上时单独重译这一格，再不行请模型复查意思是否一致，一致的只写译文，不一致的才保留原文并标色复核。各页底部只差页码的同一句页脚挪进页脚区，不再被垫高的空段挤到下一页。列表折行的制表符改为空格；译文里混入原文和目标语言都不用的文字、同一短语前后译法不一致时会重译。
+
+  **PDF converted to Word with Translation only no longer leaves bilingual cells or pushes footers onto the next page** (#237): When pdf2docx merged two "•" items into one paragraph and the model split them back, table cells used to fall back to original plus translation. Glued list items are now split first; a cell whose line count still differs is retranslated alone, then checked by the model for meaning, written as translation only when it matches and kept bilingual with a review colour only when it does not. A footer repeated at the foot of each page (differing only by page number) moves into the footer area instead of being pushed onto the next page by a spacer paragraph. Tab characters used for line wrapping in list items become spaces; a translation containing a script used by neither language, or rendering a short phrase differently from its established translation, is retranslated.
+
 ## V10.3.4
 
 - **CAD 用线画的明细表里，多行文字的译文也不再出格**（反馈 #21）：明细表、材料表常常是用线画出格子、每格放一段多行文字，不是 AutoCAD 表格对象；自动缩字以前只管单行文字和表格对象，这类文字一律不动。英文按原来中文那么窄的宽度自动换行，折成三四行压到下一行；没设宽度的一直伸过格线和表格外框。现在原文四周有格线时，先把换行宽度改成格子能给的宽度，仍放不下再按设置的比例缩小：和单行文字一样先把字压窄，压到七成才降字高；同一列的格子统一成一样大；到最小比例还放不下的列入报告。AutoCAD 表格对象里，一个英文单词比格子还宽时（表头「数量」译成「Quantity」），以前按折成两行算高度、判成放得下，单词照样伸过竖线压到旁边的表头；现在也按单词宽度缩到放得下。
