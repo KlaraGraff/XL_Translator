@@ -463,7 +463,6 @@ function showHint(anchor: HTMLElement, message: string, pinned: boolean): void {
   appendTipText(tip, message);
   const action = badgeActions.get(target);
   if (action) {
-    tip.append(" ");
     const link = el("button", { className: "linklike tip-link", text: action.label });
     link.type = "button";
     // 按下时不抢焦点：角标失焦会把浮层关掉，click 就落空了。

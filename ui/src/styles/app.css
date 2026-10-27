@@ -458,7 +458,8 @@ table.review-tbl { table-layout: fixed; }
 .tip .tip-url { display: block; text-align: left; }
 /* 末尾带蓝色链接的提示（「查看图文说明」）：浮层要能点。点「?」钉住后才够得着。 */
 .tip.has-link { pointer-events: auto; }
-.tip .tip-link { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--accent-ink); white-space: nowrap; }
+/* 链接单独成行：跟在正文后面时，放不下会整块换行，上一行被两端对齐拉开字距。 */
+.tip .tip-link { display: block; margin-top: 2px; border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--accent-ink); white-space: nowrap; text-align: left; }
 .tip::after {
   content: ""; position: absolute; left: var(--tip-arrow, 50%); margin-left: -5px;
   width: 9px; height: 9px; background: var(--surface);
