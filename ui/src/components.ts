@@ -3,7 +3,7 @@
 // （ui/src/styles/app.css 是该样张 CSS 的应用外壳改造版）。各视图代理直接用这些
 // 工厂拼装页面，不必记忆样张里的具体标签结构。
 
-import { fmtNum, t, tx } from "./i18n";
+import { fmtNum, localeTag, t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
 import { EASE_SNAP, T_BASE, motionAllowed } from "./motion";
 import { morphChildren, setReusableClick, syncAttributes } from "./morph";
@@ -194,7 +194,8 @@ export function createButton(options: ButtonOptions): HTMLButtonElement {
     button.append(icon(options.icon, { size: "sm" }));
   }
   if (options.label) {
-    button.append(document.createTextNode(options.label));
+    // 英文、法文按钮名首字母一律大写：有的词条（「选择」）同时用在句中小写的位置，按钮上要写成「Select」「Choisir」。
+    button.append(document.createTextNode(options.label.charAt(0).toLocaleUpperCase(localeTag()) + options.label.slice(1)));
   }
   if (options.title) {
     button.title = options.title;
