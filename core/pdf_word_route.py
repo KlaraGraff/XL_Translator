@@ -519,6 +519,72 @@ def _tiny_paragraph(parent):
     )
 
 
+def _shrink_paragraph(paragraph) -> None:
+    """只剩段落标记的空段：行高压到最小，不再占一行。"""
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = paragraph.makeelement(qn("w:pPr"), {})
+        paragraph.insert(0, p_pr)
+    spacing = p_pr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = p_pr.makeelement(qn("w:spacing"), {})
+        # w:spacing 在 pPr 里要排在分节符、段落标记格式之前
+        anchor = next((child for child in p_pr if child.tag in (qn("w:ind"), qn("w:jc"), qn("w:rPr"), qn("w:sectPr"))), None)
+        if anchor is not None:
+            anchor.addprevious(spacing)
+        else:
+            p_pr.append(spacing)
+    for name, value in (("w:before", "0"), ("w:after", "0"), ("w:line", "20"), ("w:lineRule", "exact")):
+        spacing.set(qn(name), value)
+    for name in ("w:beforeLines", "w:afterLines", "w:beforeAutospacing", "w:afterAutospacing"):
+        if spacing.get(qn(name)) is not None:
+            del spacing.attrib[qn(name)]
+
+
+def _trim_section_tail(children: list, body) -> None:
+    """页脚挪走以后，这一节末尾只剩几个空段（pdf2docx 用来占位、或带着分节符）。页面
+    排满时它们会单独挤到下一页（本机实测第 2 页多出一张只有页脚的空白页）。带分节符的
+    那段把分节符交给最后一段正文；最后是表格时留一个压到最小的空段（表格后面必须有段落）。"""
+    from docx.oxml.ns import qn
+
+    last = max((index for index, child in enumerate(children) if _has_visible_content(child)), default=-1)
+    if last < 0:
+        return
+    tail = [child for child in children[last + 1:] if child.tag == qn("w:p")]
+    if not tail:
+        return
+    content = children[last]
+    sect = None
+    for paragraph in tail:
+        p_pr = paragraph.find(qn("w:pPr"))
+        found = p_pr.find(qn("w:sectPr")) if p_pr is not None else None
+        if found is not None:
+            sect = (paragraph, found)
+    keep = None
+    if content.tag == qn("w:p") and sect is not None:
+        p_pr = content.find(qn("w:pPr"))
+        if p_pr is None:
+            p_pr = content.makeelement(qn("w:pPr"), {})
+            content.insert(0, p_pr)
+        if p_pr.find(qn("w:sectPr")) is None:
+            change = p_pr.find(qn("w:pPrChange"))
+            if change is not None:
+                change.addprevious(sect[1])
+            else:
+                p_pr.append(sect[1])
+    elif content.tag == qn("w:tbl"):
+        keep = sect[0] if sect is not None else tail[-1]
+    elif sect is not None:
+        keep = sect[0]
+    for paragraph in tail:
+        if paragraph is keep:
+            _shrink_paragraph(paragraph)
+        elif paragraph.getparent() is body:
+            body.remove(paragraph)
+
+
 def move_running_footers(path: Path) -> int:
     """每页底部同一句页脚（各页只差页码）挪进这一页（一节）的页脚里，前面垫高的空段去掉。
     页脚放在页脚区，正文长短不再把它挤到下一页。只有一页有、或各页不一样的不动。"""
@@ -537,7 +603,7 @@ def move_running_footers(path: Path) -> int:
            for _children, sect in blocks):
         return 0  # 已经有页脚、或首页另设页脚的不碰
     moved = 0
-    for (_children, sect), item in zip(blocks, found):
+    for (children, sect), item in zip(blocks, found):
         section = sections.get(id(sect))
         if section is None:
             continue
@@ -555,6 +621,7 @@ def move_running_footers(path: Path) -> int:
             ftr.append(_tiny_paragraph(ftr))
         if spacer is not None and spacer.getparent() is body:
             body.remove(spacer)
+        _trim_section_tail([child for child in children if child.getparent() is body], body)
         # 页脚放回原来的高度：页脚到页底的距离用原来的下边距（pdf2docx 写的 720 偏高，
         # 页脚区一高，正文就少几行）。
         margins = sect.find(qn("w:pgMar"))

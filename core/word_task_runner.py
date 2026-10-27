@@ -356,6 +356,9 @@ _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 _CJK_TARGET_PREFIXES = ("zh", "ja", "ko")
 
 
+_HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
 def _translation_in_unexpected_cjk(source: str, translation: str | None, target_lang: str) -> bool:
     """A Latin-script target whose "translation" of CJK-free text came back in CJK."""
     target = str(target_lang or "").strip().lower()
@@ -717,8 +720,12 @@ class WordTaskRunner(BaseTaskRunner):
         """
         normal: set[str] = set()
         for segment in segments:
+            # 自动识别源语言时整份文件的语言还没定，调用方传的是默认源语言（中文）：法文页脚
+            # 「Méthodologie… – Page 1」就被当成「中文行里夹着外文」送进专用通道，只输出译文
+            # 也成了原文后面接译文（本机实测）。这时按这一行自己有没有汉字判断。
+            line_lang = source_lang or ("zh" if _HAN_RE.search(segment.source) else "")
             if segment.kind in _HEADER_FOOTER_KINDS and line_has_foreign_content(
-                segment.source, source_lang=source_lang
+                segment.source, source_lang=line_lang
             ):
                 entries.append((identity, segment))
             else:
@@ -2737,11 +2744,7 @@ class WordTaskRunner(BaseTaskRunner):
                             identity=_file_result_identity(
                                 file_item, self._source_root
                             ),
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
+                            source_lang=source_lang if not auto_source_lang else "",
                             entries=header_channel_entries,
                         )
                     )
@@ -2810,11 +2813,7 @@ class WordTaskRunner(BaseTaskRunner):
                 text_set = self._split_header_channel_lines(
                     segments,
                     identity=_file_result_identity(file_item, self._source_root),
-                    source_lang=(
-                        source_lang
-                        if not auto_source_lang
-                        else get_default_source_lang()
-                    ),
+                    source_lang=source_lang if not auto_source_lang else "",
                     entries=header_channel_entries,
                 )
                 # extract_word_segments 只返回抽取好的词条，不携带边界信息；

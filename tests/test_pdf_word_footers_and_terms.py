@@ -83,6 +83,17 @@ class RunningFooterTests(unittest.TestCase):
             margins = section._sectPr.find(qn("w:pgMar"))
             self.assertEqual(margins.get(qn("w:footer")), "236")
 
+    def test_empty_paragraphs_left_at_the_end_of_a_page_are_removed(self) -> None:
+        """页面排满时节尾的空段会单独挤到下一页（本机实测第 2 页后多出一张空白页）。"""
+        _page_docx(self.path, 3)
+        move_running_footers(self.path)
+        doc = Document(str(self.path))
+        paragraphs = list(doc.paragraphs)
+        self.assertEqual([p.text for p in paragraphs], [f"Jour {n} : contrôle visuel." for n in (1, 2, 3)])
+        carried = [p._p.pPr is not None and p._p.pPr.find(qn("w:sectPr")) is not None for p in paragraphs]
+        self.assertEqual(carried, [True, True, False], "分节符交给每页最后一段正文")
+        self.assertEqual(len(doc.sections), 3)
+
     def test_single_page_is_left_alone(self) -> None:
         _page_docx(self.path, 1)
         self.assertEqual(move_running_footers(self.path), 0)
@@ -92,6 +103,22 @@ class RunningFooterTests(unittest.TestCase):
         _page_docx(self.path, 2, footer_text=lambda page: ["Synthèse des résultats", "Annexe photographique"][page - 1])
         self.assertEqual(move_running_footers(self.path), 0)
         self.assertEqual(len(Document(str(self.path)).tables), 2)
+
+
+class HeaderFooterChannelTests(unittest.TestCase):
+    def test_auto_source_french_footer_is_not_treated_as_a_mixed_chinese_line(self) -> None:
+        from core.word_document import WordSegment
+        from core.word_task_runner import WordTaskRunner
+
+        runner = WordTaskRunner.__new__(WordTaskRunner)
+        entries: list = []
+        segments = [
+            WordSegment(source="Méthodologie d’intervention – Expertise structurelle", kind="footer", location="footer[f1]"),
+            WordSegment(source="项目名称 Projet Hôpital", kind="footer", location="footer[f2]"),
+        ]
+        normal = runner._split_header_channel_lines(segments, identity="f.docx", source_lang="", entries=entries)
+        self.assertEqual(normal, {"Méthodologie d’intervention – Expertise structurelle"})
+        self.assertEqual([segment.source for _identity, segment in entries], ["项目名称 Projet Hôpital"])
 
 
 class UnexpectedScriptTests(unittest.TestCase):
