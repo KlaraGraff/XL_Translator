@@ -1713,10 +1713,9 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     event.preventDefault();
     void runScan(surface);
   });
-  // 「选择」和下拉键盘提示（↑↓ 选择）共用一条词条，英法那里是小写，按钮上首字母大写。
-  const pickLabel = t("选择");
+  // 「选择」和下拉键盘提示（↑↓ 选择）共用一条词条，英法那里是小写；按钮上的首字母大写由 createButton 统一处理。
   const pickBtn = createButton({
-    label: pickLabel.charAt(0).toUpperCase() + pickLabel.slice(1),
+    label: t("选择"),
     icon: "doc-file",
     variant: "ghost",
     size: "mini",
@@ -3692,7 +3691,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
   container.append(preferredField);
 
   if (st.outputMode === "source_folder") {
-    const note = el("div", "hint");
+    const note = el("p", "rp-note");
     note.textContent = t("当前会直接放回源文件夹；写入失败时使用下面的备用输出文件夹，最后退回桌面。");
     container.append(note);
   } else if (st.useCustomOutputDir) {
@@ -3747,9 +3746,6 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
     container.append(line);
   }
 
-  const fallback = el("div", "out-dir-fallback");
-  const fallbackLabel = el("div", "hint");
-  fallbackLabel.append(document.createTextNode(t("备用输出文件夹")), createHintBadge(t("首选位置无法创建或写入时使用；如果这里也不可用，程序会自动退回桌面。")));
   const fallbackInput = createTextField({
     label: "",
     value: st.fallbackOutputDir,
@@ -3788,13 +3784,18 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
       saveFallbackDir();
     })(),
   });
-  fallback.append(fallbackLabel);
+  // 「.hint」是「?」角标的类名（15px 圆圈），不能拿来装整句文字，否则会被挤成一字一行。
+  // 备用文件夹和上面两项一样走 .field（名称 + 角标），说明小字用右栏统一的 .rp-note。
+  fallbackInput.root.classList.add("out-dir-input");
+  fallbackInput.input.setAttribute("aria-label", t("备用输出文件夹"));
   const fallbackLine = el("div", "out-dir");
   fallbackLine.append(fallbackInput.root, browseFallback);
-  fallback.append(fallbackLine);
+  const fallback = createField(t("备用输出文件夹"), fallbackLine);
+  fallback.classList.add("out-dir-fallback");
+  fallback.querySelector("label")?.append(createHintBadge(t("首选位置无法创建或写入时使用；如果这里也不可用，程序会自动退回桌面。")));
   container.append(fallback);
 
-  const metadataHint = el("div", "hint");
+  const metadataHint = el("p", "rp-note");
   metadataHint.textContent = t("翻译参数会自动写入输出文件属性，方便以后直接识别和继续翻译。");
   container.append(metadataHint);
   return container;

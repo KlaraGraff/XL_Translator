@@ -634,9 +634,10 @@ function renderOcrCard(): HTMLElement {
     warn.className = "plugins-notice warn";
     if (ocrCapability.one_click_supported === false) {
       const reason = ocrCapability.one_click_reason || ocrCapability.dependency_one_click_reason || "";
-      warn.textContent = ocrCapability.needs_pdf_component && ocrCapability.dependency_one_click_supported === false
-        ? `${t("尚未检测到文字识别组件。当前系统不能自动安装 PDF 处理组件，请自行安装后选择它的安装位置。")}${reason ? ` ${tx(reason)}` : ""}`
-        : `${t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。")}${reason ? ` ${tx(reason)}` : ""}`;
+      const lead = ocrCapability.needs_pdf_component && ocrCapability.dependency_one_click_supported === false
+        ? t("尚未检测到文字识别组件。当前系统不能自动安装 PDF 处理组件，请自行安装后选择它的安装位置。")
+        : t("尚未检测到文字识别组件。当前系统不支持一键安装，可自行安装后选择它的安装位置。");
+      warn.textContent = reason ? `${lead} ${tx(reason)}` : lead;
     } else if (ocrCapability.needs_pdf_component) {
       warn.textContent = t("尚未检测到文字识别组件。一键安装会先自动安装下方的「PDF 处理组件」，然后安装识别模型。");
     } else {
