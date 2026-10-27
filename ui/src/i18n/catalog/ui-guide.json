@@ -47,10 +47,6 @@
     "en": "Engineering drawings and pages of A3 or larger.",
     "fr": "Plans techniques et pages au format A3 ou plus grand."
   },
-  "只替换文字，线条和尺寸不变，过长的译文自动缩小。排版可供阅读，尚不适合正式对外交付。": {
-    "en": "Only the text is replaced; lines and dimensions stay unchanged, and long translations shrink to fit. The layout is suitable for reading but not yet for formal delivery.",
-    "fr": "Seul le texte est remplacé ; les traits et les cotes restent inchangés et les traductions trop longues sont réduites. La mise en page convient à la lecture, mais pas encore à une remise officielle."
-  },
   "大型工程图纸如有 DWG 原图，建议在「CAD 图纸」页翻译后重新导出 PDF，效果更好。": {
     "en": "For large drawings with the original DWG file, translating it on the CAD drawings page and exporting the PDF again gives a better result.",
     "fr": "Pour un grand plan dont vous avez le fichier DWG d'origine, traduisez-le dans la page Plans CAO puis exportez de nouveau le PDF : le résultat sera meilleur."
@@ -62,10 +58,6 @@
   "整页由图像模型重新生成为图片，译文无法编辑；页面越大越模糊，费用较高。": {
     "en": "The image model redraws the whole page as a picture, so the translation cannot be edited. Larger pages become blurrier. Higher cost.",
     "fr": "Le modèle d'image redessine toute la page sous forme d'image ; la traduction n'est pas modifiable. Plus la page est grande, plus elle est floue. Coût plus élevé."
-  },
-  "已测试多种图像模型，目前仅建议使用 ChatGPT 的 image 系列模型，gpt-image-2 或 gpt-image-2.5 均可。": {
-    "en": "We tested many image models and currently recommend only ChatGPT image models: gpt-image-2 or gpt-image-2.5.",
-    "fr": "Après avoir testé de nombreux modèles d'image, nous ne recommandons actuellement que les modèles d'image de ChatGPT : gpt-image-2 ou gpt-image-2.5."
   },
   "混有多种页面时，选择「自动组合」": {
     "en": "For mixed pages, choose “Automatic mix”",
@@ -130,10 +122,6 @@
   "去设置": {
     "en": "Settings",
     "fr": "Paramètres"
-  },
-  "线条画成的文字，另需「文字识别组件」": {
-    "en": "Text drawn as lines also requires the text recognition component",
-    "fr": "Le texte dessiné en traits nécessite aussi le composant de reconnaissance de texte"
   },
   "译文的显示方式": {
     "en": "How translations are shown",
@@ -230,5 +218,21 @@
   "图文说明介绍译文的显示方式、过长译文的自动缩小、图框等内容的锁定，以及 DWG 图纸所需的「图纸转换工具」。": {
     "en": "The illustrated guide covers how translations are shown, how long translations shrink to fit, how to keep title blocks unchanged, and the drawing converter needed for DWG drawings.",
     "fr": "Le guide illustré présente l'affichage des traductions, la réduction des traductions trop longues, la conservation des cartouches et le convertisseur de plans nécessaire aux plans DWG."
+  },
+  "已测试多种图像模型，目前仅建议使用 ChatGPT 的 Images 2.5 或 Images 2.0，模型名为 gpt-image-2.5-flare、gpt-image-2.5-sunburst 或 gpt-image-2。": {
+    "en": "We tested many image models and currently recommend only ChatGPT Images 2.5 or Images 2.0, with the model name gpt-image-2.5-flare, gpt-image-2.5-sunburst or gpt-image-2.",
+    "fr": "Après avoir testé de nombreux modèles d'image, nous ne recommandons actuellement que ChatGPT Images 2.5 ou Images 2.0, avec le nom de modèle gpt-image-2.5-flare, gpt-image-2.5-sunburst ou gpt-image-2."
+  },
+  "导出为线条的文字另需「文字识别组件」": {
+    "en": "Text exported as lines also requires the text recognition component",
+    "fr": "Le texte exporté sous forme de traits nécessite aussi le composant de reconnaissance de texte"
+  },
+  "SHX 字体（如 txt.shx）的文字在 CAD 导出 PDF 时默认变为线条，需由「文字识别组件」识别；TrueType 字体可直接提取。": {
+    "en": "Text in SHX fonts (such as txt.shx) becomes lines by default when CAD exports a PDF and needs the text recognition component. TrueType fonts can be extracted directly.",
+    "fr": "Le texte en polices SHX (comme txt.shx) devient par défaut des traits à l'export PDF depuis la CAO et nécessite le composant de reconnaissance de texte. Les polices TrueType s'extraient directement."
+  },
+  "只替换文字，线条和尺寸不变，过长的译文自动缩小。可供阅读，尚不适合正式对外交付。": {
+    "en": "Only the text is replaced; lines and dimensions stay unchanged, and long translations shrink to fit. The layout is suitable for reading but not yet for formal delivery.",
+    "fr": "Seul le texte est remplacé ; les traits et les cotes restent inchangés et les traductions trop longues sont réduites. La mise en page convient à la lecture, mais pas encore à une remise officielle."
   }
 }

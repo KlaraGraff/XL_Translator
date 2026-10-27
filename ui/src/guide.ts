@@ -234,7 +234,7 @@ function card(opts: {
 function withNowrapModels(text: string): DocumentFragment {
   const frag = document.createDocumentFragment();
   let last = 0;
-  for (const match of text.matchAll(/gpt-image-2(?:\.5)?/g)) {
+  for (const match of text.matchAll(/gpt-image-2(?:\.5-(?:flare|sunburst))?|Images 2\.[05]/g)) {
     const index = match.index ?? 0;
     if (index > last) frag.append(text.slice(last, index));
     frag.append(el("span", "g-nw", match[0]));
@@ -385,7 +385,7 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   const note = el("div", "g-note");
   note.append(statusDot("warn"));
   const noteText = el("span");
-  noteText.append(withNowrapModels(t("已测试多种图像模型，目前仅建议使用 ChatGPT 的 image 系列模型，gpt-image-2 或 gpt-image-2.5 均可。")));
+  noteText.append(withNowrapModels(t("已测试多种图像模型，目前仅建议使用 ChatGPT 的 Images 2.5 或 Images 2.0，模型名为 gpt-image-2.5-flare、gpt-image-2.5-sunburst 或 gpt-image-2。")));
   note.append(noteText);
 
   const cards = el("div", "g-cards");
@@ -405,8 +405,10 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
       beta: true,
       rows: [
         [fit, t("工程图纸和 A3 及以上的大幅面页面。")],
-        [eff, t("只替换文字，线条和尺寸不变，过长的译文自动缩小。排版可供阅读，尚不适合正式对外交付。")],
+        [eff, t("只替换文字，线条和尺寸不变，过长的译文自动缩小。可供阅读，尚不适合正式对外交付。")],
         [t("建议"), t("大型工程图纸如有 DWG 原图，建议在「CAD 图纸」页翻译后重新导出 PDF，效果更好。")],
+        // AutoCAD 导出 PDF 时，SHX 线形字体默认写成几何线条（PDFSHX 只另加注释），文字层里没有这些字。
+        [t("说明"), t("SHX 字体（如 txt.shx）的文字在 CAD 导出 PDF 时默认变为线条，需由「文字识别组件」识别；TrueType 字体可直接提取。")],
       ],
       stats: inplaceStats,
     }),
@@ -492,7 +494,7 @@ async function fillPdfStats(
       : stat("warn", t("需先配置「图像翻译」模型"), { label: t("去设置"), onClick: go(() => navigate("settings", { page: "models", role: "image" })) }));
   }
   if (ocr && ocr.state !== "connected") {
-    hosts.inplaceStats.append(stat("idle", t("线条画成的文字，另需「文字识别组件」"), { label: t("安装"), onClick: go(() => navigate("plugins", { focus: "ocr" })) }));
+    hosts.inplaceStats.append(stat("idle", t("导出为线条的文字另需「文字识别组件」"), { label: t("安装"), onClick: go(() => navigate("plugins", { focus: "ocr" })) }));
   }
 }
 
