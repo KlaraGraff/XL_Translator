@@ -1598,6 +1598,33 @@ class WordDocumentTests(unittest.TestCase):
             content = report_path.read_text(encoding="utf-8")
             self.assertIn("页眉、页脚已翻译", content)
             self.assertNotIn("页眉、页脚不参与翻译", content)
+            self.assertIn("译文紧接在同一行原文之后", content)
+
+    def test_quality_report_says_header_source_was_replaced_in_translation_only_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "译文(法文)_页眉.docx"
+            doc = Document()
+            doc.sections[0].header.paragraphs[0].text = "Projet X, lot 1"
+            doc.add_paragraph("Contenu des travaux")
+            doc.save(str(output_path))
+
+            report_path = _write_word_quality_report(
+                output_dir=temp_path,
+                file_results=[
+                    {"name": "页眉.docx", "output": str(output_path), "success": True}
+                ],
+                issues=[],
+                elapsed_sec=1.0,
+                tm_hit_count=0,
+                api_call_count=1,
+                translate_headers_footers=True,
+                translation_only=True,
+            )
+
+            content = report_path.read_text(encoding="utf-8")
+            self.assertIn("- 页眉、页脚已翻译，译文已替换原文：页眉.docx。", content)
+            self.assertNotIn("紧接在同一行原文之后", content)
 
     def test_quality_report_omits_scope_note_without_header_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
