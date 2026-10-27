@@ -565,7 +565,7 @@
   font-size: 12.5px;
   color: var(--ink-2);
   margin-top: 1px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .res .acts {
   display: flex;
@@ -621,7 +621,7 @@
   font-size: 12.5px;
   line-height: 1.55;
   margin-bottom: 14px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .recipe .ic {
   color: var(--accent-ink);
@@ -678,11 +678,32 @@
   gap: 8px;
   align-items: center;
   margin-top: 8px;
+  /* 「指定位置」的路径行后面紧跟着「备用输出文件夹」，和上下各项一样隔开 11px（.field）。 */
+  margin-bottom: 11px;
 }
 .out-dir .out-dir-input {
   flex: 1;
   min-width: 0;
   margin: 0;
+}
+/* 路径框是 createTextField 生成的，名称为空时那个空 label 还占着 4px 下边距，会把输入框
+   顶得比旁边的按钮低一点。备用文件夹这一行就在自己的名称下面，上下间距交给外面的 .field。 */
+.out-dir .out-dir-input > label:empty {
+  display: none;
+}
+.out-dir-fallback .out-dir {
+  margin: 0;
+}
+/* 右栏的分段按钮：名称一律写全。英文、法文的「Dossier de traduction séparé」在 300px 宽的
+   右栏里一行放不下，就在按钮里折成两行（同一组按钮一起变高，滑块跟着撑满），不再截成省略号。 */
+.ws-side .seg button {
+  height: auto;
+  min-height: 26px;
+  padding: 4px 6px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-overflow: clip;
 }
 /* 任务进行中右栏锁定：控件半透明不可点，配方句照常（它说明了为什么锁着），「?」说明照样能看。 */
 .ws-side .dis .seg {
