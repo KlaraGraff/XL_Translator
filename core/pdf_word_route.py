@@ -842,7 +842,7 @@ def translate_pdf_via_word(
     except WordRouteStopped:
         return WordRouteResult(ok=False, stopped=True, error="任务已停止")
     except Exception as exc:  # noqa: BLE001 - conversion failure is reported per file
-        logger.debug(f"[PDF] 转 Word 失败：{exc!r}")
+        logger.opt(exception=exc).warning(f"[PDF] 转 Word 失败：{exc!r}")
         return WordRouteResult(ok=False, error="转成 Word 失败，这份文件可能不是普通排版的文字文档。")
     log("INFO", f"{prefix}已转成 Word，开始按 Word 流程翻译。")
 

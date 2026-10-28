@@ -205,6 +205,24 @@ def _check_adapter_cli() -> None:
             raise RuntimeError("adapter pack produced no zip")
 
 
+def _check_docx_parts() -> None:
+    """python-docx 新建页脚、批注时从 docx/parts/../templates 读模板；冻结包里漏了
+    docx/parts 目录时 import 照样成功，只有真的建页脚（PDF 转 Word 挪页脚）、加批注
+    （Word 公式待核对）时才 FileNotFoundError。"""
+    from docx import Document
+
+    doc = Document()
+    paragraph = doc.add_paragraph("smoke")
+    section = doc.sections[0]
+    section.footer.is_linked_to_previous = False
+    section.header.is_linked_to_previous = False
+    doc.add_comment(paragraph.runs, text="smoke", author="smoke", initials="S")
+    with tempfile.TemporaryDirectory(prefix="translator-docx-smoke-") as folder:
+        path = Path(folder) / "smoke.docx"
+        doc.save(str(path))
+        Document(str(path))
+
+
 def run_smoke_test() -> int:
     """Validate bundled imports without creating a QApplication or reading settings."""
     try:
@@ -233,6 +251,8 @@ def run_smoke_test() -> int:
         for lang in ("fr", "en"):
             if not lexicon(lang):
                 raise RuntimeError(f"in-place word list is missing: {lang}")
+
+        _check_docx_parts()
 
         # 随应用提供的翻译类型是数据文件（adapters/<id>/adapter.json + adapter.py），漏收时
         # 应用照常启动，只是 GET /api/surfaces 里少了它们、侧栏少了对应页面。

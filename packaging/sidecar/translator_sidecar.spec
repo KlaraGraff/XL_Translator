@@ -187,6 +187,11 @@ a = Analysis(
     ],
     noarchive=False,
     optimize=0,
+    # python-docx 新建页眉、页脚、批注、样式、设置部件时按 docx/parts/../templates/… 读模板
+    # （docx/parts/hdrftr.py、comments.py 等）。默认收进 PYZ 时磁盘上没有 docx/parts 目录，
+    # 这条路径走不通，FileNotFoundError：PDF 转 Word 挪页脚整份失败、Word 公式批注加不上。
+    # 以源码文件收 docx，docx/parts 目录就在包里。冻结冒烟会真的建一次页脚和批注。
+    module_collection_mode={"docx": "py"},
 )
 
 pyz = PYZ(a.pure)
