@@ -4,6 +4,7 @@
   "adapter_api_version": 1,
   "label": {"zh": "文本", "en": "Text", "fr": "Texte"},
   "file_noun": {"zh": "文本文件", "en": "text files", "fr": "fichiers texte"},
+  "file_noun_one": {"en": "text file", "fr": "fichier texte"},
   "description": {
     "zh": "翻译纯文本（.txt）与 Markdown（.md、.markdown）文件，保留原有格式。代码块、链接地址不翻译。",
     "en": "Translates plain text (.txt) and Markdown (.md, .markdown) files and keeps their layout. Code blocks and link addresses are not translated.",

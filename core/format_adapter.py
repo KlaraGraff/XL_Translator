@@ -273,6 +273,9 @@ class AdapterManifest(BaseModel):
     adapter_api_version: int
     label: dict[str, str]
     file_noun: dict[str, str]
+    #: 一个文件时的叫法（英文、法文的单数，如 ``"presentation"``）；可省略，省略时数量为 1
+    #: 的地方改用通用的「文件」，不会出现「1 presentations」。中文没有单复数，不用写。
+    file_noun_one: dict[str, str] = Field(default_factory=dict)
     #: 页面「?」里的一两句说明（处理什么、哪些内容不翻译）；可省略。
     description: dict[str, str] = Field(default_factory=dict)
     #: 这种文件的内置规则（发给模型的基础要求，补充要求接在后面）；可省略，省略时用应用
@@ -325,6 +328,11 @@ class AdapterManifest(BaseModel):
     @classmethod
     def _description(cls, value: Any) -> dict[str, str]:
         return _three_languages(value or {}, "description", required=False)
+
+    @field_validator("file_noun_one", mode="before")
+    @classmethod
+    def _file_noun_one(cls, value: Any) -> dict[str, str]:
+        return _three_languages(value or {}, "file_noun_one", required=False)
 
     @field_validator("prompt")
     @classmethod

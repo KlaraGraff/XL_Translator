@@ -181,6 +181,7 @@ class AdapterSurface(Surface):
         self.label = f"{manifest.label['en']} translation"
         self.display_label = dict(manifest.label)
         self.file_noun = dict(manifest.file_noun)
+        self.file_noun_one = dict(manifest.file_noun_one)
         self.icon = manifest.icon
         self.file_extensions = suffixes(manifest.extensions)
         self.output_bilingual = manifest.capabilities.bilingual

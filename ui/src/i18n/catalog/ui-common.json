@@ -63,7 +63,7 @@
   "：{0} 第 {1} 页": {"en": ": {0}, page {1}", "fr": " : {0}, page {1}"},
   "完成后将自动替换译文页并重新合成该文件的输出 PDF，其余页面不受影响。": {"en": "When done, the translated page is replaced and this file's output PDF is rebuilt; other pages are not affected.", "fr": "À la fin, la page traduite est remplacée et le PDF de sortie de ce fichier est reconstruit ; les autres pages ne changent pas."},
   "{0}未生成译文，输出 PDF 中这些页面为占位图。": {"en": "No translation was produced for {0}; they appear as placeholders in the output PDF.", "fr": "Aucune traduction n'a été produite pour {0} ; elles figurent comme pages de substitution dans le PDF de sortie."},
-  "重新生成仅涉及这 {0} 页，其余 {1} 页不会再次调用模型。": {"en": "Regeneration only affects these {0} {0|page|pages}; the other {1} will not call the model again.", "fr": "La régénération ne concerne que {0} {0|page|pages} ; les {1} autres ne rappellent pas le modèle."},
+  "重新生成仅涉及这 {0} 页，其余 {1} 页不会再次调用模型。": {"en": "Regeneration only affects these {0} {0|page|pages}; the other {1} will not call the model again.", "fr": "La régénération ne concerne que {0} {0|page|pages} ; {1|l'autre ne rappelle|les # autres ne rappellent} pas le modèle."},
   "定位到这几页": {"en": "Show these pages", "fr": "Afficher ces pages"},
   "仅重新生成这 {0} 页": {"en": "Regenerate these {0}", "fr": "Régénérer ces {0}"},
   "按幅面跳过": {"en": "Skipped (size)", "fr": "Ignorée (format)"},

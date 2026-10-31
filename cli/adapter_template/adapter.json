@@ -4,6 +4,7 @@
   "adapter_api_version": 1,
   "label": {"zh": "我的格式", "en": "My format", "fr": "Mon format"},
   "file_noun": {"zh": "我的格式文件", "en": "my format files", "fr": "fichiers de mon format"},
+  "file_noun_one": {"en": "my format file", "fr": "fichier de mon format"},
   "description": {
     "zh": "翻译「键 = 值」形式的文本文件（.myfmt），只翻译等号右边的值，键、注释和 {name} 这类占位符保持不变。",
     "en": "Translates \"key = value\" text files (.myfmt). Only the values are translated; keys, comments and placeholders such as {name} stay as they are.",

@@ -16,8 +16,8 @@
     "fr": "{0}, {1}"
   },
   "{0} 条文字由模型确认语种，其中 {1} 条已是目标语言，保留原文": {
-    "en": "{0} texts had their language confirmed by the model; {1} were already in the target language and were kept as is",
-    "fr": "{0} textes ont eu leur langue confirmée par le modèle ; {1} étaient déjà dans la langue cible et ont été conservés tels quels"
+    "en": "{0} {0|text had its|texts had their} language confirmed by the model; {1} {1|was|were} already in the target language and {1|was|were} kept as is",
+    "fr": "{0} {0|texte a eu sa|textes ont eu leur} langue confirmée par le modèle ; {1} {1|était|étaient} déjà dans la langue cible et {1|a été conservé tel quel|ont été conservés tels quels}"
   },
   "已是目标语言": {
     "en": "Already in the target language",

@@ -15,6 +15,8 @@ interface TemplateEntry {
 export interface Translator {
   t(source: string, ...args: unknown[]): string;
   tx(text: unknown): string;
+  /** 这个数在该语言里取 {0|单数|复数} 的单数分支吗。 */
+  isSingular(value: unknown): boolean;
 }
 
 const PLACEHOLDER_SPLIT_RE = /\{(\d+)\}/;
@@ -142,7 +144,8 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       const index = Number(num);
       if (index >= args.length) return whole;
       if (one !== undefined && many !== undefined) {
-        return pluralIndex(args[index]) === 0 ? one : many;
+        // 分支里的「#」换成这个数：「{1|cet élément|ces # éléments}」。
+        return (pluralIndex(args[index]) === 0 ? one : many).replace(/#/g, () => String(args[index] ?? ""));
       }
       const value = args[index];
       return value === null || value === undefined ? "" : String(value);
@@ -256,6 +259,9 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       if (runtimeCache.size > 5000) runtimeCache.clear();
       runtimeCache.set(value, result);
       return result;
+    },
+    isSingular(value: unknown): boolean {
+      return pluralIndex(value) === 0;
     },
   };
 }
