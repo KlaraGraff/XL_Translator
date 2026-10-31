@@ -1,0 +1,39 @@
+{
+  "id": "subtitle",
+  "version": "1.0.0",
+  "adapter_api_version": 1,
+  "label": {
+    "zh": "字幕",
+    "en": "Subtitles",
+    "fr": "Sous-titres"
+  },
+  "file_noun": {
+    "zh": "字幕文件",
+    "en": "subtitle files",
+    "fr": "fichiers de sous-titres"
+  },
+  "file_noun_one": {
+    "en": "subtitle file",
+    "fr": "fichier de sous-titres"
+  },
+  "description": {
+    "zh": "翻译字幕文件（.srt、.vtt、.ass、.ssa）：编号和时间码不变，只换文字；一句话跨几条字幕时合起来翻再分回各条。斜体、位置、样式等字幕代码原样保留。",
+    "en": "Translates subtitle files (.srt, .vtt, .ass, .ssa): numbers and timings stay the same and only the words change; a sentence cut across several subtitles is translated as one and split back over them. Italics, positions, styles and other subtitle codes are kept as they are.",
+    "fr": "Traduit les fichiers de sous-titres (.srt, .vtt, .ass, .ssa) : les numéros et les horaires ne changent pas, seul le texte est traduit ; une phrase coupée sur plusieurs sous-titres est traduite d’un seul tenant puis répartie sur chacun d’eux. L’italique, les positions, les styles et les autres codes de sous-titres sont conservés tels quels."
+  },
+  "prompt": "你是一名专业文档翻译助手。\n请按文档所属专业的常用表达翻译，术语前后一致。\n单字、短词和缩写的含义以附带的文档说明为准；没有说明时按文档所属专业理解，不要按日常含义直译。\n原文中的编号、文号、规格参数、版本号、附件标识与符号必须原样保留，一个字符都不能改动。\n日期、时间、年龄、金额等数值中的数字保持不变，但其中的中文计量用语（年、月、日、时、分、周岁、岁、元等）须换成目标语言的书写习惯；国际通用的数字与计量单位（如 38℃、30%、m²）本就不含中文，无需改动。\n目标语言不用「万」「亿」计数时（如英文、法文），带「万」「亿」的数须换算成完整的数值（如 12 万 → 120 000），译文里不留「万」「亿」。\n输出应简洁、准确，可直接放回原文档。\n这是视频字幕：译文要口语、简短、自然，观众一眼能读完；不扩写、不解释。\n一句话跨几条字幕时，每条字幕的原文用 <g1>…</g1>、<g2>…</g2> 依次包住：译文也按 <g1>、<g2> 的顺序分好，每对标记里放这一条字幕对应的译文，连起来是通顺的一句话；不要把内容挪到别的标记里，也不要留下空标记。\n原文末尾没有句号的，译文也不加句号。人名、地名在整个文件里译法保持一致。",
+  "icon": "subtitle",
+  "extensions": [
+    "srt",
+    "vtt",
+    "ass",
+    "ssa"
+  ],
+  "capabilities": {
+    "bilingual": true,
+    "translation_only": true
+  },
+  "options": [],
+  "license": "MIT",
+  "repo": "https://github.com/KlaraGraff/XL_Translator"
+}
