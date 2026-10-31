@@ -21,6 +21,7 @@ from typing import Callable, Iterable
 from loguru import logger
 
 from core import tm_manager
+from core.local_endpoint import runtime_mode, settings_runs_locally
 from core.runner_base import BaseTaskRunner
 from core.api_concurrency_control import (
     ApiCredentialRejectedError,
@@ -894,7 +895,7 @@ class WordTaskRunner(BaseTaskRunner):
             # 进来时，调用方已换成 PDF 文字那一组。
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             self._rate = resolve_surface_rate(
-                settings, "word", mode=getattr(model_config, "mode", None)
+                settings, "word", mode=runtime_mode(model_config)
             )
             self._word_batch = self._rate.word_batch_settings()
             engine = build_engine(engine_settings_for_rate(settings, self._rate))
@@ -907,10 +908,10 @@ class WordTaskRunner(BaseTaskRunner):
             concurrency = self._rate.concurrency
             api_scheduler = (
                 self._api_scheduler_override
-                if settings.engine.mode != "local"
+                if not settings_runs_locally(settings)
                 else None
             )
-            if api_scheduler is None and settings.engine.mode != "local":
+            if api_scheduler is None and not settings_runs_locally(settings):
                 api_scheduler = WeightedApiScheduler(
                     concurrency,
                     normal_soft_ratio=_WORD_RECOVERY_NORMAL_SOFT_RATIO,
@@ -1154,7 +1155,7 @@ class WordTaskRunner(BaseTaskRunner):
             if (self._preset_profile is None and smart_mode and global_unique_texts
                     and engine_supports_chat(engine)):
                 profile_future = self._start_document_profile(engine, global_unique_texts, target_lang)
-            parallel_requests = concurrency if settings.engine.mode != "local" else 1
+            parallel_requests = concurrency if not settings_runs_locally(settings) else 1
 
             if auto_source_lang:
                 source_lang, system_prompt, tm_language_pairs, file_language_preflights = self._preflight_source_languages(
@@ -1773,7 +1774,7 @@ class WordTaskRunner(BaseTaskRunner):
                 segment_locations=segment_locations,
                 target_lang=target_lang,
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
-                repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
+                repair_concurrency=concurrency if not settings_runs_locally(settings) else 1,
                 document_note=document_profile,
                 api_scheduler=api_scheduler,
             )
@@ -1786,7 +1787,7 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 source_lang=source_lang,
                 api_scheduler=api_scheduler,
-                concurrency=concurrency if settings.engine.mode != "local" else 1,
+                concurrency=concurrency if not settings_runs_locally(settings) else 1,
             )
 
             # ── 大标题、小标题、页眉页脚里含同一个词的几句，请模型复查译法是否一致
@@ -1820,7 +1821,7 @@ class WordTaskRunner(BaseTaskRunner):
                 target_lang=target_lang,
                 source_lang=source_lang,
                 api_scheduler=api_scheduler,
-                concurrency=concurrency if settings.engine.mode != "local" else 1,
+                concurrency=concurrency if not settings_runs_locally(settings) else 1,
                 translation_only=settings.word_output.output_translation_only,
             )
 
