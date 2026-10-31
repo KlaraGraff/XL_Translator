@@ -88,3 +88,27 @@ def test_wall_outside_the_viewport_frame_is_not_shown(tmp_path):
     attrib = _entities(output, "ATTRIB")[0]
     assert _field(attrib, 40) == str(HEIGHT) and _field(attrib, 41) is None
     assert result.stats.layout_fitted == 0
+
+
+def test_leader_note_that_cannot_fit_its_shoulder_is_split_into_two_lines(tmp_path):
+    # maple 2026-10-31：缩到最小仍放不下就折两行。两行收在原来那一行的高度里，不越过肩线，
+    # 不压到上方摞着的另一行标注。
+    block, leader = _leader(shoulder=20)
+    above = (
+        (0, "TEXT"), (5, "80"), (8, "NOTE"), (67, "1"), (100, "AcDbEntity"), (100, "AcDbText"),
+        (10, "120"), (20, str(100.5 + HEIGHT * 1.25)), (30, "0"), (40, str(HEIGHT)), (1, "成品"), (100, "AcDbText"),
+    )
+    drawing = _drawing(*leader, *above, blocks=block)
+    result, output, _messages = _translate(tmp_path, drawing, {NOTE: LONG})
+    assert result.stats.layout_wrapped == 1 and result.stats.layout_unresolved == 0
+    first, second = _entities(output, "ATTRIB")
+    assert f"{_field(first, 1)} {_field(second, 1)}" == LONG
+    assert _field(second, 2) == _field(first, 2) == "上标"
+    assert _field(second, 5) not in {"60", "61", "62", "70", "71", "72", "80"}
+    height = float(_field(first, 40))
+    lower, upper = sorted((first, second), key=lambda body: float(_field(body, 21)))
+    # 底对齐：下面那行的底边不低于肩线，上面那行顶边不碰上方那行标注。
+    assert float(_field(lower, 21)) >= 100
+    assert float(_field(upper, 21)) + height <= 100.5 + HEIGHT * 1.25
+    for body in (first, second):
+        assert _left_edge(body) >= 150 - 20 - 1e-6
