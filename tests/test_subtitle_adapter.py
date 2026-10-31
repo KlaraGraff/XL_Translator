@@ -123,8 +123,8 @@ def test_sample_units() -> None:
     assert joined.text == "今天我们主要讲一下防火分区应该怎么划分。"
     assert joined.marked == "<g1>今天我们主要讲一下</g1><g2>防火分区应该怎么划分。</g2>"
     assert joined.context == "第 2–3 条 · 00:01:05"
-    # The opening <i> stays out of the words; the closing one inside is protected.
-    assert srt[2].text == "注意：</i>每个分区面积不超过 2500 m²。" and srt[2].protected == ["</i>"]
+    # <i> closes inside the words, so both tags stay with them (and are protected).
+    assert srt[2].text == "<i>注意：</i>每个分区面积不超过 2500 m²。" and srt[2].protected == ["<i>", "</i>"]
     assert [unit.text for unit in srt[3:]] == ["有问题吗？", "没有。"]
     assert srt[3].context == "第 5 条第 1 行 · 00:01:14"
 
@@ -263,6 +263,18 @@ def test_dialogue_lines_keep_their_dashes(tmp_path: Path) -> None:
         _file(tmp_path, "a.srt", body), lambda unit: answers[unit.text], MODE_BILINGUAL
     )
     assert text.endswith("- 有问题吗？\n- 没有。\n- Des questions ?\n- Non.\n")
+
+
+def test_a_tag_closed_inside_the_words_stays_with_them(tmp_path: Path) -> None:
+    body = "1\n00:00:01,000 --> 00:00:04,000\n<i>注意：</i>保持通道畅通。\n\n2\n00:00:05,000 --> 00:00:08,000\n保持<b>通道</b>\n"
+    units = _units(_file(tmp_path, "a.srt", body))
+    assert [unit.text for unit in units] == ["<i>注意：</i>保持通道畅通。", "保持<b>通道</b>"]
+    text, _review = _write(
+        _file(tmp_path, "a.srt", body),
+        lambda unit: "<i>Attention :</i> dégagez le passage" if unit.id == "c1" else "Dégagez le <b>passage</b>",
+    )
+    assert "\n<i>Attention :</i> dégagez le passage\n" in text
+    assert "\nDégagez le <b>passage</b>\n" in text
 
 
 def test_formatting_codes_stay_around_the_translation(tmp_path: Path) -> None:
