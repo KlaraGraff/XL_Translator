@@ -278,6 +278,36 @@ def _parse_ass(document: _Document) -> None:
         )
 
 
+_OPEN_TAG = re.compile(r"<([A-Za-z][\w-]*)[^<>\n]*>")
+_CLOSE_TAG = re.compile(r"</([A-Za-z][\w-]*)\s*>")
+
+
+def _unclosed(text: str, name: str) -> int:
+    """How many more ``</name>`` than ``<name …>`` ``text`` holds (negative: more openings)."""
+    name = name.lower()
+    opened = sum(1 for match in _OPEN_TAG.finditer(text) if match.group(1).lower() == name)
+    closed = sum(1 for match in _CLOSE_TAG.finditer(text) if match.group(1).lower() == name)
+    return closed - opened
+
+
+def _balance(lead: str, text: str, trail: str) -> tuple[str, str, str]:
+    """Keep a tag with the words when its partner is among them.
+
+    ``<i>注意：</i>每个分区`` leaves ``<i>`` out of ``lead`` (its ``</i>`` is in the
+    words), so the words read as written in the review list and the model places
+    both tags.
+    """
+    for match in _OPEN_TAG.finditer(lead):
+        if _unclosed(text, match.group(1)) > 0:
+            lead, text = lead[: match.start()], lead[match.start():] + text
+            break
+    for match in reversed(list(_CLOSE_TAG.finditer(trail))):
+        if _unclosed(text, match.group(1)) < 0:
+            text, trail = text + trail[: match.end()], trail[match.end():]
+            break
+    return lead, text, trail
+
+
 def _split_part(text: str, *, dialogue: bool) -> _Part:
     lead = _LEAD.match(text).group(0)
     rest = text[len(lead):]
@@ -287,7 +317,8 @@ def _split_part(text: str, *, dialogue: bool) -> _Part:
             lead += dash.group(0)
             rest = rest[dash.end():]
     trail = _TRAIL.search(rest).group(0)
-    return _Part(lead=lead, trail=trail, text=rest[: len(rest) - len(trail)], dialogue=dialogue)
+    lead, words, trail = _balance(lead, rest[: len(rest) - len(trail)], trail)
+    return _Part(lead=lead, trail=trail, text=words, dialogue=dialogue)
 
 
 def _parts(cue: _Cue) -> list[_Part]:
@@ -307,6 +338,7 @@ def _parts(cue: _Cue) -> list[_Part]:
     text = inner[0]
     for piece in inner[1:]:
         text += _joiner(text, piece) + piece
+    first, text, last_trail = _balance(first, text, last_trail)
     return [_Part(lead=first, trail=last_trail, text=text)]
 
 
