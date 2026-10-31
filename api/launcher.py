@@ -13,7 +13,7 @@ import uvicorn
 from loguru import logger
 
 from api.app import create_app
-from core import engine_file
+from core import engine_file, text_transport
 
 # How long uvicorn waits for open connections (mainly SSE streams) before it
 # closes them itself and runs the app's shutdown hook.
@@ -202,6 +202,9 @@ def main() -> None:
         manager = getattr(app.state, "task_manager", None)
         if manager is not None:
             manager.begin_shutdown()
+        # A runner waiting on a model reply (up to minutes) cannot see the stop
+        # flag; cancel the in-flight requests so it unwinds at once.
+        text_transport.cancel_all_requests()
         # After the runners know they are stopping, so a runner whose program
         # just died reads it as the stop, not as a conversion failure.
         _end_child_processes_soon()

@@ -77,5 +77,24 @@ class StuckTaskIsExplainedTests(unittest.TestCase):
         self.assertIn("slow_converter.py", logged[0])
 
 
+class ModelRequestsCancelledOnCloseTests(unittest.TestCase):
+    """关闭时在途的模型请求立刻取消：Mac 复测里任务正等着语言预检的回复，关闭等满了 12 秒。"""
+
+    def tearDown(self) -> None:
+        from core import text_transport
+
+        text_transport._APP_CLOSING.clear()
+
+    def test_a_request_budget_stops_once_the_app_is_closing(self) -> None:
+        from core import text_transport
+
+        budget = text_transport.RequestBudget()
+        self.assertGreater(budget.check(), 0)
+        text_transport.cancel_all_requests()
+        with self.assertRaises(text_transport.TextTransportError) as caught:
+            budget.check()
+        self.assertEqual(caught.exception.kind, "cancelled")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
