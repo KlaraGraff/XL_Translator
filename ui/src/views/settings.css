@@ -344,6 +344,9 @@
 .set-body .danger-sec .sh .desc { color: var(--ink-2); }
 .set-body .license-name { margin: 0; font-size: 13px; font-weight: var(--fw-600); color: var(--ink); }
 .set-body .about-version .sec-b { gap: 8px; }
+/* 「支持这个项目」：「去点 Star」按钮旁边的 Star 数，学 GitHub 自己「★ Star | 15」的样子。
+   数字是内容不是名称，但只有几位，不会放不下，不加截断。 */
+.set-body .star-count { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 2px 9px; border: 1px solid var(--line-2); border-radius: 99px; font-size: 12px; font-weight: var(--fw-600); color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* 窄窗口（浏览器预览、将来更小的最小窗口）：子导航折成一行，用途卡两列，表单单列。 */
 @media (max-width: 1000px) {
