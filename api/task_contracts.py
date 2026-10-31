@@ -64,6 +64,10 @@ REASON_NEEDS_CONFIRMATION = "needs_confirmation"
 REASON_TRANSLATION_MODEL_MISSING = "translation_model_missing"
 REASON_IMAGE_MODEL_MISSING = "image_model_missing"
 REASON_PDF_REVIEW_MODEL_MISSING = "pdf_review_model_missing"
+# 逐页审核开着，但审核模型不能识别图片（实测拒收）/ 图片多半没送到模型（回了话却没读出
+# 测试图里的字）。界面认这两个开「本次不审核，直接开始」的弹窗（core/image_input_check.py）。
+REASON_PDF_REVIEW_NO_IMAGE_INPUT = "pdf_review_no_image_input"
+REASON_PDF_REVIEW_IMAGE_UNSEEN = "pdf_review_image_unseen"
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,8 @@ class TaskOptions:
     source_lang: str | None = None
     target_lang: str | None = None
     allow_known_review_failure: bool = False
+    # 「本次不审核，直接开始」：这一次任务关掉逐页审核，设置里的开关不动。
+    allow_skip_pdf_review: bool = False
     lang_pair: str | None = None
     # 「接着上次继续」时上一次任务的输出目录；runner 只读它，不往里写。
     resume_output_dir: str | None = None

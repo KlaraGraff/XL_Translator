@@ -383,6 +383,30 @@ class ModelUpgradeState(BaseModel):
     status: str = ""
 
 
+class ImageInputCheck(BaseModel):
+    """一条路（服务商 + 地址 + 协议 + 模型 + 密钥）上的模型能不能识别图片。
+
+    由 core/image_input_check.py 实测后写入：yes 能识别；no 拒收图片；unseen 回了话却
+    没读出测试图里的字（图片多半没送到模型）。认不出的值当作没测过。键是这条路的摘要，
+    不含密钥。
+    """
+
+    result: str = ""
+    model: str = ""
+    message: str = ""
+    checked_at: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_check(self):
+        self.result = str(self.result or "").strip()
+        if self.result not in {"yes", "no", "unseen"}:
+            self.result = ""
+        self.model = str(self.model or "").strip()
+        self.message = str(self.message or "").strip()
+        self.checked_at = str(self.checked_at or "").strip()
+        return self
+
+
 _SEEDED_CONNECTION_PREFIX = "seed-"
 
 # V10.3.2 起「文档翻译」改称「文本翻译」，「PDF 与图片翻译」改称「图像翻译」，「PDF 与图片审核」改称「图像翻译审核」。
@@ -1532,6 +1556,8 @@ class AppSettings(BaseModel):
     spread_tasks_across_connections: bool = False
     model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
     model_upgrade_states: dict[str, ModelUpgradeState] = Field(default_factory=dict)
+    # 各条连接上的模型能不能识别图片（发图之前先查这里，见 core/image_input_check.py）。
+    image_input_checks: dict[str, ImageInputCheck] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
     onboarding: OnboardingSettings = Field(default_factory=OnboardingSettings)
     appearance: AppearanceSettings = Field(default_factory=AppearanceSettings)

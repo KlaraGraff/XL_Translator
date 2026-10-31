@@ -509,6 +509,7 @@ def _summary_to_report(summary: PdfTaskSummary, material_root: str | Path | None
         f"- 自动修正比例的页：{summary.emergency_ratio_normalized_count}",
         f"- 重试次数：{summary.retry_count}",
         f"- 逐页审核：{'开启' if summary.review_enabled else '关闭'}",
+        *([f"- 审核中途停止：{summary.review_switched_off}"] if summary.review_switched_off else []),
         f"- 审核通过页：{summary.review_passed_page_count}",
         f"- 审核修复页：{summary.review_repaired_page_count}",
         f"- 审核未通过页：{summary.review_failed_page_count}",

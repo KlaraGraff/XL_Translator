@@ -42,6 +42,7 @@ from core.pdf_review import (
 )
 from settings import AppSettings, api_key_scope, set_cloud_provider_config
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.image_probe_reader import read_probe_png
 
 
 class _MockResponse:
@@ -297,6 +298,11 @@ class Phase3RoleMockProviderTests(unittest.TestCase):
                     summary="mock review ok",
                     raw_text='{"pass": true}',
                 )
+
+            def read_images(self, **kwargs):
+                # 测试连接发的是一张写着随机码的图：能看图的模型把码读出来。
+                self.config = kwargs["model_config"]
+                return read_probe_png(Path(kwargs["images"][0]).read_bytes())
 
         image_provider = ImageProvider()
         review_provider = ReviewProvider()

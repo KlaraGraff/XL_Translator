@@ -259,6 +259,9 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
             result = check_pdf_review_connectivity(settings, max_attempts=1)
         self.assertFalse(result.ok)
         self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
+        # 认出是「不收图」（code 20041），记成这条连接不能识别图片，开始任务前会拦下。
+        self.assertEqual(result.status, "no_image_input")
+        self.assertEqual([check.result for check in settings.image_input_checks.values()], ["no"])
 
     def test_route_panel_treats_a_failed_image_model_as_missing(self) -> None:
         # 自动组合：图像模型测过、没通过，就和没设置一样，扫描页与保底页保留原样。

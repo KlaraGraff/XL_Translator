@@ -21,6 +21,7 @@ from core.model_roles import (
     normalize_source_role,
     resolve_effective_model_config,
 )
+from core.image_input_check import image_input_verdict
 from core.model_throughput import (
     batch_size_bounds,
     concurrency_bounds,
@@ -77,6 +78,7 @@ def _connection_payload(
         "availability_status": "unavailable" if problem else config.availability_status,
         "availability_message": problem or config.availability_message,
         "availability_checked_at": "" if problem else connection.availability_checked_at,
+        "image_input": _image_input_state(settings, role, config),
         "has_api_key": bool(api_key),
         "api_key_preview": mask_api_key(api_key),
         "primary": index == 0,
@@ -84,6 +86,13 @@ def _connection_payload(
         # 连接的那份：选中第二条连接改并发，改的其实是主用连接。
         **_throughput_payload(settings, config),
     }
+
+
+def _image_input_state(settings: AppSettings, role: str, config: EffectiveModelConfig) -> str:
+    """审核连接上的模型能不能识别图片：yes / no / unseen，没确认过是 ""（其他用途不看图，也是 ""）。"""
+    if role != ROLE_PDF_REVIEW or config.mode != "cloud":
+        return ""
+    return image_input_verdict(settings, config)
 
 
 def _throughput_payload(settings: AppSettings, config: EffectiveModelConfig) -> dict[str, Any]:
@@ -145,6 +154,7 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "availability_message": problem or config.availability_message,
         "availability_checked_at": "" if problem else getattr(owner, "availability_checked_at", ""),
         "availability_signature": config.availability_signature,
+        "image_input": _image_input_state(settings, role, config),
         "has_api_key": bool(config.api_key),
         "api_key_preview": mask_api_key(config.api_key),
         "throughput": {
