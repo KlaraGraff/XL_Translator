@@ -807,6 +807,27 @@ fn post_shutdown_request(port: u16, token: &str) -> bool {
         .is_some_and(|code| code.len() == 3 && code.starts_with('2'))
 }
 
+/// 强杀前先把 sidecar 起的程序（LibreOffice、ODA、文字识别、扩展进程）一起结束。
+///
+/// Windows 上结束一个进程不会连带它的子进程：在 GitHub Actions 的 Windows 机器上实测
+/// （scripts/windows_exit_probe.py），sidecar 被强杀后它起的程序和临时文件夹都留了下来。
+/// `taskkill /T` 顺着父子关系找，必须趁 sidecar 还活着时调，所以放在 `child.kill()` 之前。
+/// 正常退出时 sidecar 自己会先结束这些程序（`api/launcher.py` 的 `end_child_processes`），
+/// 这里只管等满预算后的强杀兜底。Unix 上不需要：sidecar 收到 SIGTERM 后自己处理。
+#[cfg(windows)]
+fn kill_child_tree(child: &Child) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_child_tree(_child: &Child) {}
+
 /// 先请子进程自己退，限时等待，超时才强杀兜底。
 ///
 /// 「限时」是硬要求：退出不能被一个卡死的 sidecar 拖住，否则 Cmd+Q 变成假死。
@@ -831,6 +852,7 @@ fn stop_child(
             thread::sleep(SIDECAR_STOP_POLL);
         }
     }
+    kill_child_tree(child);
     let _ = child.kill();
     // 必须 wait：不回收就留一个僵尸进程，而且 `kill()` 只是发信号，不等它真死。
     let _ = child.wait();
@@ -1122,6 +1144,48 @@ mod tests {
 
         assert!(!post_shutdown_request(port, "token"));
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    /// 强杀 sidecar 时它起的程序要一起结束（Windows 不会自动连带子进程）。
+    /// 用 python 当假 sidecar：它再起一个睡觉的子进程，把子进程 pid 打出来。
+    #[cfg(windows)]
+    #[test]
+    fn force_stopping_the_sidecar_also_ends_the_programs_it_started() {
+        use super::stop_child;
+        use std::{
+            io::{BufRead, BufReader},
+            process::{Command, Stdio},
+            time::Duration,
+        };
+
+        let mut child = Command::new("python")
+            .args([
+                "-c",
+                "import subprocess, sys, time; \
+                 p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']); \
+                 print(p.pid, flush=True); time.sleep(300)",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("python is on PATH on the Windows runner");
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let grandchild: u32 = line.trim().parse().unwrap();
+
+        // 握手前（没有端口令牌）直接走强杀兜底，和等满预算后的那一步相同。
+        stop_child(&mut child, None, Duration::from_millis(100));
+
+        let listing = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {grandchild}"), "/NH", "/FO", "CSV"])
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        assert!(
+            !listing.contains(&format!("\"{grandchild}\"")),
+            "sidecar 起的程序在它被强杀后还在运行：{listing}"
+        );
     }
 
     #[test]
