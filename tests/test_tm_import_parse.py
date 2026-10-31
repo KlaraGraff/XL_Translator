@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from api.app import create_app
-from core.tm_import_parse import parse_import_file
+from core.tm_import_parse import build_template_xlsx, parse_import_file
 
 
 def _pairs(result: dict) -> list[tuple[str, str, str]]:
@@ -69,11 +69,22 @@ class TmImportParseTests(unittest.TestCase):
         self.assertEqual(result["mapping"], {"source": 1, "target": 2, "note": 3})
         self.assertEqual(_pairs(result), [("桥墩", "pile", ""), ("主梁", "poutre principale", "pont")])
 
-    def test_json_variants(self) -> None:
-        mapping_json = json.dumps({"桥墩": "pier", "主梁": "girder"}, ensure_ascii=False).encode()
-        self.assertEqual(_pairs(parse_import_file("a.json", mapping_json, "zh-en")), [("桥墩", "pier", ""), ("主梁", "girder", "")])
-        objects = json.dumps({"terms": [{"zh": "桥墩", "en": "pier", "comment": "bridge"}]}).encode()
-        self.assertEqual(_pairs(parse_import_file("b.json", objects, "zh-en")), [("桥墩", "pier", "bridge")])
+    def test_other_json_is_refused_with_plain_message(self) -> None:
+        data = json.dumps({"桥墩": "pier"}, ensure_ascii=False).encode()
+        with self.assertRaisesRegex(ValueError, "只支持本软件导出的 JSON"):
+            parse_import_file("a.json", data, "zh-en")
+
+    def test_template_round_trips_through_detection(self) -> None:
+        from openpyxl import load_workbook
+
+        for locale in ("zh", "en", "fr"):
+            workbook = load_workbook(io.BytesIO(build_template_xlsx(locale)))
+            workbook.active.append(["桥墩", "pile", "桥梁"])
+            buffer = io.BytesIO()
+            workbook.save(buffer)
+            result = parse_import_file("模板.xlsx", buffer.getvalue(), "zh-fr")
+            self.assertEqual(result["mapping"], {"source": 0, "target": 1, "note": 2}, locale)
+            self.assertEqual(_pairs(result), [("桥墩", "pile", "桥梁")])
 
     def test_own_csv_export_round_trip(self) -> None:
         data = "﻿source_text,target_text,word_type,pinned,updated_at\r\n桥墩,pier,manual,1,2026-10-31\r\n".encode("utf-8")
@@ -92,6 +103,11 @@ class TmImportParseRouteTests(unittest.TestCase):
         response = client.post("/api/tm/import/parse", json={"file_name": "x.csv", "data": data, "lang_pair": "zh-en"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["rows"], [["桥墩", "pier"]])
+
+    def test_template_route_returns_xlsx(self) -> None:
+        response = TestClient(create_app()).get("/api/tm/import/template?locale=fr")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"PK"))
 
     def test_route_rejects_bad_base64(self) -> None:
         client = TestClient(create_app())

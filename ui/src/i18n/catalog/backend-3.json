@@ -1315,9 +1315,9 @@
     "en": "This Excel file cannot be opened. Make sure it is not damaged or password-protected.",
     "fr": "Impossible d'ouvrir ce fichier Excel. Vérifiez qu'il n'est ni endommagé ni protégé par un mot de passe."
   },
-  "JSON 文件格式有误，无法读取。": {
-    "en": "The JSON file is not valid and cannot be read.",
-    "fr": "Le fichier JSON n'est pas valide et ne peut pas être lu."
+  "只支持本软件导出的 JSON。其他词表请另存为 Excel 或 CSV 后再导入。": {
+    "en": "Only JSON files exported from this application are supported. Save other glossaries as Excel or CSV and import them again.",
+    "fr": "Seuls les fichiers JSON exportés depuis cette application sont pris en charge. Enregistrez les autres glossaires au format Excel ou CSV, puis importez-les."
   },
   "此记忆库备份中的自定义语言信息不完整，无法导入。": {
     "en": "The custom language information in this translation memory backup is incomplete and cannot be imported.",

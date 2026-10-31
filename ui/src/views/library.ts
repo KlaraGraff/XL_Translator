@@ -30,7 +30,7 @@ import {
 } from "../components";
 import { icon } from "../icons";
 import { ApiClient, ApiError } from "../api-client";
-import { t, tx, fmtNum, localized } from "../i18n";
+import { t, tx, fmtNum, localized, currentLocale } from "../i18n";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
@@ -116,7 +116,6 @@ interface TmImportTable {
   format: string;
   sheet: string;
   sheets_skipped: number;
-  lang_pair: string;
   suggested_lang_pair: string;
   has_header: boolean;
   headers: string[];
@@ -1452,6 +1451,17 @@ function importTm(): void {
   });
 }
 
+async function downloadImportTemplate(): Promise<void> {
+  try {
+    const client = await getClient();
+    const saved = await client.saveBinaryDownload(`/api/tm/import/template?locale=${encodeURIComponent(currentLocale())}`, t("记忆库导入模板.xlsx"));
+    if (!saved) return;
+    showToast({ message: t("已保存导入模板到 {0}。按「原文、译文、备注」三列填写后即可导入。", saved) });
+  } catch (error) {
+    showToast({ message: t("模板保存失败：{0}", errorMessage(error)), error: true });
+  }
+}
+
 function importFullTm(): void {
   pickFile("application/json,.json", async (file) => {
     try {
@@ -1494,7 +1504,7 @@ function tableEntries(table: TmImportTable, mapping: TmImportTable["mapping"]): 
 }
 
 function openTableImportPreviewModal(fileName: string, table: TmImportTable): void {
-  const langPair = table.lang_pair || table.suggested_lang_pair || tmLangPair();
+  const langPair = table.suggested_lang_pair || tmLangPair();
   openImportPreviewModal(fileName, table.format, langPair, tableEntries(table, table.mapping), table);
 }
 
@@ -1550,7 +1560,7 @@ function openImportPreviewModal(
       }
       const skipped = table.skipped_blank + table.skipped_above_header + (table.rows.length - previewEntries.length);
       if (skipped > 0) lines.push(t("已跳过 {0} 行空行、标题行或缺少原文、译文的行。", fmtNum(skipped)));
-      if (!table.lang_pair && table.suggested_lang_pair && table.suggested_lang_pair !== tmLangPair()) {
+      if (table.suggested_lang_pair && table.suggested_lang_pair !== tmLangPair()) {
         lines.push(t("已按列名把目标语言对设为 {0}，如不正确请修改。", table.suggested_lang_pair));
       }
       if (!table.has_header) lines.push(t("文件没有可识别的列名，已按列的顺序识别原文和译文，请核对下方预览。"));
@@ -1841,6 +1851,7 @@ function rebuildToolbar(): void {
       openMenu(event.currentTarget as HTMLElement, [
         { label: t("从 Excel / CSV / JSON 导入"), onClick: () => importTm() },
         { label: t("恢复完整备份（JSON）"), onClick: () => importFullTm() },
+        { label: t("下载导入模板（Excel）"), onClick: () => void downloadImportTemplate() },
       ]),
   });
   const exportBtn = createButton({

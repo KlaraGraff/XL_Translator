@@ -5,15 +5,15 @@
 这里只做一件事：把文件读成一张二维表，并猜出哪列是原文、译文、备注。
 真正写库仍走 ``tm_manager.import_entries``，预览里用户可以改列。
 
-支持：.xlsx/.xlsm（openpyxl）、.xls（xlrd）、.csv/.tsv/.txt（自动识别编码和分隔符）、
-.json（我们导出的 ``entries``、对象数组、{原文: 译文} 字典、二维数组）。
+只认表格：.xlsx/.xlsm（openpyxl）、.xls（xlrd）、.csv/.tsv/.txt（自动识别编码和分隔符）。
+本软件导出的 JSON 由界面原样导入；别的 JSON、TBX 不支持（同类软件也都不猜，参见 memoQ / Crowdin
+的做法：自动猜列 + 预览里让用户改列 + 提供模板）。
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -203,68 +203,26 @@ def _read_xls(data: bytes) -> ParsedTable:
     return ParsedTable(file_format="xls", rows=rows, sheet=name if len(sheets) > 1 else "", sheets_skipped=skipped)
 
 
-def _rows_from_objects(items: list[dict[str, Any]]) -> list[list[str]]:
-    headers: list[str] = []
-    for item in items:
-        for key in item:
-            if key not in headers:
-                headers.append(str(key))
-    rows = [headers]
-    for item in items:
-        rows.append([_cell_text(item.get(key)) if not isinstance(item.get(key), (dict, list)) else "" for key in headers])
-    return rows
-
-
-def _read_json(data: bytes) -> tuple[ParsedTable, str]:
-    text, encoding = _decode_text(data)
-    payload = json.loads(text)
-    lang_pair = ""
-    items: Any = payload
-    if isinstance(payload, dict):
-        lang_pair = str(payload.get("lang_pair") or "")
-        for key in ("entries", "terms", "glossary", "items", "data", "rows"):
-            if isinstance(payload.get(key), list):
-                items = payload[key]
-                break
-        else:
-            # {"原文": "译文", ...}
-            pairs = [(k, v) for k, v in payload.items() if isinstance(v, (str, int, float)) and k != "lang_pair"]
-            if pairs:
-                return ParsedTable(file_format="json", rows=[[str(k), _cell_text(v)] for k, v in pairs], encoding=encoding), lang_pair
-            items = []
-    if not isinstance(items, list):
-        items = []
-    if items and all(isinstance(item, dict) for item in items):
-        rows = _rows_from_objects(items)
-    else:
-        rows = [[_cell_text(cell) for cell in item] if isinstance(item, list) else [_cell_text(item)] for item in items]
-    return ParsedTable(file_format="json", rows=rows, encoding=encoding), lang_pair
-
-
-def read_table(file_name: str, data: bytes) -> tuple[ParsedTable, str]:
-    """返回 (表格, 文件里自带的语言对)。认不出的格式抛 ValueError（中文提示）。"""
+def read_table(file_name: str, data: bytes) -> ParsedTable:
+    """读成一张表。认不出的格式抛 ValueError（中文提示）。"""
     if len(data) > MAX_IMPORT_BYTES:
         raise ValueError("文件超过 20 MB，无法导入记忆库。")
     lower = file_name.casefold()
     ext = lower.rsplit(".", 1)[-1] if "." in lower else ""
     if data[:4] == b"PK\x03\x04" or ext in {"xlsx", "xlsm"}:
         try:
-            return _read_xlsx(data), ""
+            return _read_xlsx(data)
         except Exception as exc:  # noqa: BLE001 - 给用户一句能看懂的话
             raise ValueError("无法打开这个 Excel 文件，请确认文件没有损坏或加密。") from exc
     if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" or ext == "xls":
         try:
-            return _read_xls(data), ""
+            return _read_xls(data)
         except Exception as exc:  # noqa: BLE001
             raise ValueError("无法打开这个 Excel 文件，请确认文件没有损坏或加密。") from exc
-    stripped = data.lstrip(b"\xef\xbb\xbf \t\r\n")
-    if ext == "json" or stripped[:1] in {b"{", b"["}:
-        try:
-            return _read_json(data)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            if ext == "json":
-                raise ValueError("JSON 文件格式有误，无法读取。") from exc
-    return _read_delimited(data, "tsv" if ext == "tsv" else ("txt" if ext == "txt" else "csv")), ""
+    if ext == "json":
+        # 本软件导出的 JSON 由界面直接导入，走不到这里；别的 JSON 结构千差万别，不去猜。
+        raise ValueError("只支持本软件导出的 JSON。其他词表请另存为 Excel 或 CSV 后再导入。")
+    return _read_delimited(data, "tsv" if ext == "tsv" else ("txt" if ext == "txt" else "csv"))
 
 
 # ── 认列 ──────────────────────────────────────────────────
@@ -384,8 +342,8 @@ def _suggest_lang_pair(headers: list[str], mapping: dict[str, int], lang_pair: s
 
 def parse_import_file(file_name: str, data: bytes, lang_pair: str) -> dict[str, Any]:
     """读文件并猜列，交给前端预览；前端按（可改的）列映射拼出词条。"""
-    table, file_lang_pair = read_table(file_name, data)
-    effective_pair = file_lang_pair or lang_pair
+    table = read_table(file_name, data)
+    effective_pair = lang_pair
     rows = [[str(cell).replace("\r\n", "\n").strip() for cell in row] for row in table.rows[:MAX_IMPORT_ROWS + 1]]
     header_row, mapping = detect_layout(rows, effective_pair)
     width = max((len(row) for row in rows), default=0)
@@ -406,7 +364,6 @@ def parse_import_file(file_name: str, data: bytes, lang_pair: str) -> dict[str, 
         "delimiter": table.delimiter,
         "sheet": table.sheet,
         "sheets_skipped": table.sheets_skipped,
-        "lang_pair": file_lang_pair,
         "has_header": header_row >= 0,
         "headers": headers,
         "rows": data_rows,
@@ -414,3 +371,29 @@ def parse_import_file(file_name: str, data: bytes, lang_pair: str) -> dict[str, 
         "skipped_blank": blank,
         "skipped_above_header": skipped_above,
     }
+
+
+_TEMPLATE_HEADERS = {
+    "zh": ("原文", "译文", "备注"),
+    "en": ("Source", "Translation", "Notes"),
+    "fr": ("Source", "Traduction", "Notes"),
+}
+
+
+def build_template_xlsx(locale: str) -> bytes:
+    """「下载模板」：一张只有表头的 Excel，三列和导入时自动认的列名一致。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Glossary"
+    sheet.append(list(_TEMPLATE_HEADERS.get(locale, _TEMPLATE_HEADERS["zh"])))
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    for column, width in zip("ABC", (36, 36, 30)):
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A2"
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()

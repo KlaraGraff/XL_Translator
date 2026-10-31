@@ -6,13 +6,13 @@ import base64
 import binascii
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 
 from api.task_manager import (
     TaskOptions,
 )
 from core import tm_manager
-from core.tm_import_parse import parse_import_file
+from core.tm_import_parse import build_template_xlsx, parse_import_file
 from core.language_registry import (
     CustomTargetLang,
     is_custom_target_lang,
@@ -185,6 +185,13 @@ def register(app: FastAPI) -> None:
             return parse_import_file(payload.file_name, data, payload.lang_pair)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/tm/import/template")
+    def tm_import_template(locale: str = "zh") -> Response:
+        return Response(
+            build_template_xlsx(locale),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     @app.post("/api/tm/import/full")
     def import_full_tm(payload: TmFullImportPayload) -> dict[str, int]:
