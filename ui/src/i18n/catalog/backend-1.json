@@ -20,8 +20,8 @@
     "fr": "{0}— tentative {1}/{2} : {3}"
   },
   "状态：正在停止任务：已提交 {0} 页，正在等待 {1} 页完成{2}。这些页面需等待模型服务响应或超时，可能需要几分钟；已生成的页面和素材将予以保留。": {
-    "en": "Status: Stopping the task: {0} pages submitted, waiting for {1} to finish{2}. These pages must wait for the model service to respond or time out, which may take several minutes. Pages and assets already generated will be kept.",
-    "fr": "Statut : arrêt de la tâche : {0} pages envoyées, {1} en attente de fin{2}. Ces pages doivent attendre la réponse du service de modèle ou l'expiration du délai, ce qui peut prendre quelques minutes. Les pages et ressources déjà générées seront conservées."
+    "en": "Status: Stopping the task: {0} {0|page|pages} submitted, waiting for {1} to finish{2}. These pages must wait for the model service to respond or time out, which may take several minutes. Pages and assets already generated will be kept.",
+    "fr": "Statut : arrêt de la tâche : {0} {0|page envoyée|pages envoyées}, {1} en attente de fin{2}. Ces pages doivent attendre la réponse du service de modèle ou l'expiration du délai, ce qui peut prendre quelques minutes. Les pages et ressources déjà générées seront conservées."
   },
   "（已等待 {0} 分 {1} 秒）": {
     "en": "(waited {0} min {1} s)",

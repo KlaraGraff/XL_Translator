@@ -143,6 +143,8 @@ export type SurfaceDescriptor = {
   builtin: boolean;
   label: LocalizedText;
   file_noun: LocalizedText;
+  /** 一个文件时的叫法（英文、法文单数）；旧版后端或清单没写时没有。 */
+  file_noun_one?: LocalizedText;
   icon: string;
   /** 一两句话说明这个类型翻什么、哪些内容不翻；格式适配器的清单里有才有，页面「选项」标题旁的「?」显示它。 */
   description?: LocalizedText;

@@ -76,7 +76,7 @@ import {
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
 import { el, formatSizeKb, formatTime, hasOwn, localizedLanguageOptions, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
-import { currentLocale, fmtNum, t, tx, localized } from "../i18n";
+import { currentLocale, fmtNum, isSingularCount, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
 
@@ -272,7 +272,14 @@ const SURFACE_FILE_NOUN: Record<BuiltinSurface, string> = localized(() => ({ exc
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
 export function fileNounPhrase(surface: Surface, count: number): string {
-  if (isExtSurface(surface)) return t("{0} 个{1}", count, nounAfterCjk(surfaceFileNoun(surface)));
+  if (isExtSurface(surface)) {
+    // 清单里的名词是复数（presentations）；一个文件时用单数，清单没写单数就说「1 file」。
+    if (isSingularCount(count) && currentLocale() !== "zh") {
+      const one = surfaceDescriptor(surface)?.file_noun_one?.[currentLocale()];
+      return one ? t("{0} 个{1}", count, one) : t("{0} 个文件", count);
+    }
+    return t("{0} 个{1}", count, nounAfterCjk(surfaceFileNoun(surface)));
+  }
   switch (surface) {
     case "excel": return t("{0} 个表格文件", count);
     case "word": return t("{0} 个文档", count);

@@ -126,6 +126,11 @@ export function tx(text: unknown): string {
   return translator.tx(text);
 }
 
+/** 这个数量在当前语言里用单数吗（英文只有 1；法文 0 和 1）。和词条里的 {0|单数|复数} 同一规则。 */
+export function isSingularCount(value: number): boolean {
+  return translator.isSingular(value);
+}
+
 /** 数字按当前语言分组（1,234 / 1 234）。 */
 export function fmtNum(value: number): string {
   return value.toLocaleString(localeTag());
