@@ -1,4 +1,9 @@
 {
+  "深度思考": {"en": "Deep thinking", "fr": "Réflexion approfondie"},
+  "跟随模型默认": {"en": "Model default", "fr": "Valeur par défaut du modèle"},
+  "不启用": {"en": "Off", "fr": "Désactivée"},
+  "启用": {"en": "On", "fr": "Activée"},
+  "启用后模型先思考再作答，复杂内容可能更准确，但速度较慢、费用较高；不启用时直接翻译。": {"en": "When on, the model thinks before answering. Complex content may be translated more accurately, but requests are slower and cost more. When off, the model translates directly.", "fr": "Lorsqu’elle est activée, le modèle réfléchit avant de répondre. Les contenus complexes peuvent être traduits plus fidèlement, mais les requêtes sont plus lentes et plus coûteuses. Lorsqu’elle est désactivée, le modèle traduit directement."},
   "1. 配置翻译模型": {"en": "1. Set up a translation model", "fr": "1. Configurer un modèle de traduction"},
   "2. 选择文件类型与语言": {"en": "2. Choose a file type and languages", "fr": "2. Choisir le type de fichier et les langues"},
   "3. 选择文件并开始": {"en": "3. Select files and start", "fr": "3. Choisir les fichiers et lancer"},

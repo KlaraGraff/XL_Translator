@@ -343,6 +343,7 @@ class ConnectionUpsertPayload(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     api_mode: str | None = None
+    thinking: Literal["auto", "off", "on"] | None = None
     connection_mode: Literal["cloud", "local", "follow"] | None = None
     source_role: str | None = None
 

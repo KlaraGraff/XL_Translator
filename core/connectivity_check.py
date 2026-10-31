@@ -353,6 +353,7 @@ def _check_dashscope(
     api_key: str,
     model: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    thinking: str = "auto",
 ) -> ConnectivityResult:
     if not api_key:
         return ConnectivityResult(
@@ -382,10 +383,20 @@ def _check_dashscope(
             {"role": "user", "content": TEST_USER_PROMPT},
         ],
     }
+    # 按连接的「深度思考」设置测，和翻译时发出去的请求一致；模型不接受这一项时，
+    # 翻译会去掉它按模型默认重发（core.text_transport），这里同样处理。
+    from engines.dashscope_engine import dashscope_thinking_params
+    thinking_params = dashscope_thinking_params(thinking)
 
     try:
         with system_proxy.http_client(timeout=timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
+            response = client.post(url, headers=headers, json={**payload, **thinking_params})
+            if (
+                thinking_params
+                and response.status_code in {400, 422}
+                and "enable_thinking" in str(response.text or "").casefold()
+            ):
+                response = client.post(url, headers=headers, json=payload)
             _raise_for_status(response)
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
         return ConnectivityResult(
@@ -501,6 +512,7 @@ def _check_connectivity(
             api_key=get_key(provider, base_url),
             model=model,
             timeout_seconds=timeout_seconds,
+            thinking=getattr(settings, "_runtime_thinking", "auto"),
         )
 
     return ConnectivityResult(
