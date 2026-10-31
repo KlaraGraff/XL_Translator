@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.zh_hant import is_traditional_chinese
 from core.cad_language import base_lang
 
 from .common import fitz
@@ -106,6 +107,12 @@ _WQY = [_LINUX / "truetype/wqy/wqy-zenhei.ttc", _LINUX / "truetype/wqy/wqy-micro
 _ZH_SANS = [_WIN / "simhei.ttf", _WIN / "msyh.ttc", _WIN / "simsun.ttc", _MAC_SUP / "Arial Unicode.ttf",
             _MAC / "STHeiti Medium.ttc", _MAC_LIB / "Arial Unicode.ttf", *_NOTO_CJK, *_WQY]
 _ZH_SERIF = [_WIN / "simsun.ttc", _MAC_SUP / "Songti.ttc", *_NOTO_SERIF_CJK]
+# 繁體中文：Windows 先用微軟正黑體、細明體（字形按台湾标准），没有时退回上面的中文字体
+# （它们也收了繁体字，只是字形按大陆标准）。
+_ZH_HANT_SANS = [_WIN / "msjh.ttc", _WIN / "mingliu.ttc", *_ZH_SANS]
+_ZH_HANT_SANS_BOLD = [_WIN / "msjhbd.ttc", _WIN / "msjh.ttc", _WIN / "simhei.ttf", _MAC / "STHeiti Medium.ttc",
+                      *_NOTO_CJK_BOLD]
+_ZH_HANT_SERIF = [_WIN / "mingliu.ttc", *_ZH_SERIF]
 _JA_SANS = [_WIN / "YuGothM.ttc", _WIN / "meiryo.ttc", _WIN / "msgothic.ttc", _MAC / "ヒラギノ角ゴシック W3.ttc",
             *_NOTO_CJK]
 _JA_SANS_BOLD = [_WIN / "YuGothB.ttc", _WIN / "meiryob.ttc", _MAC / "ヒラギノ角ゴシック W6.ttc", *_NOTO_CJK_BOLD]
@@ -133,6 +140,9 @@ _TABLE: dict[tuple[str, bool, bool], list[Path]] = {
     # 黑体本身就粗，中文粗体也用它，和同一页的常规字是同一款字体。
     ("zh", False, True): [_WIN / "simhei.ttf", _WIN / "msyhbd.ttc", _MAC / "STHeiti Medium.ttc", *_NOTO_CJK_BOLD],
     ("zh", True, False): _ZH_SERIF,
+    ("zh_hant", False, False): _ZH_HANT_SANS,
+    ("zh_hant", False, True): _ZH_HANT_SANS_BOLD,
+    ("zh_hant", True, False): _ZH_HANT_SERIF,
     ("ja", False, False): _JA_SANS,
     ("ja", False, True): _JA_SANS_BOLD,
     ("ja", True, False): _JA_SERIF,
@@ -158,7 +168,9 @@ def text_script(text: str, target_lang: str = "") -> str:
     if _KANA_RE.search(text):
         return "ja"
     if _HAN_RE.search(text):
-        return "ja" if base_lang(target_lang) == "ja" else "zh"
+        if base_lang(target_lang) == "ja":
+            return "ja"
+        return "zh_hant" if is_traditional_chinese(target_lang) else "zh"
     return "latin"
 
 

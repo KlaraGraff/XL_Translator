@@ -1508,7 +1508,8 @@ def _same_as_source(source: str, translation: str) -> bool:
         text = unicodedata.normalize("NFKC", text).replace("×", "x").casefold()
         return _SAME_TEXT_SPACES.sub("", text)
     return norm(source) == norm(translation)
-_CJK_TRANSLATION_FONT = compatible_font("zh")
+# 带中文大字体的译文样式（简体、繁体各一套）：译文里留着汉字也能显示。
+_CJK_TRANSLATION_FONTS = (compatible_font("zh"), compatible_font("zh_hant"))
 # 双语时译文比原文小一号；多行文字里用相对字高写。
 _BILINGUAL_SCALE = 0.8
 _ATTRIB_SEPARATOR = " / "
@@ -2318,7 +2319,7 @@ class CadTranslationPipeline:
                         # SHX 西文字体没有汉字：译文里还留着中文（专有名词、没译出的词）时，
                         # 这一行沿用原文样式，否则显示成一串问号。
                         style=style_name if fully and (
-                            font == _CJK_TRANSLATION_FONT or not has_cjk(written.get(unit.plain_text, ""))
+                            font in _CJK_TRANSLATION_FONTS or not has_cjk(written.get(unit.plain_text, ""))
                         ) else None,
                         can_mark=can_mark,
                         escape=escape_unicode,
@@ -2336,7 +2337,7 @@ class CadTranslationPipeline:
                     style_name is not None
                     and fully
                     and unit.entity_type in {"TEXT", "ATTRIB", "ATTDEF", "MTEXT"}
-                    and (font == _CJK_TRANSLATION_FONT or not has_cjk(_translated_plain(unit, written)))
+                    and (font in _CJK_TRANSLATION_FONTS or not has_cjk(_translated_plain(unit, written)))
                 )
                 _replace_unit_runs(records, unit, written, escape=escape_unicode, strip_shx_fonts=restyle)
                 if restyle:
@@ -2724,6 +2725,11 @@ class SubprocessCadConverter:
             subprocess.run(["pkill", "-f", args[0]], check=False, capture_output=True)
             raise CadPipelineError(f"图纸转换超时（{timeout} 秒）。") from exc
         except subprocess.CalledProcessError as exc:
+            if exc.returncode < 0:
+                # open 被结束了（应用关闭时引擎会结束它起的程序），但 ODA 是经
+                # LaunchServices 启动的，不是引擎的子进程，不会跟着停：按本次独有的
+                # 临时目录把它也结束，免得它在后台一直转完。
+                subprocess.run(["pkill", "-f", args[0]], check=False, capture_output=True)
             detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
             logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
             raise CadPipelineError("图纸转换工具未能启动，请在「插件」中重新连接后重试。") from exc

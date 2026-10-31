@@ -255,6 +255,14 @@ class TmImportPayload(BaseModel):
     sync_reverse: bool = False
 
 
+class TmImportParsePayload(BaseModel):
+    """用户自己的词表文件：base64，不带 data: 前缀。"""
+
+    file_name: str = ""
+    data: str = Field(min_length=1)
+    lang_pair: str = ""
+
+
 class TmFullImportPayload(BaseModel):
     format_version: Literal["tm-full-v1"]
     custom_target_langs: list[dict[str, Any]] = Field(default_factory=list)

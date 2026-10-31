@@ -22,6 +22,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from core.zh_hant import is_traditional_chinese
+
 APP_NAME = "XL_TRANSLATOR"
 TRANSLATION_STYLE = "XLT_TRANSLATION"
 # 扩展数据里第一个字符串说明这段文字是怎么来的。
@@ -34,6 +36,7 @@ _XDATA_CHUNK = 240
 # 签名校验核实过）。simplex 收了除 œ 以外的法语字母；中文用国标字体加国标大字体。
 _LATIN_FONT = ("simplex.shx", "")
 _CJK_FONT = ("gbenor.shx", "gbcbig.shx")
+_CJK_TRADITIONAL_FONT = ("gbenor.shx", "chineset.shx")
 _LATIN_LANGS = frozenset({
     "en", "fr", "es", "pt", "de", "it", "nl", "ca", "ro", "pl", "cs", "sk", "sv",
     "da", "no", "nb", "fi", "id", "ms", "tr", "vi", "sw", "af", "hu", "hr", "sl",
@@ -56,7 +59,9 @@ def compatible_font(target_lang: str) -> tuple[str, str] | None:
     """译文专用样式用的 ``(字体, 大字体)``；这个目标语言没有合适的自带字体时返回 None。"""
     base = str(target_lang or "").split("-", 1)[0].split("_", 1)[0].lower()
     if base == "zh":
-        return _CJK_FONT
+        # 国标大字体只收 GB 2312 的字，繁体字大多不在里面，会显示成问号；繁体改用
+        # AutoCAD 自带的繁体大字体（Big5）。
+        return _CJK_TRADITIONAL_FONT if is_traditional_chinese(target_lang) else _CJK_FONT
     if base in _LATIN_LANGS:
         return _LATIN_FONT
     return None

@@ -9,15 +9,18 @@
   strip_markdown_json() — 健壮剥离 LLM 响应中的 markdown 代码块
   parse_response()      — 通用 JSON 数组响应解析，解析失败抛异常交重试链处理
 """
+import dataclasses
+import functools
 import json
 import re
 from abc import ABC, abstractmethod
 
 from loguru import logger
 
-from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.language_registry import get_source_lang_display, get_target_lang_prompt_name
 from core.language_preflight import TranslationLanguageResult, normalize_translation_language_result
 from core.prompt_cache import compose_system
+from core.zh_hant import is_traditional_chinese, to_traditional
 
 
 # ── 公共常量 ──────────────────────────────────────────────
@@ -80,7 +83,7 @@ def get_source_lang_name(source_lang: str) -> str:
 
 
 def get_target_lang_name(target_lang: str) -> str:
-    return get_target_lang_display(target_lang, include_optional=True)
+    return get_target_lang_prompt_name(target_lang)
 
 
 # ── 工具函数 ──────────────────────────────────────────────
@@ -173,7 +176,45 @@ def parse_response_with_sources(
 
 # ── 抽象基类 ──────────────────────────────────────────────
 
+def _wrap_traditional_fix(method, *, with_sources: bool):
+    """目标语言是繁體中文时，把译文里漏出来的简体字改成繁体（core.zh_hant）。
+
+    所有引擎（含转手的包装引擎）都从这里过：不管走哪个模块、哪家模型，写进文件和记忆库
+    之前译文已经是繁体。改法只动简体专用字，重复经过一次也不会再变。
+    """
+    if getattr(method, "_traditional_fix", False):
+        return method
+
+    @functools.wraps(method)
+    def wrapper(self, texts, target_lang, *args, **kwargs):
+        result = method(self, texts, target_lang, *args, **kwargs)
+        if not is_traditional_chinese(target_lang) or not result:
+            return result
+        if with_sources:
+            fixed_items = []
+            for item in result:
+                translation = getattr(item, "translation", None)
+                fixed = to_traditional(translation) if isinstance(translation, str) else translation
+                if fixed != translation and dataclasses.is_dataclass(item):
+                    item = dataclasses.replace(item, translation=fixed)
+                fixed_items.append(item)
+            return type(result)(fixed_items) if isinstance(result, list) else fixed_items
+        if isinstance(result, dict):
+            return {key: to_traditional(value) if isinstance(value, str) else value for key, value in result.items()}
+        return result
+
+    wrapper._traditional_fix = True  # type: ignore[attr-defined]
+    return wrapper
+
+
 class TranslationEngine(ABC):
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for name, with_sources in (("translate_batch", False), ("translate_batch_with_sources", True)):
+            method = cls.__dict__.get(name)
+            if callable(method) and not getattr(method, "__isabstractmethod__", False):
+                setattr(cls, name, _wrap_traditional_fix(method, with_sources=with_sources))
 
     @abstractmethod
     def translate_batch(
@@ -233,6 +274,11 @@ class TranslationEngine(ABC):
     def engine_name(self) -> str:
         """引擎标识名，用于 TM 记录 source_engine 字段。"""
         return self.__class__.__name__
+
+
+TranslationEngine.translate_batch_with_sources = _wrap_traditional_fix(  # type: ignore[method-assign]
+    TranslationEngine.translate_batch_with_sources, with_sources=True
+)
 
 
 def engine_supports_chat(engine) -> bool:

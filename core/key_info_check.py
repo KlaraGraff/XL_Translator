@@ -160,7 +160,7 @@ def _complete_dates(text: str, lang: str) -> list[frozenset[tuple[int, int, int]
     """每个完整日期给出它可能的 (年, 月, 日) 读法；写法有歧义时给出两种。"""
     if not _YEAR_RE.search(text):
         return []
-    lang = str(lang or "").lower().split("-")[0]
+    lang = re.split(r"[-_]", str(lang or "").lower(), maxsplit=1)[0]
     dates: list[frozenset[tuple[int, int, int]]] = []
     for kind, pattern in _DATE_PATTERNS:
         for match in pattern.finditer(text):
@@ -332,7 +332,7 @@ def _check_name_spelling(name: str, translation: str, target_lang: str) -> list[
     key = _name_key(name)
     if key in _name_key(translation):
         return []
-    cjk_target = str(target_lang or "").lower().split("-")[0] in {"zh", "ja", "ko"}
+    cjk_target = re.split(r"[-_]", str(target_lang or "").lower(), maxsplit=1)[0] in {"zh", "ja", "ko"}
     for run in _LATIN_RUN_RE.findall(translation):
         for written in run.replace("-", " ").split():
             # 译成拉丁字母语言时，普通词首字母也大写（句首）；只拿全大写的词比，

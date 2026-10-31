@@ -6,6 +6,7 @@ export const ICON_NAMES = [
   "excel",
   "word",
   "ppt",
+  "subtitle",
   "pdf",
   "cad",
   "convert",
@@ -59,6 +60,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // A projection board on a stand with three bars: a slide deck, distinct from the folded-sheet documents.
     body: '<rect x="3.5" y="4" width="17" height="12" rx="2.5"/><path d="M12 16v4M8.5 20h7M8 12.5V10.5M12 12.5V8M16 12.5V9.5"/>',
+  },
+  subtitle: {
+    viewBox: "0 0 24 24",
+    // A screen with two caption bars along its lower edge: subtitles, distinct from the slide-deck stand.
+    body: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M7 13.5h6M15 13.5h2M7 16.5h3M12 16.5h5"/>',
   },
   pdf: {
     viewBox: "0 0 24 24",

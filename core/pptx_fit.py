@@ -139,7 +139,7 @@ _BREAK_AFTER = set("-‐–—")
 _SPACES = {" ", "　", " ", " ", " "}
 # 宽度不定的标点：片段语言是中日韩时 PowerPoint 用东亚字体画（全角）。
 _AMBIGUOUS = set("“”‘’…—·")
-_EA_SCRIPTS = {"zh-cn": "Hans", "zh-sg": "Hans", "zh-tw": "Hant", "zh-hk": "Hant", "zh-mo": "Hant"}
+_EA_SCRIPTS = {"zh-cn": "Hans", "zh-sg": "Hans", "zh-tw": "Hant", "zh-hk": "Hant", "zh-mo": "Hant", "zh-hant": "Hant", "zh_hant": "Hant"}
 
 
 @dataclass(frozen=True)

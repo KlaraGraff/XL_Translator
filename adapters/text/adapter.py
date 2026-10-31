@@ -23,12 +23,12 @@ stays tight.  A heading or table cell, which must stay on one line, reads
 
 from __future__ import annotations
 
-import codecs
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from translator_adapter import MODE_BILINGUAL, OutputFile, ScanItem, TextUnit, TranslatedUnit
+from translator_adapter.text_file import TextSource, read_text_file
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 #: Longer paragraphs are cut at line boundaries so one unit stays a comfortable request.
@@ -43,34 +43,6 @@ _NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 # ── reading ─────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class _Source:
-    text: str
-    encoding: str
-    bom: bytes
-
-
-def _read(path: str | Path) -> _Source:
-    raw = Path(path).read_bytes()
-    if raw.startswith(codecs.BOM_UTF8):
-        return _Source(raw[len(codecs.BOM_UTF8):].decode("utf-8"), "utf-8", codecs.BOM_UTF8)
-    for bom, encoding in ((codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")):
-        if raw.startswith(bom):
-            return _Source(raw[len(bom):].decode(encoding), encoding, bom)
-    try:
-        return _Source(raw.decode("utf-8"), "utf-8", b"")
-    except UnicodeDecodeError:
-        pass
-    try:
-        text = raw.decode("gb18030")
-    except UnicodeDecodeError:
-        raise ValueError("无法识别文件编码，请将文件另存为 UTF-8 后再试。") from None
-    # Translations often hold characters a GBK editor cannot show (French
-    # accents and the like), so a GB18030 file is written back as UTF-8 with a
-    # byte-order mark, which every editor recognises.
-    return _Source(text, "utf-8", codecs.BOM_UTF8)
 
 
 @dataclass
@@ -222,7 +194,7 @@ class _Slot:
 
 
 class _Document:
-    def __init__(self, source: _Source, protect: tuple[re.Pattern[str], ...]) -> None:
+    def __init__(self, source: TextSource, protect: tuple[re.Pattern[str], ...]) -> None:
         self.source = source
         self.lines = _split_lines(source.text)
         self.newline = next((line.ending for line in self.lines if line.ending), "\n")
@@ -583,7 +555,7 @@ def _parse_markdown(document: _Document, lines: list[_Line], *, top: bool) -> No
 
 
 def _parse(path: str | Path) -> _Document:
-    source = _read(path)
+    source = read_text_file(path)
     if Path(path).suffix.lower() in MARKDOWN_SUFFIXES:
         document = _Document(source, _MARKDOWN_PATTERNS)
         _parse_markdown(document, document.lines, top=True)

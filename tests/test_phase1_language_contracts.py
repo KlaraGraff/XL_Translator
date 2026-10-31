@@ -19,14 +19,16 @@ from core.language_registry import (
 
 
 class Phase1LanguageContractTests(unittest.TestCase):
-    def test_single_catalog_has_59_builtin_languages_for_both_directions(self) -> None:
-        self.assertEqual(len(SUPPORTED_LANGS), 59)
+    def test_single_catalog_has_60_targets_and_59_sources(self) -> None:
+        self.assertEqual(len(SUPPORTED_LANGS), 60)
         self.assertEqual(len(SUPPORTED_SOURCE_LANGS), 59)
         catalog = get_language_catalog()
-        self.assertEqual(len(catalog), 59)
-        self.assertTrue(all(item["can_source"] and item["can_target"] for item in catalog))
+        self.assertEqual(len(catalog), 60)
+        self.assertTrue(all(item["can_target"] for item in catalog))
+        # 繁體中文只做目标语言；原文语言不分简繁，都按「中文」。
+        self.assertEqual([item["code"] for item in catalog if not item["can_source"]], ["zh_hant"])
         self.assertEqual(get_source_language_options()[0]["code"], AUTO_SOURCE_LANG)
-        self.assertEqual(len(get_target_language_options()), 59)
+        self.assertEqual(len(get_target_language_options()), 60)
 
     def test_search_resolves_english_name_and_iso(self) -> None:
         supported = get_supported_source_languages()

@@ -13,7 +13,7 @@ import uvicorn
 from loguru import logger
 
 from api.app import create_app
-from core import engine_file
+from core import engine_file, text_transport
 
 # How long uvicorn waits for open connections (mainly SSE streams) before it
 # closes them itself and runs the app's shutdown hook.
@@ -60,13 +60,34 @@ def end_child_processes(timeout: float = CHILD_STOP_SECONDS) -> list[int]:
     return [child.pid for child in children]
 
 
-def _end_child_processes_soon() -> None:
-    """Run ``end_child_processes`` off the calling thread.
+# Once the engine is shutting down nothing it starts is wanted any more, so the
+# sweep keeps running until the process exits: a runner whose converter was just
+# ended often falls back to the next one (LibreOffice → textutil, a second ODA
+# pass), and that one must not hold the shutdown for the whole task budget.
+CHILD_SWEEP_INTERVAL_SECONDS = 0.5
+_sweeper_started = threading.Event()
 
-    ``begin_shutdown`` runs inside a signal handler on Unix, where waiting for
-    other processes is not allowed.
+
+def _keep_ending_child_processes() -> None:
+    while True:
+        try:
+            end_child_processes()
+        except Exception:  # noqa: BLE001 - keep sweeping; one bad pid must not stop it
+            pass
+        time.sleep(CHILD_SWEEP_INTERVAL_SECONDS)
+
+
+def _end_child_processes_soon() -> None:
+    """Start ending this engine's child programs, now and until it exits.
+
+    Runs off the calling thread: ``begin_shutdown`` runs inside a signal
+    handler on Unix, where waiting for other processes is not allowed.  Calling
+    it again (signal and shutdown request both arrive) starts nothing new.
     """
-    threading.Thread(target=end_child_processes, daemon=True, name="translator-end-children").start()
+    if _sweeper_started.is_set():
+        return
+    _sweeper_started.set()
+    threading.Thread(target=_keep_ending_child_processes, daemon=True, name="translator-end-children").start()
 
 
 def _parent_process_is_alive(parent_pid: int) -> bool:
@@ -181,6 +202,9 @@ def main() -> None:
         manager = getattr(app.state, "task_manager", None)
         if manager is not None:
             manager.begin_shutdown()
+        # A runner waiting on a model reply (up to minutes) cannot see the stop
+        # flag; cancel the in-flight requests so it unwinds at once.
+        text_transport.cancel_all_requests()
         # After the runners know they are stopping, so a runner whose program
         # just died reads it as the stop, not as a conversion failure.
         _end_child_processes_soon()

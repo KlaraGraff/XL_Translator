@@ -91,3 +91,21 @@ const status = createTranslator("fr", [{
 assert.equal(status.tx("[阶段 2/3] 正在补译遗留的原文（13/13）..."), "[Étape 2/3] complétion du texte non traduit (13/13)…", "status lines match without their prefix");
 assert.equal(status.tx("正在补译遗留的原文（13/13）..."), "Complétion du texte non traduit (13/13)…", "status lines match without their stage mark");
 console.log("i18n engine status tests passed");
+
+// 繁體中文界面：词条照旧是简体，显示前转繁体；占位处的文件名、用户内容不转。
+const OpenCC = await import("../ui/node_modules/opencc-js/dist/esm/cn2t.js");
+const { createTraditionalConverter } = await import("../ui/src/i18n/zh-hant.ts");
+const toHant = createTraditionalConverter(OpenCC.Converter({ from: "cn", to: "twp" }));
+assert.equal(toHant("扩展类型参数"), "擴充功能類型參數", "wording fixes replace programmer jargon");
+assert.equal(toHant("高级设置"), "進階設定");
+const hant = createTranslator("zh-Hant", [catalog], toHant);
+assert.equal(hant.t("开始翻译"), "開始翻譯");
+assert.equal(hant.t("没有词条的中文"), "沒有詞條的中文", "strings without entries are converted too");
+assert.equal(hant.t("{0} 个任务运行中", 3), "3 個任務執行中");
+assert.equal(hant.tx("扫描到 12 个文件"), "掃描到 12 個檔案");
+assert.equal(hant.tx("Excel 没能启动：没有找到 Excel"), "Excel 沒能啟動：沒有找到 Excel");
+assert.equal(hant.tx("{1} 里有 {0} 处".replace("{1}", "会议纪要.xlsx").replace("{0}", "5")), "会议纪要.xlsx 裡有 5 處", "file names inside placeholders are left as they are");
+assert.equal(hant.tx("完全不认识的后端说明"), "完全不認識的後端說明", "unknown backend text is converted");
+assert.equal(hant.tx("已停止。原件不会被改动。"), "已停止。原件不會被改動。", "sentences join without spaces");
+assert.equal(hant.tx("Already English"), "Already English");
+console.log("i18n engine zh-Hant tests passed");

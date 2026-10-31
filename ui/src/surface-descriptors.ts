@@ -5,7 +5,7 @@
 // 拉取失败不影响启动，只是那些页面暂时不显示。
 
 import { ApiClient, type LocalizedText, type SurfaceDescriptor } from "./api-client";
-import { currentLocale } from "./i18n";
+import { pickLocalized } from "./i18n";
 import { ICON_NAMES, type IconName } from "./icons";
 import type { ViewId } from "./router";
 import { builtinTranslateSideItem, setTranslateSideItems } from "./shell";
@@ -55,7 +55,7 @@ export function surfaceDescriptor(key: string): SurfaceDescriptor | undefined {
 /** 描述符里同一段文字的三种语言，按当前界面语言取；缺这一种时依次退到中文、英文、法文。 */
 export function localizedText(value: LocalizedText | undefined, fallback = ""): string {
   if (!value) return fallback;
-  return value[currentLocale()] || value.zh || value.en || value.fr || fallback;
+  return pickLocalized(value) || fallback;
 }
 
 /** 运行时注册的类型在界面上的名字；描述符还没到时用键里的 id 顶上。 */

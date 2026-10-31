@@ -371,6 +371,14 @@
     "en": "English",
     "fr": "Anglais"
   },
+  "简体中文": {
+    "en": "Simplified Chinese",
+    "fr": "Chinois simplifié"
+  },
+  "繁體中文": {
+    "en": "Traditional Chinese",
+    "fr": "Chinois traditionnel"
+  },
   "法文": {
     "en": "French",
     "fr": "Français"

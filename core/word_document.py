@@ -27,6 +27,7 @@ from docx.text.run import Run
 from loguru import logger
 
 from config import REVIEW_MARK_COLOR_DEFAULTS
+from core.zh_hant import is_chinese_lang
 from core.bilingual_writer import bilingual_output_name, build_output_dir
 from core.language_registry import get_target_lang_display
 from core.mixed_language import (
@@ -3537,7 +3538,7 @@ def _copy_translation_paragraph_shape(
         if p_style is not None:
             copied_p_pr.remove(p_style)
     _strip_translation_flow_controls(source, copied_p_pr)
-    if target_lang != "zh":
+    if not is_chinese_lang(target_lang):
         _materialize_character_first_line_indent(source, copied_p_pr)
     _sort_paragraph_properties(copied_p_pr)
     target._p.insert(0, copied_p_pr)
@@ -3943,7 +3944,7 @@ def _style_font_color(paragraph: Paragraph):
 
 
 def _set_latin_run_font(run, *, target_lang: str) -> None:
-    if target_lang == "zh":
+    if is_chinese_lang(target_lang):
         return
     try:
         run.font.name = "Times New Roman"

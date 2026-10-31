@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 界面文字检查：中文、英文、法文 × 常用（1380×900）和最小（1080×700）窗口，逐页找放不下的文字。
+ * 界面文字检查：简体中文、繁體中文、英文、法文 × 常用（1380×900）和最小（1080×700）窗口，逐页找放不下的文字。
  * 规则见 docs/UI_TEXT_FIT.md：
  *   - 名称（按钮、标签、标题、菜单、下拉选项、提示、报错）被截断、被裁掉或伸出框外 → 报红；
  *   - 内容（文件名、路径、任务名……，元素带 .fit-clip）可以截断，但鼠标停上去要能看到全文，看不到 → 报红；
@@ -12,7 +12,7 @@
  * 「反馈此任务」弹窗、搜索面板、PDF 图文指引。
  *
  * 用法（仓库根目录）：
- *   node scripts/ui_text_fit_check.mjs [--out 目录] [--locales zh,en,fr] [--sizes std,min] [--no-pseudo]
+ *   node scripts/ui_text_fit_check.mjs [--out 目录] [--locales zh,zh-Hant,en,fr] [--sizes std,min] [--no-pseudo] [--all-shots]
  * 需要：Python 依赖（requirements.txt）、ui/node_modules、Playwright 和 Chromium。
  * 自己起后端（scripts/ui_text_fit_server.py：临时数据目录 + 样例文件 + 本机假模型）和 Vite 开发页，
  * 跑完全部关掉。退出码：0 全绿，1 有红项，2 检查本身出错。
@@ -35,10 +35,12 @@ const opt = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
 const OUT = path.resolve(opt("out", path.join(ROOT, ".runtime", "self-tests", "ui-text-fit", "report")));
-const LOCALES = opt("locales", "zh,en,fr").split(",");
+const LOCALES = opt("locales", "zh,zh-Hant,en,fr").split(",");
 const SIZE_DEFS = { std: { w: 1380, h: 900 }, min: { w: 1080, h: 700 } };
 const SIZES = opt("sizes", "std,min").split(",").map((tag) => ({ tag, ...SIZE_DEFS[tag] }));
 const PSEUDO = !args.includes("--no-pseudo");
+// --all-shots：每个画面都存截图（给人看改前改后），不只是出问题的画面。
+const ALL_SHOTS = args.includes("--all-shots");
 const API_PORT = Number(opt("api-port", "18795"));
 const UI_PORT = Number(opt("ui-port", "1431"));
 const TOKEN = "uitextfit";
@@ -259,12 +261,12 @@ async function scan(page, run, name) {
   const result = await page.evaluate(detect);
   run.states[name] = result;
   const bad = result.issues.length || result.hscroll.length || result.docOverflow;
-  if (bad) {
+  if (bad || ALL_SHOTS) {
     const dir = path.join(OUT, "shots");
     mkdirSync(dir, { recursive: true });
-    const file = `${run.locale.replace("+30%", "-long")}_${run.size}_${name.replace(/[^\w.-]+/g, "_")}.png`;
+    const file = `${run.locale.replace("+30%", "-long")}_${run.size}_${name.replace(/[^\p{L}\p{N}.-]+/gu, "_")}.png`;
     await page.screenshot({ path: path.join(dir, file) }).catch(() => undefined);
-    result.screenshot = `shots/${file}`;
+    if (bad) result.screenshot = `shots/${file}`;
   }
   const counts = result.issues.length ? ` ${result.issues.length} 处` : "";
   console.log(`${bad ? (run.blocking ? "✗" : "△") : "✓"} ${run.locale}/${run.size} ${name}${counts}${result.hscroll.length ? " 右栏横向滚动" : ""}${result.docOverflow ? " 整页横向滚动" : ""}`);
@@ -399,7 +401,7 @@ async function workedStates(browser, info, root, locale, size, pseudo) {
   if (finished) {
     await step(run, "13_弹窗_反馈此任务", async () => {
       // 结果横幅上的「反馈此任务」（task-feedback.ts，按钮带 data-action）。
-      const button = page.locator(".content .res button").filter({ hasText: /反馈|feedback|Signaler|retour/i }).first();
+      const button = page.locator(".content .res button").filter({ hasText: /反馈|回饋|feedback|Signaler|retour/i }).first();
       await button.click({ timeout: 3000 });
       await page.locator(".overlay .modal").first().waitFor({ state: "visible", timeout: 5000 });
       await settle(page, 600);

@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
-from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.language_registry import get_source_lang_display, get_target_lang_prompt_name
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 
 # 一批送多少行。页眉页脚全篇通常只有 1~6 行，这个值实际上等于「一次装得下」，
@@ -277,7 +277,7 @@ def build_header_footer_prompt(
     部分都别动，只把还没译的那几个字补进去」。
     """
     source_name = get_source_lang_display(source_lang)
-    target_name = get_target_lang_display(target_lang, include_optional=True)
+    target_name = get_target_lang_prompt_name(target_lang)
     lines = [
         "你在处理工程与合同文件的页眉页脚。页眉页脚常常一行里既有原文，也有早就写定的译文。",
         f"源语言：{source_name}。需要补出的译文语言：{target_name}。",
