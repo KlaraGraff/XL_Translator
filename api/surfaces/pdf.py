@@ -249,7 +249,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
 
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None,
                   request_callback=None, error_callback=None, resend_unchanged=None, stats=None,
-                  source_lang=None) -> dict:
+                  source_lang=None, extra_check=None) -> dict:
         # 页面自己拼提示词。接口放弃、停止时没发出去的条目不在结果里：页面再试一次，仍
         # 没有就记为「未获得译文」、列进这一页的复核清单，与 CAD 一致；原样返回的才可能是
         # 模型有意保留原文（core/pdf_vector/classify.py _translate_with_retry）。
@@ -259,7 +259,8 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         # source_lang：这一页认出的原文语种，引擎的任务说明里写「从中文译成法文」而不是「从 auto」。
         return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session,
                                  request_callback=request_callback, error_callback=error_callback,
-                                 resend_unchanged=resend_unchanged, stats=stats, source_lang=source_lang)
+                                 resend_unchanged=resend_unchanged, stats=stats, source_lang=source_lang,
+                                 extra_check=extra_check)
 
     profile = None
     if smart_mode:

@@ -129,6 +129,7 @@ _REASON_TEXT = {
     "ocr_code_uncertain": "编号或数字可能认错",
     "ocr_operator_uncertain": "比较符号（≤ ≥ < >）可能认错",
     "model_missing": "未获得译文",
+    "check_failed": "译文未通过自动检查，复查也未确认",
     "numeric_mismatch": "译文里的数字和原文不一致",
     "operator_mismatch": "译文里的比较符号和原文不一致",
     "source_not_removable": "原文删不干净（可能在图片里）",
@@ -227,6 +228,8 @@ def translate_page_inplace(
     )
     for err in summary.get("errors") or []:
         say("WARN", f"原位替换：{err}")
+    if summary.get("review_accepted"):
+        say("INFO", f"原位替换：{summary['review_accepted']} 处未通过自动检查，经复查意思一致，已采用")
     manifest = work_dir / "manifest.json"
     write_json(manifest, {**info, "rows": rows, "summary": summary})
 
@@ -248,7 +251,8 @@ def translate_page_inplace(
     review_items = [
         {"text": r["source_text"], "reason": reason_text(r["decision_reason"] if r["decision"] == "review"
                                                          else skipped.get(r["id"], "")),
-         "box_px": r["display_box"], **({"kind": "untranslated"} if r["id"] in missing else {})}
+         "box_px": r["display_box"], **({"kind": "untranslated"} if r["id"] in missing else {}),
+         **({"detail": r["review_note"]} if r["decision"] == "review" and r.get("review_note") else {})}
         for r in rows
         if r["decision"] == "review" or (r["id"] in decided_write and r["id"] not in written_ids)
     ]

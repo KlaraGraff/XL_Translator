@@ -1,0 +1,54 @@
+{
+  "{0}：{1} 段未通过自动检查，经复查意思一致，已采用": {
+    "en": "{0}: {1} segments failed the automatic check; a second check confirmed the meaning, so they were used",
+    "fr": "{0} : {1} segments n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, ils ont été retenus"
+  },
+  "经复查意思一致，已采用译文": {
+    "en": "Meaning confirmed by a second check; translation used",
+    "fr": "Sens confirmé par une seconde vérification ; traduction retenue"
+  },
+  "译文未通过自动检查，复查也未确认，已保留原文": {
+    "en": "The translation failed the automatic check and the second check did not confirm it; the source text was kept",
+    "fr": "La traduction n'a pas passé la vérification automatique et la seconde vérification ne l'a pas confirmée ; le texte source a été conservé"
+  },
+  "{0} 处未通过自动检查，经复查意思一致，已采用": {
+    "en": "{0} items failed the automatic check; a second check confirmed the meaning, so they were used",
+    "fr": "{0} éléments n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, ils ont été retenus"
+  },
+  "{0}：{1} 处译文未通过自动检查，经复查意思一致，已采用": {
+    "en": "{0}: {1} translations failed the automatic check; a second check confirmed the meaning, so they were used",
+    "fr": "{0} : {1} traductions n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, elles ont été retenues"
+  },
+  "未通过自动检查，经复查意思一致：{0}": {
+    "en": "Failed the automatic check, meaning confirmed by a second check: {0}",
+    "fr": "Échec de la vérification automatique, sens confirmé par une seconde vérification : {0}"
+  },
+  "译文未通过自动检查": {
+    "en": "The translation failed the automatic check",
+    "fr": "La traduction n'a pas passé la vérification automatique"
+  },
+  "原位替换：{0} 处未通过自动检查，经复查意思一致，已采用": {
+    "en": "In-place replacement: {0} items failed the automatic check; a second check confirmed the meaning, so they were used",
+    "fr": "Remplacement sur place : {0} éléments n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, ils ont été retenus"
+  },
+  "译文未通过自动检查，复查也未确认": {
+    "en": "Failed the automatic check and not confirmed by the second check",
+    "fr": "Échec de la vérification automatique, non confirmée par la seconde vérification"
+  },
+  "{0} 处未通过自动检查，经复查意思一致，已采用。": {
+    "en": "{0} items failed the automatic check; a second check confirmed the meaning, so they were used.",
+    "fr": "{0} éléments n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, ils ont été retenus."
+  },
+  "{0} 条译文未通过自动检查，经复查意思一致，已采用。": {
+    "en": "{0} translations failed the automatic check; a second check confirmed the meaning, so they were used.",
+    "fr": "{0} traductions n'ont pas passé la vérification automatique ; une seconde vérification a confirmé le sens, elles ont été retenues."
+  },
+  "{0} 条译文经复查发现问题，已带着问题重译并通过检查。": {
+    "en": "The second check found problems in {0} translations; they were retranslated with the problem noted and now pass the check.",
+    "fr": "La seconde vérification a relevé un problème dans {0} traductions ; elles ont été retraduites en tenant compte du problème et passent désormais la vérification."
+  },
+  "  → {0}：有 {1} 条未通过自动检查的译文复查没有完成，按原来的办法处理。": {
+    "en": "  → {0}: the second check of {1} translations that failed the automatic check did not finish; they are handled as before.",
+    "fr": "  → {0} : la seconde vérification de {1} traductions ayant échoué à la vérification automatique n'a pas abouti ; elles sont traitées comme avant."
+  }
+}

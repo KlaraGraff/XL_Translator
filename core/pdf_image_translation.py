@@ -988,7 +988,14 @@ def _with_stop(translate, should_stop):
 
     wrapped.resends_unchanged = _supports_resend_unchanged(translate)
     wrapped.takes_source_lang = _takes_source_lang(translate)
+    wrapped.takes_extra_check = _takes_extra_check(translate)
     return wrapped
+
+
+def _takes_extra_check(translate) -> bool:
+    from core.pdf_vector.classify import takes_extra_check
+
+    return takes_extra_check(translate)
 
 
 def _supports_resend_unchanged(translate) -> bool:
@@ -1130,6 +1137,7 @@ class _InplacePageProgress:
 
         wrapped.resends_unchanged = _supports_resend_unchanged(translate)
         wrapped.takes_source_lang = _takes_source_lang(translate)
+        wrapped.takes_extra_check = _takes_extra_check(translate)
         return wrapped
 
 

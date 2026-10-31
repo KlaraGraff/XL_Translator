@@ -343,6 +343,8 @@ class TaskRunner(BaseTaskRunner):
         # 一格里有几种格式时：整格纯文本 → 带 <g1>…</g1> 标记的原文（core/xlsx_rich_text.py）；
         # 翻译时由 InlineMarkEngine 换上，写回时按标记分片段
         self._marked_sources: dict[str, str] = {}
+        # 规则没过、模型复查判意思一致而采用的原文：不存进记忆库（core/translation_review）。
+        self._review_accepted_sources: set[str] = set()
         self._inline_mark_engine: InlineMarkEngine | None = None
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
@@ -1734,6 +1736,8 @@ class TaskRunner(BaseTaskRunner):
         for source in stats.untranslated_sources:
             # 记进总的未译计数：结果报告和「N 条未获得译文」要把这些也算上。
             batch_stats.record_untranslated([source], errors.get(source, ""))
+        # 规则没过、复查判意思一致而采用的：不存进记忆库（见 _smart_skips_tm）。
+        self._review_accepted_sources.update(stats.review_accepted)
         for source, translation in translated.items():
             if source in stats.stopped_sources:
                 continue
@@ -2046,12 +2050,15 @@ class TaskRunner(BaseTaskRunner):
             for source, translation in normal_api_translations.items():
                 if source in already_target:
                     continue
+                if source in batch_stats.review_accepted:
+                    # 和原文一样、但模型复查判定本来就该原样保留的（品牌名、型号）：不标复核。
+                    continue
                 if str(source or "").strip().lower() == str(translation or "").strip().lower():
                     # 接口失败、质量校验回退的原文各有各的计数和日志，这里只数
                     # 模型真给了回答、而且原样照抄的。
                     echoed += (
                         source not in batch_stats.untranslated_sources
-                        and source not in batch_stats.quality_reset_items
+                        and source not in batch_stats.quality_reset_reasons
                     )
                     _set_excel_review_mark(
                         excel_review_marks,
@@ -2242,7 +2249,15 @@ class TaskRunner(BaseTaskRunner):
                         "count": batch_stats.quality_reset_count,
                         "message": message,
                         "failed_sources": [
-                            {"source": source, "error": "译文未通过质量校验，已回退为原文"}
+                            {
+                                "source": source,
+                                "error": "译文未通过质量校验，已回退为原文"
+                                + (
+                                    f"：{batch_stats.quality_reset_reasons[source]}"
+                                    if batch_stats.quality_reset_reasons.get(source)
+                                    else ""
+                                ),
+                            }
                             for source in batch_stats.quality_reset_items
                         ],
                     }
@@ -2250,6 +2265,28 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     f"有 {batch_stats.quality_reset_count} 条译文未通过质量检查，已恢复为原文并记入结果报告。",
+                )
+            self._review_accepted_sources.update(batch_stats.review_accepted)
+            if batch_stats.review_accepted:
+                # 规则没过、模型复查判意思一致而采用的：写进文件，不涂复核底色，报告里只列一行。
+                accepted_count = len(batch_stats.review_accepted)
+                quality_issues.append(
+                    {
+                        "type": "model_review_accepted",
+                        "severity": "resolved",
+                        "count": accepted_count,
+                        "message": f"{accepted_count} 处未通过自动检查，经复查意思一致，已采用。",
+                        "sources": [
+                            {"source": _build_excel_source_excerpt(source), "reason": reason}
+                            for source, reason in list(batch_stats.review_accepted.items())[:50]
+                        ],
+                    }
+                )
+                self._log("INFO", f"{accepted_count} 条译文未通过自动检查，经复查意思一致，已采用。")
+            if batch_stats.review_fixed_sources:
+                self._log(
+                    "INFO",
+                    f"{len(batch_stats.review_fixed_sources)} 条译文经复查发现问题，已带着问题重译并通过检查。",
                 )
             self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
             self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
@@ -3643,6 +3680,9 @@ class TaskRunner(BaseTaskRunner):
         if session is not None and (
             source_text in session.not_applied_texts() or source_text in session.key_info_review
         ):
+            return True
+        # 规则没过、模型复查判意思一致而采用的：这次可以用，但不当作以后复用的标准译法。
+        if source_text in getattr(self, "_review_accepted_sources", ()):
             return True
         return bool(getattr(self, "_smart_mode", False)) and is_context_sensitive(source_text)
 

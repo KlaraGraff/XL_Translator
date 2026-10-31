@@ -316,6 +316,46 @@ def translation_problem(source: str, translation: str, target_lang: str) -> str:
     return ""
 
 
+def page_rule_problem(source: str, translation: str, target_lang: str) -> str:
+    """原位替换在公共规则之外多查的几条：译文里夹着原文、数字、比较符号。
+
+    没过的不再直接列进复核，而是和公共规则没过的一起交给模型复查（core/translation_review）；
+    这里返回给模型看的一句话，通过时为空串。"""
+    dst = norm_text(translation)
+    if not dst or translation_problem(source, dst, target_lang) == "retained_by_model":
+        # 模型原样退回、没译成目标语言：页面自己的「再问一次、仍原样就保留」管
+        return ""
+    if translation_problem(source, dst, target_lang) == "residual_source":
+        return "译文里还夹着没翻译的原文文字"
+    lost = [n for n in numbers(source, dates=True) if n not in numbers(dst, dates=True)]
+    if lost:
+        return "原文中的数字在译文里没找到：" + "、".join(dict.fromkeys(lost))
+    if sorted(re.findall(r"[<>≤≥=±]", source)) != sorted(re.findall(r"[<>≤≥=±]", dst)):
+        return "译文里的比较符号（< > ≤ ≥ = ±）和原文不一致"
+    return ""
+
+
+def takes_extra_check(fn) -> bool:
+    """The translate hook takes ``extra_check`` (this page's own rules, reviewed by the
+    model together with the shared ones); a wrapper says so with an attribute."""
+    if fn is None:
+        return False
+    if getattr(fn, "takes_extra_check", False):
+        return True
+    try:
+        return "extra_check" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _collect_review(result, accepted: dict | None, rejected: dict | None) -> None:
+    """The app's service hands back what the model review decided (TranslationResults)."""
+    if accepted is not None:
+        accepted.update(getattr(result, "review_accepted", None) or {})
+    if rejected is not None:
+        rejected.update(getattr(result, "rejected", None) or {})
+
+
 def supports_resend_unchanged(fn) -> bool:
     """The translate hook takes ``resend_unchanged`` (see _translate_with_retry); a
     wrapper that passes it through says so with a ``resends_unchanged`` attribute."""
@@ -357,6 +397,7 @@ def _reason(exc: BaseException) -> str:
 
 
 def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn, errors: list[str],
+                          accepted: dict | None = None, rejected: dict | None = None,
                           **extra) -> tuple[dict, int]:
     """Texts the service gave up on are left out of the result (the app's
     translate hook drops them, see core/text_translation_service.py); words that
@@ -382,20 +423,32 @@ def _translate_with_retry(texts: list[str], prompt: str, translate: TranslateFn,
             return True
 
         try:
-            res = dict(translate(texts, prompt, resend_unchanged=pick, **extra) or {})
+            raw = translate(texts, prompt, resend_unchanged=pick, **extra) or {}
+            _collect_review(raw, accepted, rejected)
+            res = dict(raw)
         except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
             errors.append(_reason(exc))
             return {}, 0
         return res, len(picked)
     try:
-        res = dict(translate(texts, prompt, **extra) or {})
+        raw = translate(texts, prompt, **extra) or {}
+        _collect_review(raw, accepted, rejected)
+        res = dict(raw)
     except Exception as exc:  # noqa: BLE001 - rows stay in review, the page keeps its source
         errors.append(_reason(exc))
         return {}, 0
-    again = [t for t in texts if needs_another_try(t, res.get(t))]
+    # 规则没过、复查也没确认的不再问第二次：那不是「没拿到译文」。
+    again = [t for t in texts if needs_another_try(t, res.get(t)) and t not in (rejected or {})]
     if again:
         try:
-            res.update({k: v for k, v in (translate(again, prompt, **extra) or {}).items() if v})
+            raw = translate(again, prompt, **extra) or {}
+            got = {k: v for k, v in raw.items() if v}
+            res.update(got)
+            if accepted is not None:
+                accepted.update({k: v for k, v in (getattr(raw, "review_accepted", None) or {}).items()})
+            if rejected is not None:
+                for k in got:
+                    rejected.pop(k, None)
         except Exception as exc:  # noqa: BLE001
             errors.append(_reason(exc))
     return res, len(again)
@@ -437,6 +490,9 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
         if c != norm_text(r["source_text"]):
             r["same_label_as"] = c
     errors: list[str] = []
+    # 规则没过、模型复查判意思一致的（不再用下面的规则否决）/ 复查也没确认的 → 理由。
+    review_accepted: dict[str, str] = {}
+    review_rejected: dict[str, str] = {}
     scene, retried, res = "", 0, {}
     session, from_memory = None, {}
     if to_model and translate is not None:
@@ -463,17 +519,28 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             extra = {"term_session": session} if session is not None else {}
             if source_lang in SOURCE_LANG_NAMES and takes_source_lang(translate):
                 extra["source_lang"] = source_lang
-            res, retried = _translate_with_retry(ask, prompt, translate, errors, **extra)
+            if takes_extra_check(translate):
+                # 这一页的数字、比较符号、残留原文：和公共规则一起只放行，没过的交给模型复查。
+                extra["extra_check"] = lambda src, dst: page_rule_problem(src, dst, target_lang)
+            res, retried = _translate_with_retry(ask, prompt, translate, errors,
+                                                 accepted=review_accepted, rejected=review_rejected, **extra)
         res.update(from_memory)
     not_applied = session.not_applied_texts() if session is not None else set()
     for r in to_model:
         dst = norm_text(res.get(r["model_input"]) or "")
         r["model_output"] = dst or None
         problem = translation_problem(r["model_input"], dst, target_lang) if dst else ""
-        if not dst:
+        if not dst and r["model_input"] in review_rejected:
+            r.update(decision="review", decision_reason="check_failed",
+                     review_note=review_rejected[r["model_input"]])
+        elif not dst:
             r.update(decision="review", decision_reason="model_missing")
         elif problem == "retained_by_model":
             r.update(decision="keep_source", decision_reason="retained_by_model", translation_source="retained_by_model")
+        elif r["model_input"] in review_accepted:
+            # 写回，不列复核；报告里记一行。这次可以用，但不存进记忆库。
+            r.update(translation=dst, translation_source="model", decision="write",
+                     decision_reason="model_review_accepted", review_note=review_accepted[r["model_input"]])
         elif problem:
             r.update(decision="review", decision_reason=problem)
         elif any(n not in numbers(dst, dates=True) for n in numbers(r["source_text"], dates=True)):
@@ -491,7 +558,8 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
         # short words learned on this page: only text read from the PDF itself,
         # an OCR misread must never become a memory entry
         learned = {r["model_input"]: r["translation"] for r in to_model
-                   if r["decision"] == "write" and r["translation_source"] == "model" and r.get("origin") != "ocr"}
+                   if r["decision"] == "write" and r["translation_source"] == "model" and r.get("origin") != "ocr"
+                   and r["decision_reason"] != "model_review_accepted"}
         counts: dict[str, int] = {}
         for r in to_model:
             counts[r["model_input"]] = counts.get(r["model_input"], 0) + 1
@@ -511,4 +579,5 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             "unique_requests": len({r["model_input"] for r in to_model}),
             "merged_variants": sum(1 for r in to_model if r.get("same_label_as")),
             "scene_profile": scene, "retried_unchanged": retried, "errors": errors[:5],
-            "memory_hits": len(from_memory), "term_review": sum(1 for r in rows if r.get("term_review"))}
+            "memory_hits": len(from_memory), "term_review": sum(1 for r in rows if r.get("term_review")),
+            "review_accepted": sum(1 for r in to_model if r["decision_reason"] == "model_review_accepted")}

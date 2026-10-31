@@ -62,6 +62,7 @@ from core.document_profile import (
 from core.document_terms import _LATIN_STOP, _cjk_ok, make_term_picker
 from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.term_session import TaskTermSession
+from core.translation_review import ReviewItem, build_review_prompt, review_translations
 from core.language_registry import (
     build_lang_pair,
     get_default_source_lang,
@@ -2447,20 +2448,33 @@ class WordTaskRunner(BaseTaskRunner):
             self._log_relayed("OK", f"{fixed} 格表格译文已重译，行数与原文一致。")
             return
 
-        def judge(source: str):
-            return _run_semantic_arbitration(
-                judge_engine,
-                source,
-                global_translations.get(source, ""),
-                target_lang=target_lang,
-                source_lang=source_lang,
-                api_scheduler=api_scheduler,
-                error_callback=lambda message: self._log("INFO", message),
-                should_stop=self.stop_requested,
-            )
-
         can_judge = engine_supports_chat(judge_engine) and not self._stop_event.is_set()
-        verdicts = map_concurrently(judge, unfixed, max_workers=max(1, int(concurrency or 1))) if can_judge else []
+        # 一起复查，每批最多 10 格（core/translation_review，与其它模式共用）。
+        ids = {source: str(index + 1) for index, source in enumerate(unfixed)}
+        judged = (
+            review_translations(
+                judge_engine,
+                [
+                    ReviewItem(
+                        ids[source],
+                        source,
+                        _candidate_validation_text(global_translations.get(source, "")),
+                        "表格单元格译文的行数和原文的段数不一致；只是分行不同、内容完整的不算错",
+                    )
+                    for source in unfixed
+                ],
+                source_lang=source_lang,
+                target_lang=target_lang,
+                api_scheduler=api_scheduler,
+                should_stop=self.stop_requested,
+                error_callback=lambda message: self._log("INFO", message),
+                context_label="Word 表格行数复查",
+                concurrency=concurrency,
+            )
+            if can_judge
+            else {}
+        )
+        verdicts = [judged[ids[source]] for source in unfixed] if judged else []
         same_meaning = [source for source, verdict in zip(unfixed, verdicts) if verdict.equivalent]
         self._layout_only_cells.update(same_meaning)
         kept = [source for source in unfixed if source not in self._layout_only_cells]
@@ -5136,92 +5150,33 @@ def _run_semantic_arbitration(
     api_scheduler: WeightedApiScheduler | None,
     error_callback: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    problem: str = "",
 ) -> _SemanticArbitrationResult:
+    """一条译文的「意思是否一致」复查：请求、提示词和解析都在 core/translation_review，
+    与 Excel、CAD、PDF 原位替换、扩展格式共用。拿不准、出错一律 uncertain。"""
     # 停止之后不再排队、不再发付费请求、不再限流重试：拿不准就按拿不准处理。
     if should_stop is not None and should_stop():
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "任务已停止")
     candidate_text = _candidate_validation_text(candidate)
     if not candidate_text:
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "候选译文为空")
-
-    system_prompt = _build_semantic_arbitration_prompt()
-    user_payload = json.dumps(
-        {
-            "source_language": source_lang,
-            "target_language": target_lang,
-            "source_text": source,
-            "candidate_translation": candidate_text,
-        },
-        ensure_ascii=False,
-    )
-    weight = estimate_api_request_weight([source, candidate_text], system_prompt)
-
-    request_generation: int | None = None
-    try:
-        if api_scheduler is None:
-            raw = engine.chat(system_prompt, user_payload)
-        else:
-            with api_scheduler.slot(
-                weight,
-                category=API_REQUEST_CATEGORY_RECOVERY,
-                should_stop=should_stop,
-            ) as lease:
-                request_generation = lease.generation
-                raw = engine.chat(system_prompt, user_payload)
-        payload = json.loads(strip_markdown_json(raw))
-    except Exception as exc:  # noqa: BLE001 - uncertain keeps original review path
-        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
-            raise
-        if isinstance(exc, ApiSchedulerAcquireCancelled) or (should_stop is not None and should_stop()):
-            return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "任务已停止")
-        if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
-            decision = handle_api_concurrency_limit(
-                exc,
-                scheduler=api_scheduler,
-                request_generation=request_generation,
-                context_label="Word 复查",
-                error_callback=error_callback,
-                should_stop=should_stop,
-            )
-            if decision is not None:
-                return _run_semantic_arbitration(
-                    engine,
-                    source,
-                    candidate,
-                    target_lang=target_lang,
-                    source_lang=source_lang,
-                    api_scheduler=api_scheduler,
-                    error_callback=error_callback,
-                    should_stop=should_stop,
-                )
-        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, str(exc))
-
-    if not isinstance(payload, dict):
-        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "仲裁结果不是 JSON 对象")
-
-    verdict = str(payload.get("verdict") or "").strip().lower()
-    if verdict not in {
-        _SEMANTIC_VERDICT_EQUIVALENT,
-        _SEMANTIC_VERDICT_NOT_EQUIVALENT,
-        _SEMANTIC_VERDICT_UNCERTAIN,
-    }:
-        verdict = _SEMANTIC_VERDICT_UNCERTAIN
-    reason = str(payload.get("reason") or "").strip()
-    return _SemanticArbitrationResult(verdict, reason)
+    verdict = review_translations(
+        engine,
+        [ReviewItem("1", source, candidate_text, problem)],
+        source_lang=source_lang,
+        target_lang=target_lang,
+        api_scheduler=api_scheduler,
+        should_stop=should_stop,
+        error_callback=error_callback,
+        context_label="Word 复查",
+    ).get("1")
+    if verdict is None:
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "")
+    return _SemanticArbitrationResult(verdict.verdict, verdict.reason)
 
 
 def _build_semantic_arbitration_prompt() -> str:
-    return (
-        "你是一个严谨的合同与工程文本翻译质量仲裁器。\n"
-        "任务：只判断候选译文是否完整、准确传达源文的全部实质信息。\n"
-        "判定规则：\n"
-        "1. 日期、金额、单位、编号、公司名或专有名词可以用目标语言习惯表达，只要事实等价即可。\n"
-        "2. 如果遗漏主体、义务、条件、范围、日期、金额、比例、处罚或关键限制，必须判定为 not_equivalent。\n"
-        "3. 如果候选译文只是摘要、只翻译局部、照抄原文、包含明显大量未翻译源语言内容，必须判定为 not_equivalent。\n"
-        "4. 无法确定时判定为 uncertain。\n"
-        "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
-        '{"verdict":"equivalent|not_equivalent|uncertain","reason":"简短原因"}'
-    )
+    return build_review_prompt()
 
 
 def _run_header_footer_batch(

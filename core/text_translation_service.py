@@ -36,6 +36,21 @@ _AUTO_MEMORY_SOURCES = ("en", "fr", "zh")
 _SURFACE_LOG_LABELS = {"cad": "CAD", "pdf": "PDF", "ext:pptx": "PPT"}
 
 
+class TranslationResults(dict):
+    """``{原文: 译文}``，另带两份规则复查的结果（core/translation_review）：
+
+    * ``review_accepted``：规则没过、模型复查判「意思一致」而采用的原文 → 模型的理由。
+      调用方不再拿自己的规则去否决它们，不标复核，报告里列一行，不存进记忆库；
+    * ``rejected``：规则没过、复查也没采用的原文 → 原因。它们不在字典里（以前用
+      「译文 = 原文」表示，页面分不清是退回还是模型有意保留），调用方按「未获得译文」处理。
+    """
+
+    def __init__(self, *args, review_accepted=None, rejected=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.review_accepted: dict[str, str] = dict(review_accepted or {})
+        self.rejected: dict[str, str] = dict(rejected or {})
+
+
 class TextTranslationService:
     """一个任务里文字翻译的共用部分：引擎、提示词、分批请求、记忆库。
 
@@ -142,7 +157,8 @@ class TextTranslationService:
         resend_unchanged: Callable[[str, str | None], bool] | None = None,
         stats: Any = None,
         source_lang: str | None = None,
-    ) -> dict[str, str]:
+        extra_check: Callable[[str, str], str] | None = None,
+    ) -> TranslationResults:
         """分批翻译，返回 ``{原文: 译文}``。
 
         ``prompt`` 不给时用 ``system_prompt()``；``context`` 是「自动识别场景」的文档说明，
@@ -151,6 +167,9 @@ class TextTranslationService:
 
         接口放弃的批次、停止时没发出去的批次，``translate_texts`` 按原文占位交回。那不是
         译文，这里把它们摘掉，调用方据此记为「未获得译文」、标需复核（CAD 与 PDF 原位替换）。
+
+        ``extra_check(原文, 译文)`` 是这一页自己的规则（CAD 的数字、PDF 的比较符号），和
+        公共规则一起只负责放行，没过的交给模型复查；结果见 :class:`TranslationResults`。
         """
         # ``stats`` 给了就记在调用方的那份里（PDF 任务据此统计批次重试和降速次数）。
         stats = stats if stats is not None else engine_dispatcher.TranslationBatchRunStats()
@@ -182,11 +201,23 @@ class TextTranslationService:
             resend_unchanged=resend_unchanged,
             # 限流、降速提示开头写哪个页面（以前一律写成「Excel」）。
             context_label=self.log_label,
+            extra_check=extra_check,
+            # 复查理由用界面语言写（报告里给用户看）。
+            reason_lang=str(getattr(self.settings, "ui_language", "zh") or "zh"),
         )
         for text in stats.untranslated_sources | stats.stopped_sources:
             if results.get(text) == text:
                 results.pop(text, None)
-        return results
+        rejected = {}
+        for text, reason in dict(stats.quality_reset_reasons).items():
+            if text in results:
+                results.pop(text, None)
+                rejected[text] = reason
+        return TranslationResults(
+            results,
+            review_accepted={k: v for k, v in stats.review_accepted.items() if k in results},
+            rejected=rejected,
+        )
 
     def translate_with_sources(
         self,
