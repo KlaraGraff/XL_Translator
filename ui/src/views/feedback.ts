@@ -670,14 +670,14 @@ function renderKinds(): void {
       kindOption({
         checked: draft.includeSources,
         title: t("原文件"),
-        hint: t("所选任务翻译的原始文件。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        hint: t("所选任务翻译的原始文件。文件可能包含客户资料，如不便提供，可取消勾选。"),
         count: taskFilesCount(["source"]),
         onChange: (value) => { draft.includeSources = value; },
       }),
       kindOption({
         checked: draft.includeOutputs,
         title: t("译文"),
-        hint: t("所选任务生成的译文文件，含压缩版 PDF。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        hint: t("所选任务生成的译文文件，含压缩版 PDF。文件可能包含客户资料，如不便提供，可取消勾选。"),
         count: taskFilesCount(["output", "compressed"]),
         onChange: (value) => { draft.includeOutputs = value; },
       }),
