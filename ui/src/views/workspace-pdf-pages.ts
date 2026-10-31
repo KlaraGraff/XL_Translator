@@ -37,7 +37,16 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
       }
     }
   }
-  return rows;
+  return rows.sort((a, b) => recoveryRowRank(a.page) - recoveryRowRank(b.page));
+}
+
+/** 「页恢复」的排序档位：还没处理的失败页 0，已安排重新生成或跳过的 1，已跳过的 2。
+ *  sort 是稳定的，同一档里仍按文件、页码的原顺序。用户从上往下一页页点，点过的那行挪到
+ *  下面去，待处理的始终在最上面，不用在几十行里找哪些还没点过。 */
+function recoveryRowRank(page: PdfPage): number {
+  if (page.pending_action) return 1;
+  if (page.user_skipped) return 2;
+  return 0;
 }
 
 /** 刚点下去、快照还没回来的那一次单页重生成。
@@ -87,16 +96,23 @@ function isPageRerunning(snapshot: PdfPagesSnapshot, file: PdfPageFile, page: Pd
   );
 }
 
-async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage, action: "regenerate" | "skip"): Promise<void> {
+async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage, action: "regenerate" | "skip" | "cancel"): Promise<void> {
   try {
     const c = await getClient();
     if (action === "regenerate") await c.regeneratePdfPage(taskId, file.relative_path, page.page_number);
-    else await c.skipPdfPage(taskId, file.relative_path, page.page_number);
-    showToast({ message: action === "regenerate" ? t("已安排重新生成第 {0} 页，继续翻译后执行。", page.page_number) : t("已安排跳过第 {0} 页，继续翻译后执行。", page.page_number) });
+    else if (action === "skip") await c.skipPdfPage(taskId, file.relative_path, page.page_number);
+    else await c.cancelPdfPageAction(taskId, file.relative_path, page.page_number);
+    showToast({ message: pageActionToast(action, page) });
     await fetchPdfPagesSnapshot(surface, taskId);
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, t("操作失败。")), error: true });
   }
+}
+
+function pageActionToast(action: "regenerate" | "skip" | "cancel", page: PdfPage): string {
+  if (action === "regenerate") return t("已安排重新生成第 {0} 页，继续翻译后执行。", page.page_number);
+  if (action === "skip") return t("已安排跳过第 {0} 页，继续翻译后执行。", page.page_number);
+  return page.pending_action === "skip" ? t("已取消跳过第 {0} 页。", page.page_number) : t("已取消第 {0} 页的重试。", page.page_number);
 }
 
 /** 危险操作确认：要再花一次钱、还会改写可能已经交出去的文件，两条都得说。
@@ -271,17 +287,22 @@ function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSn
   nm.textContent = filePrefix + t("第 {0} 页", page.page_number) + " · " + tx(redactedText(page.error, page.placeholder ? t("页图生成失败") : t("待处理")));
   row.append(nm);
 
+  // 暂停时排上的操作要等继续翻译才真正执行，这之前一个请求都没发出去，所以排上的那个
+  // 按钮就地换成撤回：点了重试的行显示「取消重试」，点了跳过的行显示「取消跳过」，
+  // 另一个按钮照旧可点（后端会用新操作顶替旧的）。
+  const queuedRegenerate = page.pending_action === "regenerate";
+  const queuedSkip = page.pending_action === "skip";
   row.append(createButton({
-    label: t("立即重试"),
+    label: queuedRegenerate ? t("取消重试") : t("立即重试"),
     size: "mini",
     disabled: !actionable,
-    onClick: () => void runPdfPageAction(surface, taskId, file, page, "regenerate"),
+    onClick: () => void runPdfPageAction(surface, taskId, file, page, queuedRegenerate ? "cancel" : "regenerate"),
   }));
   row.append(createButton({
-    label: t("跳过该页"),
+    label: queuedSkip ? t("取消跳过") : t("跳过该页"),
     size: "mini",
     disabled: !actionable,
-    onClick: () => void runPdfPageAction(surface, taskId, file, page, "skip"),
+    onClick: () => void runPdfPageAction(surface, taskId, file, page, queuedSkip ? "cancel" : "skip"),
   }));
   return row;
 }

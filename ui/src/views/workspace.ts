@@ -3020,10 +3020,15 @@ function buildRunBox(surface: Surface, st: SurfaceState, local: LocalTask, share
       && local.task.state !== "pausing"
       && silence >= SILENCE_NOTICE_SECONDS;
     // 安全停止时不再发新请求，安静的这段多半是在写文件，只说「等接口」会误导。
+    // 进了「生成文件」阶段也一样：页都翻完了，再说「此批内容已发送至模型」就是旧闻
+    // （PDF 已生成 322 / 322 页、正在装配输出文件时，这句还挂着）。
     if (waiting) {
+      const writing = local.stageName === DEFAULT_STAGE_LAST;
       note = local.task.state === "stopping"
         ? t("已等待 {0} 秒：正在收尾，待进行中的请求返回后将已翻译的内容写入文件。大文档耗时较长，程序仍在正常运行。", silence)
-        : t("已等待 {0} 秒：此批内容已发送至模型，正在等待返回译文，程序仍在正常运行。", silence);
+        : writing
+          ? t("已等待 {0} 秒：正在生成输出文件，大文件耗时较长，程序仍在正常运行。", silence)
+          : t("已等待 {0} 秒：此批内容已发送至模型，正在等待返回译文，程序仍在正常运行。", silence);
     }
   }
   const log = createFold({

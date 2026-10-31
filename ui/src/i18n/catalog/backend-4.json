@@ -667,6 +667,10 @@
     "en": "This task cannot be ended directly while paused. Click “Stop”.",
     "fr": "Cette tâche ne peut pas être terminée directement pendant la pause. Cliquez sur « Arrêter »."
   },
+  "此 PDF 任务不支持撤回已安排的单页操作。": {
+    "en": "This PDF task does not support withdrawing a queued page action.",
+    "fr": "Cette tâche PDF ne permet pas d'annuler une action de page programmée."
+  },
   "此页只能选择「重新生成」或「跳过」。": {
     "en": "For this page, you can only choose “Regenerate” or “Skip”.",
     "fr": "Pour cette page, vous ne pouvez choisir que « Régénérer » ou « Passer »."

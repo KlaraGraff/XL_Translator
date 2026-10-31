@@ -836,6 +836,14 @@ export class ApiClient {
     });
   }
 
+  /** 撤回暂停时排上的「重新生成」或「跳过」；排上的操作要等继续翻译才执行，撤回后这一页回到原状。 */
+  async cancelPdfPageAction(taskId: string, file: string, page: number): Promise<void> {
+    await this.request(`/api/tasks/${taskId}/pdf-pages/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ file, page }),
+    });
+  }
+
   /** 终态任务专用：regeneratePdfPage 是「排队，继续翻译时生效」，这一条是「现在就重跑
    *  这一页，并把输出文件重新合成一遍」。 */
   async rerunPdfPage(taskId: string, file: string, page: number): Promise<void> {

@@ -1727,6 +1727,41 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_number=page_number,
         )
 
+    def cancel_page_action(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+        """Withdraw a queued page action before the resume sends any request.
+
+        Queued actions only take effect at the pause boundary in ``_run``, so
+        while the task is still paused nothing has reached the model yet and
+        dropping the entry leaves the page exactly as it was.  Cancelling a
+        page with nothing queued is accepted and reports ``cancelled: ""``:
+        a second click racing the snapshot refresh must not surface an error.
+        """
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise PdfPageActionError("页码必须是整数。") from exc
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+            if prepared is None:
+                raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+            record = prepared.record
+            cancelled = ""
+            remaining: list[_PdfPageAction] = []
+            for action in self._pending_page_actions:
+                if action.relative_path == record.relative_path and action.page_number == page_number:
+                    cancelled = action.kind
+                else:
+                    remaining.append(action)
+            self._pending_page_actions = remaining
+            file_name = record.name
+        return {
+            "action": "cancel",
+            "cancelled": cancelled,
+            "relative_path": relative_path,
+            "name": file_name,
+            "page_number": page_number,
+        }
+
     # ---- single-page rerun after the task ended --------------------------------
     #
     # The paused-task actions above only queue: ``_run`` is still parked inside
