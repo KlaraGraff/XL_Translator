@@ -19,6 +19,7 @@ from config import (
     get_local_concurrency_bounds,
     normalize_cloud_base_url,
 )
+from core.local_endpoint import config_runs_locally
 from core.model_roles import (
     EffectiveModelConfig,
     MODEL_ROLE_LABELS,
@@ -62,13 +63,13 @@ def model_throughput_key(config: EffectiveModelConfig) -> str:
 def batch_size_bounds(config: EffectiveModelConfig) -> tuple[int, int] | None:
     if config.role not in TEXT_THROUGHPUT_ROLES:
         return None
-    if config.mode == "local":
+    if config_runs_locally(config):
         return CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX
     return CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX
 
 
 def concurrency_bounds(config: EffectiveModelConfig) -> tuple[int, int]:
-    if config.mode == "local":
+    if config_runs_locally(config):
         return get_local_concurrency_bounds(False)
     if config.role in {ROLE_IMAGE, ROLE_PDF_REVIEW}:
         return 1, PDF_PAGE_CONCURRENCY_SAFETY_CAP
@@ -104,7 +105,7 @@ def _default_batch_size(
     bounds = bounds or (1, 2**31 - 1)
     minimum, maximum = bounds
     return _clamp_int(
-        CHUNK_LOCAL_DEFAULT if config.mode == "local" else CHUNK_CLOUD_DEFAULT,
+        CHUNK_LOCAL_DEFAULT if config_runs_locally(config) else CHUNK_CLOUD_DEFAULT,
         minimum=minimum,
         maximum=maximum,
         fallback=minimum,
@@ -112,7 +113,7 @@ def _default_batch_size(
 
 
 def _default_concurrency(settings: AppSettings, config: EffectiveModelConfig) -> int:
-    if config.mode == "local":
+    if config_runs_locally(config):
         raw = CONCURRENCY_LOCAL_DEFAULT
     elif config.role == ROLE_IMAGE:
         raw = PDF_PAGE_CONCURRENCY_DEFAULT

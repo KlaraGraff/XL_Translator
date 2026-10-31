@@ -47,6 +47,7 @@ from core.api_concurrency_control import (
 )
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
+from core.local_endpoint import is_this_computer_url
 from core.prompt_cache import carry_meter
 from core.surface_settings import is_extension_key, surface_setting
 from core.translation_protocol import should_apply_quality_filter
@@ -290,6 +291,9 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
 
     if provider in ("openai", "siliconflow", "custom_openai", "lanyi", "deepseek", "xiaomi"):
         from engines.openai_engine import OpenAIEngine
+        # 本机的模型服务（如 Ollama 的 /v1 接口）接成了云端连接：引擎名按本地模型标，
+        # 各板块据此一次只发一批、按本地的每批大小切分（core/local_endpoint.py）。
+        on_this_computer = is_this_computer_url(cloud_base_url)
         return OpenAIEngine(
             api_key=api_key,
             model=cloud_model,
@@ -297,6 +301,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
             api_mode=provider_config.api_mode,
             connection_id=s.connections[0].id if s.connections else "",
             model_role=getattr(settings, "_runtime_model_role", "translation"),
+            **({"engine_name_prefix": f"local_openai/{provider}"} if on_this_computer else {}),
         )
 
     if provider == "zhipu":
