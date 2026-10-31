@@ -1306,15 +1306,18 @@ class TranslationTaskManager:
     ) -> dict[str, Any]:
         """Queue a single-page action; only a paused task may accept one."""
         normalized = str(action or "").strip().lower()
-        if normalized not in {"regenerate", "skip"}:
+        if normalized not in {"regenerate", "skip", "cancel"}:
             raise TaskInputError("此页只能选择「重新生成」或「跳过」。")
         task = self._get_task(task_id)
         runner = self._pdf_review_runner(task)
-        method = (
-            runner.request_page_regenerate
-            if normalized == "regenerate"
-            else runner.request_page_skip
-        )
+        if normalized == "regenerate":
+            method = runner.request_page_regenerate
+        elif normalized == "skip":
+            method = runner.request_page_skip
+        else:
+            method = getattr(runner, "cancel_page_action", None)
+            if not callable(method):
+                raise TaskInputError("此 PDF 任务不支持撤回已安排的单页操作。")
         # The state check and the queueing happen under the same task condition
         # that ``resume_task`` uses to flip the state.  Either this request is
         # queued while the runner still waits inside its pause loop, or the task

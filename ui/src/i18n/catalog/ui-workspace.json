@@ -807,6 +807,10 @@
     "en": "Waiting for {0} s: finishing. Once pending requests return, the translated content will be written to the files. Large documents take longer; the app is still running normally.",
     "fr": "Attente depuis {0} s : finalisation en cours. Dès le retour des requêtes en cours, le contenu traduit sera écrit dans les fichiers. Les gros documents prennent plus de temps ; l'application fonctionne normalement."
   },
+  "已等待 {0} 秒：正在生成输出文件，大文件耗时较长，程序仍在正常运行。": {
+    "en": "Waiting for {0} s: generating the output files. Large files take longer; the app is still running normally.",
+    "fr": "Attente depuis {0} s : génération des fichiers de sortie. Les gros fichiers prennent plus de temps ; l'application fonctionne normalement."
+  },
   "已等待 {0} 秒：此批内容已发送至模型，正在等待返回译文，程序仍在正常运行。": {
     "en": "Waiting for {0} s: this batch has been sent to the model and the translation is pending; the app is still running normally.",
     "fr": "Attente depuis {0} s : ce lot a été envoyé au modèle et la traduction est attendue ; l'application fonctionne normalement."
