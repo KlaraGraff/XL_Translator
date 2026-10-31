@@ -32,6 +32,7 @@ from loguru import logger
 from core.output_metadata import is_translation_output
 
 from core.cad_cache import CadDxfCache
+from core.cad_list_layout import fit_bilingual_lists
 from core.cad_layout import (
     FitSettings,
     fit_added_lines,
@@ -2316,6 +2317,18 @@ class CadTranslationPipeline:
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,
                 )
+                # 一列上下排的说明（每条一段多行文字）：双语的译文接在原文后面，会压到下一条，
+                # 整列重新往下排开（见 core.cad_list_layout）。
+                if bilingual:
+                    stats.layout_fitted += fit_bilingual_lists(
+                        records,
+                        {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
+                        _plain_text,
+                        below=below,
+                        bilingual_scale=_BILINGUAL_SCALE,
+                        settings=FitSettings(options.fit_default_scale, options.fit_min_scale),
+                        unresolved=layout_unresolved,
+                    )
                 stats.layout_fitted += fit_translated_texts(
                     records,
                     {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
