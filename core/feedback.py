@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
-from core import diagnostics, system_proxy
+from core import diagnostics, install_failures, system_proxy
 from core.task_logger import app_event_logger, redact_absolute_paths
 import settings as settings_module
 
@@ -362,6 +362,8 @@ def _system_summary(settings: Any) -> dict[str, Any]:
         **diagnostics._build_runtime_payload(),
         "hardware": _hardware_summary(),
         "connection_summary": diagnostics._connection_summary(settings),
+        # 最近几次组件一键安装失败的原因；界面上只有一句话，排查要看这里。
+        "component_install_failures": install_failures.recent_failures(),
     }
 
 
