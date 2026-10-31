@@ -13,7 +13,6 @@
 | `adapter_api_version` | 是 | 写 `1` |
 | `label` | 是 | 类型名称，`{"zh", "en", "fr"}` 三种语言都要有 |
 | `file_noun` | 是 | 文件的叫法，三种语言 |
-| `file_noun_one` | 否 | 一个文件时的英文、法文单数叫法 |
 | `extensions` | 是 | 扩展名列表，不带点，如 `["myfmt"]` |
 | `description` | 建议 | 页面「?」里的说明，三种语言；提交到扩展列表时必须有 |
 | `prompt` | 否 | 发给模型的内置规则（中文，最长 4000 字）；省略时用 Translator 通用的那份 |

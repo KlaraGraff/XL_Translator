@@ -19,7 +19,7 @@ On GitHub, click "Use this template" to create your own repository, then clone i
 
 1. Edit `adapter.json`:
    - `id`: lower-case letters, digits, `-` and `_`, at most 40 characters; do not change it once published.
-   - `label`, `file_noun`, `description`: the type's name, what its files are called, and the text under the page's "?", each in Chinese, English and French. `file_noun_one` is the English and French singular, used when there is exactly one file.
+   - `label`, `file_noun`, `description`: the type's name, what its files are called, and the text under the page's "?", each in Chinese, English and French.
    - `extensions`: the file extensions it handles.
    - `prompt`: the built-in rules sent to the model; optional, and users can rewrite it under Settings → Translation options.
    - `capabilities`: which outputs it supports, translation only and/or source + translation. `options`: switches shown on the page; optional.
