@@ -193,6 +193,23 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
         self.assertNotIn(IMAGE_MODEL_ADVICE, result.message)
         self.assertIn("密钥", result.message)
 
+    def test_review_on_zhipu_and_dashscope_goes_to_their_fixed_endpoint_over_chat(self) -> None:
+        """智谱、阿里百炼不让填 Base URL：看图请求发到它们写死的 OpenAI 兼容地址，走 chat。"""
+        for provider in ("zhipu", "dashscope"):
+            with self.subTest(provider=provider):
+                _FakeSiliconFlow.calls = []
+                with patch.dict(
+                    "core.image_requests._FIXED_OPENAI_BASE_URLS", {provider: self.base_url}
+                ):
+                    result = OpenAICompatiblePdfReviewClient(timeout_seconds=10).review_page(
+                        source_image_path=self.source,
+                        translated_image_path=self.source,
+                        target_language="English",
+                        model_config=self._config(ROLE_PDF_REVIEW, "Qwen/Qwen3-VL-32B-Instruct", provider=provider),
+                    )
+                self.assertTrue(result.passed)
+                self.assertEqual(self._paths(), ["/v1/chat/completions"])
+
     def test_review_on_siliconflow_goes_straight_to_chat_with_both_images(self) -> None:
         result = OpenAICompatiblePdfReviewClient(timeout_seconds=10).review_page(
             source_image_path=self.source,
