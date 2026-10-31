@@ -35,6 +35,7 @@ from config import (
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
     API_REQUEST_CATEGORY_NORMAL,
+    API_REQUEST_CATEGORY_RECOVERY,
     ApiConcurrencyLimitDecision,
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
@@ -52,9 +53,22 @@ from core.prompt_cache import carry_meter
 from core.surface_settings import is_extension_key, surface_setting
 from core.translation_protocol import should_apply_quality_filter
 from core.user_facing_errors import humanize_error
-from engines.base_engine import TranslationEngine
+from engines.base_engine import TranslationEngine, engine_supports_chat
 from settings import AppSettings, get_cloud_provider_config, get_key
-from core.translation_filter import is_translation_redundant  # 质量闭环拦截
+from core.translation_filter import (  # 质量闭环拦截
+    VALIDATION_PROFILE_STRICT,
+    validate_translation,
+)
+from core.translation_review import (  # 规则没过的交给模型复查
+    OUTCOME_ACCEPTED,
+    OUTCOME_FIXED,
+    RuleFailure,
+    describe_validation,
+    hard_failure,
+    retranslation_hint,
+    review_and_repair,
+    summarize_outcomes,
+)
 
 # 调用方没给每批字符上限时的兜底（v38 起 Excel、CAD、PDF 原位替换都按「翻译参数」
 # 传入，见 core/surface_rate.py）。
@@ -161,6 +175,16 @@ class TranslationBatchRunStats:
     failed_items: list[dict[str, str]] = field(default_factory=list)
     quality_reset_count: int = 0
     quality_reset_items: list[str] = field(default_factory=list)
+    # 规则没过、复查也没采用、最后恢复成原文的全部原文 → 原因（规则的问题或模型的理由）。
+    # quality_reset_items 是限量采样，判断「这条是不是被退回的」要用这一份全集。
+    quality_reset_reasons: dict[str, str] = field(default_factory=dict)
+    # 规则没过、模型复查判「意思一致」而采用的译文：原文 → 模型的理由（core/translation_review）。
+    # 不涂复核底色，报告里列一行，不存进记忆库。
+    review_accepted: dict[str, str] = field(default_factory=dict)
+    # 复查判「不一致」、带着问题重译后通过了规则的原文。
+    review_fixed_sources: set[str] = field(default_factory=set)
+    # 送去复查的条数（含后来采用、重译、退回的）。
+    review_checked_count: int = 0
     # API 失败回退（译文=原文）的全量源文集合。failed_items 是限量采样，
     # 质量校验去重必须用全集，否则超出采样上限的条目仍会被二次计数。
     untranslated_sources: set[str] = field(default_factory=set)
@@ -201,12 +225,25 @@ class TranslationBatchRunStats:
                     }
                 )
 
-    def record_quality_reset(self, source_text: str) -> None:
+    def record_quality_reset(self, source_text: str, reason: str = "") -> None:
         """质量校验把译文重置回原文时留痕：条目必须能被任务层看见并上报。"""
         with self._lock:
             self.quality_reset_count += 1
+            self.quality_reset_reasons[source_text] = str(reason or "")
             if source_text and len(self.quality_reset_items) < _FAILED_ITEM_SAMPLE_LIMIT:
                 self.quality_reset_items.append(source_text)
+
+    @property
+    def quality_reset_sources(self) -> set[str]:
+        return set(self.quality_reset_reasons)
+
+    def record_review_accepted(self, source_text: str, reason: str = "") -> None:
+        with self._lock:
+            self.review_accepted[source_text] = str(reason or "")
+
+    def record_review_fixed(self, source_text: str) -> None:
+        with self._lock:
+            self.review_fixed_sources.add(source_text)
 
     def record_stopped(self, texts: Sequence[str]) -> None:
         """停止时整批没翻、原文占位交回——停止不是失败，不计入未翻译条数。"""
@@ -535,9 +572,18 @@ def translate_texts(
     item_retries: int = 0,
     resend_unchanged: Callable[[str, str | None], bool] | None = None,
     context_label: str = "Excel",
+    extra_check: Callable[[str, str], str] | None = None,
+    review: bool = True,
+    reason_lang: str = "zh",
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
+
+    - 规则检查（``is_translation_redundant`` 的那一套，再加上 ``extra_check(原文, 译文)``
+      返回的这一模式自己的问题）只负责放行；没通过的在全部批次回来后统一交给模型复查
+      （``core.translation_review``，``review=False`` 时不复查）：意思一致的采用并记进
+      ``stats.review_accepted``，不一致的带着问题重译（最多 ``item_retries`` 轮），仍不行的
+      恢复成原文并记进 ``stats.quality_reset_reasons``。
 
     - max_chars：每批原文字符数之和的上限（翻译参数 → 每批字符上限）；不给时按
       云端 3200 / 本地 2400 兜底。
@@ -614,7 +660,14 @@ def translate_texts(
             if progress_callback:
                 progress_callback(done, total)
         _apply_quality_filter(
-            results, target_lang, source_lang=source_lang, stats=run_stats
+            results, target_lang, source_lang=source_lang, stats=run_stats,
+            review=_ReviewContext(
+                engine=engine, system_prompt=system_prompt, api_scheduler=None,
+                should_stop=should_stop, error_callback=error_callback,
+                rounds=item_retries, concurrency=1, extra_check=extra_check,
+                reason_lang=reason_lang, context_label=context_label,
+            ) if review else None,
+            extra_check=extra_check,
         )
         return results
 
@@ -704,9 +757,20 @@ def translate_texts(
                 if fatal is None and not (should_stop and should_stop()):
                     _submit_next()
 
-    _apply_quality_filter(
-        results, target_lang, source_lang=source_lang, stats=run_stats
-    )
+    try:
+        _apply_quality_filter(
+            results, target_lang, source_lang=source_lang, stats=run_stats,
+            # key 已经判「暂时不能用」时不再发复查请求，没过规则的照旧恢复原文。
+            review=_ReviewContext(
+                engine=engine, system_prompt=system_prompt, api_scheduler=scheduler,
+                should_stop=should_stop, error_callback=error_callback,
+                rounds=item_retries, concurrency=max_workers, extra_check=extra_check,
+                reason_lang=reason_lang, context_label=context_label,
+            ) if review and fatal is None else None,
+            extra_check=extra_check,
+        )
+    except ApiKeyTemporarilyUnavailableError as exc:
+        fatal = fatal or exc
     if fatal is not None:
         _attach_partial_results(fatal, results)
         raise fatal
@@ -1672,26 +1736,121 @@ def _estimate_api_request_weight(
     return max(1, int(math.ceil(total_chars / max(1, int(chars_per_slot)))))
 
 
+@dataclass
+class _ReviewContext:
+    """``_apply_quality_filter`` 复查和重译要用的东西（见 core/translation_review）。"""
+
+    engine: TranslationEngine
+    system_prompt: str
+    api_scheduler: WeightedApiScheduler | None
+    should_stop: Callable[[], bool] | None
+    error_callback: Callable[[str], None] | None
+    rounds: int
+    concurrency: int
+    extra_check: Callable[[str, str], str] | None
+    reason_lang: str
+    context_label: str
+
+
+def _harmless_echo(source: str, result, source_lang: str, target_lang: str) -> bool:
+    """只因「和原文一样」没过、而原文本来就不是要翻的源语言文字（中译法文档里的英文行
+    「MIT License」）：原样回来是对的，规则直接放行，不花钱问模型。各页面自己的「原样
+    退回」判断（Excel 的未译标记、扩展格式的 _echoes_source、PDF 的 retained_by_model）照旧。"""
+    codes = {issue.code for issue in result.issues}
+    if codes != {"same_as_source"}:
+        return False
+    from core.translation_coverage import looks_like_source_text
+
+    return not looks_like_source_text(source, source_lang=source_lang, target_lang=target_lang)
+
+
+def quality_rule_problem(
+    source: str,
+    translation: str,
+    target_lang: str,
+    *,
+    source_lang: str = "zh",
+    extra_check: Callable[[str, str], str] | None = None,
+) -> str:
+    """规则检查：通过返回空串，没通过返回给模型看的一句话。"""
+    problems: list[str] = []
+    result = validate_translation(
+        source, translation, target_lang=target_lang, source_lang=source_lang,
+        profile=VALIDATION_PROFILE_STRICT,
+    )
+    if result.is_fail and not _harmless_echo(source, result, source_lang, target_lang):
+        problems.append(describe_validation(result) or "译文没有通过自动检查")
+    if extra_check is not None:
+        extra = str(extra_check(source, translation) or "").strip()
+        if extra and extra not in problems:
+            problems.append(extra)
+    return "；".join(problems)
+
+
+def _retranslate_one(
+    source: str,
+    previous: str,
+    reason: str,
+    *,
+    review: _ReviewContext,
+    target_lang: str,
+    source_lang: str,
+) -> str | None:
+    """带着复查指出的问题单独重译一条；失败返回 None（这一条按退回处理）。"""
+    prompt = review.system_prompt + retranslation_hint(previous, reason)
+    weight = _estimate_api_request_weight([source], prompt)
+    try:
+        if review.api_scheduler is None:
+            partial = review.engine.translate_batch([source], target_lang, prompt, source_lang=source_lang)
+        else:
+            with review.api_scheduler.slot(
+                weight, category=API_REQUEST_CATEGORY_RECOVERY, should_stop=review.should_stop
+            ):
+                partial = review.engine.translate_batch([source], target_lang, prompt, source_lang=source_lang)
+    except ApiKeyTemporarilyUnavailableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - this one item keeps the old behaviour
+        logger.debug(f"复查后重译失败：{exc!r}")
+        return None
+    value = (partial or {}).get(source)
+    return str(value) if value else None
+
+
 def _apply_quality_filter(
     results: dict[str, str],
     target_lang: str,
     *,
     source_lang: str = "zh",
     stats: TranslationBatchRunStats | None = None,
+    review: _ReviewContext | None = None,
+    extra_check: Callable[[str, str], str] | None = None,
 ) -> None:
     """
-    检测-拦截-重置闭环：
-    对每条译文调用 is_translation_redundant()，若判定为无效，
-    强制将译文重置为原文（Source Text），阻止损坏数据写回 Excel。
+    规则放行，没过的交给模型复查（maple 2026-10-31）：
 
-    重置不允许静默：每条被重置的原文都记入 stats.quality_reset_items，
-    由任务层汇入结果报告——文件里保留原文的格子必须在报告里有对应条目。
+    1. 规则（``is_translation_redundant`` 那一套 + ``extra_check``）通过的直接用；
+    2. 没通过的：译文为空、有乱码这种硬伤，或者不能复查（``review`` 为空、引擎不支持
+       对话、已按停止），照旧恢复成原文；
+    3. 其余的一起交给 ``core.translation_review.review_and_repair``：意思一致的采用，
+       不一致的带着问题重译，拿不准、出错的恢复成原文。
+
+    恢复成原文不允许静默：每条都记入 ``stats.quality_reset_reasons``，由任务层汇入结果报告。
     """
+    stats = stats if stats is not None else TranslationBatchRunStats()
+    already_untranslated = stats.untranslated_sources | stats.stopped_sources
+    failures: list[RuleFailure] = []
     reset_count = 0
-    already_untranslated = (
-        stats.untranslated_sources | stats.stopped_sources
-        if stats is not None
-        else frozenset()
+
+    def reset(src: str, reason: str) -> None:
+        nonlocal reset_count
+        results[src] = src
+        reset_count += 1
+        stats.record_quality_reset(src, reason)
+
+    can_review = (
+        review is not None
+        and engine_supports_chat(review.engine)
+        and not (review.should_stop and review.should_stop())
     )
     for src in list(results.keys()):
         if src in already_untranslated:
@@ -1702,15 +1861,61 @@ def _apply_quality_filter(
             continue
         if not should_apply_quality_filter(results[src]):
             continue
-        if is_translation_redundant(
-            src,
-            results[src],
-            target_lang,
-            source_lang=source_lang,
-        ):
-            results[src] = src
-            reset_count += 1
-            if stats is not None:
-                stats.record_quality_reset(src)
+        problem = quality_rule_problem(
+            src, results[src], target_lang, source_lang=source_lang, extra_check=extra_check,
+        )
+        if not problem:
+            continue
+        if not can_review or hard_failure(results[src]):
+            reset(src, problem)
+            continue
+        failures.append(RuleFailure(src, results[src], problem))
+
+    fatal: ApiKeyTemporarilyUnavailableError | None = None
+    if failures and review is not None:
+        stats.review_checked_count += len(failures)
+        logger.info(f"{review.context_label}：{len(failures)} 条译文未通过自动检查，正在请模型复查")
+        try:
+            outcomes = review_and_repair(
+                failures,
+                engine=review.engine,
+                rule_problem=lambda s, t: quality_rule_problem(
+                    s, t, target_lang, source_lang=source_lang, extra_check=extra_check,
+                ),
+                retranslate=lambda s, prev, why: _retranslate_one(
+                    s, prev, why, review=review, target_lang=target_lang, source_lang=source_lang,
+                ),
+                max_rounds=review.rounds,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                api_scheduler=review.api_scheduler,
+                should_stop=review.should_stop,
+                error_callback=review.error_callback,
+                context_label=f"{review.context_label} 复查",
+                reason_lang=review.reason_lang,
+                concurrency=review.concurrency,
+            )
+        except ApiKeyTemporarilyUnavailableError as exc:
+            fatal = exc
+            outcomes = {}
+        for failure in failures:
+            outcome = outcomes.get(failure.source)
+            if outcome is None:
+                reset(failure.source, failure.problem)
+            elif outcome.status == OUTCOME_ACCEPTED:
+                results[failure.source] = outcome.translation
+                stats.record_review_accepted(failure.source, outcome.reason)
+            elif outcome.status == OUTCOME_FIXED:
+                results[failure.source] = outcome.translation
+                stats.record_review_fixed(failure.source)
+            else:
+                reset(failure.source, outcome.reason or failure.problem)
+        accepted, fixed, rejected = summarize_outcomes(outcomes)
+        logger.info(
+            f"{review.context_label} 复查：{len(failures)} 条，意思一致已采用 {accepted} 条，"
+            f"重译后通过 {fixed} 条，仍未通过 {len(failures) - accepted - fixed} 条"
+        )
     if reset_count > 0:
         logger.warning(f"因质量校验未通过，已强制保留 {reset_count} 条原文")
+    if fatal is not None:
+        raise fatal

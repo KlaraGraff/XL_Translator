@@ -77,6 +77,7 @@ from core.cad_language import (
 )
 from core.request_log import TICK_SECONDS, WAIT_LOG_SECONDS, BatchRequestLog
 from core.request_progress import InFlightRequestTracker
+from core.translation_review import number_problem
 
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
 _UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未译出", "kept": "已是目标语言", "review": "需复核"}
@@ -673,6 +674,8 @@ class CadTranslationResult:
     summary: Path | None = None
     # 译文已写入、但未采用记忆库「始终采用」词条设定译法的文字：{source, reason}，需复核。
     term_review: list[dict[str, str]] = field(default_factory=list)
+    # 规则没过、模型复查判意思一致而采用的文字：{source, translation, reason}，不需复核。
+    review_accepted: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1229,13 +1232,24 @@ def _numeric_tokens(text: str) -> list[str]:
     return re.findall(r"(?:(?<![A-Za-z0-9_])|(?<=\d[xX×*]))\d+(?:[.,]\d+)?", text)
 
 
-def _valid_translation(source: str, target: str) -> tuple[bool, str]:
+def cad_rule_problem(source: str, target: str) -> str:
+    """CAD 在公共规则之外多查的一条：原文里的数字译文里都要有（不分语种）。
+
+    用的是 Excel、Word 那套公共数字规则（core.translation_review.number_problem）：
+    2.5 与 2,5 是同一个数，数字随语序换了位置也算对（反馈 #23「25厚1:2.5水泥砂浆找平」）。
+    以前按顺序逐字比，法文、俄文的小数逗号和语序调整一律判错、丢掉译文。
+    """
+    return number_problem(source, target)
+
+
+def _valid_translation(source: str, target: str, *, check_rules: bool = True) -> tuple[bool, str]:
+    """``check_rules=False``：规则没过、模型复查已判意思一致的译文，只查硬伤（空、乱码）。"""
     value = str(target or "").strip()
     if not value:
         return False, "译文为空"
     if any(char in value for char in _REPLACEMENT_CHARS):
         return False, "译文中有乱码"
-    if _numeric_tokens(source) != _numeric_tokens(value):
+    if check_rules and cad_rule_problem(source, value):
         return False, "译文中的数字与原文不一致"
     return True, ""
 
@@ -1777,10 +1791,10 @@ class CadTranslationPipeline:
         # converter at scan / write / verify.
         self._stage_weights: dict[str, int] = CAD_STAGE_WEIGHTS
 
-    def _check_translation(self, source: str, value: str) -> tuple[bool, str]:
+    def _check_translation(self, source: str, value: str, *, check_rules: bool = True) -> tuple[bool, str]:
         if self.trust_translations:
             return (True, "") if value else (False, "译文为空")
-        return _valid_translation(source, value)
+        return _valid_translation(source, value, check_rules=check_rules)
 
     def _term_log(self, level: str, message: str) -> None:
         """记忆库的运行日志：查记忆库时记在「匹配」阶段，翻完后的记在「翻译」阶段。"""
@@ -2100,6 +2114,8 @@ class CadTranslationPipeline:
             glossary = dict(glossary or {})
             translations: dict[str, str] = dict(memory_hits)
             invalid_reasons: dict[str, str] = {}
+            # 规则没过、模型复查判意思一致而采用的 → 模型的理由（报告列一行，不存记忆库）。
+            review_accepted: dict[str, str] = {}
             for key, value in list(translations.items()):
                 valid, reason = _valid_translation(key, value)
                 if not valid:
@@ -2129,16 +2145,24 @@ class CadTranslationPipeline:
             sent = 0
             translate_seconds = 0.0
             if plain and self.translator is not None:
-                ai_results = dict(
-                    self._call_translator(plain, glossary, already=len(translations), total=len(texts))
-                )
+                raw_results = self._call_translator(plain, glossary, already=len(translations), total=len(texts))
+                ai_results = dict(raw_results)
+                # 规则没过的已在翻译服务里交给模型复查（core/translation_review）：判意思一致的
+                # 不再用这里的规则否决，复查也没确认的带着原因交回。
+                accepted = dict(getattr(raw_results, "review_accepted", {}) or {})
+                rejected = dict(getattr(raw_results, "rejected", {}) or {})
                 sent += len(plain)
                 translate_seconds += self.last_translate_seconds
                 for text in plain:
                     value = str(ai_results.get(text, "") or "").strip()
-                    valid, _reason = self._check_translation(text, value)
+                    if not value and text in rejected:
+                        invalid_reasons[text] = rejected[text] or "译文未通过自动检查"
+                        continue
+                    valid, _reason = self._check_translation(text, value, check_rules=text not in accepted)
                     if valid:
                         translations[text] = value
+                        if text in accepted:
+                            review_accepted[text] = accepted[text]
                     else:
                         invalid_reasons[text] = _reason
             if checked:
@@ -2215,7 +2239,11 @@ class CadTranslationPipeline:
                         occurrences[run.text] = occurrences.get(run.text, 0) + 1
                 self.term_memory.close(
                     self._term_session,
-                    {text: translations[text] for text in remaining if text in translations},
+                    {
+                        text: translations[text]
+                        for text in remaining
+                        if text in translations and text not in review_accepted
+                    },
                     counts=occurrences,
                 )
             timings["translate"] = round(time.perf_counter() - started_at - timings["scan"] - timings["match"], 4)
@@ -2506,7 +2534,8 @@ class CadTranslationPipeline:
                     if target_text and source_text in term_review:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "review", "reason": term_review[source_text]})
                     elif target_text:
-                        unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "translated", "reason": ""})
+                        why = f"未通过自动检查，经复查意思一致：{review_accepted[source_text]}" if source_text in review_accepted else ""
+                        unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": target_text, "status": "translated", "reason": why})
                     elif source_text in kept_texts:
                         unit_reports.append({"unit_id": unit.unit_id, "source": source_text, "translation": "", "status": "kept", "reason": ""})
                     else:
@@ -2558,6 +2587,11 @@ class CadTranslationPipeline:
                 source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf,
                 manifest_path, report_path, stats, unresolved, timings, summary_path,
                 term_review=[{"source": text, "reason": detail} for text, detail in term_review.items()],
+                review_accepted=[
+                    {"source": text, "translation": translations.get(text, ""), "reason": why}
+                    for text, why in review_accepted.items()
+                    if text in translations
+                ],
             )
 
 

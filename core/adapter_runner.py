@@ -103,6 +103,10 @@ REVIEW_ITEMS_IN_RESULT = 200
 
 #: 复核原因（写进需复核清单和台账证据链）。
 REASON_UNTRANSLATED = "未获得译文"
+#: 规则没过、模型复查也没确认（core/translation_review）：保留原文。
+#: 结果报告里「复查后采用」这一类的类型名（界面按它显示，见 ui/src/views/tasks.ts）。
+REVIEW_ACCEPTED_TYPE = "model_review_accepted"
+REASON_CHECK_FAILED = "译文未通过自动检查，复查也未确认，已保留原文"
 REASON_RESIDUAL = "译文中仍有原文"
 REASON_PROTECTED = "译文未原样保留代码或链接等内容，已保留原文"
 REASON_TERM = "未采用设定译法"
@@ -189,6 +193,8 @@ class _Translated:
     reasons: dict[str, str] = field(default_factory=dict)
     #: 停止时还没翻的。
     unfinished: set[str] = field(default_factory=set)
+    #: 规则没过、模型复查判意思一致而采用的 → 模型的理由（不标复核，不存记忆库）。
+    review_accepted: dict[str, str] = field(default_factory=dict)
     #: 包了段内格式标记的引擎（这个文件有带标记的单元时）；``marked_translations`` 是模型带回的标记。
     mark_engine: InlineMarkEngine | None = None
 
@@ -267,6 +273,8 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._api_calls_lock = threading.Lock()
         self._tm_hits = 0
         self._review: list[_ReviewEntry] = []
+        # 规则没过、复查判意思一致而采用的：不算需复核，结果报告里单列一行。
+        self._review_accepted: list[_ReviewEntry] = []
         self._languages: dict[str, list[str]] = {}
 
     # ── 暂停 ─────────────────────────────────────────────────────────────
@@ -480,6 +488,13 @@ class AdapterTaskRunner(BaseTaskRunner):
                 )
                 review_count += 1
                 continue
+            if sent in translated.review_accepted:
+                self._review_accepted.append(
+                    _ReviewEntry(
+                        str(self._relative(path)), self._unit_label(unit), unit.text,
+                        translated.review_accepted[sent], kept_source=False,
+                    )
+                )
             ledger.set_state(unit.id, STATE_CLEAN, evidence=origins.get(sent, ""))
             status = STATUS_MEMORY if origins.get(sent) == "memory" else STATUS_TRANSLATED
             written.append(TranslatedUnit(unit.id, unit.text, value, status))
@@ -559,6 +574,7 @@ class AdapterTaskRunner(BaseTaskRunner):
     def _forget_review(self, path: Path) -> None:
         relative = str(self._relative(path))
         self._review = [entry for entry in self._review if entry.file != relative]
+        self._review_accepted = [entry for entry in self._review_accepted if entry.file != relative]
 
     def _failed(self, item: Any, exc: BaseException, *, fallback: str) -> dict[str, Any]:
         path = Path(item.path)
@@ -756,11 +772,21 @@ class AdapterTaskRunner(BaseTaskRunner):
         with request_log:
             if remaining and not self._stop_event.is_set():
                 model = model_translate(remaining, 0)
+                accepted = dict(getattr(model, "review_accepted", {}) or {})
+                for text, why in (getattr(model, "rejected", {}) or {}).items():
+                    # 以前退回的译文按「译文 = 原文」交回，这里误报成「模型原样返回」。
+                    reasons[text] = f"{REASON_CHECK_FAILED}：{why}" if why else REASON_CHECK_FAILED
+                if accepted:
+                    result.review_accepted.update(accepted)
+                    self._log(
+                        "INFO",
+                        f"{path.name}：{len(accepted)} 段未通过自动检查，经复查意思一致，已采用",
+                    )
                 for text in remaining:
                     value = str(model.get(text) or "").strip()
                     if not value:
                         continue
-                    if self._echoes_source(path, text, value):
+                    if text not in accepted and self._echoes_source(path, text, value):
                         echoed.add(text)
                         continue
                     translations[text] = value
@@ -801,7 +827,12 @@ class AdapterTaskRunner(BaseTaskRunner):
                 reasons[text] = f"{reasons[text]}；{note}" if text in reasons else note
             self._term_memory.close(
                 session,
-                {text: translations[text] for text in remaining if text in translations},
+                # 复查后采用的这次可以用，但不当作以后复用的标准译法。
+                {
+                    text: translations[text]
+                    for text in remaining
+                    if text in translations and text not in result.review_accepted
+                },
                 counts=Counter(text for text in plan.sent.values() if text not in mixed_set),
             )
 
@@ -942,8 +973,23 @@ class AdapterTaskRunner(BaseTaskRunner):
     # ── 需复核清单 ───────────────────────────────────────────────────────
 
     def _review_summary(self) -> dict[str, object]:
+        accepted = [
+            {
+                "file": entry.file,
+                "location": entry.unit,
+                "excerpt": entry.source,
+                "issue": REVIEW_ACCEPTED_TYPE,
+                "action": entry.reason or "经复查意思一致，已采用译文",
+                "severity": "resolved",
+            }
+            for entry in self._review_accepted[:REVIEW_ITEMS_IN_RESULT]
+        ]
         if not self._review:
-            return {"total_count": 0}
+            summary_empty: dict[str, object] = {"total_count": 0}
+            if accepted:
+                summary_empty["items"] = accepted
+                summary_empty["review_accepted_count"] = len(self._review_accepted)
+            return summary_empty
         path = self._write_review_list()
         summary: dict[str, object] = {
             "total_count": len(self._review),
@@ -959,8 +1005,11 @@ class AdapterTaskRunner(BaseTaskRunner):
                     "severity": "warning",
                 }
                 for entry in self._review[:REVIEW_ITEMS_IN_RESULT]
-            ],
+            ]
+            + accepted,
         }
+        if accepted:
+            summary["review_accepted_count"] = len(self._review_accepted)
         if path is not None:
             # report_path 是任务记录脱敏时保留的产物路径键（api/task_manager.py）。
             summary["report_path"] = str(path)

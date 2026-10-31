@@ -317,12 +317,12 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
             "[fr] Inspection\n注意：发现异常时，请立即电话通知值班主管。\n"
         )
         assert done.review["items"][0]["excerpt"] == "注意：发现异常时，请立即电话通知值班主管。"
-        assert done.review["items"][0]["issue"] == "未获得译文"
+        # 和原文一样的译文先交给模型复查（这个假模型答不上来 = 拿不准），复查没确认才保留原文。
+        assert done.review["items"][0]["issue"].startswith("译文未通过自动检查，复查也未确认")
         assert done.review["items"][0]["action"] == "已保留原文"
-        assert "a.txt\tline 2\t注意：发现异常时，请立即电话通知值班主管。\t未获得译文" in Path(
+        assert "a.txt\tline 2\t注意：发现异常时，请立即电话通知值班主管。\t译文未通过自动检查" in Path(
             done.review["report_path"]
         ).read_text(encoding="utf-8-sig")
-        assert any("1 段模型返回的译文与原文相同" in getattr(message, "message", "") for message in messages)
 
     def test_a_translation_the_quality_check_sends_back_is_listed(self) -> None:
         # 漏了数字的译文被质量校验退回原文，同样不能算已翻译。

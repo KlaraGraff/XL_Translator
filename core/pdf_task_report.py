@@ -362,7 +362,8 @@ def _inplace_report_lines(record: PdfFileRecord) -> list[str]:
             elif item.get("kind") == "overflow":
                 lines.append(f"    - 空间不足仍写入译文「{item.get('text', '')}」：需复核")
             else:
-                lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}")
+                detail = f"（{item['detail']}）" if item.get("detail") else ""
+                lines.append(f"    - 保留原文「{item.get('text', '')}」：{item.get('reason', '')}{detail}")
     return lines
 
 

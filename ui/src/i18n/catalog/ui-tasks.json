@@ -185,6 +185,7 @@
   "整篇文档": {"en": "Whole document", "fr": "Document entier"},
   "混合语言未能确认": {"en": "Mixed language not confirmed", "fr": "Langue mixte non confirmée"},
   "经语义校验后接受": {"en": "Accepted after meaning check", "fr": "Acceptée après contrôle du sens"},
+  "复查后采用": {"en": "Used after second check", "fr": "Retenue après seconde vérification"},
   "原文疑似夹杂错误外文": {"en": "Source may contain stray foreign text", "fr": "Le texte source semble contenir du texte étranger parasite"},
   "接口异常，部分内容未翻译": {"en": "Service error; some content not translated", "fr": "Erreur du service ; une partie du contenu n'est pas traduite"},
   "质量校验回退为原文": {"en": "Reverted to source after quality check", "fr": "Texte source rétabli après contrôle qualité"},

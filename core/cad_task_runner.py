@@ -502,7 +502,7 @@ class CadTaskRunner(BaseTaskRunner):
         summary_path = self._run_dir / "summary.md"
         manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         report_path.write_text(json.dumps({**payload, "report": str(report_path), "manifest": str(manifest_path)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        lines = ["# CAD 翻译摘要", "", f"- 状态：{_CAD_STATUS_LABELS.get(status, status)}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
+        lines = ["# CAD 翻译摘要", "", f"- 状态：{_CAD_STATUS_LABELS.get(status, status)}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{sum(1 for item in issues if item.get('severity') != 'resolved')} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
         for item in files:
             lines.append(f"| {Path(str(item.get('source_path') or item.get('output_path') or 'CAD')).name} | {_CAD_STATUS_LABELS.get(str(item.get('status', '')), item.get('status', ''))} | {item.get('output_path', '')} |")
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -781,6 +781,18 @@ class CadTaskRunner(BaseTaskRunner):
                         "problem": "未采用记忆库中设定的译法",
                         "status": entry.get("reason", ""),
                     })
+                review_accepted = getattr(result, "review_accepted", None) or []
+                if review_accepted:
+                    # 规则没过、模型复查判意思一致而采用的：写进图纸、不标复核，报告里列一行。
+                    issues.append({
+                        "file": source.name,
+                        "type": "model_review_accepted",
+                        "severity": "resolved",
+                        "count": len(review_accepted),
+                        "problem": f"{len(review_accepted)} 处未通过自动检查，经复查意思一致，已采用",
+                        "sources": review_accepted,
+                    })
+                    self._log("INFO", f"{source.name}：{len(review_accepted)} 处译文未通过自动检查，经复查意思一致，已采用")
                 if stats.residual_foreign_text_count:
                     issues.append({"file": source.name, "severity": "needs_review", "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文中仍夹有未翻译的原文"})
                 if stats.layout_unresolved:
@@ -790,12 +802,14 @@ class CadTaskRunner(BaseTaskRunner):
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                 self._log("INFO", f"{source.name}：已生成翻译图纸")
             elapsed = round(time.monotonic() - started, 3)
-            batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if issues else "done")
+            # 「复查后采用」（severity=resolved）只是报告里的一行说明，不算待复核。
+            pending_issues = [item for item in issues if item.get("severity") != "resolved"]
+            batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if pending_issues else "done")
             batch_paths = self._write_batch_artifacts(status=batch_status, files=results, issues=issues)
             process_status = (
                 "cancelled" if self._stop_event.is_set()
                 else "failed" if failed_files and not any(item.get("status") in {"succeeded", "needs_review"} for item in results)
-                else "needs_review" if issues
+                else "needs_review" if pending_issues
                 else "succeeded"
             )
             self._process_artifacts.finish(process_status)

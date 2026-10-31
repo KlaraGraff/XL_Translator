@@ -138,8 +138,8 @@ class WordCellLineRealignTests(IsolatedAppDataTestCase):
         # 首次 + 「单段重试次数」那么多轮（默认 3），然后复查一次
         self.assertEqual(len(engine.cell_prompts), 4)
         self.assertEqual(len(engine.judged), 1)
-        self.assertEqual(engine.judged[0]["source_text"], CELL)
-        self.assertEqual(engine.judged[0]["candidate_translation"], SPLIT)
+        self.assertEqual(engine.judged[0]["items"][0]["source"], CELL)
+        self.assertEqual(engine.judged[0]["items"][0]["translation"], SPLIT)
         self.assertFalse(self.highlighted)
         self.assertTrue([line for line in logs if "意思一致" in line], logs)
 
