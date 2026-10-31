@@ -137,3 +137,8 @@
 .tm-opt input { accent-color: var(--accent); margin: 2px 0 0; flex: none; }
 .tm-opt b { font-size: 12.5px; font-weight: var(--fw-600); }
 .tm-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+
+/* 导入预览：识别说明 + 原文 / 译文 / 备注三列选择。弹窗只有约 400px 宽，三个下拉上下排，
+   列名（「C 列（Tiếng Việt）」）才放得下一行。 */
+.tm-import-detected { color: var(--ink-2); }
+.tm-import-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
