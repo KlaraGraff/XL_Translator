@@ -159,6 +159,53 @@ def _strip_owned_extras(body: list[Any]) -> list[Any]:
     return kept
 
 
+def attribute_as_text(entity: list[Any], *, text: str | None = None, owner: str | None = None) -> list[Any]:
+    """把一个 ATTRIB / ATTDEF 的记录（从 ``0`` 那一行起）改写成一行普通的 TEXT，位置、样式、对齐都不变。
+
+    ``text`` 给出时作为显示文字（组码 1）；不给时 ATTDEF 用它显示的标记（组码 2），ATTRIB 用值。
+    ``owner`` 换掉属主（组码 330）：块参照里的属性属主是块参照，单独的文字属主是它所在的空间。
+    属性专有的组码（标记、提示、标志、字段长度、所属子类）去掉，竖向对齐 74 改为 TEXT 的 73。
+    带多行（101 内嵌多行文字）的属性不在这里处理，原样返回。
+    """
+    if any(record.code == 101 for record in entity):
+        return list(entity)
+    head, *body = entity
+    tag = next((record for record in body if record.code == 2), None)
+    shown = next((record for record in body if record.code == 1), None)
+    valign: Any = None
+    out: list[Any] = [replace(head, value="TEXT")]
+    in_attribute = False
+    for record in body:
+        if record.code == 100 and record.value.strip() in {"AcDbAttribute", "AcDbAttributeDefinition"}:
+            in_attribute = True
+            continue
+        if record.code == 74:
+            valign = record
+            continue
+        if in_attribute or record.code in {2, 3, 70, 73, 280}:
+            continue
+        if record.code == 330 and owner is not None:
+            record = replace(record, value=owner)
+        out.append(record)
+    value = text
+    if value is None:
+        value = tag.value if head.value.strip().upper() == "ATTDEF" and tag is not None else (shown.value if shown else "")
+    if shown is not None:
+        out = [replace(record, value=value) if record is shown else record for record in out]
+    else:
+        template = tag or head
+        code_text = "1".rjust(len(template.code_text)) if template.code_text else ""
+        position = next((index for index, record in enumerate(out) if record.code == 40), len(out) - 1) + 1
+        out.insert(position, replace(template, code=1, value=value, code_text=code_text))
+    if any(record.code == 100 for record in out):
+        marker = next(record for record in out if record.code == 100)
+        out.append(replace(marker, value="AcDbText"))
+    if valign is not None:
+        code_text = "73".rjust(len(valign.code_text)) if valign.code_text else ""
+        out.append(replace(valign, code=73, code_text=code_text))
+    return out
+
+
 def _table_record_names(records: Sequence[Any], start: int, end: int, kind: str) -> dict[str, tuple[int, int]]:
     names: dict[str, tuple[int, int]] = {}
     for lo, hi in _entity_ranges(records[start:end]):

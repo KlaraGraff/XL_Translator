@@ -83,11 +83,6 @@ _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
 # 引线肩线离块属性最多这么远（按字高计）才算这段文字的肩线。
 _SHOULDER_GAP = 1.0
-# 引线标注折成两行时：上方（下方）没有别的标注，最多往外多占这么多（按原字高计）；两行之间的空
-# （按新字高计）；离上方那行标注至少留的空（按原字高计）。
-_LEADER_WRAP_REACH = 1.0
-_LEADER_WRAP_GAP = 0.35
-_LEADER_WRAP_CLEAR = 0.1
 
 
 def is_chinese_target(target_lang: str) -> bool:
@@ -959,8 +954,9 @@ def fit_translated_texts(
         )
         right_limit, left_limit = min(right_limit, line_right), max(left_limit, line_left)
         shoulder = None
-        if entity.entity_type == "ATTRIB":
-            # 引线标注（块属性写在引线的水平肩线上方或下方，一端对齐肩线端点）：译文不越过肩线两端。
+        if entity.entity_type in {"ATTRIB", "TEXT"}:
+            # 写在一条横线上方或下方、一端对齐横线端点的文字：引线标注（块属性写在引线肩线上）、
+            # 带下划线的视图标题（反馈 #23）。译文不越过横线两端。
             shoulder = _shoulder(obstacle_indexes[group], entity, x, bottom, top, (old_left, old_right))
             if shoulder is not None:
                 if new_left < shoulder[0]:
@@ -983,17 +979,9 @@ def fit_translated_texts(
         if needed <= room:
             continue
         scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
-        if not fits and new_handle is not None and shoulder is not None:
-            # 引线上的长说明（maple 2026-10-31 选「放不下就折两行」）：贴着肩线的那一行不动，第二行
-            # 摞在离开肩线的一侧，两行一起收进到上（下）方那行标注为止的空当，不挪动别的标注。
-            # 第二行是同一个图块引用里紧跟着的一个属性副本。
-            plan = _leader_wrap_plan(entity, records, _vertical_neighbours(indexes[group], entity, bottom, top),
-                                     room, calibration, settings, (new_left, new_right))
-            if plan is not None:
-                splits.append(plan)
-                if wrapped is not None:
-                    wrapped.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
-                continue
+        # 引线上的长说明不折行，只缩到最小比例（仍放不下列入复核）：引线块多是动态块，AutoCAD 按块里
+        # 的参数摆属性，折出来的第二行和属性对不齐、还会压到别的标注（反馈 #23，maple 2026-10-31
+        # 在 AutoCAD 里看过两版后定的退路）。
         if not fits and new_handle is not None and entity.entity_type == "TEXT" and cell is not None:
             # 格子里最小比例一行仍放不下（窄房间的长房间名、图签格子里的长工程名）：在空格处分成两行，
             # 两行叠在原来那一行的位置上，上下不碰别的文字和格线时就这么放。不在格子里的（「标签：
@@ -1132,64 +1120,6 @@ def _split_words(entity: _TextEntity, records: Sequence[Any]) -> tuple[str, list
     if len(words) < 2 or len(raw_spaces) != len(words) - 1:
         return None
     return raw, raw_spaces, words
-
-
-def _leader_wrap_plan(
-    entity: _TextEntity,
-    records: Sequence[Any],
-    neighbours: Sequence[_TextBox],
-    room: float,
-    calibration: float,
-    settings: FitSettings,
-    span: tuple[float, float],
-) -> _WrapPlan | None:
-    """引线上的长说明分成两行：贴着肩线的那一行原地不动（上标底对齐、下标顶对齐），另一行摞在
-    外侧。字高取空当放得下的最大值（不超过原字高），字宽再按 ``room`` 收；整体缩放（字高 × 字宽）
-    不小于最小比例。放不下返回 None（照旧列入复核）。"""
-    split = _split_words(entity, records)
-    if split is None:
-        return None
-    raw, raw_spaces, words = split
-    height, width_factor = entity.height, entity.width_factor
-    best: tuple[float, int] | None = None
-    for cut in range(1, len(words)):
-        first, second = " ".join(words[:cut]).strip(), " ".join(words[cut:]).strip()
-        if not first or not second:
-            continue
-        widest = max(estimate_text_width(part, height, width_factor, entity.font_class) for part in (first, second))
-        if best is None or widest < best[0]:
-            best = (widest, cut)
-    if best is None:
-        return None
-    widest, cut = best
-    x, y = _local(entity)
-    bottom, top = _vertical_span(entity.valign, y, height)
-    upward = entity.valign in {0, 1}
-    # 外侧到哪为止：横向和这段译文重叠、在外侧的最近一行文字。
-    limit = top + _LEADER_WRAP_REACH * height if upward else bottom - _LEADER_WRAP_REACH * height
-    for box in neighbours:
-        if box.right <= span[0] or box.left >= span[1]:
-            continue
-        if upward and box.bottom >= top - 0.3 * height:
-            limit = min(limit, box.bottom - _LEADER_WRAP_CLEAR * height)
-        elif not upward and box.top <= bottom + 0.3 * height:
-            limit = max(limit, box.top + _LEADER_WRAP_CLEAR * height)
-    slot = limit - bottom if upward else top - limit
-    new_height = min(height, slot / (2 + _LEADER_WRAP_GAP))
-    if new_height <= 0:
-        return None
-    height_scale = new_height / height
-    needed = widest * height_scale * calibration
-    width_scale = min(1.0, max(room, 0.0) / needed) if needed > 0 else 1.0
-    if height_scale * width_scale < settings.min_scale - 1e-9:
-        return None
-    pitch = (1 + _LEADER_WRAP_GAP) * new_height
-    first, second = raw[:raw_spaces[cut - 1]], raw[raw_spaces[cut - 1] + 1:]
-    # 第一行在上：上标时第一行往上挪一行，下标时第二行往下挪一行。
-    return _WrapPlan(
-        entity, first, second, new_height, width_factor * width_scale,
-        pitch if upward else 0.0, 0.0 if upward else -pitch,
-    )
 
 
 def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
@@ -2018,3 +1948,80 @@ def fit_cell_mtext(
         entity = fit.entity
         _write_mtext_size(records, entity.start, entity.end, entity.height * fit.height_scale, fit.wrap, fit.width_factor)
     return len(changed)
+
+
+# ── 对齐文字的起点 ────────────────────────────────────────────
+
+
+def _single_line_fields(records: Sequence[Any]) -> list[tuple[int, int, str, dict[int, str]]]:
+    """每段单行文字（TEXT/ATTRIB）的 ``(开始, 结束, 类型, 组码)``：组码只取第一次出现、到内嵌多行文字为止。"""
+    out = []
+    for start, end in _entity_ranges(records):
+        if start >= end:
+            continue
+        entity_type = records[start].value.strip().upper()
+        if entity_type not in _SINGLE_LINE_TYPES:
+            continue
+        fields: dict[int, str] = {}
+        for record in records[start + 1:end]:
+            if record.code == 101:
+                break
+            fields.setdefault(record.code, record.value)
+        out.append((start, end, entity_type, fields))
+    return out
+
+
+def text_signatures(records: Sequence[Any]) -> dict[str, tuple[str, str, str]]:
+    """写译文前记下每段单行文字的 ``句柄 → (文字, 字高, 宽度比例)``，见 :func:`sync_start_points`。"""
+    return {
+        str(fields.get(5, "")): (str(fields.get(1, "")), str(fields.get(40, "")), str(fields.get(41, "")))
+        for _start, _end, _type, fields in _single_line_fields(records)
+        if fields.get(5)
+    }
+
+
+def sync_start_points(
+    records: list[Any], before: Mapping[str, tuple[str, str, str]], plain_text: Callable[[str], str],
+) -> int:
+    """右对齐、居中的单行文字换了译文（或字号、或是新加的）以后，把起点（组码 10/20）按新宽度重算。
+
+    这类文字 AutoCAD 只认对齐点（11/21），起点是辅助值、打开时自己重算；但「CAD快速看图」这类
+    看图软件直接拿起点摆文字，起点还停在原文的左端时，译文从那里往右写，右端对不齐（反馈 #23：
+    引线说明折成两行后两行错开）。只沿文字方向挪，上下方向的偏移照旧。宽度是估算的。
+    「对齐」「布满」（72=3/5）两点都是真位置，不动；没改过的文字不动。返回改了多少段。
+    """
+    fonts = _style_fonts(records)
+    changed = 0
+    for start, end, _type, fields in reversed(_single_line_fields(records)):
+        halign = _int(fields.get(72))
+        if halign not in {1, 2, 4} or 11 not in fields:
+            continue
+        handle = str(fields.get(5, ""))
+        now = (str(fields.get(1, "")), str(fields.get(40, "")), str(fields.get(41, "")))
+        if handle and before.get(handle) == now:
+            continue
+        height = _float(fields.get(40))
+        text = plain_text(str(fields.get(1, "")))
+        if height <= 0 or not text:
+            continue
+        width = estimate_text_width(
+            text, height, _float(fields.get(41), 1.0) or 1.0,
+            fonts.get(str(fields.get(7, "STANDARD")).strip().upper(), "shx"),
+        )
+        offset = width / 2 if halign in {1, 4} else width
+        angle = math.radians(_float(fields.get(50)))
+        dx, dy = math.cos(angle), math.sin(angle)
+        ax, ay = _float(fields.get(11)), _float(fields.get(21))
+        vx, vy = _float(fields.get(10)) - ax, _float(fields.get(20)) - ay
+        along = vx * dx + vy * dy
+        x, y = ax + vx + (-offset - along) * dx, ay + vy + (-offset - along) * dy
+        for index in range(start + 1, end):
+            record = records[index]
+            if record.code == 101:
+                break
+            if record.code == 10:
+                records[index] = replace(record, value=_format_number(x))
+            elif record.code == 20:
+                records[index] = replace(record, value=_format_number(y))
+        changed += 1
+    return changed
