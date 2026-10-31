@@ -32,6 +32,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app_meta import APP_VERSION
+from core import system_proxy
 from core.adapter_install import MAX_PACKAGE_BYTES, bundled_ids, read_registry, version_key
 from core.app_paths import get_app_data_dir
 from core.component_download import ComponentDownloadCancelled, ComponentDownloadError, RemoteFile, download_files
@@ -330,7 +331,7 @@ def fetch_index(*, force: bool = False, now: float | None = None) -> dict[str, A
                 except ValueError:
                     cached = None
         provided = _http_client()
-        client = provided or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+        client = provided or system_proxy.http_client(timeout=_TIMEOUT, follow_redirects=True)
         try:
             index, source = _download_index(client)
         except RegistryError as exc:
@@ -372,7 +373,7 @@ def download_entry(
     """按条目的地址依次下载 zip，大小和 SHA-256 不对就换下一个；全部失败抛 ``RegistryError``。"""
     item = RemoteFile(f"{entry.id}-{_safe(entry.version)}.zip", tuple(entry.download), entry.size, entry.sha256)
     provided = _http_client()
-    client = provided or httpx.Client(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
+    client = provided or system_proxy.http_client(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
     try:
         return download_files([item], target_dir, progress=progress, cancel=cancel, client=client)[0]
     except ComponentDownloadCancelled as exc:

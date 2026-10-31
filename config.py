@@ -31,22 +31,7 @@ CLOUD_ENGINES = {
     "小米 MiMo":                   "xiaomi",
 }
 
-IMAGE_GENERATION_MODEL_PROVIDERS = {
-    "OpenAI / ChatGPT": "openai",
-    "自定义配置": "custom_openai",
-    "硅基流动": "siliconflow",
-}
-
-# 看图审核：能读图片输入的服务商。DeepSeek 自 2026-08-21 起 API 接受图片输入
-# （现为 deepseek-flash；deepseek-v4-pro 不支持，测试连接会如实报错）。它不能生成
-# 图片，所以不在上面的图像翻译名单里。小米 MiMo 同理：mimo-v2.6 系列读图，不出图。
-VISION_TEXT_MODEL_PROVIDERS = {
-    "OpenAI / ChatGPT": "openai",
-    "自定义配置": "custom_openai",
-    "硅基流动": "siliconflow",
-    "DeepSeek": "deepseek",
-    "小米 MiMo": "xiaomi",
-}
+# 哪些服务商能看图、能出图不在这里列：见 core/image_requests.py（按接口写法判断）。
 
 DEFAULT_CLOUD_PROVIDER = "custom_openai"
 DEFAULT_CLOUD_MODEL = ""

@@ -1195,10 +1195,6 @@
     "en": "  [File {0}] Added to task",
     "fr": "  [Fichier {0}] Ajouté à la tâche"
   },
-  "此连接的服务商不支持图片审核，请更换连接。": {
-    "en": "This connection's provider does not support image review. Use another connection.",
-    "fr": "Le fournisseur de cette connexion ne prend pas en charge la vérification d'images. Veuillez utiliser une autre connexion."
-  },
   "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。": {
     "en": "The review model did not respond properly. Check this connection's address, API key and model name.",
     "fr": "Le modèle de vérification n'a pas répondu correctement. Vérifiez l'adresse, la clé API et le nom du modèle de cette connexion."

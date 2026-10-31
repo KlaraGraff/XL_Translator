@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import tempfile
@@ -15,8 +14,9 @@ import httpx
 from loguru import logger
 from PIL import Image
 
-from config import is_siliconflow_endpoint, normalize_cloud_base_url
+from core import system_proxy
 from core.image_generation import is_model_unavailable_error, looks_like_wrong_image_model
+from core.image_requests import VISION_ROUTE_PATHS, build_vision_payload, image_base_url, vision_routes
 from core.user_facing_errors import humanize_error
 from core.model_roles import (
     EffectiveModelConfig,
@@ -50,29 +50,9 @@ PDF_PAGE_REVIEW_PROMPT = (
 )
 
 
-# 没有 OpenAI ``/responses`` 接口、只能走 ``/chat/completions`` 的服务商。
-# DeepSeek 的图片输入以 /chat/completions 为准（官方视觉指南的首选写法），
-# 不去试 /v1/responses。小米 MiMo 的看图示例同样只有 /chat/completions。
-CHAT_COMPLETIONS_ONLY_PROVIDERS = frozenset({"siliconflow", "deepseek", "xiaomi"})
-_ROUTE_PATHS = {"chat": "chat/completions", "responses": "responses"}
-
-
 def review_routes(config: EffectiveModelConfig) -> list[str]:
-    """按连接的「文本请求协议」决定审核请求走哪种接口，和文档翻译同一个设置。
-
-    以前这里写死只发 OpenAI 的 ``/responses``，只有 chat 接口的服务商（硅基流动等）
-    无论选哪个模型都失败。指定了协议就只走那一种；自动时先走 ``/responses``
-    （原有行为，OpenAI 与多数中转站已验证），对方没有这个接口再换 chat。
-    """
-    mode = str(config.api_mode or "auto").strip()
-    mode = {"codex_responses": "responses", "chat_completions": "chat"}.get(mode, mode)
-    if mode in _ROUTE_PATHS:
-        return [mode]
-    if config.provider in CHAT_COMPLETIONS_ONLY_PROVIDERS or is_siliconflow_endpoint(
-        config.provider, config.base_url
-    ):
-        return ["chat"]
-    return ["responses", "chat"]
+    """审核请求走哪种接口，由统一的图片请求模块决定（见 core.image_requests.vision_routes）。"""
+    return vision_routes(config.provider, config.base_url, config.api_mode)
 
 
 def _route_missing(exc: httpx.HTTPStatusError, kind: str) -> bool:
@@ -173,19 +153,22 @@ class OpenAICompatiblePdfReviewClient:
             "First image is the original source PDF page. "
             "Second image is the translated candidate page."
         )
-        builders = {"chat": _chat_review_payload, "responses": _responses_review_payload}
         headers = {
             "Authorization": f"Bearer {model_config.api_key}",
             "Content-Type": "application/json",
         }
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with system_proxy.http_client(timeout=self.timeout_seconds) as client:
                 routes = review_routes(model_config)
                 for index, route in enumerate(routes):
-                    payload = builders[route](
-                        effective_model, user_text, source_image_path, translated_image_path,
+                    payload = build_vision_payload(
+                        route,
+                        model=effective_model,
+                        instructions=PDF_PAGE_REVIEW_PROMPT,
+                        user_text=user_text,
+                        images=[source_image_path, translated_image_path],
                     )
-                    url = f"{base_url}/{_ROUTE_PATHS[route]}"
+                    url = f"{base_url}/{VISION_ROUTE_PATHS[route]}"
                     response = client.post(url, headers=headers, json=payload)
                     try:
                         response.raise_for_status()
@@ -228,48 +211,6 @@ class OpenAICompatiblePdfReviewClient:
         else:
             text = _extract_response_text(response_payload)
         return parse_pdf_review_result(text)
-
-
-def _responses_review_payload(
-    model: str, user_text: str, source_image_path: Path, translated_image_path: Path,
-) -> dict[str, Any]:
-    return {
-        "model": model,
-        "instructions": PDF_PAGE_REVIEW_PROMPT,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": user_text},
-                    {"type": "input_image", "image_url": _image_data_url(source_image_path)},
-                    {"type": "input_image", "image_url": _image_data_url(translated_image_path)},
-                ],
-            }
-        ],
-        "store": False,
-        "stream": False,
-    }
-
-
-def _chat_review_payload(
-    model: str, user_text: str, source_image_path: Path, translated_image_path: Path,
-) -> dict[str, Any]:
-    # 只走 /chat/completions 的服务商（硅基流动、DeepSeek）：同一组内容换成 chat 的 image_url 写法。
-    return {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": PDF_PAGE_REVIEW_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": _image_data_url(source_image_path)}},
-                    {"type": "image_url", "image_url": {"url": _image_data_url(translated_image_path)}},
-                ],
-            },
-        ],
-        "stream": False,
-    }
 
 
 def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
@@ -349,7 +290,7 @@ def check_pdf_review_connectivity(
     )
     signature = pdf_review_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "vision_text"):
-        message = "此连接的服务商不支持图片审核，请更换连接。"
+        message = unsupported_capability_message(config.label, config.provider, "vision_text")
         record_pdf_review_model_availability(
             settings,
             ok=False,
@@ -409,15 +350,10 @@ def check_pdf_review_connectivity(
 
 
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
-    base_url = normalize_cloud_base_url(config.provider, config.base_url)
+    base_url = image_base_url(config.provider, config.base_url)
     if not base_url:
         raise PdfReviewModelUnavailableError("图像翻译审核模型尚未填写接口地址")
     return base_url
-
-
-def _image_data_url(path: Path) -> str:
-    data = path.read_bytes()
-    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def _extract_response_text(payload: Any) -> str:

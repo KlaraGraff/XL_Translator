@@ -307,6 +307,17 @@ def register(app: FastAPI) -> None:
             page_number=request.page,
         )
 
+    @app.post("/api/tasks/{task_id}/pdf-pages/cancel")
+    def cancel_pdf_page_action(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        # 撤回暂停时排上的「重新生成」或「跳过」：排上的操作要等继续翻译才执行，
+        # 这时候还没有发出任何请求，撤回后这一页回到原来的状态。
+        return app.state.task_manager.request_pdf_page_action(
+            task_id,
+            action="cancel",
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
     @app.get("/api/tasks/{task_id}/events")
     def task_events(
         task_id: str,

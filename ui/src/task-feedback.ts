@@ -57,8 +57,9 @@ export function openTaskFeedback(options: TaskFeedbackOptions): void {
     contactEdited: false,
     includeSystem: true,
     includeLogs: true,
-    includeSources: false,
-    includeOutputs: options.hasProblem,
+    // 原文件和译文默认附上：没有原文件就没法复现问题。
+    includeSources: true,
+    includeOutputs: true,
     busy: false,
   };
   let context: FeedbackContext | null = null;

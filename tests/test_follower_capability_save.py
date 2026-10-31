@@ -67,8 +67,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
 
     def test_text_only_provider_saves_and_marks_review_unavailable(self) -> None:
         for provider, model, name in (
-            ("zhipu", "glm-4-flash", "智谱 GLM"),
-            ("dashscope", "qwen-plus", "阿里百炼 (通义)"),
+            ("claude", "claude-text-model", "Anthropic"),
         ):
             with self.subTest(provider=provider):
                 self._switch_translation_to(provider, model)
@@ -81,7 +80,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
                 self.assertEqual(roles["translation"]["config_problem"], "")
                 self.assertEqual(roles["cleaner"]["config_problem"], "")
                 review = roles["pdf_review"]
-                expected = f"{name}不支持看图审核"
+                expected = f"{name}的看图审核功能尚未接入本软件"
                 self.assertIn(expected, review["config_problem"])
                 self.assertEqual(review["availability_status"], "unavailable")
                 self.assertIn(expected, review["availability_message"])
@@ -107,16 +106,16 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         self.assertIn("跟随来源不可用", roles["pdf_review"]["config_problem"])
 
     def test_other_saves_keep_working_while_review_is_unavailable(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         response = self.client.put("/api/settings", json={"theme": "dark"})
         self.assertEqual(response.status_code, 200, response.text)
-        self._switch_translation_to("zhipu", "glm-4-plus")
-        self.assertEqual(load_settings().engine.cloud_model, "glm-4-plus")
+        self._switch_translation_to("claude", "claude-text-model-2")
+        self.assertEqual(load_settings().engine.cloud_model, "claude-text-model-2")
         throughput = self.client.get("/api/models/throughput/pdf_review")
         self.assertEqual(throughput.status_code, 200, throughput.text)
 
     def test_review_row_gets_its_own_way_out(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         review_row = self._roles()["pdf_review"]["connections"][0]
         url = f"/api/models/roles/pdf_review/connections/{review_row['id']}"
 
@@ -126,7 +125,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
             json={"connection_mode": "follow", "source_role": "translation", "model": "x"},
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("智谱 GLM不支持看图审核", response.json()["detail"])
+        self.assertIn("Anthropic的看图审核功能尚未接入本软件", response.json()["detail"])
 
         # 改成独立的云端连接就恢复可用。
         response = self.client.put(
@@ -141,7 +140,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["config_problem"], "")
-        self.assertEqual(self._roles()["translation"]["provider"], "zhipu")
+        self.assertEqual(self._roles()["translation"]["provider"], "claude")
 
     def test_deepseek_translation_keeps_the_following_review_usable(self) -> None:
         # DeepSeek 的 API 已能读图片（deepseek-flash），跟随它的审核用途不再标为不可用（反馈 #16）。
@@ -150,8 +149,17 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         self.assertEqual(review["config_problem"], "")
         self.assertEqual(review["connections"][0]["connection_mode"], "follow")
 
+    def test_zhipu_and_dashscope_translation_keep_the_following_review_usable(self) -> None:
+        # 智谱、阿里百炼是 OpenAI 兼容接口，看图请求走统一的图片请求模块，审核跟随它们不再标为不可用；
+        # 所选模型能否看图由「测试连接」实际发图判断。
+        for provider, model in (("zhipu", "glm-vision"), ("dashscope", "qwen-vl")):
+            with self.subTest(provider=provider):
+                self._switch_translation_to(provider, model)
+                review = self._roles()["pdf_review"]
+                self.assertEqual(review["config_problem"], "")
+
     def test_switching_translation_back_clears_the_problem(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         self.assertTrue(self._roles()["pdf_review"]["config_problem"])
         self._switch_translation_to("custom_openai", "gpt-like")
         review = self._roles()["pdf_review"]
@@ -165,18 +173,18 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
             json={
                 "connection_mode": "cloud",
                 "source_role": "independent",
-                "provider": "zhipu",
-                "model": "glm-4-flash",
+                "provider": "claude",
+                "model": "claude-text-model",
             },
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("智谱 GLM不支持看图审核", response.json()["detail"])
+        self.assertIn("Anthropic的看图审核功能尚未接入本软件", response.json()["detail"])
 
     def test_deleting_a_connection_is_not_blocked_by_an_unavailable_follower(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         added = self.client.post(
             "/api/models/roles/translation/connections",
-            json={"label": "备用", "provider": "zhipu", "model": "glm-4-flash"},
+            json={"label": "备用", "provider": "claude", "model": "claude-text-model"},
         )
         self.assertEqual(added.status_code, 200, added.text)
         backup = added.json()["connections"][1]["id"]
@@ -197,7 +205,7 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
         return settings
 
     def test_pdf_task_explains_the_unavailable_review_model(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         settings = self._pdf_ready_settings()
         settings.pdf.review_enabled = True
         with patch("core.model_roles.get_key", return_value="secret"), self.assertRaises(
@@ -207,10 +215,10 @@ class FollowerCapabilitySaveTests(unittest.TestCase):
                 files=[object()], settings=settings, options=TaskOptions()
             )
         self.assertEqual(caught.exception.reason, REASON_PDF_REVIEW_MODEL_MISSING)
-        self.assertIn("智谱 GLM不支持看图审核", str(caught.exception))
+        self.assertIn("Anthropic的看图审核功能尚未接入本软件", str(caught.exception))
 
     def test_pdf_task_without_review_is_not_affected(self) -> None:
-        self._switch_translation_to("zhipu", "glm-4-flash")
+        self._switch_translation_to("claude", "claude-text-model")
         settings = self._pdf_ready_settings()
         settings.pdf.review_enabled = False
         save_settings(settings)

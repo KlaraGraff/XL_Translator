@@ -25,6 +25,7 @@ from core.cad_translation import (
     CadPipelineError,
     CadPipelineOptions,
     CadTranslationPipeline,
+    _has_translatable_content,
 )
 
 EDITS_FILENAME = "cad-review-edits.json"
@@ -106,11 +107,15 @@ def _rows(file_manifest: Mapping[str, Any], edits: Mapping[str, str]) -> list[di
         source = str(unit.get("source") or "")
         if not source:
             continue
+        status = str(unit.get("status") or "")
+        # 旧版本的记录把多行文字里的纯数字、符号小段（「3.0」「Φ4@50」）也记成没译出；
+        # 它们不翻译、原样保留，填了译文也写不回去，不列出来。
+        if status == "unresolved" and not _has_translatable_content(source):
+            continue
         row = rows.get(source)
         if row is not None:
             row["count"] += 1
             continue
-        status = str(unit.get("status") or "")
         rows[source] = {
             "source": source,
             "original": str(unit.get("translation") or ""),
@@ -391,6 +396,7 @@ def _rewrite_one(
             translator=translator,
             language_translator=language_translator,
             dxf_cache=dxf_cache,
+            trust_translations=True,
         ).translate_file(source, staged, options=options, stop_requested=stop_requested)
         output.parent.mkdir(parents=True, exist_ok=True)
         publish = output.with_name(f".{output.name}.rewrite")
@@ -421,9 +427,16 @@ def _rewrite_one(
                     unit["status"] = "review"
                     unit["reason"] = reasons.get(source_text, "")
         manifest_path.write_text(json.dumps(new_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 核对每条修改是否真的写进了图纸：没写进去的留在修改记录里，不能悄悄丢掉。
+        written = {
+            str(unit.get("source") or "")
+            for unit in new_manifest.get("units") or []
+            if isinstance(unit, dict) and unit.get("status") in {"translated", "review"}
+        }
         stats = result.stats
         return {
             "ok": True,
+            "applied": sorted(source for source in edits if source in written),
             "changed": stats.changed,
             "untranslated": stats.untranslated,
             "layout_unresolved": stats.layout_unresolved,
@@ -431,10 +444,21 @@ def _rewrite_one(
         }
 
 
-def clear_applied_edits(batch_manifest: str | Path, keys: Iterable[str]) -> None:
-    """写回成功的图纸：修改已经进了新的逐张清单，修改记录清掉。"""
+def clear_applied_edits(batch_manifest: str | Path, results: Iterable[Mapping[str, Any]]) -> None:
+    """写回成功的图纸：已经写进新逐张清单的修改从修改记录里拿掉，没写进去的留着。"""
     batch_path = Path(batch_manifest)
     edits = load_edits(batch_path)
-    for key in keys:
-        edits.pop(key, None)
+    for result in results:
+        if not result.get("ok"):
+            continue
+        key = str(result.get("key") or "")
+        remaining = {
+            source: value
+            for source, value in edits.get(key, {}).items()
+            if source not in set(result.get("applied") or ())
+        }
+        if remaining:
+            edits[key] = remaining
+        else:
+            edits.pop(key, None)
     _write_edits(batch_path, edits)

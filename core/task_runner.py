@@ -23,6 +23,7 @@ from loguru import logger
 from lxml import etree
 
 from core import bilingual_writer
+from core.local_endpoint import runtime_mode, settings_runs_locally
 from core.output_metadata import (
     build_translation_metadata,
     metadata_parameters,
@@ -446,7 +447,7 @@ class TaskRunner(BaseTaskRunner):
             # 是云端还是本地分档。
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             self._rate = resolve_surface_rate(
-                settings, "excel", mode=getattr(model_config, "mode", None)
+                settings, "excel", mode=runtime_mode(model_config)
             )
             engine_settings = engine_settings_for_rate(settings, self._rate)
             # Only take the failover path when there is somewhere to fail over
@@ -473,7 +474,7 @@ class TaskRunner(BaseTaskRunner):
             # 正文翻译必须共用同一个限流器，否则两边各按满并发跑会撞上接口上限。
             shared_scheduler = (
                 (self._api_scheduler or WeightedApiScheduler(concurrency))
-                if settings.engine.mode != "local"
+                if not settings_runs_locally(settings)
                 else None
             )
         except Exception as e:
@@ -873,7 +874,7 @@ class TaskRunner(BaseTaskRunner):
             smart_mode = smart_context_enabled(settings, "excel")
             self._smart_mode = smart_mode
             wants_profile = bool(smart_mode and global_unique_texts and engine_supports_chat(engine))
-            parallel_requests = concurrency if settings.engine.mode != "local" else 1
+            parallel_requests = concurrency if not settings_runs_locally(settings) else 1
             # 「自动识别场景」的通读请求和语言识别互不依赖：先在后台发出去，和语言识别
             # 同时进行。只补译未翻译内容时，语言识别之后待译文字还会重算，那时再发。
             profile_future = None
@@ -1105,7 +1106,7 @@ class TaskRunner(BaseTaskRunner):
                 phase_total=phase_total,
                 excel_review_marks=excel_review_marks,
                 # 补译遗留原文按翻译的并发设置同时修；本地引擎的并发交给引擎自己。
-                repair_concurrency=concurrency if settings.engine.mode != "local" else 1,
+                repair_concurrency=concurrency if not settings_runs_locally(settings) else 1,
                 document_note=document_profile,
                 api_scheduler=shared_scheduler,
             )

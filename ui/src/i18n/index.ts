@@ -116,14 +116,29 @@ export function localized<T extends object>(build: () => T): T {
   });
 }
 
+// 「法文加长 30%」假语言：只在浏览器开发模式里、localStorage 的 translator.pseudo-long 为 1 时生效，
+// 法文界面里每个词加长 30%，看以后加德语这类更长的语言时哪里会放不下（scripts/ui_text_fit_check.mjs
+// 的报告项）。import.meta.env.DEV 在生产构建里是 false，整段剔除。
+const pseudoLong = import.meta.env.DEV && (() => {
+  try {
+    return window.localStorage.getItem("translator.pseudo-long") === "1";
+  } catch {
+    return false;
+  }
+})();
+
+function stretch(text: string): string {
+  return pseudoLong && locale === "fr" ? text.replace(/\p{L}{2,}/gu, (word) => word + "ë".repeat(Math.ceil(word.length * 0.3))) : text;
+}
+
 /** 界面文字。key 是中文原文，{0} {1} 占位。 */
 export function t(source: string, ...args: unknown[]): string {
-  return translator.t(source, ...args);
+  return stretch(translator.t(source, ...args));
 }
 
 /** 后端送来的文字：整句或按模板换成当前语言，认不出来就原样返回。 */
 export function tx(text: unknown): string {
-  return translator.tx(text);
+  return stretch(translator.tx(text));
 }
 
 /** 这个数量在当前语言里用单数吗（英文只有 1；法文 0 和 1）。和词条里的 {0|单数|复数} 同一规则。 */

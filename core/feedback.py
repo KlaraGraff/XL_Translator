@@ -833,7 +833,7 @@ def _proxy_label(endpoint: str) -> str:
 def _open_client(*, direct: bool = False) -> httpx.Client:
     # 默认跟随系统代理（httpx 读 HTTPS_PROXY 等环境变量和系统代理设置），与检查更新一致；
     # direct=True 是系统代理连不上时的那一次直连重试。
-    return httpx.Client(timeout=_SEND_TIMEOUT, follow_redirects=False, trust_env=not direct)
+    return system_proxy.http_client(timeout=_SEND_TIMEOUT, follow_redirects=False, trust_env=not direct)
 
 
 def _unique_name(name: str, used: set[str]) -> str:

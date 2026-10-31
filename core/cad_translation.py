@@ -32,6 +32,7 @@ from loguru import logger
 from core.output_metadata import is_translation_output
 
 from core.cad_cache import CadDxfCache
+from core.cad_list_layout import fit_bilingual_lists
 from core.cad_layout import (
     FitSettings,
     fit_added_lines,
@@ -1741,8 +1742,12 @@ class CadTranslationPipeline:
         dxf_cache: CadDxfCache | None = None,
         profile_requester: Callable[..., str] | None = None,
         term_memory: Any = None,
+        trust_translations: bool = False,
     ) -> None:
         self.converter = converter
+        # 译文对照表重新写回时为 True：译文是用户亲手改的（或第一次已核对过的），
+        # 照写，不再按「数字和原文一致」检查，否则「两根立柱 → 2 posts」会被丢掉。
+        self.trust_translations = trust_translations
         # 扫描时转换过的 DWG 留在这里，翻译时直接复用，不再转第二遍。
         self.dxf_cache = dxf_cache
         self.memory_lookup = memory_lookup
@@ -1771,6 +1776,11 @@ class CadTranslationPipeline:
         # Set per drawing by ``translate_file``: a DWG spends real time in the
         # converter at scan / write / verify.
         self._stage_weights: dict[str, int] = CAD_STAGE_WEIGHTS
+
+    def _check_translation(self, source: str, value: str) -> tuple[bool, str]:
+        if self.trust_translations:
+            return (True, "") if value else (False, "译文为空")
+        return _valid_translation(source, value)
 
     def _term_log(self, level: str, message: str) -> None:
         """记忆库的运行日志：查记忆库时记在「匹配」阶段，翻完后的记在「翻译」阶段。"""
@@ -2126,7 +2136,7 @@ class CadTranslationPipeline:
                 translate_seconds += self.last_translate_seconds
                 for text in plain:
                     value = str(ai_results.get(text, "") or "").strip()
-                    valid, _reason = _valid_translation(text, value)
+                    valid, _reason = self._check_translation(text, value)
                     if valid:
                         translations[text] = value
                     else:
@@ -2155,7 +2165,7 @@ class CadTranslationPipeline:
                         # 模型确认原文已是目标语言：保留原文，不算翻译，也不用复核。
                         kept_texts.add(text)
                         continue
-                    valid, _reason = _valid_translation(text, value)
+                    valid, _reason = self._check_translation(text, value)
                     if valid:
                         translations[text] = value
                     else:
@@ -2307,6 +2317,18 @@ class CadTranslationPipeline:
                     FitSettings(options.fit_default_scale, options.fit_min_scale),
                     layout_unresolved,
                 )
+                # 一列上下排的说明（每条一段多行文字）：双语的译文接在原文后面，会压到下一条，
+                # 整列重新往下排开（见 core.cad_list_layout）。
+                if bilingual:
+                    stats.layout_fitted += fit_bilingual_lists(
+                        records,
+                        {ordinals[key]: text for key, text in cell_sources.items() if key in ordinals},
+                        _plain_text,
+                        below=below,
+                        bilingual_scale=_BILINGUAL_SCALE,
+                        settings=FitSettings(options.fit_default_scale, options.fit_min_scale),
+                        unresolved=layout_unresolved,
+                    )
                 stats.layout_fitted += fit_translated_texts(
                     records,
                     {ordinals[key]: text for key, text in fit_sources.items() if key in ordinals},
@@ -2472,10 +2494,13 @@ class CadTranslationPipeline:
                 if text not in translations and text not in kept_texts
             ]
             unit_reports: list[dict[str, str]] = []
+            sent_texts = set(texts)
             for unit in candidates:
                 for run in unit.runs or (CadTextRun(0, len(unit.plain_text), unit.plain_text),):
                     source_text = run.text
-                    if not source_text:
+                    # 一段多行文字里的纯数字、符号小段（「3.0」「Φ4@50」）不翻译、原样保留，
+                    # 不列进对照表：以前列成「未译出」，用户填了译文也写不回去。
+                    if not source_text or source_text not in sent_texts:
                         continue
                     target_text = translations.get(source_text, "")
                     if target_text and source_text in term_review:

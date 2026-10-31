@@ -69,7 +69,7 @@ class ClaudeRetryBehaviourTests(unittest.TestCase):
     def test_a_rejected_key_fails_after_a_single_attempt(self) -> None:
         fake = _FailingClient(_AuthError(401))
         engine = ClaudeEngine(api_key="bad-key", model="m")
-        with patch("engines.claude_engine.httpx.Client", return_value=fake):
+        with patch("httpx.Client", return_value=fake):
             with self.assertRaises(_AuthError):
                 engine.translate_batch(["hi"], "en", "prompt")
         # Retrying a 401 through the whole backoff budget only delays the

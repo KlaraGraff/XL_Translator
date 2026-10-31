@@ -502,9 +502,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
     el.setAttribute("role", "tab");
     const label = document.createElement("span");
     label.className = "si-lb";
+    // 名称写全：196px 放不下就折成两行（settings.css .si-lb），不用悬停提示。
     label.textContent = item.label;
-    // 法文的子页名较长，196px 放不下时省略，悬停看全名。
-    label.title = item.label;
     el.append(icon(item.icon), label);
     el.addEventListener("click", () => {
       if (currentPage === item.id) return;

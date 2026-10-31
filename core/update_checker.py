@@ -353,7 +353,7 @@ def check_for_updates(
         # 一律 302 到 objects.githubusercontent.com,httpx 默认不跟随重
         # 定向——不加 follow_redirects 会把 302 的空/占位正文当校验和文件
         # 去解析,解析失败后整次检查被误判为「正式发布包尚未就绪」。
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=not direct) as client:
+        with system_proxy.http_client(timeout=timeout_seconds, follow_redirects=True, trust_env=not direct) as client:
             response = client.get(
                 LATEST_RELEASE_API_URL,
                 headers={

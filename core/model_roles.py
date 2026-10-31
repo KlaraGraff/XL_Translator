@@ -14,8 +14,6 @@ from dataclasses import dataclass, replace as dataclass_replace
 from config import (
     DEFAULT_CLOUD_MODEL,
     DEFAULT_CLOUD_PROVIDER,
-    IMAGE_GENERATION_MODEL_PROVIDERS,
-    VISION_TEXT_MODEL_PROVIDERS,
 )
 from settings import (
     _PROVIDER_DISPLAY_NAMES,
@@ -88,10 +86,15 @@ def provider_display_name(provider: str) -> str:
 
 
 def unsupported_capability_message(label: str, provider: str, capability: str) -> str:
-    """「服务商不支持这项能力」的统一人话。"""
+    """「这家服务商的这项功能本软件还没接入」的统一人话。
+
+    以前说成「X 不支持…」，可智谱、Anthropic 等都有能看图的模型，没接上的是本软件，
+    不是对方。「自定义配置」可以填任何兼容 OpenAI 接口的地址，是现成的出路。
+    """
     ability = capability_label(capability)
     return (
-        f"{provider_display_name(provider)}不支持{ability}，请在设置中为{label}更换支持{ability}的连接。"
+        f"{provider_display_name(provider)}的{ability}功能尚未接入本软件。"
+        f"如需使用，请在设置中为{label}改用「自定义配置」，填写兼容 OpenAI 接口的地址。"
     )
 
 
@@ -881,20 +884,15 @@ def pdf_review_model_signature(settings: AppSettings, connection_id: str = "") -
     )
 
 
-def image_generation_provider_values() -> set[str]:
-    return set(IMAGE_GENERATION_MODEL_PROVIDERS.values())
-
-
-def vision_text_provider_values() -> set[str]:
-    return set(VISION_TEXT_MODEL_PROVIDERS.values())
-
-
 def provider_supports_capability(provider: str, capability: str) -> bool:
+    """看图、出图是否已接入由统一的图片请求模块判断（core.image_requests）。"""
+    from core.image_requests import supports_image_generation, supports_vision
+
     provider_value = str(provider or "").strip()
     if capability == "image":
-        return provider_value in image_generation_provider_values()
+        return supports_image_generation(provider_value)
     if capability == "vision_text":
-        return provider_value in vision_text_provider_values()
+        return supports_vision(provider_value)
     return provider_value in {
         "claude",
         "openai",

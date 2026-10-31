@@ -39,6 +39,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.local_endpoint import runtime_mode
 from core.output_metadata import (
     build_translation_metadata,
     is_translation_output,
@@ -1727,6 +1728,41 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_number=page_number,
         )
 
+    def cancel_page_action(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+        """Withdraw a queued page action before the resume sends any request.
+
+        Queued actions only take effect at the pause boundary in ``_run``, so
+        while the task is still paused nothing has reached the model yet and
+        dropping the entry leaves the page exactly as it was.  Cancelling a
+        page with nothing queued is accepted and reports ``cancelled: ""``:
+        a second click racing the snapshot refresh must not surface an error.
+        """
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise PdfPageActionError("页码必须是整数。") from exc
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+            if prepared is None:
+                raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+            record = prepared.record
+            cancelled = ""
+            remaining: list[_PdfPageAction] = []
+            for action in self._pending_page_actions:
+                if action.relative_path == record.relative_path and action.page_number == page_number:
+                    cancelled = action.kind
+                else:
+                    remaining.append(action)
+            self._pending_page_actions = remaining
+            file_name = record.name
+        return {
+            "action": "cancel",
+            "cancelled": cancelled,
+            "relative_path": relative_path,
+            "name": file_name,
+            "page_number": page_number,
+        }
+
     # ---- single-page rerun after the task ended --------------------------------
     #
     # The paused-task actions above only queue: ``_run`` is still parked inside
@@ -1927,7 +1963,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
                 review_concurrency = resolve_pdf_review_concurrency(
                     self._settings,
-                    mode=getattr(review_model_config, "mode", None),
+                    mode=runtime_mode(review_model_config),
                 )
             except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
                 logger.debug(f"[PDF] 单页重生成解析审核模型配置失败原始错误：{exc!r}")
@@ -2838,7 +2874,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         try:
             model_config = resolve_effective_model_config(self._settings, ROLE_IMAGE)
             image_concurrency = resolve_pdf_page_concurrency(
-                self._settings, mode=getattr(model_config, "mode", None)
+                self._settings, mode=runtime_mode(model_config)
             )
             model_signature = image_model_signature(self._settings)
             if not provider_supports_capability(model_config.provider, "image"):
@@ -2896,7 +2932,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
                 review_concurrency = resolve_pdf_review_concurrency(
                     self._settings,
-                    mode=getattr(review_model_config, "mode", None),
+                    mode=runtime_mode(review_model_config),
                 )
                 review_model_signature = pdf_review_model_signature(self._settings)
                 if not provider_supports_capability(review_model_config.provider, "vision_text"):
