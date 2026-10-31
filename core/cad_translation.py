@@ -1498,7 +1498,8 @@ def _same_as_source(source: str, translation: str) -> bool:
         text = unicodedata.normalize("NFKC", text).replace("×", "x").casefold()
         return _SAME_TEXT_SPACES.sub("", text)
     return norm(source) == norm(translation)
-_CJK_TRANSLATION_FONT = compatible_font("zh")
+# 带中文大字体的译文样式（简体、繁体各一套）：译文里留着汉字也能显示。
+_CJK_TRANSLATION_FONTS = (compatible_font("zh"), compatible_font("zh_hant"))
 # 双语时译文比原文小一号；多行文字里用相对字高写。
 _BILINGUAL_SCALE = 0.8
 _ATTRIB_SEPARATOR = " / "
@@ -2293,7 +2294,7 @@ class CadTranslationPipeline:
                         # SHX 西文字体没有汉字：译文里还留着中文（专有名词、没译出的词）时，
                         # 这一行沿用原文样式，否则显示成一串问号。
                         style=style_name if fully and (
-                            font == _CJK_TRANSLATION_FONT or not has_cjk(written.get(unit.plain_text, ""))
+                            font in _CJK_TRANSLATION_FONTS or not has_cjk(written.get(unit.plain_text, ""))
                         ) else None,
                         can_mark=can_mark,
                         escape=escape_unicode,
@@ -2309,7 +2310,7 @@ class CadTranslationPipeline:
                     style_name is not None
                     and fully
                     and unit.entity_type in {"TEXT", "ATTRIB", "MTEXT"}
-                    and (font == _CJK_TRANSLATION_FONT or not has_cjk(_translated_plain(unit, written)))
+                    and (font in _CJK_TRANSLATION_FONTS or not has_cjk(_translated_plain(unit, written)))
                 )
                 _replace_unit_runs(records, unit, written, escape=escape_unicode, strip_shx_fonts=restyle)
                 if restyle:

@@ -21,7 +21,7 @@ import {
 import { clearElement, createButton, createCard, createEmptyState, createProgressBar, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { fitPlaceholder } from "../text-fit";
-import { currentLocale, t, tx } from "../i18n";
+import { isChineseLocale, t, tx } from "../i18n";
 import { hasView, registerView, unregisterView } from "../router";
 import {
   isExtSurface,
@@ -204,7 +204,7 @@ function renderAbout(): void {
 }
 
 function shareUrl(): string {
-  return currentLocale() === "zh" ? `${REGISTRY_HOME}#如何提交` : `${REGISTRY_HOME}/blob/main/README.en.md#how-to-submit`; // i18n-ignore 中文 README 的标题锚点
+  return isChineseLocale() ? `${REGISTRY_HOME}#如何提交` : `${REGISTRY_HOME}/blob/main/README.en.md#how-to-submit`; // i18n-ignore 中文 README 的标题锚点
 }
 
 function progressRow(progress: ExtensionInstallProgress): HTMLElement {

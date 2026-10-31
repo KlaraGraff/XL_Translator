@@ -1,7 +1,8 @@
 // 词条匹配引擎：不碰 window、不碰 Vite，只吃「语言 + 词条表」，方便在 node 里单测
 // （tests/i18n_engine.test.mjs）。界面代码请用 ./index.ts 导出的 t / tx。
 
-export type Locale = "zh" | "en" | "fr";
+// zh-Hant：繁體中文。词条表里没有繁体译文，显示时由调用方给的转换函数把简体换成繁体。
+export type Locale = "zh" | "zh-Hant" | "en" | "fr";
 export type CatalogEntry = { en?: string; fr?: string };
 export type Catalog = Record<string, CatalogEntry>;
 
@@ -25,6 +26,10 @@ const INTERPOLATE_RE = /\{(\d+)(?:\|([^|}]*)\|([^}]*))?\}/g;
 const CJK_RE = /[㐀-鿿]/;
 // 纯数字、时间、百分比之类的捕获片段不用再翻。
 const NUMERIC_RE = /^[\s\d.,:%+\-/×x()]*$/;
+// 繁体界面里围住占位片段的标记（控制字符，不会出现在正常文字里）。
+const CAPTURE_OPEN = "\u0001";
+const CAPTURE_CLOSE = "\u0002";
+const CAPTURE_SPAN_RE = /\u0001[^\u0001\u0002]*\u0002/g;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -41,7 +46,23 @@ function renumberPlaceholders(source: string, target: string): [string, string] 
   return [rename(source), rename(target)];
 }
 
-export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): Translator {
+export function createTranslator(
+  locale: Locale,
+  catalogs: Iterable<Catalog>,
+  convert: (text: string) => string = (text) => text,
+): Translator {
+  const hant = locale === "zh-Hant";
+  // 中文界面（简体、繁体）：句子之间不加空格，分号、句号用全角。
+  const chinese = locale === "zh" || hant;
+  const convertCache = new Map<string, string>();
+  const toHant = (text: string): string => {
+    const cached = convertCache.get(text);
+    if (cached !== undefined) return cached;
+    const result = convert(text);
+    if (convertCache.size > 20000) convertCache.clear();
+    convertCache.set(text, result);
+    return result;
+  };
   const exact = new Map<string, string>();
   const templatesByHead = new Map<string, TemplateEntry[]>();
   const templatesAnyHead: TemplateEntry[] = [];
@@ -89,7 +110,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
   if (locale !== "zh") {
     for (const catalog of catalogs) {
       for (const [source, entry] of Object.entries(catalog)) {
-        const target = entry?.[locale];
+        const target = hant ? toHant(source) : entry?.[locale as "en" | "fr"];
         if (typeof target !== "string" || !target) continue;
         exact.set(source, target);
         if (PLACEHOLDER_TEST_RE.test(source)) addTemplate(source, target);
@@ -98,7 +119,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
         const STATUS_PREFIX = /^状态[:：]\s*/;
         if (STATUS_PREFIX.test(source)) {
           const bareSource = source.replace(STATUS_PREFIX, "");
-          const bareTarget = target.replace(/^(Status|État|Statut)\s*:\s*/u, "");
+          const bareTarget = hant ? toHant(bareSource) : target.replace(/^(Status|État|Statut)\s*:\s*/u, "");
           const capitalized = bareTarget.charAt(0).toUpperCase() + bareTarget.slice(1);
           if (bareSource && !exact.has(bareSource)) {
             exact.set(bareSource, capitalized);
@@ -109,7 +130,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
           if (STAGE_MARK.test(bareSource)) {
             const [stageSource, stageTarget] = renumberPlaceholders(
               bareSource.replace(STAGE_MARK, ""),
-              bareTarget.replace(/^\[[^\]]*\]\s*/, ""),
+              hant ? toHant(bareSource.replace(STAGE_MARK, "")) : bareTarget.replace(/^\[[^\]]*\]\s*/, ""),
             );
             const stageCapitalized = stageTarget.charAt(0).toUpperCase() + stageTarget.slice(1);
             if (stageSource && !exact.has(stageSource)) {
@@ -136,6 +157,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     const n = typeof value === "number" ? value : Number(String(value ?? "").replace(/[^\d.-]/g, ""));
     if (!Number.isFinite(n)) return 1;
     if (locale === "fr") return Math.abs(n) < 2 ? 0 : 1;
+    // 中文没有单复数，词条里写了 {0|…|…} 时都取第二种（与简体界面原样显示的写法一致）。
     return Math.abs(n) === 1 ? 0 : 1;
   }
 
@@ -170,7 +192,11 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       }
     }
     if (!best) return null;
-    const captures = best.match.slice(1).map((part) => translateRuntime(part, depth + 1));
+    // 繁体界面：占位处取到的片段（文件名、路径、用户写的内容）用标记围起来，最后整句转繁体时跳过。
+    const captures = best.match.slice(1).map((part) => {
+      const translated = translateRuntime(part, depth + 1);
+      return hant ? `${CAPTURE_OPEN}${translated}${CAPTURE_CLOSE}` : translated;
+    });
     return interpolate(best.entry.target, captures);
   }
 
@@ -183,6 +209,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     const translated = parts.map((part) => translateRuntime(part, depth + 1));
     if (!translated.some((part, index) => part !== parts[index])) return null;
     // 前一段已经以句号结尾（整句翻出来的）就只空一格，不再接分号。
+    if (chinese) return translated.join("；");
     const semicolon = locale === "fr" ? "\u00a0; " : "; ";
     return translated.reduce((acc, part) => (/[.!?]$/.test(acc) ? `${acc} ${part}` : `${acc}${semicolon}${part}`));
   }
@@ -203,12 +230,47 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
         const translated = translateRuntime(bare, depth + 1);
         if (translated !== bare) {
           changed = true;
+          if (chinese) return /[。！？]$/.test(translated) ? translated : `${translated}。`;
           return /[.!?]$/.test(translated) ? translated : `${translated}.`;
         }
       }
       return sentence;
     });
-    return changed ? out.join(" ").replace(/\s+$/, "") : null;
+    if (!changed) return null;
+    return chinese ? out.join("") : out.join(" ").replace(/\s+$/, "");
+  }
+
+  // 繁体界面：标记之外、还没换成繁体的字数（没认出来的部分）；其余界面：剩下的中文字数。
+  function leftover(text: string): number {
+    if (!hant) return cjkCount(text);
+    const outside = text.replace(CAPTURE_SPAN_RE, "");
+    const converted = toHant(outside);
+    let count = 0;
+    for (let i = 0; i < outside.length; i += 1) if (outside[i] !== converted[i]) count += 1;
+    return count;
+  }
+
+  // 去掉占位标记；标记之外的文字转成繁体（词条认不出来的句子也显示繁体），标记之内原样。
+  function finishHant(text: string): string {
+    let out = "";
+    let plain = "";
+    let level = 0;
+    for (const ch of text) {
+      if (ch === CAPTURE_OPEN) {
+        if (level === 0 && plain) {
+          out += toHant(plain);
+          plain = "";
+        }
+        level += 1;
+      } else if (ch === CAPTURE_CLOSE) {
+        level = Math.max(0, level - 1);
+      } else if (level === 0) {
+        plain += ch;
+      } else {
+        out += ch;
+      }
+    }
+    return out + (plain ? toHant(plain) : "");
   }
 
   function translateRuntime(text: string, depth: number): string {
@@ -219,7 +281,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     if (templated !== null) {
       // 模板的占位可能吞进「；」另一侧的整条说明：拆开逐条翻剩的中文更少时用拆开的。
       const split = text.includes("；") ? translateSemicolonParts(text, depth) : null;
-      return split !== null && cjkCount(split) < cjkCount(templated) ? split : templated;
+      return split !== null && leftover(split) < leftover(templated) ? split : templated;
     }
     const trimmed = text.trim();
     if (trimmed !== text) {
@@ -240,14 +302,14 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     const bySemicolon = text.includes("；") ? translateSemicolonParts(text, depth) : null;
     if (bySemicolon !== null) candidates.push(bySemicolon);
     if (candidates.length) {
-      return candidates.reduce((a, b) => (cjkCount(b) < cjkCount(a) ? b : a));
+      return candidates.reduce((a, b) => (leftover(b) < leftover(a) ? b : a));
     }
     return matchTemplate(text, depth, true) ?? text;
   }
 
   return {
     t(source: string, ...args: unknown[]): string {
-      const target = locale === "zh" ? source : exact.get(source) ?? source;
+      const target = locale === "zh" ? source : exact.get(source) ?? (hant ? toHant(source) : source);
       return interpolate(target, args);
     },
     tx(text: unknown): string {
@@ -255,7 +317,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       if (locale === "zh" || !value || !CJK_RE.test(value)) return value;
       const cached = runtimeCache.get(value);
       if (cached !== undefined) return cached;
-      const result = translateRuntime(value, 0);
+      const result = hant ? finishHant(translateRuntime(value, 0)) : translateRuntime(value, 0);
       if (runtimeCache.size > 5000) runtimeCache.clear();
       runtimeCache.set(value, result);
       return result;

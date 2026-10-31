@@ -6,7 +6,7 @@
 import type { ApiClient, TaskStatus } from "../api-client";
 import { createButton, createChip, showToast } from "../components";
 import { navigate } from "../router";
-import { currentLocale, t } from "../i18n";
+import { isChineseLocale, t } from "../i18n";
 
 interface TermPair {
   term: string;
@@ -192,12 +192,12 @@ function line(tone: "warn" | "ok" | "note", message: string): HTMLDivElement {
 }
 
 function listSep(): string {
-  return currentLocale() === "zh" ? "、" : ", ";
+  return isChineseLocale() ? "、" : ", ";
 }
 
 /** 「译文（备注）」：英法界面用半角括号，备注本身是用户或模型写的原文，不翻。 */
 function withNote(target: string, note: string): string {
-  return currentLocale() === "zh" ? `${target}（${note}）` : `${target} (${note})`;
+  return isChineseLocale() ? `${target}（${note}）` : `${target} (${note})`;
 }
 
 function termLabel(pair: TermPair): string {

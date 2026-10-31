@@ -18,6 +18,7 @@ from config import (
     REVIEW_MARK_FOREIGN_NOISE,
     REVIEW_MARK_UNRESOLVED,
 )
+from core.zh_hant import is_chinese_lang
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
@@ -30,7 +31,7 @@ from core.api_scheduler import (
 )
 from core.cad_language import FOREIGN, classify_text_language, has_latin_words
 from core.engine_dispatcher import user_facing_batch_reason
-from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.language_registry import get_source_lang_display, get_target_lang_prompt_name
 from core.prompt_cache import carry_meter
 from core.translation_filter import (
     TranslationValidationResult,
@@ -182,7 +183,7 @@ def classify_mixed_language_source(
 ) -> MixedLanguageDecision:
     """Return whether one source should use the mixed-language path."""
     source = str(text or "").strip()
-    if not source or target_lang == "zh":
+    if not source or is_chinese_lang(target_lang):
         return MixedLanguageDecision(False)
     if source_lang != "zh":
         return MixedLanguageDecision(False)
@@ -980,7 +981,7 @@ def _build_mixed_translation_prompt(
     translation_only: bool = False,
 ) -> str:
     source_lang_name = get_source_lang_display(source_lang)
-    target_lang_name = get_target_lang_display(target_lang, include_optional=True)
+    target_lang_name = get_target_lang_prompt_name(target_lang)
     retry_block = (
         "\n上一轮结果未通过质量校验。请重新判断 action，并确保 translation 完整翻译源语言主体、保留数字/单位/编号；"
         f"译文里不得留下不属于{target_lang_name}的普通外文词语，也不得把同一意思写两遍。"
@@ -1025,7 +1026,7 @@ def _build_mixed_semantic_prompt(
     translation_only: bool = False,
 ) -> str:
     source_lang_name = get_source_lang_display(source_lang)
-    target_lang_name = get_target_lang_display(target_lang, include_optional=True)
+    target_lang_name = get_target_lang_prompt_name(target_lang)
     translation_only_line = (
         "\n本次输出只保留译文：不得接受 existing_bilingual。" if translation_only else ""
     )

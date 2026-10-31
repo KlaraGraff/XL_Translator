@@ -292,13 +292,13 @@ SOURCE_LANG_NAMES = {"fr": "法语", "en": "英语", "es": "西班牙语", "de":
 
 
 def target_language_name(target_lang: str) -> str:
-    """提示词里的目标语言：中文按「简体中文」（与以前一样），其余按语言列表里的名称。"""
+    """提示词里的目标语言：中文按「简体中文」（与以前一样），繁体写明用字，其余按语言列表里的名称。"""
     code = str(target_lang or "").strip()
     if code.lower() in ("", "zh", "zh-cn", "zh-hans"):
         return "简体中文"
-    from core.language_registry import get_target_lang_display
+    from core.language_registry import get_target_lang_prompt_name
 
-    return get_target_lang_display(code, include_optional=True)
+    return get_target_lang_prompt_name(code)
 
 
 def translation_problem(source: str, translation: str, target_lang: str) -> str:

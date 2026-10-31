@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -374,7 +375,7 @@ def _rewrite_one(
     rows = _rows(manifest, edits)
     mapping = {row["source"]: row["translation"] for row in rows if row["translation"]}
     kept = {row["source"] for row in rows if row["status"] == "kept" and not row["edited"]}
-    target = str(options.target_lang or "").split("-", 1)[0].lower()
+    target = re.split(r"[-_]", str(options.target_lang or "").lower(), maxsplit=1)[0]
 
     def translator(texts: list[str], glossary: Mapping[str, str], **_: Any) -> dict[str, str]:
         return {text: mapping[text] for text in texts if text in mapping}

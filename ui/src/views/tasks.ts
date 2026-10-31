@@ -35,7 +35,7 @@ import { refreshTermsAdvancedMode, renderTermsSection, resetTermsEntryCache } fr
 import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
-import { currentLocale, localeTag, t, tx, localized } from "../i18n";
+import { isChineseLocale, localeTag, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
 import { entranceElapsed, motionAllowed } from "../motion";
 import "./tasks.css";
@@ -717,7 +717,7 @@ function mergeSentences(current: string, addition: string): string {
 
 /** Word 复核项的 section_path：后端没找到标题时写「正文」「表格」「表格 2」，其余是文档里的标题原文（用户数据，不翻）。 */
 function sectionLabel(container: string): string {
-  if (currentLocale() === "zh") return container;
+  if (isChineseLocale()) return container;
   if (container === "正文") return t("正文"); // i18n-ignore 后端原文
   const table = /^表格(?:\s*(\d+))?$/.exec(container); // i18n-ignore 后端原文
   // 「表格」单独一个词在别处是统计列名（复数），这里是位置，用单数。
@@ -2009,7 +2009,7 @@ function renderDetail(): void {
     // 固定列宽：任务详情是窄面板，交给浏览器按最小内容宽度分配会把文件名压成竖排单字。
     const cols = document.createElement("colgroup");
     // 英法的「位置」「问题」是整句外文，单词不能拆开，比中文需要更宽的列；摘录本身仍是原文。
-    const widths = currentLocale() === "zh"
+    const widths = isChineseLocale()
       ? (showExcerpt ? ["20%", "14%", "26%", "12%", "28%"] : ["22%", "18%", "22%", "38%"])
       : (showExcerpt ? ["17%", "17%", "19%", "19%", "28%"] : ["16%", "22%", "26%", "36%"]);
     for (const width of widths) {

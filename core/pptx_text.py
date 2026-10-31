@@ -49,6 +49,7 @@ from typing import Any
 
 from lxml import etree
 
+from core.zh_hant import is_traditional_chinese
 from core.drawingml_marks import (
     A_END_PARA_RPR,
     A_P,
@@ -871,6 +872,8 @@ def lang_tag(target_lang: str | None) -> str:
     value = str(target_lang or "").strip().replace("_", "-")
     if not value:
         return ""
+    if is_traditional_chinese(value):
+        return "zh-TW"
     base = value.split("-")[0].lower()
     if "-" in value and base in TARGET_LANG_TAGS:
         return value

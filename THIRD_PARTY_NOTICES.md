@@ -7,6 +7,8 @@ Translator 自己的代码按 [LICENSE](LICENSE)（MIT）发布。下面这些�
 | --- | --- | --- | --- |
 | Tesseract 词表（core/pdf_vector/lexicon） | 原位替换判断识别出的词是否成词 | Apache-2.0 | https://github.com/tesseract-ocr/tessdata_fast |
 | pypinyin 汉字读音表（core/pinyin_readings.py，由 pypinyin 0.55.0 的 pinyin_dict 生成） | 核对译文里人名的汉字和原文拼音是否对得上 | MIT | https://github.com/mozillazg/python-pinyin |
+| OpenCC 简繁字词表（core/zh_hant/opencc_s2twp.txt.gz，取自 opencc-js 1.4.2 所带的 OpenCC 词典） | 繁體中文译文里漏出的简体字改成繁体 | Apache-2.0 | https://github.com/BYVoid/OpenCC |
+| opencc-js 1.4.2（界面按需加载，含 OpenCC 词典） | 繁體中文界面：把界面文字换成繁体 | MIT（程序）、Apache-2.0（OpenCC 词典） | https://github.com/nk2028/opencc-js |
 
 ## 不随程序分发的可选组件
 

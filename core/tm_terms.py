@@ -639,7 +639,7 @@ def _word_matches(expected: str, candidate: str) -> bool:
 
 def is_cjk_target(target_lang: str) -> bool:
     lang = str(target_lang or "").strip().lower()
-    return lang in _CJK_TARGETS or lang.split("-", 1)[0] in {"zh", "ja", "ko"}
+    return lang in _CJK_TARGETS or re.split(r"[-_]", lang, maxsplit=1)[0] in {"zh", "ja", "ko"}
 
 
 def term_applied(

@@ -19,6 +19,9 @@ datas = [
     # 只是每一处识别出的字都「查不到」：旋转的字一律不替换，横排的也大多保留原文。
     (str(ROOT / "core" / "pdf_vector" / "lexicon" / "eng.words.txt.gz"), "core/pdf_vector/lexicon"),
     (str(ROOT / "core" / "pdf_vector" / "lexicon" / "fra.words.txt.gz"), "core/pdf_vector/lexicon"),
+    # 繁體中文译文里漏出的简体字靠这份 OpenCC 字词表改成繁体（core/zh_hant）。漏收时目标语言
+    # 选繁体就会报错找不到文件。
+    (str(ROOT / "core" / "zh_hant" / "opencc_s2twp.txt.gz"), "core/zh_hant"),
 ]
 
 metadata_packages = [

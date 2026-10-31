@@ -5,7 +5,7 @@
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { currentView, navigate, onNavigate, type ViewId } from "./router";
-import { currentLocale, t, localized } from "./i18n";
+import { isChineseLocale, t, localized } from "./i18n";
 import { ariaKeyShortcut, shortcutLabel } from "./platform";
 import { version as PACKAGE_VERSION } from "../package.json";
 
@@ -135,7 +135,7 @@ function buildSideItem(def: SideItemDef, sub = false): HTMLDivElement {
  */
 function paintSideSearch(button: HTMLElement | null, label: HTMLElement): void {
   const full = t("搜索或输入路径");
-  const short = currentLocale() !== "zh";
+  const short = !isChineseLocale();
   label.textContent = short ? t("搜索…") : full;
   if (!button) return;
   if (short) button.title = full;

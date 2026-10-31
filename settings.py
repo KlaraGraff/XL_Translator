@@ -1358,7 +1358,7 @@ class OnboardingSettings(BaseModel):
     cad_guide_seen: bool = False
 
 
-UI_LANGUAGES = ("zh", "en", "fr")
+UI_LANGUAGES = ("zh", "zh-Hant", "en", "fr")
 # 配色方案 id，与 ui/src/palette.ts、ui/src/styles/palettes.css 保持一致。
 PALETTES = ("liuguang", "graphite", "warm", "cool", "celadon", "amber")
 # 默认「流光」（v41 起），排在第一位；v40 及以前默认「素雅灰」（id 沿用早期名称 graphite），
@@ -1465,6 +1465,42 @@ class TranslationTypesSettings(BaseModel):
         normalized = str(key or "").strip().lower()
         default = not normalized.startswith("ext:") if visible_by_default is None else visible_by_default
         return self.visible.get(normalized, default)
+
+
+def _adopt_builtin_custom_target_langs(payload: dict) -> None:
+    """自定义语言的名字后来成了内置语言（「繁體中文」）：用到它的地方改指内置语言。
+
+    以前没有内置繁体时，用户自建过名为「繁體中文」的自定义语言；内置之后同名的自定义语言
+    会被 normalize_custom_target_langs 去掉。只去掉不改引用，选它的任务会悄悄落回默认的
+    英文。这里先把引用换成内置语言代码，自定义语言本身照旧由后面的校验去掉。
+    """
+    from core.language_registry import (
+        decode_custom_target_lang_code,
+        get_builtin_supported_target_languages_map,
+    )
+
+    builtin = get_builtin_supported_target_languages_map()
+    remap: dict[str, str] = {}
+    for item in payload.get("custom_target_langs") or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        name = str(item.get("name") or decode_custom_target_lang_code(code) or "").strip()
+        builtin_code = resolve_language_code(name, builtin) if name else None
+        if code and builtin_code:
+            remap[code] = builtin_code
+    if not remap:
+        return
+    for field_name in ("target_lang", "excel_target_lang", "word_target_lang", "cad_target_lang", "tm_target_lang"):
+        value = payload.get(field_name)
+        if isinstance(value, str) and value in remap:
+            payload[field_name] = remap[value]
+    pdf_payload = payload.get("pdf")
+    if isinstance(pdf_payload, dict) and pdf_payload.get("target_lang") in remap:
+        payload["pdf"] = {**pdf_payload, "target_lang": remap[pdf_payload["target_lang"]]}
+    recent = payload.get("recent_target_langs")
+    if isinstance(recent, list):
+        payload["recent_target_langs"] = [remap.get(value, value) if isinstance(value, str) else value for value in recent]
 
 
 class AppSettings(BaseModel):
@@ -1763,6 +1799,7 @@ class AppSettings(BaseModel):
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
+        _adopt_builtin_custom_target_langs(migrated)
         migrated["custom_target_langs"] = [
             entry.model_dump()
             for entry in normalize_custom_target_langs(migrated.get("custom_target_langs"))

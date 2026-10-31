@@ -442,16 +442,19 @@ SUPPORTED_LANGS: dict[str, str] = {
     "哈萨克语": "kk",
     "乌兹别克语": "uz",
     "阿塞拜疆语": "az",
-    "中文": "zh",
+    "简体中文": "zh",
+    "繁體中文": "zh_hant",
 }
 
 # Kept as an extension point for callers that still pass include_optional;
 # Phase 1 makes all built-ins available as targets, so this map is empty.
 OPTIONAL_TARGET_LANGS: dict[str, str] = {}
 
-# 源语言候选集合允许中文 + 当前所有内置语种。
+# 源语言候选集合允许中文 + 当前所有内置语种。原文语言不分简繁：简体、繁体原文都按「中文」
+# 识别和处理（zh），只有目标语言分「简体中文」「繁體中文」。
 SUPPORTED_SOURCE_LANGS: dict[str, str] = {
-    **SUPPORTED_LANGS,
+    **{name: code for name, code in SUPPORTED_LANGS.items() if code not in ("zh", "zh_hant")},
+    "中文": "zh",
 }
 
 # ── 重试配置 ──────────────────────────────────────────────

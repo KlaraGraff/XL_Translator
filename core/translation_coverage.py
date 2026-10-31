@@ -308,7 +308,7 @@ def has_incidental_cjk(text: str, *, target_lang: str) -> bool:
     cleaned = clean_coverage_text(text)
     if not cleaned:
         return False
-    if str(target_lang or "").strip().lower() in {"zh", "ja"}:
+    if _normalize_lang(target_lang) in {"zh", "ja"}:
         return False
 
     cjk_count = count_cjk_chars(cleaned)
@@ -568,7 +568,7 @@ def looks_like_target_text(
         return False
 
     target = str(target_lang or "").strip().lower()
-    if target == "zh":
+    if _normalize_lang(target) == "zh":
         return contains_cjk(cleaned)
 
     if looks_like_short_target_token(cleaned):
@@ -600,7 +600,7 @@ def _looks_translated_despite_cjk(
     source_lang: str,
     target_lang: str,
 ) -> bool:
-    if resolve_coverage_source_lang(source_lang).lower() != "zh":
+    if _normalize_lang(resolve_coverage_source_lang(source_lang)) != "zh":
         return False
     target = _normalize_lang(target_lang)
     if target == "ja":

@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 # 「数字 + 中文日期/数量单位」的判定模式只在 core/residual_classifier 维护一份；
 # 残留中文的分级（阻断/可修/放行）、目标语豁免表、以及数字 token 的跨语言
 # 归一也都由同一分类器给出，Word / Excel 共用。
+from core.zh_hant import has_simplified_characters, is_chinese_lang, is_traditional_chinese
 from core.residual_classifier import (
     CN_DATE_UNIT_RE,
     NUMBER_TOKEN_PATTERN,
@@ -422,10 +423,19 @@ def should_translate(
     if _STANDARD_CODE_RE.match(text):
         return False
 
-    if target_lang == "zh" and not _is_source_script_text(text, source_lang):
-        # 中文已经是目标语言，本轮最小范围下直接跳过。
+    # 繁体目标、原文是中文：没有简体字的（本来就是繁体，或两岸写法一样）不用再送。
+    if (
+        is_traditional_chinese(target_lang)
+        and _normalize_lang(source_lang) == "zh"
+        and _contains_chinese(text)
+        and not has_simplified_characters(text)
+    ):
+        return False
+
+    if is_chinese_lang(target_lang) and not _is_source_script_text(text, source_lang):
+        # 中文已经是目标语言，本轮最小范围下直接跳过。繁体目标时，夹着简体字的还要改成繁体。
         if _contains_chinese(text):
-            return False
+            return is_traditional_chinese(target_lang) and has_simplified_characters(text)
 
         # 保留旧分支对纯数字/符号/空白与型号代码的保护。
         if re.match(r'^[\d\s\W_]+$', text):
@@ -559,7 +569,7 @@ def _validate_translation_strict(
         )
         return _validation_result_from_issues(issues)
 
-    if target_lang == "zh":
+    if is_chinese_lang(target_lang):
         # 目标语言为中文时，若返回内容完全不含中文且原文本身是非中文文本，
         # 基本可以判定模型没有真正完成翻译。
         if not _contains_chinese(tran) and _contains_non_chinese_letters(orig):
@@ -626,7 +636,7 @@ def _validate_translation_word_recovery(
     source_lang: str,
     strict_result: TranslationValidationResult,
 ) -> TranslationValidationResult:
-    if target_lang == "zh":
+    if is_chinese_lang(target_lang):
         return strict_result
 
     # Recovery must never rescue empty, unchanged, or obviously non-translated text.

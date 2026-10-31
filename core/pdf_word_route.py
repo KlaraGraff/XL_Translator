@@ -42,6 +42,8 @@ def _word_run_fraction(phase_index: int, phase_total: int, done: int, total: int
 
 # 东亚文字用的字体。Windows 自带微软雅黑；macOS 的 Word/WPS 会自动替换成苹方。
 EAST_ASIAN_FONT = "Microsoft YaHei"
+# 繁体：微軟正黑體（Windows 自带，字形按台湾标准）；macOS 上同样会换成苹方。
+EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
 
 
 class WordRouteStopped(Exception):
@@ -71,17 +73,17 @@ def word_route_available() -> bool:
         return False
 
 
-def _fix_rfonts(tag: str) -> str:
+def _fix_rfonts(tag: str, font: str = EAST_ASIAN_FONT) -> str:
     tag = re.sub(r'w:(ascii|hAnsi|cs)="[A-Z]{6}\+([^"]+)"', r'w:\1="\2"', tag)
     tag = re.sub(r'w:(ascii|hAnsi|cs)="CIDFont\+F\d+"', r'w:\1="Arial"', tag)
     tag = re.sub(r'\s?w:eastAsiaTheme="[^"]*"', "", tag)
     tag = re.sub(r'\s?w:eastAsia="[^"]*"', "", tag)
-    return tag.replace("<w:rFonts", f'<w:rFonts w:eastAsia="{EAST_ASIAN_FONT}"', 1)
+    return tag.replace("<w:rFonts", f'<w:rFonts w:eastAsia="{font}"', 1)
 
 
-def normalize_fonts_xml(xml: str) -> str:
+def normalize_fonts_xml(xml: str, font: str = EAST_ASIAN_FONT) -> str:
     """Only <w:rFonts .../> tags are touched (w:lang also has a w:eastAsia attribute)."""
-    return re.sub(r"<w:rFonts\b[^>]*/>", lambda m: _fix_rfonts(m.group(0)), xml)
+    return re.sub(r"<w:rFonts\b[^>]*/>", lambda m: _fix_rfonts(m.group(0), font), xml)
 
 
 def loosen_row_heights_xml(xml: str) -> str:
@@ -91,7 +93,7 @@ def loosen_row_heights_xml(xml: str) -> str:
     return re.sub(r'(<w:trHeight\b[^>]*?)w:hRule="exact"', r'\1w:hRule="atLeast"', xml)
 
 
-_EAST_ASIAN_LOCALES = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh-hk": "zh-HK", "ja": "ja-JP", "ko": "ko-KR"}
+_EAST_ASIAN_LOCALES = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh-hant": "zh-TW", "zh-hk": "zh-HK", "ja": "ja-JP", "ko": "ko-KR"}
 
 
 def east_asian_locale(target_lang: str | None) -> str:
@@ -120,13 +122,14 @@ def set_default_east_asian_lang_xml(styles_xml: str, locale: str) -> str:
 
 def normalize_docx_fonts(path: Path, east_asian_lang: str = "") -> None:
     tmp = path.with_suffix(".fonts.docx")
+    font = EAST_ASIAN_TRADITIONAL_FONT if east_asian_lang in ("zh-TW", "zh-HK") else EAST_ASIAN_FONT
     with zipfile.ZipFile(path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             data = zin.read(item.filename)
             if item.filename in ("word/document.xml", "word/styles.xml") or (
                 item.filename.startswith(("word/header", "word/footer")) and item.filename.endswith(".xml")
             ):
-                text = loosen_row_heights_xml(normalize_fonts_xml(data.decode("utf-8")))
+                text = loosen_row_heights_xml(normalize_fonts_xml(data.decode("utf-8"), font))
                 if item.filename == "word/styles.xml":
                     text = set_default_east_asian_lang_xml(text, east_asian_lang)
                 data = text.encode("utf-8")

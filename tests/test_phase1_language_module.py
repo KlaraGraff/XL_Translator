@@ -23,11 +23,11 @@ from settings import AppSettings
 class Phase1LanguageTests(unittest.TestCase):
     def test_catalog_contains_all_builtin_languages_and_auto_source(self) -> None:
         catalog = get_language_catalog()
-        self.assertEqual(len(catalog), 59)
-        self.assertEqual(len({item["code"] for item in catalog}), 59)
+        self.assertEqual(len(catalog), 60)
+        self.assertEqual(len({item["code"] for item in catalog}), 60)
         self.assertEqual(get_source_language_options()[0]["code"], AUTO_SOURCE_LANG)
         self.assertEqual(len(get_source_language_options()), 60)
-        self.assertEqual(len(get_target_language_options()), 59)
+        self.assertEqual(len(get_target_language_options()), 60)
 
     def test_custom_language_is_target_only_with_stable_code(self) -> None:
         languages, code = append_custom_target_lang([], "工程方言", "项目术语")
@@ -77,7 +77,7 @@ class Phase1LanguageTests(unittest.TestCase):
             ) as save_settings:
                 client = TestClient(create_app())
                 payload = client.get("/api/languages").json()
-                self.assertEqual(len(payload["languages"]), 59)
+                self.assertEqual(len(payload["languages"]), 60)
                 self.assertEqual(payload["source_options"][0]["code"], "auto")
                 self.assertEqual(client.post("/api/languages/custom", json={"name": "项目语", "description": "内部"}).status_code, 201)
                 save_settings.assert_called()
