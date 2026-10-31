@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from core import system_proxy
 from core.prompt_cache import (
     FAMILY_CLAUDE,
     FAMILY_GROK,
@@ -418,7 +419,7 @@ async def _send_async(route: Route, api_key: str, payload: dict, budget: Request
     timeout = httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=CONNECT_TIMEOUT)
     # trust_env uses the same OS/environment proxy policy for tests and translation.
     # Never follow a redirect with credentials, including cross-origin redirects.
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=True) as client:
+    async with system_proxy.async_client(timeout=timeout, follow_redirects=False, trust_env=True) as client:
         async with client.stream("POST", route.url, headers=headers, json=payload) as response:
             if response.status_code >= 300:
                 await response.aread()

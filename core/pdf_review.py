@@ -16,6 +16,7 @@ from loguru import logger
 from PIL import Image
 
 from config import is_siliconflow_endpoint, normalize_cloud_base_url
+from core import system_proxy
 from core.image_generation import is_model_unavailable_error, looks_like_wrong_image_model
 from core.user_facing_errors import humanize_error
 from core.model_roles import (
@@ -179,7 +180,7 @@ class OpenAICompatiblePdfReviewClient:
             "Content-Type": "application/json",
         }
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with system_proxy.http_client(timeout=self.timeout_seconds) as client:
                 routes = review_routes(model_config)
                 for index, route in enumerate(routes):
                     payload = builders[route](

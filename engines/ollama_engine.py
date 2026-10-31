@@ -7,10 +7,10 @@ import asyncio
 import json
 import math
 
-import httpx
 from loguru import logger
 
 from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT, RETRY_MAX_ATTEMPTS
+from core import system_proxy
 from core.prompt_cache import compose_system, plain_system
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -130,7 +130,7 @@ class OllamaEngine(TranslationEngine):
                 {"role": "user",    "content": user_msg},
             ],
         }
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+        async with system_proxy.async_client(timeout=OLLAMA_TIMEOUT) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()

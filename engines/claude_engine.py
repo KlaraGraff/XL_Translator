@@ -4,7 +4,6 @@ Claude (Anthropic) 翻译引擎。
 """
 import json
 
-import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from config import (
@@ -14,6 +13,7 @@ from config import (
     RETRY_WAIT_MIN,
     RETRY_WAIT_MAX,
 )
+from core import system_proxy
 from core.prompt_cache import compose_system, record_usage, split_system
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -78,7 +78,7 @@ class ClaudeEngine(TranslationEngine):
             "system": self._system_field(stable, volatile),
             "messages": [{"role": "user", "content": user_msg}],
         }
-        with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
+        with system_proxy.http_client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
             response = client.post(
                 f"{self._base_url}/messages",
                 headers=headers,

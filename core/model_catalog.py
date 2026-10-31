@@ -6,7 +6,8 @@ import hashlib
 import threading
 from dataclasses import dataclass
 
-import httpx
+
+from core import system_proxy
 
 from config import (
     DASHSCOPE_OPENAI_BASE_URL,
@@ -197,7 +198,7 @@ def fetch_ollama_models(
         return cached
     url = _append_url_path(normalized_base_url, "/api/tags")
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.get(url)
             response.raise_for_status()
             payload = response.json()
@@ -317,7 +318,7 @@ def fetch_openai_compatible_models(
         params = {"limit": "1000"}  # 默认一页只给 20 个
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.get(url, headers=headers, params=params)
             response.raise_for_status()
             payload = response.json()

@@ -24,6 +24,7 @@ from config import (
     is_siliconflow_endpoint,
     normalize_cloud_base_url,
 )
+from core import system_proxy
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
@@ -208,7 +209,7 @@ class OpenAICompatibleImageGenerationClient:
         }
 
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with system_proxy.http_client(timeout=self.timeout_seconds) as client:
                 response = client.post(f"{base_url}/responses", headers=headers, json=payload)
                 response.raise_for_status()
                 response_payload = response.json()
@@ -257,7 +258,7 @@ def _generate_page_with_images_edit(
     last_http_error: httpx.HTTPStatusError | None = None
     succeeded_index = 0
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             for index, data in enumerate(request_variants, start=1):
                 try:
                     response_payload = _post_images_edit(
@@ -327,7 +328,7 @@ def _generate_page_with_siliconflow(
         "Content-Type": "application/json",
     }
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.post(f"{base_url}/images/generations", headers=headers, json=payload)
             try:
                 response.raise_for_status()

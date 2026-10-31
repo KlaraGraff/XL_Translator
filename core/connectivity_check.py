@@ -15,6 +15,7 @@ from config import (
     ZHIPU_OPENAI_BASE_URL,
     normalize_cloud_base_url,
 )
+from core import system_proxy
 from core.text_transport import request_text, TextTransportError, TOTAL_TIMEOUT
 from core.user_facing_errors import humanize_error
 from settings import AppSettings, get_cloud_provider_config, get_key
@@ -119,7 +120,7 @@ def _check_ollama_model(
         )
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.get(_append_url_path(base_url or OLLAMA_BASE_URL, "/api/tags"))
             _raise_for_status(response)
             payload = response.json()
@@ -267,7 +268,7 @@ def _check_claude(
     }
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.post(url, headers=headers, json=payload)
             _raise_for_status(response)
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
@@ -326,7 +327,7 @@ def _check_zhipu(
     }
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.post(url, headers=headers, json=payload)
             _raise_for_status(response)
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
@@ -383,7 +384,7 @@ def _check_dashscope(
     }
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.post(url, headers=headers, json=payload)
             _raise_for_status(response)
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
