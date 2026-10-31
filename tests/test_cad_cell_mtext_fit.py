@@ -129,7 +129,7 @@ def test_text_that_cannot_fit_even_at_the_minimum_is_reported(tmp_path):
     body = _cells(output)[long_name]
     assert _scale(body) == pytest.approx(0.5)
     assert result.stats.layout_unresolved == 1
-    assert any("缩到最小比例仍会压到旁边的文字或伸出图框" in message for message in messages)
+    assert any("已缩到最小字号比例，仍与相邻文字重叠或超出图框" in message for message in messages)
 
 
 def test_mtext_without_lines_around_it_is_left_alone(tmp_path):

@@ -181,8 +181,8 @@ def test_runner_logs_each_conversion_with_its_duration(tmp_path, monkeypatch):
         r"plan\.dwg：图纸格式转换完成，用时 \d+\.\d 秒",
         r"plan\.dwg：正在将译文转换回 DWG 图纸",
         r"plan\.dwg：已转换回 DWG 图纸，用时 \d+\.\d 秒",
-        r"plan\.dwg：正在读回译文图纸以便校验",
-        r"plan\.dwg：译文图纸读回完成，用时 \d+\.\d 秒",
+        r"plan\.dwg：正在重新读取译文图纸以进行校验",
+        r"plan\.dwg：已重新读取译文图纸，用时 \d+\.\d 秒",
     ]
     positions = []
     for pattern in expected:
@@ -237,8 +237,8 @@ def test_dwg_stage_weights_give_conversions_their_share(tmp_path):
     assert by_message["正在将译文转换回 DWG 图纸"] == 77
     back = next(value for key, value in by_message.items() if key.startswith("已转换回 DWG 图纸"))
     assert back == 92
-    assert by_message["正在读回译文图纸以便校验"] == 92
-    read_back = next(value for key, value in by_message.items() if key.startswith("译文图纸读回完成"))
+    assert by_message["正在重新读取译文图纸以进行校验"] == 92
+    read_back = next(value for key, value in by_message.items() if key.startswith("已重新读取译文图纸"))
     assert read_back == 96
     assert percents[-1] == 100
 
@@ -354,7 +354,7 @@ def test_drawing_that_fails_verification_keeps_its_evidence(tmp_path):
     source = tmp_path / "plan.dwg"
     source.write_text(_dxf_text("Door"), encoding="utf-8")
     output = tmp_path / "out" / "plan_zh.dwg"
-    with pytest.raises(Exception, match="文字数量不一致"):
+    with pytest.raises(Exception, match="文字数量与原图不一致"):
         CadTranslationPipeline(
             converter=_LossyReadBackConverter(), translator=lambda texts, glossary: {"Door": "门"}
         ).translate_file(source, output)

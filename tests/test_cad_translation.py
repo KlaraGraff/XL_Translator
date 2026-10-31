@@ -653,7 +653,7 @@ def test_scan_log_explains_what_was_left_out(tmp_path):
         progress=lambda event: messages.append(event.message),
     ).translate_file(source, tmp_path / "plan_en.dxf", options=CadPipelineOptions(target_lang="en"))
     assert (result.stats.skipped_non_text, result.stats.skipped_codes, result.stats.skipped_target_language) == (1, 2, 3)
-    assert "共 5 处文字，不需要翻译的：纯数字和符号 1 处，编号、轴号、型号和尺寸 2 处，已是目标语言 1 处" in messages
+    assert "共 5 处文字，其中无需翻译的有：纯数字和符号 1 处，编号、轴号、型号和尺寸 2 处，已是目标语言 1 处" in messages
 
 
 def _french_drawing(acadver):

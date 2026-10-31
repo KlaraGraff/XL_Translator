@@ -86,7 +86,7 @@ def test_translated_table_updates_display_block_and_cell_values(tmp_path):
     assert cells.count("{\\fSimSun|b0|i0|c134|p2;Liste des matériaux}") == 3
     assert cells.count("Plan de démolition des murs") == 3
     assert cells.count("3100X2100mm") == 3
-    assert any("1 个表格的单元格内容已同步为译文" in message for message in messages)
+    assert any("1 个表格的单元格已同步为译文" in message for message in messages)
 
 
 def test_bilingual_table_cells_are_restored_before_translating_again(tmp_path):
@@ -151,7 +151,7 @@ def test_new_style_table_content_is_translated_too(tmp_path):
         assert cells.count("Plan de démolition des murs") == 2, (link, cells)
         assert cells.count("{\\fSimSun|b0|i0|c134|p2;Liste des matériaux}") == 2
         assert "墙体拆除图" not in cells and cells.count("3100X2100mm") == 2
-        assert any("1 个表格的单元格内容已同步为译文" in message for message in messages)
+        assert any("1 个表格的单元格已同步为译文" in message for message in messages)
 
 
 def test_bilingual_rerun_restores_cells_by_value_even_after_the_records_moved(tmp_path):
