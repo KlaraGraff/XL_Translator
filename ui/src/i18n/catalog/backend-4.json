@@ -895,10 +895,6 @@
     "en": "image review",
     "fr": "la vérification d'images"
   },
-  "{0}不支持{1}，请在设置中为{2}更换支持{3}的连接。": {
-    "en": "{0} does not support {1}. In Settings, give the {2} a connection that supports {3}.",
-    "fr": "{0} ne prend pas en charge {1}. Dans les paramètres, attribuez au {2} une connexion qui prend en charge {3}."
-  },
   "{0}不能跟随{1}，请改为独立配置。": {
     "en": "{0} cannot use the same settings as {1}. Configure it separately instead.",
     "fr": "{0} ne peut pas reprendre la configuration de {1}. Configurez-le de façon indépendante."
@@ -1526,5 +1522,9 @@
   "原判为已有译文，经复核下一段并非本段译文，已改为补译。": {
     "en": "Initially judged as already translated, but the check found that the next paragraph is not its translation, so it will be translated.",
     "fr": "Considéré au départ comme déjà traduit, mais la vérification a établi que le paragraphe suivant n'en est pas la traduction : il sera donc traduit."
+  },
+  "{0}的{1}功能尚未接入本软件。如需使用，请在设置中为{2}改用「自定义配置」，填写兼容 OpenAI 接口的地址。": {
+    "en": "The {1} feature of {0} is not yet supported by this app. To use it, switch the {2} to “Custom configuration” in Settings and enter an OpenAI-compatible endpoint.",
+    "fr": "La fonction {1} de {0} n'est pas encore prise en charge par cette application. Pour l'utiliser, choisissez « Configuration personnalisée » pour le {2} dans les paramètres et saisissez une adresse compatible OpenAI."
   }
 }
