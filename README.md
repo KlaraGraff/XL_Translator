@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-Translator 是一款开源的、基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PPT、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel、Word 与 PPT 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。其他文件类型可通过扩展增加，也可作为 MCP 服务器供智能体调用。
+Translator 是一款开源的、基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PPT、PDF、图片、CAD 图纸（DWG / DXF）及字幕（SRT / VTT / ASS）**，适用于 macOS 与 Windows。Excel、Word 与 PPT 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。其他文件类型可通过扩展增加，也可作为 MCP 服务器供智能体调用。
 
 [下载最新版本](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
@@ -140,7 +140,7 @@ Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和
 
 ### 扩展
 
-除 Excel、Word、PPT、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md），在「扩展 → 文件类型」中打开后即出现在侧栏。「扩展」页还包含「组件」（图纸转换工具、文字识别组件、PDF 处理组件等可选组件）和「智能体接入」页签。在「文件类型」页签可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
+除 Excel、Word、PPT、PDF 和 CAD 外，其他文件类型可以通过扩展翻译，例如随应用提供的「文本」（.txt、.md）和「字幕」（.srt、.vtt、.ass、.ssa），在「扩展 → 文件类型」中打开后即出现在侧栏；拖入尚未打开的类型的文件时，应用会询问是否打开。翻译字幕时编号和时间码保持不变，一句话跨几条字幕时合起来翻译，再分回各条。「扩展」页还包含「组件」（图纸转换工具、文字识别组件、PDF 处理组件等可选组件）和「智能体接入」页签。在「文件类型」页签可以浏览并安装扩展列表里审核过的扩展，也可以添加别人发来的扩展包；扩展由第三方作者编写，以你的用户权限运行，请只安装信任的来源。自己制作扩展可从[扩展模板](https://github.com/KlaraGraff/XL_Translator-extension-template)开始，做好后提交到[扩展列表](https://github.com/KlaraGraff/XL_Translator-extensions)分享给其他人，步骤见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)。
 
 ![扩展页：选择侧栏显示的翻译类型，浏览并安装扩展](docs/images/readme/app-extensions.png)
 
