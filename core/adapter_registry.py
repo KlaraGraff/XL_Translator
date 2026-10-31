@@ -35,17 +35,23 @@ from app_meta import APP_VERSION
 from core import system_proxy
 from core.adapter_install import MAX_PACKAGE_BYTES, bundled_ids, read_registry, version_key
 from core.app_paths import get_app_data_dir
-from core.component_download import ComponentDownloadCancelled, ComponentDownloadError, RemoteFile, download_files
+from core.component_download import (
+    ComponentDownloadCancelled,
+    ComponentDownloadError,
+    RemoteFile,
+    download_files,
+    with_cdn_mirrors,
+)
 from core.format_adapter import LANGUAGES, SUPPORTED_ADAPTER_API_VERSIONS
 
 REGISTRY_REPO = "KlaraGraff/XL_Translator-extensions"
 REGISTRY_HOME = f"https://github.com/{REGISTRY_REPO}"
 TEMPLATE_HOME = "https://github.com/KlaraGraff/XL_Translator-extension-template"
-#: ``index.json`` 的地址，按顺序尝试：jsDelivr 在国内大多可达，GitHub 原始地址作后备。
+#: ``index.json`` 的地址，按顺序尝试：jsDelivr 的几个节点（国内大多可达），GitHub 原始地址作后备。
 #: 前一个失败，或 ``FALLBACK_DELAY_SECONDS`` 秒内没有结果，就同时开始取下一个，先拿到的为准：
 #: jsDelivr 偶尔卡住十几秒才报 503，不能让「浏览扩展」跟着转圈。
 INDEX_URLS = (
-    f"https://cdn.jsdelivr.net/gh/{REGISTRY_REPO}@main/index.json",
+    *with_cdn_mirrors([f"https://cdn.jsdelivr.net/gh/{REGISTRY_REPO}@main/index.json"]),
     f"https://raw.githubusercontent.com/{REGISTRY_REPO}/main/index.json",
 )
 #: 缓存多久之内不再联网。
@@ -370,8 +376,12 @@ def download_entry(
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
 ) -> Path:
-    """按条目的地址依次下载 zip，大小和 SHA-256 不对就换下一个；全部失败抛 ``RegistryError``。"""
-    item = RemoteFile(f"{entry.id}-{_safe(entry.version)}.zip", tuple(entry.download), entry.size, entry.sha256)
+    """按条目的地址依次下载 zip，大小和 SHA-256 不对就换下一个；全部失败抛 ``RegistryError``。
+
+    jsDelivr / GitHub 原始地址自动补上 jsDelivr 的其它节点（``with_cdn_mirrors``）。
+    """
+    urls = with_cdn_mirrors(entry.download)
+    item = RemoteFile(f"{entry.id}-{_safe(entry.version)}.zip", urls, entry.size, entry.sha256)
     provided = _http_client()
     client = provided or system_proxy.http_client(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
     try:
