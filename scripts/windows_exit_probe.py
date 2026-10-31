@@ -53,6 +53,7 @@ MARKER_EXT = "slowfmt"
 
 class _FakeModel(BaseHTTPRequestHandler):
     delay = 0.0
+    waiting = 0
 
     def log_message(self, *_args) -> None:
         return
@@ -81,6 +82,7 @@ class _FakeModel(BaseHTTPRequestHandler):
         if "OK" in user and len(user) < 200:
             content = "OK"
         else:
+            type(self).waiting += 1
             time.sleep(self.delay)
             try:
                 payload = json.loads(user)
@@ -101,11 +103,59 @@ class _FakeModel(BaseHTTPRequestHandler):
         })
 
 
-def start_fake_model(delay: float) -> str:
-    handler = type("SlowModel", (_FakeModel,), {"delay": delay})
+def start_fake_model(delay: float, handler_out: list | None = None) -> str:
+    handler = type("SlowModel", (_FakeModel,), {"delay": delay, "waiting": 0})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    if handler_out is not None:
+        handler_out.append(handler)
     return f"http://127.0.0.1:{server.server_address[1]}/v1"
+
+
+def model_wait_scenario(workdir: Path) -> dict:
+    """任务正在等模型回复（模型 90 秒才回）时正常关闭：不该等满 12 秒的任务时限。"""
+    import openpyxl
+
+    result: dict = {"scenario": "model_wait"}
+    app_data = workdir / "model_wait" / "appdata"
+    samples = workdir / "model_wait" / "samples"
+    app_data.mkdir(parents=True)
+    samples.mkdir(parents=True)
+    handlers: list = []
+    model_url = start_fake_model(delay=90.0, handler_out=handlers)
+    shell = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], creationflags=NO_WINDOW)
+    engine = Engine(app_data, shell.pid)
+    try:
+        configure_model(engine, model_url)
+        book = openpyxl.Workbook()
+        for row in range(1, 41):
+            book.active.cell(row=row, column=1, value=f"设备名称第{row}行检修记录")
+        sample = samples / "sample.xlsx"
+        book.save(sample)
+        start = run_cli(app_data, "translate", str(sample), "--to", "fr", "--yes", "--json", timeout=60)
+        result["translate_start"] = start.returncode
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and handlers[0].waiting == 0:
+            time.sleep(0.2)
+        result["model_requests_waiting"] = handlers[0].waiting
+        if handlers[0].waiting == 0:
+            result["error"] = f"任务没发出模型请求：{start.stdout[-400:]} {start.stderr[-400:]}"
+            return result
+        time.sleep(1)
+        engine.api("POST", "/api/system/shutdown", timeout=3)
+        took = engine.wait_exit(SHELL_STOP_BUDGET)
+        result["engine_exit"] = "超时" if took is None else f"{took:.1f} 秒后自己退出"
+        result["seconds_to_engine_gone"] = SHELL_STOP_BUDGET if took is None else round(took, 1)
+        again = Engine(app_data, shell.pid)
+        result["reopen"] = "可用" if again.api("GET", "/api/tasks") is not None else "失败"
+        again.api("POST", "/api/system/shutdown")
+        again.wait_exit(30)
+    finally:
+        if engine.process.poll() is None:
+            engine.process.kill()
+        shell.kill()
+    return result
 
 
 # ── 引擎 ──────────────────────────────────────────────────────────────────
@@ -333,7 +383,7 @@ def scenario(name: str, workdir: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", default="normal,shell_gone,killed")
+    parser.add_argument("--scenario", default="normal,shell_gone,killed,model_wait")
     parser.add_argument("--report", default="")
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
@@ -341,7 +391,7 @@ def main() -> int:
     results = []
     for name in args.scenario.split(","):
         print(f"== {name}", flush=True)
-        outcome = scenario(name.strip(), workdir)
+        outcome = model_wait_scenario(workdir) if name.strip() == "model_wait" else scenario(name.strip(), workdir)
         print(json.dumps(outcome, ensure_ascii=False, indent=2), flush=True)
         results.append(outcome)
     if args.report:
@@ -354,6 +404,8 @@ def main() -> int:
                 problems.append(f"{name}: {outcome['error']}")
             if outcome.get("children_left_running"):
                 problems.append(f"{name}: 子程序还在运行 {outcome['children_left_running']}")
+            if name == "model_wait" and outcome.get("seconds_to_engine_gone", 0) > 5:
+                problems.append(f"{name}: 等模型回复的任务让关闭用了 {outcome.get('seconds_to_engine_gone')} 秒")
             if name != "killed" and outcome.get("temp_left"):
                 problems.append(f"{name}: 临时文件夹残留 {outcome['temp_left']}")
             if not str(outcome.get("reopen", "")).endswith("可用"):

@@ -2465,13 +2465,18 @@ def _log_threads_still_running(tasks: list[Any]) -> None:
     import traceback
 
     names = {thread.ident: thread.name for thread in threading.enumerate()}
-    markers = (f"{os.sep}core{os.sep}", f"{os.sep}engines{os.sep}", f"{os.sep}adapters{os.sep}")
+    # The installed app records paths relative to its bundle ("core/x.py"), a
+    # source run absolute ones; compare both the same way.
+    markers = ("/core/", "/engines/", "/adapters/")
     for ident, frame in sys._current_frames().items():
-        if ident == threading.get_ident():
+        # The pump threads only wait on their runner's queue; the runner is what to show.
+        if ident == threading.get_ident() or str(names.get(ident, "")).startswith(("api-task-", "api-rerun-")):
             continue
         frames = traceback.extract_stack(frame)
         # Only threads that are inside the app's own work, not uvicorn or idle pools.
-        if not any(marker in entry.filename for entry in frames for marker in markers):
+        if not any(
+            marker in "/" + entry.filename.replace("\\", "/") for entry in frames for marker in markers
+        ):
             continue
         stack = "".join(traceback.format_list(frames[-12:]))
         logger.warning(f"关闭时任务未在时限内停下，线程 {names.get(ident, ident)} 停在：\n{stack}")

@@ -74,7 +74,7 @@ class RequestBudget:
     seconds: float = TOTAL_TIMEOUT
 
     def check(self) -> float:
-        if self.should_stop and self.should_stop():
+        if _APP_CLOSING.is_set() or (self.should_stop and self.should_stop()):
             raise TextTransportError("请求已取消。", kind="cancelled")
         left = self.deadline - time.monotonic()
         if left <= 0:
@@ -88,6 +88,17 @@ class RequestBudget:
         if self.remaining <= 0:
             raise TextTransportError("本次请求尝试预算已用尽。", kind="budget_exhausted")
         self.remaining -= 1
+
+
+# 应用正在关闭：在途的模型请求每 0.1 秒看一次预算（``_send_cancellable``），看到这个就
+# 立刻取消，不再等服务端返回。任务自己的 should_stop 到不了语言预检这类在线程池里发的
+# 请求，所以关闭用进程级的开关。只由 api/launcher.py 在引擎退出时设置。
+_APP_CLOSING = threading.Event()
+
+
+def cancel_all_requests() -> None:
+    """引擎要退出了：取消所有在途和之后的模型文字请求。"""
+    _APP_CLOSING.set()
 
 
 _BUDGET: ContextVar[RequestBudget | None] = ContextVar("text_request_budget", default=None)
