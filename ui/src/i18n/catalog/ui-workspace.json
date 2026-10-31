@@ -545,7 +545,7 @@
   },
   "{0} 个 .xls 未统计": {
     "en": "{0} .xls not counted",
-    "fr": "{0} .xls non comptés"
+    "fr": "{0} .xls non {0|compté|comptés}"
   },
   "不翻译，原样保留 · {0}": {
     "en": "Not translated, kept as is · {0}",
@@ -668,8 +668,8 @@
     "fr": "dont {0} A3+"
   },
   "按设定未翻译的内容 · 本批 {0} 个文件、{1} 个文本单元格": {
-    "en": "Content not translated by design · This batch: {0} {0|file|files}, {1} text cells",
-    "fr": "Contenu non traduit selon les réglages · Ce lot : {0} {0|fichier|fichiers}, {1} cellules de texte"
+    "en": "Content not translated by design · This batch: {0} {0|file|files}, {1} {1|text cell|text cells}",
+    "fr": "Contenu non traduit selon les réglages · Ce lot : {0} {0|fichier|fichiers}, {1} {1|cellule|cellules} de texte"
   },
   "另有 ": {
     "en": "The text in ",
@@ -807,6 +807,10 @@
     "en": "Waiting for {0} s: finishing. Once pending requests return, the translated content will be written to the files. Large documents take longer; the app is still running normally.",
     "fr": "Attente depuis {0} s : finalisation en cours. Dès le retour des requêtes en cours, le contenu traduit sera écrit dans les fichiers. Les gros documents prennent plus de temps ; l'application fonctionne normalement."
   },
+  "已等待 {0} 秒：正在生成输出文件，大文件耗时较长，程序仍在正常运行。": {
+    "en": "Waiting for {0} s: generating the output files. Large files take longer; the app is still running normally.",
+    "fr": "Attente depuis {0} s : génération des fichiers de sortie. Les gros fichiers prennent plus de temps ; l'application fonctionne normalement."
+  },
   "已等待 {0} 秒：此批内容已发送至模型，正在等待返回译文，程序仍在正常运行。": {
     "en": "Waiting for {0} s: this batch has been sent to the model and the translation is pending; the app is still running normally.",
     "fr": "Attente depuis {0} s : ce lot a été envoyé au modèle et la traduction est attendue ; l'application fonctionne normalement."
@@ -832,8 +836,8 @@
     "fr": "Toujours non résolus {0}"
   },
   "已生成 {0} / {1} 页": {
-    "en": "{0} / {1} pages generated",
-    "fr": "{0} / {1} pages générées"
+    "en": "{0} / {1} {1|page|pages} generated",
+    "fr": "{0} / {1} {1|page générée|pages générées}"
   },
   "原样保留 {0} 页": {
     "en": "{0} {0|page|pages} kept as is",
@@ -1028,8 +1032,8 @@
     "fr": " ({0} {0|fichier dont la source a changé sera retraduit|fichiers dont la source a changé seront retraduits} entièrement)"
   },
   "检测到上次的翻译结果（{0}/{1} 个文件已有译文）。本次将全部重新翻译。": {
-    "en": "Previous translation found ({0}/{1} files already translated). This run will retranslate everything.",
-    "fr": "Traduction précédente détectée ({0}/{1} fichiers déjà traduits). Cette exécution retraduira tout."
+    "en": "Previous translation found ({0}/{1} {1|file|files} already translated). This run will retranslate everything.",
+    "fr": "Traduction précédente détectée ({0}/{1} {1|fichier déjà traduit|fichiers déjà traduits}). Cette exécution retraduira tout."
   },
   "重新选择": {
     "en": "Choose again",
@@ -1064,12 +1068,12 @@
     "fr": "(aucun dossier précédent utilisable)"
   },
   "已完成 {0} / {1} 页（另有 {2} 个文件没有页记录，需整份生成）": {
-    "en": "{0} / {1} pages done ({2} more {2|file has|files have} no page records and will be generated in full)",
-    "fr": "{0} / {1} pages terminées ({2} autre(s) fichier(s) sans suivi des pages, à générer entièrement)"
+    "en": "{0} / {1} {1|page|pages} done ({2} more {2|file has|files have} no page records and will be generated in full)",
+    "fr": "{0} / {1} {1|page terminée|pages terminées} ({2} {2|autre fichier|autres fichiers} sans suivi des pages, à générer entièrement)"
   },
   "已完成 {0} / {1} 页": {
-    "en": "{0} / {1} pages done",
-    "fr": "{0} / {1} pages terminées"
+    "en": "{0} / {1} {1|page|pages} done",
+    "fr": "{0} / {1} {1|page terminée|pages terminées}"
   },
   "上次任务 {0} 被手动停止": {
     "en": "Last task was stopped manually on {0}",
@@ -1080,12 +1084,12 @@
     "fr": "La dernière tâche a été arrêtée manuellement"
   },
   "找到 {0} 次历史输出，已选最近一次": {
-    "en": "{0} previous outputs found; the most recent is selected",
-    "fr": "{0} sorties précédentes trouvées ; la plus récente est sélectionnée"
+    "en": "{0} previous {0|output|outputs} found; the most recent is selected",
+    "fr": "{0} {0|sortie précédente trouvée|sorties précédentes trouvées} ; la plus récente est sélectionnée"
   },
   "找到 {0} 次历史输出": {
-    "en": "{0} previous outputs found",
-    "fr": "{0} sorties précédentes trouvées"
+    "en": "{0} previous {0|output|outputs} found",
+    "fr": "{0} {0|sortie précédente trouvée|sorties précédentes trouvées}"
   },
   "{0}（最近）": {
     "en": "{0} (latest)",
@@ -1097,7 +1101,7 @@
   },
   "另有 {0} 个文件没有页面记录，无论选择哪种方式都将整份重新生成，不计入此处页数。": {
     "en": "{0} more {0|file has|files have} no page records; either way {0|it|they} will be regenerated in full and {0|is|are} not included in the page count here.",
-    "fr": "{0} autre(s) fichier(s) sans suivi des pages : dans les deux cas, ils seront régénérés entièrement et ne sont pas comptés ici."
+    "fr": "{0} {0|autre fichier|autres fichiers} sans suivi des pages : dans les deux cas, {0|il sera régénéré entièrement et n'est pas compté|ils seront régénérés entièrement et ne sont pas comptés} ici."
   },
   "另有 {0} 个 PDF 的源文件在上次翻译后已修改，上次的页面无法复用，将整份重新生成。": {
     "en": "The source of {0} more {0|PDF|PDFs} changed after the last translation; previous pages cannot be reused, so {0|it|they} will be regenerated in full.",
@@ -1120,16 +1124,16 @@
     "fr": "Les résultats sont enregistrés dans un nouveau dossier de sortie ; la sortie précédente n'est ni écrasée ni supprimée."
   },
   "跳过已完成的 {0} 页，仅生成剩余的 {1} 页，最后合成为完整的 PDF。已生成的页面直接复用，不会重复产生费用。": {
-    "en": "Skip the {0} completed pages, generate only the remaining {1}, then assemble the full PDF. Pages already generated are reused at no extra cost.",
-    "fr": "Ignorer les {0} pages terminées, générer seulement les {1} restantes, puis assembler le PDF complet. Les pages déjà générées sont réutilisées sans frais supplémentaires."
+    "en": "Skip the {0} completed {0|page|pages}, generate only the remaining {1}, then assemble the full PDF. Pages already generated are reused at no extra cost.",
+    "fr": "Ignorer {0|la page terminée|les # pages terminées}, générer seulement les {1} restantes, puis assembler le PDF complet. Les pages déjà générées sont réutilisées sans frais supplémentaires."
   },
   "中途停止的任务，最后几页可能未完整生成。继续前将逐页核对，占位页或损坏页面将自动重新生成。": {
     "en": "If a task was stopped midway, the last few pages may not be fully generated. Each page is checked before continuing, and placeholder or broken pages are regenerated automatically.",
     "fr": "Si une tâche a été arrêtée en cours de route, les dernières pages peuvent être incomplètes. Chaque page est vérifiée avant de reprendre ; les pages de substitution ou défectueuses sont régénérées automatiquement."
   },
   "从头重新生成全部 {0} 页。": {
-    "en": "Generate all {0} pages from scratch.",
-    "fr": "Générer les {0} pages depuis le début."
+    "en": "{0|Generate the page|Generate all # pages} from scratch.",
+    "fr": "{0|Générer la page|Générer les # pages} depuis le début."
   },
   "无论选择哪种方式，结果都将保存到新的输出文件夹，上次的输出不会被覆盖或删除。": {
     "en": "Either way, results are saved to a new output folder; previous output will not be overwritten or deleted.",
@@ -1356,8 +1360,8 @@
     "fr": "Connexion au service en arrière-plan perdue ; cette tâche a été marquée comme interrompue."
   },
   "正在停止：写入已翻译的部分（{0}/{1} 个文件）": {
-    "en": "Stopping: writing out the translated parts ({0}/{1} files)",
-    "fr": "Arrêt : écriture des parties traduites ({0}/{1} fichiers)"
+    "en": "Stopping: writing out the translated parts ({0}/{1} {1|file|files})",
+    "fr": "Arrêt : écriture des parties traduites ({0}/{1} {1|fichier|fichiers})"
   },
   "正在停止…": {
     "en": "Stopping…",

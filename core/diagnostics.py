@@ -335,6 +335,11 @@ def build_diagnostics_history_zip_bytes() -> tuple[bytes, str, int]:
             )
             _add_directory_to_zip(zf, record_dir, Path("records") / record_dir.name)
 
+        # 组件一键安装失败的原因（core.install_failures 写的，已脱敏）。
+        install_failures = DIAGNOSTICS_DIR / "component_install_failures.json"
+        if install_failures.is_file():
+            zf.write(install_failures, install_failures.name)
+
         zf.writestr(
             "history_summary.csv",
             _csv_text(

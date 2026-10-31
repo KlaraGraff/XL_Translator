@@ -159,6 +159,9 @@ class Surface:
     display_label: ClassVar[LocalizedText] = {}
     #: What the page calls its files (「表格文件」, "documents").
     file_noun: ClassVar[LocalizedText] = {}
+    #: The same noun for exactly one file ("presentation"), where the language
+    #: has a singular; empty means the front end says "1 file" instead.
+    file_noun_one: ClassVar[LocalizedText] = {}
     #: Icon name from ``ui/src/icons.ts``.
     icon: ClassVar[str] = ""
     #: File suffixes the page translates (see ``suffixes``).
@@ -225,6 +228,7 @@ class Surface:
             "builtin": self.builtin,
             "label": dict(self.display_label),
             "file_noun": dict(self.file_noun),
+            "file_noun_one": dict(self.file_noun_one),
             "icon": self.icon,
             "extensions": list(self.file_extensions),
             "capabilities": {

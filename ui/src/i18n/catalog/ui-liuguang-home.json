@@ -4,8 +4,8 @@
     "fr": "Excel, Word, PowerPoint, PDF et images, plans CAO : déposez-les ici. Translator envoie chaque fichier vers l'espace de travail correspondant et le lit."
   },
   "{0} 条 · {1} → {2}": {
-    "en": "{0} entries · {1} → {2}",
-    "fr": "{0} entrées · {1} → {2}"
+    "en": "{0} {0|entry|entries} · {1} → {2}",
+    "fr": "{0} {0|entrée|entrées} · {1} → {2}"
   },
   "{0}正在翻译，完成后再放入新的文件。": {
     "en": "{0} is translating. Add new files once it finishes.",
@@ -68,8 +68,8 @@
     "fr": "{0} {0|plan|plans} DWG {0|nécessite|nécessitent} d'abord le convertisseur de plans ; seuls les fichiers DXF sont traduits cette fois."
   },
   "全部开始（{0} 个文件）": {
-    "en": "Start all ({0} files)",
-    "fr": "Tout lancer ({0} fichiers)"
+    "en": "Start all ({0} {0|file|files})",
+    "fr": "Tout lancer ({0} {0|fichier|fichiers})"
   },
   "其余类型已开始。处理好上述问题后，可在对应页面单独开始。": {
     "en": "The other types have started. Once the issues above are fixed, start them from their own pages.",

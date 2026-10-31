@@ -13,6 +13,7 @@ import { t } from "../i18n";
 import { ApiClient, sidecarExecutable } from "../api-client";
 import { isWindows } from "../platform";
 import "./mcp.css";
+import { FIT_CLIP } from "../text-fit";
 
 // 拿不到本机路径时（开发构建）用默认安装位置，与 tauri.conf.json 的 resources
 // （resources/sidecar → sidecar）和 NSIS 当前用户安装目录（%LOCALAPPDATA%\Translator）一致。
@@ -212,7 +213,7 @@ function modelCard(roles: Roles): HTMLElement {
     const value = document.createElement("dd");
     if (configured) {
       const text = document.createElement("span");
-      text.className = "mcp-model-name";
+      text.className = `mcp-model-name ${FIT_CLIP}`;
       text.textContent = role?.mode === "local" ? t("本地 · {0}", model) : model;
       value.append(text);
     }

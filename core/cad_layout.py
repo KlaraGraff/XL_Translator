@@ -81,6 +81,13 @@ _POLYLINE_NOT_FLAT = 8 | 16 | 64
 _PERCENT_SYMBOL_RE = re.compile(r"%%[cdpCDP]")
 _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
+# 引线肩线离块属性最多这么远（按字高计）才算这段文字的肩线。
+_SHOULDER_GAP = 1.0
+# 引线标注折成两行时：上方（下方）没有别的标注，最多往外多占这么多（按原字高计）；两行之间的空
+# （按新字高计）；离上方那行标注至少留的空（按原字高计）。
+_LEADER_WRAP_REACH = 1.0
+_LEADER_WRAP_GAP = 0.35
+_LEADER_WRAP_CLEAR = 0.1
 
 
 def is_chinese_target(target_lang: str) -> bool:
@@ -417,12 +424,17 @@ def _geometry(
     一个图块）里的线按插入点、比例、旋转换算出来，算进插入它的容器，图块里再插图块的
     一层层往下找。格子、图框、房间的墙都是这样画出来的。ARC、CIRCLE 和多段线的圆弧段
     （门的开启线、轴号圈）折成弦单独放：它们不当格线，只用来挡住伸过去的译文。
+
+    图纸空间（布局）里的视口显示着模型空间的墙和轴线：这些线按视口比例换算到图纸上、
+    裁到视口框以内，也算进视口所在的容器（见 :func:`_viewport_segments`）。写在布局里的
+    引线标注以前看不到墙，译文一路压过去。
     """
     layers = _linetypes(records)
     own: dict[tuple[str, str], list[_Segment]] = {}
     own_curves: dict[tuple[str, str], list[_Segment]] = {}
     inserts: dict[tuple[str, str], list[tuple[str, float, float, float, float, float]]] = {}
     bases: dict[str, tuple[float, float]] = {}
+    viewports: list[tuple[tuple[str, str], _Viewport]] = []
     block = ""
 
     def add_polyline(container: tuple[str, str], points: list[tuple[float, float, float]], closed: bool) -> None:
@@ -458,7 +470,7 @@ def _geometry(
         if entity_type == "ENDBLK":
             block = ""
             continue
-        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "ARC", "CIRCLE"}:
+        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "ARC", "CIRCLE", "VIEWPORT"}:
             continue
         fields: dict[int, str] = {}
         points: list[tuple[float, float, float]] = []
@@ -475,6 +487,11 @@ def _geometry(
             container = ("BLOCK", block)
         else:
             container = ("SPACE", "1" if str(fields.get(67, "0")).strip() == "1" else "0")
+        if entity_type == "VIEWPORT":
+            viewport = _Viewport.parse(fields)
+            if viewport is not None:
+                viewports.append((container, viewport))
+            continue
         if entity_type == "INSERT":
             name = str(fields.get(2, "")).strip().upper()
             if name:
@@ -540,7 +557,84 @@ def _geometry(
 
         return {container: segments for container in set(source) | set(inserts) if (segments := resolve(container))}
 
-    return resolver(own), resolver(own_curves)
+    segments, curves = resolver(own), resolver(own_curves)
+    model = ("SPACE", "0")
+    for container, viewport in viewports:
+        for resolved in (segments, curves):
+            shown = _viewport_segments(viewport, resolved.get(model, ()))
+            if shown:
+                resolved[container] = [*resolved.get(container, []), *shown][:_MAX_SEGMENTS]
+    return segments, curves
+
+
+@dataclass(frozen=True)
+class _Viewport:
+    """图纸空间里的一个视口：纸面上的框，和它显示的那块模型空间（只认俯视的）。"""
+
+    center_x: float
+    center_y: float
+    half_width: float
+    half_height: float
+    model_x: float
+    model_y: float
+    scale: float
+    twist: float
+
+    @classmethod
+    def parse(cls, fields: Mapping[int, str]) -> _Viewport | None:
+        width, height, view_height = _float(fields.get(40)), _float(fields.get(41)), _float(fields.get(45))
+        # 69=1 是布局本身的整页视图，不显示模型；68=0 是关掉的视口。
+        if _int(fields.get(69), 0) == 1 or _int(fields.get(68), 1) == 0:
+            return None
+        if width <= 0 or height <= 0 or view_height <= 0:
+            return None
+        # 斜着看（三维视图）的视口，模型线投到纸上不是这样换算，不认。
+        direction = (_float(fields.get(16)), _float(fields.get(26)), _float(fields.get(36), 1.0))
+        if abs(direction[0]) > 1e-9 or abs(direction[1]) > 1e-9 or direction[2] <= 0:
+            return None
+        return cls(
+            _float(fields.get(10)), _float(fields.get(20)), width / 2, height / 2,
+            _float(fields.get(17)) + _float(fields.get(12)), _float(fields.get(27)) + _float(fields.get(22)),
+            height / view_height, math.radians(_float(fields.get(51))),
+        )
+
+    def place(self, x: float, y: float) -> tuple[float, float]:
+        dx, dy = (x - self.model_x) * self.scale, (y - self.model_y) * self.scale
+        # 视图扭转角是把模型绕视图中心转了这么多再显示。
+        cos, sin = math.cos(self.twist), math.sin(self.twist)
+        return self.center_x + dx * cos - dy * sin, self.center_y + dx * sin + dy * cos
+
+
+def _clip(segment: _Segment, left: float, bottom: float, right: float, top: float) -> _Segment | None:
+    """线段裁到矩形以内（Liang–Barsky）；完全在外面时返回 None。"""
+    x1, y1, x2, y2 = segment
+    dx, dy = x2 - x1, y2 - y1
+    low, high = 0.0, 1.0
+    for p, q in ((-dx, x1 - left), (dx, right - x1), (-dy, y1 - bottom), (dy, top - y1)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            low = max(low, t)
+        else:
+            high = min(high, t)
+        if low > high:
+            return None
+    return x1 + low * dx, y1 + low * dy, x1 + high * dx, y1 + high * dy
+
+
+def _viewport_segments(viewport: _Viewport, model: Sequence[_Segment]) -> list[_Segment]:
+    """模型空间的线经过这个视口显示在纸面上的那几段（纸面坐标）。"""
+    left, right = viewport.center_x - viewport.half_width, viewport.center_x + viewport.half_width
+    bottom, top = viewport.center_y - viewport.half_height, viewport.center_y + viewport.half_height
+    out: list[_Segment] = []
+    for x1, y1, x2, y2 in model:
+        clipped = _clip((*viewport.place(x1, y1), *viewport.place(x2, y2)), left, bottom, right, top)
+        if clipped is not None and (clipped[0], clipped[1]) != (clipped[2], clipped[3]):
+            out.append(clipped)
+    return out
 
 
 class _ObstacleIndex:
@@ -592,6 +686,37 @@ class _ObstacleIndex:
                 elif high <= old[0] and high > new[0]:
                     left = max(left, high)
         return right, left
+
+
+def _shoulder(
+    index: _ObstacleIndex, entity: _TextEntity, x: float, bottom: float, top: float, old: tuple[float, float],
+) -> tuple[float, float, float] | None:
+    """块属性下方（底对齐、上标）或上方（顶对齐、下标）紧挨着的引线肩线 ``(左端, 右端, 高度位置)``。
+
+    肩线是一条横线，盖住原文，左对齐的文字插入点在它左端、右对齐的在右端。找不到返回 None。
+    """
+    height = entity.height
+    if entity.halign not in {0, 2}:
+        return None
+    reach = _SHOULDER_GAP * height
+    band = (bottom - reach, bottom + 0.05 * height) if entity.valign in {0, 1} else (top - 0.05 * height, top + reach)
+    best: tuple[float, float, float, float] | None = None
+    first = max(math.floor((band[0] - index.low) / index.size), 0)
+    last = min(math.floor((band[1] - index.low) / index.size), index._BUCKETS)
+    for bucket in range(first, last + 1):
+        for ax, ay, bx, by in index.buckets.get(bucket, ()):
+            if abs(ay - by) > 1e-6 * max(1.0, abs(ax - bx)) or not band[0] <= ay <= band[1]:
+                continue
+            low, high = min(ax, bx), max(ax, bx)
+            if low > old[0] + 0.2 * height or high < old[1] - 0.2 * height:
+                continue
+            end = high if entity.halign == 2 else low
+            if abs(x - end) > 2 * height:
+                continue
+            distance = abs(ay - (bottom if entity.valign in {0, 1} else top))
+            if best is None or distance < best[0]:
+                best = (distance, low, high, ay)
+    return None if best is None else best[1:]
 
 
 class _CellIndex:
@@ -826,12 +951,22 @@ def fit_translated_texts(
         if group not in obstacle_indexes:
             obstacle_indexes[group] = _ObstacleIndex(
                 [*segments.get(entity.container, ()), *curves.get(entity.container, ())], entity.rotation,
-                bottoms[0], max(box.top for box in boxes),
+                # 上下各多留一个字高：最低、最高那行文字的引线肩线也要找得到（见 _shoulder）。
+                bottoms[0] - tallest, max(box.top for box in boxes) + tallest,
             )
         line_right, line_left = obstacle_indexes[group].limits(
             (bottom + 0.15 * height, top - 0.15 * height), (old_left, old_right), (new_left, new_right),
         )
         right_limit, left_limit = min(right_limit, line_right), max(left_limit, line_left)
+        shoulder = None
+        if entity.entity_type == "ATTRIB":
+            # 引线标注（块属性写在引线的水平肩线上方或下方，一端对齐肩线端点）：译文不越过肩线两端。
+            shoulder = _shoulder(obstacle_indexes[group], entity, x, bottom, top, (old_left, old_right))
+            if shoulder is not None:
+                if new_left < shoulder[0]:
+                    left_limit = max(left_limit, shoulder[0])
+                if new_right > shoulder[1]:
+                    right_limit = min(right_limit, shoulder[1])
         if entity.halign in {1, 4}:
             half = min(right_limit - x, x - left_limit)
             allowed = 2 * half
@@ -848,6 +983,17 @@ def fit_translated_texts(
         if needed <= room:
             continue
         scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
+        if not fits and new_handle is not None and shoulder is not None:
+            # 引线上的长说明（maple 2026-10-31 选「放不下就折两行」）：贴着肩线的那一行不动，第二行
+            # 摞在离开肩线的一侧，两行一起收进到上（下）方那行标注为止的空当，不挪动别的标注。
+            # 第二行是同一个图块引用里紧跟着的一个属性副本。
+            plan = _leader_wrap_plan(entity, records, _vertical_neighbours(indexes[group], entity, bottom, top),
+                                     room, calibration, settings, (new_left, new_right))
+            if plan is not None:
+                splits.append(plan)
+                if wrapped is not None:
+                    wrapped.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
+                continue
         if not fits and new_handle is not None and entity.entity_type == "TEXT" and cell is not None:
             # 格子里最小比例一行仍放不下（窄房间的长房间名、图签格子里的长工程名）：在空格处分成两行，
             # 两行叠在原来那一行的位置上，上下不碰别的文字和格线时就这么放。不在格子里的（「标签：
@@ -919,15 +1065,10 @@ def _wrap_plan(
 ) -> _WrapPlan | None:
     """一行放不下的译文在哪个空格处分成两行、缩到多大：两行都要放进 ``room`` 宽，
     叠起来的高度不碰原来上下方的文字和格线。放不下就是 None（照旧列入复核）。"""
-    index = _text_record(records, entity.start, entity.end)
-    if index is None:
+    split = _split_words(entity, records)
+    if split is None:
         return None
-    raw = records[index].value
-    raw_spaces = [position for position, char in enumerate(raw) if char == " "]
-    words = entity.text.split(" ")
-    # 转义（%%c、\U+00E9）里没有空格：原始写法和显示文字的空格一一对应才分。
-    if len(words) < 2 or len(raw_spaces) != len(words) - 1:
-        return None
+    raw, raw_spaces, words = split
     height, width_factor = entity.height, entity.width_factor
     best: tuple[float, int] | None = None
     for cut in range(1, len(words)):
@@ -977,6 +1118,78 @@ def _wrap_plan(
                 new_height, width_factor * width_scale, shift(centre + offset), shift(centre - offset),
             )
     return None
+
+
+def _split_words(entity: _TextEntity, records: Sequence[Any]) -> tuple[str, list[int], list[str]] | None:
+    """``(原始写法, 原始写法里空格的位置, 显示文字按空格分开的词)``；没法按空格分时返回 None。"""
+    index = _text_record(records, entity.start, entity.end)
+    if index is None:
+        return None
+    raw = records[index].value
+    raw_spaces = [position for position, char in enumerate(raw) if char == " "]
+    words = entity.text.split(" ")
+    # 转义（%%c、\U+00E9）里没有空格：原始写法和显示文字的空格一一对应才分。
+    if len(words) < 2 or len(raw_spaces) != len(words) - 1:
+        return None
+    return raw, raw_spaces, words
+
+
+def _leader_wrap_plan(
+    entity: _TextEntity,
+    records: Sequence[Any],
+    neighbours: Sequence[_TextBox],
+    room: float,
+    calibration: float,
+    settings: FitSettings,
+    span: tuple[float, float],
+) -> _WrapPlan | None:
+    """引线上的长说明分成两行：贴着肩线的那一行原地不动（上标底对齐、下标顶对齐），另一行摞在
+    外侧。字高取空当放得下的最大值（不超过原字高），字宽再按 ``room`` 收；整体缩放（字高 × 字宽）
+    不小于最小比例。放不下返回 None（照旧列入复核）。"""
+    split = _split_words(entity, records)
+    if split is None:
+        return None
+    raw, raw_spaces, words = split
+    height, width_factor = entity.height, entity.width_factor
+    best: tuple[float, int] | None = None
+    for cut in range(1, len(words)):
+        first, second = " ".join(words[:cut]).strip(), " ".join(words[cut:]).strip()
+        if not first or not second:
+            continue
+        widest = max(estimate_text_width(part, height, width_factor, entity.font_class) for part in (first, second))
+        if best is None or widest < best[0]:
+            best = (widest, cut)
+    if best is None:
+        return None
+    widest, cut = best
+    x, y = _local(entity)
+    bottom, top = _vertical_span(entity.valign, y, height)
+    upward = entity.valign in {0, 1}
+    # 外侧到哪为止：横向和这段译文重叠、在外侧的最近一行文字。
+    limit = top + _LEADER_WRAP_REACH * height if upward else bottom - _LEADER_WRAP_REACH * height
+    for box in neighbours:
+        if box.right <= span[0] or box.left >= span[1]:
+            continue
+        if upward and box.bottom >= top - 0.3 * height:
+            limit = min(limit, box.bottom - _LEADER_WRAP_CLEAR * height)
+        elif not upward and box.top <= bottom + 0.3 * height:
+            limit = max(limit, box.top + _LEADER_WRAP_CLEAR * height)
+    slot = limit - bottom if upward else top - limit
+    new_height = min(height, slot / (2 + _LEADER_WRAP_GAP))
+    if new_height <= 0:
+        return None
+    height_scale = new_height / height
+    needed = widest * height_scale * calibration
+    width_scale = min(1.0, max(room, 0.0) / needed) if needed > 0 else 1.0
+    if height_scale * width_scale < settings.min_scale - 1e-9:
+        return None
+    pitch = (1 + _LEADER_WRAP_GAP) * new_height
+    first, second = raw[:raw_spaces[cut - 1]], raw[raw_spaces[cut - 1] + 1:]
+    # 第一行在上：上标时第一行往上挪一行，下标时第二行往下挪一行。
+    return _WrapPlan(
+        entity, first, second, new_height, width_factor * width_scale,
+        pitch if upward else 0.0, 0.0 if upward else -pitch,
+    )
 
 
 def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:

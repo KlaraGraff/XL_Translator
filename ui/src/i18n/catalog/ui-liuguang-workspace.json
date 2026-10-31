@@ -1,11 +1,11 @@
 {
   "{0} 个旧版 .xls，开始时选择转换方式": {
     "en": "{0} legacy .xls — choose how to convert when you start",
-    "fr": "{0} .xls ancien(s) — choisissez la conversion au lancement"
+    "fr": "{0} .xls {0|ancien|anciens} — choisissez la conversion au lancement"
   },
   "{0} 项 · 已按常用场景设好": {
-    "en": "{0} items · preset for common cases",
-    "fr": "{0} réglages · valeurs courantes"
+    "en": "{0} {0|item|items} · preset for common cases",
+    "fr": "{0} {0|réglage|réglages} · valeurs courantes"
   },
   "也可以拖入整个文件夹，Translator 会找出其中全部可翻译的文件。": {
     "en": "You can also drop a whole folder; Translator finds every translatable file in it.",
@@ -54,6 +54,10 @@
   "拖入文件或文件夹，或粘贴路径后回车": {
     "en": "Drop files or a folder, or paste a path and press Enter",
     "fr": "Déposez des fichiers ou un dossier, ou collez un chemin puis Entrée"
+  },
+  "粘贴路径后回车": {
+    "en": "Paste a path and press Enter",
+    "fr": "Collez un chemin puis Entrée"
   },
   "支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过路径栏的「选择」选择文件或文件夹后将自动读取。源语言默认自动识别，PDF 和图片仅需选择目标语言。": {
     "en": "Excel, Word, PDF / images and CAD drawings (DWG / DXF) are supported. Choose a file or folder with “Choose” in the path bar and it is read automatically. The source language is detected automatically by default; for PDF and images, only the target language needs to be chosen.",
@@ -108,20 +112,20 @@
     "fr": "Lecture"
   },
   "读取完成，{0} 处待翻译；记忆库将优先复用已有译法。": {
-    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first.",
-    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes."
+    "en": "Read complete: {0} {0|item|items} to translate. Translation memory reuses existing translations first.",
+    "fr": "Lecture terminée : {0} {0|élément|éléments} à traduire. La mémoire de traduction réutilise d'abord les traductions existantes."
   },
   "读取完成，{0} 处待翻译；记忆库将优先复用已有译法，开始后自动识别文档场景。": {
-    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first, and the document's context is detected once you start.",
-    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document est détecté au lancement."
+    "en": "Read complete: {0} {0|item|items} to translate. Translation memory reuses existing translations first, and the document's context is detected once you start.",
+    "fr": "Lecture terminée : {0} {0|élément|éléments} à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document est détecté au lancement."
   },
   "读取完成，{0} 处待翻译；记忆库将优先复用已有译法，开始后自动识别文档场景与原文语言。": {
-    "en": "Read complete: {0} items to translate. Translation memory reuses existing translations first, and the document's context and source language are detected once you start.",
-    "fr": "Lecture terminée : {0} éléments à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document ainsi que la langue source sont détectés au lancement."
+    "en": "Read complete: {0} {0|item|items} to translate. Translation memory reuses existing translations first, and the document's context and source language are detected once you start.",
+    "fr": "Lecture terminée : {0} {0|élément|éléments} à traduire. La mémoire de traduction réutilise d'abord les traductions existantes, et le contexte du document ainsi que la langue source sont détectés au lancement."
   },
   "读取完成，{0} 页待翻译。": {
-    "en": "Read complete: {0} pages to translate.",
-    "fr": "Lecture terminée : {0} pages à traduire."
+    "en": "Read complete: {0} {0|page|pages} to translate.",
+    "fr": "Lecture terminée : {0} {0|page|pages} à traduire."
   },
   "读取文件夹及其子文件夹中的全部可翻译文件": {
     "en": "Reads every translatable file in the folder and its subfolders",

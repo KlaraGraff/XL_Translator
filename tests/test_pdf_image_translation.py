@@ -2297,6 +2297,19 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(len(runner._pending_page_actions), 1)
             self.assertEqual(runner._pending_page_actions[0].kind, "skip")
 
+            # Withdrawing the queued action leaves the page as it was; a second
+            # withdrawal (a double click racing the snapshot) is not an error.
+            cancelled = runner.cancel_page_action(relative_path="source.pdf", page_number=1)
+            self.assertEqual(cancelled["cancelled"], "skip")
+            self.assertEqual(runner._pending_page_actions, [])
+            snapshot_page = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+            self.assertEqual(snapshot_page["pending_action"], "")
+            self.assertEqual(snapshot_page["status"], "placeholder_pending")
+            again = runner.cancel_page_action(relative_path="source.pdf", page_number=1)
+            self.assertEqual(again["cancelled"], "")
+            with self.assertRaises(PdfPageActionError):
+                runner.cancel_page_action(relative_path="missing.pdf", page_number=1)
+
             record.status = PDF_OUTPUT_STATE_FAILED
             with self.assertRaises(PdfPageActionError):
                 runner.request_page_regenerate(relative_path="source.pdf", page_number=1)

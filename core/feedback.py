@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
-from core import diagnostics, system_proxy
+from core import diagnostics, install_failures, system_proxy
 from core.task_logger import app_event_logger, redact_absolute_paths
 import settings as settings_module
 
@@ -362,6 +362,8 @@ def _system_summary(settings: Any) -> dict[str, Any]:
         **diagnostics._build_runtime_payload(),
         "hardware": _hardware_summary(),
         "connection_summary": diagnostics._connection_summary(settings),
+        # 最近几次组件一键安装失败的原因；界面上只有一句话，排查要看这里。
+        "component_install_failures": install_failures.recent_failures(),
     }
 
 
@@ -831,7 +833,7 @@ def _proxy_label(endpoint: str) -> str:
 def _open_client(*, direct: bool = False) -> httpx.Client:
     # 默认跟随系统代理（httpx 读 HTTPS_PROXY 等环境变量和系统代理设置），与检查更新一致；
     # direct=True 是系统代理连不上时的那一次直连重试。
-    return httpx.Client(timeout=_SEND_TIMEOUT, follow_redirects=False, trust_env=not direct)
+    return system_proxy.http_client(timeout=_SEND_TIMEOUT, follow_redirects=False, trust_env=not direct)
 
 
 def _unique_name(name: str, used: set[str]) -> str:

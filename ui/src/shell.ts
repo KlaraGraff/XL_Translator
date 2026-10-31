@@ -5,7 +5,7 @@
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { currentView, navigate, onNavigate, type ViewId } from "./router";
-import { t, localized } from "./i18n";
+import { currentLocale, t, localized } from "./i18n";
 import { ariaKeyShortcut, shortcutLabel } from "./platform";
 import { version as PACKAGE_VERSION } from "../package.json";
 
@@ -129,6 +129,20 @@ function buildSideItem(def: SideItemDef, sub = false): HTMLDivElement {
 }
 
 /**
+ * 侧栏搜索框的提示文字。英文、法文的「Search or enter a path」「Rechercher ou saisir un chemin」
+ * 在侧栏里放不下，框里用短说法「Search…」「Rechercher…」，完整说法放悬停提示（词表约定的短说法，
+ * 见 docs/UI_TEXT_FIT.md）；中文放得下，照旧写全。
+ */
+function paintSideSearch(button: HTMLElement | null, label: HTMLElement): void {
+  const full = t("搜索或输入路径");
+  const short = currentLocale() !== "zh";
+  label.textContent = short ? t("搜索…") : full;
+  if (!button) return;
+  if (short) button.title = full;
+  else button.removeAttribute("title");
+}
+
+/**
  * 侧栏顶部的搜索入口。这里只派发 document 事件 "xl:cmdk"，搜索面板和键盘快捷键由
  * 监听它的模块负责；快捷键文字按平台显示（Mac「⌘K」、Windows「Ctrl+K」），不随界面语言变。
  */
@@ -139,8 +153,8 @@ function buildSideSearch(): HTMLButtonElement {
   button.setAttribute("aria-keyshortcuts", ariaKeyShortcut("K"));
   const label = document.createElement("span");
   label.className = "lb";
-  label.textContent = t("搜索或输入路径");
   sideSearchText = label;
+  paintSideSearch(button, label);
   const kbd = document.createElement("kbd");
   kbd.textContent = shortcutLabel("K");
   button.append(icon("search", { size: "sm" }), label, kbd);
@@ -165,7 +179,7 @@ function buildTranslateGroup(): HTMLDivElement {
 /** 界面语言换了以后，原地换掉外壳上的文字（侧栏、任务药丸）。模型药丸由调用方刷新。 */
 export function relocalizeShell(): void {
   if (translateGroupText) translateGroupText.data = t("翻译");
-  if (sideSearchText) sideSearchText.textContent = t("搜索或输入路径");
+  if (sideSearchText) paintSideSearch(sideSearchText.parentElement, sideSearchText);
   for (const def of [...RESOURCE_ITEMS, ...SYSTEM_ITEMS]) {
     const node = sideItemTextNodes.get(def.id);
     if (node) node.data = def.label;

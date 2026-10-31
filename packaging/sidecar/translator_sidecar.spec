@@ -73,6 +73,8 @@ hiddenimports += [
 hiddenimports += [
     "docx",
     "httpx",
+    # 系统代理是 SOCKS 时 httpx 才去 import 它；漏收时冻结版一遇到 SOCKS 代理就只能直连。
+    "socksio",
     "loguru",
     "openpyxl",
     "PIL",

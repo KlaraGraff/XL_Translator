@@ -143,6 +143,8 @@ export type SurfaceDescriptor = {
   builtin: boolean;
   label: LocalizedText;
   file_noun: LocalizedText;
+  /** 一个文件时的叫法（英文、法文单数）；旧版后端或清单没写时没有。 */
+  file_noun_one?: LocalizedText;
   icon: string;
   /** 一两句话说明这个类型翻什么、哪些内容不翻；格式适配器的清单里有才有，页面「选项」标题旁的「?」显示它。 */
   description?: LocalizedText;
@@ -829,6 +831,14 @@ export class ApiClient {
 
   async regeneratePdfPage(taskId: string, file: string, page: number): Promise<void> {
     await this.request(`/api/tasks/${taskId}/pdf-pages/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ file, page }),
+    });
+  }
+
+  /** 撤回暂停时排上的「重新生成」或「跳过」；排上的操作要等继续翻译才执行，撤回后这一页回到原状。 */
+  async cancelPdfPageAction(taskId: string, file: string, page: number): Promise<void> {
+    await this.request(`/api/tasks/${taskId}/pdf-pages/cancel`, {
       method: "POST",
       body: JSON.stringify({ file, page }),
     });

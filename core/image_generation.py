@@ -21,9 +21,10 @@ from config import (
     PDF_ASPECT_RATIO_TOLERANCE,
     PDF_MIN_READABLE_LONG_EDGE_PX,
     PDF_MIN_READABLE_SHORT_EDGE_PX,
-    is_siliconflow_endpoint,
     normalize_cloud_base_url,
 )
+from core import system_proxy
+from core.image_requests import image_data_url, image_generation_method
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
@@ -172,7 +173,8 @@ class OpenAICompatibleImageGenerationClient:
             review_feedback=review_feedback,
             document_context=document_context,
         )
-        if is_siliconflow_endpoint(model_config.provider, base_url):
+        method = image_generation_method(model_config.provider, base_url)
+        if method == "siliconflow":
             return _generate_page_with_siliconflow(
                 source_image_path=source_image_path,
                 prompt=prompt,
@@ -188,7 +190,7 @@ class OpenAICompatibleImageGenerationClient:
                 base_url=base_url,
                 timeout_seconds=self.timeout_seconds,
             )
-        image_data_url = _image_data_url(source_image_path)
+        source_data_url = image_data_url(source_image_path)
         payload = {
             "model": model_config.model,
             "input": [
@@ -196,7 +198,7 @@ class OpenAICompatibleImageGenerationClient:
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": prompt},
-                        {"type": "input_image", "image_url": image_data_url},
+                        {"type": "input_image", "image_url": source_data_url},
                     ],
                 }
             ],
@@ -208,7 +210,7 @@ class OpenAICompatibleImageGenerationClient:
         }
 
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            with system_proxy.http_client(timeout=self.timeout_seconds) as client:
                 response = client.post(f"{base_url}/responses", headers=headers, json=payload)
                 response.raise_for_status()
                 response_payload = response.json()
@@ -257,7 +259,7 @@ def _generate_page_with_images_edit(
     last_http_error: httpx.HTTPStatusError | None = None
     succeeded_index = 0
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             for index, data in enumerate(request_variants, start=1):
                 try:
                     response_payload = _post_images_edit(
@@ -320,14 +322,14 @@ def _generate_page_with_siliconflow(
     payload = {
         "model": model_config.model,
         "prompt": prompt,
-        "image": _image_data_url(source_image_path),
+        "image": image_data_url(source_image_path),
     }
     headers = {
         "Authorization": f"Bearer {model_config.api_key}",
         "Content-Type": "application/json",
     }
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with system_proxy.http_client(timeout=timeout_seconds) as client:
             response = client.post(f"{base_url}/images/generations", headers=headers, json=payload)
             try:
                 response.raise_for_status()
@@ -745,11 +747,6 @@ def _floor_multiple(value: float, multiple: int) -> int:
 
 def _ceil_multiple(value: float, multiple: int) -> int:
     return max(multiple, math.ceil(value / multiple) * multiple)
-
-
-def _image_data_url(path: Path) -> str:
-    data = path.read_bytes()
-    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def _extract_image_bytes(payload: Any) -> bytes:

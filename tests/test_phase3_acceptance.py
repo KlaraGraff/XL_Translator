@@ -218,7 +218,7 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 422)
-        self.assertIn("不支持", response.json()["detail"])
+        self.assertIn("尚未接入本软件", response.json()["detail"])
         checker.assert_not_called()
 
     def test_sensitive_v3_export_requires_confirmation_and_default_export_never_leaks_key(self) -> None:
@@ -343,7 +343,7 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
             }
         )
         with patch("core.model_config.save_key") as save_key:
-            with self.assertRaisesRegex(ValueError, "不支持"):
+            with self.assertRaisesRegex(ValueError, "尚未接入本软件"):
                 apply_model_config_import(AppSettings(), imported)
         save_key.assert_not_called()
 

@@ -12,6 +12,10 @@
     "en": "presentations",
     "fr": "présentations"
   },
+  "file_noun_one": {
+    "en": "presentation",
+    "fr": "présentation"
+  },
   "description": {
     "zh": "翻译 PowerPoint 演示文稿（.pptx、.pptm、.ppsx、.potx；旧版 .ppt、.pps 先用本机 PowerPoint 或 LibreOffice 转换，输出为 .pptx）：幻灯片上的文本框、形状、表格，演讲者备注，图表和 SmartArt，以及母版和版式上的固定文字，保留原有格式。图片、嵌入对象和批注中的文字不翻译。",
     "en": "Translates PowerPoint presentations (.pptx, .pptm, .ppsx, .potx; old .ppt and .pps files are first converted with the local PowerPoint or LibreOffice and come out as .pptx): text boxes, shapes and tables on the slides, charts and SmartArt, speaker notes, and fixed text on masters and layouts, keeping the original formatting. Text in pictures, embedded objects and comments is not translated.",

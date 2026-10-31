@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger
 
+from core import install_failures
+
 InstallFn = Callable[..., Any]
 
 
@@ -54,14 +56,28 @@ class InstallJob:
         def progress(phase: str, done: int, total: int) -> None:
             self._set(phase=phase, done=done, total=total)
 
+        with install_failures.collect_notes() as notes:
+            try:
+                self._install()(progress=progress, cancel=self._cancel)
+                if self._on_success is not None:
+                    self._on_success()
+                self._set(running=False, phase="done", error="", finished=time.time())
+            except self._error_type() as exc:
+                cancelled = self._cancel.is_set()
+                if not cancelled:
+                    self._record(str(exc), exc, notes)
+                self._set(running=False, phase="failed", error=str(exc), cancelled=cancelled,
+                          finished=time.time())
+            except Exception as exc:  # noqa: BLE001 - every failure becomes a message on the page
+                logger.exception(f"[{self._name}] 一键安装失败")
+                self._record("组件安装失败。", exc, notes)
+                self._set(running=False, phase="failed", error="组件安装失败。", cancelled=False,
+                          finished=time.time())
+
+    def _record(self, message: str, exc: BaseException, notes: install_failures.InstallNotes) -> None:
+        """失败原因存进诊断目录，反馈包里带上；记录失败不影响界面。"""
         try:
-            self._install()(progress=progress, cancel=self._cancel)
-            if self._on_success is not None:
-                self._on_success()
-            self._set(running=False, phase="done", error="", finished=time.time())
-        except self._error_type() as exc:
-            self._set(running=False, phase="failed", error=str(exc), cancelled=self._cancel.is_set(),
-                      finished=time.time())
-        except Exception:  # noqa: BLE001 - every failure becomes a message on the page
-            logger.exception(f"[{self._name}] 一键安装失败")
-            self._set(running=False, phase="failed", error="组件安装失败。", cancelled=False, finished=time.time())
+            install_failures.record_failure(self._name, message=message, exc=exc, progress=self.progress(),
+                                            notes=notes)
+        except Exception:  # noqa: BLE001 - recording is best effort
+            logger.exception(f"[{self._name}] 无法记录安装失败原因")

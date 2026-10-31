@@ -102,7 +102,7 @@
   对内置键无效。注册之后，扫描、开始任务、进度权重、暂停 / 继续都和内置页面一样从注册表取；
   请求里的 `surface` 按已注册的键精确匹配。续译检测（`previous_output`）只对内置页面做。
 - **描述符**：`GET /api/surfaces` 按注册顺序列出每个页面的 `Surface.describe()`：
-  `key`、`builtin`、`label`（中英法三语）、`file_noun`（三语）、`icon`（`ui/src/icons.ts` 的图标名）、
+  `key`、`builtin`、`label`（中英法三语）、`file_noun`（三语）、`file_noun_one`（英法单数，可空）、`icon`（`ui/src/icons.ts` 的图标名）、
   `extensions`（小写、不带点）、`capabilities`（`requires_source`、`can_pause`、`pause_mode`、
   `can_resume`、`can_end_paused`、`bilingual`、`translation_only`）、`phases`（各阶段的三语名称，
   与 `phase_weights` 一一对应）、`options`（运行设置里的选项：`key`、`kind`（`"toggle"` 开关；`"choice"` 多选一，

@@ -39,6 +39,7 @@ import { currentLocale, localeTag, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
 import { entranceElapsed, motionAllowed } from "../motion";
 import "./tasks.css";
+import { FIT_CLIP } from "../text-fit";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -1670,7 +1671,7 @@ function renderCard(id: string, index: number): HTMLButtonElement {
   // 用户看不见这条任务到底成没成。完整名字放 title，悬停可看全。
   const titleText = cardTitle(entry.task);
   const titleEl = document.createElement("span");
-  titleEl.className = "ttl";
+  titleEl.className = `ttl ${FIT_CLIP}`;
   titleEl.textContent = titleText;
   // 悬停时给出完整来源说明（含「等 N 个文件」）。
   titleEl.title = tx(text(entry.task.source_label, titleText));
@@ -1770,8 +1771,9 @@ function renderDetail(): void {
   const header = document.createElement("div");
   header.className = "tk-top";
   // 标题和列表行同一个说法（文件名），类型挪到下面的摘要句；完整来源（含「等 N 个文件」）
-  // 放 title。同卡片标题：长文件名必须省略（.tk-top h2），不然会把右侧「更多」推到可视区外。
+  // 放 title。同卡片标题：长文件名单行截断（.fit-clip），不然会把右侧「更多」推到可视区外。
   const title = document.createElement("h2");
+  title.className = FIT_CLIP;
   const fallbackTitle = t("任务 {0}", task.task_id.slice(0, 8));
   const titleText = `${taskSurfaceLabel(task.surface, task.task_snapshot)} · ${tx(text(task.source_label, fallbackTitle))}`;
   title.textContent = cardTitle(task);
@@ -2027,7 +2029,7 @@ function renderDetail(): void {
       const tr = document.createElement("tr");
       // 文件名单行显示、超出省略；完整名字放 title，悬停可看全。
       const fileTd = document.createElement("td");
-      fileTd.className = "fname";
+      fileTd.className = `fname ${FIT_CLIP}`;
       fileTd.textContent = row.file || "—";
       if (row.file) fileTd.title = row.file;
       tr.append(fileTd);
@@ -2098,7 +2100,7 @@ function renderDetail(): void {
       const tr = document.createElement("tr");
       // 文件名同样单行省略 + 悬停看全名，和上面那张表保持一致。
       const nameTd = document.createElement("td");
-      nameTd.className = "fname";
+      nameTd.className = `fname ${FIT_CLIP}`;
       nameTd.textContent = file.name || "—";
       if (file.name) nameTd.title = file.name;
       tr.append(nameTd);
@@ -2109,7 +2111,7 @@ function renderDetail(): void {
       tr.append(statusTd);
       // 「输出」只显示文件名；完整路径进 title，脱敏后的占位值在 fileRows 里已经被丢掉了。
       const outputTd = document.createElement("td");
-      outputTd.className = "fname";
+      outputTd.className = `fname ${FIT_CLIP}`;
       outputTd.textContent = file.output || "—";
       if (file.outputPath) outputTd.title = file.outputPath;
       // 压缩版 PDF 也是一份真产物：运行日志里写了「已生成压缩版」，这张表以前只列高清版，

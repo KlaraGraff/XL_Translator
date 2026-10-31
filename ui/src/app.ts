@@ -23,6 +23,7 @@ import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems } from 
 import type { SurfaceDescriptor } from "./api-client";
 import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 import { installCmdk } from "./cmdk";
+import { installTextFit } from "./text-fit";
 import { isMac, isWindows } from "./platform";
 
 import * as homeView from "./views/home";
@@ -209,6 +210,7 @@ function main(): void {
   initTheme();
   injectIconSprite();
   installLoopingAnimationSync();
+  installTextFit();
 
   const root = document.querySelector<HTMLDivElement>("#app");
   if (!root) {

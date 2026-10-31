@@ -134,6 +134,9 @@ class _ReviewPanelRunner:
             raise PdfPageActionError("source.pdf 第 1 页没有失败，不能跳过；如需改动请选择重新生成。")
         return self._accept("skip", relative_path, page_number)
 
+    def cancel_page_action(self, *, relative_path: str, page_number: int) -> dict:
+        return self._accept("cancel", relative_path, page_number)
+
     # -- single-page rerun after the task ended ----------------------------
     def can_rerun_pages(self) -> bool:
         return not self.rerun_active.is_set()
@@ -299,6 +302,12 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                 )
                 self.assertEqual(while_running.status_code, 409, while_running.text)
                 self.assertEqual(while_running.json()["reason"], "task_not_paused")
+                cancel_while_running = client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/cancel",
+                    json={"file": "source.pdf", "page": 1},
+                )
+                self.assertEqual(cancel_while_running.status_code, 409, cancel_while_running.text)
+                self.assertEqual(cancel_while_running.json()["reason"], "task_not_paused")
                 self.assertEqual(runner.requests, [])
 
                 client.post(f"/api/tasks/{task_id}/pause")
@@ -319,6 +328,15 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                 )
                 self.assertEqual(skipped.status_code, 200, skipped.text)
                 self.assertEqual(runner.requests[-1], ("skip", "source.pdf", 2))
+
+                # 排上的操作在继续翻译前都还没发出请求，暂停时可以撤回。
+                cancelled = client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/cancel",
+                    json={"file": "source.pdf", "page": 2},
+                )
+                self.assertEqual(cancelled.status_code, 200, cancelled.text)
+                self.assertEqual(cancelled.json()["accepted"]["action"], "cancel")
+                self.assertEqual(runner.requests[-1], ("cancel", "source.pdf", 2))
 
                 client.post(f"/api/tasks/{task_id}/end-paused")
                 deadline = time.monotonic() + 1.0

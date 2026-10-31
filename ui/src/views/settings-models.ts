@@ -96,6 +96,7 @@ import {
 import { version as PACKAGE_VERSION } from "../../package.json";
 import { ApiError } from "../api-client";
 import { localeTag, t, tx, localized } from "../i18n";
+import { FIT_CLIP } from "../text-fit";
 
 // ---------------------------------------------------------------------------
 // 子页①：模型服务
@@ -824,7 +825,7 @@ function buildRoleSeg(): HTMLElement {
     card.setAttribute("aria-selected", String(role === modelRole));
     const b = document.createElement("b");
     b.textContent = MODEL_ROLE_SHORT_LABELS[role] || role;
-    // 四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
+    // 卡片上是短名称（写全、放不下就折行），完整名字悬停可见。
     b.title = MODEL_ROLE_LABELS[role] || role;
     const primary = roleConnections(role)[0];
     const problem = text(primary?.config_problem ?? payload.config_problem);
@@ -841,7 +842,7 @@ function buildRoleSeg(): HTMLElement {
     summary.textContent = [scope, modeSummary].filter(Boolean).join(" · ");
     span.append(summary);
     // 有连接但模型名还空着：跟随行尤其容易漏——卡片写着「跟随…」看起来已经配好，
-    // 真用到这个用途时才报错。在卡片上直接标出来；摘要太长时省略的是摘要，不是这个标记。
+    // 真用到这个用途时才报错。在卡片上直接标出来；放不下时它换到摘要下面一行。
     if (problem) {
       // 别的用途改了连接，这个用途跟着用不了：卡片上直接标出来，原因放在悬停提示里。
       const unusable = document.createElement("em");
@@ -908,10 +909,11 @@ function buildConnectionListCard(role: string): HTMLElement {
     const dot = document.createElement("span");
     dot.className = `cd ${tone}`;
     const name = document.createElement("b");
+    name.className = FIT_CLIP;
     name.textContent = tx(connection.display_label) || t("连接 {0}", index + 1);
     // 灰字「服务商 · 模型」：跟随行显示的是来源连接的服务商。
     const meta = document.createElement("span");
-    meta.className = "conn-meta";
+    meta.className = `conn-meta ${FIT_CLIP}`;
     meta.textContent = [providerLabel(connection.provider), connection.model].filter(Boolean).join(" · ");
     meta.title = meta.textContent;
     const chips: HTMLElement[] = [];
@@ -1136,10 +1138,7 @@ function buildKvList(rows: [string, string | HTMLElement][]): HTMLDListElement {
     const dt = document.createElement("dt");
     dt.textContent = key;
     const dd = document.createElement("dd");
-    // app.css 的 .kv dd 是单行加省略号，那是给短值设计的。这里的值有保存路径，
-    // 省略号从尾部砍，砍掉的正是文件名——用户最需要看到的那一段。改成换行。
-    dd.style.whiteSpace = "normal";
-    dd.style.overflow = "visible";
+    // 值里有保存路径，截断会砍掉文件名——用户最需要看到的那一段。照 .kv dd 默认的折行写全。
     if (typeof value === "string") dd.textContent = value;
     else dd.append(value);
     dl.append(dt, dd);

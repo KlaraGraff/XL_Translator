@@ -76,16 +76,8 @@ def replace_file(source: Path, target: Path) -> None:
 
 
 def open_client() -> httpx.Client:
-    """下载用的客户端，跟随系统代理。
-
-    系统代理是 httpx 用不了的类型时（Windows「Internet 选项」里填的 SOCKS 代理会被读成
-    socks4://，环境变量里的 socks5:// 需要另装 socksio）建客户端就会出错：改为直连。
-    """
-    try:
-        return httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
-    except (ValueError, ImportError) as exc:
-        logger.warning(f"[组件安装] 系统代理无法使用，改为直连下载：{exc}")
-        return direct_client()
+    """下载用的客户端，跟随系统代理（httpx 用不了的代理类型见 system_proxy.http_client）。"""
+    return system_proxy.http_client(timeout=_TIMEOUT, follow_redirects=True)
 
 
 def direct_client() -> httpx.Client:

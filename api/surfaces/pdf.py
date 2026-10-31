@@ -16,6 +16,7 @@ from api.task_contracts import (
     TaskInputError,
     TaskOptions,
 )
+from core.local_endpoint import settings_runs_locally
 from core.language_registry import get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
@@ -288,7 +289,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
 
 def _document_profile_concurrency(settings: AppSettings) -> int:
     """几份 PDF 的文档说明同时请求几个：沿用 PDF 文字翻译的同时请求数；本地模型一次一个。"""
-    if settings.engine.mode == "local":
+    if settings_runs_locally(settings):
         return 1
     try:
         from core.surface_rate import resolve_surface_rate

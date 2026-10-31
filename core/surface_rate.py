@@ -55,6 +55,7 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     resolve_effective_model_config,
 )
+from core.local_endpoint import config_runs_locally
 from core.surface_settings import is_extension_key
 from settings import RATE_SURFACE_KEYS, AppSettings, SurfaceRateSettings, WordBatchSettings
 
@@ -105,9 +106,12 @@ def _mode(value: object) -> str:
 def role_mode(settings: AppSettings, role: str = ROLE_TRANSLATION) -> str:
     """一个模型用途当前是云端还是本地（默认值和范围都按这个分档）。"""
     try:
-        return _mode(resolve_effective_model_config(settings, role).mode)
+        config = resolve_effective_model_config(settings, role)
     except Exception:  # noqa: BLE001 - a half-configured role still has a mode
         return _mode(getattr(settings.engine, "mode", "cloud"))
+    # 本机的模型服务接成了云端连接（如 Ollama 的 /v1 地址）也按本地分档：云端默认一次 30 批，
+    # 本机算不过来，排队等不到的就保留了原文（core/local_endpoint.py）。
+    return "local" if config_runs_locally(config) else "cloud"
 
 
 def rate_defaults(surface: str, mode: str) -> dict[str, int]:
@@ -195,7 +199,12 @@ def extension_rate(settings: AppSettings, surface: str, *, mode: str | None = No
         config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
     except Exception:  # noqa: BLE001 - a half-configured role still gets the defaults
         config = None
-    resolved_mode = _mode(mode) if mode else _mode(getattr(config, "mode", None) or role_mode(settings))
+    if mode:
+        resolved_mode = _mode(mode)
+    elif config is not None:
+        resolved_mode = "local" if config_runs_locally(config) else "cloud"
+    else:
+        resolved_mode = role_mode(settings)
     defaults = rate_defaults(surface, resolved_mode)
     concurrency = defaults["concurrency"]
     batch_items = defaults["batch_items"]
@@ -293,13 +302,14 @@ def task_role_rate(
     速率（core/model_throughput.py）取。
     """
     role = config.role
+    mode = "local" if config_runs_locally(config) else "cloud"
     if page_key == "pdf_translate" and role == ROLE_IMAGE:
-        return resolve_pdf_page_concurrency(settings, mode=config.mode), None
+        return resolve_pdf_page_concurrency(settings, mode=mode), None
     if page_key == "pdf_translate" and role == ROLE_PDF_REVIEW:
-        return resolve_pdf_review_concurrency(settings, mode=config.mode), None
+        return resolve_pdf_review_concurrency(settings, mode=mode), None
     surface = PAGE_TEXT_SURFACES.get(str(page_key or "").strip())
     if surface is not None and role == ROLE_TRANSLATION:
-        rate = resolve_surface_rate(settings, surface, mode=config.mode)
+        rate = resolve_surface_rate(settings, surface, mode=mode)
         return rate.concurrency, rate.batch_items
     from core.model_throughput import get_model_throughput
 

@@ -31,6 +31,7 @@ import {
   uploadFeedback,
 } from "../feedback-shared";
 import "./feedback.css";
+import { FIT_CLIP, fitPlaceholder } from "../text-fit";
 
 type Category = "problem" | "suggestion" | "other";
 
@@ -112,8 +113,9 @@ function emptyDraft(): Draft {
     contactEdited: false,
     includeSystem: true,
     includeLogs: true,
-    includeSources: false,
-    includeOutputs: false,
+    // 原文件和译文默认附上：没有原文件就没法复现问题（反馈 #26 只带了日志和截图）。
+    includeSources: true,
+    includeOutputs: true,
     taskIds: new Set(),
     files: [],
     images: [],
@@ -478,11 +480,11 @@ function taskRow(task: FeedbackTask, options: { checked: boolean; disabled: bool
   box.disabled = options.disabled;
   box.addEventListener("change", () => options.onChange(box.checked));
   const name = document.createElement("span");
-  name.className = "feedback-task-name";
+  name.className = `feedback-task-name ${FIT_CLIP}`;
   name.textContent = taskName(task);
   name.title = taskName(task);
   const meta = document.createElement("span");
-  meta.className = "feedback-task-meta";
+  meta.className = `feedback-task-meta ${FIT_CLIP}`;
   meta.textContent = taskMeta(task);
   meta.title = taskMeta(task);
   row.append(box, icon(surfaceIcon(task.surface), { size: "sm" }), name, meta);
@@ -669,14 +671,14 @@ function renderKinds(): void {
       kindOption({
         checked: draft.includeSources,
         title: t("原文件"),
-        hint: t("所选任务翻译的原始文件。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        hint: t("所选任务翻译的原始文件。文件可能包含客户资料，如不便提供，可取消勾选。"),
         count: taskFilesCount(["source"]),
         onChange: (value) => { draft.includeSources = value; },
       }),
       kindOption({
         checked: draft.includeOutputs,
         title: t("译文"),
-        hint: t("所选任务生成的译文文件，含压缩版 PDF。文件可能包含客户资料，仅在需要我们查看时勾选。"),
+        hint: t("所选任务生成的译文文件，含压缩版 PDF。文件可能包含客户资料，如不便提供，可取消勾选。"),
         count: taskFilesCount(["output", "compressed"]),
         onChange: (value) => { draft.includeOutputs = value; },
       }),
@@ -695,7 +697,7 @@ function renderOtherFiles(): void {
     row.className = "feedback-file";
     row.append(icon("folder", { size: "sm" }));
     const name = document.createElement("span");
-    name.className = "feedback-file-name";
+    name.className = `feedback-file-name ${FIT_CLIP}`;
     name.textContent = file.name;
     name.title = file.path;
     const size = document.createElement("span");
@@ -775,9 +777,9 @@ function buildTaskToolbar(): HTMLElement {
   searchWrap.className = "feedback-search";
   const search = document.createElement("input");
   search.type = "text";
-  search.placeholder = t("搜索文件名、类型、状态或日期…");
+  // 窄窗口里整句放不下就写「搜索…」，整句进悬停提示。
+  fitPlaceholder(search, t("搜索文件名、类型、状态或日期…"), t("搜索…"));
   search.setAttribute("aria-label", t("搜索任务"));
-  search.title = search.placeholder;
   search.spellcheck = false;
   search.value = taskQuery;
   search.addEventListener("input", () => {

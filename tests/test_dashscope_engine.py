@@ -79,7 +79,7 @@ class DashscopeEngineTests(unittest.TestCase):
             _FakeResponse({"content": [{"type": "text", "text": "[]"}]})
         )
 
-        with patch("engines.claude_engine.httpx.Client", return_value=client):
+        with patch("httpx.Client", return_value=client):
             response = ClaudeEngine("claude-key", "claude-model")._call_api("system", "user")
 
         self.assertEqual(response, "[]")
