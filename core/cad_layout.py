@@ -81,6 +81,8 @@ _POLYLINE_NOT_FLAT = 8 | 16 | 64
 _PERCENT_SYMBOL_RE = re.compile(r"%%[cdpCDP]")
 _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
+# 引线肩线离块属性最多这么远（按字高计）才算这段文字的肩线。
+_SHOULDER_GAP = 1.0
 
 
 def is_chinese_target(target_lang: str) -> bool:
@@ -417,12 +419,17 @@ def _geometry(
     一个图块）里的线按插入点、比例、旋转换算出来，算进插入它的容器，图块里再插图块的
     一层层往下找。格子、图框、房间的墙都是这样画出来的。ARC、CIRCLE 和多段线的圆弧段
     （门的开启线、轴号圈）折成弦单独放：它们不当格线，只用来挡住伸过去的译文。
+
+    图纸空间（布局）里的视口显示着模型空间的墙和轴线：这些线按视口比例换算到图纸上、
+    裁到视口框以内，也算进视口所在的容器（见 :func:`_viewport_segments`）。写在布局里的
+    引线标注以前看不到墙，译文一路压过去。
     """
     layers = _linetypes(records)
     own: dict[tuple[str, str], list[_Segment]] = {}
     own_curves: dict[tuple[str, str], list[_Segment]] = {}
     inserts: dict[tuple[str, str], list[tuple[str, float, float, float, float, float]]] = {}
     bases: dict[str, tuple[float, float]] = {}
+    viewports: list[tuple[tuple[str, str], _Viewport]] = []
     block = ""
 
     def add_polyline(container: tuple[str, str], points: list[tuple[float, float, float]], closed: bool) -> None:
@@ -458,7 +465,7 @@ def _geometry(
         if entity_type == "ENDBLK":
             block = ""
             continue
-        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "ARC", "CIRCLE"}:
+        if entity_type not in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "ARC", "CIRCLE", "VIEWPORT"}:
             continue
         fields: dict[int, str] = {}
         points: list[tuple[float, float, float]] = []
@@ -475,6 +482,11 @@ def _geometry(
             container = ("BLOCK", block)
         else:
             container = ("SPACE", "1" if str(fields.get(67, "0")).strip() == "1" else "0")
+        if entity_type == "VIEWPORT":
+            viewport = _Viewport.parse(fields)
+            if viewport is not None:
+                viewports.append((container, viewport))
+            continue
         if entity_type == "INSERT":
             name = str(fields.get(2, "")).strip().upper()
             if name:
@@ -540,7 +552,84 @@ def _geometry(
 
         return {container: segments for container in set(source) | set(inserts) if (segments := resolve(container))}
 
-    return resolver(own), resolver(own_curves)
+    segments, curves = resolver(own), resolver(own_curves)
+    model = ("SPACE", "0")
+    for container, viewport in viewports:
+        for resolved in (segments, curves):
+            shown = _viewport_segments(viewport, resolved.get(model, ()))
+            if shown:
+                resolved[container] = [*resolved.get(container, []), *shown][:_MAX_SEGMENTS]
+    return segments, curves
+
+
+@dataclass(frozen=True)
+class _Viewport:
+    """图纸空间里的一个视口：纸面上的框，和它显示的那块模型空间（只认俯视的）。"""
+
+    center_x: float
+    center_y: float
+    half_width: float
+    half_height: float
+    model_x: float
+    model_y: float
+    scale: float
+    twist: float
+
+    @classmethod
+    def parse(cls, fields: Mapping[int, str]) -> _Viewport | None:
+        width, height, view_height = _float(fields.get(40)), _float(fields.get(41)), _float(fields.get(45))
+        # 69=1 是布局本身的整页视图，不显示模型；68=0 是关掉的视口。
+        if _int(fields.get(69), 0) == 1 or _int(fields.get(68), 1) == 0:
+            return None
+        if width <= 0 or height <= 0 or view_height <= 0:
+            return None
+        # 斜着看（三维视图）的视口，模型线投到纸上不是这样换算，不认。
+        direction = (_float(fields.get(16)), _float(fields.get(26)), _float(fields.get(36), 1.0))
+        if abs(direction[0]) > 1e-9 or abs(direction[1]) > 1e-9 or direction[2] <= 0:
+            return None
+        return cls(
+            _float(fields.get(10)), _float(fields.get(20)), width / 2, height / 2,
+            _float(fields.get(17)) + _float(fields.get(12)), _float(fields.get(27)) + _float(fields.get(22)),
+            height / view_height, math.radians(_float(fields.get(51))),
+        )
+
+    def place(self, x: float, y: float) -> tuple[float, float]:
+        dx, dy = (x - self.model_x) * self.scale, (y - self.model_y) * self.scale
+        # 视图扭转角是把模型绕视图中心转了这么多再显示。
+        cos, sin = math.cos(self.twist), math.sin(self.twist)
+        return self.center_x + dx * cos - dy * sin, self.center_y + dx * sin + dy * cos
+
+
+def _clip(segment: _Segment, left: float, bottom: float, right: float, top: float) -> _Segment | None:
+    """线段裁到矩形以内（Liang–Barsky）；完全在外面时返回 None。"""
+    x1, y1, x2, y2 = segment
+    dx, dy = x2 - x1, y2 - y1
+    low, high = 0.0, 1.0
+    for p, q in ((-dx, x1 - left), (dx, right - x1), (-dy, y1 - bottom), (dy, top - y1)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            low = max(low, t)
+        else:
+            high = min(high, t)
+        if low > high:
+            return None
+    return x1 + low * dx, y1 + low * dy, x1 + high * dx, y1 + high * dy
+
+
+def _viewport_segments(viewport: _Viewport, model: Sequence[_Segment]) -> list[_Segment]:
+    """模型空间的线经过这个视口显示在纸面上的那几段（纸面坐标）。"""
+    left, right = viewport.center_x - viewport.half_width, viewport.center_x + viewport.half_width
+    bottom, top = viewport.center_y - viewport.half_height, viewport.center_y + viewport.half_height
+    out: list[_Segment] = []
+    for x1, y1, x2, y2 in model:
+        clipped = _clip((*viewport.place(x1, y1), *viewport.place(x2, y2)), left, bottom, right, top)
+        if clipped is not None and (clipped[0], clipped[1]) != (clipped[2], clipped[3]):
+            out.append(clipped)
+    return out
 
 
 class _ObstacleIndex:
@@ -592,6 +681,37 @@ class _ObstacleIndex:
                 elif high <= old[0] and high > new[0]:
                     left = max(left, high)
         return right, left
+
+
+def _shoulder(
+    index: _ObstacleIndex, entity: _TextEntity, x: float, bottom: float, top: float, old: tuple[float, float],
+) -> tuple[float, float] | None:
+    """块属性下方（底对齐、上标）或上方（顶对齐、下标）紧挨着的引线肩线 ``(左端, 右端)``。
+
+    肩线是一条横线，盖住原文，左对齐的文字插入点在它左端、右对齐的在右端。找不到返回 None。
+    """
+    height = entity.height
+    if entity.halign not in {0, 2}:
+        return None
+    reach = _SHOULDER_GAP * height
+    band = (bottom - reach, bottom + 0.05 * height) if entity.valign in {0, 1} else (top - 0.05 * height, top + reach)
+    best: tuple[float, float, float] | None = None
+    first = max(math.floor((band[0] - index.low) / index.size), 0)
+    last = min(math.floor((band[1] - index.low) / index.size), index._BUCKETS)
+    for bucket in range(first, last + 1):
+        for ax, ay, bx, by in index.buckets.get(bucket, ()):
+            if abs(ay - by) > 1e-6 * max(1.0, abs(ax - bx)) or not band[0] <= ay <= band[1]:
+                continue
+            low, high = min(ax, bx), max(ax, bx)
+            if low > old[0] + 0.2 * height or high < old[1] - 0.2 * height:
+                continue
+            end = high if entity.halign == 2 else low
+            if abs(x - end) > 2 * height:
+                continue
+            distance = abs(ay - (bottom if entity.valign in {0, 1} else top))
+            if best is None or distance < best[0]:
+                best = (distance, low, high)
+    return None if best is None else (best[1], best[2])
 
 
 class _CellIndex:
@@ -826,12 +946,21 @@ def fit_translated_texts(
         if group not in obstacle_indexes:
             obstacle_indexes[group] = _ObstacleIndex(
                 [*segments.get(entity.container, ()), *curves.get(entity.container, ())], entity.rotation,
-                bottoms[0], max(box.top for box in boxes),
+                # 上下各多留一个字高：最低、最高那行文字的引线肩线也要找得到（见 _shoulder）。
+                bottoms[0] - tallest, max(box.top for box in boxes) + tallest,
             )
         line_right, line_left = obstacle_indexes[group].limits(
             (bottom + 0.15 * height, top - 0.15 * height), (old_left, old_right), (new_left, new_right),
         )
         right_limit, left_limit = min(right_limit, line_right), max(left_limit, line_left)
+        if entity.entity_type == "ATTRIB":
+            # 引线标注（块属性写在引线的水平肩线上方或下方，一端对齐肩线端点）：译文不越过肩线两端。
+            shoulder = _shoulder(obstacle_indexes[group], entity, x, bottom, top, (old_left, old_right))
+            if shoulder is not None:
+                if new_left < shoulder[0]:
+                    left_limit = max(left_limit, shoulder[0])
+                if new_right > shoulder[1]:
+                    right_limit = min(right_limit, shoulder[1])
         if entity.halign in {1, 4}:
             half = min(right_limit - x, x - left_limit)
             allowed = 2 * half
