@@ -467,7 +467,8 @@ if __name__ == "__main__":
 class WordRouteTaskTests(unittest.TestCase):
     """The whole task (``_run``) with a word-route file: stop and review status."""
 
-    def _run_task(self, fake_word, *, route="auto", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None):
+    def _run_task(self, fake_word, *, route="auto", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None,
+                  out_pages=1):
         from core.pdf_routes import DocumentKind, PageKind
         from core.task_runner import DoneMsg, ErrorMsg, StoppedMsg
 
@@ -490,7 +491,8 @@ class WordRouteTaskTests(unittest.TestCase):
         kinds = kinds or DocumentKind("text", [PageKind(i + 1, "text", False) for i in range(len(sizes))])
         def fake_docx_to_pdf(_docx, pdf_path, **_kwargs):
             doc = fitz.open()
-            doc.new_page(width=A4[0], height=A4[1]).insert_text((60, 100), "SEGMENT", fontsize=12)
+            for _ in range(out_pages):
+                doc.new_page(width=A4[0], height=A4[1]).insert_text((60, 100), "SEGMENT", fontsize=12)
             doc.save(pdf_path)
             return "word"
 
@@ -584,6 +586,72 @@ class WordRouteTaskTests(unittest.TestCase):
         pages = runner._prepared_files[0].record.pages
         self.assertFalse(any(page.inplace_requested for page in pages))
         self.assertEqual(runner._prepared_files[0].record.skipped_oversize_page_count, 0)
+
+    @staticmethod
+    def _ok_word(calls: list[tuple[int, int]], broken_first: list[int] | None = None):
+        from core.pdf_word_route import WordRouteResult
+
+        def fake(_runner, pdf, _work, final_path, _settings, **_kwargs):
+            with fitz.open(pdf) as doc:
+                calls.append((len(doc), int(final_path.name.split("_p")[-1].split("-")[0])))
+            if broken_first and len(calls) == 1:
+                return WordRouteResult(ok=False, error="转成 Word 后版面出错", broken_pages=list(broken_first))
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(b"docx")
+            return WordRouteResult(ok=True, output_path=str(final_path))
+
+        return fake
+
+    def test_pages_pdf2docx_broke_take_the_safety_net_and_the_rest_is_converted_again(self):
+        # 地勘报告（maple 2026-10-31）：pdf2docx 把柱状图那一页转坏了。这一页改走整页图像翻译，
+        # 前后的页各自重新转 Word，输出仍是一页对一页。
+        from core.pdf_word_guard import REASON_BROKEN_PAGE
+        from core.task_runner import DoneMsg
+
+        calls: list[tuple[int, int]] = []
+        runner, final, client = self._run_task(self._ok_word(calls, broken_first=[2]), sizes=(A4, A4, A4),
+                                               text=(True, True, True))
+        self.assertIsInstance(final, DoneMsg)
+        self.assertEqual(calls, [(3, 1), (1, 1), (1, 3)])   # whole segment, then page 1 and page 3 again
+        self.assertGreaterEqual(len(client.calls), 1)        # page 2 went to the image model
+        record = runner._prepared_files[0].record
+        pages = sorted(record.pages, key=lambda page: page.page_number)
+        self.assertEqual([page.word_status for page in pages], ["done", "", "done"])
+        self.assertIn(REASON_BROKEN_PAGE, pages[1].route_note)
+        self.assertEqual([(item["first_page"], item["status"]) for item in record.word_segments],
+                         [(1, "done"), (3, "done")])
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 3)
+
+    def test_image_grid_pages_never_go_to_word(self):
+        from core.pdf_routes import DocumentKind, PageKind
+        from core.pdf_word_guard import REASON_IMAGE_GRID
+        from core.task_runner import DoneMsg
+
+        calls: list[tuple[int, int]] = []
+        kinds = DocumentKind("text", [PageKind(1, "text", False), PageKind(2, "text", False, image_grid=True),
+                                      PageKind(3, "text", False)])
+        runner, final, client = self._run_task(self._ok_word(calls), sizes=(A4, A4, A4), text=(True, True, True),
+                                               kinds=kinds)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertEqual(calls, [(1, 1), (1, 3)])
+        self.assertGreaterEqual(len(client.calls), 1)
+        page = sorted(runner._prepared_files[0].record.pages, key=lambda item: item.page_number)[1]
+        self.assertIn(REASON_IMAGE_GRID, page.route_note)
+
+    def test_segment_that_comes_back_far_longer_is_not_assembled(self):
+        from core.pdf_word_guard import REASON_PAGE_GROWTH
+        from core.task_runner import DoneMsg
+
+        calls: list[tuple[int, int]] = []
+        runner, final, client = self._run_task(self._ok_word(calls), out_pages=9)
+        self.assertIsInstance(final, DoneMsg)
+        self.assertGreaterEqual(len(client.calls), 2)   # both pages fell back to image translation
+        record = runner._prepared_files[0].record
+        self.assertEqual(record.word_segments[0]["status"], "failed")
+        self.assertTrue(all(REASON_PAGE_GROWTH in page.route_note for page in record.pages))
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 2)
 
     def test_large_scans_are_scanned_pages(self):
         from core.pdf_routes import DocumentKind, PageKind

@@ -25,6 +25,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
+
 LogFn = Callable[[str, str], None]
 # progress(done, total)：整段 Word 翻译做完了多少（按 Word 各阶段的权重折算好，千分之一）。
 ProgressFn = Callable[[int, int], None]
@@ -63,6 +65,8 @@ class WordRouteResult:
     # 这一段的批次重试（缩小重试 + 接口临时故障重发）和降速次数，算进 PDF 报告。
     retry_count: int = 0
     rate_limit_reduction_count: int = 0
+    # pdf2docx 转坏了的页（从 1 数，按这一段的页序），见 core.pdf_word_guard。
+    broken_pages: list[int] = field(default_factory=list)
 
 
 def word_route_available() -> bool:
@@ -781,6 +785,16 @@ def _conversion_timeout(pdf_path: Path) -> float:
     return float(max(300, 30 * pages))
 
 
+def _pdf_page_count(pdf_path: Path) -> int:
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(pdf_path))
+    try:
+        return len(doc)
+    finally:
+        doc.close()
+
+
 def convert_pdf_to_docx(
     pdf_path: Path,
     docx_path: Path,
@@ -803,6 +817,9 @@ def convert_pdf_to_docx(
         convert_with_command(managed_convert_command(where, pdf_path, docx_path), docx_path, timeout)
     else:
         convert_with_plugin(where, pdf_path, docx_path, timeout)
+    broken = broken_docx_pages(docx_path, _pdf_page_count(pdf_path))
+    if broken:
+        raise BrokenPagesError(broken)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
@@ -844,6 +861,8 @@ def translate_pdf_via_word(
                             target_lang=settings.pdf.target_lang or settings.target_lang)
     except WordRouteStopped:
         return WordRouteResult(ok=False, stopped=True, error="任务已停止")
+    except BrokenPagesError as exc:
+        return WordRouteResult(ok=False, error=REASON_BROKEN_PAGE, broken_pages=exc.pages)
     except Exception as exc:  # noqa: BLE001 - conversion failure is reported per file
         logger.opt(exception=exc).warning(f"[PDF] 转 Word 失败：{exc!r}")
         return WordRouteResult(ok=False, error="转成 Word 失败，这份文件可能不是普通排版的文字文档。")
