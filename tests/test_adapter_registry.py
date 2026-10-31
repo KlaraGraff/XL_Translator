@@ -28,7 +28,9 @@ from core import adapter_install, adapter_registry
 from core.adapter_registry import CACHE_TTL_SECONDS, INDEX_URLS, RegistryEntry, parse_index
 from tests.test_adapter_install import KEY, _wait_install, isolated, make_package, zip_package  # noqa: F401
 
-PRIMARY, FALLBACK = INDEX_URLS
+# The real list has jsDelivr's other nodes in between (see the mirror tests
+# below); most tests here only need "first" and "last", so they run on two.
+PRIMARY, FALLBACK = INDEX_URLS[0], INDEX_URLS[-1]
 ZIP_URL = "https://github.com/someone/linetext/releases/download/v1.0.0/linetext-1.0.0.zip"
 MIRROR_URL = "https://mirror.example.com/linetext-1.0.0.zip"
 
@@ -74,6 +76,12 @@ class FakeServer:
 
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+@pytest.fixture(autouse=True)
+def two_index_addresses():
+    with patch.object(adapter_registry, "INDEX_URLS", (PRIMARY, FALLBACK)):
+        yield
 
 
 @pytest.fixture
@@ -324,3 +332,50 @@ def test_refresh_route_asks_the_network_again(serve) -> None:
         refreshed = client.post("/api/extensions/registry/refresh").json()
         assert server.requests == [PRIMARY, PRIMARY]
         assert refreshed["fetched_at"] <= time.time()
+
+
+# ── China-reachable mirrors ─────────────────────────────────────────────────
+
+REPO = "KlaraGraff/XL_Translator-extensions"
+
+
+def test_the_index_addresses_try_every_jsdelivr_node_before_github() -> None:
+    assert INDEX_URLS == (
+        f"https://cdn.jsdelivr.net/gh/{REPO}@main/index.json",
+        f"https://gcore.jsdelivr.net/gh/{REPO}@main/index.json",
+        f"https://fastly.jsdelivr.net/gh/{REPO}@main/index.json",
+        f"https://testingcf.jsdelivr.net/gh/{REPO}@main/index.json",
+        f"https://raw.githubusercontent.com/{REPO}/main/index.json",
+    )
+
+
+def test_the_list_comes_from_another_jsdelivr_node_when_cdn_fails(serve) -> None:
+    gcore, fastly = INDEX_URLS[1], INDEX_URLS[2]
+    server = serve({PRIMARY: 503, gcore: 503, fastly: index(entry())})
+    with patch.object(adapter_registry, "INDEX_URLS", INDEX_URLS):
+        view = adapter_registry.fetch_index()
+    assert view["source"] == fastly and view["stale"] is False
+    assert [item["id"] for item in view["entries"]] == ["linetext"]
+    assert server.requests == [PRIMARY, gcore, fastly]
+
+
+def test_a_package_on_jsdelivr_falls_back_to_the_other_nodes(serve, tmp_path: Path) -> None:
+    data, digest = package_zip(tmp_path)
+    cdn = f"https://cdn.jsdelivr.net/gh/{REPO}@main/packages/linetext-1.0.0.zip"
+    raw = f"https://raw.githubusercontent.com/{REPO}/main/packages/linetext-1.0.0.zip"
+    testingcf = f"https://testingcf.jsdelivr.net/gh/{REPO}@main/packages/linetext-1.0.0.zip"
+    server = serve(
+        {
+            PRIMARY: index(entry(sha256=digest, size=len(data), download=[cdn, raw])),
+            testingcf: data,
+        }
+    )
+    with TestClient(create_app()) as client:
+        assert _registry_install(client)["phase"] == "done"
+    downloads = [url for url in server.requests if url.endswith(".zip")]
+    assert downloads == [
+        cdn,
+        f"https://gcore.jsdelivr.net/gh/{REPO}@main/packages/linetext-1.0.0.zip",
+        f"https://fastly.jsdelivr.net/gh/{REPO}@main/packages/linetext-1.0.0.zip",
+        testingcf,
+    ]
