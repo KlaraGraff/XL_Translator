@@ -21,6 +21,7 @@ import { redactedText } from "./workspace-util";
 import { taskRowSummary } from "./tasks";
 import { createBatchCard } from "./home-batch";
 import "./home.css";
+import { FIT_CLIP } from "../text-fit";
 
 const BUILTIN_TYPES: Surface[] = ["excel", "word", "pdf", "cad"];
 let mountGeneration = 0;
@@ -144,7 +145,7 @@ async function fillRecent(rows: HTMLElement, generation: number): Promise<void> 
       const row = el("button", "row");
       row.type = "button";
       row.style.setProperty("--i", String(index));
-      row.append(icon(info.icon, { size: "sm" }), el("span", "nm", info.title), el("span", "meta", info.meta), createChip(info.chip));
+      row.append(icon(info.icon, { size: "sm" }), el("span", `nm ${FIT_CLIP}`, info.title), el("span", "meta", info.meta), createChip(info.chip));
       row.title = tx(task.source_label ?? info.title);
       row.addEventListener("click", () => navigate("tasks", { taskId: task.task_id }));
       rows.append(row);

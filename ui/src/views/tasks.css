@@ -120,12 +120,9 @@
   flex: none;
   color: var(--ink-3);
 }
+/* 任务名是内容：单行截断（.fit-clip），悬停看全文。 */
 .content.tasks .tk-row .r1 > .ttl {
   flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .content.tasks .tk-row .r1 > .chip {
   flex: none;
@@ -164,9 +161,6 @@
   font-size: 16px;
   font-weight: var(--fw-650);
   letter-spacing: -.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .content.tasks .tk-top .acts {
   margin-left: auto;

@@ -79,6 +79,7 @@ import { el, formatSizeKb, formatTime, hasOwn, localizedLanguageOptions, nestedP
 import { currentLocale, fmtNum, isSingularCount, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
+import { FIT_CLIP, fitPlaceholder } from "../text-fit";
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -1688,7 +1689,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   const input = el("input");
   input.type = "text";
   input.value = st.sourcePath;
-  input.placeholder = t("拖入文件或文件夹，或粘贴路径后回车");
+  // 英文、法文的窄窗口里整句放不下：换短说法，整句进悬停提示（拖入的说明在下面的空白区里）。
+  fitPlaceholder(input, t("拖入文件或文件夹，或粘贴路径后回车"), t("粘贴路径后回车"));
   input.setAttribute("aria-label", t("来源路径"));
   input.spellcheck = false;
   input.autocomplete = "off";
@@ -2884,7 +2886,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   row.append(checkCell);
 
   // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
-  const nameCell = el("td", "fname");
+  const nameCell = el("td", `fname ${FIT_CLIP}`);
   nameCell.textContent = fileLabel(file);
   nameCell.title = file.relative_path || fileLabel(file);
   row.append(nameCell);
@@ -3244,7 +3246,7 @@ function buildLogBody(local: LocalTask, sharesHeight = false): HTMLElement {
   for (const progress of rows) {
     const row = el("div", "filerow");
     row.append(createChip({ label: fileProgressLabel(progress, local.task.state), tone: fileProgressTone(progress, local.task.state) }));
-    const nm = el("span", "nm");
+    const nm = el("span", `nm ${FIT_CLIP}`);
     nm.textContent = progress.name || progress.relative_path;
     // 名字太长时单行省略，鼠标停上去看全名（带相对路径，同名文件分得清）。
     nm.title = progress.relative_path || progress.name;
@@ -3823,6 +3825,7 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
     disabled: active,
     onInput: (value) => { st.fallbackOutputDir = value; },
   });
+  fitPlaceholder(fallbackInput.input, t("未设置，失败时使用桌面"), t("未设置"));
   const saveFallbackDir = (): void => {
     const prevDir = text(outputRecord(surface).fallback_output_dir);
     void persistSettingsOrRevert(
@@ -4393,7 +4396,7 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
   const box = el("div", "resume-found");
   const pathRow = el("div", "rf-path");
   pathRow.append(icon(surface === "pdf" ? "pdf" : "folder", { size: "sm" }));
-  const code = el("code");
+  const code = el("code", FIT_CLIP);
   code.textContent = info.selected_dir ? basename(info.selected_dir) : t("（未找到可用的历史目录）");
   pathRow.append(code);
   box.append(pathRow);
@@ -6341,7 +6344,7 @@ function buildCadLockInput(kind: CadLockKind, placeholder: string, active: boole
   const names = cadLockNames(kind);
   for (const name of names) {
     const tag = el("span", "tag");
-    const label = el("span", "tag-label");
+    const label = el("span", `tag-label ${FIT_CLIP}`);
     label.textContent = name;
     label.title = name;
     tag.append(label);
@@ -6453,13 +6456,13 @@ function buildCadContainerList(active: boolean): HTMLElement {
       box.checked = current.includes(item.name.toUpperCase());
       box.disabled = active;
       box.addEventListener("change", () => toggleCadLockName(kind, item.name, box.checked));
-      const name = el("span");
-      name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      const name = el("span", FIT_CLIP);
+      name.style.flex = "1";
       name.textContent = item.name;
       name.title = item.sample ? `${item.name}\n${item.sample}` : item.name;
       if (item.sample) {
-        const sample = el("span");
-        sample.style.cssText = "display:block;font-size:11px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis";
+        const sample = el("span", FIT_CLIP);
+        sample.style.cssText = "display:block;font-size:11px;color:var(--ink-3)";
         sample.textContent = item.sample;
         name.append(sample);
       }

@@ -17,6 +17,7 @@ import { t, tx } from "../i18n";
 import { icon } from "../icons";
 import { getClient, rerender, stateOf, surfaceLabel, type LocalTask, type Surface } from "./workspace";
 import { el, redactedText } from "./workspace-util";
+import { FIT_CLIP } from "../text-fit";
 
 // ---------------------------------------------------------------------------
 // PDF 页恢复 / 逐页审核 —— 真正的逐页交互面板（GET /pdf-pages 拉取式快照 + 三个操作端点）。
@@ -282,6 +283,7 @@ function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSn
     row.append(createChip({ label: t("失败"), tone: "dgr" }));
   }
 
+  // 页码和失败原因（报错）写全，放不下就折行。
   const nm = el("span", "nm");
   const filePrefix = multiFile ? `${file.name} · ` : "";
   nm.textContent = filePrefix + t("第 {0} 页", page.page_number) + " · " + tx(redactedText(page.error, page.placeholder ? t("页图生成失败") : t("待处理")));
@@ -732,7 +734,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       btn.type = "button";
       btn.setAttribute("aria-expanded", String(open));
       btn.append(icon("chev", { size: "sm", className: "cv" }));
-      const fn = el("span", "fn");
+      const fn = el("span", `fn ${FIT_CLIP}`);
       fn.textContent = file.name;
       const sum = el("span", "sum");
       sum.append(...buildGroupSummaryNodes(file, taskStopped, snapshot.review_enabled));

@@ -28,6 +28,7 @@ import {
 } from "../surface-descriptors";
 import { installSections, mountInstall, uninstallButton, unmountInstall } from "./extensions-install";
 import "./extensions-page.css";
+import { FIT_CLIP } from "../text-fit";
 
 let mounted = false;
 /** 嵌在「扩展」页的「文件类型」页签里：顶栏由扩展页管，这里不设。 */
@@ -139,6 +140,7 @@ function typeRow(key: string, index: number, count: number, visibleCount: number
   const extensions = (surfaceDescriptor(key)?.extensions ?? []).map((ext) => `.${ext}`).join(" ");
   if (extensions) {
     const exts = document.createElement("small");
+    exts.className = FIT_CLIP;
     exts.textContent = extensions;
     name.append(exts);
   }
