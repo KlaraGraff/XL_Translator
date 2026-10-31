@@ -581,6 +581,7 @@ def _connections_for_export(
             "follow_model": str(raw.get("follow_model") or "").strip(),
             "base_url": _configured_base_url(raw.get("base_url")),
             "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
+            "thinking": str(raw.get("thinking") or "auto").strip() or "auto",
             "connection_mode": str(raw.get("connection_mode") or "cloud").strip(),
             "source_role": str(raw.get("source_role") or SOURCE_INDEPENDENT).strip(),
         }
@@ -929,6 +930,7 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                     "follow_model": str(raw.get("follow_model") or "").strip(),
                     "base_url": _configured_base_url(base_url),
                     "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
+                    "thinking": str(raw.get("thinking") or "auto").strip() or "auto",
                     "connection_mode": str(raw.get("connection_mode") or "").strip(),
                     "source_role": str(raw.get("source_role") or SOURCE_INDEPENDENT).strip(),
                 }

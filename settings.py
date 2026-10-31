@@ -268,6 +268,15 @@ def _default_local_base_url(provider: str) -> str:
     return ""
 
 
+THINKING_MODES = ("auto", "off", "on")
+
+
+def normalize_thinking_mode(value) -> str:
+    """深度思考设置只认 auto / off / on，其余（含旧文件里没有这一项）一律按 auto。"""
+    value = str(value or "").strip()
+    return value if value in THINKING_MODES else "auto"
+
+
 def new_connection_id() -> str:
     """Return a stable id for one pool connection."""
     return uuid.uuid4().hex
@@ -307,6 +316,9 @@ class ModelConnection(TextProtocolSettings):
     cloud_model: str = ""
     cloud_base_url: str = ""
     cloud_api_mode: str = "auto"
+    # 深度思考（目前只有阿里百炼的千问用得上）：auto 不传参数、由模型自己决定，
+    # off / on 发 enable_thinking=false / true。跟随连接用来源连接的设置。
+    thinking: str = "auto"
     local_provider: str = ""
     # A legacy text follower may have a distinct local model name.  Keep it
     # when its source switches between cloud and local primaries.
@@ -333,6 +345,7 @@ class ModelConnection(TextProtocolSettings):
         self.cloud_model = str(self.cloud_model or "").strip()
         self.cloud_base_url = str(self.cloud_base_url or "").strip().rstrip("/")
         self.cloud_api_mode = normalize_api_mode(self.cloud_api_mode)
+        self.thinking = normalize_thinking_mode(self.thinking)
         self.local_provider = str(self.local_provider or "").strip()
         self.local_model = str(self.local_model or "").strip()
         self.local_base_url = str(self.local_base_url or "").strip().rstrip("/")
@@ -1456,6 +1469,8 @@ class TranslationTypesSettings(BaseModel):
 
 class AppSettings(BaseModel):
     _runtime_model_role: str = PrivateAttr(default="translation")
+    # settings_for_text_role 填入：这次拨号的连接的深度思考设置（auto / off / on）。
+    _runtime_thinking: str = PrivateAttr(default="auto")
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)

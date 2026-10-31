@@ -360,6 +360,10 @@ def classify_http_error(exc: httpx.HTTPStatusError) -> tuple[str, str]:
         param = str(error.get("param") or "")
         if param in {"store", "stream"}:
             return "parameter", param
+    # 深度思考开关：只能思考的模型不接受关闭，个别开源模型开着思考不能非流式输出。
+    # 这类模型去掉这一项按它自己的默认重发，不让整批翻译因为一个可选设置失败。
+    if status in {400, 422} and "enable_thinking" in body:
+        return "parameter", "enable_thinking"
     if status in {400, 404, 405, 410, 422}:
         if code in {"unsupported_protocol", "unsupported_endpoint", "route_not_found", "endpoint_not_found"}:
             return "route", ""
@@ -377,7 +381,7 @@ _CACHE_HINTS = frozenset({"cache_control", "prompt_cache_key"})
 _HEADERS_KEY = "_xlt_headers"
 
 
-def _payload(route: Route, model: str, system: str, user: str) -> dict:
+def _payload(route: Route, model: str, system: str, user: str, extra: dict | None = None) -> dict:
     stable, volatile = split_system(system)
     text = "\n\n".join(part for part in (stable, volatile) if part)
     family = model_cache_family(model)
@@ -389,6 +393,9 @@ def _payload(route: Route, model: str, system: str, user: str) -> dict:
             if volatile:
                 system_content.append({"type": "text", "text": volatile})
         body = {"model": model, "messages": [{"role": "system", "content": system_content}, {"role": "user", "content": user}]}
+        # 服务商自有的 chat 参数（百炼的 enable_thinking）。只加在 chat 上：Responses
+        # 不认这些写法。
+        body.update(extra or {})
     else:
         body = {"model": model, "instructions": text, "input": [{"role": "user", "content": [{"type": "input_text", "text": user}]}], "store": False, "stream": True}
     if family == FAMILY_OPENAI:
@@ -471,14 +478,15 @@ def _send(route, api_key, payload, budget):
 
 def request_text(*, base_url: str, api_key: str, model: str, system: str, user: str,
                  api_mode: str = "auto", connection_id: str = "", total_seconds=TOTAL_TIMEOUT,
-                 should_stop=None, model_role: str = "translation") -> tuple[str, Route]:
+                 should_stop=None, model_role: str = "translation",
+                 chat_extra: dict | None = None) -> tuple[str, Route]:
     if connection_id:
         from core.model_auto_upgrade import effective_model_after_rollback
 
         model = effective_model_after_rollback(connection_id, model, base_url, model_role)
     mode = normalize_api_mode(api_mode)
     routes = candidate_routes(base_url, mode)
-    identity = hashlib.sha256(json.dumps([connection_id, base_url, model, mode, hashlib.sha256(api_key.encode()).hexdigest()], ensure_ascii=False).encode()).hexdigest()
+    identity = hashlib.sha256(json.dumps([connection_id, base_url, model, mode, hashlib.sha256(api_key.encode()).hexdigest(), chat_extra or {}], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     with request_budget(seconds=total_seconds, should_stop=should_stop) as budget:
         while True:
             with _LOCK:
@@ -523,6 +531,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                             system=system, user=user, api_mode=api_mode,
                             connection_id=connection_id, total_seconds=total_seconds,
                             should_stop=should_stop, model_role=model_role,
+                            chat_extra=chat_extra,
                         )
                 raise _copy_cached_error(entry.error)
             routes = [entry.route] + [r for r in routes if r != entry.route]
@@ -532,7 +541,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
             if not leader:
                 route = routes[0]
                 try:
-                    return _send(route, api_key, _payload(route, model, system, user), budget), route
+                    return _send(route, api_key, _payload(route, model, system, user, chat_extra), budget), route
                 except httpx.HTTPStatusError as exc:
                     if classify_http_error(exc)[0] in {"route", "parameter"}:
                         with _LOCK:
@@ -549,7 +558,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                 while True:
                     try:
                         send_attempts += 1
-                        text = _send(route, api_key, _payload(route, model, system, user), budget)
+                        text = _send(route, api_key, _payload(route, model, system, user, chat_extra), budget)
                         entry.route = route
                         entry.expires = time.monotonic() + 600
                         return text, route
@@ -557,7 +566,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                         kind, param = classify_http_error(exc)
                         if budget.remaining <= 0 or send_attempts >= MAX_SENDS:
                             raise TextTransportError("协议候选已耗尽。", kind="budget_exhausted") from exc
-                        sent_payload = _payload(route, model, system, user)
+                        sent_payload = _payload(route, model, system, user, chat_extra)
                         if kind == "parameter" and param in sent_payload and param not in route.omitted:
                             route = Route(route.mode, route.url, route.omitted | {param})
                             continue
@@ -605,6 +614,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                         system=system, user=user, api_mode=api_mode,
                         connection_id=connection_id, total_seconds=total_seconds,
                         should_stop=should_stop, model_role=model_role,
+                        chat_extra=chat_extra,
                     )
             if leader:
                 raise _copy_cached_error(entry.error) from exc

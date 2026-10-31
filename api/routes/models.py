@@ -258,6 +258,7 @@ def register(app: FastAPI) -> None:
                 api_mode=payload.api_mode,
                 connection_mode=requested_mode,
                 source_role=payload.source_role,
+                thinking=payload.thinking,
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc

@@ -305,7 +305,11 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
 
     if provider == "dashscope":
         from engines.dashscope_engine import DashscopeEngine
-        return DashscopeEngine(api_key=api_key, model=cloud_model)
+        return DashscopeEngine(
+            api_key=api_key,
+            model=cloud_model,
+            thinking=getattr(settings, "_runtime_thinking", "auto"),
+        )
 
     raise ValueError(f"未知翻译引擎：{provider}")
 

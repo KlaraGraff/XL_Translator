@@ -102,6 +102,7 @@ export type PoolConnection = {
   own_model?: string;
   own_base_url?: string;
   own_api_mode?: string;
+  own_thinking?: string;
   own_cloud_provider?: string;
   own_cloud_model?: string;
   own_cloud_base_url?: string;
@@ -871,6 +872,7 @@ export type ModelFormSubmission = {
   apiKey: string;
   connectionLabel: string;
   apiMode: string;
+  thinking: string;
 };
 
 type ModelFormDraft = { scope: string; values: Record<string, string> };

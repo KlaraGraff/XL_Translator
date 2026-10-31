@@ -549,6 +549,27 @@ export function renderModelsPage(host: HTMLElement): void {
     apiModeRoot = apiModeField.root;
   }
 
+  // 深度思考：目前只有阿里百炼的千问认这个开关，只在服务商选百炼时出现。跟随连接用
+  // 来源连接的设置，这里不显示。默认「跟随模型默认」，不传参数，和以前完全一样。
+  let thinkingSelect: HTMLSelectElement | null = null;
+  let thinkingRoot: HTMLElement | null = null;
+  if (cloudMode && !following) {
+    const thinkingField = selectField(
+      t("深度思考"),
+      [
+        { value: "auto", label: t("跟随模型默认") },
+        { value: "off", label: t("不启用") },
+        { value: "on", label: t("启用") },
+      ],
+      text(selected?.own_thinking, "auto"),
+      () => undefined,
+      { hint: t("启用后模型先思考再作答，复杂内容可能更准确，但速度较慢、费用较高；不启用时直接翻译。") },
+    );
+    thinkingSelect = thinkingField.select;
+    thinkingSelect.id = "settings-model-thinking";
+    thinkingRoot = thinkingField.root;
+  }
+
   const labelField = textField(t("连接名称"), selected?.label ?? "", () => undefined, { placeholder: t("例如 主账号 / 备用厂商") });
   const connectionLabelField = labelField.input;
   connectionLabelField.id = "settings-model-connection-label";
@@ -570,7 +591,17 @@ export function renderModelsPage(host: HTMLElement): void {
     grid.append(keyField);
   }
   if (apiModeRoot) grid.append(apiModeRoot);
+  if (thinkingRoot) grid.append(thinkingRoot);
   grid.append(labelField.root);
+  // 有深度思考那一行时，它和连接名称各占半行；没有时连接名称照旧占整行。
+  const paintThinking = () => {
+    if (!thinkingRoot) return;
+    const shown = providerSelectEl.value === "dashscope";
+    thinkingRoot.hidden = !shown;
+    labelField.root.classList.toggle("span2", !shown);
+  };
+  paintThinking();
+  providerSelectEl.addEventListener("change", paintThinking);
 
   // 速率与重试不再按模型设置（v38 起在「翻译参数」里按文件类型设置），这里只留一句说明
   // 指过去。清洗记忆库没有对应的设置项，只说自动保存。
@@ -675,6 +706,7 @@ export function renderModelsPage(host: HTMLElement): void {
     apiKey: apiKeyField?.value ?? "",
     connectionLabel: connectionLabelField.value,
     apiMode: apiModeSelect?.value ?? "auto",
+    thinking: thinkingSelect?.value ?? "auto",
   });
   setSubmitModelForm(() => {
     const form = readModelForm();
@@ -734,7 +766,7 @@ export function renderModelsPage(host: HTMLElement): void {
       }
     });
   };
-  for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField, apiModeSelect]) {
+  for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField, apiModeSelect, thinkingSelect]) {
     field?.addEventListener("change", autoSaveOnBlur);
   }
 
@@ -998,6 +1030,7 @@ async function saveModel(
     body.provider = form.provider;
     body.base_url = form.baseUrl;
     body.api_mode = form.apiMode;
+    body.thinking = form.thinking;
     if (form.apiKey && connectionMode === "cloud") body.api_key = form.apiKey;
   }
   const problemsBefore = otherRoleProblems(role);
