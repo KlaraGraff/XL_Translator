@@ -79,7 +79,7 @@ from core.request_log import TICK_SECONDS, WAIT_LOG_SECONDS, BatchRequestLog
 from core.request_progress import InFlightRequestTracker
 
 # 摘要表格给人看；manifest / report 里仍存内部状态码。
-_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未完成", "kept": "已是目标语言", "review": "需复核"}
+_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "未译出", "kept": "已是目标语言", "review": "需复核"}
 
 CAD_SUPPORTED_EXTENSIONS = frozenset({".dwg", ".dxf"})
 # Stage weights are part of the UI contract and sum to 100.
@@ -1976,7 +1976,7 @@ class CadTranslationPipeline:
                 shutil.copy2(source, work_dxf)
             elif (cached := self.dxf_cache.lookup(source) if self.dxf_cache else None) is not None:
                 shutil.copyfile(cached, work_dxf)
-                self._emit("scan", 0, 1, "使用扫描时已转换好的图纸，跳过格式转换")
+                self._emit("scan", 0, 1, "已使用添加文件时转换好的图纸，无需再次转换格式")
             elif self.converter is not None:
                 # DWG 转 DXF 要调用外部转换器，大图纸要几秒到几分钟：开始和结束各记一行
                 # 运行日志，进度在转换真正完成时才前进。
@@ -2006,7 +2006,7 @@ class CadTranslationPipeline:
             escape_unicode = not _writes_real_unicode(records, dxf_encoding)
             restored = restore_previous_run(records)
             if restored:
-                self._emit("scan", 0, 1, f"图纸里有 {restored} 处上次写入的双语译文，已先恢复原文再重新翻译")
+                self._emit("scan", 0, 1, f"图纸中有 {restored} 处此前写入的双语译文，已先恢复为原文，再重新翻译")
             bilingual = options.display_mode in _BILINGUAL_MODES
             handles = HandleAllocator(records)
             font = compatible_font(options.target_lang) if options.translation_font == "compatible" else None
@@ -2026,19 +2026,19 @@ class CadTranslationPipeline:
             stats.candidate_entities = len(units)
             stats.locked_texts = lock_report.locked_texts
             if options.locked_blocks or options.locked_layers:
-                self._emit("scan", 1, 1, f"锁定不翻译的图块和图层里有 {lock_report.locked_texts} 处文字，保持原样")
+                self._emit("scan", 1, 1, f"「锁定不翻译」的图块和图层中共有 {lock_report.locked_texts} 处文字，已保持原样")
                 missing_blocks = [name for name, count in lock_report.block_matches.items() if not count]
                 missing_layers = [name for name, count in lock_report.layer_matches.items() if not count]
                 if missing_blocks:
                     self._emit(
                         "scan", 1, 1,
-                        f"这张图里没有找到这些图块：{', '.join(missing_blocks)}，请检查锁定名单是否写错",
+                        f"本图纸中未找到以下图块：{', '.join(missing_blocks)}。请检查「锁定不翻译」中的名称是否正确。",
                         level="WARN",
                     )
                 if missing_layers:
                     self._emit(
                         "scan", 1, 1,
-                        f"这张图里没有找到这些图层：{', '.join(missing_layers)}，请检查锁定名单是否写错",
+                        f"本图纸中未找到以下图层：{', '.join(missing_layers)}。请检查「锁定不翻译」中的名称是否正确。",
                         level="WARN",
                     )
             # 整条文字程序拿不准语种的那些（只在「已是目标语言的不翻译」打开时有意义）。
@@ -2052,7 +2052,7 @@ class CadTranslationPipeline:
                 # 文字实体和待翻译差得多时，用户第一反应是「是不是识别错了」：把差在哪说清楚。
                 self._emit(
                     "scan", 1, 1,
-                    f"共 {len(units)} 处文字，不需要翻译的：纯数字和符号 {skipped_numbers} 处，"
+                    f"共 {len(units)} 处文字，其中无需翻译的有：纯数字和符号 {skipped_numbers} 处，"
                     f"编号、轴号、型号和尺寸 {skipped_codes} 处，已是目标语言 {skipped_words} 处",
                 )
             texts = list(dict.fromkeys(
@@ -2106,7 +2106,7 @@ class CadTranslationPipeline:
                     invalid_reasons[key] = reason
                     translations.pop(key, None)
             stats.memory_hits = len(memory_hits)
-            self._emit("match", len(memory_hits), max(1, len(texts)), f"记忆库已有译文 {len(memory_hits)} 条")
+            self._emit("match", len(memory_hits), max(1, len(texts)), f"{len(memory_hits)} 条文字在记忆库中已有译文")
             remaining = [text for text in texts if text not in translations]
             glossary_hits: dict[str, str] = {}
             for text in remaining:
@@ -2120,7 +2120,7 @@ class CadTranslationPipeline:
             translations.update(glossary_hits)
             stats.glossary_hits = len(glossary_hits)
             timings["match"] = round(time.perf_counter() - started_at - timings["scan"], 4)
-            self._emit("match", len(memory_hits) + len(glossary_hits), max(1, len(texts)), f"术语表匹配 {len(glossary_hits)} 条")
+            self._emit("match", len(memory_hits) + len(glossary_hits), max(1, len(texts)), f"{len(glossary_hits)} 条文字匹配到术语表")
             remaining = [text for text in remaining if text not in translations]
             self._check_stop()
             checked = [text for text in remaining if text in uncertain_texts] if self.language_translator else []
@@ -2175,7 +2175,7 @@ class CadTranslationPipeline:
                     "translate",
                     len(translations),
                     max(1, len(texts)),
-                    f"{len(checked)} 条文字由模型确认语种，其中 {len(kept_texts)} 条已是目标语言，保留原文",
+                    f"已请模型确认 {len(checked)} 条文字的语种，其中 {len(kept_texts)} 条已是目标语言，保留原文",
                 )
             stats.ai_translated = sum(1 for text in remaining if text in translations)
             if sent:
@@ -2198,7 +2198,7 @@ class CadTranslationPipeline:
                         level="OK",
                     )
             else:
-                self._emit("translate", len(translations), max(1, len(texts)), "翻译完成", fraction=1.0)
+                self._emit("translate", len(translations), max(1, len(texts)), "无需调用模型，翻译完成", fraction=1.0)
             stats.untranslated = sum(1 for text in texts if text not in translations and text not in kept_texts)
             # 记忆库：未采用「始终采用」词条设定译法的（已重译仍不符），译文照常写进图纸，
             # 在译文对照表里标记需复核；模型新译的短词在「自动识别场景」下自动保存。
@@ -2292,7 +2292,7 @@ class CadTranslationPipeline:
                     fit_sources[id(records[start])] = unit.plain_text
             tables_synced = apply_table_cells(records, table_plans, can_mark=can_mark)
             if tables_synced:
-                self._emit("write", 0, 1, f"{tables_synced} 个表格的单元格内容已同步为译文，在 AutoCAD 里编辑表格也不会变回原文")
+                self._emit("write", 0, 1, f"{tables_synced} 个表格的单元格已同步为译文，在 AutoCAD 中编辑表格时不会恢复为原文")
             handles.finish()
             layout_unresolved: list[dict[str, str]] = []
             layout_wrapped: list[dict[str, str]] = []
@@ -2373,16 +2373,16 @@ class CadTranslationPipeline:
                 if stats.layout_fitted:
                     self._emit(
                         "write", 0, 1,
-                        f"{stats.layout_fitted} 处译文比原文长、会压到旁边的文字或伸出图框，已缩小字宽或字高",
+                        f"{stats.layout_fitted} 处译文比原文长，为避免与相邻文字重叠或超出图框，已缩小字宽或字高",
                     )
                 if layout_wrapped:
-                    self._emit("write", 0, 1, f"{len(layout_wrapped)} 处译文缩到最小比例一行仍放不下，已在原处折成两行")
+                    self._emit("write", 0, 1, f"{len(layout_wrapped)} 处译文缩到最小字号比例后一行仍放不下，已在原位置分成两行")
                 if unified:
                     self._emit("write", 0, 1, f"{unified} 处译文与同一列的其他译文统一为相同字高")
                 if layout_unresolved:
                     self._emit(
                         "write", 0, 1,
-                        f"{len(layout_unresolved)} 处译文缩到最小比例仍会压到旁边的文字或伸出图框，已列入报告，请复核",
+                        f"{len(layout_unresolved)} 处译文已缩到最小字号比例，仍与相邻文字重叠或超出图框，已列入报告，请复核",
                         level="WARN",
                     )
             write_started = time.perf_counter()
@@ -2399,7 +2399,7 @@ class CadTranslationPipeline:
                 converter = self.converter
                 output_version = resolve_output_version(source, options.output_version)
                 if output_version is not None:
-                    self._emit("write", 0, 1, f"译文图纸存成 AutoCAD {output_version[4:]} 格式")
+                    self._emit("write", 0, 1, f"译文图纸将保存为 AutoCAD {output_version[4:]} 格式")
                 self._convert(
                     "write",
                     converter.dxf_to_dwg if output_version is None
@@ -2412,7 +2412,7 @@ class CadTranslationPipeline:
             else:
                 shutil.copy2(translated_dxf, staged_output)
             timings["write"] = round(time.perf_counter() - write_started, 4)
-            self._emit("write", 1, 1, "已写回图纸")
+            self._emit("write", 1, 1, "译文已写入图纸")
             verification_dxf = translated_dxf
             self._check_stop()
             if output.suffix.lower() == ".dwg" and options.verify_roundtrip:
@@ -2425,8 +2425,8 @@ class CadTranslationPipeline:
                     self.converter.dwg_to_dxf,
                     staged_output,
                     verification_dxf,
-                    started="正在读回译文图纸以便校验",
-                    finished="译文图纸读回完成，用时 {0} 秒",
+                    started="正在重新读取译文图纸以进行校验",
+                    finished="已重新读取译文图纸，用时 {0} 秒",
                     total=2,
                 )
             if options.verify_roundtrip:
@@ -2439,7 +2439,7 @@ class CadTranslationPipeline:
                     locked_layers=options.locked_layers,
                 )
                 if options.check_entity_counts and len(output_units) != len(units) + stats.bilingual_added + stats.layout_wrapped:
-                    raise CadPipelineError("写回后的图纸文字数量不一致，为安全起见未输出。")
+                    raise CadPipelineError("写入译文后，图纸中的文字数量与原图不一致，为安全起见，未生成译文图纸。")
             else:
                 output_records = records
                 output_units = extract_cad_text_units(
@@ -2487,7 +2487,7 @@ class CadTranslationPipeline:
             # treated as a failure signal.
             timings["verify"] = round(time.perf_counter() - started_at - sum(timings.values()), 4)
             timings["total"] = round(time.perf_counter() - started_at, 4)
-            self._emit("verify", 1, 1, "已完成文字与乱码检查")
+            self._emit("verify", 1, 1, "已检查译文是否完整、有无乱码")
             unresolved = [
                 {"source": text, "reason": invalid_reasons.get(text, "未获得译文")}
                 for text in texts
@@ -2537,9 +2537,9 @@ class CadTranslationPipeline:
                 f"# CAD 翻译摘要：{source.name}", "",
                 f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
                 f"- 保留原文（已是目标语言或译文与原文相同）：{stats.kept_units} 处",
-                f"- 未完成：{len(unresolved)} 处", f"- 未采用记忆库设定译法：{len(term_review)} 处",
+                f"- 未译出：{len(unresolved)} 处", f"- 未采用记忆库设定译法：{len(term_review)} 处",
                 f"- 译文中仍有原文：{stats.residual_foreign_text_count} 处",
-                f"- 缩到最小比例仍会压到旁边文字或伸出图框：{stats.layout_unresolved} 处", "",
+                f"- 缩到最小字号比例仍与相邻文字重叠或超出图框：{stats.layout_unresolved} 处", "",
                 "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
             for item in unit_reports:
