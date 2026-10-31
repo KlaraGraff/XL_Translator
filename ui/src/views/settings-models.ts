@@ -22,6 +22,7 @@ import {
   openModal,
   showToast,
   type ModalHandle,
+  type SelectFieldOption,
 } from "../components";
 import { icon } from "../icons";
 import { saveJsonFile } from "../save-file";
@@ -70,6 +71,7 @@ import {
   providerBaseUrlDisabled,
   openExternalUrl,
   providerLabel,
+  providerUnsupportedReason,
   queueModelFormSave,
   record,
   refreshDataHealth,
@@ -378,7 +380,7 @@ export function renderModelsPage(host: HTMLElement): void {
   setApplyProviderDerivedState(() => {});
   const providerFieldHandle = selectField(
     cloudMode ? t("服务商") : t("本地运行器"),
-    providers.map((item) => ({ value: item, label: providerLabel(item) })),
+    providerOptionsFor(role, providers, cloudMode),
     formProvider,
     (value) => onProviderChange(value),
     { disabled: following },
@@ -790,6 +792,18 @@ export function renderModelsPage(host: HTMLElement): void {
     control: spreadSw,
   }));
   host.append(spreadSec.root);
+}
+
+/** 服务商下拉的选项。图像翻译、图像翻译审核下不支持图片的服务商灰色不可选，排在可选项之后，
+ *  名称下写明原因；仍然可以搜到。本地运行器这两个用途本来就不提供，不用处理。 */
+function providerOptionsFor(role: string, providers: string[], cloudMode: boolean): SelectFieldOption[] {
+  const options: SelectFieldOption[] = providers.map((item) => {
+    const reason = cloudMode ? providerUnsupportedReason(role, item) : "";
+    return reason
+      ? { value: item, label: providerLabel(item), description: reason, disabled: true }
+      : { value: item, label: providerLabel(item) };
+  });
+  return [...options.filter((option) => !option.disabled), ...options.filter((option) => option.disabled)];
 }
 
 function apiKeyPlaceholder(connection: PoolConnection | null, following: boolean, preview: string): string {

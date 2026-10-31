@@ -31,6 +31,7 @@ import {
   type ChipTone,
   type LanguageOption,
   type ModalHandle,
+  type SelectFieldOption,
 } from "../components";
 import { icon, type IconName } from "../icons";
 import { ApiClient, ApiError } from "../api-client";
@@ -356,6 +357,20 @@ export function baseUrlOptionsFor(provider: string): BaseUrlOption[] {
 // 会原样停在 Ollama 的端口上，还会被失焦自动保存原样存进去，之后每次测试连接都失败，
 // 而界面上没有任何地方提示地址不对。值照抄 config.py 的 OLLAMA_BASE_URL /
 // LM_STUDIO_BASE_URL；custom_local 的端点本来就要用户自己填，没有预设。
+// 需要图片能力的用途（图像翻译、图像翻译审核）各自能用哪些云端服务商，同一接口下发，
+// 与后端保存时的能力检查是同一份名单。没列出的用途不限制；接口没回来时也不限制。
+let roleProviderAllowList: Record<string, string[]> = {};
+const ROLE_PROVIDER_UNSUPPORTED: Record<string, string> = localized(() => ({
+  image: t("不支持生成图片。"),
+  pdf_review: t("不支持识别图片。"),
+}));
+/** 该用途下这家服务商不可用时返回原因（下拉里灰色那一项下面的说明），可用时返回空串。 */
+export function providerUnsupportedReason(role: string, provider: string): string {
+  const allowed = roleProviderAllowList[role];
+  if (!allowed || allowed.includes(provider)) return "";
+  return ROLE_PROVIDER_UNSUPPORTED[role] ?? "";
+}
+
 export const LOCAL_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
   ollama: "http://localhost:11434",
   lm_studio: "http://localhost:1234/v1",
@@ -997,7 +1012,9 @@ async function refreshProviderDefaults(): Promise<void> {
       base_url_options?: Record<string, BaseUrlOption[]>;
       base_url_disabled: string[];
       disabled_placeholder: string;
+      role_providers?: Record<string, string[]>;
     }>("/api/models/provider-defaults");
+    roleProviderAllowList = payload.role_providers || {};
     providerBaseUrlDefaults = payload.base_url_defaults || {};
     providerApiKeyPages = payload.api_key_pages || {};
     apiKeyPagesByHost = payload.api_key_pages_by_host || {};
@@ -1012,6 +1029,7 @@ async function refreshProviderDefaults(): Promise<void> {
     providerBaseUrlHintSources = {};
     providerBaseUrlOptions = {};
     providerBaseUrlDisabled = new Set();
+    roleProviderAllowList = {};
     console.warn("服务商预设读取失败，本次不预填 Base URL：", error); // i18n-ignore 控制台日志，不面向用户
   }
 }
@@ -1125,7 +1143,7 @@ export function fieldWithHint(labelText: string, control: HTMLElement, hint?: st
 
 export function selectField(
   labelText: string,
-  options: { value: string; label: string }[],
+  options: SelectFieldOption[],
   value: string,
   onChange: (value: string) => void,
   opts: { disabled?: boolean; hint?: string } = {},

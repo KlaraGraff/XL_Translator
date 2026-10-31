@@ -29,6 +29,8 @@ from core.model_roles import (
     resolve_effective_model_config,
     validate_all_model_roles,
     validate_model_capability,
+    image_generation_provider_values,
+    vision_text_provider_values,
 )
 from core.model_throughput import (
     batch_size_bounds,
@@ -101,6 +103,10 @@ def register(app: FastAPI) -> None:
         address depends on the plan (Chinese source, translated by the UI);
         ``base_url_options`` lists that provider's common addresses for the
         Base URL dropdown.
+        ``role_providers`` lists, for each role that needs an image capability,
+        the cloud providers able to serve it; the provider dropdown greys out
+        the rest.  It is the same allow-list ``validate_model_capability``
+        enforces, so the dropdown and the save-time check cannot disagree.
         No model name is prefilled: presets go stale too quickly.
         """
         return {
@@ -113,6 +119,10 @@ def register(app: FastAPI) -> None:
             "base_url_options": {
                 provider: [dict(option) for option in options]
                 for provider, options in CLOUD_PROVIDER_BASE_URL_OPTIONS.items()
+            },
+            "role_providers": {
+                ROLE_IMAGE: sorted(image_generation_provider_values()),
+                ROLE_PDF_REVIEW: sorted(vision_text_provider_values()),
             },
         }
 

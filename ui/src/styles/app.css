@@ -518,6 +518,9 @@ table.review-tbl { table-layout: fixed; }
 /* 键盘走到的那一项（.active）与悬停同级；当前选中的值（.selected）是淡蓝底。 */
 .dropdown-menu .menu-item.active, .dropdown-menu .menu-item-row.active { background: var(--surface-2); }
 .dropdown-menu .menu-item.selected.active { background: var(--tint); }
+/* 不可选的选项（如图像翻译下不支持图片的服务商）：灰字、无悬停底色，说明照常显示。 */
+.menu-item.disabled, .menu-item.disabled b { color: var(--ink-3); cursor: default; }
+.menu-item.disabled:hover, .dropdown-menu .menu-item.disabled.active { background: none; }
 .dropdown-menu .menu-item-row.selected .menu-item-main { color: var(--tint-ink); font-weight: var(--fw-600); }
 .dropdown-menu mark, .lang-pop mark { background: transparent; color: var(--accent-ink); font-weight: var(--fw-700); }
 .menu-empty { padding: 12px 10px; text-align: center; font-size: 12px; color: var(--ink-3); }

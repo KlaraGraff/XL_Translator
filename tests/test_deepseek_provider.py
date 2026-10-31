@@ -193,6 +193,17 @@ class ProviderDefaultsRouteTests(unittest.TestCase):
         self.assertEqual(payload["base_url_disabled"], ["dashscope", "zhipu"])
         self.assertTrue(payload["disabled_placeholder"])
 
+    def test_lists_providers_able_to_serve_each_image_role(self) -> None:
+        """图像翻译下拉只放能生成图片的服务商可选；审核下拉多出能读图的 DeepSeek、小米 MiMo。"""
+        payload = self.client.get("/api/models/provider-defaults").json()
+
+        self.assertEqual(payload["role_providers"]["image"], ["custom_openai", "openai", "siliconflow"])
+        self.assertEqual(
+            payload["role_providers"]["pdf_review"],
+            ["custom_openai", "deepseek", "openai", "siliconflow", "xiaomi"],
+        )
+        self.assertNotIn("translation", payload["role_providers"])
+
     def test_prefills_no_model_name_and_links_every_named_provider_key_page(self) -> None:
         """不预填型号（各家换代太快，写死的推荐很快过时）；每家给一个创建密钥的控制台链接。"""
         payload = self.client.get("/api/models/provider-defaults").json()
