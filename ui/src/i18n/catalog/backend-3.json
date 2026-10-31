@@ -1303,6 +1303,22 @@
     "en": "The conflicting candidate does not exist, has already been handled, or the current entry has changed.",
     "fr": "Le candidat en conflit n'existe pas, a déjà été traité, ou l'entrée actuelle a changé."
   },
+  "无法读取导入文件。": {
+    "en": "The import file cannot be read.",
+    "fr": "Impossible de lire le fichier à importer."
+  },
+  "文件超过 20 MB，无法导入记忆库。": {
+    "en": "The file is larger than 20 MB and cannot be imported into the translation memory.",
+    "fr": "Le fichier dépasse 20 Mo et ne peut pas être importé dans la mémoire de traduction."
+  },
+  "无法打开这个 Excel 文件，请确认文件没有损坏或加密。": {
+    "en": "This Excel file cannot be opened. Make sure it is not damaged or password-protected.",
+    "fr": "Impossible d'ouvrir ce fichier Excel. Vérifiez qu'il n'est ni endommagé ni protégé par un mot de passe."
+  },
+  "JSON 文件格式有误，无法读取。": {
+    "en": "The JSON file is not valid and cannot be read.",
+    "fr": "Le fichier JSON n'est pas valide et ne peut pas être lu."
+  },
   "此记忆库备份中的自定义语言信息不完整，无法导入。": {
     "en": "The custom language information in this translation memory backup is incomplete and cannot be imported.",
     "fr": "Les informations de langue personnalisée de cette sauvegarde de la mémoire de traduction sont incomplètes ; importation impossible."

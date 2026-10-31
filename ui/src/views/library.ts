@@ -108,6 +108,22 @@ interface TmImportEntry {
   target_text: string;
   word_type?: string;
   pinned?: number | boolean | string;
+  note?: string;
+}
+
+/** /api/tm/import/parse 读出的用户词表：整张表 + 猜出的列。 */
+interface TmImportTable {
+  format: string;
+  sheet: string;
+  sheets_skipped: number;
+  lang_pair: string;
+  suggested_lang_pair: string;
+  has_header: boolean;
+  headers: string[];
+  rows: string[][];
+  mapping: Partial<Record<"source" | "target" | "note" | "word_type" | "pinned", number>>;
+  skipped_blank: number;
+  skipped_above_header: number;
 }
 
 function record(value: unknown): JsonObject {
@@ -141,57 +157,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function parseTmCsv(input: string): TmImportEntry[] {
-  // 前导 BOM 要先剥掉，否则它会粘在第一个表头单元格上（"﻿source"），列名对不上，
-  // 整份导入变成 0 条。我们自己导出的 CSV 就带 BOM（见 exportTm），Excel 另存的
-  // UTF-8 CSV 也带，所以这是最常见的一条导入路径，不是边角情况。
-  const raw = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let index = 0; index < raw.length; index += 1) {
-    const char = raw[index];
-    if (char === '"') {
-      if (quoted && raw[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (char === "," && !quoted) {
-      row.push(field);
-      field = "";
-    } else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && raw[index + 1] === "\n") index += 1;
-      row.push(field);
-      if (row.some((value) => value.trim())) rows.push(row);
-      row = [];
-      field = "";
-    } else {
-      field += char;
-    }
-  }
-  if (field || row.length) {
-    row.push(field);
-    if (row.some((value) => value.trim())) rows.push(row);
-  }
-  if (!rows.length) return [];
-  const headers = rows.shift()!.map((header) => header.trim().toLocaleLowerCase());
-  const findColumn = (names: string[]) => headers.findIndex((header) => names.includes(header));
-  const sourceIndex = findColumn(["source_text", "source", "原文"]); // i18n-ignore 导入文件的列名
-  const targetIndex = findColumn(["target_text", "target", "译文"]); // i18n-ignore 导入文件的列名
-  const wordTypeIndex = findColumn(["word_type", "type", "来源"]); // i18n-ignore 导入文件的列名
-  const pinnedIndex = findColumn(["pinned", "固定"]); // i18n-ignore 导入文件的列名
-  return rows
-    .map((values) => ({
-      source_text: values[sourceIndex >= 0 ? sourceIndex : 0]?.trim() ?? "",
-      target_text: values[targetIndex >= 0 ? targetIndex : 1]?.trim() ?? "",
-      ...(wordTypeIndex >= 0 ? { word_type: values[wordTypeIndex]?.trim() } : {}),
-      ...(pinnedIndex >= 0 ? { pinned: values[pinnedIndex]?.trim() } : {}),
-    }))
-    .filter((entry) => entry.source_text && entry.target_text);
-}
 function csvCell(value: unknown): string {
   const raw = String(value ?? "");
   return /[",\r\n]/.test(raw) ? `"${raw.replaceAll('"', '""')}"` : raw;
@@ -1403,7 +1368,7 @@ async function exportTm(format: "json" | "csv"): Promise<void> {
     // 这时候什么都不该说（旧代码是无条件弹的，于是界面报告了一件没发生的事）。
     // CSV 前面加 UTF-8 BOM：不带 BOM 的 UTF-8 CSV 被 Excel 当成本地编码（简中 Windows
     // 上是 GBK）打开，整份译文变乱码——而记忆库导出的第一去处就是 Excel。JSON 不能加，
-    // 那会让它不再是合法 JSON。导入侧 parseTmCsv 会把 BOM 剥掉，往返仍然成立。
+    // 那会让它不再是合法 JSON。导入侧（core/tm_import_parse.py）会把 BOM 剥掉，往返仍然成立。
     const saved = format === "csv"
       ? await saveTextFile(`translator-tm-${tmLangPair()}.csv`, `﻿${toTmCsv(list)}`)
       : await saveJsonFile(`translator-tm-${tmLangPair()}.json`, payload);
@@ -1437,27 +1402,50 @@ function pickFile(accept: string, onFile: (file: File) => void): void {
   input.click();
 }
 
+const TM_IMPORT_ACCEPT = ".xlsx,.xlsm,.xls,.csv,.tsv,.txt,.json,application/json,text/csv,text/plain";
+
+function readFileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** 本软件自己导出的 JSON（entries 里每条都有 source_text）：原样导入，保留备注、用法、生效范围。 */
+function ownJsonEntries(payload: JsonObject): TmImportEntry[] | null {
+  if (!Array.isArray(payload.entries) || !payload.entries.length) return null;
+  const entries = (payload.entries as unknown[]).filter((entry): entry is TmImportEntry => Boolean(entry && typeof entry === "object"));
+  return entries.length && entries.every((entry) => "source_text" in entry && "target_text" in entry) ? entries : null;
+}
+
 function importTm(): void {
-  pickFile("application/json,.json,text/csv,.csv", async (file) => {
+  pickFile(TM_IMPORT_ACCEPT, async (file) => {
     try {
-      const raw = await file.text();
-      const isCsv = file.name.toLocaleLowerCase().endsWith(".csv") || file.type.includes("csv");
-      let previewEntries: TmImportEntry[];
-      let langPair = tmLangPair();
-      if (isCsv) {
-        previewEntries = parseTmCsv(raw);
-      } else {
-        const payload = JSON.parse(raw) as JsonObject;
-        if (text(payload.format_version) === "tm-full-v1") {
+      if (file.name.toLocaleLowerCase().endsWith(".json")) {
+        let payload: JsonObject | null = null;
+        try {
+          payload = record(JSON.parse(await file.text()));
+        } catch {
+          payload = null; // 交给后端：可能是 GBK / UTF-16 保存的 JSON
+        }
+        if (payload && text(payload.format_version) === "tm-full-v1") {
           openFullImportPreviewModal(file.name, payload);
           return;
         }
-        previewEntries = Array.isArray(payload.entries)
-          ? (payload.entries as unknown[]).filter((entry): entry is TmImportEntry => Boolean(entry && typeof entry === "object"))
-          : [];
-        langPair = text(payload.lang_pair, tmLangPair());
+        const own = payload ? ownJsonEntries(payload) : null;
+        if (payload && own) {
+          openImportPreviewModal(file.name, "json", text(payload.lang_pair, tmLangPair()), own);
+          return;
+        }
       }
-      openImportPreviewModal(file.name, isCsv ? "csv" : "json", langPair, previewEntries);
+      const client = await getClient();
+      const table = await client.request<TmImportTable>("/api/tm/import/parse", {
+        method: "POST",
+        body: JSON.stringify({ file_name: file.name, data: await readFileBase64(file), lang_pair: tmLangPair() }),
+      });
+      openTableImportPreviewModal(file.name, table);
     } catch (error) {
       showToast({ message: t("无法读取导入文件：{0}", errorMessage(error)), error: true });
     }
@@ -1476,7 +1464,49 @@ function importFullTm(): void {
   });
 }
 
-function openImportPreviewModal(fileName: string, format: "json" | "csv", langPair: string, previewEntries: TmImportEntry[]): void {
+/** 第 0 列 → "A"，和 Excel 的列号一致。 */
+function columnLetter(index: number): string {
+  let label = "";
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) label = String.fromCharCode(65 + ((n - 1) % 26)) + label;
+  return label;
+}
+
+function columnLabel(table: TmImportTable, index: number): string {
+  const header = (table.headers[index] ?? "").trim();
+  return header ? t("{0} 列（{1}）", columnLetter(index), header) : t("{0} 列", columnLetter(index));
+}
+
+function tableEntries(table: TmImportTable, mapping: TmImportTable["mapping"]): TmImportEntry[] {
+  const at = (row: string[], index: number | undefined) => (index === undefined || index < 0 ? "" : (row[index] ?? "").trim());
+  const entries: TmImportEntry[] = [];
+  for (const row of table.rows) {
+    const source = at(row, mapping.source);
+    const target = at(row, mapping.target);
+    if (!source || !target) continue;
+    const entry: TmImportEntry = { source_text: source, target_text: target };
+    const note = at(row, mapping.note);
+    if (note) entry.note = note;
+    if (mapping.word_type !== undefined) entry.word_type = at(row, mapping.word_type);
+    if (mapping.pinned !== undefined) entry.pinned = at(row, mapping.pinned);
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function openTableImportPreviewModal(fileName: string, table: TmImportTable): void {
+  const langPair = table.lang_pair || table.suggested_lang_pair || tmLangPair();
+  openImportPreviewModal(fileName, table.format, langPair, tableEntries(table, table.mapping), table);
+}
+
+function openImportPreviewModal(
+  fileName: string,
+  format: string,
+  langPair: string,
+  initialEntries: TmImportEntry[],
+  table?: TmImportTable,
+): void {
+  let previewEntries = initialEntries;
+  const mapping: TmImportTable["mapping"] = { ...(table?.mapping ?? {}) };
   const pairField = createTextField({ label: t("目标语言对"), value: langPair, placeholder: t("例如 zh-en") });
   const modeField = createSelectField({
     label: t("重复项"),
@@ -1497,39 +1527,83 @@ function openImportPreviewModal(fileName: string, format: "json" | "csv", langPa
   });
 
   const summary = document.createElement("p");
-  summary.textContent = t("{0} · {1} · 共 {2} 条。请确认字段映射和重复项策略后再写入。", fileName, format.toUpperCase(), fmtNum(previewEntries.length));
-
-  const table = document.createElement("table");
-  table.className = "tbl";
-  const head = document.createElement("tr");
-  for (const label of [t("原文"), t("译文"), t("来源")]) {
-    const th = document.createElement("th");
-    th.textContent = label;
-    head.append(th);
-  }
-  table.append(head);
-  for (const entry of previewEntries.slice(0, 8)) {
-    const tr = document.createElement("tr");
-    for (const value of [entry.source_text, entry.target_text, text(entry.word_type, "-")]) {
-      const td = document.createElement("td");
-      td.textContent = value;
-      tr.append(td);
-    }
-    table.append(tr);
-  }
+  const detected = document.createElement("p");
+  detected.className = "tm-import-detected";
   const tableWrap = document.createElement("div");
   tableWrap.style.maxHeight = "220px";
   tableWrap.style.overflow = "auto";
   tableWrap.style.border = "1px solid var(--line)";
   tableWrap.style.borderRadius = "var(--r-md)";
-  tableWrap.append(table);
+  const more = document.createElement("p");
 
-  const body: HTMLElement[] = [summary, pairField.root, modeField.root, syncRow, tableWrap];
-  if (previewEntries.length > 8) {
-    const note = document.createElement("p");
-    note.textContent = t("仅显示前 {0} 条预览。", 8);
-    body.push(note);
+  const showNote = Boolean(table);
+  const render = () => {
+    summary.textContent = t("{0} · {1} · 共 {2} 条。请确认字段映射和重复项策略后再写入。", fileName, format.toUpperCase(), fmtNum(previewEntries.length));
+    if (table) {
+      const lines: string[] = [];
+      if (table.sheet) {
+        lines.push(
+          table.sheets_skipped
+            ? t("已读取工作表「{0}」，其余 {1} 张工作表未导入。", table.sheet, fmtNum(table.sheets_skipped))
+            : t("已读取工作表「{0}」。", table.sheet),
+        );
+      }
+      const skipped = table.skipped_blank + table.skipped_above_header + (table.rows.length - previewEntries.length);
+      if (skipped > 0) lines.push(t("已跳过 {0} 行空行、标题行或缺少原文、译文的行。", fmtNum(skipped)));
+      if (!table.lang_pair && table.suggested_lang_pair && table.suggested_lang_pair !== tmLangPair()) {
+        lines.push(t("已按列名把目标语言对设为 {0}，如不正确请修改。", table.suggested_lang_pair));
+      }
+      if (!table.has_header) lines.push(t("文件没有可识别的列名，已按列的顺序识别原文和译文，请核对下方预览。"));
+      detected.textContent = lines.join(" ");
+      detected.hidden = !lines.length;
+    }
+    const grid = document.createElement("table");
+    grid.className = "tbl";
+    const head = document.createElement("tr");
+    for (const label of [t("原文"), t("译文"), showNote ? t("备注") : t("来源")]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      head.append(th);
+    }
+    grid.append(head);
+    for (const entry of previewEntries.slice(0, 8)) {
+      const tr = document.createElement("tr");
+      for (const value of [entry.source_text, entry.target_text, showNote ? text(entry.note, "-") : text(entry.word_type, "-")]) {
+        const td = document.createElement("td");
+        td.textContent = value;
+        tr.append(td);
+      }
+      grid.append(tr);
+    }
+    tableWrap.replaceChildren(grid);
+    more.textContent = t("仅显示前 {0} 条预览。", 8);
+    more.hidden = previewEntries.length <= 8;
+  };
+
+  const body: HTMLElement[] = [summary];
+  if (table) {
+    body.push(detected);
+    const width = Math.max(table.headers.length, ...table.rows.slice(0, 50).map((row) => row.length), 0);
+    const columns = Array.from({ length: width }, (_, index) => ({ value: String(index), label: columnLabel(table, index) }));
+    const roleField = (label: string, role: "source" | "target" | "note", optional: boolean) =>
+      createSelectField({
+        label,
+        value: mapping[role] === undefined ? "" : String(mapping[role]),
+        options: optional ? [{ value: "", label: t("不导入") }, ...columns] : columns,
+        onChange: (value) => {
+          if (value === "") delete mapping[role];
+          else mapping[role] = Number(value);
+          previewEntries = tableEntries(table, mapping);
+          render();
+        },
+      }).root;
+    const columnRow = document.createElement("div");
+    columnRow.className = "tm-import-columns";
+    columnRow.append(roleField(t("原文列"), "source", false), roleField(t("译文列"), "target", false), roleField(t("备注列"), "note", true));
+    body.push(columnRow);
   }
+  body.push(pairField.root, modeField.root, syncRow, tableWrap, more);
+  render();
 
   openModal({
     tone: "warn",
@@ -1765,7 +1839,7 @@ function rebuildToolbar(): void {
     icon: "down",
     onClick: (event) =>
       openMenu(event.currentTarget as HTMLElement, [
-        { label: t("从 JSON / CSV 导入"), onClick: () => importTm() },
+        { label: t("从 Excel / CSV / JSON 导入"), onClick: () => importTm() },
         { label: t("恢复完整备份（JSON）"), onClick: () => importFullTm() },
       ]),
   });
