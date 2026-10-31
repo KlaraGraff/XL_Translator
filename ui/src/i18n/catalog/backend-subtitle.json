@@ -1,0 +1,9 @@
+{
+  "第 {0} 条 · {1}": {"en": "Subtitle {0} · {1}", "fr": "Sous-titre {0} · {1}"},
+  "第 {0}–{1} 条 · {2}": {"en": "Subtitles {0}–{1} · {2}", "fr": "Sous-titres {0} à {1} · {2}"},
+  "第 {0} 条第 {1} 行 · {2}": {"en": "Subtitle {0}, line {1} · {2}", "fr": "Sous-titre {0}, ligne {1} · {2}"},
+  "一句话分在几条字幕里，译文是按长短比例分开的，请检查断开的位置": {"en": "One sentence runs over several subtitles and its translation was split by length; check where it breaks", "fr": "Une phrase s’étend sur plusieurs sous-titres et sa traduction a été répartie selon la longueur ; vérifiez les coupures"},
+  "译文较长，按正常语速可能读不完（每秒约 {0} 字）": {"en": "Long translation; may be too fast to read (about {0} characters a second)", "fr": "Traduction longue ; peut-être trop rapide à lire (environ {0} caractères par seconde)"},
+  "译文较长，两行放不下": {"en": "Long translation; does not fit on two lines", "fr": "Traduction longue ; ne tient pas sur deux lignes"},
+  "没有找到字幕内容，可能不是字幕文件。": {"en": "No subtitles found; this may not be a subtitle file.", "fr": "Aucun sous-titre trouvé ; ce n’est peut-être pas un fichier de sous-titres."}
+}

@@ -5,15 +5,17 @@
 // 卡片列出每一类、各页的设置，一个按钮全部开始，结果写进同一个输出文件夹（home-batch.ts）。
 
 import { currentView, navigate, type ViewId } from "./router";
-import { showToast } from "./components";
+import { openModal, showToast } from "./components";
 import { t } from "./i18n";
-import { isExtSurface, surfaceDescriptors } from "./surface-descriptors";
+import { isExtSurface, isTypeVisible, refreshTranslateSideItems, surfaceDescriptors } from "./surface-descriptors";
 import {
   dropFromDispatchBatch,
+  fileNounPhrase,
   getClient,
   openSourcePaths,
   setDispatchBatch,
   surfaceFileExtensions,
+  surfaceIcon,
   surfaceLabel,
   type Surface,
 } from "./views/workspace";
@@ -98,6 +100,59 @@ function pickWinner(buckets: Map<Surface, Bucket>, prefer: Surface | null): Surf
   return best;
 }
 
+/** 问一句要不要开启一个没显示在侧栏的类型。 */
+function askToTurnOn(surface: Surface, count: number): Promise<boolean> {
+  const label = surfaceLabel(surface);
+  return new Promise((resolve) => {
+    openModal({
+      tone: "tint",
+      icon: surfaceIcon(surface),
+      title: t("要开启「{0}」翻译吗？", label),
+      body: [
+        t("放入的文件里有 {0}，「{1}」现在没有开启。", fileNounPhrase(surface, count), label),
+        t("开启后它会显示在侧栏，之后也可以在「扩展」页关掉。"),
+      ],
+      actions: [
+        { label: t("这次不用"), onClick: () => resolve(false) },
+        { label: t("开启并放入"), variant: "primary", onClick: () => resolve(true) },
+      ],
+    });
+  });
+}
+
+/**
+ * 拖入的文件里有没显示在侧栏的类型（「字幕」默认不显示）：逐类问要不要开启。开启的照常放入，
+ * 选「这次不用」的这一类不放入，同一批里的其他文件不受影响。读不到设置时照旧全部放入。
+ */
+async function admitHiddenTypes(buckets: Map<Surface, Bucket>): Promise<void> {
+  let settings: Record<string, unknown>;
+  const client = await getClient().catch(() => null);
+  if (!client) return;
+  try {
+    settings = await client.request<Record<string, unknown>>("/api/settings");
+  } catch {
+    return;
+  }
+  for (const surface of candidateSurfaces()) {
+    const bucket = buckets.get(surface);
+    if (!bucket || isTypeVisible(settings, surface)) continue;
+    if (!(await askToTurnOn(surface, bucket.count))) {
+      buckets.delete(surface);
+      continue;
+    }
+    try {
+      settings = await client.request<Record<string, unknown>>("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({ translation_types: { visible: { [surface]: true } } }),
+      });
+      refreshTranslateSideItems(settings);
+    } catch (error) {
+      buckets.delete(surface);
+      showToast({ message: error instanceof Error ? t("保存失败：{0}", error.message) : t("保存失败。"), error: true });
+    }
+  }
+}
+
 function isSurfaceView(id: ViewId | undefined): id is Surface {
   return id !== undefined && (BUILTIN_ORDER.includes(id as Surface) || isExtSurface(id));
 }
@@ -109,6 +164,10 @@ export async function dispatchPaths(paths: string[]): Promise<void> {
   // 在任务、设置这类页面上松手：先回到入口页，没有可翻译的文件时就停在那里。
   if (!isSurfaceView(currentView()?.id) && currentView()?.id !== "home") navigate("home");
   const buckets = bucketize(await classify(list));
+  const found = buckets.size;
+  await admitHiddenTypes(buckets);
+  // 全都选了「这次不用」：什么也不放，也不再提示没有可翻译的文件。
+  if (found && !buckets.size) return;
   const here = currentView()?.id;
   const target = pickWinner(buckets, isSurfaceView(here) ? here : null);
   if (!target) {

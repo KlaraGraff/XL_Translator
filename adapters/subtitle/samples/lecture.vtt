@@ -1,0 +1,21 @@
+WEBVTT
+Kind: captions
+Language: zh
+
+NOTE 这是注释，不翻译
+
+STYLE
+::cue { color: yellow }
+
+intro
+00:01.000 --> 00:03.000 align:start position:10%
+<v 讲师>欢迎来到第二讲
+
+00:03.500 --> 00:05.000
+<v 讲师>我们从疏散通道
+
+00:05.000 --> 00:07.000
+<v 讲师>的宽度说起。
+
+00:07.500 --> 00:09.000
+<v 学员>好的&amp;明白
