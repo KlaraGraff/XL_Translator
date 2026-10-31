@@ -1,0 +1,34 @@
+name: Windows exit probe
+
+# 关闭软件时引擎、子程序、临时文件和重新打开的情况：在真实 Windows 上量（scripts/windows_exit_probe.py）。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/project-thread-2lek32
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-release-py311.txt
+      - name: Install dependencies
+        run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt
+      - name: Probe
+        run: python scripts/windows_exit_probe.py --report exit-probe.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit-probe
+          path: exit-probe.json
