@@ -25,6 +25,7 @@ from config import (
 )
 from core import system_proxy
 from core.image_requests import image_data_url, image_generation_method
+from core.zh_hant import TRADITIONAL_CHINESE, is_traditional_chinese
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
@@ -82,6 +83,12 @@ PDF_IMAGE_TRANSLATION_LANGUAGE_RULES: dict[str, str] = {
         "Use concise Simplified Chinese that fits the original boxes and table cells. "
         "Prefer short engineering/document labels and field names; avoid verbose paraphrases, long sentences, "
         "and Traditional Chinese."
+    ),
+    "zh_hant": (
+        "Use concise Traditional Chinese (繁體中文) with Taiwan standard characters and wording that fits the "
+        "original boxes and table cells. Every Chinese character must be a Traditional character: never use "
+        "Simplified Chinese characters (for example write 這、們、說、國、體、會, not 这、们、说、国、体、会). "
+        "Prefer short engineering/document labels and field names; avoid verbose paraphrases and long sentences."
     ),
     "en": (
         "Use concise professional English suitable for engineering, administrative, and document-control PDFs. "
@@ -468,6 +475,8 @@ def _pdf_image_translation_language_rule(
     target_lang_code: str | None = None,
 ) -> str:
     normalized_code = str(target_lang_code or "").strip().lower()
+    if is_traditional_chinese(normalized_code):
+        normalized_code = TRADITIONAL_CHINESE
     rule = PDF_IMAGE_TRANSLATION_LANGUAGE_RULES.get(normalized_code)
     if rule:
         return rule

@@ -76,7 +76,7 @@ import {
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
 import { el, formatSizeKb, formatTime, hasOwn, localizedLanguageOptions, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
-import { currentLocale, fmtNum, isSingularCount, t, tx, localized } from "../i18n";
+import { currentLocale, isChineseLocale, fmtNum, isSingularCount, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
 import { FIT_CLIP, fitPlaceholder } from "../text-fit";
@@ -275,8 +275,9 @@ const SURFACE_FILE_NOUN: Record<BuiltinSurface, string> = localized(() => ({ exc
 export function fileNounPhrase(surface: Surface, count: number): string {
   if (isExtSurface(surface)) {
     // 清单里的名词是复数（presentations）；一个文件时用单数，清单没写单数就说「1 file」。
-    if (isSingularCount(count) && currentLocale() !== "zh") {
-      const one = surfaceDescriptor(surface)?.file_noun_one?.[currentLocale()];
+    const locale = currentLocale();
+    if (isSingularCount(count) && (locale === "en" || locale === "fr")) {
+      const one = surfaceDescriptor(surface)?.file_noun_one?.[locale];
       return one ? t("{0} 个{1}", count, one) : t("{0} 个文件", count);
     }
     return t("{0} 个{1}", count, nounAfterCjk(surfaceFileNoun(surface)));
@@ -307,7 +308,7 @@ const SURFACE_BANNER_EMPTY: Record<BuiltinSurface, { title: string; description:
 
 /** 中文句子里接在「个」「的」后面的名词，以西文字母或数字开头时前面补一个空格。 */
 function nounAfterCjk(noun: string): string {
-  return currentLocale() === "zh" && /^[A-Za-z0-9]/.test(noun) ? ` ${noun}` : noun;
+  return isChineseLocale() && /^[A-Za-z0-9]/.test(noun) ? ` ${noun}` : noun;
 }
 
 export function surfaceLabel(surface: Surface): string {
@@ -2065,7 +2066,7 @@ function buildDispatchNote(surface: Surface): HTMLElement | null {
   const [before, after = ""] = t("同一批文件还有 {0}，已在对应页面读取。", "\u0000").split("\u0000");
   words.append(document.createTextNode(before));
   others.forEach((other, index) => {
-    if (index) words.append(document.createTextNode(currentLocale() === "zh" ? "、" : ", "));
+    if (index) words.append(document.createTextNode(isChineseLocale() ? "、" : ", "));
     const go = el("button", "resume-link");
     go.type = "button";
     go.textContent = fileNounPhrase(other, dispatchBatch?.counts.get(other) ?? 0);
@@ -4468,7 +4469,7 @@ function resumeLead(lead: string, body: string): HTMLElement {
 function joinNotes(...notes: string[]): string {
   const parts = notes.filter(Boolean);
   if (!parts.length) return "";
-  const glue = currentLocale() === "zh" ? "" : " ";
+  const glue = isChineseLocale() ? "" : " ";
   return glue + parts.join(glue);
 }
 

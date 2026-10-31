@@ -2298,7 +2298,8 @@ function renderLanguageCard(host: HTMLElement): void {
   const { root: card, body } = sec({ title: t("界面语言"), desc: t("正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。") });
   const active = currentLanguagePreference();
   const hints: Record<Locale, string> = {
-    zh: "界面、运行日志和提示显示为中文", // i18n-ignore 各语言用自己的原文
+    zh: "界面、运行日志和提示显示为简体中文", // i18n-ignore 各语言用自己的原文
+    "zh-Hant": "介面、執行記錄和提示顯示為繁體中文", // i18n-ignore 各语言用自己的原文
     en: "Interface, activity log and messages in English",
     fr: "Interface, journal d'activité et messages en français",
   };
@@ -2319,7 +2320,7 @@ function renderLanguageCard(host: HTMLElement): void {
       void reRenderAfter(async () => {
         await persistSettings({ appearance: { ...record(settings?.appearance), ui_language: option.value } });
         storeLocale(option.value);
-        setLocale(option.value);
+        await setLocale(option.value);
       });
     });
   }

@@ -22,6 +22,7 @@ from loguru import logger
 
 from core import tm_manager
 from core.local_endpoint import runtime_mode, settings_runs_locally
+from core.zh_hant import fix_translation, is_traditional_chinese, lang_base, to_traditional
 from core.runner_base import BaseTaskRunner
 from core.api_concurrency_control import (
     ApiCredentialRejectedError,
@@ -363,7 +364,8 @@ _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 def _translation_in_unexpected_cjk(source: str, translation: str | None, target_lang: str) -> bool:
     """A Latin-script target whose "translation" of CJK-free text came back in CJK."""
     target = str(target_lang or "").strip().lower()
-    if not target or target.startswith(_CJK_TARGET_PREFIXES):
+    # 自定义目标语言不知道用什么文字写（粤语、客家话用汉字），不查。
+    if not target or target.startswith(_CJK_TARGET_PREFIXES) or target.startswith("x-custom-"):
         return False
     text = str(translation or "")
     if not text or text.strip() == str(source or "").strip():
@@ -2378,7 +2380,7 @@ class WordTaskRunner(BaseTaskRunner):
                 source = by_id.get(int(item.get("id")))
             except (TypeError, ValueError):
                 continue
-            candidate = str(item.get("translation") or "").strip()
+            candidate = str(fix_translation(str(item.get("translation") or "").strip(), target_lang))
             if source is None or not _title_review_change_ok(
                 source,
                 str(global_translations[source]),
@@ -5114,7 +5116,7 @@ def _semantic_candidate_is_eligible(
     if source_len >= 40 and candidate_len < max(8, int(source_len * _SEMANTIC_MIN_LENGTH_RATIO)):
         return False
 
-    if source_lang == "zh" and target_lang not in {"zh", "ja"}:
+    if source_lang == "zh" and lang_base(target_lang) not in {"zh", "ja"}:
         cjk_count = len(_CJK_RE.findall(candidate_text))
         if cjk_count:
             candidate_non_space_len = max(len(re.sub(r"\s+", "", candidate_text)), 1)
@@ -5290,7 +5292,10 @@ def _run_header_footer_batch(
                 + user_facing_reason(exc, fallback="模型服务返回了错误。")
             )
         return []
-    return parse_header_footer_response(raw, len(lines))
+    slots = parse_header_footer_response(raw, len(lines))
+    if is_traditional_chinese(target_lang):
+        slots = [(to_traditional(line), to_traditional(added)) for line, added in slots]
+    return slots
 
 
 def _semantic_review_validation(

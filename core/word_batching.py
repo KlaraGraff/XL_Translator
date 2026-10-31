@@ -12,6 +12,7 @@ from typing import Callable
 
 from loguru import logger
 
+from core.zh_hant import is_chinese_lang
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     credential_rejection,
@@ -684,7 +685,7 @@ def _merge_unit_results(
 
 def _join_translated_parts(parts: list[str], *, target_lang: str) -> str:
     non_empty = [part for part in parts if part]
-    if target_lang == "zh" or any(_CJK_RE.search(part) for part in non_empty):
+    if is_chinese_lang(target_lang) or any(_CJK_RE.search(part) for part in non_empty):
         return "".join(non_empty)
     return " ".join(non_empty)
 

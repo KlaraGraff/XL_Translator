@@ -21,7 +21,7 @@ import { mountUpdateToast } from "./update-toast";
 import { ApiClient } from "./api-client";
 import { isExtSurface, loadSurfaceDescriptors, refreshTranslateSideItems } from "./surface-descriptors";
 import type { SurfaceDescriptor } from "./api-client";
-import { currentLocale, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
+import { currentLocale, ensureLocaleReady, isLocale, localeTag, onLocaleChange, setLocale, storeLocale } from "./i18n";
 import { installCmdk } from "./cmdk";
 import { installTextFit } from "./text-fit";
 import { isMac, isWindows } from "./platform";
@@ -99,7 +99,7 @@ async function syncAppearanceFromBackend(): Promise<void> {
   const language = appearance.ui_language;
   if (isLocale(language) && language !== currentLocale()) {
     storeLocale(language);
-    setLocale(language);
+    void setLocale(language);
   }
 }
 
@@ -267,4 +267,5 @@ function main(): void {
   installCmdk();
 }
 
-main();
+// 繁體中文界面先等转换表加载好，首屏直接是繁体。
+void ensureLocaleReady().finally(main);

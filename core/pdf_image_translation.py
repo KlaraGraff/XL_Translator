@@ -72,7 +72,7 @@ from core.image_generation import (
     is_model_unavailable_error,
     pdf_page_ratio_tolerance,
 )
-from core.language_registry import get_supported_languages, get_target_lang_display
+from core.language_registry import get_supported_languages, get_target_lang_description, get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -5299,6 +5299,17 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._settings.custom_target_langs,
             include_optional=True,
         )
+        # 自定义目标语言的说明（例如「用台湾用字」「用粤语口语」）也要交给图像模型，
+        # 否则生图时只看到一个语言名。
+        language_note = get_target_lang_description(
+            self._settings.pdf.target_lang,
+            self._settings.custom_target_langs,
+        ).strip()
+        if language_note:
+            document_context = (
+                f"Notes on the target language ({target_language}), written by the user:\n{language_note}"
+                + (f"\n\n{document_context}" if document_context else "")
+            )
         review_enabled = bool(self._settings.pdf.review_enabled and review_model_config is not None)
         page_record.review_enabled = review_enabled
         # 质检容差必须跟着「这一页会被请求成什么尺寸」走，否则对只支持固定
@@ -6355,7 +6366,8 @@ def _validate_source_image(path: Path) -> tuple[int, int]:
 # 启用可选语言的扩展口子；不传 custom_target_langs 是因为扫描目录时
 # 走不到 AppSettings——用户自定义语言名不在这个白名单里，是已知的
 # 口子，见 _is_new_style_translated_name 的说明。
-_BUILTIN_TARGET_LANG_LABELS = frozenset(get_supported_languages(None, include_optional=True))
+# 「中文」是改名「简体中文」之前的显示名：以前产出的「xxx_中文_高清.pdf」也要认得。
+_BUILTIN_TARGET_LANG_LABELS = frozenset(get_supported_languages(None, include_optional=True)) | {"中文"}
 
 # 后缀式译文名末尾可能叠着修订号 `_R2` 和高清/压缩变体 `_高清`/`_压缩`，
 # 识别时要先把这两层剥掉，才能拿到真正的语言标签去对白名单。

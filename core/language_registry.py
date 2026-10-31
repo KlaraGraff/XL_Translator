@@ -74,7 +74,8 @@ BUILTIN_LANGUAGE_ENGLISH_NAMES: dict[str, set[str]] = {
     "kk": {"Kazakh"},
     "uz": {"Uzbek"},
     "az": {"Azerbaijani"},
-    "zh": {"Chinese", "Mandarin"},
+    "zh": {"Chinese", "Mandarin", "Simplified Chinese", "Chinese (Simplified)", "zh-CN", "zh-Hans"},
+    "zh_hant": {"Traditional Chinese", "Chinese (Traditional)", "zh-TW", "zh-Hant", "zh-HK"},
 }
 
 
@@ -100,7 +101,8 @@ _INLINE_WHITESPACE_RE = re.compile(r"[^\S\n]+")
 _PAREN_WRAPPER_RE = re.compile(r"^(?P<outer>.+?)\s*[（(](?P<inner>.+?)[）)]$")
 
 EXPLICIT_LANGUAGE_ALIAS_GROUPS: dict[str, set[str]] = {
-    "中文": {"中文", "汉语", "汉文", "华语", "普通话", "国语", "中国话", "中国语"},
+    "简体中文": {"简体中文", "中文", "简体", "简中", "汉语", "汉文", "华语", "普通话", "国语", "中国话", "中国语"},
+    "繁體中文": {"繁體中文", "繁体中文", "繁體", "繁体", "繁中", "正體中文", "正体中文", "台灣中文", "台湾中文", "香港中文"},
     "英文": {"英文", "英语"},
     "法文": {"法文", "法语"},
     "德文": {"德文", "德语"},
@@ -300,6 +302,11 @@ def _get_builtin_supported_target_languages(
     if include_optional:
         supported.update(OPTIONAL_TARGET_LANGS)
     return supported
+
+
+def get_builtin_supported_target_languages_map() -> dict[str, str]:
+    """内置目标语言：显示名 → 代码（不含自定义语言）。"""
+    return _get_builtin_supported_target_languages(include_optional=True)
 
 
 def _split_lang_pair(lang_pair: str) -> tuple[str, str] | None:
@@ -728,6 +735,22 @@ def get_target_lang_display(
     return target_lang
 
 
+# 交给模型的目标语言名。繁体单写「繁體中文」时，有的模型仍混进简体字或大陆用词，写明白。
+TRADITIONAL_CHINESE_PROMPT_NAME = "繁體中文（台灣正體字與台灣用詞，一律使用繁體字，不得夾雜簡體字）"
+
+
+def get_target_lang_prompt_name(
+    target_lang: str,
+    custom_target_langs: Iterable[object] | None = None,
+) -> str:
+    """提示词里用的目标语言名：一般就是显示名；繁体中文写明用字要求。"""
+    from core.zh_hant import is_traditional_chinese
+
+    if is_traditional_chinese(target_lang):
+        return TRADITIONAL_CHINESE_PROMPT_NAME
+    return get_target_lang_display(target_lang, custom_target_langs, include_optional=True)
+
+
 def get_target_lang_description(
     target_lang: str,
     custom_target_langs: Iterable[object] | None = None,
@@ -968,7 +991,8 @@ def get_language_catalog(
                 "display_name": display_name,
                 "aliases": list(dict.fromkeys(aliases)),
                 "builtin": True,
-                "can_source": True,
+                # 原文语言不分简繁：繁體中文只做目标语言（原文都按「中文」zh）。
+                "can_source": code in SUPPORTED_SOURCE_LANGS.values(),
                 "can_target": True,
             }
         )
@@ -1004,7 +1028,16 @@ def get_source_language_options(
             "can_target": False,
         }
     ]
-    options.extend(item for item in get_language_catalog() if item["can_source"])
+    # 原文语言用源语言表里的名字：中文原文叫「中文」（简体、繁体都算），不叫「简体中文」。
+    source_names = {code: name for name, code in SUPPORTED_SOURCE_LANGS.items()}
+    for item in get_language_catalog():
+        if not item["can_source"]:
+            continue
+        name = source_names.get(str(item["code"]), str(item["display_name"]))
+        if name != item["display_name"]:
+            aliases = [name, *get_language_search_aliases(name), *item["aliases"]]
+            item = {**item, "display_name": name, "aliases": list(dict.fromkeys(aliases))}
+        options.append(item)
     return options
 
 

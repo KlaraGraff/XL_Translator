@@ -16,7 +16,7 @@ import { ApiClient, type CadCapabilityStatus, type ComponentInstallProgress, typ
 import { clearElement, createButton, createCard, createHintBadge, createProgressBar, createStatus, openModal, showToast } from "../components";
 import { icon } from "../icons";
 import { motionAllowed } from "../motion";
-import { currentLocale, t, tx } from "../i18n";
+import { isChineseLocale, t, tx } from "../i18n";
 import "./plugins.css";
 
 const OFFICIAL_OCR_URL = "https://github.com/PaddlePaddle/PaddleOCR";
@@ -46,7 +46,7 @@ let focusStart = 0;
 let wordCapability: Pdf2DocxPluginStatus | null = null;
 let wordErrorText = "";
 let wordBusy = false;
-const DEFAULT_OFFICIAL_CAD_URL = currentLocale() === "zh"
+const DEFAULT_OFFICIAL_CAD_URL = isChineseLocale()
   ? "https://www.opendesign.com/cn/guestfiles/oda_file_converter"
   : "https://www.opendesign.com/guestfiles/oda_file_converter";
 
@@ -55,7 +55,7 @@ function localizedOfficialCadUrl(value?: string): string {
   try {
     const url = new URL(value);
     // 中文界面才换成官网中文页；英法界面用默认的英文页。
-    if (currentLocale() === "zh" && url.hostname === "www.opendesign.com" && url.pathname === "/guestfiles/oda_file_converter") {
+    if (isChineseLocale() && url.hostname === "www.opendesign.com" && url.pathname === "/guestfiles/oda_file_converter") {
       url.pathname = "/cn/guestfiles/oda_file_converter";
     }
     return url.toString().replace(/\/$/, "");
