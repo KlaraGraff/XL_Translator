@@ -1,9 +1,10 @@
 .plugins-content { display: flex; overflow: auto; }
 .plugins-column { width: 100%; display: flex; flex-direction: column; gap: 14px; }
 .plugins-card-body { padding: 18px 20px 20px; }
-.plugins-title-row { display: flex; align-items: center; gap: 14px; }
+/* 名称和说明至少留 260px：按钮多、法文长时，按钮整排换到下一行（靠右），不把说明挤成一个词一行。 */
+.plugins-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .plugins-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--tint); color: var(--tint-ink); display: grid; place-items: center; font-size: 23px; flex: none; }
-.plugins-copy { flex: 1; min-width: 0; }
+.plugins-copy { flex: 1 1 260px; min-width: 0; }
 .plugins-copy h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 7px; }
 .plugins-copy p { margin: 5px 0 0; color: var(--ink-3); font-size: 12.5px; }
 .plugins-copy h2 .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: var(--fw-600); }
@@ -15,7 +16,7 @@
 .plugins-notice.danger { color: var(--danger); background: var(--danger-t); }
 .plugins-notice.plugins-progress { color: var(--ink-2); background: var(--tint); display: flex; flex-direction: column; gap: 8px; }
 .plugins-note { padding: 14px 16px; display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 12px; }
-@media (max-width: 720px) { .plugins-title-row { align-items: flex-start; flex-wrap: wrap; } }
+@media (max-width: 720px) { .plugins-title-row { align-items: flex-start; } }
 .oda-terms-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 2px; }
 .oda-terms-links .linklike { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--tint-ink); cursor: pointer; }
 .oda-terms-links .linklike svg { width: 12px; height: 12px; }

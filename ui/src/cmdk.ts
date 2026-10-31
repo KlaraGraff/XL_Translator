@@ -22,6 +22,7 @@ import { getClient, surfaceIcon, surfaceLabel, type Surface } from "./views/work
 import { taskRowSummary } from "./views/tasks";
 import type { TaskStatus } from "./api-client";
 import "./cmdk.css";
+import { FIT_CLIP } from "./text-fit";
 
 type Group = "path" | "pages" | "tasks" | "entries";
 
@@ -560,7 +561,7 @@ function rebuild(state: PanelState, resetActive: boolean): void {
     button.tabIndex = -1;
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", index === active ? "true" : "false");
-    const main = el("span", "lb");
+    const main = el("span", `lb ${FIT_CLIP}`);
     if (item.code !== undefined) {
       const [before, after = ""] = item.label.split("\u0000");
       main.append(document.createTextNode(before), el("code", undefined, item.code), document.createTextNode(after));
@@ -568,7 +569,7 @@ function rebuild(state: PanelState, resetActive: boolean): void {
       appendWithMark(main, item.label, words);
     }
     button.append(icon(item.icon, { size: "sm" }), main);
-    if (item.sub) button.append(el("span", "sub", item.sub));
+    if (item.sub) button.append(el("span", `sub ${FIT_CLIP}`, item.sub));
     if (item.code !== undefined) button.title = item.code;
     else if (item.group === "tasks" || item.group === "entries") button.title = item.label;
     list.append(button);

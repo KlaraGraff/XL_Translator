@@ -20,6 +20,7 @@ import {
 } from "../api-client";
 import { clearElement, createButton, createCard, createEmptyState, createProgressBar, openModal, showToast } from "../components";
 import { icon } from "../icons";
+import { fitPlaceholder } from "../text-fit";
 import { currentLocale, t, tx } from "../i18n";
 import { hasView, registerView, unregisterView } from "../router";
 import {
@@ -538,8 +539,8 @@ function browseHead(): HTMLElement {
   search.className = "tk-search ext-search";
   const input = document.createElement("input");
   input.type = "search";
-  input.placeholder = t("搜索扩展");
   input.setAttribute("aria-label", t("搜索扩展"));
+  fitPlaceholder(input, t("搜索扩展"), t("搜索…"));
   input.value = query;
   input.addEventListener("input", () => {
     query = input.value;

@@ -16,9 +16,10 @@
 .cmdk .it { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 8px 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; text-align: left; color: var(--ink); cursor: pointer; }
 .cmdk .it:hover { background: var(--surface-2); }
 .cmdk .it .ic { flex: none; color: var(--ink-3); }
-.cmdk .it .lb { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 搜索结果（文件、任务、路径、词条、设置项）单行截断（.fit-clip），悬停看全文。 */
+.cmdk .it .lb { flex: 1 1 auto; }
 .cmdk .it .lb code { font-family: var(--mono); font-size: 12px; }
-.cmdk .it .sub { flex: 0 3 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
+.cmdk .it .sub { flex: 0 3 auto; max-width: 42%; color: var(--ink-3); font-size: 12px; }
 .cmdk .it mark { background: transparent; color: var(--accent-ink); font-weight: var(--fw-700); }
 .cmdk .it.on { background: var(--tint); color: var(--tint-ink); }
 .cmdk .it.on .ic, .cmdk .it.on .sub, .cmdk .it.on mark { color: var(--tint-ink); }

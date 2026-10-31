@@ -218,12 +218,13 @@
    第一次放到位不带过渡，到位后才加 .ready。各项自己只变字色。 */
 .set-row .set-nav .set-ind { position: absolute; left: 0; right: 0; top: 0; height: 32px; border-radius: var(--r-sm); background: var(--tint); pointer-events: none; opacity: 0; }
 .set-row .set-nav .set-ind.ready { transition: transform var(--t-base) var(--ease-snap), height var(--t-base) var(--ease-out), opacity var(--t-fast) var(--ease-out); }
-.set-row .set-nav .si { position: relative; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
+.set-row .set-nav .si { position: relative; width: 100%; min-height: 32px; padding: 6px 10px; line-height: 1.3; border: 0; border-radius: var(--r-sm); background: none; font: inherit; font-size: 13px; color: var(--ink-2); display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out); }
 .set-row .set-nav .si svg { flex: none; }
 .set-row .set-nav .si:hover { background: var(--surface-2); color: var(--ink); }
 .set-row .set-nav .si.on, .set-row .set-nav .si.on:hover { background: transparent; color: var(--tint-ink); font-weight: var(--fw-600); }
 .set-row .set-nav .si:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.set-row .si-lb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 子页名称写全：放不下就折成两行，不截断（app.css 旧的 .set-nav .si 规则写了 nowrap，这里改回）。 */
+.set-row .si-lb { min-width: 0; white-space: normal; overflow-wrap: break-word; }
 /* 正文自己滚动；Windows 常驻 8px 滚动条，右侧留 2px 免得内容贴着滚动条。 */
 /* 内边距给聚焦光圈（外扩 4px）留位置，负外边距抵掉，内容位置不变；贴边的输入框左右两侧不再被裁。 */
 .set-row .set-body { display: block; min-width: 0; min-height: 0; overflow: auto; padding: 0 6px 4px 5px; margin: 0 -6px -4px -5px; }
@@ -285,16 +286,26 @@
 /* 换子页、换页签、换用途时的浮现由 motion.ts riseIn 播（Web Animations），这里没有对应样式。 */
 
 /* ========== 模型服务 ========== */
-/* 四张用途卡：名字和摘要都只占一行，放不下就省略（title 里有全文）。 */
-.set-body .roles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+/* 四张用途卡：名称、用在哪、缺什么都写全，放不下就折行。一排放得下 4 张（每张至少 --role-min）
+   就排 4 列，放不下就排 2 列，不出现 3 + 1：列的最小宽度在「四等分」和「二等分」之间二选一——
+   (4 × 最小宽 + 3 个间距 − 容器宽) × 999 在放得下 4 张时是负数，取四等分；放不下时极大，取二等分。
+   减 0.5px 防止小数像素把 4 列算成 3 列。 */
+.set-body .roles {
+  --role-min: 180px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(max(calc((100% - 24px) / 4 - .5px), min(calc((100% - 8px) / 2 - .5px), calc((4 * var(--role-min) + 24px - 100%) * 999))), 1fr));
+}
 .set-body .role { min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
+/* 同一排的卡片一样高时，字从顶上排起（按钮默认把内容竖着居中，矮的那张会往下掉）。 */
+.set-body .role { display: flex; flex-direction: column; justify-content: flex-start; }
 .set-body .role:hover { border-color: var(--line-2); }
 .set-body .role:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.set-body .role b { display: block; font-size: 12.5px; font-weight: var(--fw-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-body .role-sub { display: flex; gap: 6px; min-width: 0; margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
-.set-body .role-sub i { font-style: normal; flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 摘要先省略；卡片窄到连标记也放不下时（法语「Nom du modèle manquant」）标记再省略，全文在 title 里。 */
-.set-body .role-sub em { font-style: normal; font-weight: var(--fw-600); color: var(--warn); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .role b { display: block; font-size: 12.5px; font-weight: var(--fw-600); line-height: 1.35; overflow-wrap: break-word; }
+/* 摘要和「缺少模型名称」这类标记放得下就并排，放不下标记换到下一行；各自也可以折行。 */
+.set-body .role-sub { display: flex; flex-wrap: wrap; gap: 0 6px; min-width: 0; margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--ink-3); }
+.set-body .role-sub i { font-style: normal; min-width: 0; overflow-wrap: break-word; }
+.set-body .role-sub em { font-style: normal; font-weight: var(--fw-600); color: var(--warn); min-width: 0; overflow-wrap: break-word; }
 .set-body .role.on { border-color: var(--tint-line); background: var(--tint); }
 .set-body .role.on b { color: var(--tint-ink); }
 .set-body .role.on .role-sub { color: var(--ink-2); }
@@ -307,8 +318,9 @@
 .set-body .conn .cd { width: 8px; height: 8px; border-radius: 99px; flex: none; background: var(--ink-3); }
 .set-body .conn .cd.ok { background: var(--ok); }
 .set-body .conn .cd.warn { background: var(--warn); }
-.set-body .conn > b { flex: 0 1 auto; min-width: 0; max-width: 45%; font-weight: var(--fw-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-body .conn-meta { flex: 1 1 60px; min-width: 0; font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 连接名和「服务商 · 模型」是内容：单行截断（.fit-clip），悬停看全文。 */
+.set-body .conn > b { flex: 0 1 auto; max-width: 45%; font-weight: var(--fw-600); }
+.set-body .conn-meta { flex: 1 1 60px; font-size: 12px; color: var(--ink-3); }
 .set-body .conn > .acts { margin-left: auto; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 /* 所选连接的表单，接在列表下面。 */

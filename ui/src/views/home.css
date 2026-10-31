@@ -145,12 +145,11 @@
   color: var(--ink-3);
   flex: none;
 }
+/* 最近任务的名称是文件名：单行截断（.fit-clip，home.ts），悬停看全文。「就绪状态」那几行的
+   名称和值写全，放不下就折行。 */
 .home .row .nm {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: var(--fw-550);
 }
 .home .row .meta {
@@ -182,14 +181,13 @@
   color: var(--ink);
   min-width: 0;
   max-width: 62%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  justify-content: flex-end;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .home .ready .row .val .chip {
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 .home .chip .led {
   width: 6px;
@@ -244,13 +242,10 @@
 .bc-head b {
   font-weight: var(--fw-650);
 }
+/* 来源文件夹名是内容：单行截断（.fit-clip），悬停看全文。 */
 .bc-from {
   color: var(--ink-3);
   font-size: 12.5px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .bc-x {
   margin-left: auto;
@@ -311,10 +306,9 @@
   color: var(--ink-3);
   font-size: 12px;
 }
+/* 配方摘要写全，放不下就折行。 */
 .bc-set {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
   color: var(--ink-2);
 }
 .bc-note {

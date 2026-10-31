@@ -36,6 +36,7 @@ import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
 import { tmSwitchDefs } from "./tm-switches";
 import "./library.css";
+import { fitPlaceholder } from "../text-fit";
 
 // ---------------------------------------------------------------------------
 // 类型 / 工具函数
@@ -1734,7 +1735,8 @@ function rebuildToolbar(): void {
   searchWrap.className = "lib-search";
   const searchInput = document.createElement("input");
   searchInput.type = "search";
-  searchInput.placeholder = t("搜索原文、译文或备注…");
+  // 窄窗口里整句放不下就写「搜索…」，整句进悬停提示。
+  fitPlaceholder(searchInput, t("搜索原文、译文或备注…"), t("搜索…"));
   searchInput.setAttribute("aria-label", t("搜索原文、译文或备注…"));
   searchInput.value = keyword;
   searchInput.addEventListener("input", () => {

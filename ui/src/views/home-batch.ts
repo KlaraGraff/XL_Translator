@@ -27,6 +27,7 @@ import {
   type Surface,
 } from "./workspace";
 import { redactedText } from "./workspace-util";
+import { FIT_CLIP } from "../text-fit";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -216,7 +217,7 @@ export function createBatchCard(): { node: HTMLElement; dispose: () => void } {
     card.dataset.key = view.root;
     const head = el("div", "bc-head");
     head.append(icon("folder", { size: "sm" }), el("b", undefined, t("本批文件")));
-    const from = el("span", "bc-from", baseName(view.root));
+    const from = el("span", `bc-from ${FIT_CLIP}`, baseName(view.root));
     from.title = view.root;
     head.append(from);
     const close = el("button", "linklike bc-x", "×");

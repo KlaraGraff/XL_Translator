@@ -859,6 +859,20 @@ function armFreshTyping(input: HTMLInputElement): void {
   });
 }
 
+/**
+ * 可输入下拉框里的选中项写全（名称不截断，见 text-fit.ts）：输入框只能单行，选项名在英文、法文里
+ * 常常比框长。框里平时显示叠在输入框上的一层 .combo-text，放不下就折成两行、框跟着变高；
+ * 点进去打字或展开列表时才露出输入框。返回的 sync 在每次改写 input.value 后调用。
+ */
+function createComboFace(input: HTMLInputElement): { face: HTMLSpanElement; sync: () => void } {
+  input.classList.add("combo-input");
+  const face = el("span", { className: "combo-face" });
+  const text = el("span", { className: "combo-text" });
+  text.setAttribute("aria-hidden", "true");
+  face.append(input, text);
+  return { face, sync: () => { text.textContent = input.value; } };
+}
+
 /** 失焦时的「按打的字确认」推到下一轮做。整页重建时正被移除的输入框也会收到 blur，就地选中
  *  会触发 onChange 再重建一次，浏览器报「moved in a 'blur' event handler」；输入框这时已经
  *  不在页面上，只收起列表、不改值。焦点又回到输入框（点了展开按钮）时什么都不做。 */
@@ -905,11 +919,13 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
   button.tabIndex = -1;
   button.setAttribute("aria-label", t("展开选项"));
   button.append(icon("chev", { className: "chev" }));
-  field.append(input, tagEl, button);
+  const face = createComboFace(input);
+  field.append(face.face, tagEl, button);
 
   const current = () => options.options.find((item) => item.value === select.value);
   const paint = () => {
     input.value = current()?.label ?? select.value;
+    face.sync();
     const tag = current()?.tag;
     tagEl.textContent = tag ?? "";
     tagEl.style.display = tag && !menu ? "" : "none";
@@ -1288,7 +1304,8 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
   caret.setAttribute("aria-label", t("展开选项"));
   caret.append(icon("chev", { className: "chev" }));
   field.classList.toggle("disabled", Boolean(options.disabled));
-  field.append(input, codeBadge, caret);
+  const face = createComboFace(input);
+  field.append(face.face, codeBadge, caret);
   root.append(field);
 
   let current = options.value;
@@ -1300,6 +1317,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
   const paintButton = () => {
     const found = options.options.find((item) => item.code === current);
     input.value = found ? tx(found.display_name) : current;
+    face.sync();
     // 「自动识别」没有真正的语言代码，挂个 auto 角标只会让人以为那是一门语言。
     const showCode = Boolean(found) && current !== AUTO_LANG_CODE;
     codeBadge.textContent = showCode ? current : "";

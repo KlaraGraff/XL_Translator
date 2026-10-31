@@ -13,5 +13,6 @@
   "未连接模型": { "en": "No model connected", "fr": "Aucun modèle connecté" },
   "{0} 个任务进行中": { "en": "{0} {0|task|tasks} in progress", "fr": "{0} {0|tâche|tâches} en cours" },
   "任务": { "en": "Tasks", "fr": "Tâches" },
-  "搜索或输入路径": { "en": "Search or enter a path", "fr": "Rechercher ou saisir un chemin" }
+  "搜索或输入路径": { "en": "Search or enter a path", "fr": "Rechercher ou saisir un chemin" },
+  "搜索…": { "en": "Search…", "fr": "Rechercher…" }
 }

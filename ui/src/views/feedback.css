@@ -20,7 +20,7 @@
 /* 类型：三张并排的卡片，沿用全局 .segc 的皮肤。 */
 .feedback-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .feedback-cards .segc { min-width: 0; padding: 10px 12px; transition: border-color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out); }
-.feedback-cards .segc span { display: block; margin-top: 2px; line-height: 1.4; }
+.feedback-cards .segc span { display: block; margin-top: 2px; line-height: 1.4; overflow-wrap: break-word; }
 .feedback-cards .segc:hover:not(.on) { border-color: var(--line-2); }
 .feedback-cards .segc:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
 
@@ -69,8 +69,9 @@
 .feedback-task.disabled { opacity: 0.55; cursor: not-allowed; }
 .feedback-task .ck { flex: none; margin: 0; }
 .feedback-task > svg { flex: none; color: var(--ink-3); }
-.feedback-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--fw-550); }
-.feedback-task-meta { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+/* 任务名、时间和文件名是内容：单行截断（.fit-clip），悬停看全文。 */
+.feedback-task-name { flex: 1; font-weight: var(--fw-550); }
+.feedback-task-meta { flex: none; max-width: 60%; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
 /* 其他文件：固定在右栏底部。 */
 .feedback-other-files { display: flex; flex-direction: column; gap: 6px; }
@@ -98,7 +99,7 @@
 .feedback-input { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 9px; }
 .feedback-warning { margin: 0; font-size: 12px; line-height: 1.55; color: var(--warn); background: var(--warn-t); padding: 8px 10px; border-radius: var(--r-sm); }
 .feedback-file { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 12.5px; }
-.feedback-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feedback-file-name { flex: 1; }
 .feedback-file-size { color: var(--ink-3); font-size: 11.5px; flex: none; }
 .feedback-total { margin: 0; font-size: 11.5px; color: var(--ink-3); }
 .feedback-total.over { color: var(--danger); }
@@ -129,7 +130,8 @@
 .feedback-privacy { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 7px; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--tint); color: var(--ink-2); font-size: 12px; line-height: 1.55; }
 .feedback-privacy svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--accent-ink); }
 .feedback-kind-title { flex: none; font-weight: var(--fw-550); color: var(--ink); white-space: nowrap; }
-.feedback-kind-count { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 6px; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 条数说明写全：放不下就折行。 */
+.feedback-kind-count { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 6px; font-size: 11.5px; color: var(--ink-3); text-align: right; overflow-wrap: break-word; }
 /* 「反馈此任务」弹窗：和反馈页同一套控件，排得更紧凑。 */
 .task-feedback { display: flex; flex-direction: column; gap: 8px; }
 .task-feedback .feedback-text { min-height: 96px; resize: vertical; }

@@ -31,6 +31,7 @@ import {
   uploadFeedback,
 } from "../feedback-shared";
 import "./feedback.css";
+import { FIT_CLIP, fitPlaceholder } from "../text-fit";
 
 type Category = "problem" | "suggestion" | "other";
 
@@ -479,11 +480,11 @@ function taskRow(task: FeedbackTask, options: { checked: boolean; disabled: bool
   box.disabled = options.disabled;
   box.addEventListener("change", () => options.onChange(box.checked));
   const name = document.createElement("span");
-  name.className = "feedback-task-name";
+  name.className = `feedback-task-name ${FIT_CLIP}`;
   name.textContent = taskName(task);
   name.title = taskName(task);
   const meta = document.createElement("span");
-  meta.className = "feedback-task-meta";
+  meta.className = `feedback-task-meta ${FIT_CLIP}`;
   meta.textContent = taskMeta(task);
   meta.title = taskMeta(task);
   row.append(box, icon(surfaceIcon(task.surface), { size: "sm" }), name, meta);
@@ -696,7 +697,7 @@ function renderOtherFiles(): void {
     row.className = "feedback-file";
     row.append(icon("folder", { size: "sm" }));
     const name = document.createElement("span");
-    name.className = "feedback-file-name";
+    name.className = `feedback-file-name ${FIT_CLIP}`;
     name.textContent = file.name;
     name.title = file.path;
     const size = document.createElement("span");
@@ -776,9 +777,9 @@ function buildTaskToolbar(): HTMLElement {
   searchWrap.className = "feedback-search";
   const search = document.createElement("input");
   search.type = "text";
-  search.placeholder = t("搜索文件名、类型、状态或日期…");
+  // 窄窗口里整句放不下就写「搜索…」，整句进悬停提示。
+  fitPlaceholder(search, t("搜索文件名、类型、状态或日期…"), t("搜索…"));
   search.setAttribute("aria-label", t("搜索任务"));
-  search.title = search.placeholder;
   search.spellcheck = false;
   search.value = taskQuery;
   search.addEventListener("input", () => {
