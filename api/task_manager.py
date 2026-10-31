@@ -1747,6 +1747,7 @@ class TranslationTaskManager:
                             })
                         break
                     task.condition.wait(timeout=min(remaining, 0.25))
+        _log_threads_still_running(tasks)
         self.mark_active_tasks_interrupted()
         self.flush_history()
 
@@ -2448,3 +2449,29 @@ def _sanitize_local_operations(value: Any) -> list[dict[str, str]]:
         if action in allowed_actions and path:
             operations.append({"action": action, "path": path})
     return operations
+
+
+def _log_threads_still_running(tasks: list[Any]) -> None:
+    """When a task did not stop in time, write down where its thread is waiting.
+
+    A shutdown that uses its whole budget is otherwise a black box: the log
+    only shows that it took 12 seconds, not which converter, model request or
+    lock held it.  Only runs when something actually overstayed.
+    """
+    stuck = [task for task in tasks if not task.terminal or task.rerun_active]
+    if not stuck:
+        return
+    import sys
+    import traceback
+
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    markers = (f"{os.sep}core{os.sep}", f"{os.sep}engines{os.sep}", f"{os.sep}adapters{os.sep}")
+    for ident, frame in sys._current_frames().items():
+        if ident == threading.get_ident():
+            continue
+        frames = traceback.extract_stack(frame)
+        # Only threads that are inside the app's own work, not uvicorn or idle pools.
+        if not any(marker in entry.filename for entry in frames for marker in markers):
+            continue
+        stack = "".join(traceback.format_list(frames[-12:]))
+        logger.warning(f"关闭时任务未在时限内停下，线程 {names.get(ident, ident)} 停在：\n{stack}")

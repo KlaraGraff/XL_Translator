@@ -2696,6 +2696,11 @@ class SubprocessCadConverter:
             subprocess.run(["pkill", "-f", args[0]], check=False, capture_output=True)
             raise CadPipelineError(f"图纸转换超时（{timeout} 秒）。") from exc
         except subprocess.CalledProcessError as exc:
+            if exc.returncode < 0:
+                # open 被结束了（应用关闭时引擎会结束它起的程序），但 ODA 是经
+                # LaunchServices 启动的，不是引擎的子进程，不会跟着停：按本次独有的
+                # 临时目录把它也结束，免得它在后台一直转完。
+                subprocess.run(["pkill", "-f", args[0]], check=False, capture_output=True)
             detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
             logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
             raise CadPipelineError("图纸转换工具未能启动，请在「插件」中重新连接后重试。") from exc
