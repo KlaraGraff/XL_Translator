@@ -39,13 +39,17 @@ def _runtime_diagnostics() -> dict[str, str]:
     }
 
 
-def _unsupported_reason(label: str, manifest: tuple[Any, ...]) -> str:
+def _unsupported_reason(component: str, manifest: tuple[Any, ...]) -> str:
+    """不能一键安装时的说明。两个组件各写一整句，界面才能按整句翻成英文、法文。"""
     if manifest:
         return ""
     details = _runtime_diagnostics()
-    return (f"当前运行环境不支持{label}一键安装，需要 Python 3.11 和 macOS arm64、Windows x64 或 Linux x64；"
-            f"当前为 Python {details['runtime_python']} / {details['runtime_platform']} "
-            f"{details['runtime_architecture']}。")
+    python, system, arch = details["runtime_python"], details["runtime_platform"], details["runtime_architecture"]
+    if component == "pdf":
+        return (f"当前运行环境不支持PDF 处理组件一键安装，需要 Python 3.11 和 macOS arm64、Windows x64 或 Linux x64；"
+                f"当前为 Python {python} / {system} {arch}。")
+    return (f"当前运行环境不支持文字识别组件一键安装，需要 Python 3.11 和 macOS arm64、Windows x64 或 Linux x64；"
+            f"当前为 Python {python} / {system} {arch}。")
 
 
 def _install_with_dependency(*, progress=None, cancel=None) -> dict[str, Any]:
@@ -59,7 +63,7 @@ def _install_with_dependency(*, progress=None, cancel=None) -> dict[str, Any]:
     needs_pdf = ppocr_component.numpy_site_dir() is None
     if needs_pdf:
         if not pdf_files:
-            raise installer.ComponentInstallError(_unsupported_reason("PDF 处理组件", pdf_files))
+            raise installer.ComponentInstallError(_unsupported_reason("pdf", pdf_files))
         if pdf2docx_plugin.install_progress().get("running"):
             raise installer.ComponentInstallError("PDF 处理组件正在安装，请稍候。")
 
@@ -117,8 +121,8 @@ def probe_status() -> dict[str, Any]:
     status["recognition_one_click_supported"] = bool(ocr_files)
     status["dependency_one_click_supported"] = not needs_pdf or dependency_supported
     status["one_click_supported"] = bool(ocr_files) and (not needs_pdf or dependency_supported)
-    status["one_click_reason"] = _unsupported_reason("文字识别组件", ocr_files)
-    status["dependency_one_click_reason"] = _unsupported_reason("PDF 处理组件", pdf_files) if needs_pdf else ""
+    status["one_click_reason"] = _unsupported_reason("ocr", ocr_files)
+    status["dependency_one_click_reason"] = _unsupported_reason("pdf", pdf_files) if needs_pdf else ""
     status.update(_runtime_diagnostics())
     status["download_bytes"] = installer.download_size()
     # 识别模型用「PDF 处理组件」里的 NumPy、OpenCV：没装它时先装它
@@ -145,12 +149,12 @@ def start_install() -> dict[str, Any]:
     """后台开始一键安装；进度用 install_progress() 查。已在安装时不重复开始。"""
     ocr_files = installer.manifest_files()
     if not ocr_files:
-        raise ValueError(_unsupported_reason("文字识别组件", ocr_files))
+        raise ValueError(_unsupported_reason("ocr", ocr_files))
     needs_pdf = ppocr_component.numpy_site_dir() is None
     if needs_pdf:
         pdf_files = pdf_installer.manifest_files()
         if not pdf_files:
-            raise ValueError(_unsupported_reason("PDF 处理组件", pdf_files))
+            raise ValueError(_unsupported_reason("pdf", pdf_files))
         from api import pdf2docx_plugin
         if pdf2docx_plugin.install_progress().get("running"):
             raise ValueError("PDF 处理组件正在安装，请稍候。")

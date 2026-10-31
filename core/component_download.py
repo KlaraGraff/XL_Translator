@@ -58,6 +58,54 @@ def pypi_file(name: str, path: str, size: int, sha256: str) -> RemoteFile:
     return RemoteFile(name, tuple(host + path for host in PYPI_HOSTS), size, sha256)
 
 
+# jsDelivr 的几个同源节点：内容和路径与 cdn.jsdelivr.net 完全一样，只是走不同的 CDN。
+# 国内连 cdn.jsdelivr.net 和 raw.githubusercontent.com 时好时坏，多几个节点按顺序换。
+# 文件照旧核对大小和 SHA-256，节点给错内容也装不上。
+JSDELIVR_HOSTS = (
+    "https://cdn.jsdelivr.net/",
+    "https://gcore.jsdelivr.net/",
+    "https://fastly.jsdelivr.net/",
+    "https://testingcf.jsdelivr.net/",
+)
+_RAW_GITHUB = "https://raw.githubusercontent.com/"
+
+
+def _jsdelivr_path(url: str) -> str | None:
+    """jsDelivr 上同一个文件的路径（``gh/...``）；不是 jsDelivr 或 GitHub 原始地址时为 None。"""
+    for host in JSDELIVR_HOSTS:
+        if url.startswith(host):
+            return url[len(host):]
+    if url.startswith(_RAW_GITHUB):
+        parts = url[len(_RAW_GITHUB):].split("/", 3)
+        if len(parts) == 4 and all(parts):
+            owner, repo, ref, path = parts
+            return f"gh/{owner}/{repo}@{ref}/{path}"
+    return None
+
+
+def with_cdn_mirrors(urls: Sequence[str]) -> tuple[str, ...]:
+    """在第一个 jsDelivr 地址（或由 GitHub 原始地址换算出的 jsDelivr 地址）后面补上其余节点。
+
+    原有地址的先后不变；去重；GitHub Release 等其它地址原样保留。
+    """
+    result: list[str] = []
+
+    def add(url: str) -> None:
+        if url not in result:
+            result.append(url)
+
+    for url in urls:
+        path = _jsdelivr_path(url)
+        if path is None:
+            add(url)
+            continue
+        if url.startswith(_RAW_GITHUB):
+            add(url)
+        for host in JSDELIVR_HOSTS:
+            add(host + path)
+    return tuple(result)
+
+
 # Windows 上杀毒软件会在文件刚写完时打开它扫描，这一两秒里改名会被拒绝（WinError 5 / 32）。
 _REPLACE_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)
 

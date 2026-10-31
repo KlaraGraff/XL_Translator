@@ -284,14 +284,17 @@ adapters/<id>/
 
 - **客户端**（`core/adapter_registry.py`）：`fetch_index` 先取
   `https://cdn.jsdelivr.net/gh/KlaraGraff/XL_Translator-extensions@main/index.json`；它失败或 3 秒内没有
-  结果（`FALLBACK_DELAY_SECONDS`）就同时取 raw.githubusercontent.com 上的同一文件，先拿到的为准，只走 HTTPS。结果缓存在 `<应用数据>/cache/extensions-index.json`，
+  结果（`FALLBACK_DELAY_SECONDS`）就同时取下一个地址，先拿到的为准，只走 HTTPS。地址顺序是 jsDelivr 的
+  cdn、gcore、fastly、testingcf 四个节点（同一文件，国内连 cdn 节点和 GitHub 时好时坏），最后是
+  raw.githubusercontent.com（`core/component_download.with_cdn_mirrors`）。结果缓存在 `<应用数据>/cache/extensions-index.json`，
   24 小时内不联网（「刷新」强制联网）；联网失败而有缓存时返回缓存并带 `stale: true`；都没有时返回空列表和
   一句原因，不抛错。不合规的条目跳过，只列 `status` 为 `official` / `reviewed` 的。每个条目另带 `state`：
   `available`、`installed`、`update`、`incompatible`（原因在 `incompatible_reason`）、`bundled`（随应用提供，
   不能再装一份）。
 - **从列表安装**（`install_from_registry`）：按条目的 `download` 地址依次下载到
   `<应用数据>/cache/extension-downloads/`（`core/component_download.py`，大小和 SHA-256 必须与条目一致；
-  一个地址 15 秒没有新数据就换下一个），
+  一个地址 15 秒没有新数据就换下一个；jsDelivr 或 GitHub 原始地址自动补上 jsDelivr 的其它节点，
+  GitHub Release 等地址原样），
   再走与本地添加相同的 `preview`（id、版本须与条目一致）和安装。确认在前端，与本地添加是同一个确认框。
 - **接口**：`GET /api/extensions/registry`、`POST /api/extensions/registry/refresh`、
   `POST /api/extensions/registry/install {id, confirmed}`（与本地安装共用 `install-progress`）。

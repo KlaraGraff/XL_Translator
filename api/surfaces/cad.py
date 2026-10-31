@@ -26,6 +26,7 @@ from core.cad_translation import (
     CAD_OUTPUT_VERSIONS,
     CAD_SUPPORTED_EXTENSIONS,
     CadPipelineError,
+    cad_rule_problem,
     CadPipelineOptions,
     SubprocessCadConverter,
     list_cad_files,
@@ -441,6 +442,9 @@ class CadSurface(Surface):
                 should_stop=should_stop,
                 error_callback=error_callback,
                 request_callback=request_callback,
+                # CAD 多查一条数字（不分语种，公共数字规则）；没过的和公共规则没过的一起交给
+                # 模型复查，结果带在返回值上（TranslationResults）。
+                extra_check=cad_rule_problem,
             )
 
         def translate_batch_with_sources(

@@ -25,6 +25,7 @@ class OpenAIEngine(TranslationEngine):
         model_role: str = "translation",
         engine_name_prefix: str = "openai",
         response_label: str = "OpenAI",
+        chat_extra: dict | None = None,
     ):
         self._connection_id = connection_id
         self._model_role = model_role
@@ -34,6 +35,7 @@ class OpenAIEngine(TranslationEngine):
         self._api_mode = str(api_mode or "").strip()
         self._engine_name_prefix = str(engine_name_prefix or "openai").strip()
         self._response_label = str(response_label or "OpenAI").strip()
+        self._chat_extra = dict(chat_extra or {})
 
     @property
     def engine_name(self) -> str:
@@ -67,6 +69,7 @@ class OpenAIEngine(TranslationEngine):
             system=system, user=user_msg, api_mode=self._api_mode or "auto",
             connection_id=self._connection_id,
             model_role=self._model_role,
+            chat_extra=self._chat_extra,
         )
         return text
 

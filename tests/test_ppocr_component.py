@@ -471,3 +471,20 @@ def test_ocr_status_exposes_runtime_and_dependency_diagnostics(hermetic, monkeyp
     assert status["dependency_one_click_supported"] is False
     assert status["runtime_python"] and status["runtime_platform"] and status["runtime_architecture"]
     assert "当前运行环境" in status["one_click_reason"]
+
+
+def test_unsupported_reasons_have_english_and_french_entries(hermetic, monkeypatch):
+    """不能一键安装的说明要能在英文、法文界面里整句翻出来（Intel Mac、Windows ARM 上会显示）。"""
+    import re
+
+    from api import ocr_plugin
+
+    catalog = json.loads((Path(__file__).resolve().parents[1] / "ui/src/i18n/catalog/ui-ocr-component.json")
+                         .read_text(encoding="utf-8"))
+    templates = [re.compile("^" + re.sub(r"\\\{\d\\\}", ".+?", re.escape(key)) + "$")
+                 for key, entry in catalog.items() if entry.get("en") and entry.get("fr")]
+    status_text = "尚未安装「PDF 处理组件」；一键安装会先自动安装它，再安装文字识别组件。"
+    for text in (ocr_plugin._unsupported_reason("ocr", ()), ocr_plugin._unsupported_reason("pdf", ()), status_text):
+        assert any(pattern.match(text) for pattern in templates), text
+    assert "PDF 处理组件" in ocr_plugin._unsupported_reason("pdf", ())
+    assert ocr_plugin._unsupported_reason("ocr", ("file",)) == ""

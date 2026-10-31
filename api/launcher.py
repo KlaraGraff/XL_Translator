@@ -21,6 +21,52 @@ GRACEFUL_SHUTDOWN_SECONDS = 10.0
 # Last resort when the orderly shutdown itself wedges after the desktop shell
 # is already gone.
 WATCHDOG_FORCE_EXIT_SECONDS = 20.0
+# How long programs this engine started (LibreOffice, the ODA converter,
+# Tesseract, extension hosts) get to exit after a polite request before they
+# are killed.
+CHILD_STOP_SECONDS = 3.0
+
+
+def end_child_processes(timeout: float = CHILD_STOP_SECONDS) -> list[int]:
+    """End every program this engine started, and the programs those started.
+
+    A runner waiting on ``subprocess.run`` cannot be interrupted by a flag, so
+    without this a shutdown waits out the whole task budget while LibreOffice
+    or the ODA converter keeps working, and the program then outlives the
+    engine: measured on Windows, an extension host, its console host and its
+    temporary folder were all still there after every kind of exit.  Ending
+    the children lets the waiting runner return at once and unwind normally.
+
+    Office applications driven over COM are started by Windows, not by this
+    process, so they are not children and are left alone.  Returns the pids
+    that were asked to stop.
+    """
+    try:
+        children = psutil.Process().children(recursive=True)
+    except psutil.Error:
+        return []
+    for child in children:
+        try:
+            child.terminate()
+        except psutil.Error:
+            pass
+    _gone, alive = psutil.wait_procs(children, timeout=max(0.0, timeout))
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(alive, timeout=1.0)
+    return [child.pid for child in children]
+
+
+def _end_child_processes_soon() -> None:
+    """Run ``end_child_processes`` off the calling thread.
+
+    ``begin_shutdown`` runs inside a signal handler on Unix, where waiting for
+    other processes is not allowed.
+    """
+    threading.Thread(target=end_child_processes, daemon=True, name="translator-end-children").start()
 
 
 def _parent_process_is_alive(parent_pid: int) -> bool:
@@ -103,6 +149,8 @@ def _start_parent_watchdog(server: uvicorn.Server, on_exit) -> None:
         deadline = time.monotonic() + WATCHDOG_FORCE_EXIT_SECONDS
         while time.monotonic() < deadline:
             time.sleep(0.25)
+        # Leaving now would orphan whatever the engine started.
+        end_child_processes(timeout=1.0)
         os._exit(0)
 
     threading.Thread(target=watch, daemon=True, name="translator-parent-watchdog").start()
@@ -133,6 +181,9 @@ def main() -> None:
         manager = getattr(app.state, "task_manager", None)
         if manager is not None:
             manager.begin_shutdown()
+        # After the runners know they are stopping, so a runner whose program
+        # just died reads it as the stop, not as a conversion failure.
+        _end_child_processes_soon()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -154,6 +205,8 @@ def main() -> None:
             server.run(sockets=[sock])
         finally:
             engine_file.remove_engine_file()
+            # Anything a runner started while it was unwinding.
+            end_child_processes(timeout=1.0)
 
 
 if __name__ == "__main__":

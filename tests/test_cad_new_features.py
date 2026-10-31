@@ -156,7 +156,7 @@ def test_text_that_cannot_fit_at_the_minimum_is_reported(tmp_path):
     # 停在最小比例：字宽 0.7、字高 0.5/0.7 倍。
     assert float(_field(label, 41)) == pytest.approx(0.7)
     assert float(_field(label, 40)) == pytest.approx(2.5 * 0.5 / 0.7)
-    assert any("缩到最小比例仍会压到旁边的文字" in message for message in messages)
+    assert any("已缩到最小字号比例，仍与相邻文字重叠" in message for message in messages)
     report = (tmp_path / "plan_out.dxf.report.json").read_text(encoding="utf-8")
     assert "Pit bottom elevation of the equipment" in report
 
@@ -233,8 +233,8 @@ def test_scan_counts_leave_out_locked_text_and_translation_warns_about_unmatched
         tmp_path, _framed_drawing(), translations, name="framed", locked_blocks=("TK*", "TKA9"),
     )
     assert result.stats.locked_texts == 4
-    assert any("锁定不翻译的图块和图层里有 4 处文字" in message for message in messages)
-    assert any("没有找到这些图块：TKA9" in message for message in messages)
+    assert any("「锁定不翻译」的图块和图层中共有 4 处文字" in message for message in messages)
+    assert any("未找到以下图块：TKA9" in message for message in messages)
     written = output.read_text(encoding="utf-8")
     assert "设计单位" in written and "一层平面图" in written and "Porte coupe-feu" in written
 
@@ -305,7 +305,7 @@ def test_translating_a_bilingual_output_again_replaces_the_old_translation(tmp_p
     result, second, messages = _translate(
         tmp_path, first.read_text(encoding="utf-8"), again, name="again", display_mode="source_first",
     )
-    assert any("上次写入的双语译文" in message for message in messages)
+    assert any("此前写入的双语译文" in message for message in messages)
     texts = [_field(body, 1) for body in _entities(second, "TEXT")]
     assert texts == ["设备基坑", "Fosse"]
     assert _field(_entities(second, "ATTRIB")[0], 1) == "一层 / Rez"
@@ -391,7 +391,7 @@ def test_inspecting_a_dwg_caches_the_conversion_for_the_task(tmp_path):
         dxf_cache=cache,
     ).translate_file(source, tmp_path / "out" / "plan_fr.dwg", options=CadPipelineOptions(target_lang="fr"))
     assert converter.calls == 2  # 只有读回校验那一次，扫描时转好的直接复用
-    assert "使用扫描时已转换好的图纸，跳过格式转换" in messages
+    assert "已使用添加文件时转换好的图纸，无需再次转换格式" in messages
 
 
 def test_cache_misses_after_the_drawing_changes_and_prunes_to_its_size_limit(tmp_path):
@@ -441,7 +441,7 @@ def test_bilingual_line_in_a_tight_table_shrinks_into_the_gap_above_the_next_row
     assert float(_field(wood, 20)) == pytest.approx(98.625)
     # 「钢门」下一行顶边 95.7，只剩 0.3：缩到最小比例仍放不下，列入报告。
     assert result.stats.layout_unresolved == 1
-    assert any("缩到最小比例仍会压到旁边的文字" in message for message in messages)
+    assert any("已缩到最小字号比例，仍与相邻文字重叠" in message for message in messages)
     # 最后一行下面没有别的文字，留在原来的位置；三行译文左端对齐、上下相邻，是同一列，
     # 字高跟着统一成最小的 1.0。
     window = texts["Fenetre"]

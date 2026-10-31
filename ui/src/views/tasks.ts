@@ -614,6 +614,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   // 会落到 `type` 键）：core/task_runner.py 的 quality_issues 枚举
   api_unavailable: "接口异常，部分内容未翻译", // i18n-ignore 参与复核判断与合并，显示时 tx()
   quality_filter_reset: "质量校验回退为原文", // i18n-ignore 参与复核判断与合并，显示时 tx()
+  model_review_accepted: "复查后采用", // i18n-ignore 参与复核判断与合并，显示时 tx()
   suspected_source_language_mismatch: "语言方向疑似选错", // i18n-ignore 参与复核判断与合并，显示时 tx()
   residual_numbering_autofixed: "中文序号残留已自动修复", // i18n-ignore 参与复核判断与合并，显示时 tx()
   residual_repaired: "残留中文已自动修复", // i18n-ignore 参与复核判断与合并，显示时 tx()

@@ -48,9 +48,9 @@ from core.output_metadata import build_translation_metadata, write_translation_m
 # 下面：进度卡上的阶段名和 Excel / Word / PDF 一致，具体在做哪一步写在后半句里。
 _PHASES = {
     "scan": ("读取文件", "正在读取图纸"),
-    "match": ("翻译", "正在匹配记忆库与术语"),
+    "match": ("翻译", "正在查找记忆库和术语表中的译文"),
     "translate": ("翻译", "正在翻译图纸文字"),
-    "write": ("生成文件", "正在写回图纸"),
+    "write": ("生成文件", "正在将译文写入图纸"),
     "verify": ("生成文件", "正在校验结果"),
 }
 
@@ -67,7 +67,7 @@ _CAD_STATUS_LABELS = {
     "done": "已完成",
     "completed_with_issues": "已完成，部分内容需复核",
     "stopped": "已停止",
-    "error": "出错",
+    "error": "未能完成",
     "succeeded": "已完成",
     "needs_review": "需复核",
     "failed": "失败",
@@ -75,6 +75,14 @@ _CAD_STATUS_LABELS = {
 
 # 单个图纸失败时给用户看的兜底句；原始异常写进日志文件。
 _CAD_FILE_FAILURE_FALLBACK = "出现意外问题，此图纸未能翻译。"
+
+
+def _unresolved_problem(reason: Any) -> str:
+    """需复核清单里「没译出来」那一条的说明：原因本身就是「未获得译文」时不再前缀「未能翻译」。"""
+    reason = str(reason or "").strip()
+    if not reason or reason == "未获得译文":
+        return "未获得译文，图纸中保留原文"
+    return f"未能翻译：{reason}"
 
 
 def _cad_failure_message(exc: BaseException, *, fallback: str = _CAD_FILE_FAILURE_FALLBACK) -> str:
@@ -494,7 +502,7 @@ class CadTaskRunner(BaseTaskRunner):
         summary_path = self._run_dir / "summary.md"
         manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         report_path.write_text(json.dumps({**payload, "report": str(report_path), "manifest": str(manifest_path)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        lines = ["# CAD 翻译摘要", "", f"- 状态：{_CAD_STATUS_LABELS.get(status, status)}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
+        lines = ["# CAD 翻译摘要", "", f"- 状态：{_CAD_STATUS_LABELS.get(status, status)}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{sum(1 for item in issues if item.get('severity') != 'resolved')} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
         for item in files:
             lines.append(f"| {Path(str(item.get('source_path') or item.get('output_path') or 'CAD')).name} | {_CAD_STATUS_LABELS.get(str(item.get('status', '')), item.get('status', ''))} | {item.get('output_path', '')} |")
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -536,7 +544,7 @@ class CadTaskRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     "图纸文件名未能翻译，已保留原文件名："
-                    + user_facing_reason(exc, fallback="本次未获得可用的译名。"),
+                    + user_facing_reason(exc, fallback="模型未返回可用的译名。"),
                 )
         # 「自动识别场景」：后面几张图纸的图纸说明提前同时请求，翻到哪张时直接取用，
         # 不用每张图纸都先停下来等一次通读。接着上次继续的批次不提前请求：沿用
@@ -555,7 +563,7 @@ class CadTaskRunner(BaseTaskRunner):
             else None
         )
         try:
-            self._log("INFO", f"共 {len(self._files)} 个图纸文件")
+            self._log("INFO", f"本次共翻译 {len(self._files)} 个图纸文件")
             for file_index, item in enumerate(self._files):
                 self._wait_while_paused(CAD_PAUSED_STATUS)
                 source = Path(item.path)
@@ -643,7 +651,7 @@ class CadTaskRunner(BaseTaskRunner):
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                         self._put_batch_progress(file_index, 1.0)
-                        self._log("INFO", f"{source.name}：沿用上次的翻译结果")
+                        self._log("INFO", f"{source.name}：上次已翻译完成，直接使用上次的结果")
                         checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
                         continue
@@ -759,35 +767,49 @@ class CadTaskRunner(BaseTaskRunner):
                 # severity 判断是不是待办，不带它时徽章会退回「已完成」，和文件状态对不上。
                 if result.unresolved:
                     issues.extend(
-                        {"file": source.name, **entry, "severity": "needs_review", "problem": f"未能翻译：{entry.get('reason') or '未获得译文'}"}
+                        {"file": source.name, **entry, "severity": "needs_review", "problem": _unresolved_problem(entry.get('reason'))}
                         for entry in result.unresolved
                     )
                 if stats.replacement_characters:
-                    issues.append({"file": source.name, "severity": "needs_review", "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处译文出现乱码（无法显示的字符）"})
                 for entry in getattr(result, "term_review", None) or ():
                     issues.append({
                         "file": source.name,
                         "source": entry.get("source", ""),
                         "reason": "term_not_applied",
                         "severity": "needs_review",
-                        "problem": "未采用设定译法",
+                        "problem": "未采用记忆库中设定的译法",
                         "status": entry.get("reason", ""),
                     })
+                review_accepted = getattr(result, "review_accepted", None) or []
+                if review_accepted:
+                    # 规则没过、模型复查判意思一致而采用的：写进图纸、不标复核，报告里列一行。
+                    issues.append({
+                        "file": source.name,
+                        "type": "model_review_accepted",
+                        "severity": "resolved",
+                        "count": len(review_accepted),
+                        "problem": f"{len(review_accepted)} 处未通过自动检查，经复查意思一致，已采用",
+                        "sources": review_accepted,
+                    })
+                    self._log("INFO", f"{source.name}：{len(review_accepted)} 处译文未通过自动检查，经复查意思一致，已采用")
                 if stats.residual_foreign_text_count:
-                    issues.append({"file": source.name, "severity": "needs_review", "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文中仍夹有未翻译的原文"})
                 if stats.layout_unresolved:
-                    issues.append({"file": source.name, "severity": "needs_review", "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文缩到最小比例仍会压到旁边的文字或伸出图框"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "layout_overflow", "count": stats.layout_unresolved, "problem": f"有 {stats.layout_unresolved} 处译文已缩到最小字号比例，仍与相邻文字重叠或超出图框，请复核"})
                 if stats.unsupported_entities or stats.unknown_entity_count:
-                    issues.append({"file": source.name, "severity": "needs_review", "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
+                    issues.append({"file": source.name, "severity": "needs_review", "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸内容的类型暂不支持翻译，已保持原样"})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                 self._log("INFO", f"{source.name}：已生成翻译图纸")
             elapsed = round(time.monotonic() - started, 3)
-            batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if issues else "done")
+            # 「复查后采用」（severity=resolved）只是报告里的一行说明，不算待复核。
+            pending_issues = [item for item in issues if item.get("severity") != "resolved"]
+            batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if pending_issues else "done")
             batch_paths = self._write_batch_artifacts(status=batch_status, files=results, issues=issues)
             process_status = (
                 "cancelled" if self._stop_event.is_set()
                 else "failed" if failed_files and not any(item.get("status") in {"succeeded", "needs_review"} for item in results)
-                else "needs_review" if issues
+                else "needs_review" if pending_issues
                 else "succeeded"
             )
             self._process_artifacts.finish(process_status)

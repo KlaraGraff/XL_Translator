@@ -37,6 +37,7 @@ from core.component_download import (
     extract_conda,
     replace_file,
     stream_conda_files,
+    with_cdn_mirrors,
 )
 
 MANIFEST_VERSION = "1"
@@ -70,15 +71,13 @@ def _conda(name: str, size: int, sha256: str, *files: str) -> CondaPackage:
     return CondaPackage(name, size, sha256, files)
 
 
-_TESSDATA_HOSTS = (
-    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/",
-    "https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata_fast@4.1.0/",
-)
+_TESSDATA_HOST = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/"
 
 
 def _tessdata(lang: str, size: int, sha256: str) -> RemoteFile:
+    # GitHub 原始地址在前，后面是 jsDelivr 的各个节点（with_cdn_mirrors）。
     name = f"{lang}.traineddata"
-    return RemoteFile(name, tuple(host + name for host in _TESSDATA_HOSTS), size, sha256)
+    return RemoteFile(name, with_cdn_mirrors([_TESSDATA_HOST + name]), size, sha256)
 
 
 # tesseract 的配置文件只用到 tsv 一个（core.pdf_vector.extract 按 TSV 读结果），内容固定。

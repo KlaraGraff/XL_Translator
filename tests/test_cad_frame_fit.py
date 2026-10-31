@@ -49,7 +49,7 @@ def test_note_next_to_the_frame_is_shrunk_to_stay_inside_it(tmp_path):
     assert float(_field(note, 41)) == pytest.approx(0.7)
     assert _right_edge(note) < 100
     assert result.stats.layout_fitted == 1 and result.stats.layout_unresolved == 0
-    assert any("伸出图框" in message for message in messages)
+    assert any("超出图框" in message for message in messages)
 
 
 def test_bilingual_line_under_the_source_stays_inside_the_frame(tmp_path):
@@ -68,7 +68,7 @@ def test_translation_that_cannot_fit_in_the_frame_is_reported(tmp_path):
     # 停在最小比例，记进报告请人复核。
     assert float(_field(note, 40)) == pytest.approx(2.5 * 0.4 / 0.7)
     assert result.stats.layout_unresolved == 1
-    assert any("缩到最小比例仍会压到旁边的文字或伸出图框" in message for message in messages)
+    assert any("已缩到最小字号比例，仍与相邻文字重叠或超出图框" in message for message in messages)
 
 
 def test_text_with_no_line_in_its_way_is_left_alone(tmp_path):
@@ -261,7 +261,7 @@ def test_long_name_in_a_narrow_cell_is_split_into_two_lines_inside_it(tmp_path):
     assert lines[1][4] < lines[0][3]
     assert lines[0][5] and lines[1][5] and lines[0][5] != lines[1][5]
     assert result.stats.layout_wrapped == 1 and result.stats.layout_unresolved == 0
-    assert any("已在原处折成两行" in message for message in messages)
+    assert any("已在原位置分成两行" in message for message in messages)
 
 
 def test_split_lines_of_a_bilingual_translation_are_both_removed_on_the_next_run(tmp_path):

@@ -25,6 +25,7 @@ from settings import (
     get_cloud_provider_config,
     get_connection_scoped_key,
     get_key,
+    normalize_thinking_mode,
     set_cloud_provider_config,
 )
 
@@ -139,6 +140,7 @@ class EffectiveModelConfig:
     connection_id: str = ""
     connection_label: str = ""
     api_mode: str = "auto"
+    thinking: str = "auto"
 
     @property
     def engine_label(self) -> str:
@@ -414,6 +416,7 @@ def update_role_connection(
     api_mode: str | None = None,
     connection_mode: str | None = None,
     source_role: str | None = None,
+    thinking: str | None = None,
 ) -> ModelConnection:
     """Edit one pool entry in place."""
     owner = role_pool_owner(settings, role)
@@ -422,6 +425,9 @@ def update_role_connection(
         raise ModelRoleConfigError("找不到要修改的连接。")
     if label is not None:
         connection.label = str(label).strip()
+    if thinking is not None:
+        # 只影响模型答题前想不想，不换端点、不换模型，测试结论照旧有效。
+        connection.thinking = normalize_thinking_mode(thinking)
     changed_endpoint = False
     if connection_mode is not None:
         mode = str(connection_mode).strip()
@@ -1023,6 +1029,7 @@ def resolve_effective_model_config(
             ) or _own_model_name(settings, normalized_role, source_config.mode),
             base_url=source_config.base_url,
             api_mode=source_config.api_mode,
+            thinking=source_config.thinking,
             api_key=source_config.api_key,
             # Report the connection actually dialed rather than an entry from
             # this role's own idle pool, which is what made the panel label a
@@ -1082,6 +1089,7 @@ def resolve_effective_model_config(
         model=model,
         base_url=base_url,
         api_mode=provider_config.api_mode if provider_config else connection.api_mode,
+        thinking=connection.thinking,
         api_key=_connection_api_key(connection, provider, base_url),
         connection_id=connection.id,
         connection_label=connection.display_label,
@@ -1208,6 +1216,7 @@ def settings_for_text_role(
     config = resolve_effective_model_config(settings, role, connection_id=connection_id)
     copy_settings = settings.model_copy(deep=True)
     copy_settings._runtime_model_role = role
+    copy_settings._runtime_thinking = config.thinking
     if config.mode == "local":
         copy_settings.engine.mode = "local"
         copy_settings.engine.local_provider = config.provider

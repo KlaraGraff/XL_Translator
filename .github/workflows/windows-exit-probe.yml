@@ -1,0 +1,74 @@
+name: Windows exit
+
+# 关闭软件时，翻译引擎起的程序（LibreOffice、ODA、文字识别、扩展）要一起结束，临时文件夹要清掉，
+# 马上再开要能用。在真实 Windows 上量（scripts/windows_exit_probe.py），只在改到退出相关的文件时跑。
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - api/launcher.py
+      - api/task_manager.py
+      - api/routes/maintenance.py
+      - src-tauri/src/main.rs
+      - scripts/windows_exit_probe.py
+      - .github/workflows/windows-exit-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-exit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Close the app mid-task (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-release-py311.txt
+      - name: Install dependencies
+        run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt
+      - name: Probe
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: python scripts/windows_exit_probe.py --report exit-probe.json --strict
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: exit-probe
+          path: exit-probe.json
+
+  shell:
+    name: Desktop shell tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      # tauri 的 generate_context! 要读 ui 的构建产物。
+      - run: npm ci --prefix ui && npm run build --prefix ui
+      # tauri-build 要求 tauri.conf.json 里的 resources 路径存在；测试用不到真的引擎。
+      - name: Placeholder engine folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/resources/sidecar | Out-Null
+          if (-not (Get-ChildItem src-tauri/resources/sidecar)) { Set-Content src-tauri/resources/sidecar/placeholder.txt "test" }
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
