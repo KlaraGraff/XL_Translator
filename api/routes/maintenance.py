@@ -69,6 +69,18 @@ def register(app: FastAPI) -> None:
             payload["notification_suppressed"] = _background_notice_suppressed(settings, payload)
         return payload
 
+    @app.get("/api/updates/stars")
+    def repo_stars() -> dict[str, Any]:
+        """设置「更新与关于」页「去点 Star」按钮旁边的数字。查不到时 stars 为 null，界面不显示数字。
+
+        关了「启动时后台检查更新」的用户说过不想让软件自己联网，这里也不去问 GitHub。
+        """
+        from core.repo_stars import REPO_PAGE_URL, cached_star_count
+
+        settings = load_settings()
+        stars = None if settings.update.notifications_paused else cached_star_count()
+        return {"stars": stars, "repo_url": REPO_PAGE_URL}
+
     @app.put("/api/updates/preferences")
     def update_preferences(payload: UpdatePreferencesRequest) -> dict[str, Any]:
         settings = load_settings()

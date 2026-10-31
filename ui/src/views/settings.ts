@@ -3019,6 +3019,8 @@ function renderAboutPage(host: HTMLElement): void {
   }));
   host.append(reminder.root);
 
+  host.append(renderStarCard());
+
   const { root: licenseCard, body: licenseBody } = sec({ title: t("开源许可") });
   const licenseText = document.createElement("p");
   licenseText.className = "license-name";
@@ -3033,6 +3035,55 @@ function renderAboutPage(host: HTMLElement): void {
 }
 
 const PROJECT_HOME = "https://github.com/KlaraGraff/XL_Translator";
+
+// 「支持这个项目」：请用户去 GitHub 给项目点 Star。只放在这一页，不弹窗、不在翻译时打扰。
+// GitHub 没有「一键点星」的网址，按钮只能打开仓库，用户在浏览器里登录后自己点；软件也不知道
+// 用户点没点过，所以不显示「已点过」。按钮旁边的数字由后端 /api/updates/stars 给，一天最多问
+// 一次 GitHub；查不到（没网、关了后台检查）就是 null，只是不显示数字。
+// undefined = 这次运行还没问过；null = 问过了，没有数字可显示。
+let repoStars: number | null | undefined;
+let repoStarsLoading = false;
+
+function loadRepoStars(): void {
+  if (repoStars !== undefined || repoStarsLoading) return;
+  repoStarsLoading = true;
+  void (async () => {
+    try {
+      await ensureConnected();
+      const payload = await client.request<{ stars?: unknown }>("/api/updates/stars");
+      const value = payload.stars;
+      repoStars = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    } catch {
+      repoStars = null;
+    } finally {
+      repoStarsLoading = false;
+    }
+    // 数字回来时用户还在这一页、而且没在下载更新（那一屏只改文字，不整页重画），才把数字补上。
+    const phase = updateSnapshot().flow.phase;
+    if (repoStars !== null && currentPage === "about" && phase !== "downloading" && phase !== "installing") renderBody();
+  })();
+}
+
+function renderStarCard(): HTMLElement {
+  const { root, body } = sec({ title: t("支持这个项目"), className: "about-star" });
+  const controls: HTMLElement[] = [
+    createButton({ label: t("去点 Star"), icon: "star", size: "mini", variant: "primary", onClick: () => void openExternalUrl(PROJECT_HOME) }),
+  ];
+  if (typeof repoStars === "number") {
+    const count = document.createElement("span");
+    count.className = "star-count";
+    count.title = t("GitHub 上的 Star 数");
+    count.append(icon("star", { size: "sm" }), document.createTextNode(fmtNum(repoStars)));
+    controls.push(count);
+  }
+  body.append(optRow({
+    title: t("在 GitHub 上点个 Star"),
+    desc: t("觉得好用的话，欢迎到 GitHub 给项目点个 Star。Star 越多，越容易被需要的人找到，也是对作者继续维护的鼓励。"),
+    control: controls,
+  }));
+  loadRepoStars();
+  return root;
+}
 
 /** 屏①：还没有任何检查结果。进这一页不自动发起检查——启动时后台已经跑过一次了。 */
 function renderUpdateUnchecked(body: HTMLElement, options: { paused: boolean }): void {

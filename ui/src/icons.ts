@@ -40,6 +40,7 @@ export const ICON_NAMES = [
   "blocks",
   "link",
   "trans",
+  "star",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -209,6 +210,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     viewBox: "0 0 24 24",
     // 「文」加「A」：侧栏「翻译」分组的父项（流光外壳）。
     body: '<path d="M4 6h8M8 4v2M6.5 6c0 4 2.3 7 5.5 9M11.5 6c-.6 3.5-3 6.5-6.5 8.5"/><path d="m12.5 20 4-9 4 9M14 17h5"/>',
+  },
+  star: {
+    viewBox: "0 0 24 24",
+    // 五角星：设置「更新与关于」页「去点 Star」按钮和旁边的 Star 数。
+    body: '<path d="m12 3.8 2.5 5.1 5.6.8-4.05 3.95.95 5.6L12 16.6l-5 2.65.95-5.6L3.9 9.7l5.6-.8Z"/>',
   },
 };
 

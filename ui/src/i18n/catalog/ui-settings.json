@@ -1734,5 +1734,25 @@
   "修改后自动保存。": {
     "en": "Changes are saved automatically.",
     "fr": "Les modifications sont enregistrées automatiquement."
+  },
+  "支持这个项目": {
+    "en": "Support the project",
+    "fr": "Soutenir le projet"
+  },
+  "在 GitHub 上点个 Star": {
+    "en": "Star it on GitHub",
+    "fr": "Ajouter une étoile sur GitHub"
+  },
+  "觉得好用的话，欢迎到 GitHub 给项目点个 Star。Star 越多，越容易被需要的人找到，也是对作者继续维护的鼓励。": {
+    "en": "If XL Translator helps you, please star it on GitHub. More stars help other people find it and encourage the author to keep improving it.",
+    "fr": "Si XL Translator vous est utile, ajoutez-lui une étoile sur GitHub. Plus il a d’étoiles, plus il est facile à trouver, et cela encourage l’auteur à continuer."
+  },
+  "去点 Star": {
+    "en": "Star on GitHub",
+    "fr": "Mettre une étoile sur GitHub"
+  },
+  "GitHub 上的 Star 数": {
+    "en": "Stars on GitHub",
+    "fr": "Étoiles sur GitHub"
   }
 }
