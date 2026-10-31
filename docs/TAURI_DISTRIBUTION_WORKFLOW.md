@@ -87,7 +87,7 @@ Windows 安装器暂不做代码签名，正式与测试通道产物同名（名
 - macOS：已签名、已公证、已 staple 的 `.app` 打包成 `Translator_macOS_arm64_<version>.app.tar.gz`。DMG 需要人手拖拽，更新器用不了，所以另发一份 tarball。
 - Windows：**就是那个 NSIS 安装器 `.exe` 本身**（静默运行）。Tauri v2 对 NSIS 不再另出压缩包 —— 加了 `createUpdaterArtifacts` 也只会给 `.exe` 旁边多一个 `.sig`。
 
-两者都由 `TAURI_SIGNING_PRIVATE_KEY` 签名，签名以同名 `.sig` 文件随包发布。发布 job 用 `scripts/build_updater_manifest.py` 生成 `latest.json`；该脚本会比对 `.sig` 与 `tauri.conf.json` 里公钥的 key id，因为 Tauri CLI 在密钥不匹配时只打印 warning，不会让构建失败 —— 那种 Release 全绿，却在每个用户的机器上装不上。
+两者都由 `TAURI_SIGNING_PRIVATE_KEY` 签名，构建时在包旁边生成同名 `.sig` 文件。`.sig` 只用来生成 `latest.json`（签名原文写进清单），不上传到 Release。安装包同名的 `.sha256` 则必须上传：已安装的应用找不到它就会判定新版本尚未发布。发布 job 用 `scripts/build_updater_manifest.py` 生成 `latest.json`；该脚本会比对 `.sig` 与 `tauri.conf.json` 里公钥的 key id，因为 Tauri CLI 在密钥不匹配时只打印 warning，不会让构建失败 —— 那种 Release 全绿，却在每个用户的机器上装不上。
 
 ### 发布说明的写法约定
 

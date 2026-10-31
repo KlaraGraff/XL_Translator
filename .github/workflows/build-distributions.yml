@@ -444,12 +444,14 @@ jobs:
 
             构建渠道 / Channel: `${{ needs.validate-release.outputs.artifact_channel }}`
             （`formal-release` = Developer ID 签名并通过 Apple 公证；`temporary-test` = ad-hoc 签名、未公证）
+          # 只上传用户和更新器真正会下载的文件。
+          # - .sig 不上传：签名在上一步已经写进 latest.json，更新器只从那里读。
+          # - .sha256 必须上传：已安装的各版本（core/update_checker.py）找不到
+          #   安装包同名的 .sha256 就判定「新版本尚未发布」，不会提示更新。
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.sha256
             release-assets/*.exe
             release-assets/*.exe.sha256
             release-assets/*.app.tar.gz
-            release-assets/*.app.tar.gz.sig
-            release-assets/*.exe.sig
             release-assets/latest.json
