@@ -745,9 +745,6 @@ export interface SelectFieldOption {
   description?: string;
   /** 名称后面的小角标（如「Beta」），按钮和菜单里都显示。 */
   tag?: string;
-  /** 灰色显示、不可选（仍可被搜到，好让用户看到它为什么不能用；原因写在 description）。
-   *  已经存着这一项的旧配置照常显示在框里，不会被悄悄改掉。 */
-  disabled?: boolean;
 }
 
 export interface SelectFieldOptions {
@@ -940,7 +937,6 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
 
   /** 点选或回车选中照旧总是通知调用方（与改版前一致）；Tab/失焦确认时值没变就不通知。 */
   const choose = (option: SelectFieldOption, explicit = true) => {
-    if (option.disabled) return;
     const changed = option.value !== select.value;
     select.value = option.value;
     close();
@@ -953,8 +949,8 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
   const commitTyped = () => {
     const typed = input.value.trim().toLowerCase();
     if (filtering && typed) {
-      const exact = options.options.find((option) => !option.disabled && (option.label.toLowerCase() === typed || option.value.toLowerCase() === typed));
-      const candidates = visibleOptions().filter((option) => !option.disabled);
+      const exact = options.options.find((option) => option.label.toLowerCase() === typed || option.value.toLowerCase() === typed);
+      const candidates = visibleOptions();
       const pick = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
       if (pick) {
         choose(pick, false);
@@ -969,8 +965,6 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
     clearElement(menu);
     shown = visibleOptions();
     active = Math.max(0, Math.min(active, shown.length - 1));
-    // 筛选后高亮落在灰色项上时挪到第一项可选的，回车才不会落空。
-    if (filtering && shown[active]?.disabled) active = Math.max(0, shown.findIndex((option) => !option.disabled));
     const query = filtering ? input.value.trim() : "";
     shown.forEach((option, index) => {
       const selected = option.value === select.value;
@@ -1006,12 +1000,7 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
           appendWithMark(description, option.description, query);
           row.append(description);
         }
-        if (option.disabled) {
-          row.classList.add("disabled");
-          row.setAttribute("aria-disabled", "true");
-        } else {
-          row.addEventListener("click", () => choose(option));
-        }
+        row.addEventListener("click", () => choose(option));
       }
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(selected));
@@ -1101,13 +1090,12 @@ export function createDropdown(options: DropdownOptions): DropdownHandle {
         open();
         return;
       }
-      if (!shown.some((option) => !option.disabled)) return;
-      const step = event.key === "ArrowDown" ? 1 : shown.length - 1;
-      do active = (active + step) % shown.length; while (shown[active].disabled);
+      if (!shown.length) return;
+      active = (active + (event.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length;
       render();
     } else if (event.key === "Enter") {
       event.preventDefault();
-      if (menu && shown[active] && !shown[active].disabled) choose(shown[active]);
+      if (menu && shown[active]) choose(shown[active]);
       else commitTyped();
     } else if (event.key === "Escape") {
       if (!menu) return;

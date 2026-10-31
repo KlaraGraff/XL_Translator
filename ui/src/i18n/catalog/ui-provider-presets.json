@@ -50,13 +50,5 @@
   "从常用地址中选择": {
     "en": "Choose from common addresses",
     "fr": "Choisir parmi les adresses courantes"
-  },
-  "不支持生成图片。": {
-    "en": "Cannot generate images.",
-    "fr": "Ne peut pas générer d'images."
-  },
-  "不支持识别图片。": {
-    "en": "Cannot read images.",
-    "fr": "Ne peut pas lire les images."
   }
 }
