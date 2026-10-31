@@ -38,6 +38,13 @@ KIND_BLANK = "blank"
 _DRAWING_SLANTED_ITEMS = 1000
 _DRAWING_ITEMS = 8000
 _VISIBLE_MIN_CHARS = 20
+# 整页大图上叠着表格线的页（地勘报告的钻孔柱状图：一张位图铺满大半页，表头和分栏线
+# 画在图上）：pdf2docx 把这张图往表格的每个格子里各复制一遍，一页转出几十页
+# （maple 2026-10-31，322 页的报告转回 2581 页）。图上的字都在位图里，转 Word 也翻
+# 不到。实测 60 页柱状图大图占 44–64%、压在图上的直线 41–152 条；正常页的大图上
+# 至多零星几条线（个别页 102 条，误判只是改走保底方式）。
+_IMAGE_GRID_MIN_AREA = 0.4
+_IMAGE_GRID_MIN_LINES = 30
 # Word 的页面最大 22 英寸（55.88 cm）。长边超过它的文字页转不了 Word，按图纸处理。
 WORD_MAX_PAGE_EDGE_PT = 22 * 72
 
@@ -67,6 +74,8 @@ class PageKind:
     words: int = 0
     vector_items: int = 0
     slanted_items: int = 0
+    # 文字页里「整页大图上叠着表格线」的页：不转 Word（见 _IMAGE_GRID_MIN_AREA）。
+    image_grid: bool = False
 
 
 @dataclass
@@ -138,6 +147,7 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
     except Exception:  # noqa: BLE001 - cannot read the vectors: judge by the text
         pass
     has_ink = bool(drawings)
+    image_grid = visible >= _VISIBLE_MIN_CHARS and _lines_over_big_image(page, drawings) >= _IMAGE_GRID_MIN_LINES
     if visible < _VISIBLE_MIN_CHARS and not has_ink:
         try:
             has_ink = bool(page.get_images(full=False))
@@ -145,8 +155,35 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
             has_ink = False
     words = (sum(1 for word in page.get_text("words") if any(ch.isalpha() for ch in word[4]))
              if visible >= _VISIBLE_MIN_CHARS else 0)
-    return _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
+    kind = _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
                              words=words, items=items, slanted=slanted)
+    kind.image_grid = image_grid and kind.kind == KIND_TEXT
+    return kind
+
+
+def _lines_over_big_image(page, drawings: list) -> int:
+    """页上最大的一张图占页面 ≥40% 时，压在这张图上的直线有几条；没有这样的图返回 0。
+
+    只数直线（"l"）：柱状图的表头、分栏线都是直线；矩形是正文表格自己的格子。"""
+    page_area = abs(page.rect)
+    if page_area <= 0:
+        return 0
+    try:
+        boxes = [page.rect & item["bbox"] for item in page.get_image_info()]
+    except Exception:  # noqa: BLE001 - unreadable images: nothing to judge by
+        return 0
+    boxes = [box for box in boxes if not box.is_empty]
+    if not boxes:
+        return 0
+    big = max(boxes, key=abs)
+    if abs(big) < _IMAGE_GRID_MIN_AREA * page_area:
+        return 0
+    lines = 0
+    for path in drawings:
+        for item in path["items"]:
+            if item[0] == "l" and big.contains((item[1] + item[2]) * 0.5):
+                lines += 1
+    return lines
 
 
 def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind:
