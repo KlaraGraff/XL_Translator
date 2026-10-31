@@ -88,7 +88,7 @@ def test_edits_are_saved_and_rewritten_without_calling_the_model(tmp_path, monke
     assert result["ok"], result
     assert _texts(output) == ["Plan de démolition", "Plan du faux plafond", "Plan de démolition"]
 
-    clear_applied_edits(batch, [file["key"]])
+    clear_applied_edits(batch, [result])
     [file] = load_review(batch)["files"]
     # 写回之后，新的译文就是对照表里的「原译文」，修改记录清空。
     assert file["edited"] == 0
@@ -112,6 +112,62 @@ def test_unresolved_text_can_be_filled_in_by_hand(tmp_path, monkeypatch):
     assert result["ok"] and result["untranslated"] == 1
     output = tmp_path / "results" / file["output_name"]
     assert _texts(output) == ["Démolition", "天花图", "Démolition"]
+
+
+def test_hand_written_translation_with_different_numbers_is_written(tmp_path, monkeypatch):
+    # 反馈 #23：「两根立柱」手填「2 posts」，数字和原文对不上，以前写回时被当成错误译文丢掉，
+    # 修改记录又被清空，重开仍是「未译出」、填的内容也没了。
+    batch = _run_task(
+        tmp_path, monkeypatch,
+        drawing=_drawing(*_text("20", "两根立柱"), *_text("21", "围墙", y=10)),
+        translator=lambda texts, glossary, **_: {},
+    )
+    [file] = load_review(batch)["files"]
+    save_edits(batch, file["key"], {"两根立柱": "2 posts", "围墙": "Fence"})
+    [result] = rewrite_files(batch, [file["key"]], converter=None)
+    assert result["ok"] and result["untranslated"] == 0, result
+    assert sorted(result["applied"]) == ["两根立柱", "围墙"]
+    assert _texts(tmp_path / "results" / file["output_name"]) == ["2 posts", "Fence"]
+    clear_applied_edits(batch, [result])
+    [file] = load_review(batch)["files"]
+    assert {row["source"]: (row["status"], row["translation"]) for row in file["rows"]} == {
+        "两根立柱": ("translated", "2 posts"), "围墙": ("translated", "Fence"),
+    }
+
+
+def test_edits_that_did_not_reach_the_drawing_are_kept(tmp_path, monkeypatch):
+    batch = _run_task(tmp_path, monkeypatch, translator=lambda texts, glossary, **_: {})
+    [file] = load_review(batch)["files"]
+    save_edits(batch, file["key"], {"天花图": "Plafond", "墙体拆除图": "Démolition"})
+    [result] = rewrite_files(batch, [file["key"]], converter=None)
+    # 假装「墙体拆除图」没写进去：它的修改留着，写进去的那条清掉。
+    clear_applied_edits(batch, [{**result, "applied": ["天花图"]}])
+    [file] = load_review(batch)["files"]
+    assert {row["source"]: row["edited"] for row in file["rows"]} == {"墙体拆除图": True, "天花图": False}
+    assert next(row for row in file["rows"] if row["source"] == "墙体拆除图")["translation"] == "Démolition"
+
+
+def test_number_and_symbol_parts_of_mtext_are_not_listed_as_unresolved(tmp_path, monkeypatch):
+    # 反馈 #23：多行文字里的「Φ4@50」「3.0」不翻译，以前列成「未译出」，填了也写不回去。
+    from tests.test_cad_cell_mtext_fit import _mtext
+
+    batch = _run_task(
+        tmp_path, monkeypatch,
+        drawing=_drawing(*_mtext("30", "{\\fArial|b0;钢丝网}\\P{\\fSimSun;Φ4@50}\\P3.0", x=0, y=0)),
+        translator=lambda texts, glossary, **_: {"钢丝网": "Wire mesh"} if "钢丝网" in texts else {},
+    )
+    [file] = load_review(batch)["files"]
+    assert [(row["source"], row["status"]) for row in file["rows"]] == [("钢丝网", "translated")]
+
+
+def test_old_records_hide_number_parts_listed_as_unresolved(tmp_path, monkeypatch):
+    batch = _run_task(tmp_path, monkeypatch)
+    [file] = load_review(batch)["files"]
+    manifest = json.loads(Path(file["key"]).read_text(encoding="utf-8"))
+    manifest["units"].append({"unit_id": "x", "source": "3.0", "translation": "", "status": "unresolved", "reason": "未获得译文"})
+    Path(file["key"]).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    [file] = load_review(batch)["files"]
+    assert "3.0" not in {row["source"] for row in file["rows"]}
 
 
 def test_bilingual_rewrite_does_not_stack_translations(tmp_path, monkeypatch):

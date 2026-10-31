@@ -203,7 +203,7 @@ class CadReviewService:
         results: list[dict[str, Any]] = []
         try:
             results = rewrite_files(manifest, keys, converter=converter, dxf_cache=default_cad_cache(), progress=progress)
-            clear_applied_edits(manifest, [item["key"] for item in results if item.get("ok")])
+            clear_applied_edits(manifest, results)
         except Exception as exc:
             logger.opt(exception=exc).warning(f"[CAD 对照表] 重新写回失败：{exc!r}")
             message = str(exc) if isinstance(exc, CadReviewError) else "重新写回时出错，请导出诊断信息反馈。"
