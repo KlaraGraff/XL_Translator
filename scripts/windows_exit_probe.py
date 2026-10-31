@@ -6,7 +6,7 @@
 
 - normal：正常关闭——外壳发 ``POST /api/system/shutdown``，最多等 25 秒，再强杀（和 main.rs 一样）。
 - shell_gone：外壳被任务管理器结束或崩溃——父进程直接没了，引擎靠自己的看门狗退出。
-- killed：引擎被强杀（外壳等满 25 秒后的兜底）。
+- killed：引擎被强杀（外壳等满 25 秒后的兜底；Windows 上和 main.rs 一样先 ``taskkill /T``）。
 
 每个场景都在任务跑到一半时关，并且任务里正在跑一个子程序（用一个「取字很慢」的扩展模拟
 LibreOffice、ODA、文字识别这类外部程序），然后看：
@@ -16,7 +16,10 @@ LibreOffice、ODA、文字识别这类外部程序），然后看：
 3. 临时文件夹里有没有剩下的；
 4. 马上重新打开能不能用、上次的任务显示成什么状态。
 
-用法：``python scripts/windows_exit_probe.py [--scenario normal,shell_gone,killed] [--report out.md]``
+用法：``python scripts/windows_exit_probe.py [--scenario normal,shell_gone,killed] [--report out.json] [--strict]``
+
+``--strict``：任一场景里子程序留了下来、重新打开失败，或（引擎能自己收尾的 normal / shell_gone）
+临时文件夹有残留，就以非零退出，供 PR 检查用。
 """
 
 from __future__ import annotations
@@ -283,6 +286,10 @@ def scenario(name: str, workdir: Path) -> dict:
         else:
             result["engine_exit"] = f"外壳没了 {took:.1f} 秒后自己退出"
     elif name == "killed":
+        # 外壳等满预算后的强杀，和 main.rs 的 stop_child 一样：Windows 上先 taskkill /T 连子程序一起结束。
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(engine.process.pid), "/T", "/F"],
+                           capture_output=True, creationflags=NO_WINDOW, check=False)
         engine.process.kill()
         engine.process.wait()
         result["engine_exit"] = "被强杀"
@@ -328,6 +335,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="normal,shell_gone,killed")
     parser.add_argument("--report", default="")
+    parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
     workdir = Path(tempfile.mkdtemp(prefix="exit-probe-"))
     results = []
@@ -338,6 +346,21 @@ def main() -> int:
         results.append(outcome)
     if args.report:
         Path(args.report).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.strict:
+        problems = []
+        for outcome in results:
+            name = outcome["scenario"]
+            if outcome.get("error"):
+                problems.append(f"{name}: {outcome['error']}")
+            if outcome.get("children_left_running"):
+                problems.append(f"{name}: 子程序还在运行 {outcome['children_left_running']}")
+            if name != "killed" and outcome.get("temp_left"):
+                problems.append(f"{name}: 临时文件夹残留 {outcome['temp_left']}")
+            if not str(outcome.get("reopen", "")).endswith("可用"):
+                problems.append(f"{name}: 重新打开 {outcome.get('reopen')}")
+        for problem in problems:
+            print(f"FAIL {problem}", flush=True)
+        return 1 if problems else 0
     return 0
 
 

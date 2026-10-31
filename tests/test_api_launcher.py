@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.launcher import _parent_process_is_alive, _shutdown_requester
+import psutil
+
+from api.launcher import _parent_process_is_alive, _shutdown_requester, end_child_processes
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -133,6 +135,38 @@ class ShutdownRequestTests(unittest.TestCase):
                     process.kill()
                     process.wait()
                 process.stdout.close()
+
+
+class EndChildProcessesTests(unittest.TestCase):
+    """Programs the engine started must not outlive it (measured on Windows)."""
+
+    def test_children_and_grandchildren_are_ended(self) -> None:
+        # A child that starts its own child, like LibreOffice or an extension host.
+        script = (
+            "import subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "print(p.pid, flush=True); time.sleep(120)"
+        )
+        child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+        try:
+            grandchild = int(child.stdout.readline())
+            ended = end_child_processes(timeout=3)
+            self.assertIn(child.pid, ended)
+            self.assertIn(grandchild, ended)
+            child.wait(timeout=5)
+            self.assertFalse(
+                psutil.pid_exists(grandchild) and psutil.Process(grandchild).status() != psutil.STATUS_ZOMBIE
+            )
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            child.stdout.close()
+
+    def test_nothing_to_end_is_fine(self) -> None:
+        with patch("api.launcher.psutil.Process") as process:
+            process.return_value.children.return_value = []
+            self.assertEqual(end_child_processes(timeout=0), [])
 
 
 if __name__ == "__main__":
