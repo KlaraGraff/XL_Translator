@@ -954,8 +954,9 @@ def fit_translated_texts(
         )
         right_limit, left_limit = min(right_limit, line_right), max(left_limit, line_left)
         shoulder = None
-        if entity.entity_type == "ATTRIB":
-            # 引线标注（块属性写在引线的水平肩线上方或下方，一端对齐肩线端点）：译文不越过肩线两端。
+        if entity.entity_type in {"ATTRIB", "TEXT"}:
+            # 写在一条横线上方或下方、一端对齐横线端点的文字：引线标注（块属性写在引线肩线上）、
+            # 带下划线的视图标题（反馈 #23）。译文不越过横线两端。
             shoulder = _shoulder(obstacle_indexes[group], entity, x, bottom, top, (old_left, old_right))
             if shoulder is not None:
                 if new_left < shoulder[0]:

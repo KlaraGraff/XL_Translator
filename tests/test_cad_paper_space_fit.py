@@ -130,6 +130,20 @@ def test_view_title_drawn_as_a_loose_attribute_definition_is_translated(tmp_path
     assert result.stats.changed == 1
 
 
+def test_underlined_view_title_shrinks_to_stay_on_its_underline(tmp_path):
+    # 反馈 #23：视图标题下面有一条下划线，译文比原文长时伸过下划线右端，以前不缩（不算碰撞）。
+    # 现在和引线肩线一样：横线盖住原文、文字一端对齐横线端点时，译文不越过横线两端。
+    underline = ((0, "LINE"), (5, "95"), (8, "0"), (67, "1"), (10, "98"), (20, "49"), (30, "0"),
+                 (11, "125"), (21, "49"), (31, "0"))
+    drawing = _drawing(*_loose_attdef(), *underline)
+    result, output, _messages = _translate(tmp_path, drawing, {"标准段剖面": "Coupe de la section type"})
+    [title] = _entities(output, "TEXT")
+    width = estimate_text_width(_field(title, 1), float(_field(title, 40)), float(_field(title, 41, 1.0)))
+    assert float(_field(title, 40)) * float(_field(title, 41, 1.0)) < 4.0
+    assert 100 + width <= 125 + 1e-6
+    assert result.stats.layout_fitted == 1
+
+
 def test_attribute_definitions_inside_blocks_keep_reading_the_default_value(tmp_path):
     block = (
         (0, "BLOCK"), (5, "70"), (8, "0"), (2, "TITLE"), (70, "2"), (10, "0"), (20, "0"), (30, "0"),
