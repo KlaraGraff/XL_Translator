@@ -732,6 +732,13 @@ def get_target_lang_display(
     decoded_custom_name = decode_custom_target_lang_code(target_lang)
     if decoded_custom_name:
         return decoded_custom_name
+    # 调用方传的是别名（「zh-TW」「Traditional Chinese」）：按内置语言的显示名写，
+    # 输出文件名里才是「繁體中文」而不是「zh-TW」。
+    resolved = resolve_language_code(
+        target_lang, _get_builtin_supported_target_languages(include_optional=include_optional)
+    )
+    if resolved and resolved != target_lang:
+        return get_target_lang_display(resolved, custom_target_langs, include_optional=include_optional)
     return target_lang
 
 

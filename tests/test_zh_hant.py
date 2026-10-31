@@ -61,6 +61,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(targets["简体中文"], "zh")
         self.assertEqual(targets["繁體中文"], "zh_hant")
         self.assertEqual(get_target_lang_display("zh"), "简体中文")
+        # API 调用方传 zh-TW 时，输出文件名里写「繁體中文」而不是「zh-TW」。
+        self.assertEqual(get_target_lang_display("zh-TW"), "繁體中文")
         for alias in ("中文", "简体", "Chinese"):
             self.assertEqual(resolve_language_code(alias, targets), "zh", alias)
         for alias in ("繁体中文", "繁體", "Traditional Chinese", "zh-TW", "正體中文"):
