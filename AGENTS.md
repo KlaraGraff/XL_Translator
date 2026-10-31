@@ -68,6 +68,14 @@ Legacy data compatibility rules (in effect since V9.2.1):
 - Scope: `settings.json`, `keys.json`, `tm.db`, task history, and any persisted data later written into `APP_DATA_DIR`.
 - This rule supersedes the pre-V9.2.1 convention of "not distributed, so no legacy compatibility at all."
 
+Where new code goes (maple, 2026-10-31):
+- Some files are large: `core/pdf_image_translation.py`, `core/word_task_runner.py`, `settings.py`, `core/task_runner.py`, `core/word_document.py`.
+  There is no separate "split the big files" task. Splitting is worth it only for two things: a thread reading a huge file misses related code, and parallel threads collide on the same file.
+- Split by independent parts, never by line count. A part is independent when changing it never touches the others: each PDF translation mode (in-place, to-Word, image), and in `settings.py` the old-data migration rules.
+  A step-by-step main flow (most of `WordTaskRunner._run`) stays in one place; cutting it into many files only makes it harder to follow.
+- When your change lands inside an independent part of a large file, first move that part into its own module with no behaviour change (tests green). Then make your change there. Keep the move and the change in separate commits.
+- A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
+
 When reusing this rule set in a new project, prefer copying the root `AGENTS.md` and the entire `agent/` directory, then adapt `quality_gate.ps1` and the dynamic test scripts to the new project's actual structure.
 
 GitHub sync rules:
