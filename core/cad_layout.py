@@ -83,11 +83,6 @@ _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
 # 引线肩线离块属性最多这么远（按字高计）才算这段文字的肩线。
 _SHOULDER_GAP = 1.0
-# 引线标注折成两行时：上方（下方）没有别的标注，最多往外多占这么多（按原字高计）；两行之间的空
-# （按新字高计）；离上方那行标注至少留的空（按原字高计）。
-_LEADER_WRAP_REACH = 1.0
-_LEADER_WRAP_GAP = 0.35
-_LEADER_WRAP_CLEAR = 0.1
 
 
 def is_chinese_target(target_lang: str) -> bool:
@@ -983,17 +978,9 @@ def fit_translated_texts(
         if needed <= room:
             continue
         scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
-        if not fits and new_handle is not None and shoulder is not None:
-            # 引线上的长说明（maple 2026-10-31 选「放不下就折两行」）：贴着肩线的那一行不动，第二行
-            # 摞在离开肩线的一侧，两行一起收进到上（下）方那行标注为止的空当，不挪动别的标注。
-            # 第二行是同一个图块引用里紧跟着的一个属性副本。
-            plan = _leader_wrap_plan(entity, records, _vertical_neighbours(indexes[group], entity, bottom, top),
-                                     room, calibration, settings, (new_left, new_right))
-            if plan is not None:
-                splits.append(plan)
-                if wrapped is not None:
-                    wrapped.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
-                continue
+        # 引线上的长说明不折行，只缩到最小比例（仍放不下列入复核）：引线块多是动态块，AutoCAD 按块里
+        # 的参数摆属性，折出来的第二行和属性对不齐、还会压到别的标注（反馈 #23，maple 2026-10-31
+        # 在 AutoCAD 里看过两版后定的退路）。
         if not fits and new_handle is not None and entity.entity_type == "TEXT" and cell is not None:
             # 格子里最小比例一行仍放不下（窄房间的长房间名、图签格子里的长工程名）：在空格处分成两行，
             # 两行叠在原来那一行的位置上，上下不碰别的文字和格线时就这么放。不在格子里的（「标签：
@@ -1134,77 +1121,12 @@ def _split_words(entity: _TextEntity, records: Sequence[Any]) -> tuple[str, list
     return raw, raw_spaces, words
 
 
-def _leader_wrap_plan(
-    entity: _TextEntity,
-    records: Sequence[Any],
-    neighbours: Sequence[_TextBox],
-    room: float,
-    calibration: float,
-    settings: FitSettings,
-    span: tuple[float, float],
-) -> _WrapPlan | None:
-    """引线上的长说明分成两行：贴着肩线的那一行原地不动（上标底对齐、下标顶对齐），另一行摞在
-    外侧。字高取空当放得下的最大值（不超过原字高），字宽再按 ``room`` 收；整体缩放（字高 × 字宽）
-    不小于最小比例。放不下返回 None（照旧列入复核）。"""
-    split = _split_words(entity, records)
-    if split is None:
-        return None
-    raw, raw_spaces, words = split
-    height, width_factor = entity.height, entity.width_factor
-    best: tuple[float, int] | None = None
-    for cut in range(1, len(words)):
-        first, second = " ".join(words[:cut]).strip(), " ".join(words[cut:]).strip()
-        if not first or not second:
-            continue
-        widest = max(estimate_text_width(part, height, width_factor, entity.font_class) for part in (first, second))
-        if best is None or widest < best[0]:
-            best = (widest, cut)
-    if best is None:
-        return None
-    widest, cut = best
-    x, y = _local(entity)
-    bottom, top = _vertical_span(entity.valign, y, height)
-    upward = entity.valign in {0, 1}
-    # 外侧到哪为止：横向和这段译文重叠、在外侧的最近一行文字。
-    limit = top + _LEADER_WRAP_REACH * height if upward else bottom - _LEADER_WRAP_REACH * height
-    for box in neighbours:
-        if box.right <= span[0] or box.left >= span[1]:
-            continue
-        if upward and box.bottom >= top - 0.3 * height:
-            limit = min(limit, box.bottom - _LEADER_WRAP_CLEAR * height)
-        elif not upward and box.top <= bottom + 0.3 * height:
-            limit = max(limit, box.top + _LEADER_WRAP_CLEAR * height)
-    slot = limit - bottom if upward else top - limit
-    new_height = min(height, slot / (2 + _LEADER_WRAP_GAP))
-    if new_height <= 0:
-        return None
-    height_scale = new_height / height
-    needed = widest * height_scale * calibration
-    width_scale = min(1.0, max(room, 0.0) / needed) if needed > 0 else 1.0
-    if height_scale * width_scale < settings.min_scale - 1e-9:
-        return None
-    pitch = (1 + _LEADER_WRAP_GAP) * new_height
-    first, second = raw[:raw_spaces[cut - 1]], raw[raw_spaces[cut - 1] + 1:]
-    # 第一行在上：上标时第一行往上挪一行，下标时第二行往下挪一行。
-    return _WrapPlan(
-        entity, first, second, new_height, width_factor * width_scale,
-        pitch if upward else 0.0, 0.0 if upward else -pitch,
-    )
-
-
 def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
     """第一行写回原实体，第二行是紧跟在后面的一个副本（新句柄，不带原实体的反应器和扩展数据，
-    双语新增行的标记照带：再翻一次时两行一起删掉）。
-
-    块属性（引线标注）不在块参照里加第二个同名属性：动态块重新求值时会按标记把属性摆回
-    定义的位置，两行就乱了（反馈 #23，maple 在 AutoCAD 里双击后看到）。原属性留在原位放
-    贴着肩线的那一行，另一行写成块参照后面一行普通文字（见 :func:`_apply_attribute_wrap`）。"""
+    双语新增行的标记照带：再翻一次时两行一起删掉）。"""
     from core.cad_writeback import MARK_ADDED, _strip_owned_extras, marker_records, read_marker
 
     entity = plan.entity
-    if entity.entity_type == "ATTRIB":
-        _apply_attribute_wrap(records, plan, new_handle)
-        return
     start = entity.start
     end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
     index = _text_record(records, start, end)
@@ -1222,45 +1144,6 @@ def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], st
     records[index] = replace(records[index], value=plan.first)
     _shift_entity(records, start, end, entity.rotation, plan.first_shift)
     records[end:end] = copy
-
-
-def _apply_attribute_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
-    from core.cad_writeback import _strip_owned_extras, attribute_as_text
-
-    entity = plan.entity
-    start = entity.start
-    end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
-    index = _text_record(records, start, end)
-    if index is None:
-        return
-    # 原位（挪动 0）的那一行留给属性，另一行写成普通文字。
-    if plan.first_shift == 0:
-        kept, kept_shift, loose, loose_shift = plan.first, plan.first_shift, plan.second, plan.second_shift
-    else:
-        kept, kept_shift, loose, loose_shift = plan.second, plan.second_shift, plan.first, plan.first_shift
-    # 块参照（属性前面最近的 INSERT）的属主就是这行文字所在的空间；文字放在它的 SEQEND 后面。
-    insert = next((i for i in range(start - 1, -1, -1)
-                   if records[i].code == 0 and records[i].value.strip().upper() in {"INSERT", "MINSERT"}), None)
-    owner = None
-    if insert is not None:
-        owner = next((r.value for r in records[insert + 1:start] if r.code == 330), None)
-    after = end
-    while after < len(records):
-        if records[after].code == 0 and records[after].value.strip().upper() == "SEQEND":
-            after = next((i for i in range(after + 1, len(records)) if records[i].code == 0), len(records))
-            break
-        if records[after].code == 0 and records[after].value.strip().upper() != "ATTRIB":
-            break
-        after += 1
-    copy = _strip_owned_extras(list(records[start:end]))
-    copy = attribute_as_text(copy, text=loose, owner=owner)
-    handle = new_handle() if new_handle is not None else None
-    copy = [record if record.code != 5 else replace(record, value=handle) for record in copy if record.code != 5 or handle]
-    _write_size(copy, 0, len(copy), plan.height, plan.width_factor)
-    _shift_entity(copy, 0, len(copy), entity.rotation, loose_shift)
-    records[index] = replace(records[index], value=kept)
-    _shift_entity(records, start, end, entity.rotation, kept_shift)
-    records[after:after] = copy
 
 
 def _write_size(records: list[Any], start: int, end: int, height: float, width_factor: float) -> None:

@@ -90,35 +90,18 @@ def test_wall_outside_the_viewport_frame_is_not_shown(tmp_path):
     assert result.stats.layout_fitted == 0
 
 
-def test_leader_note_that_cannot_fit_its_shoulder_is_split_into_two_lines(tmp_path):
-    # maple 2026-10-31：缩到最小仍放不下就折两行。两行收在原来那一行的高度里，不越过肩线，
-    # 不压到上方摞着的另一行标注。
+def test_leader_note_that_cannot_fit_its_shoulder_stays_one_line_at_minimum_scale(tmp_path):
+    # 反馈 #23：引线块多是动态块，折出来的第二行在 AutoCAD 里和属性对不齐、压到别的标注；
+    # maple 2026-10-31 定的退路：引线说明不折行，缩到最小比例，译文照写，列入复核。
     block, leader = _leader(shoulder=20)
-    above = (
-        (0, "TEXT"), (5, "80"), (8, "NOTE"), (67, "1"), (100, "AcDbEntity"), (100, "AcDbText"),
-        (10, "120"), (20, str(100.5 + HEIGHT * 1.25)), (30, "0"), (40, str(HEIGHT)), (1, "成品"), (100, "AcDbText"),
-    )
-    drawing = _drawing(*leader, *above, blocks=block)
+    drawing = _drawing(*leader, blocks=block)
     result, output, _messages = _translate(tmp_path, drawing, {NOTE: LONG})
-    assert result.stats.layout_wrapped == 1 and result.stats.layout_unresolved == 0
-    # 块参照里仍只有一个「上标」属性，留在肩线上方原位；另一行是块参照后面的普通文字（动态块重新
-    # 求值时按标记把属性摆回原位，两个同名属性会乱）。
+    assert result.stats.layout_wrapped == 0 and result.stats.layout_unresolved == 1
     [attrib] = _entities(output, "ATTRIB")
-    loose = next(body for body in _entities(output, "TEXT") if _field(body, 1) != "成品")
-    assert f"{_field(loose, 1)} {_field(attrib, 1)}" == LONG
-    assert _field(attrib, 2) == "上标" and float(_field(attrib, 21)) == pytest.approx(100.5)
-    assert _field(loose, 2) is None and _field(loose, 74) is None
-    assert (_field(loose, 72), _field(loose, 73)) == ("2", "1")
-    assert float(_field(loose, 11)) == pytest.approx(150)
-    assert _field(loose, 5) not in {"60", "61", "62", "70", "71", "72", "80"}
-    text = output.read_text(encoding="utf-8")
-    assert text.index("SEQEND") < text.index(_field(loose, 1))
-    height = float(_field(attrib, 40))
-    assert float(_field(loose, 40)) == pytest.approx(height)
-    # 上面那行顶边不碰上方那行标注。
-    assert float(_field(loose, 21)) + height <= 100.5 + HEIGHT * 1.25
-    for body in (attrib, loose):
-        assert _left_edge(body) >= 150 - 20 - 1e-6
+    assert _field(attrib, 1) == LONG
+    assert not [body for body in _entities(output, "TEXT") if _field(body, 1) and LONG.split(" ")[0] in _field(body, 1)]
+    scale = float(_field(attrib, 40)) / HEIGHT * float(_field(attrib, 41))
+    assert scale == pytest.approx(0.4, abs=0.01)
 
 
 def _loose_attdef(handle="90", tag="标准段剖面", *, block=False):
@@ -160,8 +143,8 @@ def test_attribute_definitions_inside_blocks_keep_reading_the_default_value(tmp_
 
 
 def test_start_point_of_right_aligned_text_follows_the_translation(tmp_path):
-    # 反馈 #23：右对齐的文字只改了对齐点处的文字，起点（10/20）还在原文左端；「CAD快速看图」拿起点
-    # 摆文字，折成两行后两行右端错开。写完译文后起点按新宽度重算，上下位置不变。
+    # 反馈 #23：右对齐的文字只改了对齐点处的文字，起点（10/20）还在原文左端；AutoCAD 打开时和
+    # 「CAD快速看图」都拿起点摆文字，右端就对不上。写完译文后起点按新宽度重算，上下位置不变。
     block, leader = _leader(shoulder=20)
     untouched = (
         (0, "TEXT"), (5, "80"), (8, "0"), (100, "AcDbEntity"), (100, "AcDbText"),
@@ -170,11 +153,9 @@ def test_start_point_of_right_aligned_text_follows_the_translation(tmp_path):
     )
     _result, output, _messages = _translate(tmp_path, _drawing(*leader, *untouched, blocks=block), {NOTE: LONG})
     [attrib] = _entities(output, "ATTRIB")
-    loose = next(body for body in _entities(output, "TEXT") if _field(body, 1) != "B-B")
-    for body in (attrib, loose):
-        width = estimate_text_width(_field(body, 1), float(_field(body, 40)), float(_field(body, 41)))
-        assert float(_field(body, 10)) == pytest.approx(float(_field(body, 11)) - width, abs=1e-3)
-        assert float(_field(body, 20)) == pytest.approx(float(_field(body, 21)))
+    width = estimate_text_width(_field(attrib, 1), float(_field(attrib, 40)), float(_field(attrib, 41)))
+    assert float(_field(attrib, 10)) == pytest.approx(float(_field(attrib, 11)) - width, abs=1e-3)
+    assert float(_field(attrib, 20)) == pytest.approx(float(_field(attrib, 21)))
     # 没翻译、没改字号的文字原样不动（哪怕起点本来就对不上）。
     kept = next(body for body in _entities(output, "TEXT") if _field(body, 1) == "B-B")
     assert (_field(kept, 10), _field(kept, 20)) == ("1", "300")
