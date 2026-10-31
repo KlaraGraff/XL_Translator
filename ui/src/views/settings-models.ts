@@ -639,7 +639,7 @@ export function renderModelsPage(host: HTMLElement): void {
   statusReasonNote.className = "conn-reason";
   const paintStatus = (connection: PoolConnection | null) => {
     const availabilitySource: JsonObject = connection
-      ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at, config_problem: connection.config_problem ?? "" }
+      ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at, config_problem: connection.config_problem ?? "", image_input: connection.image_input ?? "" }
       : rolePayload;
     // 配置本身用不了（多半是跟随的来源换了服务商）和「测过、没通过」是两回事：前者不用
     // 去点「测试连接」，要改的是连接方式或服务商，所以胶囊写「不可用」而不是「测试失败」。
@@ -657,7 +657,29 @@ export function renderModelsPage(host: HTMLElement): void {
     const availChip = statusChip(availabilityLabel, availabilityTone);
     availChip.title = tx(text(availabilitySource.availability_message, t("当前配置尚未测试。"))) + (checkedAt ? ` · ${checkedAt}` : "");
     clearElement(statusRow);
-    statusRow.append(catalogChip, availChip, autoSaveNote);
+    statusRow.append(catalogChip, availChip);
+    // 审核要看图：测试连接发一张写着字的图，读出来才算能识别图片（core/image_input_check.py）。
+    // 旧版本的「测试通过」只说明接口通了，没确认过能不能看图，这里点明，免得当成已验过。
+    // 只跟着「测试通过 / 测试失败」一起出现：换了模型又换回来时，旧结论还记着，但胶囊已回到
+    // 「未测试」，这时再写「不能识别图片」读起来自相矛盾（开始任务时照样会按旧结论提醒）。
+    if (role === "pdf_review" && !configProblem && availability !== "unknown") {
+      const imageInput = text(availabilitySource.image_input);
+      const imageLabel = imageInput === "yes"
+        ? t("能识别图片")
+        : imageInput === "no"
+          ? t("不能识别图片")
+          : imageInput === "unseen"
+            ? t("图片可能未送到模型")
+            : availability === "available" ? t("未确认能否识别图片") : "";
+      if (imageLabel) {
+        const imageChip = statusChip(imageLabel, imageInput === "yes" ? "done" : imageInput ? "error" : "");
+        imageChip.title = imageInput
+          ? t("测试连接时发了一张写着字的图，模型读出了图里的字才算能识别图片。")
+          : t("这次测试结果来自旧版本，没有确认模型能否识别图片。点击「测试连接」重新测试。");
+        statusRow.append(imageChip);
+      }
+    }
+    statusRow.append(autoSaveNote);
 
     // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
     // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点

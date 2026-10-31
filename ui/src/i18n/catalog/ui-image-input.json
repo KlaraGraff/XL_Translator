@@ -1,0 +1,74 @@
+{
+  "审核模型不能识别图片": {
+    "en": "The review model cannot read images",
+    "fr": "Le modèle de vérification ne lit pas les images"
+  },
+  "审核模型可能没看到图片": {
+    "en": "The review model may not have seen the image",
+    "fr": "Le modèle de vérification n'a peut-être pas vu l'image"
+  },
+  "逐页审核已开启，但测试发现当前的图像翻译审核模型不能识别图片，用它审核每一页都会出错。": {
+    "en": "Page review is on, but a test shows that the current image translation review model cannot read images. Reviewing with it would fail on every page.",
+    "fr": "La vérification page par page est activée, mais un test montre que le modèle actuel de vérification des images ne lit pas les images. Avec lui, la vérification échouerait à chaque page."
+  },
+  "可以本次不审核直接开始，译文照常生成；或在「设置 → 模型服务 → 图像翻译审核」中换一个能识别图片的模型。": {
+    "en": "You can start without review this time, and pages are translated as usual. Or choose a model that reads images in “Settings → Models → Image translation review”.",
+    "fr": "Vous pouvez lancer sans vérification cette fois-ci ; les pages sont traduites normalement. Ou choisissez un modèle qui lit les images dans « Paramètres → Modèles → Vérification des images »."
+  },
+  "本次不审核只影响这一次任务，设置不会被修改。": {
+    "en": "Skipping review affects only this task; your settings will not change.",
+    "fr": "Ignorer la vérification ne concerne que cette tâche ; vos réglages ne changent pas."
+  },
+  "测试时审核模型有回复，但没有读出测试图中的文字。图片可能未送达模型（例如所用的中转服务没有转发图片），这样的审核结果不可信。": {
+    "en": "During the test the review model replied, but it did not read the text in the test image. The image may not have reached the model (for example, a relay service did not pass it on), so its review results cannot be trusted.",
+    "fr": "Lors du test, le modèle de vérification a répondu, mais n'a pas lu le texte de l'image de test. L'image n'est peut-être pas parvenue au modèle (par exemple, un service relais ne l'a pas transmise) : ses résultats ne sont pas fiables."
+  },
+  "建议本次不审核直接开始，或在「设置 → 模型服务 → 图像翻译审核」中更换模型或连接。": {
+    "en": "We suggest starting without review this time, or changing the model or connection in “Settings → Models → Image translation review”.",
+    "fr": "Nous conseillons de lancer sans vérification cette fois-ci, ou de changer de modèle ou de connexion dans « Paramètres → Modèles → Vérification des images »."
+  },
+  "如确认该模型能识别图片，也可以仍用它审核。": {
+    "en": "If you are sure this model reads images, you can still review with it.",
+    "fr": "Si vous êtes sûr que ce modèle lit les images, vous pouvez quand même l'utiliser pour la vérification."
+  },
+  "前往设置更换模型": {
+    "en": "Change model in Settings",
+    "fr": "Changer de modèle"
+  },
+  "仍用它审核": {
+    "en": "Review with it anyway",
+    "fr": "Vérifier quand même"
+  },
+  "本次不审核，直接开始": {
+    "en": "Start without review",
+    "fr": "Lancer sans vérification"
+  },
+  "审核模型不能识别图片，之后的页面未审核": {
+    "en": "the review model cannot read images, so later pages were not checked",
+    "fr": "le modèle de vérification ne lit pas les images ; les pages suivantes n'ont pas été contrôlées"
+  },
+  "能识别图片": {
+    "en": "Reads images",
+    "fr": "Lit les images"
+  },
+  "不能识别图片": {
+    "en": "Cannot read images",
+    "fr": "Ne lit pas les images"
+  },
+  "图片可能未送到模型": {
+    "en": "Image may not reach the model",
+    "fr": "Image peut-être non transmise"
+  },
+  "未确认能否识别图片": {
+    "en": "Image reading not confirmed",
+    "fr": "Lecture d'images non confirmée"
+  },
+  "测试连接时发了一张写着字的图，模型读出了图里的字才算能识别图片。": {
+    "en": "The connection test sends an image with text on it; the model counts as reading images only if it reads that text back.",
+    "fr": "Le test de connexion envoie une image contenant du texte ; le modèle n'est considéré comme lisant les images que s'il relit ce texte."
+  },
+  "这次测试结果来自旧版本，没有确认模型能否识别图片。点击「测试连接」重新测试。": {
+    "en": "This test result comes from an earlier version and does not confirm that the model reads images. Click “Test connection” to test again.",
+    "fr": "Ce résultat provient d'une version précédente et ne confirme pas que le modèle lit les images. Cliquez sur « Tester la connexion » pour refaire le test."
+  }
+}

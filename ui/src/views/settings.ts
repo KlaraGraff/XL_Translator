@@ -117,6 +117,8 @@ export type PoolConnection = {
   availability_status: string;
   availability_message: string;
   availability_checked_at: string;
+  // 只有图像翻译审核有：这条连接上的模型能不能识别图片（yes / no / unseen），没确认过是 ""。
+  image_input?: string;
   // 这条连接眼下用不了的原因（服务商不支持本用途所需能力，或跟随了本地模型），没有问题时为空。
   config_problem?: string;
   has_api_key: boolean;

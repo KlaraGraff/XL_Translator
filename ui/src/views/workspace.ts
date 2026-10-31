@@ -5013,6 +5013,47 @@ function noteStartFailure(surface: Surface, error: unknown): void {
  *  确认继续」，而 9.2.6 只在提示文字里说了这句话，界面上没有任何按钮能确认，看起来就
  *  像开始按钮坏了。 */
 function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: JsonObject, error: unknown): void {
+  // 开始前给审核模型发了一张写着字的测试图（core/image_input_check.py）。不能识别图片的
+  // 模型审核每一页都会出错，出路是「本次不审核」或换模型；回了话却没读出字的，图片可能
+  // 没送到模型，另给一个「仍用它审核」。两种都只影响这一次任务，设置里的开关不动。
+  const imageInputReason = apiErrorReason(error);
+  if (imageInputReason === "pdf_review_no_image_input" || imageInputReason === "pdf_review_image_unseen") {
+    const unseen = imageInputReason === "pdf_review_image_unseen";
+    openModal({
+      // 三四个按钮、英法文又长：用宽一些的弹窗，按钮尽量排在一行。
+      wide: true,
+      tone: "warn",
+      icon: "warn",
+      title: unseen ? t("审核模型可能没看到图片") : t("审核模型不能识别图片"),
+      body: unseen
+        ? [
+          t("测试时审核模型有回复，但没有读出测试图中的文字。图片可能未送达模型（例如所用的中转服务没有转发图片），这样的审核结果不可信。"),
+          t("建议本次不审核直接开始，或在「设置 → 模型服务 → 图像翻译审核」中更换模型或连接。"),
+          t("如确认该模型能识别图片，也可以仍用它审核。"),
+        ]
+        : [
+          t("逐页审核已开启，但测试发现当前的图像翻译审核模型不能识别图片，用它审核每一页都会出错。"),
+          t("可以本次不审核直接开始，译文照常生成；或在「设置 → 模型服务 → 图像翻译审核」中换一个能识别图片的模型。"),
+          t("本次不审核只影响这一次任务，设置不会被修改。"),
+        ],
+      actions: [
+        { label: t("取消") },
+        { label: t("前往设置更换模型"), onClick: () => navigate("settings", { page: "models", role: "pdf_review" }) },
+        ...(unseen
+          ? [{
+            label: t("仍用它审核"),
+            onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
+          }]
+          : []),
+        {
+          label: t("本次不审核，直接开始"),
+          variant: "primary" as const,
+          onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_skip_pdf_review: true }),
+        },
+      ],
+    });
+    return;
+  }
   if (apiErrorReason(error) === "pdf_review_model_unavailable") {
     openModal({
       tone: "warn",
@@ -5566,6 +5607,11 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     ? result.issues.map(record).find((issue) => text(issue.type) === "rate_limited_partial")
     : undefined;
   if (rateLimited) clauses.push(t("服务持续限流，{0} 处尚未翻译，请稍后使用「继续上次翻译」补译", num(rateLimited.count)));
+  // 审核模型在任务中途确认不能识别图片，后面的页没再送审（core/image_input_check.py 的保底）。
+  // 这时不能说「全部通过」：没审的页谁也没判过。
+  const reviewSwitchedOff = Array.isArray(result.issues)
+    && result.issues.map(record).some((issue) => text(issue.kind) === "review_no_image_input");
+  if (reviewSwitchedOff) clauses.push(t("审核模型不能识别图片，之后的页面未审核"));
   // CAD 的待复核是按文件记的（逐文件 status=needs_review），没有 review.total_count。
   const reviewFiles = surface === "cad"
     ? fileResults.filter((entry) => fileResultProduced(entry) && fileResultPendingReview(entry) > 0).length
@@ -5650,7 +5696,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // PDF 没开逐页审核时谁也没判过「通过」：逐文件的 review_enabled 一个都不为真（旧记录
   // 没有这个键，也按没开算——说「已生成」不会错，说「通过」可能是错的）。
   const pdfUnreviewed = surface === "pdf"
-    && !fileResults.some((entry) => record(entry).review_enabled === true);
+    && (reviewSwitchedOff || !fileResults.some((entry) => record(entry).review_enabled === true));
   if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0 && !unfinishedUnknown) {
     const hasOther = review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0;
     clauses.push(

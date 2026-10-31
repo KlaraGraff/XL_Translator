@@ -1,0 +1,58 @@
+{
+  "该模型不能识别图片。": {
+    "en": "This model cannot read images.",
+    "fr": "Ce modèle ne lit pas les images."
+  },
+  "该模型不能识别图片。图像翻译审核需要能识别图片的模型，请换一个支持图片输入的模型。": {
+    "en": "This model cannot read images. Image translation review needs a model that reads images; please choose one that accepts image input.",
+    "fr": "Ce modèle ne lit pas les images. La vérification des images nécessite un modèle qui lit les images ; choisissez-en un qui accepte les images en entrée."
+  },
+  "模型有回复，但没有读出测试图中的文字，图片可能未送达模型。请换一个能识别图片的模型，或更换连接。": {
+    "en": "The model replied but did not read the text in the test image, so the image may not have reached it. Please choose a model that reads images, or another connection.",
+    "fr": "Le modèle a répondu sans lire le texte de l'image de test : l'image ne lui est peut-être pas parvenue. Choisissez un modèle qui lit les images, ou une autre connexion."
+  },
+  "模型读出了测试图中的文字，能识别图片。": {
+    "en": "The model read the text in the test image, so it can read images.",
+    "fr": "Le modèle a lu le texte de l'image de test : il lit donc les images."
+  },
+  "逐页审核需要能识别图片的模型，但当前的图像翻译审核模型不能识别图片，用它审核每一页都会出错。可以本次不审核直接开始，或在设置中更换模型。": {
+    "en": "Page review needs a model that reads images, but the current image translation review model cannot read images, so reviewing would fail on every page. You can start without review this time, or change the model in Settings.",
+    "fr": "La vérification page par page nécessite un modèle qui lit les images, mais le modèle actuel de vérification des images ne les lit pas : la vérification échouerait à chaque page. Vous pouvez lancer sans vérification cette fois-ci, ou changer de modèle dans les paramètres."
+  },
+  "测试时图像翻译审核模型有回复，但没有读出测试图中的文字，图片可能未送达模型，审核结果不可信。可以本次不审核直接开始，或在设置中更换模型。": {
+    "en": "During the test the image translation review model replied but did not read the text in the test image. The image may not have reached the model, so review results cannot be trusted. You can start without review this time, or change the model in Settings.",
+    "fr": "Lors du test, le modèle de vérification des images a répondu sans lire le texte de l'image de test. L'image n'est peut-être pas parvenue au modèle : les résultats ne sont pas fiables. Vous pouvez lancer sans vérification cette fois-ci, ou changer de modèle dans les paramètres."
+  },
+  "图像翻译审核模型不能识别图片，之后的页面不再审核，已生成的译图照常保留。请在设置中为图像翻译审核更换一个能识别图片的模型。": {
+    "en": "The image translation review model cannot read images, so later pages are no longer checked; translated pages already made are kept. Please choose a model that reads images for image translation review in Settings.",
+    "fr": "Le modèle de vérification des images ne lit pas les images : les pages suivantes ne sont plus contrôlées et les pages déjà traduites sont conservées. Dans les paramètres, choisissez pour la vérification des images un modèle qui lit les images."
+  },
+  "图像翻译模型无法生成图片，这一页需要整页图像翻译，已保留原样": {
+    "en": "The image translation model cannot generate images; this page needs full-page image translation and was kept as is",
+    "fr": "Le modèle de traduction d'image ne peut pas générer d'images ; cette page nécessite une traduction de page en image et a été conservée telle quelle"
+  },
+  "图像翻译模型无法生成图片": {
+    "en": "the image translation model cannot generate images",
+    "fr": "le modèle de traduction d'image ne peut pas générer d'images"
+  },
+  "图像翻译模型连续两页均未能生成图片，可能不是图像生成模型。{0}": {
+    "en": "The image translation model failed to produce an image for two pages in a row and may not be an image generation model. {0}",
+    "fr": "Le modèle de traduction d'image n'a produit aucune image pour deux pages de suite ; ce n'est peut-être pas un modèle de génération d'images. {0}"
+  },
+  "图像翻译模型连续两页均未能生成图片，可能不是图像生成模型。": {
+    "en": "The image translation model failed to produce an image for two pages in a row and may not be an image generation model.",
+    "fr": "Le modèle de traduction d'image n'a produit aucune image pour deux pages de suite ; ce n'est peut-être pas un modèle de génération d'images."
+  },
+  "其余需要整页图像翻译的页面将保留原样。": {
+    "en": "The remaining pages that need full-page image translation will be kept as they are.",
+    "fr": "Les autres pages qui nécessitent une traduction de page en image seront conservées telles quelles."
+  },
+  "图像翻译模型连接测试失败：{0}": {
+    "en": "Image translation model connection test failed: {0}",
+    "fr": "Échec du test de connexion du modèle de traduction d'image : {0}"
+  },
+  "整个任务": {
+    "en": "Whole task",
+    "fr": "Toute la tâche"
+  }
+}
