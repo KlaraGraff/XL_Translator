@@ -1194,10 +1194,17 @@ def _leader_wrap_plan(
 
 def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
     """第一行写回原实体，第二行是紧跟在后面的一个副本（新句柄，不带原实体的反应器和扩展数据，
-    双语新增行的标记照带：再翻一次时两行一起删掉）。"""
+    双语新增行的标记照带：再翻一次时两行一起删掉）。
+
+    块属性（引线标注）不在块参照里加第二个同名属性：动态块重新求值时会按标记把属性摆回
+    定义的位置，两行就乱了（反馈 #23，maple 在 AutoCAD 里双击后看到）。原属性留在原位放
+    贴着肩线的那一行，另一行写成块参照后面一行普通文字（见 :func:`_apply_attribute_wrap`）。"""
     from core.cad_writeback import MARK_ADDED, _strip_owned_extras, marker_records, read_marker
 
     entity = plan.entity
+    if entity.entity_type == "ATTRIB":
+        _apply_attribute_wrap(records, plan, new_handle)
+        return
     start = entity.start
     end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
     index = _text_record(records, start, end)
@@ -1215,6 +1222,45 @@ def _apply_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], st
     records[index] = replace(records[index], value=plan.first)
     _shift_entity(records, start, end, entity.rotation, plan.first_shift)
     records[end:end] = copy
+
+
+def _apply_attribute_wrap(records: list[Any], plan: _WrapPlan, new_handle: Callable[[], str | None] | None) -> None:
+    from core.cad_writeback import _strip_owned_extras, attribute_as_text
+
+    entity = plan.entity
+    start = entity.start
+    end = next((index for index in range(start + 1, len(records)) if records[index].code == 0), len(records))
+    index = _text_record(records, start, end)
+    if index is None:
+        return
+    # 原位（挪动 0）的那一行留给属性，另一行写成普通文字。
+    if plan.first_shift == 0:
+        kept, kept_shift, loose, loose_shift = plan.first, plan.first_shift, plan.second, plan.second_shift
+    else:
+        kept, kept_shift, loose, loose_shift = plan.second, plan.second_shift, plan.first, plan.first_shift
+    # 块参照（属性前面最近的 INSERT）的属主就是这行文字所在的空间；文字放在它的 SEQEND 后面。
+    insert = next((i for i in range(start - 1, -1, -1)
+                   if records[i].code == 0 and records[i].value.strip().upper() in {"INSERT", "MINSERT"}), None)
+    owner = None
+    if insert is not None:
+        owner = next((r.value for r in records[insert + 1:start] if r.code == 330), None)
+    after = end
+    while after < len(records):
+        if records[after].code == 0 and records[after].value.strip().upper() == "SEQEND":
+            after = next((i for i in range(after + 1, len(records)) if records[i].code == 0), len(records))
+            break
+        if records[after].code == 0 and records[after].value.strip().upper() != "ATTRIB":
+            break
+        after += 1
+    copy = _strip_owned_extras(list(records[start:end]))
+    copy = attribute_as_text(copy, text=loose, owner=owner)
+    handle = new_handle() if new_handle is not None else None
+    copy = [record if record.code != 5 else replace(record, value=handle) for record in copy if record.code != 5 or handle]
+    _write_size(copy, 0, len(copy), plan.height, plan.width_factor)
+    _shift_entity(copy, 0, len(copy), entity.rotation, loose_shift)
+    records[index] = replace(records[index], value=kept)
+    _shift_entity(records, start, end, entity.rotation, kept_shift)
+    records[after:after] = copy
 
 
 def _write_size(records: list[Any], start: int, end: int, height: float, width_factor: float) -> None:

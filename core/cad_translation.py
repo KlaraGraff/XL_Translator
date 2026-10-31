@@ -49,6 +49,7 @@ from core.cad_writeback import (
     MARK_TABLE,
     TRANSLATION_STYLE,
     HandleAllocator,
+    attribute_as_text,
     LinePlacement,
     added_line,
     append_marker,
@@ -1148,6 +1149,13 @@ def extract_cad_text_units(
             for index in range(start + 1, end):
                 if records[index].code in allowed_codes:
                     fields.append(index)
+            if entity_type == "ATTDEF" and section_by_record[start] != "BLOCKS" and not any(
+                _plain_text(records[index].value) for index in fields
+            ):
+                # 直接放在图上（不在图块定义里）、默认值为空的属性定义，图上显示的是它的标记：
+                # 「标准段剖面」这类视图标题（反馈 #23）。翻译标记，写回时改成一行普通文字
+                # （见 _loose_attdefs_as_text：标记里不能有空格）。
+                fields = [index for index in range(start + 1, end) if records[index].code == 2][:1]
         if not fields:
             continue
         assembled = "".join(records[index].value for index in fields)
@@ -1488,6 +1496,19 @@ _CJK_TRANSLATION_FONT = compatible_font("zh")
 # 双语时译文比原文小一号；多行文字里用相对字高写。
 _BILINGUAL_SCALE = 0.8
 _ATTRIB_SEPARATOR = " / "
+
+
+def _loose_attdef_as_text(records: list[DxfRecord], unit: CadTextUnit, start: int) -> bool:
+    """直接放在图上的属性定义（译的是它显示的标记）写回后改成同一位置、同一样式的一行 TEXT。
+
+    AutoCAD 的标记里不能有空格，译文写进标记会被当成坏数据；不在图块里的属性定义本来也
+    只起一行文字的作用。改了返回 True。
+    """
+    if unit.entity_type != "ATTDEF" or records[unit.record_indices[0]].code != 2:
+        return False
+    end = _entity_end(records, start)
+    records[start:end] = attribute_as_text(list(records[start:end]))
+    return True
 
 
 def _write_bilingual(
@@ -2276,11 +2297,13 @@ class CadTranslationPipeline:
                         added_lines[id(added)] = id(records[start])
                     elif unit.entity_type == "ATTRIB":
                         fit_sources[id(records[start])] = unit.plain_text
+                    elif _loose_attdef_as_text(records, unit, start):
+                        fit_sources[id(records[start])] = unit.plain_text
                     continue
                 restyle = (
                     style_name is not None
                     and fully
-                    and unit.entity_type in {"TEXT", "ATTRIB", "MTEXT"}
+                    and unit.entity_type in {"TEXT", "ATTRIB", "ATTDEF", "MTEXT"}
                     and (font == _CJK_TRANSLATION_FONT or not has_cjk(_translated_plain(unit, written)))
                 )
                 _replace_unit_runs(records, unit, written, escape=escape_unicode, strip_shx_fonts=restyle)
@@ -2288,7 +2311,7 @@ class CadTranslationPipeline:
                     end = _entity_end(records, start)
                     records[start + 1:end] = set_style(list(records[start + 1:end]), TRANSLATION_STYLE)
                     stats.restyled += 1
-                if unit.entity_type in {"TEXT", "ATTRIB"}:
+                if unit.entity_type in {"TEXT", "ATTRIB"} or _loose_attdef_as_text(records, unit, start):
                     fit_sources[id(records[start])] = unit.plain_text
             tables_synced = apply_table_cells(records, table_plans, can_mark=can_mark)
             if tables_synced:
