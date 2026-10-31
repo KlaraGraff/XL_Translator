@@ -112,8 +112,9 @@ function emptyDraft(): Draft {
     contactEdited: false,
     includeSystem: true,
     includeLogs: true,
-    includeSources: false,
-    includeOutputs: false,
+    // 原文件和译文默认附上：没有原文件就没法复现问题（反馈 #26 只带了日志和截图）。
+    includeSources: true,
+    includeOutputs: true,
     taskIds: new Set(),
     files: [],
     images: [],
