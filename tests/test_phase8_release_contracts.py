@@ -97,7 +97,13 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             workflow,
         )
         # Windows 的更新载荷就是安装器本身，Tauri v2 不再另出 .nsis.zip。
-        self.assertIn("release-assets/*.exe.sig", workflow)
+        # .sig 只用来生成 latest.json，不随 Release 上传；.sha256 必须上传，
+        # 已安装的版本靠它判断新版本是否就绪（core/update_checker.py）。
+        self.assertNotIn("release-assets/*.exe.sig", workflow)
+        self.assertNotIn("release-assets/*.app.tar.gz.sig", workflow)
+        self.assertIn("release-assets/*.dmg.sha256", workflow)
+        self.assertIn("release-assets/*.exe.sha256", workflow)
+        self.assertIn("release-assets/latest.json", workflow)
         self.assertNotIn(".nsis.zip", workflow)
         self.assertIn("python -m venv .venv", workflow)
         self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
