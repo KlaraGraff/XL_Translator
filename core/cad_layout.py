@@ -2064,3 +2064,80 @@ def fit_cell_mtext(
         entity = fit.entity
         _write_mtext_size(records, entity.start, entity.end, entity.height * fit.height_scale, fit.wrap, fit.width_factor)
     return len(changed)
+
+
+# ── 对齐文字的起点 ────────────────────────────────────────────
+
+
+def _single_line_fields(records: Sequence[Any]) -> list[tuple[int, int, str, dict[int, str]]]:
+    """每段单行文字（TEXT/ATTRIB）的 ``(开始, 结束, 类型, 组码)``：组码只取第一次出现、到内嵌多行文字为止。"""
+    out = []
+    for start, end in _entity_ranges(records):
+        if start >= end:
+            continue
+        entity_type = records[start].value.strip().upper()
+        if entity_type not in _SINGLE_LINE_TYPES:
+            continue
+        fields: dict[int, str] = {}
+        for record in records[start + 1:end]:
+            if record.code == 101:
+                break
+            fields.setdefault(record.code, record.value)
+        out.append((start, end, entity_type, fields))
+    return out
+
+
+def text_signatures(records: Sequence[Any]) -> dict[str, tuple[str, str, str]]:
+    """写译文前记下每段单行文字的 ``句柄 → (文字, 字高, 宽度比例)``，见 :func:`sync_start_points`。"""
+    return {
+        str(fields.get(5, "")): (str(fields.get(1, "")), str(fields.get(40, "")), str(fields.get(41, "")))
+        for _start, _end, _type, fields in _single_line_fields(records)
+        if fields.get(5)
+    }
+
+
+def sync_start_points(
+    records: list[Any], before: Mapping[str, tuple[str, str, str]], plain_text: Callable[[str], str],
+) -> int:
+    """右对齐、居中的单行文字换了译文（或字号、或是新加的）以后，把起点（组码 10/20）按新宽度重算。
+
+    这类文字 AutoCAD 只认对齐点（11/21），起点是辅助值、打开时自己重算；但「CAD快速看图」这类
+    看图软件直接拿起点摆文字，起点还停在原文的左端时，译文从那里往右写，右端对不齐（反馈 #23：
+    引线说明折成两行后两行错开）。只沿文字方向挪，上下方向的偏移照旧。宽度是估算的。
+    「对齐」「布满」（72=3/5）两点都是真位置，不动；没改过的文字不动。返回改了多少段。
+    """
+    fonts = _style_fonts(records)
+    changed = 0
+    for start, end, _type, fields in reversed(_single_line_fields(records)):
+        halign = _int(fields.get(72))
+        if halign not in {1, 2, 4} or 11 not in fields:
+            continue
+        handle = str(fields.get(5, ""))
+        now = (str(fields.get(1, "")), str(fields.get(40, "")), str(fields.get(41, "")))
+        if handle and before.get(handle) == now:
+            continue
+        height = _float(fields.get(40))
+        text = plain_text(str(fields.get(1, "")))
+        if height <= 0 or not text:
+            continue
+        width = estimate_text_width(
+            text, height, _float(fields.get(41), 1.0) or 1.0,
+            fonts.get(str(fields.get(7, "STANDARD")).strip().upper(), "shx"),
+        )
+        offset = width / 2 if halign in {1, 4} else width
+        angle = math.radians(_float(fields.get(50)))
+        dx, dy = math.cos(angle), math.sin(angle)
+        ax, ay = _float(fields.get(11)), _float(fields.get(21))
+        vx, vy = _float(fields.get(10)) - ax, _float(fields.get(20)) - ay
+        along = vx * dx + vy * dy
+        x, y = ax + vx + (-offset - along) * dx, ay + vy + (-offset - along) * dy
+        for index in range(start + 1, end):
+            record = records[index]
+            if record.code == 101:
+                break
+            if record.code == 10:
+                records[index] = replace(record, value=_format_number(x))
+            elif record.code == 20:
+                records[index] = replace(record, value=_format_number(y))
+        changed += 1
+    return changed

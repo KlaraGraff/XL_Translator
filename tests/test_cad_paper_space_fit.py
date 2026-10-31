@@ -157,3 +157,24 @@ def test_attribute_definitions_inside_blocks_keep_reading_the_default_value(tmp_
     result, output, _messages = _translate(tmp_path, _drawing(*insert, blocks=block), {"标准段剖面": "Coupe"})
     assert _field(_entities(output, "ATTDEF")[0], 2) == "标准段剖面"
     assert result.stats.changed == 0
+
+
+def test_start_point_of_right_aligned_text_follows_the_translation(tmp_path):
+    # 反馈 #23：右对齐的文字只改了对齐点处的文字，起点（10/20）还在原文左端；「CAD快速看图」拿起点
+    # 摆文字，折成两行后两行右端错开。写完译文后起点按新宽度重算，上下位置不变。
+    block, leader = _leader(shoulder=20)
+    untouched = (
+        (0, "TEXT"), (5, "80"), (8, "0"), (100, "AcDbEntity"), (100, "AcDbText"),
+        (10, "1"), (20, "300"), (30, "0"), (40, "3"), (1, "B-B"), (72, "2"), (11, "50"), (21, "300.6"), (31, "0"),
+        (100, "AcDbText"),
+    )
+    _result, output, _messages = _translate(tmp_path, _drawing(*leader, *untouched, blocks=block), {NOTE: LONG})
+    [attrib] = _entities(output, "ATTRIB")
+    loose = next(body for body in _entities(output, "TEXT") if _field(body, 1) != "B-B")
+    for body in (attrib, loose):
+        width = estimate_text_width(_field(body, 1), float(_field(body, 40)), float(_field(body, 41)))
+        assert float(_field(body, 10)) == pytest.approx(float(_field(body, 11)) - width, abs=1e-3)
+        assert float(_field(body, 20)) == pytest.approx(float(_field(body, 21)))
+    # 没翻译、没改字号的文字原样不动（哪怕起点本来就对不上）。
+    kept = next(body for body in _entities(output, "TEXT") if _field(body, 1) == "B-B")
+    assert (_field(kept, 10), _field(kept, 20)) == ("1", "300")

@@ -40,6 +40,8 @@ from core.cad_layout import (
     fit_table_cells,
     fit_translated_texts,
     short_text_rows,
+    sync_start_points,
+    text_signatures,
     text_heights,
     unify_column_heights,
 )
@@ -2044,6 +2046,8 @@ class CadTranslationPipeline:
                 self._emit("scan", 0, 1, f"图纸中有 {restored} 处此前写入的双语译文，已先恢复为原文，再重新翻译")
             bilingual = options.display_mode in _BILINGUAL_MODES
             handles = HandleAllocator(records)
+            # 写译文前每段单行文字的样子：写完以后改过的对齐文字要重算起点（见 sync_start_points）。
+            signatures_before = text_signatures(records)
             font = compatible_font(options.target_lang) if options.translation_font == "compatible" else None
             # 表记录要在取文字之前加：之后再插记录，取出的文字位置就全错开了。
             style_name = TRANSLATION_STYLE if font and ensure_translation_style(records, handles, font) else None
@@ -2436,6 +2440,7 @@ class CadTranslationPipeline:
                         f"{len(layout_unresolved)} 处译文已缩到最小字号比例，仍与相邻文字重叠或超出图框，已列入报告，请复核",
                         level="WARN",
                     )
+            sync_start_points(records, signatures_before, _plain_text)
             write_started = time.perf_counter()
             translated_dxf = temp_root / f"{source.stem}_translated.dxf"
             _write_dxf_text(translated_dxf, _serialize_dxf(records), dxf_encoding)
