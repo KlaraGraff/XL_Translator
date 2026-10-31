@@ -288,7 +288,7 @@ def test_claude_engine_marks_fixed_part_and_falls_back_when_rejected() -> None:
         reject = {"on": rejected}
         bodies.clear()
         engine = ClaudeEngine(api_key="k", model="claude-sonnet-5.5", base_url="https://relay.example/v1")
-        with patch("engines.claude_engine.httpx.Client", side_effect=client_factory), usage_metering() as meter:
+        with patch("httpx.Client", side_effect=client_factory), usage_metering() as meter:
             assert engine.translate_batch(["甲"], "fr", system) == {"甲": "A"}
         if not rejected:
             assert len(bodies) == 1

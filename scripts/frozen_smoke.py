@@ -20,6 +20,9 @@ _CRITICAL_IMPORTS = (
     "docx",
     "pypdfium2",
     "httpx",
+    # 系统代理是 SOCKS 时 httpx 靠它连接（core/system_proxy.py）；只在用到时才 import，
+    # 冻结时漏掉不会报错，只会让开着 SOCKS 代理的用户全部改走直连。
+    "socksio",
     "api.launcher",
     # 导出配置的加密要用 cryptography 的原生扩展，而 spec 里一度把它整包排除过。
     # 冻结后少了它，sidecar 会在启动时直接崩，本地开发环境却一切正常——所以这条

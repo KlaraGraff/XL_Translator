@@ -14,6 +14,7 @@ from threading import Event, RLock
 import httpx
 from loguru import logger
 
+from core import system_proxy
 from core.model_catalog import (
     build_model_catalog_signature,
     fetch_openai_compatible_models,
@@ -141,7 +142,7 @@ def select_candidate(
 
 
 def _catalog() -> dict:
-    with httpx.Client(timeout=CATALOG_TIMEOUT_SECONDS) as client:
+    with system_proxy.http_client(timeout=CATALOG_TIMEOUT_SECONDS) as client:
         response = client.get(CATALOG_URL)
         response.raise_for_status()
         payload = response.json()
