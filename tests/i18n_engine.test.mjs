@@ -15,6 +15,7 @@ const catalog = {
   "已停止。": { en: "Stopped.", fr: "Arrêtée." },
   "原件不会被改动": { en: "The original is left unchanged", fr: "L'original n'est pas modifié" },
   "{0}": { en: "nope {0}", fr: "nope {0}" },
+  "这 {0} 条保留原文": { en: "{0|This item keeps|These # items keep} the source text", fr: "{0|Cet élément conserve|Ces # éléments conservent} le texte source" },
 };
 
 const zh = createTranslator("zh", [catalog]);
@@ -44,6 +45,13 @@ const fr = createTranslator("fr", [catalog]);
 assert.equal(fr.t("{0} 个任务运行中", 0), "0 tâche en cours", "French treats 0 as singular");
 assert.equal(fr.t("{0} 个任务运行中", 2), "2 tâches en cours");
 assert.equal(fr.tx("扫描到 1 个文件"), "1 fichier trouvé");
+assert.equal(fr.t("这 {0} 条保留原文", 3), "Ces 3 éléments conservent le texte source", "# in a plural branch is the number");
+assert.equal(fr.tx("这 1 条保留原文"), "Cet élément conserve le texte source");
+assert.equal(en.tx("这 12 条保留原文"), "These 12 items keep the source text");
+assert.equal(en.isSingular(1), true);
+assert.equal(en.isSingular(0), false);
+assert.equal(fr.isSingular(0), true);
+assert.equal(fr.isSingular(2), false);
 assert.equal(fr.tx("Excel 没能启动：没有找到 Excel"), "Excel n'a pas pu démarrer : Excel est introuvable");
 
 console.log("i18n engine tests passed");

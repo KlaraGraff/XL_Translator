@@ -46,7 +46,7 @@ class ModelCatalogTests(unittest.TestCase):
 
     def _patch_client(self, fake_client: _FakeClient):
         return patch(
-            "core.model_catalog.httpx.Client",
+            "httpx.Client",
             autospec=True,
             return_value=fake_client,
         )

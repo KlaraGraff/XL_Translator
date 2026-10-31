@@ -12,8 +12,8 @@
     "fr": "Fichier inconnu · Corps du texte · Emplacement inconnu"
   },
   "  → 页眉页脚：{0} 行已有部分译文，其中 {1} 行已提交模型补译，成功补译 {2} 行。": {
-    "en": "  → Headers & footers: {0} lines already had partial translations; {1} were sent to the model to fill in, and {2} were completed.",
-    "fr": "  → En-têtes et pieds de page : {0} lignes avaient déjà une traduction partielle ; {1} ont été envoyées au modèle pour être complétées, {2} l'ont été."
+    "en": "  → Headers & footers: {0} {0|line already had a partial translation|lines already had partial translations}; {1} {1|was|were} sent to the model to fill in, and {2} {2|was|were} completed.",
+    "fr": "  → En-têtes et pieds de page : {0} {0|ligne avait|lignes avaient} déjà une traduction partielle ; {1} {1|a été envoyée|ont été envoyées} au modèle pour être {1|complétée|complétées}, {2} l'{2|a|ont} été."
   },
   "任务已停止": {
     "en": "Task stopped",
@@ -56,8 +56,8 @@
     "fr": "Le résultat de la vérification n'est pas un objet JSON"
   },
   "  → [前置内容保护] {0}：跳过开头 {1} 段，正文从「{2}」开始。": {
-    "en": "  → [Front matter protection] {0}: skipped the first {1} paragraphs; the body starts at “{2}”.",
-    "fr": "  → [Protection des pages liminaires] {0} : les {1} premiers paragraphes sont ignorés, le corps du texte commence à « {2} »."
+    "en": "  → [Front matter protection] {0}: skipped the first {1} {1|paragraph|paragraphs}; the body starts at “{2}”.",
+    "fr": "  → [Protection des pages liminaires] {0} : {1|le premier paragraphe est ignoré|les # premiers paragraphes sont ignorés}, le corps du texte commence à « {2} »."
   },
   "  → [前置内容保护] {0}：未能识别出正文标题，前置内容保护未生效，本文件将按未保护方式正常处理。": {
     "en": "  → [Front matter protection] {0}: no body heading was found, so front matter protection did not apply; this file will be processed normally.",
@@ -68,8 +68,8 @@
     "fr": "Vérification de la complétion Word"
   },
   "  → 页眉页脚：{0} 行与正文内容相同，按正文的译文处理。": {
-    "en": "  → Headers & footers: {0} lines match the body text and use the body translation.",
-    "fr": "  → En-têtes et pieds de page : {0} lignes sont identiques au corps du texte et reprennent sa traduction."
+    "en": "  → Headers & footers: {0} {0|line matches|lines match} the body text and {0|uses|use} the body translation.",
+    "fr": "  → En-têtes et pieds de page : {0} {0|ligne est identique|lignes sont identiques} au corps du texte et {0|reprend|reprennent} sa traduction."
   },
   "[补译模式] 只补未译内容：已有译文位置将保持不变。": {
     "en": "[Fill-in mode] Only untranslated content will be filled in; existing translations stay as they are.",
@@ -80,8 +80,8 @@
     "fr": "[Protection des pages liminaires] Activée : dans chaque fichier, tout ce qui précède le premier titre du corps du texte (couverture, table des matières, préface, etc.) n'est pas traduit par défaut. Les fichiers sans titre de corps de texte ne sont pas concernés."
   },
   "[阶段 1 完成] 全部文档合计 {0} 处待翻译文本，相同内容仅翻译一次（{1}s）": {
-    "en": "[Step 1 done] {0} text items to translate across all documents; identical content is translated only once ({1}s)",
-    "fr": "[Étape 1 terminée] {0} textes à traduire dans l'ensemble des documents ; un contenu identique n'est traduit qu'une fois ({1}s)"
+    "en": "[Step 1 done] {0} {0|text item|text items} to translate across all documents; identical content is translated only once ({1}s)",
+    "fr": "[Étape 1 terminée] {0} {0|texte|textes} à traduire dans l'ensemble des documents ; un contenu identique n'est traduit qu'une fois ({1}s)"
   },
   "[阶段 2] 记忆库已有译文 {0} 处，需要模型翻译 {1} 处，夹杂多种语言 {2} 处": {
     "en": "[Step 2] Found in translation memory: {0}; to translate with the model: {1}; mixed-language: {2}",
@@ -101,7 +101,7 @@
   },
   "  → {0}：{1} 处待翻译段落位置（{2}s）": {
     "en": "  → {0}: {1} paragraph positions to translate ({2}s)",
-    "fr": "  → {0} : {1} emplacements de paragraphes à traduire ({2}s)"
+    "fr": "  → {0} : {1} {1|emplacement|emplacements} de paragraphes à traduire ({2}s)"
   },
   "已识别原文语言：": {
     "en": "Detected source language: ",
@@ -152,8 +152,8 @@
     "fr": "La tâche de traduction Word s'est interrompue de façon inattendue : "
   },
   "{0}进度：已译 {1}/{2} 段，{3} 段保留原文待续译，已写入 {4} 个文件。": {
-    "en": "{0}Progress: {1}/{2} paragraphs translated, {3} kept in the source language for later, {4} {4|file|files} written.",
-    "fr": "{0}Progression : {1}/{2} paragraphes traduits, {3} conservés en langue source pour plus tard, {4} {4|fichier écrit|fichiers écrits}."
+    "en": "{0}Progress: {1}/{2} {2|paragraph|paragraphs} translated, {3} kept in the source language for later, {4} {4|file|files} written.",
+    "fr": "{0}Progression : {1}/{2} {2|paragraphe traduit|paragraphes traduits}, {3} {3|conservé|conservés} en langue source pour plus tard, {4} {4|fichier écrit|fichiers écrits}."
   },
   "  → [继续上次翻译] {0}：在上次翻译结果的基础上补译，本次仅补译未翻译的内容。": {
     "en": "  → [Resume previous translation] {0}: building on the previous result; only untranslated content will be filled in this time.",
@@ -252,8 +252,8 @@
     "fr": "Numérotation automatique : prise en charge par l'application"
   },
   "重译未成功，继续重译（已完成 {0}/{1} 轮）": {
-    "en": "Retranslation failed; trying again ({0}/{1} rounds done)",
-    "fr": "La nouvelle traduction a échoué ; nouvel essai ({0}/{1} passes effectuées)"
+    "en": "Retranslation failed; trying again ({0}/{1} {1|round|rounds} done)",
+    "fr": "La nouvelle traduction a échoué ; nouvel essai ({0}/{1} {1|passe effectuée|passes effectuées})"
   },
   "复查通过，采用译文": {
     "en": "Passed the second check; translation accepted",
@@ -300,8 +300,8 @@
     "fr": "État : [Étape 2/{0}] Recherche des traductions existantes dans la mémoire de traduction…"
   },
   "夹杂多种语言的内容 {0} 处：已有双语 {1} 处，原文疑似有误 {2} 处，待人工确认 {3} 处，复查后采用 {4} 处": {
-    "en": "Mixed-language content: {0} items; already bilingual {1}, source likely contains errors {2}, awaiting manual confirmation {3}, accepted after second check {4}",
-    "fr": "Contenu en plusieurs langues : {0} éléments ; déjà bilingues {1}, erreur probable dans le texte source {2}, en attente de confirmation manuelle {3}, retenus après seconde vérification {4}"
+    "en": "Mixed-language content: {0} {0|item|items}; already bilingual {1}, source likely contains errors {2}, awaiting manual confirmation {3}, accepted after second check {4}",
+    "fr": "Contenu en plusieurs langues : {0} {0|élément|éléments} ; déjà bilingues {1}, erreur probable dans le texte source {2}, en attente de confirmation manuelle {3}, retenus après seconde vérification {4}"
   },
   "{0} 处译文不是目标语言（原文不含中文，而译文为中文），已退回原文重试。": {
     "en": "{0} {0|translation is|translations are} not in the target language (the source has no Chinese, but the translation is Chinese); reverted to the source and retried.",
@@ -440,8 +440,8 @@
     "fr": "En-têtes et pieds de page Word"
   },
   "  → 页眉页脚：一批共 {0} 行未获得译文，已原样保留：": {
-    "en": "  → Headers & footers: a batch of {0} lines got no translation and was left as is: ",
-    "fr": "  → En-têtes et pieds de page : un lot de {0} lignes n'a reçu aucune traduction et a été laissé tel quel : "
+    "en": "  → Headers & footers: a batch of {0} {0|line|lines} got no translation and was left as is: ",
+    "fr": "  → En-têtes et pieds de page : un lot de {0} {0|ligne|lignes} n'a reçu aucune traduction et a été laissé tel quel : "
   },
   "原因：{0}": {
     "en": "Reason: {0}",
@@ -556,8 +556,8 @@
     "fr": "{0} : impossible de compléter à partir du résultat précédent ; traduction complète depuis le début : "
   },
   "：自动编号 {0} 段，其中 {1} 段的编号已转成文字": {
-    "en": ": {0} auto-numbered paragraphs, {1} of which had their numbers converted to text",
-    "fr": " : {0} paragraphes à numérotation automatique, dont {1} avec numéros convertis en texte"
+    "en": ": {0} auto-numbered {0|paragraph|paragraphs}, {1} of which {1|had its number|had their numbers} converted to text",
+    "fr": " : {0} {0|paragraphe|paragraphes} à numérotation automatique, dont {1} avec {1|numéro converti|numéros convertis} en texte"
   },
   "记忆库暂时无法写入。": {
     "en": "Translation memory is temporarily unavailable for writing.",
@@ -577,7 +577,7 @@
   },
   "，其中 {0} 次拆分为更小的批次重试": {
     "en": ", including {0} retried in smaller batches",
-    "fr": ", dont {0} relancés en lots plus petits"
+    "fr": ", dont {0} {0|relancé|relancés} en lots plus petits"
   },
   "重译过程中出错。": {
     "en": "An error occurred during retranslation.",
@@ -1149,7 +1149,7 @@
   },
   " 等 {0} 处": {
     "en": " and {0} more",
-    "fr": " et {0} autres"
+    "fr": " et {0} {0|autre|autres}"
   },
   "[INFO] 共 {0} 个单元格是错误值（#N/A、#REF! 之类），已保持原样，未写入译文：{1}{2}": {
     "en": "[INFO] {0} {0|cell contains an error value|cells contain error values} (#N/A, #REF! and the like); left as is with no translation written: {1}{2}",
@@ -1188,8 +1188,8 @@
     "fr": "[WARN] La traduction de {0}!{1} contenait {2} {2|caractère spécial impossible|caractères spéciaux impossibles} à enregistrer ; {2|supprimé|supprimés} avant l'écriture"
   },
   "[WARN] {0}!{1} 原文加译文超过 Excel 单元格上限 {2} 字，已截去 {3} 字（否则 Excel 会将整个文件视为已损坏）": {
-    "en": "[WARN] Source plus translation in {0}!{1} exceeds Excel's {2}-character cell limit; {3} characters were cut (otherwise Excel would consider the whole file damaged)",
-    "fr": "[WARN] Le texte source et la traduction de {0}!{1} dépassent la limite de {2} caractères par cellule d'Excel ; {3} caractères ont été coupés (sinon Excel considérerait tout le fichier comme endommagé)"
+    "en": "[WARN] Source plus translation in {0}!{1} exceeds Excel's {2}-character cell limit; {3} {3|character was|characters were} cut (otherwise Excel would consider the whole file damaged)",
+    "fr": "[WARN] Le texte source et la traduction de {0}!{1} dépassent la limite de {2} caractères par cellule d'Excel ; {3} {3|caractère a été coupé|caractères ont été coupés} (sinon Excel considérerait tout le fichier comme endommagé)"
   },
   "[WARN] {0}!{1}{2} 缩至最小字号 {3}pt 仍可能无法完全显示": {
     "en": "[WARN] {0}!{1}{2} may still not fit even at the minimum font size of {3}pt",
@@ -1276,12 +1276,12 @@
     "fr": "Une requête de lot de traduction a échoué temporairement ; nouvel essai sous peu (tentative {0}/{1}) : {2}"
   },
   "一批翻译请求重试 {0} 次后仍失败，该批 {1} 条内容已保留原文：{2}": {
-    "en": "A translation batch request still failed after {0} {0|retry|retries}; these {1} items keep the source text: {2}",
-    "fr": "Une requête de lot de traduction a encore échoué après {0} {0|nouvel essai|nouveaux essais} ; ces {1} éléments conservent le texte source : {2}"
+    "en": "A translation batch request still failed after {0} {0|retry|retries}; {1|this item keeps|these # items keep} the source text: {2}",
+    "fr": "Une requête de lot de traduction a encore échoué après {0} {0|nouvel essai|nouveaux essais} ; {1|cet élément conserve|ces # éléments conservent} le texte source : {2}"
   },
   "一批翻译请求未成功，该批 {0} 条内容已保留原文：{1}": {
-    "en": "A translation batch request did not succeed; these {0} items keep the source text: {1}",
-    "fr": "Une requête de lot de traduction n'a pas abouti ; ces {0} éléments conservent le texte source : {1}"
+    "en": "A translation batch request did not succeed; {0|this item keeps|these # items keep} the source text: {1}",
+    "fr": "Une requête de lot de traduction n'a pas abouti ; {0|cet élément conserve|ces # éléments conservent} le texte source : {1}"
   },
   "一批翻译出错，已拆分为更小的批次重试：{0}": {
     "en": "A translation batch failed; retrying in smaller batches: {0}",

@@ -66,7 +66,7 @@
   "显示全部": {"en": "Show all", "fr": "Tout afficher"},
   "共 {0} 条": {"en": "{0} {0|task|tasks}", "fr": "{0} {0|tâche|tâches}"},
   "没有匹配的任务。": {"en": "No matching tasks.", "fr": "Aucune tâche correspondante."},
-  "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} autres non affichées. Recherchez ou affichez-en davantage."},
+  "还有 {0} 条未显示，可搜索或调整显示条数。": {"en": "{0} more not shown. Search or show more.", "fr": "{0} {0|autre non affichée|autres non affichées}. Recherchez ou affichez-en davantage."},
   "其他文件": {"en": "Other files", "fr": "Autres fichiers"},
   "原文件": {"en": "Original", "fr": "Original"},
   "选择任务": {"en": "Choose tasks", "fr": "Choisir les tâches"},

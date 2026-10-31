@@ -95,8 +95,10 @@ def test_an_unusable_system_proxy_falls_back_to_a_direct_connection(monkeypatch)
     monkeypatch.setenv("HTTPS_PROXY", "socks4://127.0.0.1:7891")
     with pytest.raises(ValueError):
         httpx.Client()
+    # 改按 SOCKS5 连同一个端口（代理软件的 SOCKS 端口几乎都支持 5）。
     with component_download.open_client() as client:
-        assert client.trust_env is False
+        transport = client._transport_for_url(httpx.URL("https://example.com/a.whl"))
+        assert transport._pool._proxy_url.scheme == b"socks5"
 
 
 def test_download_retries_directly_when_the_system_proxy_is_gone(tmp_path, monkeypatch):

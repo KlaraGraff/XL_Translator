@@ -24,7 +24,8 @@
 | `id` | 是 | 小写字母、数字、`-`、`_`，最长 40 个字符；页面键为 `ext:<id>`；发布后不要再改 |
 | `version` | 是 | 版本号，如 `0.1.0`；发布标签是 `v<version>` |
 | `adapter_api_version` | 是 | 目前是 `1` |
-| `label`、`file_noun` | 是 | 类型名称、文件的叫法，`{"zh", "en", "fr"}` 三种语言 |
+| `label`、`file_noun` | 是 | 类型名称、文件的叫法（复数，如 presentations），`{"zh", "en", "fr"}` 三种语言 |
+| `file_noun_one` | 否 | 一个文件时的叫法（英文、法文单数，如 `{"en": "presentation", "fr": "présentation"}`）；省略时数量为 1 处显示「1 file」 |
 | `extensions` | 是 | 处理的扩展名，不带点 |
 | `description` | 建议 | 页面「?」里的说明，三种语言；提交到扩展列表时必须有 |
 | `prompt` | 否 | 这种文件的内置规则（最长 4000 字），省略时用 Translator 通用的那份；用户可在「设置 → 翻译参数」里改写 |
