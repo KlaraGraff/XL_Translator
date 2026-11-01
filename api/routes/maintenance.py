@@ -21,7 +21,7 @@ from api.schemas import (
     FullResetRequest,
 )
 from api.routes._shared import (
-    _require_no_active_tasks,
+    _no_active_tasks_during,
     _json_error,
     _json_safe,
 )
@@ -122,10 +122,14 @@ def register(app: FastAPI) -> None:
     @app.post("/api/maintenance/clear")
     def maintenance_clear(payload: MaintenanceClearRequest) -> dict[str, Any]:
         category = payload.category
-        if category in {"task_history", "logs", "diagnostics", "keys", "tm"}:
-            _require_no_active_tasks(app, category=category)
         if category in {"keys", "settings", "tm"} and not payload.confirmation:
             raise HTTPException(422, "此操作需要明确确认。")
+        if category in {"task_history", "logs", "diagnostics", "keys", "tm"}:
+            with _no_active_tasks_during(app, category=category):
+                return _clear_category(category, payload)
+        return _clear_category(category, payload)
+
+    def _clear_category(category: str, payload: MaintenanceClearRequest) -> dict[str, Any]:
         if category == "task_history":
             return {
                 "category": "task_history",
@@ -147,10 +151,10 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/maintenance/reset-full")
     def reset_full_local_data(payload: FullResetRequest) -> dict[str, Any]:
-        _require_no_active_tasks(app, category="reset_full")
         if not payload.confirmation or payload.phrase != "RESET":
             raise HTTPException(422, "完整重置需要勾选确认并输入 RESET。")
-        return maintenance.reset_all_local_data().as_dict()
+        with _no_active_tasks_during(app, category="reset_full"):
+            return maintenance.reset_all_local_data().as_dict()
 
     @app.get("/api/diagnostics")
     def list_diagnostics() -> dict[str, Any]:
@@ -193,8 +197,8 @@ def register(app: FastAPI) -> None:
 
     @app.delete("/api/diagnostics/{record_id}")
     def delete_diagnostic_record(record_id: str) -> dict[str, Any]:
-        _require_no_active_tasks(app, category="diagnostics")
-        return maintenance.delete_diagnostic(record_id).as_dict()
+        with _no_active_tasks_during(app, category="diagnostics"):
+            return maintenance.delete_diagnostic(record_id).as_dict()
 
     @app.post("/api/system/shutdown", status_code=202)
     async def request_shutdown() -> Response:

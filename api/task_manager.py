@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+from contextlib import contextmanager
 import re
 import threading
 import time
@@ -206,6 +207,9 @@ class TranslationTaskManager:
         self._tasks: dict[str, ApiTask] = {}
         self._confirmation_tokens: dict[str, ConfirmationToken] = {}
         self._lock = threading.RLock()
+        # 维护页的清理正在进行时 >0：检查「没有活动任务」和清理本身之间，新任务和单页操作
+        # 一律不让登记，否则清理会在一个刚开始的任务脚下删掉它要写的数据。
+        self._maintenance_holds = 0
         # Set once the process is on its way out; SSE loops check it so an
         # open stream cannot hold up a graceful shutdown.
         self._shutdown = threading.Event()
@@ -534,17 +538,35 @@ class TranslationTaskManager:
             for path in (selected_paths or [])
             if str(path or "").strip()
         }
-        if spec.scan_honours_selection:
-            files = self._scan(
-                root,
-                normalized_surface,
-                selected_options,
-                selected_paths=selected if selected else None,
-            )
-        else:
-            # Keep the established call shape for other surfaces; tests and
-            # integrations may provide a narrow scan adapter for them.
-            files = self._scan(root, normalized_surface, selected_options)
+        # 跨文件夹多选/拖入：界面把第一个文件的上级目录当来源，其他文件夹里的文件不在
+        # 它下面，只重扫这一个根再按 selected_paths 收窄，它们就被无声丢掉了。不在根下
+        # 的那几个各扫一次补进来；任务的来源根换成所有路径共同的上级，译文按各自的
+        # 相对位置放，同名文件不会撞在一起。只扫选中的路径，不去扫那个共同上级。
+        outside = sorted(
+            path for path in selected if not _path_is_within(Path(path), root)
+        )
+        scan_roots = [root, *(Path(path) for path in outside)]
+        if outside:
+            root = Path(os.path.commonpath([str(root), *outside]))
+        files = []
+        seen_files: set[str] = set()
+        for scan_root in scan_roots:
+            if spec.scan_honours_selection:
+                found = self._scan(
+                    scan_root,
+                    normalized_surface,
+                    selected_options,
+                    selected_paths=selected if selected else None,
+                )
+            else:
+                # Keep the established call shape for other surfaces; tests and
+                # integrations may provide a narrow scan adapter for them.
+                found = self._scan(scan_root, normalized_surface, selected_options)
+            for item in found:
+                key = str(Path(item.path).expanduser().resolve())
+                if key not in seen_files:
+                    seen_files.add(key)
+                    files.append(item)
         if selected:
             files = [
                 item
@@ -757,6 +779,7 @@ class TranslationTaskManager:
                 task.file_progress[entry["file_id"]] = entry
                 task.file_sources[entry["file_id"]] = str(item.path)
             with self._lock:
+                self._raise_if_maintenance_active()
                 self._tasks[task_id] = task
             self._append_event(
                 task,
@@ -1064,6 +1087,33 @@ class TranslationTaskManager:
         return {"active": [_without_logs(record) for record in active],
                 "recent": [_without_logs(record) for record in recent_records],
                 "active_work_count": self.active_task_count()}
+
+    @contextmanager
+    def maintenance_window(self) -> Generator[int, None, None]:
+        """Hold off new work while a maintenance clean-up runs.
+
+        Yields the number of active tasks seen at entry.  When it is 0 no task
+        or page operation can register until the block exits, so the caller's
+        "no active tasks" check stays true for the whole clean-up.
+        """
+        with self._lock:
+            active = self.active_task_count()
+            if not active:
+                self._maintenance_holds += 1
+        try:
+            yield active
+        finally:
+            if not active:
+                with self._lock:
+                    self._maintenance_holds -= 1
+
+    def _raise_if_maintenance_active(self) -> None:
+        """Caller holds ``self._lock``."""
+        if self._maintenance_holds:
+            raise TaskConflictError(
+                "正在清理本地数据，请稍候再开始。",
+                reason="maintenance_active",
+            )
 
     def active_task_count(self) -> int:
         """Count all work that can write data, including terminal page operations."""
@@ -1399,7 +1449,9 @@ class TranslationTaskManager:
                     else "此任务已有一页正在重新生成，请待其完成后再操作下一页。",
                     reason="page_rerun_active",
                 )
-            task.rerun_active = True
+            with self._lock:
+                self._raise_if_maintenance_active()
+                task.rerun_active = True
             task.rerun_kind = "rerun"
         lease: ScheduledTaskLease | None = None
         try:
@@ -1492,7 +1544,9 @@ class TranslationTaskManager:
                     else "此任务有一页正在重新生成，请待其完成后再切换回上一版。",
                     reason="page_rerun_active",
                 )
-            task.rerun_active = True
+            with self._lock:
+                self._raise_if_maintenance_active()
+                task.rerun_active = True
             task.rerun_kind = "restore"
         try:
             accepted = runner.restore_previous_page(
@@ -2223,6 +2277,15 @@ def _scanned_file_name(item: Any) -> str:
     raw = getattr(item, "path", None) or getattr(item, "name", "")
     value = str(raw or "").strip()
     return Path(value).name if value else ""
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """``path`` 是 ``root`` 本身或在它下面（两边都已 resolve）。"""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _selected_files_label(files: list[Any]) -> str:
