@@ -753,6 +753,21 @@
   min-width: 112px;
   width: 100%;
 }
+/* 带修订的文件：文件名 + 「有 N 处未接受的修订」徽标排在同一行。徽标不能折行（.chip
+   是圆角胶囊），文件名用掉剩下的宽度，放不下才省略。 */
+.tbl.ws-files td.fname .fname-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.tbl.ws-files td.fname .fname-line > .fit-clip {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.tbl.ws-files td.fname .fname-line > .chip {
+  flex: none;
+}
 /* CAD：DWG 的文字数开始翻译后才统计，「开始后统计」用弱色小字，不和真实计数抢眼。 */
 .tbl.ws-files td.num.pending {
   color: var(--ink-3);
@@ -1103,4 +1118,79 @@ tr.hid {
   font-size: 11.5px;
   font-weight: var(--fw-500);
   white-space: nowrap;
+}
+
+/* Word「未接受的修订」弹窗（样张②③④）。三行选项整块可点，选中的那行描边高亮——
+   单选点太小，而且中文长句在小圆点里根本读不出来。 */
+.modal.word-revision .mbody > p {
+  margin-bottom: 10px;
+}
+.rev-options {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.rev-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.rev-option:hover {
+  background: var(--surface-2);
+}
+.rev-option.sel {
+  border-color: var(--tint-line);
+  background: var(--tint);
+}
+.rev-dot {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  border-radius: 99px;
+  border: 1.5px solid var(--line-2);
+  background: var(--surface);
+}
+.rev-option.sel .rev-dot {
+  border-color: var(--accent);
+  border-width: 4.5px;
+}
+.rev-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rev-copy b {
+  font-size: 13px;
+  font-weight: var(--fw-650);
+}
+.rev-copy small {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.rev-apply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.rev-apply input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  flex: none;
 }

@@ -91,6 +91,9 @@ export type BuiltinSurface = "excel" | "word" | "pdf" | "cad";
 export type Surface = BuiltinSurface | ExtSurface;
 
 
+/** Word 未接受的修订怎么处理（后端 core/word_revisions.py 的 revision_mode）。 */
+type RevisionMode = "skip" | "translate";
+
 /** 扫描接口返回的文件条目；字段是后端各 surface 联合，具体用到哪些看 surface。 */
 type FileItem = JsonObject & {
   path: string;
@@ -126,6 +129,10 @@ type FileItem = JsonObject & {
   shape_text_count?: number | null;
   comment_count?: number | null;
   anchor_frozen_count?: number;
+  /** Word：扫描时数出的「未接受的修订」处数（w:ins + w:del，有可见文字的）。大于 0 时
+   *  文件旁边挂一枚「有 N 处未接受的修订」，点「开始翻译」还要先问一句怎么处理。
+   *  老后端不产出这个字段，缺失按 0 处理。 */
+  tracked_change_count?: number;
   /** 运行时注册的类型：适配器 scan 数出的单元数，和给用户看的整句提示（「3 张图片中的文字未翻译」）。 */
   unit_count?: number | null;
   warnings?: string[];
@@ -582,7 +589,12 @@ interface SurfaceState {
   pdfAutoFallback: "image" | "skip";
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
   pdfAlsoSaveWord: boolean;
-  /** 从多大算大幅面（原位替换、自动组合用）。 */
+  /** Word 未接受的修订怎么处理：skip（默认，保持原文）/ translate（连修订一起翻，标记保留）。
+   *  弹窗里选过就记住，同一批里其余文件（以及下一次弹窗）沿用它；点「本批其他有修订的
+   *  文件也按这个处理」时它决定整批。 */
+  revisionMode: RevisionMode;
+  /** 「本批其他有修订的文件也按这个处理」：勾上以后这次任务不再逐文件弹窗。 */
+  revisionApplyToBatch: boolean;
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -645,6 +657,8 @@ function freshState(surface: Surface): SurfaceState {
     pdfAutoDrawingRoute: "inplace",
     pdfAutoFallback: "image",
     pdfAlsoSaveWord: false,
+    revisionMode: "skip",
+    revisionApplyToBatch: false,
   };
 }
 
@@ -695,6 +709,9 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   st.showBanner = false;
   st.bannerInfo = null;
   st.excelDoneNotice = null;
+  // 新一批文件重新问：上一次「本批其他有修订的文件也按这个处理」不能跟过来。
+  st.revisionMode = "skip";
+  st.revisionApplyToBatch = false;
   st.lastTaskId = undefined;
   st.lastOutputPath = undefined;
   st.historyOnly = false;
@@ -2886,11 +2903,27 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   checkCell.append(checkbox);
   row.append(checkCell);
 
-  // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
-  const nameCell = el("td", `fname ${FIT_CLIP}`);
-  nameCell.textContent = fileLabel(file);
-  nameCell.title = file.relative_path || fileLabel(file);
-  row.append(nameCell);
+  // Word：扫描时就标出「这个文件有几处未接受的修订」，挂在文件名右边（样张①）。
+  // 没有修订的文件什么都不显示——每个文件都挂一句「无修订」，真正要注意的那一行反而
+  // 找不出来了。老后端不产出 tracked_change_count，缺失按 0 处理。
+  const revisionCount = surface === "word" && !st.historyOnly ? num(file.tracked_change_count) : 0;
+  if (revisionCount > 0) {
+    const nameCell = el("td", "fname");
+    const nameLine = el("div", "fname-line");
+    const nameText = el("span", FIT_CLIP);
+    nameText.textContent = fileLabel(file);
+    nameText.title = file.relative_path || fileLabel(file);
+    nameLine.append(nameText);
+    nameLine.append(createChip({ label: t("有 {0} 处未接受的修订", fmtNum(revisionCount)), tone: "warn" }));
+    nameCell.append(nameLine);
+    row.append(nameCell);
+  } else {
+    // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
+    const nameCell = el("td", `fname ${FIT_CLIP}`);
+    nameCell.textContent = fileLabel(file);
+    nameCell.title = file.relative_path || fileLabel(file);
+    row.append(nameCell);
+  }
 
   if (surface === "cad") {
     const fmtCell = el("td");
@@ -3213,6 +3246,20 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
 
   const oversized = num(item.skipped_oversize_page_count);
   if (oversized > 0) chips.push(createChip({ label: t("跳过 {0} 页 A3+", oversized), tone: "tint" }));
+
+  // Word 修订的处理结果（状态⑤）：跑完之后这一行要说清这份文件当时是跳过还是连修订
+  // 一起翻的——运行日志会滚走，任务记录里留一句才查得到。
+  const revisions = record(item.revisions);
+  const revisionCount = num(revisions.count);
+  if (revisionCount > 0) {
+    const translated = text(revisions.mode) === "translate";
+    chips.push(createChip({
+      label: translated
+        ? t("翻译了 {0} 处修订（保留修订标记）", fmtNum(revisionCount))
+        : t("跳过了 {0} 处修订（保持原文）", fmtNum(revisionCount)),
+      tone: translated ? "tint" : "mute",
+    }));
+  }
 
   return chips;
 }
@@ -4803,6 +4850,8 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.allow_doc_fallback = st.allowDocFallback;
     payload.protect_front_matter = Boolean(st.toggles.get("protectFrontMatter"));
     payload.translate_headers_footers = Boolean(st.toggles.get("translateHeadersFooters"));
+    // 未接受的修订怎么处理：开始前弹窗问过才有意义，默认 skip（旧行为，不动修订里的原文）。
+    payload.revision_mode = st.revisionMode;
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   if (isExtSurface(surface)) {
@@ -4878,6 +4927,8 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
       showCompatibilityModal(surface, st, riskyCount);
       return;
     }
+    // 未接受的修订：开始前必须让用户决定怎么处理（样张②/④）。默认跳过，最不容易出错。
+    if (!nextRevisionDecision(st)) return;
   }
   await submitAfterResumeCheck(surface, st);
 }
@@ -4957,6 +5008,198 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
       },
     ],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Word：未接受的修订（样张②③④）
+//
+// 扫描时已经数出每个文件有几处未接受的修订。点「开始翻译」时如果有选中文件带着
+// 修订，就不能替他做主——「先处理修订」和「修订一起翻译」差着原件会不会被改动，
+// 所以先问一句，默认「跳过修订，只翻译其余部分」（不改动修订内容，最不容易出错）。
+// ---------------------------------------------------------------------------
+
+/** 这批里被选中、且带未接受修订的文件，按「修订处数从多到少」排。 */
+function filesWithRevisions(st: SurfaceState): Array<{ file: FileItem; count: number }> {
+  return st.files
+    .filter((file) => st.selected.has(file.path))
+    .map((file) => ({ file, count: num(file.tracked_change_count) }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count);
+}
+
+/** 文件名列表接成一句话：「合同.docx」12 处，「补充协议.docx」3 处。 */
+function revisionCountPhrase(entries: Array<{ file: FileItem; count: number }>): string {
+  return entries
+    .map((entry) => t("「{0}」{1} 处", fileLabel(entry.file), fmtNum(entry.count)))
+    .join("，");
+}
+
+/** 开始前的修订处理决定。返回 true 表示可以接着走启动流程；false 表示弹窗已经开了，
+ *  等用户在弹窗里决定（决定完会自己接着往下走）。 */
+function nextRevisionDecision(st: SurfaceState): boolean {
+  if (st.revisionApplyToBatch) return true;
+  const entries = filesWithRevisions(st);
+  if (!entries.length) return true;
+  showRevisionModal(st, entries);
+  return false;
+}
+
+function showRevisionModal(st: SurfaceState, entries: Array<{ file: FileItem; count: number }>): void {
+  const single = entries.length === 1;
+  const title = single
+    ? t("「{0}」里有 {1} 处未接受的修订", fileLabel(entries[0].file), fmtNum(entries[0].count))
+    : t("本批有 {0} 个文件含未接受的修订", entries.length);
+  const otherSelected = st.files.filter(
+    (file) => st.selected.has(file.path) && num(file.tracked_change_count) === 0,
+  ).length;
+  const intro = single
+    ? t("修订就是在 Word 里开着「修订」功能时做的改动（新增、删除的文字）。这些文字要怎么处理？")
+    : t("「{0}」。其余 {1} 个文件没有修订，会正常翻译。", revisionCountPhrase(entries), otherSelected);
+
+  const options: Array<{ value: RevisionMode | "resolve"; label: string; hint: string }> = [
+    {
+      value: "resolve",
+      label: t("先处理修订，再翻译"),
+      hint: single
+        ? t("这次先不翻译。请在 Word 里接受或拒绝修订、保存后，回来重新扫描。最干净。")
+        : t("这次全部先不开始。处理完修订后重新扫描。"),
+    },
+    {
+      value: "translate",
+      label: t("修订一起翻译"),
+      hint: single
+        ? t("新增和删除的文字都翻译，并保留修订标记，对方打开译文仍能看到改了哪些地方。")
+        : t("新增和删除的文字都翻译，保留修订标记。"),
+    },
+    {
+      value: "skip",
+      label: t("跳过修订，只翻译其余部分"),
+      hint: single
+        ? t("修订里的文字保持原文不动，其余部分正常翻译。（默认）")
+        : t("修订里的文字保持原文不动。（默认）"),
+    },
+  ];
+
+  let chosen: RevisionMode | "resolve" = "skip";
+  const overlay = el("div", "overlay");
+  const modal = el("div", "modal word-revision");
+  const mark = el("div", "mi warn");
+  mark.append(icon("warn"));
+  const source = el("span", "mlabel");
+  source.textContent = t("Word 文档 · 开始前核对");
+  const heading = el("h3");
+  heading.textContent = title;
+  const body = el("div", "mbody");
+  const introLine = el("p");
+  introLine.textContent = intro;
+  const list = el("div", "rev-options");
+  const rows: HTMLButtonElement[] = [];
+  for (const option of options) {
+    const row = el("button", "rev-option") as HTMLButtonElement;
+    row.type = "button";
+    row.setAttribute("role", "radio");
+    row.setAttribute("aria-checked", String(option.value === "skip"));
+    const dot = el("span", "rev-dot");
+    const copy = el("div", "rev-copy");
+    const name = el("b");
+    name.textContent = option.label;
+    const hint = el("small");
+    hint.textContent = option.hint;
+    copy.append(name, hint);
+    row.append(dot, copy);
+    if (option.value === "skip") row.classList.add("sel");
+    row.addEventListener("click", () => {
+      chosen = option.value;
+      for (const item of rows) {
+        item.classList.toggle("sel", item === row);
+        item.setAttribute("aria-checked", String(item === row));
+      }
+      primary.textContent = chosen === "resolve" ? t("知道了") : t("开始翻译");
+    });
+    rows.push(row);
+    list.append(row);
+  }
+
+  // 「本批其他有修订的文件也按这个处理」：只有真还有其他带修订的文件时才出现（样张②）。
+  let applyCheckbox: HTMLInputElement | null = null;
+  if (single && filesWithRevisions(st).length - entries.length > 0) {
+    const line = el("label", "rev-apply");
+    applyCheckbox = document.createElement("input");
+    applyCheckbox.type = "checkbox";
+    applyCheckbox.checked = st.revisionApplyToBatch;
+    const words = document.createElement("span");
+    words.textContent = t("本批其他有修订的文件也按这个处理");
+    line.append(applyCheckbox, words);
+    list.append(line);
+  }
+
+  body.append(introLine, list);
+
+  const acts = el("div", "macts");
+  const close = () => overlay.remove();
+  const cancel = createButton({ label: t("取消"), onClick: close });
+  const primary = createButton({
+    label: t("开始翻译"),
+    variant: "primary",
+    onClick: () => {
+      if (chosen === "resolve") {
+        close();
+        showRevisionResolveModal(st, entries);
+        return;
+      }
+      st.revisionMode = chosen;
+      if (applyCheckbox?.checked) st.revisionApplyToBatch = true;
+      close();
+      void submitAfterResumeCheck("word", st);
+    },
+  });
+  acts.append(cancel, primary);
+  modal.append(mark, source, heading, body, acts);
+  overlay.append(modal);
+  document.body.append(overlay);
+}
+
+/** 样张③：选了「先处理修订」之后那一步。这里已经不再启动翻译了。 */
+function showRevisionResolveModal(
+  st: SurfaceState,
+  entries: Array<{ file: FileItem; count: number }>,
+): void {
+  const single = entries.length === 1;
+  const name = single ? fileLabel(entries[0].file) : t("这批文件");
+  openModal({
+    tone: "tint",
+    icon: "folder",
+    title: t("好的，先处理修订"),
+    body: [
+      single
+        ? t("请用 Word 打开「{0}」，在「审阅」里接受或拒绝全部修订并保存。处理完回到这里点「重新扫描」，就可以开始翻译了。", name)
+        : t("请用 Word 打开这批文件，在「审阅」里接受或拒绝全部修订并保存。处理完回到这里点「重新扫描」，就可以开始翻译了。"),
+    ],
+    actions: [
+      {
+        label: t("在访达中显示"),
+        onClick: () => revealSourceInFinder(entries),
+      },
+      // 「知道了」= 主按钮；点完什么也不启动，用户自己回 Word 处理。
+      { label: t("知道了"), variant: "primary" },
+    ],
+  });
+  // 点过「先处理修订」就等于这次不翻：把「本批其他文件也按这个处理」的状态清掉，
+  // 免得下次点开始翻译时静默跳过这一问。
+  st.revisionApplyToBatch = false;
+}
+
+/** 「在访达中显示」：macOS 是访达，其他平台由壳自己换成文件管理器。 */
+function revealSourceInFinder(entries: Array<{ file: FileItem; count: number }>): void {
+  const target = entries[0]?.file.path;
+  if (!target) return;
+  void (async () => {
+    try {
+      await invoke("open_local_path", { path: target, reveal: true });
+    } catch (error) {
+      showToast({ message: redactedText((error as Error)?.message, t("打开路径失败。")), error: true });
+    }
+  })();
 }
 
 /** 预检加提交合起来要跑好几个来回，这段时间里按钮还是可点的。第二次点击最终会被
