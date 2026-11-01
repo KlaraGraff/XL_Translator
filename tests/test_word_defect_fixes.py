@@ -29,6 +29,7 @@ from core.word_document import (
     WordFileItem,
     _looks_like_toc_title,
     detect_hidden_word_content,
+    extract_word_segments,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
@@ -698,17 +699,23 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
         )
         doc.save(path)
 
-    def test_content_controls_and_tracked_insertions_are_reported(self) -> None:
+    def test_content_controls_and_tracked_insertions_are_no_longer_defects(self) -> None:
+        """V10.5：内容控件随正文一起翻，修订由用户在开始前选跳过还是连它一起翻。
+
+        两者都不再算「读不到的内容」——以前它们报成漏译，用户只能自己去 Word 里
+        处理；现在一个自动翻、一个有明确的选择，剩下的只有行内控件。
+        """
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "hidden.docx"
             self._build_hidden_content_docx(path)
 
             report = detect_hidden_word_content(path)
+            # 计数照旧留着（过程记录要看），但都不再进漏译总账。
             self.assertEqual(report.content_control_count, 1)
             self.assertEqual(report.tracked_insertion_count, 1)
-            self.assertTrue(report.found)
-            self.assertIn("内容控件", report.describe())
-            self.assertIn("修订", report.describe())
+            self.assertEqual(report.total, 0)
+            self.assertFalse(report.found)
+            self.assertEqual(report.describe(), "")
 
     def test_textboxes_and_footnotes_are_counted_but_not_reported(self) -> None:
         """审计 高-13：文本框和脚注走不进 python-docx 的段落遍历；现在单独翻译，只计数不报漏译。"""
@@ -826,7 +833,7 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
                 self.assertEqual(report.describe(), "")
 
     def test_toc_and_real_content_control_are_counted_apart(self) -> None:
-        """同一份文档里既有目录又有真正藏了正文的控件时，只有后者算漏译。"""
+        """同一份文档里既有目录又有真正的正文控件：两者分开计数，都不算漏译。"""
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "both.docx"
             doc = Document()
@@ -844,13 +851,15 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             report = detect_hidden_word_content(path)
             self.assertEqual(report.toc_control_count, 1)
             self.assertEqual(report.content_control_count, 1)
-            self.assertTrue(report.found)
-            self.assertIn("内容控件 1 处", report.describe())
+            # V10.5：控件里的段落随正文一起翻，不再是漏译；目录依旧是提示，不是缺陷。
+            self.assertFalse(report.found)
+            self.assertEqual(report.describe(), "")
 
-    def test_control_wrapping_a_toc_and_real_text_is_still_a_defect(self) -> None:
-        """外层控件套着目录时不许整体降级——里面藏的正文会被静默吞掉。
+    def test_control_wrapping_a_toc_is_not_treated_as_pure_toc(self) -> None:
+        """外层控件套着目录时不许整体当成纯目录——里面的正文会被静默吞掉。
 
-        误报只是烦人，漏报是丢内容。拿不准一律退回按漏译报警。
+        这类控件现在按普通内容控件翻译（V10.5），所以它是否被判成纯目录，看的是
+        ``toc_control_count``：被误判成目录就等于整块不翻，那才是真丢内容。
         """
         secret = "SECRET CLAUSE that must be translated."
         shapes = {
@@ -886,9 +895,10 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
                 report = detect_hidden_word_content(path)
                 self.assertEqual(report.toc_control_count, 0, f"{name}：被当成了纯目录")
                 self.assertEqual(report.content_control_count, 1)
-                self.assertTrue(report.found, f"{name}：藏起来的正文没有报警")
+                segments = extract_word_segments(path, target_lang="fr")
+                self.assertIn(secret, [segment.source for segment in segments], f"{name}：藏起来的正文没拿去翻译")
 
-    def test_short_sentence_smuggled_into_a_toc_is_still_a_defect(self) -> None:
+    def test_short_sentence_smuggled_into_a_toc_is_still_translated(self) -> None:
         """一句短正文塞进目录控件，不许因为「字数不多」被放过。
 
         判目录看的是标题本身，不是长度。按长度放行时，一句十几个字的「本工程按甲方
@@ -919,7 +929,8 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             report = detect_hidden_word_content(path)
             self.assertEqual(report.toc_control_count, 0, "短句被当成了目录标题")
             self.assertEqual(report.content_control_count, 1)
-            self.assertTrue(report.found)
+            segments = extract_word_segments(path, target_lang="fr")
+            self.assertIn(secret, [segment.source for segment in segments])
 
     def test_bilingual_toc_title_is_still_a_hint(self) -> None:
         """双语标题「目录 / TABLE OF CONTENTS」仍是目录，不该退回报警。"""
@@ -944,7 +955,7 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             self.assertEqual(report.content_control_count, 0)
             self.assertFalse(report.found)
 
-    def test_unbalanced_field_brackets_fall_back_to_a_defect(self) -> None:
+    def test_unbalanced_field_brackets_do_not_pass_as_a_toc(self) -> None:
         """域的 begin/end 没配平就不认目录——读不准的时候不猜。
 
         多出来的一个 begin 会把它之后的所有正文都当成域结果扣掉，一整段漏译于是从
@@ -974,7 +985,8 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             report = detect_hidden_word_content(path)
             self.assertEqual(report.toc_control_count, 0, "域没配平却按目录放过了")
             self.assertEqual(report.content_control_count, 1)
-            self.assertTrue(report.found)
+            segments = extract_word_segments(path, target_lang="fr")
+            self.assertIn(secret.strip(), [segment.source for segment in segments])
 
     def test_toc_declared_by_a_self_closing_field(self) -> None:
         """目录也可以写成 w:fldSimple（指令挂在属性上），同样算目录。
@@ -1377,7 +1389,8 @@ class WordHiddenContentWarningTests(IsolatedAppDataTestCase):
                 return list(issues)
         return []
 
-    def test_runner_warns_about_content_controls_and_tracked_insertions(self) -> None:
+    def test_runner_no_longer_warns_about_content_controls_and_revisions(self) -> None:
+        """V10.5：内容控件自动跟着翻、修订由用户选好处理方式，都不再是「读不到的内容」。"""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "hidden.docx"
@@ -1386,9 +1399,9 @@ class WordHiddenContentWarningTests(IsolatedAppDataTestCase):
             runner = self._run(root, source)
 
             warnings = self._messages(runner, "WARN")
-            self.assertTrue(
-                any("未翻译内容" in text and "内容控件" in text for text in warnings),
-                f"没有发出漏译告警：{warnings}",
+            self.assertFalse(
+                any("未翻译内容" in text for text in warnings),
+                f"已经能处理的内容仍被当成漏译报警：{warnings}",
             )
 
     def test_table_of_contents_is_reported_as_a_hint(self) -> None:

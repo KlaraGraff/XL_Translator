@@ -75,6 +75,9 @@ class TaskOptions:
     untranslated_only: bool = False
     protect_front_matter: bool = False
     translate_headers_footers: bool = False
+    # 未接受的修订怎么处理：skip（默认，保持原文）或 translate（连修订一起翻，标记保留）。
+    # 旧客户端不带这个字段，缺省必须是 skip——不能因为少一个字段就改动修订里的原文。
+    revision_mode: str = "skip"
     allow_xls_fallback: bool = False
     allow_doc_fallback: bool = False
     include_images: bool = False

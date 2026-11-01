@@ -485,6 +485,13 @@ def _format_location_label(location: str) -> str:
     if cell_match:
         return f"表格 {int(cell_match.group(1)) + 1} / 单元格 {int(cell_match.group(2)) + 1}"
 
+    control_match = re.match(
+        r"content_control\[(\d+)\]\.paragraph\[(\d+)\]", str(location or "")
+    )
+    if control_match:
+        control, paragraph = control_match.groups()
+        return f"内容控件 {int(control) + 1} / 段落 {int(paragraph) + 1}"
+
     story_match = re.match(r"(textbox|footnote|endnote)\[(-?\d+)\]\.paragraph\[(\d+)\]", str(location or ""))
     if story_match:
         kind, number, paragraph = story_match.groups()
