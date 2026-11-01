@@ -624,6 +624,46 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
             self.assertIn("受密码保护", result["error"])
             self.assertNotIn("encrypted", result["error"])
 
+    def test_truncated_xls_fails_with_the_corrupted_sentence_and_skips_libreoffice(self) -> None:
+        """截断的 .xls：LibreOffice 会静默转出乱码表，所以根本不交给它。
+
+        两个转换函数都不打桩、soffice 也假装装着：文件坏了要在转换前就被认出来，
+        任务里这个文件判失败并说「已损坏或不完整」，不报成「兼容转换不可用」再退回
+        xlrd，更不能把乱码当译文来源。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = write_password_protected_xls(root / "truncated.xls", encrypted=False)
+            raw = legacy.read_bytes()
+            legacy.write_bytes(raw[: len(raw) // 2])
+            with ExitStack() as stack:
+                writer = self._run_patches(
+                    stack,
+                    root=root,
+                    engine=_PreflightEngine(),
+                    texts_by_path={},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_converter._find_soffice",
+                        return_value="/Applications/LibreOffice.app/Contents/MacOS/soffice",
+                    )
+                )
+                run = stack.enter_context(patch.object(xls_converter.subprocess, "run"))
+                runner = TaskRunner(
+                    [FileItem(path=legacy, name="truncated", size_kb=1.0, format="xls")],
+                    _settings(),
+                    source_root=root,
+                    allow_xls_fallback=True,
+                )
+                runner._run()
+
+            run.assert_not_called()
+            writer.assert_not_called()
+            result = _done_message(runner).file_results[0]
+            self.assertFalse(result["success"])
+            self.assertIn("已损坏或不完整", result["error"])
+
     def test_excel_review_colors_are_not_read_from_word_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

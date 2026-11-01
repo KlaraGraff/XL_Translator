@@ -2439,6 +2439,7 @@ class TaskRunner(BaseTaskRunner):
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
             from core.xls_converter import (
                 convert_with_excel,
+                XlsFileCorruptedError,
                 convert_with_fallback,
                 convert_with_libreoffice,
             )
@@ -2455,6 +2456,9 @@ class TaskRunner(BaseTaskRunner):
                     try:
                         process_path = convert_with_libreoffice(process_path)
                         file_conversion_modes[str(file_item.path)] = "libreoffice_conversion"
+                    except XlsFileCorruptedError:
+                        # 文件本身坏了，换哪条路转都一样：直接报，不说成「兼容转换不可用」。
+                        raise
                     except Exception as lo_error:
                         lo_reason = user_facing_reason(
                             lo_error, fallback="LibreOffice 转换不可用。"
