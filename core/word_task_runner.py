@@ -133,6 +133,7 @@ from core.task_runner import (
 )
 from core.translation_filter import (
     drop_file_texts_ruled_out_after_preflight,
+    is_same_han_spelling_in_chinese,
     VALIDATION_STATUS_FAIL,
     VALIDATION_STATUS_SOFT_PASS_REVIEW,
     VALIDATION_PROFILE_STRICT,
@@ -1098,6 +1099,8 @@ class WordTaskRunner(BaseTaskRunner):
         self.batch_stats = word_batch_stats
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
+        # 模型真给了回答的段落（请求失败交回的原文不在里面），见 already_in_target_language。
+        model_answered_sources: set[str] = set()
         # 模型报「本来就是目标语言」、原样返回的段落：成品体检不再把它们报成未译源文。
         already_target_sources: set[str] = set()
         recovery_pool: _WordRecoveryPool | None = None
@@ -1365,7 +1368,12 @@ class WordTaskRunner(BaseTaskRunner):
                     # 英文段落）：不是翻译失败，不该占三轮重试再标需复核。
                     # 译文跟原文不一样也算：模型报这段已经是目标语言，却又「翻」出了别的
                     # 东西（本机实测里一段英文被译成了中文插进英文文档），那份译文一律不用。
-                    del candidate
+                    with model_source_results_lock:
+                        model_answered = source in model_answered_sources
+                    if model_answered and is_same_han_spelling_in_chinese(source, candidate, target_lang):
+                        # 「品名」「数量」中日写法相同，模型原样还回来就是对的，不重翻、不标复核。
+                        # 只认模型真给了回答的：请求失败交回的原文不算。
+                        return True
                     if not auto_source_lang:
                         return False
                     with model_source_results_lock:
@@ -1378,6 +1386,8 @@ class WordTaskRunner(BaseTaskRunner):
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
                     if self.stop_requested():
                         return
+                    with model_source_results_lock:
+                        model_answered_sources.add(source)
                     if already_in_target_language(source, candidate):
                         return
                     if _needs_word_translation_retry(

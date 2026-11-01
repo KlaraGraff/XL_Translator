@@ -886,3 +886,23 @@ def drop_file_texts_ruled_out_after_preflight(
         for text_set in file_texts:
             global_unique_texts.update(text_set)
     return dropped_total
+
+
+def is_same_han_spelling_in_chinese(source: str, translation: str | None, target_lang: str) -> bool:
+    """目标是中文、原文只有汉字、模型原样还回来：中日（韩）写法相同的词，算已是中文。
+
+    「品名」「数量」「安全管理」在日文和中文里写法一样，模型原样返回是对的。以前 Word
+    把它当成没翻成功，重翻几轮再标需复核，体检还报「仍有未译原文」（#283 本机复测）。
+    只认整段都是汉字（可夹空格、数字和标点）：带假名、谚文、字母的照常走校验。
+    """
+    if not is_chinese_lang(target_lang):
+        return False
+    text = str(source or "").strip()
+    if not text or str(translation or "").strip() != text:
+        return False
+    if not _contains_chinese(text) or _KANA_OR_HANGUL_RE.search(text):
+        return False
+    if is_traditional_chinese(target_lang) and has_simplified_characters(text):
+        # 译成繁体时原样还回来的简体字是没转成繁体，不是写法相同。
+        return False
+    return not any(char.isalpha() and not _contains_chinese(char) for char in text)
