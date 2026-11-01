@@ -2910,6 +2910,7 @@ class WordTaskRunner(BaseTaskRunner):
                         else get_default_source_lang()
                     ),
                     revision_mode=self._revision_mode,
+                    protect_front_matter=self._protect_front_matter,
                 )
                 _remember_segment_locations(
                     segment_locations,

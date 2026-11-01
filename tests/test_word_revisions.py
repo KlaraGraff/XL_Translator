@@ -155,6 +155,59 @@ def _control_texts(path: Path) -> list[str]:
     ]
 
 
+# 测试文档里那一段修改前、修改后的整句（_revision_xml：正文原文 + 插入 + 删除）。
+ORIGINAL = f"{BODY_TEXT} {DELETED_TEXT}"
+REVISED = f"{BODY_TEXT} {INSERTED_TEXT}"
+TRANSLATIONS[ORIGINAL] = "Body text with a deleted sentence"
+TRANSLATIONS[REVISED] = "Body text with an inserted sentence"
+
+
+def _revision_paragraphs(path: Path) -> list:
+    """含修订标记的段落（w:p），按文档顺序。"""
+    body = Document(str(path)).element.body
+    return [
+        paragraph
+        for paragraph in body.iter(qn("w:p"))
+        if next(paragraph.iter(qn("w:ins"), qn("w:del")), None) is not None
+    ]
+
+
+def _view(paragraph, *, accept: bool) -> str:
+    """在 Word 里接受（或拒绝）全部修订后这一段的文字。"""
+    dropped = qn("w:del") if accept else qn("w:ins")
+    pieces = []
+    for node in paragraph.iter(qn("w:t"), qn("w:delText")):
+        parent = node.getparent()
+        while parent is not None and parent is not paragraph:
+            if parent.tag == dropped:
+                break
+            parent = parent.getparent()
+        else:
+            pieces.append(node.text or "")
+    return "".join(pieces).strip()
+
+
+def _accepted(paragraph) -> str:
+    return _view(paragraph, accept=True)
+
+
+def _rejected(paragraph) -> str:
+    return _view(paragraph, accept=False)
+
+
+def _paragraph_texts(path: Path) -> list[str]:
+    """全文每一段接受修订后的文字（含内容控件、表格里的段落）。"""
+    return [
+        _accepted(paragraph) for paragraph in Document(str(path)).element.body.iter(qn("w:p"))
+    ]
+
+
+def _paragraph_xml(paragraph) -> bytes:
+    from lxml import etree
+
+    return etree.tostring(paragraph)
+
+
 class ContentControlTests(unittest.TestCase):
     """A. 内容控件里的文字永远翻译，不由用户选择。"""
 
@@ -368,7 +421,7 @@ class RevisionModeTests(unittest.TestCase):
         self.assertNotIn(TRANSLATIONS[DELETED_TEXT], xml)
         self.assertIn(TRANSLATIONS[BODY_TEXT], xml)
 
-    def test_translate_replaces_revision_text_and_keeps_the_marks(self) -> None:
+    def test_translate_in_translation_only_output_keeps_marks_in_place(self) -> None:
         source = self.root / "revisions.docx"
         build_document(source, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
 
@@ -384,45 +437,100 @@ class RevisionModeTests(unittest.TestCase):
         )
         xml = _document_xml(output)
 
-        self.assertNotIn(INSERTED_TEXT, xml)
-        self.assertNotIn(DELETED_TEXT, xml)
-        self.assertIn(TRANSLATIONS[INSERTED_TEXT], xml)
-        self.assertIn(TRANSLATIONS[DELETED_TEXT], xml)
-        # 修订元素和它们的作者/日期/id 一个都不能少：对方打开译文还得看得出改了哪。
-        self.assertIn('<w:ins w:id="11" w:author="张三"', xml)
-        self.assertIn('<w:del w:id="12" w:author="张三"', xml)
-        # 删除的还是删除：译文写在 w:delText 里，不能被写成正文 w:t。
-        self.assertRegex(xml, r'<w:del[^>]*>.*?<w:delText[^>]*>A deleted sentence</w:delText>')
+        # 原文（含修订里的原文）一个字都不剩，修改前 / 修改后都换成了整句译文。
+        for text in (BODY_TEXT, INSERTED_TEXT, DELETED_TEXT):
+            self.assertNotIn(text, xml)
+        paragraph = _revision_paragraphs(output)[0]
+        self.assertEqual(_accepted(paragraph), TRANSLATIONS[REVISED])
+        self.assertEqual(_rejected(paragraph), TRANSLATIONS[ORIGINAL])
+        # 修订标记沿用原来的作者和日期；删除的写在 w:delText 里，不能被写成正文 w:t。
+        self.assertIn('w:author="张三"', xml)
+        self.assertIn('w:date="2026-01-02T03:04:05Z"', xml)
+        self.assertRegex(xml, r"<w:del [^>]*>.*?<w:delText[^>]*>[^<]*deleted")
         self.assertEqual(seen[0].mode, "translate")
         self.assertEqual(seen[0].translated_count, 2)
         self.assertEqual(seen[0].describe(), "翻译了 2 处修订（保留修订标记）")
         Document(str(output))
 
-    def test_translate_mode_only_extracts_revisions_in_translate_mode(self) -> None:
+    def test_translate_in_bilingual_output_leaves_the_original_paragraph_alone(self) -> None:
+        source = self.root / "revisions.docx"
+        build_document(source, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
+        original = _paragraph_xml(_revision_paragraphs(source)[0])
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "bilingual",
+            translations=TRANSLATIONS,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        source_paragraph, translation = _revision_paragraphs(output)
+        # 原文段落连同修订标记原样不动（maple 2026-11-01 定的：修订的译文放进译文段）。
+        self.assertEqual(_paragraph_xml(source_paragraph), original)
+        self.assertEqual(_accepted(translation), TRANSLATIONS[REVISED])
+        self.assertEqual(_rejected(translation), TRANSLATIONS[ORIGINAL])
+        for wrapper in translation.iter(qn("w:ins"), qn("w:del")):
+            self.assertEqual(wrapper.get(qn("w:author")), "张三")
+            self.assertEqual(wrapper.get(qn("w:date")), "2026-01-02T03:04:05Z")
+            # 新标记有自己的编号，不和原文段里的 11 / 12 撞。
+            self.assertNotIn(wrapper.get(qn("w:id")), {"11", "12"})
+        # 修订以外那截「正文原文」不再单独译一遍、另起一段（"Body text" 只来自开头那段正文）。
+        self.assertEqual(_paragraph_texts(output).count(TRANSLATIONS[BODY_TEXT]), 1)
+        Document(str(output))
+
+    def test_translate_marks_only_the_words_that_differ(self) -> None:
+        source = self.root / "amount.docx"
+        doc = Document()
+        _append_xml(
+            doc,
+            f'<w:p {nsdecls("w")}><w:r><w:t>合同金额为</w:t></w:r>'
+            '<w:del w:id="5" w:author="李四" w:date="2026-01-02T00:00:00Z">'
+            "<w:r><w:delText>100</w:delText></w:r></w:del>"
+            '<w:ins w:id="6" w:author="李四" w:date="2026-01-02T00:00:00Z">'
+            "<w:r><w:t>120</w:t></w:r></w:ins><w:r><w:t>万元。</w:t></w:r></w:p>",
+        )
+        doc.save(source)
+        translations = {
+            "合同金额为100万元。": "The contract amount is RMB 1 million.",
+            "合同金额为120万元。": "The contract amount is RMB 1.2 million.",
+        }
+        self.assertEqual(
+            sorted(segment.source for segment in extract_word_segments(
+                source, target_lang="en", revision_mode="translate"
+            )),
+            sorted(translations),
+        )
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "amount",
+            translations=translations,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        translation = _revision_paragraphs(output)[1]
+        self.assertEqual(
+            [node.text for node in translation.iter(qn("w:t"))],
+            ["The contract amount is RMB 1", ".2", " million."],
+        )
+        self.assertEqual(_accepted(translation), translations["合同金额为120万元。"])
+        self.assertEqual(_rejected(translation), translations["合同金额为100万元。"])
+
+    def test_translate_mode_extracts_whole_sentences_only_in_translate_mode(self) -> None:
         source = self.root / "revisions.docx"
         build_document(source, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
 
-        skip_sources = [
-            segment.source for segment in extract_word_segments(source, target_lang="en")
-        ]
-        translated = [
-            segment.source
-            for segment in extract_word_segments(
-                source, target_lang="en", revision_mode="translate"
-            )
-        ]
+        skip = extract_word_segments(source, target_lang="en")
+        translated = extract_word_segments(source, target_lang="en", revision_mode="translate")
 
-        self.assertNotIn(INSERTED_TEXT, skip_sources)
-        self.assertNotIn(DELETED_TEXT, skip_sources)
-        self.assertIn(INSERTED_TEXT, translated)
-        self.assertIn(DELETED_TEXT, translated)
-        self.assertTrue(
-            any(
-                segment.kind == "tracked_change"
-                for segment in extract_word_segments(
-                    source, target_lang="en", revision_mode="translate"
-                )
-            )
+        # skip：照旧只送修订以外的文字。
+        self.assertEqual([segment.source for segment in skip], [BODY_TEXT])
+        # translate：修改前、修改后各一句整句，修订以外那截不再单独送。
+        self.assertEqual(
+            [(segment.source, segment.kind) for segment in translated],
+            [(BODY_TEXT, "paragraph"), (ORIGINAL, "tracked_change"), (REVISED, "tracked_change")],
         )
 
     def test_both_control_and_revisions_together(self) -> None:
@@ -430,19 +538,74 @@ class RevisionModeTests(unittest.TestCase):
         build_document(source, control=CONTROL_TEXT, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
 
         output = self._write(source, mode="translate", name="both")
-        xml = _document_xml(output)
 
         self.assertEqual(
             _control_texts(output), [[TRANSLATIONS[CONTROL_TEXT]]]
         )
-        self.assertIn(TRANSLATIONS[INSERTED_TEXT], xml)
-        self.assertIn(TRANSLATIONS[DELETED_TEXT], xml)
+        paragraph = _revision_paragraphs(output)[0]
+        self.assertEqual(_accepted(paragraph), TRANSLATIONS[REVISED])
         Document(str(output))
+
+    def test_revision_inside_a_content_control_goes_to_the_translation_paragraph(self) -> None:
+        source = self.root / "control-revision.docx"
+        doc = Document()
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+            + _revision_xml(inserted=INSERTED_TEXT, deleted=DELETED_TEXT).replace(
+                f' {nsdecls("w")}', ""
+            )
+            + "</w:sdtContent></w:sdt>",
+        )
+        doc.save(source)
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "control-revision",
+            translations=TRANSLATIONS,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        control = next(Document(str(output)).element.body.iter(qn("w:sdt")))
+        paragraphs = list(control.iter(qn("w:p")))
+        self.assertEqual(len(paragraphs), 2)
+        self.assertEqual(_rejected(paragraphs[0]), ORIGINAL)
+        self.assertEqual(_accepted(paragraphs[1]), TRANSLATIONS[REVISED])
+        self.assertNotIn(TRANSLATIONS[BODY_TEXT], _paragraph_texts(output))
+
+    def test_revision_in_a_table_cell_is_translated_per_paragraph(self) -> None:
+        source = self.root / "cell.docx"
+        doc = Document()
+        cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+        cell.paragraphs[0].add_run("单元格第一行")
+        cell._tc.append(parse_xml(_revision_xml(inserted=INSERTED_TEXT, deleted=DELETED_TEXT)))
+        doc.save(source)
+        translations = {**TRANSLATIONS, "单元格第一行": "First line of the cell"}
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "cell",
+            translations=translations,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        tc = next(Document(str(output)).element.body.iter(qn("w:tc")))
+        texts = [_accepted(paragraph) for paragraph in tc.iterchildren(qn("w:p"))]
+        self.assertEqual(
+            texts,
+            ["单元格第一行", "First line of the cell", REVISED, TRANSLATIONS[REVISED]],
+        )
 
     def test_translate_mode_also_works_for_fill_in_tasks(self) -> None:
         source = self.root / "revisions.docx"
         build_document(source, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
         plan = build_word_coverage_plan(source, target_lang="en")
+        stories = extract_word_story_segments(source, target_lang="en", revision_mode="translate")
+        self.assertEqual(
+            sorted(segment.source for segment in stories), sorted([ORIGINAL, REVISED])
+        )
 
         output = write_untranslated_docx(
             source_path=source,
@@ -452,12 +615,197 @@ class RevisionModeTests(unittest.TestCase):
             target_lang="en",
             revision_mode="translate",
         )
+
+        source_paragraph, translation = _revision_paragraphs(output)
+        self.assertEqual(_rejected(source_paragraph), ORIGINAL)
+        self.assertEqual(_accepted(translation), TRANSLATIONS[REVISED])
+        self.assertEqual(_rejected(translation), TRANSLATIONS[ORIGINAL])
+        # 再补译一遍：译文已经在了，不再接一段。
+        self.assertEqual(
+            extract_word_story_segments(output, target_lang="en", revision_mode="translate"), []
+        )
+        again = write_untranslated_docx(
+            source_path=output,
+            output_dir=self.root / "fill-again",
+            plan=build_word_coverage_plan(output, target_lang="en"),
+            translations=TRANSLATIONS,
+            target_lang="en",
+            revision_mode="translate",
+        )
+        self.assertEqual(len(_revision_paragraphs(again)), 2)
+
+    def test_bilingual_translate_output_is_not_reported_as_untranslated(self) -> None:
+        source = self.root / "revisions.docx"
+        build_document(source, control=CONTROL_TEXT, inserted=INSERTED_TEXT, deleted=DELETED_TEXT)
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "check",
+            translations=TRANSLATIONS,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        self.assertEqual(build_word_coverage_plan(output, target_lang="en").source_units, [])
+
+
+def _cover_page_xml(text: str) -> str:
+    """Word「插入 → 封面」生成的那种封面：一个 docPartGallery 为 Cover Pages 的块级控件。"""
+    return (
+        f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj>'
+        '<w:docPartGallery w:val="Cover Pages"/><w:docPartUnique/>'
+        f"</w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+        "</w:sdtContent></w:sdt>"
+    )
+
+
+class ReviewFindingTests(unittest.TestCase):
+    """独立审查查出的几处：成对判定、封面保护、控件里的文本框。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_bilingual_control_output_is_covered_not_untranslated(self) -> None:
+        source = self.root / "control.docx"
+        build_document(source, control=CONTROL_TEXT)
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations=TRANSLATIONS,
+            target_lang="en",
+        )
+
+        plan = build_word_coverage_plan(output, target_lang="en")
+
+        self.assertEqual(plan.source_units, [])
+        control_units = [unit for unit in plan.units if unit.kind == "content_control"]
+        self.assertEqual(
+            [(unit.status, unit.target_text) for unit in control_units],
+            [("covered", TRANSLATIONS[CONTROL_TEXT])],
+        )
+        # 补译再跑：控件里的段落已经译过，不再送翻、也不再接一段。
+        self.assertNotIn(CONTROL_TEXT, plan.source_texts)
+        again = write_untranslated_docx(
+            source_path=output,
+            output_dir=self.root / "again",
+            plan=plan,
+            translations=TRANSLATIONS,
+            target_lang="en",
+        )
+        self.assertEqual(_control_texts(again), [[CONTROL_TEXT, TRANSLATIONS[CONTROL_TEXT]]])
+
+    def _cover_document(self) -> Path:
+        source = self.root / "cover.docx"
+        doc = Document()
+        _append_xml(doc, _cover_page_xml("封面标题"))
+        doc.add_heading("第一章 总则", level=1)
+        doc.add_paragraph(BODY_TEXT)
+        _append_xml(doc, _content_control_xml(CONTROL_TEXT))
+        doc.save(source)
+        return source
+
+    def test_cover_page_control_is_protected_with_front_matter(self) -> None:
+        source = self._cover_document()
+        translations = {**TRANSLATIONS, "封面标题": "Cover title", "第一章 总则": "Chapter 1"}
+
+        protected = [
+            segment.source
+            for segment in extract_word_segments(source, target_lang="en", protect_front_matter=True)
+        ]
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "protected",
+            translations=translations,
+            target_lang="en",
+            protect_front_matter=True,
+        )
+        plan = build_word_coverage_plan(output, target_lang="en", protect_front_matter=True)
+
+        self.assertNotIn("封面标题", protected)
+        self.assertIn(CONTROL_TEXT, protected)
+        # 封面控件原样不动，正文里的控件照常翻。
+        self.assertEqual(
+            _control_texts(output), [["封面标题"], [CONTROL_TEXT, TRANSLATIONS[CONTROL_TEXT]]]
+        )
+        self.assertEqual(plan.source_units, [])
+
+    def test_cover_page_control_is_translated_without_protection(self) -> None:
+        source = self._cover_document()
+
+        sources = [segment.source for segment in extract_word_segments(source, target_lang="en")]
+
+        self.assertIn("封面标题", sources)
+
+    def test_textbox_inside_a_control_is_translated_once(self) -> None:
+        from tests.test_word_embedded_text import _box_texts, _textbox_paragraph
+
+        source = self.root / "control-textbox.docx"
+        doc = Document()
+        paragraph = _textbox_paragraph(["图例说明"], cx=2286000, cy=914400)
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>{paragraph}</w:sdtContent></w:sdt>',
+        )
+        doc.save(source)
+        translations = {"正文原文": "Body text", "图例说明": "Legend"}
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations=translations,
+            target_lang="en",
+        )
         xml = _document_xml(output)
 
-        self.assertIn(TRANSLATIONS[INSERTED_TEXT], xml)
-        self.assertIn(TRANSLATIONS[DELETED_TEXT], xml)
-        self.assertIn('<w:ins w:id="11"', xml)
-        self.assertIn('<w:del w:id="12"', xml)
+        # 文本框（正本和 VML 备份）各自只多出一段译文；控件那一趟不再往框里或框外再写一份。
+        self.assertEqual(_box_texts(xml), [["图例说明", "Legend"], ["图例说明", "Legend"]])
+        self.assertEqual(xml.count("Legend"), 2)
+
+    def test_textbox_revision_is_counted_once(self) -> None:
+        from tests.test_word_embedded_text import _textbox_paragraph
+
+        source = self.root / "textbox-revision.docx"
+        doc = Document()
+        paragraph = parse_xml(_textbox_paragraph(["图例说明"], cx=2286000, cy=914400))
+        for box in paragraph.iter(qn("w:txbxContent")):
+            box.find(qn("w:p")).append(
+                parse_xml(
+                    f'<w:ins {nsdecls("w")} w:id="3" w:author="张三">'
+                    f"<w:r><w:t>{INSERTED_TEXT}</w:t></w:r></w:ins>"
+                )
+            )
+        doc.element.body.find(qn("w:sectPr")).addprevious(paragraph)
+        doc.save(source)
+
+        self.assertEqual(count_tracked_changes(Document(str(source)).element.body), 1)
+
+    def test_ordinary_document_is_untouched_by_the_new_passes(self) -> None:
+        """没有内容控件和修订的普通文档：translate 模式和 skip 模式写出来逐字节一样。"""
+        source = self.root / "plain.docx"
+        doc = Document()
+        doc.add_heading("第一章 总则", level=1)
+        doc.add_paragraph(BODY_TEXT)
+        doc.add_table(rows=1, cols=1).cell(0, 0).text = "表格里的字"
+        doc.save(source)
+        translations = {**TRANSLATIONS, "第一章 总则": "Chapter 1", "表格里的字": "Text in a table"}
+
+        outputs = [
+            _document_xml(
+                write_bilingual_docx(
+                    source_path=source,
+                    output_dir=self.root / mode,
+                    translations=translations,
+                    target_lang="en",
+                    revision_mode=mode,
+                )
+            )
+            for mode in ("skip", "translate")
+        ]
+
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertIn("Text in a table", outputs[0])
 
 
 class RunnerRevisionRecordTests(IsolatedAppDataTestCase):
@@ -476,6 +824,40 @@ class RunnerRevisionRecordTests(IsolatedAppDataTestCase):
         return next(
             message for message in runner._queue.queue if isinstance(message, DoneMsg)
         )
+
+    def test_full_run_with_a_control_reports_no_untranslated_paragraph(self) -> None:
+        """成品体检不打桩：双语输出里控件的原文段后面跟着译文，不能报「未翻译」。"""
+        from core.word_quality_report import _append_post_write_coverage_issues
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "control.docx"
+            build_document(source, control=CONTROL_TEXT)
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                AppSettings(source_lang="zh", target_lang="en"),
+                source_root=root,
+            )
+            with ExitStack() as stack:
+                word_helpers.WordResumeTests._runner_patches(self, stack, root=root)
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._append_post_write_coverage_issues",
+                        side_effect=_append_post_write_coverage_issues,
+                    )
+                )
+                runner._run()
+            done = next(
+                message for message in runner._queue.queue if isinstance(message, DoneMsg)
+            )
+
+            result = done.file_results[0]
+            self.assertTrue(result["success"], result)
+            self.assertEqual(_control_texts(Path(result["output"])), [[CONTROL_TEXT, "TM translation"]])
+            self.assertEqual(
+                [issue for issue in result["issues"] if "content_control" in str(issue.get("location"))],
+                [],
+            )
 
     def test_skip_is_recorded_on_the_file_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -506,13 +888,12 @@ class RunnerRevisionRecordTests(IsolatedAppDataTestCase):
             self.assertEqual(
                 result["revisions"]["label"], "翻译了 2 处修订（保留修订标记）"
             )
-            # 这里走的是记忆库替身（每句都给 "TM translation"）：验证的是修订里的字
-            # 换成了译文、修订标记还在，具体译法由别的用例覆盖。
-            xml = _document_xml(Path(result["output"]))
-            self.assertIn('<w:ins w:id="11" w:author="张三"', xml)
-            self.assertIn('<w:del w:id="12" w:author="张三"', xml)
-            self.assertNotIn(INSERTED_TEXT, xml)
-            self.assertNotIn(DELETED_TEXT, xml)
+            # 这里走的是记忆库替身（每句都给 "TM translation"）：验证的是原文段落和修订
+            # 标记原样留着、译文段写了出来，具体译法由别的用例覆盖。
+            # 替身给修改前、修改后同一句译文，两句一样，译文段里也就没有要标的差别。
+            source_paragraph = _revision_paragraphs(Path(result["output"]))[0]
+            self.assertEqual(_rejected(source_paragraph), ORIGINAL)
+            self.assertEqual(_accepted(source_paragraph.getnext()), "TM translation")
 
 
 if __name__ == "__main__":

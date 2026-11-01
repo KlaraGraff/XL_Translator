@@ -50,7 +50,12 @@ from core.word_inline_marks import (
 )
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 from core.output_metadata import is_translation_output
-from core.word_revisions import REVISION_MODE_TRANSLATE, normalize_revision_mode
+from core.word_revisions import (
+    EMPTY_REVISION_LAYOUT,
+    REVISION_MODE_TRANSLATE,
+    RevisionLayout,
+    normalize_revision_mode,
+)
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
@@ -463,13 +468,15 @@ def extract_word_segments(
     只有 include_headers_footers 打开时才追加进来。
 
     内容控件（``w:sdt``，自动目录除外）里的段落按普通正文段落一起抽出来；未接受的修订
-    按 ``revision_mode`` 走：``skip``（默认）不进待译清单，``translate`` 才把 ``w:ins``
-    / ``w:del`` 里的文字一并送翻。写回时两种情况都不会改动修订本身。
+    按 ``revision_mode`` 走：``skip``（默认）含修订的段落照旧只送修订以外的文字，
+    ``translate`` 时这些段落改由修订那一趟接手，修改前、修改后各送一句整句
+    （见 core/word_revisions.py）。
     """
     doc = Document(str(path))
     front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
     protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
     protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
+    revisions = _revision_layout(doc, revision_mode, front_matter)
     seen: set[str] = set()
     segments: list[WordSegment] = []
     section_stack: dict[int, str] = {}
@@ -481,6 +488,8 @@ def extract_word_segments(
         heading_level = _detect_heading_level(paragraph)
         if heading_level is not None and source:
             _update_section_stack(section_stack, heading_level, source)
+        if revisions.skips_paragraph(paragraph._p):
+            continue
 
         if not _is_translatable_source(
             source,
@@ -509,6 +518,8 @@ def extract_word_segments(
         if table_index in protected_tables:
             continue
         for cell_index, cell in enumerate(_iter_unique_table_cells(table)):
+            if revisions.skips_cell(cell._tc):
+                continue
             source = _cell_source_text(cell)
             if not _is_translatable_source(
                 source,
@@ -546,6 +557,8 @@ def extract_word_segments(
         doc,
         target_lang=target_lang,
         source_lang=source_lang,
+        front_matter=front_matter,
+        layout=revisions,
     ):
         if segment.source in seen:
             continue
@@ -557,6 +570,7 @@ def extract_word_segments(
             doc,
             target_lang=target_lang,
             source_lang=source_lang,
+            front_matter=front_matter,
         ):
             if segment.source in seen:
                 continue
@@ -578,6 +592,8 @@ def _collect_content_control_segments(
     target_lang: str,
     source_lang: str,
     untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
+    layout: RevisionLayout | None = None,
 ) -> list[WordSegment]:
     """内容控件里的段落：两类看不见的正文之一，和正文段落同一套抽取规则。"""
     from core.word_revisions import extract_content_control_segments
@@ -588,6 +604,8 @@ def _collect_content_control_segments(
             target_lang=target_lang,
             source_lang=source_lang,
             untranslated_only=untranslated_only,
+            front_matter=front_matter,
+            layout=layout,
         )
     except Exception as exc:  # noqa: BLE001 - 内容控件异常不该拖垮正文翻译
         logger.warning(f"读取 Word 内容控件失败：{exc!r}")
@@ -600,8 +618,9 @@ def _collect_revision_segments(
     target_lang: str,
     source_lang: str,
     untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
 ) -> list[WordSegment]:
-    """未接受修订里的文字：只在用户选了「修订一起翻译」时才进待译清单。"""
+    """含修订的段落：只在用户选了「修订一起翻译」时才进待译清单（修改前、修改后各一句）。"""
     from core.word_revisions import extract_revision_segments
 
     try:
@@ -610,10 +629,31 @@ def _collect_revision_segments(
             target_lang=target_lang,
             source_lang=source_lang,
             untranslated_only=untranslated_only,
+            front_matter=front_matter,
         )
     except Exception as exc:  # noqa: BLE001 - 修订读取异常不该拖垮正文翻译
         logger.warning(f"读取 Word 修订失败：{exc!r}")
         return []
+
+
+def _revision_layout(
+    doc: Document,
+    revision_mode: str,
+    front_matter: "WordFrontMatterBoundary | None",
+) -> RevisionLayout:
+    """「修订一起翻译」时由修订那一趟接手的段落；其余模式、或读不出来时为空。
+
+    读不出来就当没有：常规写回照旧处理这些段落（只译修订以外的文字），不至于整段漏掉。
+    """
+    if normalize_revision_mode(revision_mode) != REVISION_MODE_TRANSLATE:
+        return EMPTY_REVISION_LAYOUT
+    from core.word_revisions import revision_layout
+
+    try:
+        return revision_layout(doc, front_matter=front_matter)
+    except Exception as exc:  # noqa: BLE001 - 修订读取异常不该拖垮正文翻译
+        logger.warning(f"读取 Word 修订失败：{exc!r}")
+        return EMPTY_REVISION_LAYOUT
 
 
 def extract_word_story_segments(
@@ -622,6 +662,7 @@ def extract_word_story_segments(
     target_lang: str,
     source_lang: str = "zh",
     revision_mode: str = "skip",
+    protect_front_matter: bool = False,
 ) -> list[WordSegment]:
     """补译模式：文本框、脚注/尾注和未接受修订里还没译过的段落。
 
@@ -647,6 +688,9 @@ def extract_word_story_segments(
                 target_lang=target_lang,
                 source_lang=source_lang,
                 untranslated_only=True,
+                front_matter=(
+                    find_word_front_matter_boundary(doc) if protect_front_matter else None
+                ),
             )
         )
     for segment in candidates:
@@ -1317,6 +1361,8 @@ def write_bilingual_docx(
         id(paragraph): _paragraph_source_text(paragraph)
         for paragraph in all_paragraphs
     }
+    # 必须在插任何译文段之前取：取晚了，插进去的译文段也会被当成要处理的段落。
+    revisions = _revision_layout(doc, revision_mode, front_matter)
     original_paragraph_prefixes = {
         id(paragraph): _paragraph_leading_inline_whitespace(paragraph)
         for paragraph in all_paragraphs
@@ -1347,6 +1393,8 @@ def write_bilingual_docx(
 
     for paragraph_index, paragraph in enumerate(body_paragraphs):
         if paragraph_index in protected_paragraphs:
+            continue
+        if revisions.skips_paragraph(paragraph._p):
             continue
         paragraph_key = id(paragraph)
         source = original_paragraph_sources.get(
@@ -1452,6 +1500,8 @@ def write_bilingual_docx(
     for cell in table_cells:
         if id(cell) in protected_table_cell_ids:
             continue
+        if revisions.skips_cell(cell._tc):
+            continue
         source = original_cell_sources.get(id(cell), _cell_source_text(cell))
         if not _is_translatable_source(
             source,
@@ -1553,6 +1603,8 @@ def write_bilingual_docx(
         target_lang=target_lang,
         source_lang=source_lang,
         output_translation_only=output_translation_only,
+        front_matter=front_matter,
+        layout=revisions,
     )
     revision_stats = _apply_revision_translations(
         doc,
@@ -1560,6 +1612,9 @@ def write_bilingual_docx(
         target_lang=target_lang,
         source_lang=source_lang,
         mode=revision_mode,
+        output_translation_only=output_translation_only,
+        front_matter=front_matter,
+        layout=revisions,
     )
     if revision_callback is not None:
         revision_callback(revision_stats)
@@ -1616,6 +1671,8 @@ def _apply_content_control_translations(
     source_lang: str,
     output_translation_only: bool = False,
     untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
+    layout: RevisionLayout | None = None,
 ) -> int:
     """内容控件里的段落这一趟。内容控件写坏了不该拖垮整份正文的输出。"""
     from core.word_revisions import apply_content_control_translations
@@ -1628,6 +1685,8 @@ def _apply_content_control_translations(
             source_lang=source_lang,
             output_translation_only=output_translation_only,
             untranslated_only=untranslated_only,
+            front_matter=front_matter,
+            layout=layout,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"写入 Word 内容控件失败：{exc!r}")
@@ -1635,7 +1694,7 @@ def _apply_content_control_translations(
 
 
 def _apply_revision_translations(doc: Document, translations: dict[str, str], **kwargs):
-    """未接受修订这一趟：skip 只数不改，translate 把文字换掉、标记保留。"""
+    """未接受修订这一趟：skip 只数不改，translate 写带修订标记的译文（见 core/word_revisions.py）。"""
     from core.word_revisions import RevisionWriteStats, apply_revision_translations
 
     try:

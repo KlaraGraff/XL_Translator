@@ -492,6 +492,10 @@ def _format_location_label(location: str) -> str:
         control, paragraph = control_match.groups()
         return f"内容控件 {int(control) + 1} / 段落 {int(paragraph) + 1}"
 
+    revision_match = re.match(r"revision\[(\d+)\]", str(location or ""))
+    if revision_match:
+        return f"含修订的段落 {int(revision_match.group(1)) + 1}"
+
     story_match = re.match(r"(textbox|footnote|endnote)\[(-?\d+)\]\.paragraph\[(\d+)\]", str(location or ""))
     if story_match:
         kind, number, paragraph = story_match.groups()
