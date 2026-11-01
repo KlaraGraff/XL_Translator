@@ -831,6 +831,11 @@ def _looks_like_base64_image(value: str) -> bool:
     return False
 
 
+def exception_text(exc: BaseException) -> str:
+    """异常的全部可读文字：消息、类型名、HTTP 状态码与响应体、SDK 的 body。"""
+    return _exception_text(exc)
+
+
 def _exception_text(exc: BaseException) -> str:
     parts = [str(exc), exc.__class__.__name__]
     response = getattr(exc, "response", None)

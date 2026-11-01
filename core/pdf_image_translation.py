@@ -95,7 +95,8 @@ from core.model_roles import (
     save_model_role_availability,
 )
 from core.surface_rate import resolve_pdf_page_concurrency, resolve_pdf_review_concurrency
-from core.user_facing_errors import is_quota_problem
+from core.image_generation import exception_text
+from core.user_facing_errors import QUOTA_EXHAUSTED_SENTENCE, is_quota_problem
 from core.pdf_review import (
     OpenAICompatiblePdfReviewClient,
     PdfPageReviewClient,
@@ -248,6 +249,21 @@ PDF_PAGE_MAX_RENDER_PIXELS = 40_000_000
 PDF_PAGE_MIN_RENDER_DPI = 72.0
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _model_unavailable_reason(exc: BaseException, *, fallback: str) -> str:
+    """模型级失败换成人话；额度、余额不足一律说成额度那句。
+
+    429 + insufficient_quota 会被通用规则说成「请求过于频繁」，403 +「余额不足」说成
+    「没有访问权限」，存不存成「不可用」又要靠这句话认出额度问题，所以先看原始报文
+    （连同引发它的那一串异常，以及 HTTP 响应体：额度字样常常只在响应体里）。
+    """
+    current: BaseException | None = exc
+    while current is not None:
+        if is_quota_problem(exception_text(current)):
+            return QUOTA_EXHAUSTED_SENTENCE
+        current = current.__cause__ or current.__context__
+    return user_facing_reason(exc, fallback=fallback)
 
 
 def _save_image_model_availability(settings: AppSettings, **verdict: Any) -> None:
@@ -5324,7 +5340,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     # 换成人话；原文留给 debug 日志。
                     logger.debug(f"[PDF] 图像模型不可用原始错误：{exc!r}")
                     raise ImageModelUnavailableError(
-                        user_facing_reason(
+                        _model_unavailable_reason(
                             exc,
                             fallback=(
                                 "图像翻译模型当前不可用，请在设置中检查此连接的 API 密钥、"
@@ -5457,7 +5473,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         ):
                             logger.debug(f"[PDF] 审核模型不可用原始错误：{exc!r}")
                             raise PdfReviewModelUnavailableError(
-                                user_facing_reason(
+                                _model_unavailable_reason(
                                     exc,
                                     fallback=(
                                         "图像翻译审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
