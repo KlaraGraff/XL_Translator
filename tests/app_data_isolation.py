@@ -9,6 +9,8 @@ resolve their file from it when they are created.
 
 from __future__ import annotations
 
+import os
+
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -40,3 +42,11 @@ class IsolatedAppDataTestCase(unittest.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
+        # 开发机上若设了 MIMO_API_KEY 之类的环境变量，取密钥会落到它上面，
+        # 「没填密钥」的用例就变成拿真密钥去连。这里一律清掉，只认测试自己存的。
+        api_key_env = patch.dict(
+            os.environ,
+            {name: "" for name in os.environ if name.endswith("_API_KEY") or name.endswith("_API_KEY_ID")},
+        )
+        api_key_env.start()
+        self.addCleanup(api_key_env.stop)
