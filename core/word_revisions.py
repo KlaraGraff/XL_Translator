@@ -114,12 +114,11 @@ def _is_toc_control(element) -> bool:
 
 
 def toc_controls(body) -> list:
-    """正文里的自动目录控件（``w:sdt``）。目录是域，翻译它没有意义。"""
-    return [
-        control
-        for control in _iter_outermost_elements(body, "w:sdt")
-        if _is_toc_control(control)
-    ]
+    """正文里的自动目录控件（``w:sdt``）。目录是域，翻译它没有意义。
+
+    嵌在别的控件里的目录也算（不只看最外层），否则它的「目录」标题会被当正文翻掉。
+    """
+    return [control for control in body.iter(qn("w:sdt")) if _is_toc_control(control)]
 
 
 def _inside(element, containers) -> bool:
@@ -832,6 +831,9 @@ def content_control_paragraph_entries(
     entries: list[tuple[Paragraph, int, int]] = []
     for control_index, control in enumerate(controls):
         if is_front_matter(control, body, front_matter_start):
+            continue
+        if _in_embedded_story(control, body):
+            # 文本框里的控件归文本框那一趟翻；这里再翻一次就重复了。
             continue
         if protect_cover and in_cover_page(control, body):
             continue

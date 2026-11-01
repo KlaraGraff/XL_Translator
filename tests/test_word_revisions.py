@@ -975,6 +975,38 @@ class ThirdReviewTests(unittest.TestCase):
         plan = build_word_coverage_plan(output, target_lang="en", protect_front_matter=True)
         self.assertEqual(plan.source_units, [])
 
+    def test_control_inside_a_text_box_is_translated_once(self) -> None:
+        from tests.test_word_embedded_text import _textbox_paragraph
+
+        source = self.root / "boxed-control.docx"
+        doc = Document()
+        paragraph = parse_xml(_textbox_paragraph(["图例说明"], cx=2286000, cy=914400))
+        for box in paragraph.iter(qn("w:txbxContent")):
+            box.append(parse_xml(_content_control_xml(CONTROL_TEXT)))
+        doc.element.body.find(qn("w:sectPr")).addprevious(paragraph)
+        doc.save(source)
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations={**TRANSLATIONS, "图例说明": "Legend"},
+            target_lang="en",
+        )
+
+        # 正本和 VML 备份各一份，控件那一趟不再多写。
+        self.assertEqual(_document_xml(output).count(TRANSLATIONS[CONTROL_TEXT]), 2)
+
+    def test_toc_nested_in_another_control_is_left_alone(self) -> None:
+        source = self.root / "nested-toc.docx"
+        doc = Document()
+        toc = _content_control_xml("目录", toc=True).replace(f' {nsdecls("w")}', "")
+        _append_xml(doc, f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>{toc}</w:sdtContent></w:sdt>')
+        doc.save(source)
+
+        sources = [segment.source for segment in extract_word_segments(source, target_lang="en")]
+
+        self.assertNotIn("目录", sources)
+
     def test_control_pass_gives_copied_paragraph_marks_new_ids(self) -> None:
         source = self.root / "control-ids.docx"
         doc = Document()
