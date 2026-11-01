@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import sys
+
+import httpx
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,15 +72,33 @@ class PdfAvailabilitySavedTests(unittest.TestCase):
         self.assertIn("密钥", stored.availability_message)
 
     def test_running_out_of_quota_is_not_saved_as_unavailable(self) -> None:
-        """额度用完只算这一次：充值后配置不变，存下的「不可用」会一直挡着自动组合。"""
+        """额度用完只算这一次：充值后配置不变，存下的「不可用」会一直挡着自动组合。
 
-        class _QuotaClient:
-            def generate_page(self, **_kwargs):
-                raise ImageModelUnavailableError("Error code: 429 insufficient_quota")
+        真实报文常带 429 / 403：通用规则会把它们说成「请求过于频繁」「没有访问权限」，
+        额度字样在换成人话时丢掉，所以三种写法都要认出来。
+        """
+        def http_error(status: int, body: str) -> Exception:
+            request = httpx.Request("POST", "https://images.example/v1/images/edits")
+            response = httpx.Response(status, request=request, text=body)
+            return httpx.HTTPStatusError(
+                f"Client error '{status}' for url '{request.url}'", request=request, response=response
+            )
 
-        self._run(_QuotaClient())
-        stored = settings_module.load_settings().image_model_role
-        self.assertEqual(stored.availability_status, "unknown")
+        for error in (
+            RuntimeError("Error code: 402 insufficient_quota"),
+            http_error(429, '{"error": {"code": "insufficient_quota", "message": "You exceeded your current quota"}}'),
+            http_error(403, '{"error": {"message": "账户余额不足，请充值后再试"}}'),
+        ):
+            with self.subTest(error=str(error)):
+                settings_module.save_settings(_page_review_settings(self.root))
+
+                class _QuotaClient:
+                    def generate_page(self, **_kwargs):
+                        raise ImageModelUnavailableError(str(error)) from error
+
+                self._run(_QuotaClient())
+                stored = settings_module.load_settings().image_model_role
+                self.assertEqual(stored.availability_status, "unknown")
 
     def test_a_verdict_for_a_model_the_user_since_replaced_is_not_saved(self) -> None:
         task_settings = settings_module.load_settings()
