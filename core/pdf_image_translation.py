@@ -90,9 +90,8 @@ from core.model_roles import (
     pdf_review_model_signature,
     provider_supports_capability,
     unsupported_capability_message,
-    record_image_model_availability,
-    record_pdf_review_model_availability,
     resolve_effective_model_config,
+    save_model_role_availability,
 )
 from core.surface_rate import resolve_pdf_page_concurrency, resolve_pdf_review_concurrency
 from core.pdf_review import (
@@ -247,6 +246,16 @@ PDF_PAGE_MAX_RENDER_PIXELS = 40_000_000
 PDF_PAGE_MIN_RENDER_DPI = 72.0
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _save_image_model_availability(settings: AppSettings, **verdict: Any) -> None:
+    """任务里得出的图像模型结论：记在任务副本上，同时存进设置（重启后还在）。"""
+    save_model_role_availability(settings, ROLE_IMAGE, **verdict)
+
+
+def _save_pdf_review_model_availability(settings: AppSettings, **verdict: Any) -> None:
+    """同上，图像翻译审核模型。"""
+    save_model_role_availability(settings, ROLE_PDF_REVIEW, **verdict)
 
 
 class PdfPageActionError(ValueError):
@@ -3006,7 +3015,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 self._image_model_missing = message
                 model_config = None
             else:
-                record_image_model_availability(
+                _save_image_model_availability(
                     self._settings,
                     ok=False,
                     message=message,
@@ -3053,7 +3062,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     raise PdfReviewModelUnavailableError("图像翻译审核模型的名称不能为空")
             except PdfReviewModelUnavailableError as exc:
                 message = str(exc)
-                record_pdf_review_model_availability(
+                _save_pdf_review_model_availability(
                     self._settings,
                     ok=False,
                     message=message,
@@ -3221,7 +3230,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 if self._fatal_model_error:
                     fatal_error = self._fatal_model_error
                     if self._fatal_review_model_error:
-                        record_pdf_review_model_availability(
+                        _save_pdf_review_model_availability(
                             self._settings,
                             ok=False,
                             message=self._fatal_review_model_error,
@@ -3348,7 +3357,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 self._log("WARN", "已停止：已全部翻译的文件均已生成，未翻译完成的文件保留已完成的页面和报告。")
         except ImageModelUnavailableError as exc:
             fatal_error = str(exc)
-            record_image_model_availability(
+            _save_image_model_availability(
                 self._settings,
                 ok=False,
                 message=fatal_error,
@@ -3358,7 +3367,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             self._log("ERROR", fatal_error)
         except PdfReviewModelUnavailableError as exc:
             fatal_error = str(exc)
-            record_pdf_review_model_availability(
+            _save_pdf_review_model_availability(
                 self._settings,
                 ok=False,
                 message=fatal_error,
@@ -5912,7 +5921,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         self._image_output_guard.succeeded()
         if self._settings.image_model_role.availability_status == "available":
             return
-        record_image_model_availability(
+        _save_image_model_availability(
             self._settings,
             ok=True,
             message="图像翻译模型调用成功。",
@@ -6007,7 +6016,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
     def _mark_pdf_review_model_success(self) -> None:
         if self._settings.pdf_review_model_role.availability_status == "available":
             return
-        record_pdf_review_model_availability(
+        _save_pdf_review_model_availability(
             self._settings,
             ok=True,
             message="图像翻译审核模型调用成功。",
