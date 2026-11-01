@@ -34,6 +34,9 @@ _NOISE_PATTERNS = (
 )
 
 
+QUOTA_EXHAUSTED_SENTENCE = "该账号的接口额度或余额不足，请充值或更换连接。"
+
+
 def strip_error_noise(value: object) -> str:
     """Collapse an exception (or message) to a single trimmed line."""
     raw = value if isinstance(value, str) else str(value or "")
@@ -163,7 +166,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"insufficient_quota", r"billing hard limit", r"余额不足", r"额度不足", r"\b402\b"),
-        "该账号的接口额度或余额不足，请充值或更换连接。",
+        QUOTA_EXHAUSTED_SENTENCE,
     ),
     (
         (r"\bforbidden\b", r"\b403\b"),
@@ -191,9 +194,23 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
 )
 
+_QUOTA_RE = re.compile(
+    r"insufficient_quota|quota exceeded|billing|payment required|\bbalance\b|\b402\b"
+    r"|余额不足|额度不足|额度或余额不足|欠费",
+    re.IGNORECASE,
+)
+
 _COMPILED: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile("|".join(markers), re.IGNORECASE), sentence) for markers, sentence in _RULES
 )
+
+
+def is_quota_problem(value: object) -> bool:
+    """额度、余额、欠费一类的失败：充了值就好，模型和配置本身没问题。
+
+    认原始报文，也认已经换成人话的那句。
+    """
+    return bool(_QUOTA_RE.search(strip_error_noise(value) or str(value or "")))
 
 
 def humanize_error(value: object, fallback: str = "") -> str:

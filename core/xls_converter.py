@@ -10,6 +10,7 @@ XLS 格式转换器模块。
    公式必丢、复杂格式（合并单元格样式、图片、宏等）也丢。
 """
 import datetime
+import os
 import platform
 import shutil
 import subprocess
@@ -37,6 +38,73 @@ class LibreOfficeConversionError(Exception):
     调用方（task_runner.py 的兼容转换分支）接住它之后退回 convert_with_fallback，
     这个异常从不需要直接展示给用户。
     """
+
+
+XLS_CORRUPTED_MESSAGE = (
+    "此 .xls 文件已损坏或不完整（可能是下载或拷贝时中断），无法读取。"
+    "请用 Excel 打开确认后另存一份，再重新翻译。"
+)
+
+# OLE2 复合文档的文件头：Excel 97–2003 的 .xls 都装在这种容器里。
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+class XlsFileCorruptedError(ValueError):
+    """.xls 本身读不出来（截断、内部结构损坏）。
+
+    LibreOffice 遇到截断的 .xls 不报错，而是静默转出一整张乱码表；xlrd 兜底则抛一个
+    裸的 IndexError。两条路都会把用户的内容弄丢或说不清，所以转换前先查一遍，
+    读不出来就直说文件坏了，不再往下转。
+    """
+
+    def __init__(self, message: str = XLS_CORRUPTED_MESSAGE) -> None:
+        super().__init__(message)
+
+
+def _open_xls_with_xlrd(xls_path: Path, *, structure_only: bool = False):
+    """用 xlrd 打开 .xls；读不出来的（加密除外）一律换成 XlsFileCorruptedError。
+
+    加密文件照原样抛 xlrd 的「Workbook is encrypted」，上层把它说成「受密码保护」。
+    ``structure_only``：转换前的检查用。只看容器和流是否完整（截断会在打开时就被
+    认出来），不逐张表解析；也放过 xlrd 自己的「Workbook corruption」严格检查——
+    有些第三方导出的文件触发它，Excel 和 LibreOffice 却能正常打开。
+    """
+    import xlrd
+
+    extra = {"on_demand": True, "ignore_workbook_corruption": True} if structure_only else {}
+    with open(os.devnull, "w", encoding="utf-8") as quiet:
+        try:
+            return xlrd.open_workbook(
+                str(xls_path), formatting_info=False, logfile=quiet, **extra
+            )
+        except xlrd.XLRDError as error:
+            if "encrypted" in str(error).lower():
+                raise
+            raise XlsFileCorruptedError() from error
+        except (OSError, MemoryError):
+            raise
+        except Exception as error:  # noqa: BLE001 - 截断的文件会以各种内部错误收场
+            raise XlsFileCorruptedError() from error
+
+
+def check_xls_readable(xls_path: Path) -> None:
+    """转换前的完整性检查：真 .xls（OLE2 容器）读不出来就抛 XlsFileCorruptedError。
+
+    不是 OLE2 容器的（改了扩展名的 .xlsx、HTML、CSV）不在这里判断，交给
+    LibreOffice 照旧去认。
+    """
+    with open(xls_path, "rb") as handle:
+        if handle.read(len(_OLE2_MAGIC)) != _OLE2_MAGIC:
+            return
+    import xlrd
+
+    try:
+        book = _open_xls_with_xlrd(xls_path, structure_only=True)
+    except xlrd.XLRDError:
+        return  # 加密：LibreOffice 会以非零退出收场，上层另有说法
+    except MemoryError:
+        return  # 太大读不进 Python 不等于坏了：交给 LibreOffice
+    book.release_resources()
 
 
 def is_excel_automation_permission_denied(exc: BaseException | str) -> bool:
@@ -129,6 +197,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
     soffice_path = _find_soffice()
     if soffice_path is None:
         raise LibreOfficeConversionError("本机未找到 LibreOffice。")
+    check_xls_readable(xls_path)
 
     out_path = _get_temp_xlsx_path(xls_path)
     work_dir = Path(tempfile.mkdtemp(prefix="xl_translator_lo_"))
@@ -355,13 +424,12 @@ def convert_with_fallback(xls_path: Path) -> Path:
     :param xls_path: 原 .xls 文件路径
     :return: 转换后的临时 .xlsx 文件路径
     """
-    import xlrd
     from openpyxl import Workbook
 
     out_path = _get_temp_xlsx_path(xls_path)
     logger.info(f"使用降级方案将 {xls_path.name} 转换为临时 .xlsx")
 
-    wb_in = xlrd.open_workbook(str(xls_path), formatting_info=False)
+    wb_in = _open_xls_with_xlrd(xls_path)
     try:
         wb_out = Workbook()
         try:

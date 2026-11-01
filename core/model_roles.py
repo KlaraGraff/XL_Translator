@@ -621,6 +621,61 @@ def record_model_role_availability(
     target.availability_checked_at = str(checked_at or "").strip()
 
 
+def save_model_role_availability(
+    settings: AppSettings,
+    role: str,
+    *,
+    ok: bool,
+    message: str,
+    signature: str | None = None,
+    checked_at: str = "",
+) -> None:
+    """Record a verdict a real task reached, on its copy and in settings.json.
+
+    A task runs on its own settings copy, so recording alone is forgotten on
+    restart and the settings page keeps saying 「未测试」.  The file write goes
+    through ``update_settings_atomically`` and only lands while the role's
+    primary connection is still the configuration the task used: the user may
+    have switched models mid-task, and that newer choice has not been tested.
+    """
+    from loguru import logger
+
+    from settings import update_settings_atomically
+
+    record_model_role_availability(
+        settings,
+        role,
+        ok=ok,
+        message=message,
+        signature=signature,
+        checked_at=checked_at,
+    )
+    recorded = _availability_record_target(settings, role, "")
+    verdict_signature = recorded.availability_signature
+
+    def update(current: AppSettings) -> bool:
+        try:
+            current_signature = model_config_signature(resolve_effective_model_config(current, role))
+        except Exception:  # noqa: BLE001 - the role is broken now; nothing to stamp
+            return False
+        if current_signature != verdict_signature:
+            return False
+        record_model_role_availability(
+            current,
+            role,
+            ok=ok,
+            message=message,
+            signature=verdict_signature,
+            checked_at=checked_at,
+        )
+        return True
+
+    try:
+        update_settings_atomically(update)
+    except Exception as exc:  # noqa: BLE001 - an unsaved verdict is simply re-learned next task
+        logger.warning(f"[模型检测] {role} 的可用性结论未能存入设置：{exc}")
+
+
 def amend_model_role_availability_message(
     settings: AppSettings,
     role: str,

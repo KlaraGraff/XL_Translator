@@ -1853,7 +1853,7 @@ function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; e
   return { name: images.length ? t("PDF 与图片") : "PDF", extensions: ["pdf", ...images] };
 }
 
-/** 取路径的上级目录。系统选择框一次只能在同一个文件夹里多选，取第一个的父目录即可。 */
+/** 取路径的上级目录。 */
 function parentDirOf(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
   const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
@@ -2102,7 +2102,8 @@ function buildDispatchNote(surface: Surface): HTMLElement | null {
   return bar;
 }
 
-/** 多选时任务的来源记它们共同的上级目录，单选就是它自己（与 applySourcePaths 一致）。 */
+/** 多选时任务的来源记第一个的上级目录，单选就是它自己（与 applySourcePaths 一致）。
+ * 跨文件夹多选/拖入时其他文件不在它下面：后端开始任务时把它们各扫一次补进来（api/task_manager.py）。 */
 export function sourcePathFor(pickedList: string[]): string {
   return pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
 }

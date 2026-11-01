@@ -181,9 +181,15 @@ def set_model_throughput(
 ) -> EffectiveModelThroughput:
     key = model_throughput_key(config)
     current = get_model_throughput(settings, config)
-    profile = ModelThroughputSettings(
-        batch_size=current.batch_size,
-        concurrency=current.concurrency,
+    # Only the value the caller passed is written; the other one stays as
+    # stored (blank means "recommended").  Freezing the effective default into
+    # a new profile made two overlapping saves of one model clash: the second
+    # wrote its default back over the first one's edit.
+    stored = settings.model_throughput_profiles.get(key)
+    profile = (
+        stored.model_copy()
+        if isinstance(stored, ModelThroughputSettings)
+        else ModelThroughputSettings()
     )
 
     if batch_size is not None and supports_batch_size(config):

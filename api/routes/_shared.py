@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -10,14 +12,25 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 
-def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
-    active_count = app.state.task_manager.active_task_count()
-    if active_count:
-        raise HTTPException(
-            409,
-            "仍有任务正在进行，请待其结束后再清理。",
-            headers={"X-Translator-Reason": f"active_tasks_block_{category}"},
-        )
+def _raise_active_tasks_block(category: str) -> None:
+    raise HTTPException(
+        409,
+        "仍有任务正在进行，请待其结束后再清理。",
+        headers={"X-Translator-Reason": f"active_tasks_block_{category}"},
+    )
+
+
+@contextmanager
+def _no_active_tasks_during(app: FastAPI, *, category: str) -> Iterator[None]:
+    """Check for active tasks and keep new ones out until the clean-up ends.
+
+    A bare check followed by the clean-up leaves a window in which a task can
+    start and then have its history, logs or keys removed underneath it.
+    """
+    with app.state.task_manager.maintenance_window() as active_count:
+        if active_count:
+            _raise_active_tasks_block(category)
+        yield
 
 
 def _json_error(

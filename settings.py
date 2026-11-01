@@ -3032,6 +3032,29 @@ def _adopt_settings_state(target: AppSettings, source: AppSettings) -> None:
     target.__pydantic_fields_set__.update(source.__pydantic_fields_set__)
 
 
+def _baseline_with_new_profiles(baseline: dict, updated: dict) -> dict:
+    """Diff a newly created throughput profile field by field.
+
+    A profile that did not exist at load time would otherwise travel as one
+    whole-value SET, so when two requests each create the same model's
+    profile (one sets the batch size, the other the concurrency) the later
+    write replaces the earlier one entirely.  Comparing a new profile against
+    a blank one turns it into a per-field merge, like an existing profile.
+    """
+    new_profiles = updated.get("model_throughput_profiles")
+    old_profiles = baseline.get("model_throughput_profiles")
+    if not isinstance(new_profiles, dict) or not isinstance(old_profiles, dict):
+        return baseline
+    missing = [key for key in new_profiles if key not in old_profiles]
+    if not missing:
+        return baseline
+    blank = ModelThroughputSettings().model_dump(mode="json")
+    patched = dict(old_profiles)
+    for key in missing:
+        patched[key] = dict(blank)
+    return {**baseline, "model_throughput_profiles": patched}
+
+
 def _merged_settings_payload(settings: AppSettings) -> AppSettings | None:
     """Fold this caller's edits into the settings file as it stands now.
 
@@ -3043,7 +3066,7 @@ def _merged_settings_payload(settings: AppSettings) -> AppSettings | None:
     if baseline is None:
         return None
     updated = settings.model_dump(mode="json")
-    delta = _settings_delta(baseline, updated)
+    delta = _settings_delta(_baseline_with_new_profiles(baseline, updated), updated)
     current = load_settings().model_dump(mode="json")
     merged = _apply_settings_delta(current, delta)
     try:

@@ -502,7 +502,7 @@ class WordRouteTaskTests(unittest.TestCase):
                 patch("core.pdf_word_route.word_route_available", return_value=True), \
                 patch("core.pdf_image_translation.classify_document", return_value=kinds), \
                 patch("core.model_roles.get_key", return_value="secret"), \
-                patch("core.pdf_image_translation.record_image_model_availability", lambda *a, **k: None):
+                patch("core.pdf_image_translation._save_image_model_availability", lambda *a, **k: None):
             runner._run()
         final = None
         while True:
