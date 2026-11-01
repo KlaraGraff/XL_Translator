@@ -77,7 +77,11 @@ from core.mixed_language import (
     translate_mixed_language_texts,
 )
 from core.translation_coverage import format_ignored_coverage_report, resolve_coverage_source_lang
-from core.translation_filter import drop_file_texts_ruled_out_after_preflight, should_translate
+from core.translation_filter import (
+    drop_file_texts_ruled_out_after_preflight,
+    is_same_han_spelling_in_chinese,
+    should_translate,
+)
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
@@ -2061,6 +2065,15 @@ class TaskRunner(BaseTaskRunner):
                 for source, item in normal_api_language_results.items()
                 if _already_in_target_language(source, item, target_lang)
             }
+            # 「品名」「数量」中日写法相同，目标是中文时原样还回来就是对的（和 Word 同一条规则）。
+            already_target.update(
+                source
+                for source, translation in normal_api_translations.items()
+                # 接口失败、质量校验回退交回的原文不算：那是真没翻成。
+                if source not in batch_stats.untranslated_sources
+                and source not in batch_stats.quality_reset_reasons
+                and is_same_han_spelling_in_chinese(source, translation, target_lang)
+            )
             for source in already_target:
                 api_translations.pop(source, None)
             if already_target:
