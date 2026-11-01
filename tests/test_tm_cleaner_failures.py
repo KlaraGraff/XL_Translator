@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
+from core.api_scheduler import WeightedApiScheduler
 from core.tm_cleaner import (
     CleanSuggestion,
     TmCleaningBatchError,
@@ -88,6 +91,38 @@ class TmCleanerFailureTests(unittest.TestCase):
 
         self.assertEqual([row["entry_id"] for row in persisted[-1]], [1])
         self.assertEqual(ctx.exception.model_suggestions, [paid])
+
+    # 审计 中-4：限流退避最长要睡 30 秒，停止标志必须交给退避本身，
+    # 否则用户点了停止还要先把这一觉睡完才回来。
+    def test_rate_limit_backoff_receives_the_cancel_event(self) -> None:
+        scheduler = WeightedApiScheduler(1)  # 已在最低档，直接进宽限等待
+        cancel_event = threading.Event()
+        seen: list = []
+
+        def _record_sleep(delay: float, should_stop) -> None:  # noqa: ANN001
+            seen.append(should_stop)
+            cancel_event.set()  # 用户在这一觉里按了停止
+            time.sleep(0)
+
+        with patch(
+            "core.api_concurrency_control._interruptible_sleep", _record_sleep
+        ), patch(
+            "core.tm_cleaner._clean_batch_sync",
+            side_effect=RuntimeError("HTTP 429: Too Many Requests"),
+        ):
+            with self.assertRaises(TmCleaningBatchError):
+                _run_cleaning_threaded(
+                    [[{"id": 1}]],
+                    _Engine(),
+                    lambda _p: None,
+                    concurrency=1,
+                    cancel_event=cancel_event,
+                    api_scheduler=scheduler,
+                )
+
+        self.assertTrue(seen, "限流退避根本没有被调用，测试前提不成立")
+        self.assertIsNotNone(seen[0], "限流退避没拿到停止标志，点了停止仍会睡满")
+        self.assertTrue(seen[0](), "停止标志交给退避后必须能读到已停止")
 
 
 if __name__ == "__main__":

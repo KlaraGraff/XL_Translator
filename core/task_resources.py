@@ -23,6 +23,11 @@ from core.api_scheduler import (
 )
 
 
+# 与 WeightedApiScheduler 的默认 normal_soft_ratio 一致：只要有恢复请求
+# 在等或在跑，普通请求就最多占到组容量的八成，留下两成给重试 / 仲裁线程。
+_NORMAL_SOFT_RATIO = 0.8
+
+
 @dataclass(frozen=True)
 class TaskResourceReservation:
     """Immutable view of one task's reserved upstream resources."""
@@ -170,7 +175,10 @@ class FairApiGroupScheduler:
     own value; when one finishes, the others take over its share.  A
     simple task FIFO sits in front of the weighted capacity check, so a busy
     task cannot continuously re-acquire slots ahead of another task waiting on
-    the same API connection.  429 feedback changes only this in-memory group.
+    the same API connection.  Once recovery (retry / review) work is waiting or
+    active, regular requests respect a soft cap so that work can make progress
+    instead of being squeezed out by main translation traffic.  429 feedback
+    changes only this in-memory group.
     """
 
     def __init__(self) -> None:
@@ -178,6 +186,8 @@ class FairApiGroupScheduler:
         self.initial_capacity = 1
         self.minimum_capacity = 1
         self._adaptive_capacity_levels = build_adaptive_capacity_levels(1)
+        self._normal_soft_ratio = _NORMAL_SOFT_RATIO
+        self.normal_soft_limit = _normal_soft_limit(self.capacity, self._normal_soft_ratio)
         self._generation = 0
         self._active_total_weight = 0
         self._active_normal_weight = 0
@@ -236,7 +246,9 @@ class FairApiGroupScheduler:
                 # the weight on every check or a waiter sized for the old
                 # capacity can never be admitted again.
                 normalized_weight = min(normalized_weight, max(1, self.capacity))
-                while not self._can_acquire_locked(owner_key, normalized_weight):
+                while not self._can_acquire_locked(
+                    owner_key, normalized_weight, normalized_category
+                ):
                     if should_stop is not None and should_stop():
                         raise ApiSchedulerAcquireCancelled("API 请求在等待并发槽位期间已取消")
                     self._condition.wait(timeout=0.1 if should_stop is not None else None)
@@ -302,6 +314,7 @@ class FairApiGroupScheduler:
                 self.initial_capacity
             )
             self.minimum_capacity = _minimum_capacity(self.initial_capacity)
+            self._refresh_normal_soft_limit_locked()
             self._condition.notify_all()
 
     def register_concurrency_limit_hit(
@@ -329,6 +342,7 @@ class FairApiGroupScheduler:
                     request_generation=request_generation,
                 )
             self.capacity = self._next_reduced_capacity_locked()
+            self._refresh_normal_soft_limit_locked()
             self._generation += 1
             self._condition.notify_all()
             return ApiConcurrencyLimitDecision(
@@ -348,6 +362,7 @@ class FairApiGroupScheduler:
         self.initial_capacity = total
         self._adaptive_capacity_levels = build_adaptive_capacity_levels(total)
         self.minimum_capacity = _minimum_capacity(total)
+        self._refresh_normal_soft_limit_locked()
         self._generation += 1
         self._condition.notify_all()
 
@@ -358,10 +373,34 @@ class FairApiGroupScheduler:
                 return max(self.minimum_capacity, level)
         return max(self.minimum_capacity, self.capacity - 1)
 
-    def _can_acquire_locked(self, owner_key: str, weight: int) -> bool:
+    def _refresh_normal_soft_limit_locked(self) -> None:
+        self.normal_soft_limit = _normal_soft_limit(self.capacity, self._normal_soft_ratio)
+
+    def _can_acquire_locked(self, owner_key: str, weight: int, category: str) -> bool:
         if self._active_total_weight + weight > self.capacity:
             return False
-        return bool(self._waiting_tasks and self._waiting_tasks[0] == owner_key)
+        if not (self._waiting_tasks and self._waiting_tasks[0] == owner_key):
+            return False
+        return self._passes_normal_soft_limit_locked(weight, category)
+
+    def _passes_normal_soft_limit_locked(self, weight: int, category: str) -> bool:
+        """Leave recovery work a share of the group once it becomes active.
+
+        Mirrors ``WeightedApiScheduler._can_acquire``: without this the recovery
+        bookkeeping above is written and reported but never decides anything,
+        so retry / review threads of a task compete with its own main
+        translation traffic and lose.
+        """
+        if category != API_REQUEST_CATEGORY_NORMAL:
+            return True
+        recovery_pressure = self._waiting_recovery_count > 0 or self._active_recovery_weight > 0
+        if not recovery_pressure:
+            return True
+        if self._active_normal_weight + weight <= self.normal_soft_limit:
+            return True
+        # Allow one overweight regular request through if it fits globally.
+        # This avoids deadlock when a single large batch exceeds the soft cap.
+        return self._active_normal_weight == 0
 
     def _add_waiter_locked(self, owner_key: str) -> None:
         if owner_key not in self._waiting_task_set:
@@ -592,3 +631,7 @@ def _normalize_weight(weight: int | float | None) -> int:
 
 def _minimum_capacity(initial_capacity: int) -> int:
     return max(1, int(math.floor(max(1, initial_capacity) * 0.2)))
+
+
+def _normal_soft_limit(capacity: int, ratio: float) -> int:
+    return max(1, int(math.floor(max(1, capacity) * ratio)))

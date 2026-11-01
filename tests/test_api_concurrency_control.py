@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import errno
 import unittest
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from unittest.mock import patch
 
+import httpx
+
+from core import api_concurrency_control
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
+    UPSTREAM_RETRY_AFTER_MAX_SECONDS,
+    extract_retry_after,
     handle_api_concurrency_limit,
     is_api_concurrency_limit_error,
     is_local_descriptor_limit_error,
@@ -19,6 +26,24 @@ from core.api_scheduler import (
 
 def _limit_error() -> RuntimeError:
     return RuntimeError("HTTP 429: Too Many Requests")
+
+
+def _response_with_headers(
+    headers: dict[str, str] | None = None,
+    status: int = 429,
+    text: str = "Too Many Requests",
+) -> httpx.Response:
+    request = httpx.Request("POST", "https://service.test/v1/chat/completions")
+    return httpx.Response(status, headers=headers or {}, text=text, request=request)
+
+
+def _http_error(
+    headers: dict[str, str] | None = None,
+    status: int = 429,
+    text: str = "Too Many Requests",
+) -> httpx.HTTPStatusError:
+    response = _response_with_headers(headers, status, text)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=response.request, response=response)
 
 
 class MinimumCapacityPolicyTests(unittest.TestCase):
@@ -279,6 +304,100 @@ class ApiConcurrencyControlTests(unittest.TestCase):
 
         self.assertFalse(is_api_concurrency_limit_error(quota_exc))
         self.assertFalse(is_api_concurrency_limit_error(auth_exc))
+
+
+class RetryAfterHeaderTests(unittest.TestCase):
+    """审计 中-13：限流退避只按本地公式算，上游给的 Retry-After 一律被丢掉。
+
+    上游说「60 秒后再来」，本地 2 秒后又打过去，把限流窗口不断刷新；反过来上游
+    说「1 秒即可」时又白等 30 秒。这里守住「读得到、认得出、等得够」三件事。
+    """
+
+    def _hit_with(self, exc: BaseException, *, should_stop=None) -> None:
+        scheduler = WeightedApiScheduler(1)
+        reset_minimum_capacity_watch(scheduler)
+        handle_api_concurrency_limit(
+            exc,
+            scheduler=scheduler,
+            request_generation=None,
+            context_label="Excel",
+            should_stop=should_stop,
+        )
+
+    def test_the_response_header_reaches_the_limit_classifier(self) -> None:
+        # 探针原本的断言：限流响应里的 Retry-After 不能被无声丢弃。
+        response = _response_with_headers({"retry-after": "60"})
+        texts = list(api_concurrency_control._collect_response_texts(response))
+
+        self.assertIn("retry-after: 60", texts)
+
+    def test_seconds_form_is_read(self) -> None:
+        self.assertEqual(extract_retry_after(_http_error({"Retry-After": "25"})), 25.0)
+        self.assertEqual(extract_retry_after(_http_error({"Retry-After": "1.5"})), 1.5)
+
+    def test_http_date_form_is_read(self) -> None:
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=20)
+        header = format_datetime(deadline, usegmt=True)
+
+        seconds = extract_retry_after(_http_error({"Retry-After": header}))
+
+        self.assertIsNotNone(seconds)
+        self.assertAlmostEqual(seconds, 20.0, delta=3.0)
+
+    def test_a_date_already_passed_means_no_wait(self) -> None:
+        past = datetime.now(timezone.utc) - timedelta(seconds=45)
+        header = format_datetime(past, usegmt=True)
+
+        self.assertIsNone(extract_retry_after(_http_error({"Retry-After": header})))
+
+    def test_the_x_ratelimit_reset_headers_are_not_a_retry_interval(self) -> None:
+        # 它们是「额度完全回满还要多久」，每个响应都带，当成重试间隔会把退避拉到几分钟。
+        self.assertIsNone(extract_retry_after(_http_error({"x-ratelimit-reset-requests": "1m30s"})))
+        self.assertIsNone(extract_retry_after(_http_error({"x-ratelimit-reset-tokens": "1.5s"})))
+
+    def test_the_header_is_found_behind_an_exception_wrapper(self) -> None:
+        # text_transport 会把 HTTP 错误包进自己的异常类型，头在 __cause__ 上。
+        wrapper = RuntimeError("协议候选已耗尽。")
+        wrapper.__cause__ = _http_error({"retry-after": "30"})
+
+        self.assertEqual(extract_retry_after(wrapper), 30.0)
+
+    def test_a_malicious_header_is_capped(self) -> None:
+        self.assertEqual(
+            extract_retry_after(_http_error({"retry-after": "99999"})),
+            UPSTREAM_RETRY_AFTER_MAX_SECONDS,
+        )
+        # inf / nan 这种畸形数值同样不能进到 time.sleep 里。
+        self.assertIsNone(extract_retry_after(_http_error({"retry-after": "inf"})))
+
+    def test_a_response_without_the_header_means_no_wait(self) -> None:
+        self.assertIsNone(extract_retry_after(_http_error({})))
+        self.assertIsNone(extract_retry_after(_http_error({"retry-after": "soon"})))
+        self.assertIsNone(extract_retry_after(RuntimeError("HTTP 429: Too Many Requests")))
+
+    def test_the_at_minimum_wait_follows_upstreams_retry_after(self) -> None:
+        delays: list[float] = []
+        exc = _http_error({"retry-after": "25"})
+
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_BASE_DELAY", 0.01), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_MAX_DELAY", 0.01), \
+             patch("core.api_concurrency_control._interruptible_sleep", lambda delay, _stop: delays.append(delay)):
+            self._hit_with(exc)
+
+        self.assertEqual(len(delays), 1)
+        self.assertGreaterEqual(delays[0], 25.0)
+
+    def test_a_shorter_upstream_wait_never_shortens_the_local_backoff(self) -> None:
+        delays: list[float] = []
+        exc = _http_error({"retry-after": "1"})
+
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_BASE_DELAY", 30.0), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_MAX_DELAY", 30.0), \
+             patch("core.api_concurrency_control._interruptible_sleep", lambda delay, _stop: delays.append(delay)):
+            self._hit_with(exc)
+
+        self.assertEqual(len(delays), 1)
+        self.assertGreater(delays[0], 1.0)
 
 
 if __name__ == "__main__":

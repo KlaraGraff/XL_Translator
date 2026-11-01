@@ -163,6 +163,55 @@ class NewlinePreservationTests(IsolatedTmTestCase):
         )
 
 
+class CleaningSuggestionNewlineTests(IsolatedTmTestCase):
+    """中-16：深度清洗建议写回也要保住换行，别在入库前被折成单行。
+
+    中-5 把「入库」这条路上守住以后，清洗建议仍旧走 tm_cleaner 自己那套
+    `\\s+` 折叠：模型确实改了内容的多行译文，一确认写入就永久变成单行，
+    下次翻同一份文档时 TM 回填的是塌掉的译文。
+    """
+
+    def _seed_multiline_entry(self) -> dict:
+        tm_manager.insert_batch(
+            [("line1\nline2", "第一行\n第二行")], "en-zh", 500, "test"
+        )
+        return tm_manager.get_all_entries_for_cleaning("en-zh")[0]
+
+    def test_sanitized_suggestion_keeps_the_line_break(self) -> None:
+        self.assertEqual(
+            tm_cleaner._sanitize_clean_suggestion(
+                "第一行改\n第二行改",
+                current_target="第一行\n第二行",
+            ),
+            "第一行改\n第二行改",
+        )
+
+    def test_inline_whitespace_is_still_collapsed_per_line(self) -> None:
+        # 修的是换行被吃掉，行内空白该折还是要折（与 tm_text 存储形态同口径）。
+        self.assertEqual(
+            tm_cleaner._normalize_clean_target("  甲   乙\n  丙  丁  "),
+            "甲 乙\n丙 丁",
+        )
+
+    def test_cleaning_suggestion_written_back_replays_multiline(self) -> None:
+        entry = self._seed_multiline_entry()
+        suggestion = tm_cleaner._build_clean_suggestion(
+            {"id": entry["id"], "suggested": "第一行改\n第二行改"},
+            {entry["id"]: entry},
+        )
+        self.assertIsNotNone(suggestion)
+        assert suggestion is not None
+        self.assertEqual(suggestion.new_target, "第一行改\n第二行改")
+
+        applied = apply_suggestions([suggestion])
+
+        self.assertEqual(applied, 1)
+        stored = self.rows("SELECT target_text FROM tm_entries")[0]
+        self.assertEqual(stored["target_text"], "第一行改\n第二行改")
+        hit = tm_manager.lookup_batch(["line1\nline2"], "en-zh")
+        self.assertEqual(hit["line1\nline2"], "第一行改\n第二行改")
+
+
 class BackupRestoreHashTests(IsolatedTmTestCase):
     """中-5 补漏：备份还原（preserve_status=True）写的哈希必须与全仓一个口径。"""
 

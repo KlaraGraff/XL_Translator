@@ -124,7 +124,7 @@ def register(app: FastAPI) -> None:
         category = payload.category
         if category in {"task_history", "logs", "diagnostics", "keys", "tm"}:
             _require_no_active_tasks(app, category=category)
-        if category in {"keys", "settings", "tm", "workspaces"} and not payload.confirmation:
+        if category in {"keys", "settings", "tm"} and not payload.confirmation:
             raise HTTPException(422, "此操作需要明确确认。")
         if category == "task_history":
             return {
@@ -143,8 +143,6 @@ def register(app: FastAPI) -> None:
             return maintenance.reset_settings().as_dict()
         if category == "tm":
             return maintenance.clear_tm(lang_pair=payload.lang_pair).as_dict()
-        if category == "workspaces":
-            return maintenance.clear_owned_workspaces().as_dict()
         raise HTTPException(422, "不支持的维护类别。")
 
     @app.post("/api/maintenance/reset-full")

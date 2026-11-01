@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,7 +44,9 @@ from core.pdf_image_translation import (
     PdfPageRecord,
     _unstarted_page_count,
     max_page_generation_attempts,
+    write_pdf_manifest_and_report,
 )
+from core.pdf_review import PdfPageReviewResult, PdfReviewIssue
 from core.task_runner import DoneMsg, StoppedMsg
 from settings import AppSettings
 from tests.test_pdf_image_translation import (
@@ -57,6 +60,7 @@ from tests.test_pdf_image_translation import (
     _jpeg_bytes,
     _page_review_settings,
     _png_bytes,
+    _run_single_file,
 )
 
 
@@ -163,6 +167,39 @@ class _FormatSwitchingImageClient(_FakeImageClient):
         if self.calls > self.png_calls:
             self.image_bytes = self.jpeg_bytes
         return super().generate_page(**kwargs)
+
+
+class _DiscardedRoundSuggestionReviewClient:
+    """第一轮不通过（带一条建议），第二轮通过（带另一条建议）。
+
+    还原「审核建议跨轮累加」：第一轮那张候选图随后就被丢弃了，只有第二轮那版
+    才是最终交付的译文。
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def review_page(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return PdfPageReviewResult(
+                passed=False,
+                blocking_issues=[
+                    PdfReviewIssue(
+                        type="wrong_translation",
+                        location="标题栏",
+                        problem="编号标签误译",
+                        suggestion="改为报告号",
+                    )
+                ],
+                minor_suggestions=["第1轮建议（这一版已被丢弃）"],
+                summary="审核未通过：编号标签误译",
+            )
+        return PdfPageReviewResult(
+            passed=True,
+            minor_suggestions=["最终版建议"],
+            summary="可采用",
+        )
 
 
 class _CountingLock:
@@ -574,6 +611,89 @@ class AuditPdfLowSeverityTests(unittest.TestCase):
         ``_process_prepared_pages`` + ``_finalize_file_record`` 这条真实路径。
         """
         self.assertFalse(hasattr(PdfImageTranslationRunner, "_process_file"))
+
+
+class AuditPdfReviewMinorSuggestionTests(unittest.TestCase):
+    """CODE_AUDIT_2026-08-31 中-26：审核轻微建议跨轮次只能保留最后一轮。"""
+
+    def test_discarded_round_minor_suggestion_does_not_reach_the_final_page(self) -> None:
+        """第一轮被丢弃那版的建议不许留在页记录上，更不许进报告。
+
+        旧实现用 ``extend`` 把每一轮的建议都追加进 ``review_minor_suggestions``，
+        从不归零：一页跑 N 轮就攒 N 轮的建议，而前 N-1 轮的候选图早已被丢弃。
+        报告里的「审核轻微建议」因此被放大成重试轮数倍，逐页明细的 ``[:2]``
+        印出的恰好是最早那几轮（即用户永远看不到的那几版）的建议。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            output_dir = root / "out"
+            settings = _page_review_settings(root)
+            settings.pdf.review_enabled = True
+            settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+            settings.pdf_review_model_role.cloud_provider = "custom_openai"
+            settings.pdf_review_model_role.cloud_model = "vision-review-model"
+            settings.pdf_review_model_role.cloud_base_url = "https://images.example/v1"
+            review_client = _DiscardedRoundSuggestionReviewClient()
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                review_client=review_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
+                "core.model_roles.get_key",
+                return_value="secret",
+            ):
+                record = _run_single_file(
+                    runner,
+                    output_dir=output_dir,
+                    max_attempts=max_page_generation_attempts(3),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=resolve_effective_model_config(
+                        settings,
+                        ROLE_PDF_REVIEW,
+                    ),
+                )
+
+            page = record.pages[0]
+            self.assertEqual(review_client.calls, 2)
+            self.assertEqual(page.review_status, "passed")
+            # 最终交付的是第 2 版：建议只留第 2 版那一条。
+            self.assertEqual(list(page.review_minor_suggestions), ["最终版建议"])
+            self.assertEqual(record.review_minor_suggestion_count, 1)
+            # 报告里也不许出现被丢弃那版的建议。
+            summary = runner._build_summary(
+                output_dir=output_dir,
+                started=datetime.now(),
+                file_records=[record],
+                stopped=False,
+                fatal_error="",
+            )
+            _manifest, report_path = write_pdf_manifest_and_report(
+                summary,
+                artifact_dir=root / "artifacts",
+            )
+            report = report_path.read_text(encoding="utf-8")
+            self.assertIn("最终版建议", report)
+            self.assertNotIn("这一版已被丢弃", report)
+            # 被丢弃那轮的建议仍随候选图留档，供事后追查。
+            candidate_review = (
+                output_dir
+                / "_pdf_pages"
+                / "review_candidates"
+                / "source"
+                / "page_001"
+                / "attempt_01_review.json"
+            )
+            self.assertIn(
+                "这一版已被丢弃",
+                candidate_review.read_text(encoding="utf-8"),
+            )
 
 
 class AuditPdfSecondRoundTests(unittest.TestCase):

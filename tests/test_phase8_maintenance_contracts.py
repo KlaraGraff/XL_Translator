@@ -61,7 +61,6 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 SETTINGS_PATH=settings_path,
                 KEYS_PATH=keys_path,
                 LOG_PATH=log_path,
-                WORKSPACES_DIR=self.app_data / "workspaces",
                 API_HEALTH_STATE_PATH=self.app_data / "api_health_state.json",
             ),
             patch.multiple(
@@ -92,9 +91,6 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         settings_module.BACKUPS_DIR.joinpath("original.json").write_bytes(b"original")
         unrelated_recovery = self.root / "recovery.json"
         unrelated_recovery.write_bytes(b"outside current app data")
-        owned_workspace = self.app_data / "workspaces" / "task-1"
-        owned_workspace.mkdir(parents=True)
-        owned_workspace.joinpath(".translator-workspace.json").write_text("{}", encoding="utf-8")
         self.app_data.joinpath("feedback_contact.json").write_text('{"email":"a@example.com"}', encoding="utf-8")
 
         result = maintenance.reset_all_local_data()
@@ -111,19 +107,35 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         self.assertTrue(self.output.exists())
         self.assertEqual(self.legacy_data.joinpath("settings.json").read_text(encoding="utf-8"), "legacy")
 
-    def test_workspace_cleanup_requires_the_translator_owned_marker(self) -> None:
-        owned = self.app_data / "workspaces" / "owned"
-        unowned = self.app_data / "workspaces" / "unowned"
-        owned.mkdir(parents=True)
-        unowned.mkdir(parents=True)
-        owned.joinpath(".translator-workspace.json").write_text("{}", encoding="utf-8")
-        unowned.joinpath("user-file.txt").write_text("keep", encoding="utf-8")
+    def test_removed_workspaces_category_is_a_clean_4xx_not_a_crash(self) -> None:
+        """旧界面还是可能带着 category="workspaces" 来请求。
 
-        result = maintenance.clear_owned_workspaces()
+        这个分类从来没有代码往里写过东西，已经从概览、路由和 schema 里删掉；但用户
+        上一次打开、还没刷新的窗口仍会发出这条请求。它必须在进到处理函数之前就被拒成
+        4xx 字段校验错误（命令行和界面都靠 loc/msg 把它拼成一句人话），而不是 500，
+        也不能悄悄当成「清完了」返回 200。
+        """
+        client = TestClient(create_app(task_manager=_TaskManager(active_count=0)))
 
-        self.assertEqual(result.removed_count, 1)
-        self.assertFalse(owned.exists())
-        self.assertTrue(unowned.exists())
+        response = client.post(
+            "/api/maintenance/clear",
+            json={"category": "workspaces", "confirmation": True},
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        detail = response.json()["detail"]
+        self.assertIsInstance(detail, list)
+        self.assertEqual(detail[0]["loc"], ["body", "category"])
+        self.assertEqual(detail[0]["type"], "literal_error")
+        # 合法类别照旧，删掉的那一个不在可接受值里。
+        self.assertIn("task_history", detail[0]["msg"])
+        self.assertNotIn("workspaces", detail[0]["msg"])
+
+    def test_overview_no_longer_lists_the_workspaces_category(self) -> None:
+        overview = maintenance.data_overview()
+
+        self.assertNotIn("workspaces", [item["id"] for item in overview["categories"]])
+        self.assertFalse(hasattr(maintenance, "clear_owned_workspaces"))
 
     def test_diagnostic_export_has_no_key_content_paths_or_document_text(self) -> None:
         record = diagnostics.archive_task_diagnostics(
