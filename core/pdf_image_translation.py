@@ -253,6 +253,9 @@ class PdfPageActionError(ValueError):
     """Raised when a single-page review action cannot be accepted."""
 
 
+class _CompressedRebuildFailed(RuntimeError):
+    """换回上一版时压缩版没能重建：整次换回要回滚，不能只丢掉压缩版。"""
+
 
 # 任务中途发现模型不收图 / 生成不了图时说的话（core/image_input_check.py 的保底）。
 REVIEW_SWITCHED_OFF_MESSAGE = (
@@ -2270,10 +2273,27 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         # 任务已终态，进度消息不再发，终态界面读的是 record.pages 重算出的记录级
         # 计数（_refresh_file_record_counts），口径以 record 为准。失败路径回滚
         # 计数器只是把快照原样放回，不是「成功也该调」的另一半。
+        # 高清版装配是原子替换，可压缩版在它之后才装：压缩版失败时高清版已经换成
+        # 新内容了。先留一份高清版原件，回滚时放回去，换回才真的「输出文件不动」。
+        try:
+            hd_backup = self._backup_output_file(record.translated_pdf_path)
+        except OSError as exc:
+            reason = _with_sentence_end(
+                user_facing_reason(exc, fallback="无法在输出文件夹里留一份当前的高清 PDF。")
+            )
+            raise PdfPageActionError(f"{reason}本次换回未进行。") from exc
         moves = self._swap_page_versions(prepared, page)
         committed = False
         try:
-            self._finalize_file_record(prepared, should_assemble=True)
+            try:
+                self._finalize_file_record(
+                    prepared,
+                    should_assemble=True,
+                    keep_compressed_output=True,
+                )
+            except _CompressedRebuildFailed as exc:
+                reason = _with_sentence_end(str(exc))
+                raise PdfPageActionError(f"{reason}已保留当前版本，本次换回未生效。") from exc
             if record.status == PDF_OUTPUT_STATE_FAILED:
                 reason = _with_sentence_end(
                     record.error or "换回上一版后，未能重新生成输出文件。"
@@ -2290,6 +2310,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             raise PdfPageActionError(f"{reason}已保留当前版本，本次换回未生效。") from exc
         finally:
             if not committed:
+                self._put_back_output_file(record.translated_pdf_path, hd_backup)
                 self._undo_page_version_swap(moves)
                 _copy_page_record(page_backup, page)
                 _restore_file_artifacts(record, artifact_backup)
@@ -2299,11 +2320,30 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     "WARN",
                     f"[{record.name}] 第 {page_number} 页换回上一版失败，已保留当前版本，输出文件未改动。",
                 )
+            elif hd_backup is not None:
+                hd_backup.unlink(missing_ok=True)
         self._rewrite_finished_report(extra_elapsed_sec=time.monotonic() - started)
         self._log(
             "OK",
             f"[{record.name}] 第 {page_number} 页已换回上一版，输出文件已重新装配。",
         )
+
+    @staticmethod
+    def _backup_output_file(path_text: str) -> Path | None:
+        if not path_text or not Path(path_text).is_file():
+            return None
+        path = Path(path_text)
+        backup = path.with_name(f".{path.name}.before-restore")
+        shutil.copy2(path, backup)
+        return backup
+
+    def _put_back_output_file(self, path_text: str, backup: Path | None) -> None:
+        if backup is None or not path_text:
+            return
+        try:
+            os.replace(backup, path_text)
+        except OSError as exc:
+            logger.warning(f"[PDF] 换回失败后放回高清 PDF 失败：{backup} -> {path_text}：{exc!r}")
 
     def _swap_page_versions(
         self,
@@ -4317,7 +4357,11 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         prepared: _PreparedPdfFile,
         *,
         should_assemble: bool,
+        keep_compressed_output: bool = False,
     ) -> None:
+        """``keep_compressed_output``：换回上一版用。这次装配必须重建压缩版
+        （只要任务原本有压缩版，压缩开关事后关掉也照建），没建成时不清旧的那份，
+        由调用方把整次换回判失败、原样回滚。"""
         record = prepared.record
         # 中止和失败这两条路以前直接 return，逐页计数一次都没刷新过：清单里 generated_page_count
         # 永远是 0，报告写「页面完成进度 12/14」（那其实是已提交数），而界面同一时刻写着
@@ -4368,8 +4412,11 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             # 单页重生成不再预删旧产物，不在这里显式收口的话，旧压缩版会连同旧的
             # compression_error 一起被当成本轮的结果继续挂在记录上。
             compressed_built = False
+            had_compressed = bool(record.compressed_pdf_path)
             record.compression_error = ""
-            if self._settings.pdf.generate_compressed_pdf:
+            if self._settings.pdf.generate_compressed_pdf or (
+                keep_compressed_output and had_compressed
+            ):
                 try:
                     self._assemble_translated_pdf(
                         record,
@@ -4412,11 +4459,18 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 if _record_needs_review(record)
                 else PDF_OUTPUT_STATE_COMPLETED
             )
+            if keep_compressed_output and had_compressed and not compressed_built:
+                # 换回上一版承诺「失败整体回滚」：旧压缩版留在原处，交给调用方回滚。
+                if not record.compression_error:
+                    record.compression_error = "压缩版 PDF 未能重新生成。"
+                raise _CompressedRebuildFailed(record.compression_error)
             if not compressed_built:
                 # 清理放在状态落定之后：这样单页重生成失败要回滚时，磁盘上什么
                 # 都还没被删过（那正是 高-5 的病根，不能为清残留把它请回来）。
                 self._discard_superseded_compressed_pdf(record, prepared)
             self._log("OK", f"[{record.name}] 已生成高清 PDF：{prepared.translated_pdf_path.name}")
+        except _CompressedRebuildFailed:
+            raise
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
             logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
