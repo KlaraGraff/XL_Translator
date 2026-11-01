@@ -115,4 +115,5 @@ class WordSurface(Surface):
             api_scheduler=request.api_schedulers.get("translation"),
             resume_output_dir=options.resume_output_dir,
             batch_output_dir=options.batch_output_dir,
+            revision_mode=options.revision_mode,
         )

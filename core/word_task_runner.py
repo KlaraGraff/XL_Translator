@@ -186,6 +186,7 @@ from core.word_inline_marks import (
     unmark,
 )
 from core.word_layout_fixes import join_wrapped_line_breaks_in_file
+from core.word_revisions import RevisionWriteStats, normalize_revision_mode
 from core.word_batching import (
     WordBatchRunStats,
     _join_translated_parts,
@@ -486,6 +487,7 @@ class WordTaskRunner(BaseTaskRunner):
         term_file_paths: list[Path] | None = None,
         batch_output_dir: str | None = None,
         document_profile: str | None = None,
+        revision_mode: str = "skip",
     ):
         self._files = file_items
         # 调用方已经写好的文档说明（PDF 转 Word：任务开始时为整份 PDF 写的那一段）。给了就
@@ -505,6 +507,9 @@ class WordTaskRunner(BaseTaskRunner):
         self._protect_front_matter = bool(protect_front_matter)
         self._translate_headers_footers = bool(translate_headers_footers)
         self._allow_doc_fallback = bool(allow_doc_fallback)
+        # 未接受的修订怎么处理：skip（默认，保持原文）或 translate（连修订一起翻，标记保留）。
+        # 缺省必须是 skip——旧客户端不传这个字段，不能被改掉修订里的原文。
+        self._revision_mode = normalize_revision_mode(revision_mode)
         # 段内有局部格式的原文 → 带标记的原文；翻译时由 InlineMarkEngine 换上（core/word_inline_marks.py）
         self._marked_sources: dict[str, str] = {}
         # 原文 → {占位符编号: 说明}（公式的线性文字），补标记时给模型看
@@ -2777,8 +2782,9 @@ class WordTaskRunner(BaseTaskRunner):
             process_paths.append(process_path)
             hidden_content = detect_hidden_word_content(process_path)
             if hidden_content.found:
-                # 这部分内容 python-docx 根本看不见，本次一定漏译。做不到翻译，
-                # 至少不能让它静悄悄地漏掉。
+                # 真正还读不到的只剩行内内容控件（日期、勾选框）：文字挂在 w:r 上、和正文
+                # 混在同一段里，本版当不成独立段落翻译。块级内容控件和未接受的修订已经
+                # 纳入翻译（见 core/word_revisions.py），不再从这里报警。
                 self._log(
                     "WARN",
                     (
@@ -2798,7 +2804,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "snippet": "",
                         "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
                         "status": (
-                            "这些内容位于内容控件或未接受的修订里，"
+                            "这些内容位于行内内容控件里，"
                             "未参与翻译，输出文档中保持原文。"
                         ),
                         "severity": "needs_review",
@@ -2919,11 +2925,13 @@ class WordTaskRunner(BaseTaskRunner):
                             entries=header_channel_entries,
                         )
                     )
-                # 文本框和脚注/尾注也不在覆盖率计划里，同样单独取一次。
+                # 文本框、脚注/尾注和未接受的修订也不在覆盖率计划里，同样单独取一次。
                 story_segments = extract_word_story_segments(
                     process_path,
                     target_lang=target_lang,
                     source_lang=source_lang,
+                    revision_mode=self._revision_mode,
+                    protect_front_matter=self._protect_front_matter,
                 )
                 _remember_segment_locations(
                     segment_locations,
@@ -2958,6 +2966,7 @@ class WordTaskRunner(BaseTaskRunner):
                     source_lang=source_lang,
                     protect_front_matter=self._protect_front_matter,
                     include_headers_footers=self._translate_headers_footers,
+                    revision_mode=self._revision_mode,
                 )
                 coverage_plans.append(None)
                 for segment in segments:
@@ -3705,6 +3714,9 @@ class WordTaskRunner(BaseTaskRunner):
             staged_output_dir = Path(stage_handle.name)
             write_log_messages: list[str] = []
             mark_counts: list[int] = []
+            # 写回时按这份文件实际有几处修订统计：扫描期那份计数用的是扫描时的副本，
+            # 这份是真正要写出去的那一份，数对不上就按实际的报。
+            revision_stats_box: list[RevisionWriteStats] = []
             if self._untranslated_only:
                 coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
                 if coverage_plan is None:
@@ -3735,6 +3747,8 @@ class WordTaskRunner(BaseTaskRunner):
                             info=info,
                         )
                     ),
+                    revision_mode=self._revision_mode,
+                    revision_callback=revision_stats_box.append,
                 )
             else:
                 out_path = write_bilingual_docx(
@@ -3768,7 +3782,10 @@ class WordTaskRunner(BaseTaskRunner):
                     ),
                     formula_flags=self._formula_flags or None,
                     layout_only_cells=self._layout_only_cells or None,
+                    revision_mode=self._revision_mode,
+                    revision_callback=revision_stats_box.append,
                 )
+            revision_stats = revision_stats_box[0] if revision_stats_box else None
             residual_count = _append_post_write_coverage_issues(
                 issues=quality_issues,
                 file_name=_file_result_identity(file_item, source_root),
@@ -3811,6 +3828,13 @@ class WordTaskRunner(BaseTaskRunner):
                 "front_matter": (
                     front_matter_summaries[index]
                     if index < len(front_matter_summaries)
+                    else {}
+                ),
+                # 这份文件对未接受的修订是怎么处理的：任务记录里要写「跳过了 N 处修订
+                # （保持原文）」/「翻译了 N 处修订（保留修订标记）」，事后好查。
+                "revisions": (
+                    revision_stats.as_dict()
+                    if revision_stats is not None
                     else {}
                 ),
                 "issues": [

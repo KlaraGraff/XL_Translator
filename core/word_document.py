@@ -50,6 +50,12 @@ from core.word_inline_marks import (
 )
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 from core.output_metadata import is_translation_output
+from core.word_revisions import (
+    EMPTY_REVISION_LAYOUT,
+    REVISION_MODE_TRANSLATE,
+    RevisionLayout,
+    normalize_revision_mode,
+)
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
@@ -202,6 +208,9 @@ class WordFileItem:
     paragraph_count: int | None = None
     table_count: int | None = None
     translatable_count: int = 0
+    # 扫描期数到的未接受修订（w:ins + w:del，有可见文字的）。开始翻译前用它弹窗问
+    # 用户怎么处理（core/word_revisions.py）。.doc 读不出，保持 0。
+    tracked_change_count: int = 0
     original_path: Path | None = None
     relative_path: str = ""
     format: str = "docx"
@@ -240,6 +249,14 @@ class WordScanResult:
             "doc_count": doc_count,
             "doc_unknown_count": sum(
                 1 for item in self.items if item.statistics_status != "known"
+            ),
+            # 有未接受修订的文件数与处数合计：起跑前那一屏要能说「本批有 2 个文件含
+            # 未接受的修订」，而不是让界面自己把逐文件数字再加一遍（容易和弹窗文案对不上）。
+            "tracked_change_file_count": sum(
+                1 for item in self.items if int(item.tracked_change_count or 0) > 0
+            ),
+            "tracked_change_count": sum(
+                int(item.tracked_change_count or 0) for item in self.items
             ),
             "skipped_count": len(self.skipped),
         }
@@ -302,16 +319,24 @@ class WordNumberingNormalizationResult:
 
 @dataclass(frozen=True)
 class WordHiddenContentReport:
-    """python-docx 看不见、因而必然漏译的正文内容统计。
+    """python-docx 看不见、因而会漏译的正文内容统计。
 
-    python-docx 只把 ``w:p`` / ``w:tbl`` 的直接子节点当成文档内容，段落文本又只由
-    ``w:r`` 与 ``w:hyperlink`` 拼成。被内容控件（``w:sdt``）或未接受的修订插入
-    （``w:ins``）包住的文字因此完全不在扫描范围内——不报错、不计数，用户拿到的译文
-    里就是缺了这几段，没有任何线索。这个报告的唯一职责是把"缺了多少"变成可见信息。
+    V10.5 起，两类内容已经纳入翻译，不再算漏译：
+
+    - 内容控件（``w:sdt``，自动目录除外）里的段落由 ``extract_word_content_control_segments``
+      当普通正文段落抽出来、随正文一起写回；
+    - 未接受的修订由用户在开始前选择 ``skip``（保持原文）或 ``translate``（连修订一起
+      翻译），两种都不会静默漏掉。
+
+    剩下真正读不到的是**行内**内容控件（日期、勾选框之类，文字挂在 ``w:r`` 上、和
+    正文混在同一段里），它们仍进 total / found，照旧告警。文本框和脚注/尾注自 V10.1
+    起单独翻译，只留计数。
     """
 
     content_control_count: int = 0
     tracked_insertion_count: int = 0
+    # 行内内容控件：本版还当不了独立段落翻译，是真正的漏译。
+    inline_control_count: int = 0
     # 文本框（w:txbxContent）挂在 w:r/w:drawing 里，脚注/尾注在单独的 XML 部件里，
     # python-docx 的段落遍历走不到（审计 高-13）。现在由 core/word_embedded_text.py
     # 单独翻译，这两项只计数，不进 total。
@@ -323,8 +348,8 @@ class WordHiddenContentReport:
 
     @property
     def total(self) -> int:
-        # 文本框和脚注/尾注自 V10.1 起参与翻译，只留计数供过程记录，不再算漏译。
-        return self.content_control_count + self.tracked_insertion_count
+        # 只有行内控件真的还在漏译；其余几项都已参与翻译或单独提示。
+        return self.inline_control_count
 
     @property
     def found(self) -> bool:
@@ -336,25 +361,22 @@ class WordHiddenContentReport:
 
     def describe(self) -> str:
         parts = []
-        if self.content_control_count:
-            parts.append(f"内容控件 {self.content_control_count} 处")
-        if self.tracked_insertion_count:
-            parts.append(f"未接受的修订插入 {self.tracked_insertion_count} 处")
+        if self.inline_control_count:
+            parts.append(f"行内内容控件 {self.inline_control_count} 处")
         return "、".join(parts)
 
     def advice(self) -> str:
         """按实际检测到的类型给出对应的处理建议，而不是一句笼统的话。"""
         tips = []
-        if self.tracked_insertion_count:
-            tips.append("在 Word 中接受全部修订")
-        if self.content_control_count:
-            tips.append("将内容控件转换为普通文本")
+        if self.inline_control_count:
+            tips.append("将行内内容控件转换为普通文本")
         return "；".join(tips)
 
     def as_dict(self) -> dict[str, int]:
         return {
             "content_control_count": self.content_control_count,
             "tracked_insertion_count": self.tracked_insertion_count,
+            "inline_control_count": self.inline_control_count,
             "textbox_count": self.textbox_count,
             "footnote_count": self.footnote_count,
             "toc_control_count": self.toc_control_count,
@@ -438,16 +460,23 @@ def extract_word_segments(
     source_lang: str = "zh",
     protect_front_matter: bool = False,
     include_headers_footers: bool = False,
+    revision_mode: str = "skip",
 ) -> list[WordSegment]:
     """Extract unique body-paragraph and table-cell texts that need translation.
 
     页眉页脚默认不在范围内（Word 里它们是独立的 part，正文遍历根本看不到），
     只有 include_headers_footers 打开时才追加进来。
+
+    内容控件（``w:sdt``，自动目录除外）里的段落按普通正文段落一起抽出来；未接受的修订
+    按 ``revision_mode`` 走：``skip``（默认）含修订的段落照旧只送修订以外的文字，
+    ``translate`` 时这些段落改由修订那一趟接手，修改前、修改后各送一句整句
+    （见 core/word_revisions.py）。
     """
     doc = Document(str(path))
     front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
     protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
     protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
+    revisions = _revision_layout(doc, revision_mode, front_matter)
     seen: set[str] = set()
     segments: list[WordSegment] = []
     section_stack: dict[int, str] = {}
@@ -459,6 +488,8 @@ def extract_word_segments(
         heading_level = _detect_heading_level(paragraph)
         if heading_level is not None and source:
             _update_section_stack(section_stack, heading_level, source)
+        if revisions.skips_paragraph(paragraph._p):
+            continue
 
         if not _is_translatable_source(
             source,
@@ -487,6 +518,8 @@ def extract_word_segments(
         if table_index in protected_tables:
             continue
         for cell_index, cell in enumerate(_iter_unique_table_cells(table)):
+            if revisions.skips_cell(cell._tc):
+                continue
             source = _cell_source_text(cell)
             if not _is_translatable_source(
                 source,
@@ -520,6 +553,30 @@ def extract_word_segments(
             seen.add(segment.source)
             segments.append(segment)
 
+    for segment in _collect_content_control_segments(
+        doc,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        front_matter=front_matter,
+        layout=revisions,
+    ):
+        if segment.source in seen:
+            continue
+        seen.add(segment.source)
+        segments.append(segment)
+
+    if normalize_revision_mode(revision_mode) == REVISION_MODE_TRANSLATE:
+        for segment in _collect_revision_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            front_matter=front_matter,
+        ):
+            if segment.source in seen:
+                continue
+            seen.add(segment.source)
+            segments.append(segment)
+
     for segment in _collect_story_segments(doc, target_lang=target_lang, source_lang=source_lang):
         if segment.source in seen:
             continue
@@ -529,24 +586,114 @@ def extract_word_segments(
     return segments
 
 
+def _collect_content_control_segments(
+    doc: Document,
+    *,
+    target_lang: str,
+    source_lang: str,
+    untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
+    layout: RevisionLayout | None = None,
+) -> list[WordSegment]:
+    """内容控件里的段落：两类看不见的正文之一，和正文段落同一套抽取规则。"""
+    from core.word_revisions import extract_content_control_segments
+
+    try:
+        return extract_content_control_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            untranslated_only=untranslated_only,
+            front_matter=front_matter,
+            layout=layout,
+        )
+    except Exception as exc:  # noqa: BLE001 - 内容控件异常不该拖垮正文翻译
+        logger.warning(f"读取 Word 内容控件失败：{exc!r}")
+        return []
+
+
+def _collect_revision_segments(
+    doc: Document,
+    *,
+    target_lang: str,
+    source_lang: str,
+    untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
+) -> list[WordSegment]:
+    """含修订的段落：只在用户选了「修订一起翻译」时才进待译清单（修改前、修改后各一句）。"""
+    from core.word_revisions import extract_revision_segments
+
+    try:
+        return extract_revision_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            untranslated_only=untranslated_only,
+            front_matter=front_matter,
+        )
+    except Exception as exc:  # noqa: BLE001 - 修订读取异常不该拖垮正文翻译
+        logger.warning(f"读取 Word 修订失败：{exc!r}")
+        return []
+
+
+def _revision_layout(
+    doc: Document,
+    revision_mode: str,
+    front_matter: "WordFrontMatterBoundary | None",
+) -> RevisionLayout:
+    """「修订一起翻译」时由修订那一趟接手的段落；其余模式、或读不出来时为空。
+
+    读不出来就当没有：常规写回照旧处理这些段落（只译修订以外的文字），不至于整段漏掉。
+    """
+    if normalize_revision_mode(revision_mode) != REVISION_MODE_TRANSLATE:
+        return EMPTY_REVISION_LAYOUT
+    from core.word_revisions import revision_layout
+
+    try:
+        return revision_layout(doc, front_matter=front_matter)
+    except Exception as exc:  # noqa: BLE001 - 修订读取异常不该拖垮正文翻译
+        logger.warning(f"读取 Word 修订失败：{exc!r}")
+        return EMPTY_REVISION_LAYOUT
+
+
 def extract_word_story_segments(
     path: str | Path,
     *,
     target_lang: str,
     source_lang: str = "zh",
+    revision_mode: str = "skip",
+    protect_front_matter: bool = False,
 ) -> list[WordSegment]:
-    """补译模式：文本框和脚注/尾注里还没译过的段落。
+    """补译模式：文本框、脚注/尾注和未接受修订里还没译过的段落。
 
     覆盖率计划只按正文段落和表格的下标定位，这几处不在计划里，要单独取一次。
+    未接受的修订只在 ``revision_mode="translate"`` 时有内容——``skip`` 时它们本来
+    就该保持原文。
     """
+    doc = Document(str(path))
     segments: list[WordSegment] = []
     seen: set[str] = set()
-    for segment in _collect_story_segments(
-        Document(str(path)),
-        target_lang=target_lang,
-        source_lang=source_lang,
-        untranslated_only=True,
-    ):
+    candidates = list(
+        _collect_story_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            untranslated_only=True,
+        )
+    )
+    if normalize_revision_mode(revision_mode) == REVISION_MODE_TRANSLATE:
+        candidates.extend(
+            _collect_revision_segments(
+                doc,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                untranslated_only=True,
+                front_matter=(
+                    find_word_front_matter_boundary(doc) if protect_front_matter else None
+                ),
+            )
+        )
+    for segment in candidates:
         if segment.source not in seen:
             seen.add(segment.source)
             segments.append(segment)
@@ -799,6 +946,7 @@ def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
     return WordHiddenContentReport(
         content_control_count=len(controls) - len(toc_controls),
         toc_control_count=len(toc_controls),
+        # 修订自 V10.5 起由用户选择处理方式，不再是「读不到」，只留计数给过程记录。
         tracked_insertion_count=sum(
             1
             for element in _iter_outermost_elements(body, "w:ins")
@@ -807,6 +955,8 @@ def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
             if _element_has_visible_text(element)
             and not _has_ancestor_tag(element, "w:sdt", body)
         ),
+        # 只有行内控件（没有块级段落）还没法当独立段落翻译，仍是真正的漏译。
+        inline_control_count=_count_inline_content_controls(body, toc_controls),
         textbox_count=sum(
             1
             for element in _iter_outermost_elements(body, "w:txbxContent")
@@ -817,6 +967,17 @@ def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
         ),
         footnote_count=_count_note_parts(doc),
     )
+
+
+def _count_inline_content_controls(body, toc_controls: list) -> int:
+    """行内内容控件（日期、勾选框之类）：文字挂在 ``w:r`` 上，没有自己的段落。
+
+    块级控件里的段落已经由 ``content_control_paragraphs`` 当正文段落翻译，这里只数
+    没法照那样处理的那些，免得把已经翻掉的内容继续报成漏译。
+    """
+    from core import word_revisions
+
+    return word_revisions.inline_content_control_count(body, excluded=toc_controls)
 
 
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
@@ -1102,6 +1263,8 @@ def write_bilingual_docx(
     marked_translations: dict[str, tuple[str, str]] | None = None,
     formula_flags: dict[str, list[tuple[int, int, int]]] | None = None,
     layout_only_cells: set[str] | None = None,
+    revision_mode: str = "skip",
+    revision_callback=None,
 ) -> Path:
     """Write a bilingual Word document to the output directory.
 
@@ -1118,6 +1281,12 @@ def write_bilingual_docx(
     +追加译文"时，对每个这样的单元格回调一次，参数是
     ``{"location": "table[i].cell[j]", "source": 原文, "translation": 译文}``，
     供调用方写进质量报告。不传则只体现在日志汇总里。
+
+    ``revision_mode``：未接受修订的处理方式（``skip`` 默认 / ``translate``，见
+    core/word_revisions.py）。``skip`` 时修订里的文字一个字不动。
+
+    ``revision_callback``：写完之后回调一次 ``RevisionWriteStats``，供调用方在逐文件
+    记录里写「跳过了 N 处修订（保持原文）」。
     """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -1192,6 +1361,8 @@ def write_bilingual_docx(
         id(paragraph): _paragraph_source_text(paragraph)
         for paragraph in all_paragraphs
     }
+    # 必须在插任何译文段之前取：取晚了，插进去的译文段也会被当成要处理的段落。
+    revisions = _revision_layout(doc, revision_mode, front_matter)
     original_paragraph_prefixes = {
         id(paragraph): _paragraph_leading_inline_whitespace(paragraph)
         for paragraph in all_paragraphs
@@ -1222,6 +1393,8 @@ def write_bilingual_docx(
 
     for paragraph_index, paragraph in enumerate(body_paragraphs):
         if paragraph_index in protected_paragraphs:
+            continue
+        if revisions.skips_paragraph(paragraph._p):
             continue
         paragraph_key = id(paragraph)
         source = original_paragraph_sources.get(
@@ -1327,6 +1500,8 @@ def write_bilingual_docx(
     for cell in table_cells:
         if id(cell) in protected_table_cell_ids:
             continue
+        if revisions.skips_cell(cell._tc):
+            continue
         source = original_cell_sources.get(id(cell), _cell_source_text(cell))
         if not _is_translatable_source(
             source,
@@ -1422,6 +1597,27 @@ def write_bilingual_docx(
         review_color_map=review_color_map,
         issue_callback=issue_callback,
     )
+    content_control_insertions = _apply_content_control_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        output_translation_only=output_translation_only,
+        front_matter=front_matter,
+        layout=revisions,
+    )
+    revision_stats = _apply_revision_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        mode=revision_mode,
+        output_translation_only=output_translation_only,
+        front_matter=front_matter,
+        layout=revisions,
+    )
+    if revision_callback is not None:
+        revision_callback(revision_stats)
     highlight_count += story_stats.highlight_count
     highlight_skip_count += story_stats.highlight_skip_count
 
@@ -1459,7 +1655,53 @@ def write_bilingual_docx(
             f"{header_footer_summary}{highlight_summary}）"
         )
         log_story_summary(log_callback, out_path.name, story_stats)
+        if content_control_insertions:
+            log_callback(f"  → {out_path.name}：已翻译内容控件 {content_control_insertions} 段")
+        if revision_stats.tracked_change_count:
+            # 修订的处理结果要能在事后查到：这份文件当时是跳过还是连修订一起翻的。
+            log_callback(f"  → {out_path.name}：{revision_stats.describe()}")
     return out_path
+
+
+def _apply_content_control_translations(
+    doc: Document,
+    translations: dict[str, str],
+    *,
+    target_lang: str,
+    source_lang: str,
+    output_translation_only: bool = False,
+    untranslated_only: bool = False,
+    front_matter: "WordFrontMatterBoundary | None" = None,
+    layout: RevisionLayout | None = None,
+) -> int:
+    """内容控件里的段落这一趟。内容控件写坏了不该拖垮整份正文的输出。"""
+    from core.word_revisions import apply_content_control_translations
+
+    try:
+        return apply_content_control_translations(
+            doc,
+            translations,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            output_translation_only=output_translation_only,
+            untranslated_only=untranslated_only,
+            front_matter=front_matter,
+            layout=layout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"写入 Word 内容控件失败：{exc!r}")
+        return 0
+
+
+def _apply_revision_translations(doc: Document, translations: dict[str, str], **kwargs):
+    """未接受修订这一趟：skip 只数不改，translate 写带修订标记的译文（见 core/word_revisions.py）。"""
+    from core.word_revisions import RevisionWriteStats, apply_revision_translations
+
+    try:
+        return apply_revision_translations(doc, translations, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"写入 Word 修订失败：{exc!r}")
+        return RevisionWriteStats(mode=str(kwargs.get("mode") or "skip"))
 
 
 def _apply_story_translations(doc: Document, translations: dict[str, str], **kwargs):
@@ -1621,12 +1863,17 @@ def _relative_word_path(path: Path, root: Path) -> str:
 # 点「开始」时同一份文档会被连读三遍：界面扫描、前置校验、真正启动各扫一次。一份
 # 3000 段的文档每遍 4~5 秒，按钮上「正在启动…」就要挂将近 10 秒。统计只取决于文件
 # 内容，按（路径、大小、修改时间）记住最近几份的结果，文件一改就自动失效。
-_WORD_COUNT_CACHE: dict[tuple[str, int, int], tuple[int, int, int]] = {}
+_WORD_COUNT_CACHE: dict[tuple[str, int, int], tuple[int, int, int, int]] = {}
 _WORD_COUNT_CACHE_LIMIT = 64
 _WORD_COUNT_CACHE_LOCK = threading.Lock()
 
 
-def _word_file_counts(path: Path) -> tuple[int, int, int]:
+def _word_file_counts(path: Path) -> tuple[int, int, int, int]:
+    """(正文段落数, 表格数, 待译条目数, 未接受的修订处数)。
+
+    修订处数在扫描期就算出来：开始翻译前要按文件弹窗问用户怎么处理，等任务跑起来
+    再数就晚了（那时用户已经点过「开始翻译」）。
+    """
     info = path.stat()
     key = (str(path.resolve()), info.st_size, info.st_mtime_ns)
     with _WORD_COUNT_CACHE_LOCK:
@@ -1635,7 +1882,11 @@ def _word_file_counts(path: Path) -> tuple[int, int, int]:
         return cached
     doc = Document(str(path))
     segments = extract_word_segments(path, target_lang="en", source_lang="zh")
-    counts = (len(doc.paragraphs), len(doc.tables), len(segments))
+    from core.word_revisions import count_tracked_changes, toc_controls
+
+    body = doc.element.body
+    tracked_changes = count_tracked_changes(body, excluded=toc_controls(body))
+    counts = (len(doc.paragraphs), len(doc.tables), len(segments), tracked_changes)
     with _WORD_COUNT_CACHE_LOCK:
         _WORD_COUNT_CACHE[key] = counts
         while len(_WORD_COUNT_CACHE) > _WORD_COUNT_CACHE_LIMIT:
@@ -1663,7 +1914,7 @@ def _build_word_file_item(path: Path, *, root: Path | None = None) -> WordFileIt
             },
         )
 
-    paragraph_count, table_count, translatable_count = _word_file_counts(path)
+    paragraph_count, table_count, translatable_count, tracked_change_count = _word_file_counts(path)
     return WordFileItem(
         path=path,
         name=path.stem,
@@ -1671,6 +1922,7 @@ def _build_word_file_item(path: Path, *, root: Path | None = None) -> WordFileIt
         paragraph_count=paragraph_count,
         table_count=table_count,
         translatable_count=translatable_count,
+        tracked_change_count=tracked_change_count,
         relative_path=_relative_word_path(path, root or path.parent),
         format="docx",
         needs_conversion=False,
