@@ -184,7 +184,8 @@ class ReviewImageInputPreflightTests(IsolatedAppDataTestCase):
         accepted = self._start(client, allow_known_review_failure=True)
         self.assertEqual(accepted.status_code, 202, accepted.text)
         self.assertTrue(self.captured[0]["settings"].pdf.review_enabled)
-        self.assertEqual(len(_FakeReviewClient.calls), 1)
+        # 只有开始前那次检查的两张测试图（第一次没读出，换新码又试一次）。
+        self.assertEqual(len(_FakeReviewClient.calls), 2)
 
     def test_a_model_that_reads_the_code_starts_and_is_not_tested_again(self) -> None:
         _FakeReviewClient.mode = "reads"

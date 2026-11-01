@@ -577,6 +577,9 @@ def looks_like_wrong_image_model(exc: BaseException) -> bool:
         return True
     if any(isinstance(item, (httpx.TransportError, TimeoutError)) for item in chain):
         return False
+    # 模型名填错、接口上没有这个模型：叫人换「能出图 / 能看图」的模型说不到点子上。
+    if is_model_not_found_error(exc):
+        return False
     # 只看最里层的原始报错：外面包的那句是给人看的总结（「请检查密钥、模型和额度」），
     # 里面的词会误中下面的密钥/额度判断。
     text = _exception_text(chain[-1]).lower()
@@ -587,6 +590,37 @@ def looks_like_wrong_image_model(exc: BaseException) -> bool:
     if re.search(r"\b(401|402|403)\b", text) or any(marker in text for marker in _CREDENTIAL_MARKERS):
         return False
     return bool(re.search(r"\b(400|404|415|422)\b", text))
+
+
+def is_model_not_found_error(exc: BaseException) -> bool:
+    """服务商回的是「没有这个模型」（404 model_not_found、「Model Not Exist」一类）。
+
+    认法和文本翻译共用（core.text_transport.classify_http_error 归为 ``model``），另外
+    认 ``model_not_found`` 写在 ``error.type`` 里的中转站（ai-pixel：2026-11-01 实测
+    404 + ``{"error": {"type": "model_not_found"}}``）。这里只决定给人看哪句话，不改
+    文本翻译换接口、回退模型的做法。
+    """
+    from core.text_transport import classify_http_error
+
+    current: BaseException | None = exc
+    for _ in range(6):  # 包装过的报错一层层往里看
+        if current is None:
+            break
+        if isinstance(current, httpx.HTTPStatusError) and (
+            classify_http_error(current)[0] == "model" or _says_model_not_found(current.response)
+        ):
+            return True
+        current = current.__cause__
+    return False
+
+
+def _says_model_not_found(response: httpx.Response) -> bool:
+    if response.status_code in {401, 402, 403, 429} or response.status_code >= 500:
+        return False
+    try:
+        return "model_not_found" in response.text.casefold()
+    except Exception:  # noqa: BLE001 - a stream that cannot be read again
+        return False
 
 
 _CREDENTIAL_MARKERS = (

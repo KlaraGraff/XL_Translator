@@ -48,6 +48,25 @@ class ResponseTextExtractionTests(unittest.TestCase):
         self.assertEqual(text.count('"summary"'), 1)
         self.assertEqual(_extract_json_object(text), json.loads(review_json))
 
+    def test_only_the_message_counts_when_there_is_one(self) -> None:
+        """中转站回的思考过程带一长串加密内容（2026-11-01 Mac 实测 ai-pixel），不是回答。"""
+        payload = {
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAAB" + "x" * 3000},
+                {"type": "message", "content": [{"type": "output_text", "text": "H49T"}]},
+            ],
+        }
+        self.assertEqual(_extract_response_text(payload), "H49T")
+
+    def test_replies_without_a_message_item_are_still_read(self) -> None:
+        # 只有 output_text、或者输出项没有 type 的写法，照旧能取到字。
+        self.assertEqual(_extract_response_text({"status": "completed", "output_text": "ok"}), "ok")
+        self.assertEqual(
+            _extract_response_text({"output": [{"content": [{"type": "output_text", "text": "ok"}]}]}),
+            "ok",
+        )
+
 
 class PdfReviewTests(unittest.TestCase):
     def test_parse_review_json_keeps_minor_suggestions_non_blocking(self) -> None:

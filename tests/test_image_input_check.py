@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+from PIL import ImageOps
 
 from core.image_input_check import (
     IMAGE_INPUT_NO,
@@ -21,20 +22,23 @@ from core.image_input_check import (
     MAX_STORED_CHECKS,
     PROBE_CODE_ALPHABET,
     PROBE_ERROR,
-    PROBE_GLYPHS,
+    PROBE_CELL_SIZE,
     ImageInputGuard,
     draw_probe_image,
+    probe_glyph,
     image_input_key,
     image_input_verdict,
     image_model_refused_page,
     looks_like_no_image_input,
     new_probe_code,
     probe_image_input,
+    reply_excerpt,
     reply_has_code,
     save_image_input_verdict,
     save_role_availability,
     set_image_input_verdict,
 )
+from core.image_generation import is_model_not_found_error, looks_like_wrong_image_model
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -78,12 +82,17 @@ class ProbeImageTests(unittest.TestCase):
                 path = draw_probe_image(code, Path(tmp) / f"{index}.png")
                 self.assertEqual(read_probe_png(path.read_bytes()), code)
 
-    def test_glyphs_are_distinct_and_cover_the_alphabet(self) -> None:
-        self.assertEqual(set(PROBE_GLYPHS), set(PROBE_CODE_ALPHABET))
-        self.assertEqual(len(set(PROBE_GLYPHS.values())), len(PROBE_GLYPHS))
-        for shape in PROBE_GLYPHS.values():
-            self.assertEqual(len(shape), 7)
-            self.assertTrue(all(len(line) == 5 for line in shape))
+    def test_glyphs_are_distinct_and_fit_their_cells(self) -> None:
+        glyphs = {char: probe_glyph(char) for char in PROBE_CODE_ALPHABET}
+        self.assertEqual(len({glyph.tobytes() for glyph in glyphs.values()}), len(glyphs))
+        width, height = PROBE_CELL_SIZE
+        for char, glyph in glyphs.items():
+            with self.subTest(char=char):
+                # 字整个落在格子里，四边都留白（没被截掉）。
+                left, top, right, bottom = ImageOps.invert(glyph).getbbox()
+                self.assertTrue(left > 0 and top > 0 and right < width and bottom < height)
+                # 字够大：字高至少占格子的一半。
+                self.assertGreaterEqual(bottom - top, height // 2)
 
     def test_codes_are_random_and_avoid_lookalikes(self) -> None:
         codes = {new_probe_code() for _ in range(50)}
@@ -98,6 +107,39 @@ class ProbeImageTests(unittest.TestCase):
         self.assertFalse(reply_has_code("ACD", "ACD3"))
         self.assertFalse(reply_has_code('{"pass": true}', "ACD3"))
         self.assertFalse(reply_has_code("anything", ""))
+
+    def test_a_reply_of_just_the_code_may_have_one_character_wrong(self) -> None:
+        # Mac 实测里真模型的误读（图是送到了的）。
+        self.assertTrue(reply_has_code("H43T", "H49T"))
+        self.assertTrue(reply_has_code("1UF3", "4UF3"))
+        self.assertTrue(reply_has_code("图中字符：TOYC", "TDYC"))
+        # 错两个就不算了。
+        self.assertFalse(reply_has_code("LKFY", "UKPY"))
+        self.assertFalse(reply_has_code("R C U B", "MCU3"))
+        # 回了一大段话的不放宽：话里的词太多，容易碰巧凑上。
+        self.assertFalse(reply_has_code("The text is H43T", "H49T"))
+        self.assertFalse(reply_has_code('{"pass": true}', "PAX3"))
+
+    def test_reply_match_needs_the_code_on_its_own(self) -> None:
+        # 中文句子里紧挨着汉字、加粗、逐个列出，都算读出来了。
+        self.assertTrue(reply_has_code("图中的字符是ACD3。", "ACD3"))
+        self.assertTrue(reply_has_code("**ACD3**", "ACD3"))
+        self.assertTrue(reply_has_code("A, C, D, 3", "ACD3"))
+        # 是别的词、别的长串的一部分，就不算。
+        self.assertFalse(reply_has_code("XACD3Y", "ACD3"))
+        self.assertFalse(reply_has_code("rs_68f0ACD3b9", "ACD3"))
+
+    def test_an_image_in_the_reply_never_counts_as_reading_the_code(self) -> None:
+        """图像生成模型回的是整张图的 base64：几十万个字符里碰巧有这 4 个字并不稀奇。"""
+        blob = "iVBORw0KGgoAAAANSUhEUgAA" + "x" * 200 + "+ACD3/" + "y" * 200 + "=="
+        self.assertFalse(reply_has_code(blob, "ACD3"))
+        self.assertFalse(reply_has_code(f"result {blob}", "ACD3"))
+
+    def test_reply_excerpt_leaves_out_long_strings(self) -> None:
+        blob = "iVBORw0KGgo" + "A" * 5000
+        excerpt = reply_excerpt(f"image_generation_call completed {blob}")
+        self.assertEqual(excerpt, "image_generation_call completed …")
+        self.assertLessEqual(len(reply_excerpt("字" * 500)), 200)
 
 
 class NoImageInputClassifierTests(unittest.TestCase):
@@ -188,8 +230,50 @@ class ProbeTests(unittest.TestCase):
         probe = probe_image_input(ask, attempts=3)
         self.assertEqual(probe.result, IMAGE_INPUT_UNSEEN)
         self.assertIn("pass", probe.reply)
-        # 读不出也是结论，不再重试。
-        self.assertEqual(len(calls), 1)
+        # 换新码再读一次，还是读不出才下结论；不按「出错重试」的次数一直试下去。
+        self.assertEqual(len(calls), 2)
+
+    def test_a_misread_first_try_is_read_again_with_a_new_code(self) -> None:
+        """Mac 实测：图送到了，模型偶尔把整串认错（MCU3 读成「R C U B」）。"""
+        codes = []
+
+        def ask(_instructions, _text, images):
+            codes.append(read_probe_png(Path(images[0]).read_bytes()))
+            return "R C U B" if len(codes) == 1 else codes[-1]
+
+        probe = probe_image_input(ask)
+        self.assertEqual(probe.result, IMAGE_INPUT_YES)
+        self.assertEqual(len(codes), 2)
+        self.assertNotEqual(codes[0], "")
+
+    def test_one_misread_character_still_counts_as_seen(self) -> None:
+        def ask(_instructions, _text, images):
+            code = read_probe_png(Path(images[0]).read_bytes())
+            return ("X" if code[1] != "X" else "Y").join([code[0], code[2:]])
+
+        probe = probe_image_input(ask, rereads=0)
+        self.assertEqual(probe.result, IMAGE_INPUT_YES)
+
+    def test_an_error_on_the_second_read_leaves_no_verdict(self) -> None:
+        calls = []
+
+        def ask(*_args):
+            calls.append(1)
+            if len(calls) == 1:
+                return "nothing here"
+            raise _http_error(503, {"error": {"message": "Service temporarily unavailable"}})
+
+        probe = probe_image_input(ask)
+        self.assertEqual(probe.result, PROBE_ERROR)
+
+    def test_an_image_model_reply_is_unseen_and_not_carried_back_whole(self) -> None:
+        def ask(*_args):
+            return "ig_0123 completed " + "iVBORw0KGgo" + "Q" * 300_000
+
+        probe = probe_image_input(ask)
+        self.assertEqual(probe.result, IMAGE_INPUT_UNSEEN)
+        self.assertLessEqual(len(probe.reply), 200)
+        self.assertNotIn("QQQQ", probe.reply)
 
     def test_only_errors_without_a_verdict_are_retried(self) -> None:
         calls = []
@@ -261,6 +345,45 @@ class ImageModelRefusedPageTests(unittest.TestCase):
         ):
             with self.subTest(exc=str(exc)):
                 self.assertFalse(image_model_refused_page(exc))
+
+
+class ModelNotFoundTests(unittest.TestCase):
+    """模型名填错不是「换个能看图 / 能出图的模型」能解决的，不能那样提示。"""
+
+    NOT_FOUND = (
+        # OpenAI 及多数中转站
+        (404, {"error": {"message": "The model `no-such-model` does not exist or you do not have access to it.",
+                         "type": "invalid_request_error", "code": "model_not_found"}}),
+        # DeepSeek
+        (400, {"error": {"message": "Model Not Exist", "type": "invalid_request_error"}}),
+        # ai-pixel 中转（2026-11-01 Mac 实测）：model_not_found 写在 type 里
+        (404, {"error": {"message": 'Model "no-such-model" is not supported by any configured account in this group',
+                         "type": "model_not_found"}}),
+    )
+
+    def test_is_recognized_through_wrapping(self) -> None:
+        for status, body in self.NOT_FOUND:
+            with self.subTest(status=status):
+                self.assertTrue(is_model_not_found_error(_wrapped(_http_error(status, body))))
+
+    def test_is_not_called_a_model_that_cannot_read_or_make_images(self) -> None:
+        for status, body in self.NOT_FOUND:
+            with self.subTest(status=status):
+                exc = _wrapped(_http_error(status, body))
+                self.assertFalse(looks_like_wrong_image_model(exc))
+                self.assertFalse(looks_like_no_image_input(exc))
+                self.assertFalse(image_model_refused_page(exc))
+
+    def test_other_errors_are_not_model_not_found(self) -> None:
+        for exc in (
+            _http_error(400, {"error": {"message": "image input is not supported by this model"}}),
+            _http_error(404, {"error": {"message": "model does not support image generation"}}),
+            _http_error(401, {"error": {"message": "model not found for this key", "code": "model_not_found"}}),
+            _http_error(503, {"error": {"message": "no channel", "type": "model_not_found"}}),
+            RuntimeError("model not found"),
+        ):
+            with self.subTest(exc=str(exc)):
+                self.assertFalse(is_model_not_found_error(exc))
 
 
 class VerdictStoreTests(unittest.TestCase):

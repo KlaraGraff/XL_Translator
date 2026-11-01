@@ -27,12 +27,13 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 from loguru import logger
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 IMAGE_INPUT_YES = "yes"
 IMAGE_INPUT_NO = "no"
@@ -56,36 +57,18 @@ IMAGE_INPUT_YES_MESSAGE = "模型读出了测试图中的文字，能识别图�
 
 
 # ── 测试图 ──────────────────────────────────────────────────
-# 每次随机 4 个字符，模型猜不到；不用 0/O、1/I、2/Z、5/S、8/B、6/G 这类容易看错的字。
+# 每次随机 4 个字符，模型猜不到；不用 0/O、1/I/L/J、2/Z、5/S、8/B、6/G、V 这类容易看错的字。
 PROBE_CODE_ALPHABET = "ACDEFHKMNPRTUWXY3479"
 PROBE_CODE_LENGTH = 4
 
-# 自带 5×7 点阵字形：不依赖系统字体，各平台画出来一模一样（测试也能据此读回）。
-PROBE_GLYPHS: dict[str, tuple[str, ...]] = {
-    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
-    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
-    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
-    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
-    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
-    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
-    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
-    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
-    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
-    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
-    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
-    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
-    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
-    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
-    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
-}
-PROBE_CELL_PX = 12      # 一个点画成 12×12 像素
-PROBE_GLYPH_GAP = 2     # 字与字之间空 2 个点
-PROBE_MARGIN = 3        # 四周留 3 个点
+# 字用 Pillow 自带的 Aileron 字体（不依赖系统字体，各平台画出来一样），加粗、字大、
+# 字距宽。以前用 5×7 的方块点阵字，真模型常把形近的字认错（9/3、4/1、A/H、D/O），
+# 图明明送到了却被判成「没看到」（2026-11-01 Mac 实测 ai-pixel 中转的 gpt-6 系列）。
+PROBE_FONT_PX = 84
+PROBE_STROKE_PX = 2
+PROBE_CELL_SIZE = (96, 100)   # 每个字占一格，画在格子正中（测试据此读回）
+PROBE_GAP_PX = 16
+PROBE_MARGIN_PX = 24
 
 PROBE_INSTRUCTIONS = (
     "You are checking whether an attached image reaches you. "
@@ -98,30 +81,94 @@ def new_probe_code() -> str:
     return "".join(secrets.choice(PROBE_CODE_ALPHABET) for _ in range(PROBE_CODE_LENGTH))
 
 
+@lru_cache(maxsize=1)
+def _probe_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return ImageFont.load_default(size=PROBE_FONT_PX)
+
+
+def probe_glyph(char: str) -> Image.Image:
+    """一个字符的格子：白底黑字，字在正中（灰度图）。"""
+    width, height = PROBE_CELL_SIZE
+    cell = Image.new("L", (width, height), 255)
+    ImageDraw.Draw(cell).text(
+        (width / 2, height / 2),
+        char,
+        fill=0,
+        font=_probe_font(),
+        anchor="mm",
+        stroke_width=PROBE_STROKE_PX,
+        stroke_fill=0,
+    )
+    return cell
+
+
+def probe_cell_origins(length: int) -> list[tuple[int, int]]:
+    width, _height = PROBE_CELL_SIZE
+    return [(PROBE_MARGIN_PX + index * (width + PROBE_GAP_PX), PROBE_MARGIN_PX) for index in range(length)]
+
+
 def draw_probe_image(code: str, path: Path) -> Path:
-    """白底黑字画出 ``code``，存成 PNG（4 个字约 384×156 像素，几百 token）。"""
-    cell = PROBE_CELL_PX
-    columns = PROBE_MARGIN * 2 + len(code) * 5 + max(0, len(code) - 1) * PROBE_GLYPH_GAP
-    rows = PROBE_MARGIN * 2 + 7
-    image = Image.new("RGB", (columns * cell, rows * cell), "white")
-    draw = ImageDraw.Draw(image)
-    for index, char in enumerate(code):
-        left = PROBE_MARGIN + index * (5 + PROBE_GLYPH_GAP)
-        for row, line in enumerate(PROBE_GLYPHS[char]):
-            for col, mark in enumerate(line):
-                if mark == "#":
-                    x0 = (left + col) * cell
-                    y0 = (PROBE_MARGIN + row) * cell
-                    draw.rectangle((x0, y0, x0 + cell - 1, y0 + cell - 1), fill="black")
+    """白底黑字画出 ``code``，存成 PNG（4 个字是 480×148 像素，几百 token）。"""
+    width, height = PROBE_CELL_SIZE
+    size = (
+        PROBE_MARGIN_PX * 2 + len(code) * width + max(0, len(code) - 1) * PROBE_GAP_PX,
+        PROBE_MARGIN_PX * 2 + height,
+    )
+    image = Image.new("L", size, 255)
+    for char, origin in zip(code, probe_cell_origins(len(code))):
+        image.paste(probe_glyph(char), origin)
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, format="PNG")
+    image.convert("RGB").save(path, format="PNG")
     return path
 
 
+# 回复里连成一长串的字母数字（base64 图片、接口 id 这类），不是模型读出来的字。
+# 图像生成模型回的是整张图的 base64，几十万个字符里碰巧含这 4 个字的机会很大，
+# 不先去掉就会被误判成「能识别图片」。
+_BLOB = re.compile(r"[A-Za-z0-9+/=_-]{40,}")
+
+
+def _without_blobs(reply: str) -> str:
+    return _BLOB.sub(" ", str(reply or ""))
+
+
+# 回复里的一个候选：前后不挨着别的字母数字，由 n 个字母数字组成，字与字之间最多隔
+# 3 个空格、横线、逗号这类分隔（「A, C, D, 3」）。用先行断言找出所有（含重叠的）候选。
+def _candidates(text: str, length: int) -> list[str]:
+    pattern = re.compile(
+        rf"(?<![0-9A-Za-z])(?=([0-9A-Za-z](?:[^0-9A-Za-z]{{0,3}}[0-9A-Za-z]){{{length - 1}}})(?![0-9A-Za-z]))"
+    )
+    return [re.sub(r"[^0-9A-Za-z]", "", match.group(1)).upper() for match in pattern.finditer(text)]
+
+
 def reply_has_code(reply: str, code: str) -> bool:
-    """模型的回复里有没有这串码（不分大小写，忽略空格、横线这类分隔）。"""
-    normalized = re.sub(r"[^0-9A-Z]", "", str(reply or "").upper())
-    return bool(code) and code.upper() in normalized
+    """模型的回复里有没有读出这串码。
+
+    不分大小写，字与字之间可以隔空格、横线、逗号这类分隔，但前后不能紧挨着别的字母
+    数字（不能是某个单词、某个长串的一部分）。
+
+    模型只回了 4 个字（按要求那样）时，认错 1 个也算：图送到了的模型偶尔把形近的字
+    认错，而没看到图的模型碰巧猜中其中 3 个的机会约万分之五。回了一大段话的不放宽，
+    话里的词太多，碰巧凑上的机会就大了。
+    """
+    code = str(code or "").upper()
+    if not code:
+        return False
+    text = _without_blobs(reply)
+    if code in _candidates(text, len(code)):
+        return True
+    answer = re.sub(r"[^0-9A-Za-z]", "", text).upper()
+    return (
+        len(code) >= PROBE_CODE_LENGTH
+        and len(answer) == len(code)
+        and sum(a != b for a, b in zip(answer, code)) <= 1
+    )
+
+
+def reply_excerpt(reply: str, limit: int = 200) -> str:
+    """给日志和测试结果看的一段回复：长串（多半是 base64 图片）换成「…」，再截短。"""
+    text = _BLOB.sub("…", str(reply or "")).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 # ── 报错是不是「不收图」 ─────────────────────────────────────
@@ -308,23 +355,30 @@ def save_image_input_verdict(
 class ImageInputProbe:
     result: str           # yes / no / unseen / error
     message: str          # 给用户看的一句（error 时是空的，由调用方按原来的方式说）
-    reply: str = ""       # 模型的原始回复（只进日志）
+    reply: str = ""       # 模型回复的一段（长串已去掉、已截短；只进日志和测试结果）
     error: BaseException | None = None
 
 
 AskImages = Callable[[str, str, list[Path]], str]
 
 
-def probe_image_input(ask: AskImages, *, attempts: int = 1) -> ImageInputProbe:
+def probe_image_input(ask: AskImages, *, attempts: int = 1, rereads: int = 1) -> ImageInputProbe:
     """发一张带随机码的小图让模型读出来。
 
     ``ask(instructions, user_text, images)`` 发出请求、返回模型回复的文字，失败就抛错
-    （审核用的 ``OpenAICompatiblePdfReviewClient.read_images`` 就是这样）。只有网络、
-    服务商这类没有结论的失败才重试；读对、拒收、读不出都是结论，不再重试。
+    （审核用的 ``OpenAICompatiblePdfReviewClient.read_images`` 就是这样）。
+
+    * 读出来了 → yes；接口说不收图 → no：都是结论，马上返回。
+    * 回了话却没读出码：换一个新码再试 ``rereads`` 次，都读不出才算 unseen。模型偶尔
+      认错字，不能一次就说图没送到。
+    * 网络、服务商这类没有结论的失败最多试 ``attempts`` 次。重试时出了这种失败，前面
+      那次「没读出」也不作数，按没有结论返回。
     """
     last_exc: BaseException | None = None
+    errors_left = max(1, int(attempts))
+    rereads_left = max(0, int(rereads))
     with tempfile.TemporaryDirectory() as tmp:
-        for _attempt in range(max(1, int(attempts))):
+        while True:
             code = new_probe_code()
             image = draw_probe_image(code, Path(tmp) / "image_input_probe.png")
             try:
@@ -335,12 +389,18 @@ def probe_image_input(ask: AskImages, *, attempts: int = 1) -> ImageInputProbe:
                     logger.debug(f"[识图检查] 模型拒收图片：{exc!r}")
                     return ImageInputProbe(IMAGE_INPUT_NO, IMAGE_INPUT_NO_MESSAGE, error=exc)
                 logger.debug(f"[识图检查] 请求失败：{exc!r}")
-                continue
+                errors_left -= 1
+                if errors_left > 0:
+                    continue
+                return ImageInputProbe(PROBE_ERROR, "", error=last_exc)
+            excerpt = reply_excerpt(reply)
             if reply_has_code(reply, code):
-                return ImageInputProbe(IMAGE_INPUT_YES, IMAGE_INPUT_YES_MESSAGE, reply=reply)
-            logger.debug(f"[识图检查] 没读出测试码 {code}，模型回复：{str(reply)[:200]!r}")
-            return ImageInputProbe(IMAGE_INPUT_UNSEEN, IMAGE_INPUT_UNSEEN_MESSAGE, reply=str(reply or ""))
-    return ImageInputProbe(PROBE_ERROR, "", error=last_exc)
+                return ImageInputProbe(IMAGE_INPUT_YES, IMAGE_INPUT_YES_MESSAGE, reply=excerpt)
+            logger.debug(f"[识图检查] 没读出测试码 {code}，模型回复：{excerpt!r}")
+            if rereads_left > 0:
+                rereads_left -= 1
+                continue
+            return ImageInputProbe(IMAGE_INPUT_UNSEEN, IMAGE_INPUT_UNSEEN_MESSAGE, reply=excerpt)
 
 
 # ── 任务中的保底 ────────────────────────────────────────────
