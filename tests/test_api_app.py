@@ -404,6 +404,60 @@ class ApiAppTests(unittest.TestCase):
         after_apply = self.client.get("/api/tm/clean/suggestions?lang_pair=zh-en")
         self.assertEqual(after_apply.json()["suggestions"], [])
 
+    def test_clean_suggestions_endpoint_returns_every_pending_row_in_one_call(self) -> None:
+        # CODE_AUDIT_2026-08-31 M1「没来得及验」第 4 项：清洗建议接口一次全量返回、
+        # 不分页。这里钉住现状本身：接口没有 page / page_size 参数（传了也被忽略，
+        # 不会悄悄按某一页截断），一次请求就把该语言对下所有待审建议按 id 升序给全，
+        # 换了语言对只剩那一对。哪天接口加上分页，这条会红，逼着同时改界面和这里。
+        tm_manager.init_db()
+        tm_manager.insert_batch(
+            [(f"术语{i:02d}", f"term {i:02d}") for i in range(25)], "zh-en", 500, "test"
+        )
+        tm_manager.insert_batch([("其他语言对", "other pair")], "zh-fr", 500, "test")
+        zh_en = {row["source_text"]: row for row in tm_manager.get_all_entries_for_cleaning("zh-en")}
+        zh_fr = {row["source_text"]: row for row in tm_manager.get_all_entries_for_cleaning("zh-fr")}
+        suggestions = [
+            {
+                "entry_id": row["id"],
+                "source_text": text,
+                "old_target": row["target_text"],
+                "new_target": f"{row['target_text']} (reviewed)",
+                "lang_pair": "zh-en",
+                "version": row["version"],
+            }
+            for text, row in zh_en.items()
+        ]
+        suggestions.append(
+            {
+                "entry_id": zh_fr["其他语言对"]["id"],
+                "source_text": "其他语言对",
+                "old_target": "other pair",
+                "new_target": "other pair (reviewed)",
+                "lang_pair": "zh-fr",
+                "version": zh_fr["其他语言对"]["version"],
+            }
+        )
+        self.assertEqual(tm_manager.persist_cleaning_suggestions(suggestions), 26)
+
+        listed = self.client.get("/api/tm/clean/suggestions?lang_pair=zh-en&page=2&page_size=5")
+        self.assertEqual(listed.status_code, 200)
+        body = listed.json()
+        self.assertEqual(len(body["suggestions"]), 25)
+        self.assertEqual(
+            [row["id"] for row in body["suggestions"]],
+            sorted(row["id"] for row in body["suggestions"]),
+            "建议按 id 升序返回，界面不必自己再排",
+        )
+        self.assertEqual({row["lang_pair"] for row in body["suggestions"]}, {"zh-en"})
+        # stale_count 是同一口径下的另一个数字，不跟着分页走。
+        self.assertEqual(body["stale_count"], 0)
+
+        other = self.client.get("/api/tm/clean/suggestions?lang_pair=zh-fr")
+        self.assertEqual([row["source_text"] for row in other.json()["suggestions"]], ["其他语言对"])
+
+        everything = self.client.get("/api/tm/clean/suggestions")
+        self.assertEqual(len(everything.json()["suggestions"]), 26)
+
     def test_model_config_update_and_diagnostics_endpoints(self) -> None:
         imported = self.client.post(
             "/api/model-config/import",

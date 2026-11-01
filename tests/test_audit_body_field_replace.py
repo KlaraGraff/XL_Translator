@@ -21,6 +21,7 @@ from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import RGBColor
 
 from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
@@ -272,6 +273,54 @@ class BodyFieldReplacementTests(unittest.TestCase):
             self.assertTrue(
                 highlights and "none" not in {value.lower() for value in highlights},
                 f"含域正文段原地替换后应带复核高亮，实际 highlight 值：{highlights!r}",
+            )
+
+    def test_leading_superscript_number_does_not_format_the_whole_field_paragraph(self) -> None:
+        """审计中-23 的含域变体：段首上标脚注号 + 域 + 正文，整句译文不许继承上标红色。
+
+        域把段落切成几截，锚点仍是段首那个上标编号；分母必须按整段作者文字算，
+        只拿这一截自己的字数当分母会把它当成「这一截本来就是这个格式」。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "seq_caption_superscript.docx"
+            doc = Document()
+            doc.add_paragraph("正文说明")
+            caption = doc.add_paragraph()
+            number = caption.add_run("1")
+            number.font.superscript = True
+            number.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            _append_field(caption, " SEQ Table \\* ARABIC ", result="9")
+            caption.add_run(" 本条款适用于全体员工及外聘人员。")
+            doc.save(str(source_path))
+            line = Document(str(source_path)).paragraphs[1].text
+            self.assertEqual(line, "19 本条款适用于全体员工及外聘人员。")
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={line: _replace("This clause applies to all employees and outsourced staff.")},
+                target_lang="en",
+                source_lang="zh",
+            )
+            out_doc = Document(str(out_path))
+            caption = out_doc.paragraphs[1]
+
+            self.assertIn("SEQ", caption._p.xml)
+            # 域的结果由 Word 自己刷新，译文里没有它，整句落在第一截作者文字上。
+            formats = [
+                (
+                    run.text,
+                    run.font.superscript,
+                    None if run.font.color.rgb is None else str(run.font.color.rgb),
+                )
+                for run in caption.runs
+                if run.text
+            ]
+            self.assertEqual(
+                formats,
+                [("This clause applies to all employees and outsourced staff.", None, None), ("9", None, None)],
+                f"整句译文继承了段首脚注号的上标与红色：{formats!r}",
             )
 
     def test_leading_prefix_survives_field_paragraph_replaced_in_place(self) -> None:

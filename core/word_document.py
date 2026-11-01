@@ -3228,28 +3228,38 @@ def _adopt_dominant_run_shape(anchor, runs: list) -> None:
 
     按格式累计字数，不是挑最长的一个 run：PDF 转来的段落一行一个 run，加粗的首行
     往往是最长的一行，正文却分在后面几行里。超链接里的 run 不算，免得整段译文
-    套上链接样式（蓝色下划线）而链接本身已经没了。"""
+    套上链接样式（蓝色下划线）而链接本身已经没了。
+
+    换格式只看「锚点占不占多数」，管不到锚点身上的局部字符格式：正文全在超链接里
+    时没有可参照的正文 run，按格式分组「最长」的又常常就是锚点自己。所以上标脚注号、
+    标红的强调字另外按字数判一遍（见 ``_drop_stray_run_emphasis``），不跟着这条
+    门槛一起放行。"""
     lengths = [(len(run.text or ""), run) for run in runs]
     total = sum(length for length, _run in lengths)
     if total == 0:
         return
     anchor_len = next((length for length, run in lengths if run._r is anchor._r), 0)
-    if anchor_len * 2 >= total:
-        return
+    if anchor_len * 2 < total:
+        _adopt_dominant_run_look(anchor, lengths)
+    _drop_stray_run_emphasis(anchor, lengths)
 
-    def look(run) -> bytes:
-        rpr = run._r.find(qn("w:rPr"))
-        return b"" if rpr is None else etree.tostring(rpr)
 
+def _run_look(run) -> bytes:
+    rpr = run._r.find(qn("w:rPr"))
+    return b"" if rpr is None else etree.tostring(rpr)
+
+
+def _adopt_dominant_run_look(anchor, lengths: list) -> None:
+    """换成覆盖字数最多的那种格式（同上，超链接里的 run 不算）。"""
     by_look: dict[bytes, list] = {}
     for length, run in lengths:
         if length and run._r.getparent().tag != qn("w:hyperlink"):
-            entry = by_look.setdefault(look(run), [0, run])
+            entry = by_look.setdefault(_run_look(run), [0, run])
             entry[0] += length
     if not by_look:
         return
     _count, dominant = max(by_look.values(), key=lambda item: item[0])
-    if dominant._r is anchor._r or look(dominant) == look(anchor):
+    if dominant._r is anchor._r or _run_look(dominant) == _run_look(anchor):
         return
     source = dominant._r.find(qn("w:rPr"))
     current = anchor._r.find(qn("w:rPr"))
@@ -3257,6 +3267,42 @@ def _adopt_dominant_run_shape(anchor, runs: list) -> None:
         anchor._r.remove(current)
     if source is not None:
         anchor._r.insert(0, deepcopy(source))
+
+
+# 只属于个别字、铺满整句译文就很扎眼的字符格式：上标/下标（段首的脚注号、角标）
+# 和颜色、高亮（标红的强调字）。整段译文写进一个 run 时，这几种跟着锚点走代价最大。
+_LOCAL_EMPHASIS_TAGS = (
+    qn("w:vertAlign"),
+    qn("w:color"),
+    qn("w:highlight"),
+)
+
+
+def _drop_stray_run_emphasis(anchor, lengths: list) -> None:
+    """别让只属于个别字的局部字符格式，跟着锚点铺满整句译文。
+
+    上标脚注号、标红的强调字常常只是段首一个两三个字的 run，换主体格式治不到它：
+    整段文字都在超链接里时压根没有可参照的正文 run，按格式分组「最长」的又常常就是
+    锚点自己。这里按字数算每种局部格式盖住了全段多少，不到一半就从锚点上摘掉；整段
+    本来就是这个格式（全段标红、全段上标）时照旧留着。
+    """
+    total = sum(length for length, _run in lengths)
+    r_pr = anchor._r.find(qn("w:rPr"))
+    if total == 0 or r_pr is None:
+        return
+    for tag in _LOCAL_EMPHASIS_TAGS:
+        node = r_pr.find(tag)
+        if node is None:
+            continue
+        value = node.get(qn("w:val"))
+        covered = 0
+        for length, run in lengths:
+            other = run._r.find(qn("w:rPr"))
+            same = None if other is None else other.find(tag)
+            if same is not None and same.get(qn("w:val")) == value:
+                covered += length
+        if covered * 2 < total:
+            r_pr.remove(node)
 
 
 def _replace_paragraph_text_around_fields(
@@ -3302,6 +3348,12 @@ def _replace_paragraph_text_around_fields(
         chunks[first_index] = replacement
 
     keep_tags = _layout_tags_to_keep(replacement)
+    # 局部字符格式按整段作者文字的合计字数判定：域把段落切成几截，段首那个上标脚注号
+    # 仍是全段里的一小截（审计中-23），只拿自己那一截当分母会把它当成「这一截本来就
+    # 是这个格式」。域的结果由 Word 自己刷新，不算作者文字，不参与分母。
+    paragraph_lengths = [
+        (len(run.text or ""), run) for runs in run_groups for run in runs
+    ]
     for runs, chunk in zip(run_groups, chunks):
         if not runs:
             continue
@@ -3310,6 +3362,7 @@ def _replace_paragraph_text_around_fields(
         # 不必新建锚点，清空了事。
         anchor = _paragraph_text_anchor_run(paragraph, runs) if chunk else None
         if anchor is not None:
+            _drop_stray_run_emphasis(anchor, paragraph_lengths)
             _set_run_text_keeping_layout(anchor, chunk, keep_tags)
             _set_latin_run_font(anchor, target_lang=target_lang)
         for run in runs:

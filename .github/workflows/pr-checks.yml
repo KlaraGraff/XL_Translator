@@ -71,6 +71,10 @@ jobs:
         run: node ../tests/i18n_engine.test.mjs
       - name: Feedback relay
         run: node ../tests/feedback_relay.test.mjs
+      - name: Update flow (restart / install guards)
+        run: node ../tests/test_update_activity.cjs
+      - name: Update acceptance (check / ignore version)
+        run: node ../tests/test_update_acceptance.cjs
 
   # 界面文字放不下的检查（docs/UI_TEXT_FIT.md）：中英法 × 两种窗口逐页找被截断的名称、伸出框外的文字、
   # 右栏横向滚动；另跑「法文加长 30%」只出报告。全在本机：临时数据目录、样例文件、假模型。
