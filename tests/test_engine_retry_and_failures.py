@@ -10,6 +10,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from config import RETRY_MAX_ATTEMPTS
 from engines.base_engine import is_retryable_engine_error
 from engines.claude_engine import ClaudeEngine
 from engines.ollama_engine import OllamaEngine
@@ -75,6 +76,42 @@ class ClaudeRetryBehaviourTests(unittest.TestCase):
         # Retrying a 401 through the whole backoff budget only delays the
         # user's feedback about a misconfigured key.
         self.assertEqual(fake.posts, 1)
+
+
+class OllamaRetryPolicyTests(unittest.TestCase):
+    def _run(self, error: Exception) -> tuple[int, BaseException | None]:
+        engine = OllamaEngine(model="m", concurrency=1)
+        calls: list[int] = []
+
+        async def _fail(system: str, user_msg: str) -> str:
+            calls.append(1)
+            raise error
+
+        async def _no_sleep(_delay: float) -> None:
+            return None
+
+        with (
+            patch.object(engine, "_call_ollama", new=_fail),
+            patch("engines.ollama_engine.asyncio.sleep", new=_no_sleep),
+        ):
+            raised: BaseException | None = None
+            try:
+                engine.translate_batch(["你好"], "en", "prompt")
+            except BaseException as exc:  # noqa: BLE001 - 这里要的是重试次数
+                raised = exc
+        return len(calls), raised
+
+    def test_a_wrong_model_name_is_not_retried(self) -> None:
+        # Ollama 对不存在的模型返回 404；原来的手写循环把这类永久性配置错误
+        # 当成瞬时故障，多退避三次才把真实原因交回上层。
+        calls, raised = self._run(_AuthError(404))
+        self.assertIsInstance(raised, _AuthError)
+        self.assertEqual(calls, 1, "404（模型名填错）第一次就该放弃")
+
+    def test_a_transient_server_error_still_uses_the_full_budget(self) -> None:
+        calls, raised = self._run(_AuthError(503))
+        self.assertIsInstance(raised, _AuthError)
+        self.assertEqual(calls, RETRY_MAX_ATTEMPTS, "503 应当重试到预算用完")
 
 
 class OllamaExhaustionTests(unittest.TestCase):

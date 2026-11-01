@@ -238,6 +238,58 @@ class WordConverterTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "/usr/bin/codesign")
         self.assertIn("启动限制", str(ctx.exception))
 
+    def test_libreoffice_convert_to_uses_isolated_user_profile(self) -> None:
+        """``--convert-to`` 必须带一份独立的 ``-env:UserInstallation``。
+
+        两个 soffice 进程不能共享用户配置目录：用户开着 LibreOffice 图形界面时，
+        headless 转换会静默失败。同一文件里的 UNO 编号路径、xls_converter、
+        ppt_converter 都已经是这个做法，只有这里的 ``--convert-to`` 漏了。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.doc"
+            source_path.write_bytes(b"legacy word payload")
+
+            commands: list[list[str]] = []
+            profiles: list[Path] = []
+
+            def _fake_run(command, **_kwargs):
+                commands.append([str(part) for part in command])
+                profile_args = [
+                    part for part in command if part.startswith("-env:UserInstallation=")
+                ]
+                # 没有配置隔离时也照常「转换成功」，好让断言报出真正的原因。
+                if profile_args:
+                    profile = Path(profile_args[0].split("=", 1)[1][len("file://"):])
+                    profiles.append(profile)
+                    # 隔离出来的配置目录必须先被建出来，soffice 才肯用它。
+                    self.assertTrue(profile.is_dir(), f"临时配置目录不存在：{profile}")
+                outdir = Path(command[command.index("--outdir") + 1])
+                (outdir / f"{source_path.stem}.docx").write_bytes(b"PK\x03\x04 fake docx")
+                return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+            # 连续转两次：每次都该拿到自己的一份配置，而不是复用上一份。
+            with (
+                patch.object(word_converter, "_find_soffice", return_value=root / "soffice"),
+                patch.object(word_converter, "_run_command", side_effect=_fake_run),
+            ):
+                for _ in range(2):
+                    word_converter.convert_with_libreoffice(source_path)
+
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertTrue(
+                any(part.startswith("-env:UserInstallation=") for part in command),
+                f"缺少配置隔离：{command}",
+            )
+            self.assertIn("--convert-to", command)
+        # 每次转换用的是自己新建的临时目录，用完整棵树都删掉。
+        self.assertIn("word_translator_lo_", str(profiles[0]))
+        self.assertNotEqual(profiles[0].parent, profiles[1].parent, "两次转换复用了同一份配置目录")
+        # 临时配置目录属于这次转换，用完必须删掉，不能堆在临时目录里。
+        for profile in profiles:
+            self.assertFalse(profile.exists(), f"临时配置目录没有清理：{profile}")
+
     @staticmethod
     def _build_docx(path: Path) -> None:
         doc = Document()

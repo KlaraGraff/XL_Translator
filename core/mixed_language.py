@@ -550,6 +550,9 @@ def _translate_mixed_batch_with_fallback(
                 request_generation=request_generation,
                 context_label="混合语言",
                 error_callback=error_callback,
+                # 限流退避一睡就是几十秒，不把停止标志交给它，用户点了停止也要
+                # 先睡满才轮得到下面那句检查。
+                should_stop=should_stop,
             )
             if decision is not None:
                 stats.record_adaptive_concurrency_decision(decision)
@@ -885,6 +888,8 @@ def _retry_one_mixed_source(
                     request_generation=request_generation,
                     context_label="混合语言重试",
                     error_callback=None,
+                    # 同上：退避期间要能被停止打断，否则重试循环会睡满一整段。
+                    should_stop=should_stop,
                 )
                 if decision is not None:
                     stats.record_adaptive_concurrency_decision(decision)

@@ -17,6 +17,7 @@ from engines.base_engine import (
     TranslationEngine,
     get_source_lang_name,
     get_target_lang_name,
+    is_retryable_engine_error,
     parse_response,
 )
 
@@ -115,6 +116,10 @@ class OllamaEngine(TranslationEngine):
                     return parse_response(texts, raw, "Ollama")
                 except Exception as e:
                     last_error = e
+                    # 模型名填错、鉴权被拒这类 4xx 重试也不会自愈：和 openai/claude
+                    # 引擎一样第一次失败就把真实原因交回上层，别让退避把报错拖后几秒。
+                    if not is_retryable_engine_error(e):
+                        raise
                     logger.warning(f"Ollama 第 {attempt + 1} 次重试：{e}")
                     await asyncio.sleep(1.5 ** attempt)
         logger.error(f"Ollama 重试耗尽：{last_error}")

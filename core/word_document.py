@@ -1742,23 +1742,79 @@ def _paragraph_content_runs(paragraph: Paragraph) -> list:
     return runs
 
 
-def _paragraph_text_anchor_run(paragraph: Paragraph, runs: list):
+def _paragraph_text_anchor_run(
+    paragraph: Paragraph,
+    runs: list,
+    *,
+    respect_bookmarks: bool = True,
+):
     """挑出（必要时新建）承载整段文字的那个 run。
 
     段落以超链接开头时不能直接写进超链接内部的 run：那样整段译文都会变成可点击的
     链接。改为在该超链接之前插入一个段落级的普通 run。
+
+    书签同理：``w:bookmarkStart`` / ``w:bookmarkEnd`` 是 ``w:p`` 的直接子元素，Word 给
+    交叉引用生成的 ``_Ref…`` 书签圈的往往只是段落中间一截文字。锚点若仍留在书签之前，
+    整段译文就落在书签外面，书签区间里只剩一个被清空的 run，``REF 该书签`` 刷新后
+    取到空串。书签不全段时把锚点挪进区间：取区间里的第一个 run；它若在超链接内部，
+    上面那条规则会在超链接之前新建 run，落点仍在书签区间里。
+
+    段落里有多个互不相交的书签时，一个锚点不可能同时落进所有区间，只保证第一处
+    书签里有字（这种段落现实里极罕见，保持原样、不额外猜）。
     """
     # 脚注/尾注段落开头是编号标记那个 run（上标样式），译文不能写进去。
-    first_run = next(
-        (run for run in runs if next(run._r.iter(*_NOTE_MARK_TAGS), None) is None),
-        runs[0],
-    )
+    candidates = [
+        run for run in runs if next(run._r.iter(*_NOTE_MARK_TAGS), None) is None
+    ] or runs[:1]
+    first_run = candidates[0]
+    if respect_bookmarks and paragraph._p.find(qn("w:bookmarkStart")) is not None:
+        first_run = _first_run_inside_bookmark(paragraph, candidates) or first_run
     holder = first_run._r.getparent()
     if holder is paragraph._p:
         return first_run
     new_r = OxmlElement("w:r")
     holder.addprevious(new_r)
     return Run(new_r, paragraph)
+
+
+def _bookmark_spans(children: list) -> list[tuple[int, int]]:
+    """书签起止在段落直接子元素里的下标对；起止不配平的书签跳过。
+
+    按嵌套关系配对，不按 ``w:id``：Word 写出的文件里两者一致，被其它工具改过的文件里
+    id 可能重复或缺失，而 ``w:bookmarkStart`` / ``w:bookmarkEnd`` 的嵌套次序始终是
+    结构本身。
+    """
+    opens: list[int] = []
+    spans: list[tuple[int, int]] = []
+    for index, node in enumerate(children):
+        if node.tag == qn("w:bookmarkStart"):
+            opens.append(index)
+        elif node.tag == qn("w:bookmarkEnd") and opens:
+            spans.append((opens.pop(), index))
+    return spans
+
+
+def _first_run_inside_bookmark(paragraph: Paragraph, runs: list):
+    """``runs`` 里第一个落在某本书签区间内的 run；没有就返回 ``None``。
+
+    书签圈住整段、或从段首圈到段中时，第一个内容 run 本来就在区间里，返回的就是它
+    ——与修复前一致；只有书签圈住的是段落中间一截（用户选中一短语插书签，Word 给
+    ``_Ref…`` 生成的也是这种形状）时，锚点才被挪到区间里去。
+    """
+    children = list(paragraph._p.iterchildren())
+    inside: set = set()
+    for start, end in _bookmark_spans(children):
+        inside.update(children[start + 1 : end])
+    if not inside:
+        return None
+    for run in runs:
+        node = run._r
+        # 超链接（以及 w:ins 这类容器）里的 run 按它所在的那个直接子元素定位。
+        while node is not None and node.getparent() is not paragraph._p:
+            node = node.getparent()
+        if node is not None and node in inside:
+            return run
+    return None
 
 
 def _drop_emptied_hyperlinks(paragraph: Paragraph) -> None:
@@ -2891,7 +2947,8 @@ def _prepend_paragraph_text(paragraph: Paragraph, label: str) -> bool:
         return True
     # 段落以超链接开头：编号标签写进 paragraph.runs[0] 会落到超链接之后，序号掉进
     # 段落中间；直接 add_run 又会追加到末尾。必须在超链接之前插入一个新的普通 run。
-    label_run = _paragraph_text_anchor_run(paragraph, runs)
+    # 编号标签不属于任何一段书签，别让书签把标签拽进段落中间。
+    label_run = _paragraph_text_anchor_run(paragraph, runs, respect_bookmarks=False)
     label_run.text = prefix
     return True
 

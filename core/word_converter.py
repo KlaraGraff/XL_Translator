@@ -185,7 +185,12 @@ def convert_with_native_word(doc_path: str | Path) -> Path:
 
 
 def convert_with_libreoffice(doc_path: str | Path) -> Path:
-    """Convert .doc to .docx with LibreOffice/soffice when installed."""
+    """Convert .doc to .docx with LibreOffice/soffice when installed.
+
+    每次转换都带一份独立的 ``-env:UserInstallation`` 临时配置目录：两个 soffice
+    进程不能共享用户配置目录，用户开着 LibreOffice 图形界面时 headless 会静默
+    失败。UNO 编号路径、xls_converter、ppt_converter 都已是这个做法。
+    """
     source_path = Path(doc_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
@@ -193,10 +198,15 @@ def convert_with_libreoffice(doc_path: str | Path) -> Path:
 
     output_path = _get_temp_docx_path(source_path)
     work_dir = Path(tempfile.mkdtemp(prefix="word_translator_lo_"))
+    profile_dir = work_dir / "profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
     try:
         command = [
             str(soffice_path),
             "--headless",
+            "--norestore",
+            "--nodefault",
+            f"-env:UserInstallation={profile_dir.as_uri()}",
             "--convert-to",
             "docx",
             "--outdir",

@@ -400,7 +400,11 @@ class UpdatePreferencesRequest(BaseModel):
 
 
 class MaintenanceClearRequest(BaseModel):
-    category: Literal["task_history", "logs", "diagnostics", "keys", "settings", "tm", "workspaces"]
+    # "workspaces"（「临时文件」）这个可清理类别已经整体删掉：从来没有代码往那个目录
+    # 写过东西。旧界面或用户上一次打开、还没刷新的窗口仍可能带着它来请求，这里不再
+    # 接受——FastAPI 会在进到处理函数之前就把它拒成 422 字段校验错误，而不是让它落到
+    # 路由里的 if 链上悄悄做完一个空操作，也不会以 500 收场。
+    category: Literal["task_history", "logs", "diagnostics", "keys", "settings", "tm"]
     confirmation: bool = False
     lang_pair: str | None = Field(default=None, max_length=128)
 

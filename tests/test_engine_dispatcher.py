@@ -648,13 +648,40 @@ class _TransportFailingEngine(TranslationEngine):
         ]
 
 
-def _transport_http_error(status: int) -> Exception:
+def _slept(make):
+    """Run ``make()`` with ``time.monotonic``/``time.sleep`` replaced by a fake clock.
+
+    ``_backoff_sleep`` slices one long wait into 0.25 s naps, so the test has to
+    move the clock forward by exactly what was slept; patching ``sleep`` alone
+    would loop forever.  Returns the recorded nap durations.
+    """
+    delays: list[float] = []
+    clock = [1000.0]
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        delays.append(seconds)
+        clock[0] += seconds
+
+    with patch("core.engine_dispatcher.time.monotonic", monotonic), \
+         patch("core.engine_dispatcher.time.sleep", sleep):
+        make()
+    return delays
+
+
+def _transport_http_error(
+    status: int,
+    headers: dict[str, str] | None = None,
+    text: str = "{}",
+) -> Exception:
     import httpx
 
     from core.text_transport import TextTransportHTTPError
 
     request = httpx.Request("POST", "https://service.test/v1/chat/completions")
-    response = httpx.Response(status, text="{}", request=request)
+    response = httpx.Response(status, headers=headers or {}, text=text, request=request)
     return TextTransportHTTPError(f"HTTP {status}", request=request, response=response, kind="transient")
 
 
@@ -761,6 +788,59 @@ class TransientTransportRetryTests(unittest.TestCase):
         self.assertGreater(_TRANSIENT_RETRY_BASE_DELAY * 0.75, FAILED_REQUEST_CACHE_SECONDS)
 
 
+class RetryAfterBackoffTests(unittest.TestCase):
+    """审计 中-13：退避只按本地公式计时，上游 Retry-After 一律被忽略。
+
+    上游说「60 秒后再来」时本地 2 秒后又打过去，等于把限流窗口不断刷新；
+    这里守住「退避时长不短于上游要求」。
+    """
+
+    def test_the_transient_retry_waits_at_least_as_long_as_upstream_asked(self) -> None:
+        engine = _TransportFailingEngine(failures=[_transport_http_error(503, {"Retry-After": "25"})])
+
+        with patch("core.engine_dispatcher.random.random", return_value=0.5):
+            delays = _slept(lambda: translate_texts(
+                ["alpha"], engine, "fr", "system prompt",
+                batch_size=20, concurrency=1, source_lang="en",
+            ))
+
+        self.assertEqual(len(engine.calls), 2)
+        self.assertTrue(delays, delays)
+        self.assertGreaterEqual(sum(delays), 25.0)
+
+    def test_a_short_upstream_wait_does_not_shorten_the_local_backoff(self) -> None:
+        engine = _TransportFailingEngine(failures=[_transport_http_error(503, {"Retry-After": "1"})])
+
+        with patch("core.engine_dispatcher.random.random", return_value=0.5):
+            delays = _slept(lambda: translate_texts(
+                ["alpha"], engine, "fr", "system prompt",
+                batch_size=20, concurrency=1, source_lang="en",
+            ))
+
+        self.assertEqual(len(engine.calls), 2)
+        self.assertGreater(sum(delays), 1.0)
+
+    def test_the_concurrency_limit_retry_honours_the_header_too(self) -> None:
+        class HeaderLimitEngine(ConcurrencyLimitExcelEngine):
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                self.calls.append(list(texts))
+                if self.fail_count > 0:
+                    self.fail_count -= 1
+                    raise _transport_http_error(429, {"Retry-After": "25"}, text="Too Many Requests")
+                return {text: f"translated:{text}" for text in texts}
+
+        engine = HeaderLimitEngine(fail_count=1)
+
+        with patch("core.engine_dispatcher.random.random", return_value=0.5):
+            delays = _slept(lambda: translate_texts(
+                ["alpha"], engine, "fr", "system prompt",
+                batch_size=20, concurrency=4, source_lang="en",
+            ))
+
+        self.assertEqual(len(engine.calls), 2)
+        self.assertGreaterEqual(sum(delays), 25.0)
+
+
 class QualityFilterResetTrackingTests(unittest.TestCase):
     """质量校验重置不许静默：每条被回退的原文必须记入 stats，任务层才报得出来。
 
@@ -789,10 +869,6 @@ class QualityFilterResetTrackingTests(unittest.TestCase):
         results = {"施工方案总说明": " 施工方案总说明 "}
         _apply_quality_filter(results, "fr", source_lang="zh", stats=None)
         self.assertEqual(results["施工方案总说明"], "施工方案总说明")
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class _ResendEngine(TranslationEngine):
@@ -838,3 +914,7 @@ class ResendUnchangedTests(unittest.TestCase):
                                  source_lang="en")
         self.assertEqual(len(engine.calls), 1)
         self.assertNotEqual(result.get("Acme"), "译Acme")
+
+
+if __name__ == "__main__":
+    unittest.main()

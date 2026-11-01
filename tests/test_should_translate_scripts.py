@@ -137,6 +137,58 @@ class ChineseTargetBranchTests(unittest.TestCase):
                 )
 
 
+class StructuredLiteralTests(unittest.TestCase):
+    """网址、邮箱、文件路径是结构化字面量，哪个方向都不该送去翻。
+
+    审查 2026-08-31 中-15：外译中分支只有「纯数字符号」和「无空格 + 字母 + 数字」
+    两条保护，后面直接 letter_count >= 2 → True，不含数字的网址、邮箱、路径全被
+    当成待译文本。两个方向对「什么算可翻文本」的定义本就不该不一致。
+    """
+
+    SAMPLES = (
+        "https://example.com/a/b",
+        "user@example.com",
+        "C:\\Users\\Tom\\file.docx",
+        "/usr/local/bin/python",
+        "ftp://files.example.com/pub",
+        "www.example.com",
+        "src/main.py",
+        "drawing01.dwg",
+    )
+
+    def test_addresses_are_skipped_for_every_target(self) -> None:
+        for text in self.SAMPLES:
+            for target, source in (
+                ("zh", "en"),
+                ("zh", "ja"),
+                ("en", "zh"),
+                ("fr", "zh"),
+                ("zh_hant", "en"),
+            ):
+                with self.subTest(text=text, target=target, source=source):
+                    self.assertFalse(
+                        should_translate(text, target_lang=target, source_lang=source),
+                        msg="结构化字面量在任何目标语言里都原样保留，不该花一次调用",
+                    )
+
+    def test_units_and_ordinary_phrases_still_go_through(self) -> None:
+        # 放宽只能落在「整段就是一个结构化串」上。单位、型号、带空格的正常句子
+        # 要么继续跳过，要么照常送去翻，一条都不能被路径判据误伤。
+        for text in ("Conditions générales", "See the file for details"):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    should_translate(text, target_lang="zh", source_lang="en")
+                )
+        # 180m3/h、220V/50Hz 不以 / 开头且末段没有扩展名，不该被当成路径。
+        # Cu/XLPE/PVC 这类电缆型号在本次修复前就走 letter_count 判真（旧行为），
+        # 不属于「整段是一个结构化字面量」，由既有用例盯着，这里不重复钉。
+        for text in ("180m3/h", "220V/50Hz"):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    should_translate(text, target_lang="zh", source_lang="en")
+                )
+
+
 class StandardCodeTests(unittest.TestCase):
     """独立成格的标准号原样保留：送去翻译只会被模型原样还回，再被标成需复核。"""
 

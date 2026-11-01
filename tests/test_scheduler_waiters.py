@@ -4,6 +4,11 @@ Two historical ways a waiter could hang forever: a weight clamped to the
 capacity at entry time never fits again once 429 feedback shrinks the
 capacity below it, and a FairApiGroupScheduler sibling thread loses the
 shared per-task queue entry when another thread of the same task acquires.
+
+A third historical gap: the group scheduler recorded ``waiting_recovery_count``
+and ``active_recovery_weight`` but never read them, so recovery (retry /
+review) threads on the production path had no priority over the same task's
+main translation traffic.
 """
 
 from __future__ import annotations
@@ -14,6 +19,9 @@ import unittest
 
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
+    API_REQUEST_CATEGORY_NORMAL,
+    API_REQUEST_CATEGORY_RECOVERY,
+    ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
 from core.task_resources import FairApiGroupScheduler
@@ -80,6 +88,113 @@ class FairSchedulerSiblingWaiterTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertFalse(any(thread.is_alive() for thread in siblings))
         self.assertEqual(sorted(finished), ["second", "third"])
+
+
+class FairSchedulerRecoveryPriorityTests(unittest.TestCase):
+    """Recovery work must get a slot while one task's normal threads are busy.
+
+    ``TaskGroupScheduler`` forwards ``category=RECOVERY`` into
+    ``FairApiGroupScheduler``, and that scheduler is what every runner gets in
+    production.  Its admission check used to ignore the category entirely, so
+    the recovery bookkeeping was dead code and review / retry threads within a
+    task queued behind its own main translation traffic.
+    """
+
+    def test_recovery_gets_a_slot_despite_full_normal_load(self) -> None:
+        group = FairApiGroupScheduler()
+        group.add_task("task-a", 4)
+        stop_normal = threading.Event()
+        normal_acquired = threading.Semaphore(0)
+
+        def _normal_worker() -> None:
+            while not stop_normal.is_set():
+                lease = group.acquire_lease(
+                    "task-a", 1, category=API_REQUEST_CATEGORY_NORMAL
+                )
+                normal_acquired.release()
+                time.sleep(0.02)
+                group.release(lease, category=API_REQUEST_CATEGORY_NORMAL)
+
+        normal_threads = [
+            threading.Thread(target=_normal_worker, daemon=True) for _ in range(4)
+        ]
+        for thread in normal_threads:
+            thread.start()
+        self.addCleanup(stop_normal.set)
+        for _ in range(4):
+            self.assertTrue(
+                normal_acquired.acquire(timeout=5), "普通请求没有把 4 个槽位占满"
+            )
+
+        deadline = time.monotonic() + 0.5
+        started = time.monotonic()
+        try:
+            lease = group.acquire_lease(
+                "task-a",
+                1,
+                category=API_REQUEST_CATEGORY_RECOVERY,
+                should_stop=lambda: time.monotonic() > deadline,
+            )
+        except ApiSchedulerAcquireCancelled:
+            self.fail(
+                "恢复请求 500ms 内一个槽位都没拿到：FairApiGroupScheduler 忽略 request category，"
+                "普通请求满载时 recovery 没有软上限保护（生产路径的恢复优先级是死代码）"
+            )
+        waited = time.monotonic() - started
+        group.release(lease, category=API_REQUEST_CATEGORY_RECOVERY)
+        stop_normal.set()
+        for thread in normal_threads:
+            thread.join(timeout=5)
+        self.assertLess(waited, 0.3, f"恢复请求等待 {waited * 1000:.0f}ms 才拿到槽位")
+
+    def test_normal_load_keeps_the_reserved_share_free_for_recovery(self) -> None:
+        """The soft cap, not just the recovery request, must actually bind.
+
+        Capacity 6 with the default 0.8 ratio leaves ``normal_soft_limit`` = 4.
+        Four normal slots plus one recovery slot still fit the global budget,
+        so only the soft cap stops a fifth normal request from taking the last
+        free slot and starving recovery again.
+        """
+        group = FairApiGroupScheduler()
+        group.add_task("task-a", 6)
+        self.assertEqual(group.normal_soft_limit, 4)
+        normal_leases = [
+            group.acquire_lease("task-a", 1, category=API_REQUEST_CATEGORY_NORMAL)
+            for _ in range(4)
+        ]
+        self.addCleanup(
+            lambda: [
+                group.release(lease, category=API_REQUEST_CATEGORY_NORMAL)
+                for lease in normal_leases
+            ]
+        )
+        recovery_lease = group.acquire_lease(
+            "task-a", 1, category=API_REQUEST_CATEGORY_RECOVERY
+        )
+        self.addCleanup(
+            lambda: group.release(recovery_lease, category=API_REQUEST_CATEGORY_RECOVERY)
+        )
+
+        deadline = time.monotonic() + 0.3
+        with self.assertRaises(ApiSchedulerAcquireCancelled):
+            group.acquire_lease(
+                "task-a",
+                1,
+                category=API_REQUEST_CATEGORY_NORMAL,
+                should_stop=lambda: time.monotonic() > deadline,
+            )
+
+    def test_normal_load_is_unrestricted_without_recovery_pressure(self) -> None:
+        """The soft cap must not slow down a group that has no recovery work."""
+        group = FairApiGroupScheduler()
+        group.add_task("task-a", 6)
+        leases = [
+            group.acquire_lease("task-a", 1, category=API_REQUEST_CATEGORY_NORMAL)
+            for _ in range(6)
+        ]
+        for lease in leases:
+            group.release(lease, category=API_REQUEST_CATEGORY_NORMAL)
+        self.assertEqual(group.snapshot().active_normal_weight, 0)
 
 
 if __name__ == "__main__":

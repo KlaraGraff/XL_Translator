@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import random
 import re
 import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -97,6 +100,12 @@ MINIMUM_CAPACITY_EPISODE_RESET_SECONDS = 120.0
 # that actually mattered out of view.
 LIMIT_WAIT_NOTICE_INTERVAL_SECONDS = 60.0
 _UPSTREAM_REASON_MAX_CHARS = 120
+# 上游在 429/503 上会用 Retry-After 明确说「多久之后再来」。以前这个头没读过，本地
+# 2 秒后又打过去，把限流窗口不断刷新。只认 Retry-After：OpenAI 系的
+# x-ratelimit-reset-* 是「额度完全回满还要多久」，每个响应都带，不是重试间隔。
+# 上限 30 秒，必须远小于最低档的 120 秒宽限窗口，否则一次等待就把窗口耗光。
+UPSTREAM_RETRY_AFTER_MAX_SECONDS = 30.0
+_RETRY_AFTER_HEADERS = ("retry-after",)
 
 
 @dataclass
@@ -413,6 +422,12 @@ def _wait_out_minimum_capacity_limit(
         MINIMUM_CAPACITY_BASE_DELAY * (2 ** min(attempt - 1, 6)),
     )
     delay *= 0.75 + random.random() * 0.5
+    # 上游给了 Retry-After 就按它说的等（取两者较大的），本地公式在它面前只会
+    # 提前打过去、把限流窗口重新刷一遍。本机句柄不足与上游无关，不看这个头。
+    upstream_wait = None if local_descriptor_limit else extract_retry_after(exc)
+    if upstream_wait is not None and upstream_wait > delay:
+        logger.debug(f"{context_label} 上游要求等待 {upstream_wait:.1f}s，按其时间退避")
+        delay = upstream_wait
     reason = "本机句柄仍不足" if local_descriptor_limit else "上游仍在限流"
     logger.warning(
         f"{context_label} {reason}（并发已在最低档 {decision.current_capacity}）；"
@@ -483,10 +498,111 @@ def _collect_exception_texts(exc: BaseException) -> Iterable[str]:
                 stack.append(linked)
 
 
+def extract_retry_after(exc: BaseException) -> float | None:
+    """Return how many seconds upstream asked us to wait, or ``None``.
+
+    上游在 429/503 上用 ``Retry-After``（秒数或 HTTP-date 两种格式）告诉客户端
+    多久之后再来。这个头以前被完整丢弃，退避只按本地公式算。返回值按
+    :data:`UPSTREAM_RETRY_AFTER_MAX_SECONDS` 封顶，负数和解析不了的值当作没有。
+    """
+    for current in _exception_chain(exc):
+        for headers in _response_headers_candidates(current):
+            for name in _RETRY_AFTER_HEADERS:
+                seconds = _parse_retry_after_value(_header_value(headers, name))
+                if seconds is not None:
+                    return seconds
+    return None
+
+
+def _exception_chain(exc: BaseException) -> Iterable[BaseException]:
+    """Yield ``exc`` and everything it wraps, the same walk the classifier does."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                stack.append(linked)
+
+
+def _response_headers_candidates(exc: BaseException) -> Iterable[Any]:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        yield getattr(response, "headers", None)
+    # 少数封装层把 headers 直接挂在异常上（不经过 response）。
+    yield getattr(exc, "headers", None)
+
+
+def _header_value(headers: Any, name: str) -> Any:
+    if headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        try:
+            value = getter(name)
+        except Exception:
+            value = None
+        if value not in (None, ""):
+            return value
+    # 普通 dict 可能大小写和真实响应头不一样；httpx.Headers 本身不区分大小写。
+    items = getattr(headers, "items", None)
+    if callable(items):
+        try:
+            lowered = name.casefold()
+            return next(
+                (value for key, value in items() if str(key).casefold() == lowered and value not in (None, "")),
+                None,
+            )
+        except Exception:
+            return None
+    return None
+
+
+def _parse_retry_after_value(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    seconds: float | None = None
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = _parse_http_date_seconds(text)
+    # ``inf``/``nan`` 来自畸形头，不能让它们进到 time.sleep 里。
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, UPSTREAM_RETRY_AFTER_MAX_SECONDS)
+
+
+
+def _parse_http_date_seconds(text: str) -> float | None:
+    """Retry-After 的 HTTP-date 写法（``Wed, 21 Oct 2015 07:28:00 GMT``）。"""
+    try:
+        date = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if date is None:
+        return None
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=timezone.utc)
+    return (date - datetime.now(timezone.utc)).total_seconds()
+
+
 def _collect_response_texts(response: Any) -> Iterable[str]:
     status_code = getattr(response, "status_code", None)
     if status_code not in (None, ""):
         yield f"HTTP {status_code}"
+
+    # 限流响应里的 Retry-After 是上游给的「多久之后再来」，
+    # 以前连头都没读过，判定和退避都只按本地公式走（审计 中-13）。
+    headers = getattr(response, "headers", None)
+    for name in _RETRY_AFTER_HEADERS:
+        value = _header_value(headers, name)
+        if value not in (None, ""):
+            yield f"{name}: {value}"
 
     # 流式响应(httpx.Response 处于 stream 模式且未被读取)访问 .text/.content
     # 会抛 httpx.ResponseNotRead(RuntimeError 子类),不是 AttributeError,

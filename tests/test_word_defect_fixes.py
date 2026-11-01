@@ -189,6 +189,138 @@ class WordHyperlinkParagraphTests(unittest.TestCase):
             )
 
 
+def _add_bookmark(paragraph, *, number: int, name: str):
+    """在段落末尾追加一对 bookmarkStart/bookmarkEnd，返回这对元素。"""
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(number))
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(number))
+    return start, end
+
+
+def _bookmark_inner_text(paragraph_element) -> str:
+    """bookmarkStart 与 bookmarkEnd 之间的可见文字。"""
+    inside = False
+    collected: list[str] = []
+    for node in paragraph_element.iter():
+        if node.tag == qn("w:bookmarkStart"):
+            inside = True
+            continue
+        if node.tag == qn("w:bookmarkEnd"):
+            inside = False
+            continue
+        if inside and node.tag == qn("w:t") and node.text:
+            collected.append(node.text)
+    return "".join(collected).strip()
+
+
+class WordBookmarkParagraphTests(unittest.TestCase):
+    """中-24：书签只圈住段落中间一截时，replace 模式把译文写到了书签外面。
+
+    ``w:bookmarkStart`` / ``w:bookmarkEnd`` 是 ``w:p`` 的直接子元素，修复前的
+    ``_paragraph_text_anchor_run`` 完全不看它们，锚点固定取第一个内容 run；整段译文
+    写进去、其余 run 清空之后，书签区间里就只剩一个空 run，``REF 该书签`` 刷新后
+    取到空串。docx 按真实 XML 结构构造（书签真的是段落的直接子元素），断言落在
+    XML 上：书签区间内必须还有字。
+    """
+
+    def test_translation_stays_inside_a_mid_paragraph_bookmark(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_path = root / "bookmark.docx"
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            # 段落：「参见 」+ bookmarkStart(_Ref100) + 「第三章 安全总则」+ bookmarkEnd
+            paragraph.add_run("参见 ")
+            start, end = _add_bookmark(paragraph, number=1, name="_Ref100")
+            paragraph._p.append(start)
+            paragraph.add_run("第三章 安全总则")
+            paragraph._p.append(end)
+            doc.save(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=root / "out",
+                translations={
+                    "参见 第三章 安全总则": _replace(
+                        "See Chapter 3 General Safety Rules"
+                    )
+                },
+                target_lang="en",
+                source_lang="zh",
+                output_translation_only=True,
+            )
+
+            out_doc = Document(str(out_path))
+            target = out_doc.paragraphs[0]
+            self.assertEqual(target.text, "See Chapter 3 General Safety Rules")
+            # 修复前这里是空串：译文整个落在 bookmarkStart 之前。
+            self.assertEqual(
+                _bookmark_inner_text(target._p),
+                "See Chapter 3 General Safety Rules",
+            )
+
+    def test_a_bookmark_starting_at_the_paragraph_head_keeps_its_anchor(self) -> None:
+        """书签从段首圈到段尾（Word 给标题生成 _Toc… 的常见形状）时不额外插 run。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_path = root / "toc_bookmark.docx"
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            start, end = _add_bookmark(paragraph, number=1, name="_Toc100")
+            paragraph._p.append(start)
+            paragraph.add_run("第一章 总则")
+            paragraph._p.append(end)
+            doc.save(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=root / "out",
+                translations={"第一章 总则": _replace("Chapter 1 General")},
+                target_lang="en",
+                source_lang="zh",
+                output_translation_only=True,
+            )
+
+            out_doc = Document(str(out_path))
+            target = out_doc.paragraphs[0]
+            self.assertEqual(target.text, "Chapter 1 General")
+            self.assertEqual(_bookmark_inner_text(target._p), "Chapter 1 General")
+            # 段首书签的锚点本来就在区间内，不该再空出前面那个多余的 run。
+            self.assertEqual(len(target._p.findall(qn("w:r"))), 1)
+
+    def test_translation_inside_a_bookmark_never_becomes_a_hyperlink(self) -> None:
+        """书签圈住的那截文字是超链接时：译文进书签，但不能写进 w:hyperlink 里。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_path = root / "bookmark_hyperlink.docx"
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            paragraph.add_run("参见 ")
+            start, end = _add_bookmark(paragraph, number=1, name="_Ref200")
+            paragraph._p.append(start)
+            _add_hyperlink(paragraph, "第三章 安全总则", "https://example.com/ch3")
+            paragraph._p.append(end)
+            doc.save(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=root / "out",
+                translations={"参见 第三章 安全总则": _replace("See Chapter 3")},
+                target_lang="en",
+                source_lang="zh",
+                output_translation_only=True,
+            )
+
+            out_doc = Document(str(out_path))
+            target = out_doc.paragraphs[0]
+            self.assertEqual(target.text, "See Chapter 3")
+            self.assertEqual(_bookmark_inner_text(target._p), "See Chapter 3")
+            # 译文仍在段落级的普通 run 里：链接已在整段改写时被清空并摘除。
+            self.assertEqual(len(target._p.findall(qn("w:hyperlink"))), 0)
+
+
 class WordDocumentOrderTests(unittest.TestCase):
     """4.3：doc.paragraphs + 表格段落的拼接顺序不是文档真实顺序。"""
 

@@ -5385,6 +5385,8 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         page_record.review_issues = [
                             issue.__dict__ for issue in review_result.blocking_issues
                         ]
+                        # 这一轮的图就是交付图，上一轮的轻微建议不能跟着它交出去。
+                        page_record.review_minor_suggestions = list(review_result.minor_suggestions)
                         page_record.error = review_result.summary
                         # 审核异常保留候选图时也要按真实格式定扩展名：这条分支此前
                         # 一直用循环开头那个写死的 .png，模型返回 JPEG/WebP 时就会
@@ -5420,7 +5422,12 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         "passed" if review_result.passed else "failed"
                     )
                     candidate_artifact["summary"] = review_result.summary
-                    page_record.review_minor_suggestions.extend(review_result.minor_suggestions)
+                    # 轻微建议按轮次整体替换，不能跨轮累加：前几轮的候选图早就被丢掉了，
+                    # 它们的建议若留在页记录上，就会被报告当成本次交付译文的建议展示出来，
+                    # 「审核轻微建议」的条数也会被放大成重试轮数倍。与同一分支里
+                    # review_issues 的赋值语义对齐；被丢弃那几轮的建议随候选图留在
+                    # review_candidates/attempt_NN_review.json 里备查。
+                    page_record.review_minor_suggestions = list(review_result.minor_suggestions)
                     if review_result.minor_suggestions:
                         self._log(
                             "INFO",

@@ -28,7 +28,6 @@ from settings import (
 )
 
 
-WORKSPACES_DIR = APP_DATA_DIR / "workspaces"
 API_HEALTH_STATE_PATH = APP_DATA_DIR / "api_health_state.json"
 _TASK_HISTORY_LIMIT = 200
 _LOG_FILE_LIMIT = 5
@@ -64,7 +63,6 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
         _category("task_history", "任务记录", [default_history_path()], clearable=True),
         _category("logs", "运行日志", _log_paths(), clearable=True),
         _category("diagnostics", "诊断记录", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
-        _category("workspaces", "临时文件", [WORKSPACES_DIR], clearable=True),
     ]
     categories[0]["schema"] = get_settings_schema_status()
     categories[1]["key_count"] = _key_count()
@@ -260,22 +258,6 @@ def clear_tm(*, lang_pair: str | None = None) -> MaintenanceResult:
     return MaintenanceResult(category="tm", removed_count=removed)
 
 
-def clear_owned_workspaces() -> MaintenanceResult:
-    """Remove only app-owned stale workspaces marked by Translator itself."""
-    removed = 0
-    if not WORKSPACES_DIR.exists():
-        return MaintenanceResult(category="workspaces", removed_count=0)
-    for candidate in WORKSPACES_DIR.iterdir():
-        if candidate.is_symlink():
-            continue
-        marker = candidate / ".translator-workspace.json"
-        if not candidate.is_dir() or not marker.is_file():
-            continue
-        if _remove_owned_path(candidate):
-            removed += 1
-    return MaintenanceResult(category="workspaces", removed_count=removed)
-
-
 def reset_all_local_data() -> MaintenanceResult:
     """Remove known current-baseline data, never sources or user output folders."""
     removed = 0
@@ -357,7 +339,6 @@ def _reset_paths() -> list[Path]:
         *_task_history_temp_paths(),
         *_log_paths(),
         diagnostics.DIAGNOSTICS_DIR,
-        WORKSPACES_DIR,
         # 启动自检模块已经删掉，现在没有任何代码再写这个文件；旧版本装过的机器上
         # 它还躺着，恢复出厂得连它一起清，所以这条留着。
         API_HEALTH_STATE_PATH,

@@ -387,6 +387,32 @@ _STANDARD_CODE_RE = re.compile(
 
 _LOWERCASE_WORD_RE = re.compile(r"[a-z]{4,}")
 _ADDRESS_OR_FILENAME_RE = re.compile(r"@|://|^www\.|\.[A-Za-z][A-Za-z0-9]{1,4}$")
+# 网址 / 邮箱 / 文件路径在哪个目标语言里都该原样保留，所以两个方向共用同一份
+# 判据。早先只有中文→外语的规则 3b 认这一条，外译中分支认不出来：不含数字的
+# https://example.com/a/b、user@example.com、/usr/local/bin/python 全落进
+# letter_count 兜底被送去翻，白花一次调用，模型真按字面翻了还会把链接和邮箱
+# 替换成中文短语写进产物（审查 2026-08-31 中-15）。
+# 路径另有三类写法要认：POSIX 绝对路径（/usr/local/bin/python）、Windows 盘符
+# 或 UNC 路径（C:\Users\Tom\file.docx）、带分隔符且末段是带扩展名文件的相对路径
+# （src/main.py）。单位写法 180m3/h、220V/50Hz 不以 / 开头、末段也没有扩展名，
+# 不会被误伤成路径。
+_PATH_RE = re.compile(
+    r"^(?:~?/|\.{1,2}/)[^\s]+$"
+    r"|^(?:[A-Za-z]:[\\/]|\\\\)[^\s]+$"
+    r"|^[^\s]+[/\\][^\s]*\.[A-Za-z][A-Za-z0-9]{1,4}$"
+)
+
+
+def _is_structured_literal(text: str) -> bool:
+    """整段就是网址 / 邮箱 / 文件路径 / 带扩展名的文件名？是就不必送去翻译。
+
+    这些串在任何目标语言里都原样保留：模型按字面翻了，交付件里的链接、联系邮箱
+    和文件名就点不开也找不到了。判据只看「整体是不是一个结构化串」，带空格的
+    句子（`See https://example.com for details`）照旧按普通文本处理。
+    """
+    if not text or any(char.isspace() for char in text):
+        return False
+    return bool(_ADDRESS_OR_FILENAME_RE.search(text) or _PATH_RE.match(text))
 
 
 def should_translate(
@@ -404,6 +430,9 @@ def should_translate(
       1. 空字符串  → 跳过
       2. 含中文字符 → 翻译
       3. 纯数字/符号/空白 → 跳过
+      3a. 网址 / 邮箱 / 文件路径 / 带扩展名的文件名 → 跳过（两个方向共用，见
+          _is_structured_literal）。放在规则 4 之前，是因为它们常含数字、无空格，
+          会被型号代码那条先吃掉——外译中时更会一路落到 letter_count 兜底被送翻。
       3b. 无空格但含连续 4 个以上小写字母（空格丢了的英文词句） → 翻译
       4. 无空格且字母数字混合（型号代码，如 "A3B12"） → 跳过
       5. 含空格（词组或短句） → 翻译
@@ -443,6 +472,13 @@ def should_translate(
         if ' ' not in text and _contains_non_chinese_letters(text) and re.search(r'\d', text):
             return False
 
+        # 网址、邮箱、文件路径/文件名原样保留。少了这一条，不含数字的
+        # https://example.com/a/b、user@example.com、/usr/local/bin/python 会落到
+        # 下面的 letter_count 兜底被送去翻：白花一次调用，模型真按字面翻了还会把
+        # 链接和邮箱替换成中文短语写进产物（审查 2026-08-31 中-15）。
+        if _is_structured_literal(text):
+            return False
+
         # 任意非中文自然语言到中文：
         # 1) 含空格的词组/短句
         # 2) 不含空格但有足够字母内容的单词（含重音字符、阿拉伯字母等）
@@ -472,7 +508,8 @@ def should_translate(
     if (
         ' ' not in text
         and _LOWERCASE_WORD_RE.search(text)
-        and not _ADDRESS_OR_FILENAME_RE.search(text)
+        # 旧判据照旧（多个地址用换行/制表符隔开时也算），再补上路径写法。
+        and not (_ADDRESS_OR_FILENAME_RE.search(text) or _is_structured_literal(text))
     ):
         return True
 

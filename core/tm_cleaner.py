@@ -226,7 +226,12 @@ _BRACKET_PAIRS = (("(", ")"), ("[", "]"), ("{", "}"))
 
 
 def _normalize_clean_target(text: str) -> str:
-    """保守清洗：去除高置信外层噪声，保留可能承载工程信息的括号类内容。"""
+    """保守清洗：去除高置信外层噪声，保留可能承载工程信息的括号类内容。
+
+    收尾的空白折叠只折行内空白，不能像 `\\s+` 那样把换行一起吃掉：
+    多行单元格的换行是内容的一部分，清洗建议写回时折平了，TM 命中回填
+    的就是单行译文（审计 中-16）。口径与 tm_text 的存储形态保持一致。
+    """
     cleaned = str(text or "").strip()
     if not cleaned:
         return ""
@@ -237,7 +242,7 @@ def _normalize_clean_target(text: str) -> str:
         cleaned = updated
         if not cleaned:
             break
-    return _MULTISPACE_RE.sub(" ", cleaned).strip()
+    return normalize_tm_text_for_storage(cleaned)
 
 
 def _wraps_whole_text(cleaned: str, prefix: str, suffix: str) -> bool:
@@ -746,6 +751,14 @@ def _run_cleaning_threaded(
 
     def _submit_batch(batch: list[dict]) -> list[CleanSuggestion]:
         """单批次执行，异常由汇总层转换为清晰的任务失败。"""
+        # TM 清洗本来就是用户可以随时叫停的后台整理：限流退避里最长要睡 30 秒，
+        # 不把停止标志交给它，点了停止也得先把这一觉睡完才回来。
+        should_stop = (
+            (lambda: bool(cancel_event and cancel_event.is_set()))
+            if cancel_event is not None
+            else None
+        )
+
         while True:
             generation = None
             try:
@@ -754,11 +767,7 @@ def _run_cleaning_threaded(
                 with api_scheduler.slot(
                     1,
                     category=API_REQUEST_CATEGORY_NORMAL,
-                    should_stop=(
-                        (lambda: bool(cancel_event and cancel_event.is_set()))
-                        if cancel_event is not None
-                        else None
-                    ),
+                    should_stop=should_stop,
                 ) as lease:
                     generation = lease.generation
                     return _clean_batch_sync(batch, engine, system_prompt)
@@ -770,6 +779,7 @@ def _run_cleaning_threaded(
                     scheduler=api_scheduler,
                     request_generation=generation,
                     context_label="记忆库清洗",
+                    should_stop=should_stop,
                 )
                 if decision is None or not decision.should_retry:
                     raise

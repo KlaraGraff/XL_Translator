@@ -43,6 +43,7 @@ from core.api_scheduler import (
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     credential_rejection,
+    extract_retry_after,
     handle_api_concurrency_limit,
     is_api_concurrency_limit_error,
 )
@@ -143,14 +144,20 @@ def _backoff_sleep(
     base: float,
     cap: float,
     should_stop=None,
+    exc: BaseException | None = None,
 ) -> None:
     """Sleep for an exponentially growing, jittered delay.
 
     The wait is sliced so a stop request is honoured promptly instead of after
-    the full backoff.
+    the full backoff.  When ``exc`` carries a Retry-After header, upstream's own wait time wins if it is longer: resending earlier
+    than the server asked for only refreshes the limit window.
     """
     delay = min(cap, base * (2 ** max(0, int(attempt))))
     delay *= 0.75 + random.random() * 0.5
+    upstream_wait = extract_retry_after(exc) if exc is not None else None
+    if upstream_wait is not None and upstream_wait > delay:
+        logger.debug(f"上游要求等待 {upstream_wait:.1f}s，按其时间退避（本地退避 {delay:.1f}s）")
+        delay = upstream_wait
     deadline = time.monotonic() + delay
     while True:
         remaining = deadline - time.monotonic()
@@ -1078,6 +1085,7 @@ def _translate_batch_with_fallback(
                     base=_CONCURRENCY_RETRY_BASE_DELAY,
                     cap=_CONCURRENCY_RETRY_MAX_DELAY,
                     should_stop=should_stop,
+                    exc=exc,
                 )
                 if should_stop and should_stop():
                     stats.record_stopped(batch)
@@ -1425,6 +1433,7 @@ def _translate_batch_with_sources_fallback(
                     base=_CONCURRENCY_RETRY_BASE_DELAY,
                     cap=_CONCURRENCY_RETRY_MAX_DELAY,
                     should_stop=should_stop,
+                    exc=exc,
                 )
                 if should_stop and should_stop():
                     stats.record_stopped(batch)
@@ -1657,6 +1666,7 @@ def _wait_before_transient_retry(
         base=_TRANSIENT_RETRY_BASE_DELAY,
         cap=_TRANSIENT_RETRY_MAX_DELAY,
         should_stop=should_stop,
+        exc=exc,
     )
     return not (should_stop and should_stop())
 
