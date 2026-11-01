@@ -17,9 +17,15 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 from core.file_scanner import FileItem
-from core.language_preflight import TranslationLanguageResult
+from core.language_preflight import (
+    LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    TranslationLanguageResult,
+)
 from core.task_runner import TaskRunner
-from core.translation_coverage import looks_like_source_text, resolve_coverage_source_lang
+from core.translation_coverage import (
+    looks_like_source_text,
+    resolve_coverage_source_lang,
+)
 from core.translation_filter import drop_file_texts_ruled_out_after_preflight
 from tests.test_audit_task_runner_fixes import _base_patches, _settings
 
@@ -30,12 +36,20 @@ class _Engine:
     engine_name = "auto-source-unknown/mock"
 
     def __init__(self, reply) -> None:
+        # 一个回答用于每次请求；给列表时按请求次序逐个回答（第一次没认出会再问一次）。
+        self._replies = list(reply) if isinstance(reply, list) else None
         self._reply = reply
+        self.calls = 0
 
     def chat(self, system: str, user: str) -> str:
-        if isinstance(self._reply, Exception):
-            raise self._reply
-        return self._reply
+        if system != LANGUAGE_PREFLIGHT_SYSTEM_PROMPT:
+            # 「自动识别场景」的通读请求和语言识别同时发，不占语言识别的回答次序。
+            raise RuntimeError("not a language preflight request")
+        self.calls += 1
+        reply = self._replies[self.calls - 1] if self._replies is not None else self._reply
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
 
 def _texts_sent_for_translation(target_lang: str, preflight_reply) -> list[str]:
@@ -89,6 +103,13 @@ class ExcelUnknownSourceLanguage(unittest.TestCase):
 
     def test_detected_english_drops_existing_chinese_cells_again(self) -> None:
         sent = _texts_sent_for_translation("zh", '{"source_langs":["en"]}')
+        self.assertEqual(sent, ["Design drawing", "これは図面です"])
+
+
+class ExcelPreflightRetry(unittest.TestCase):
+    def test_second_larger_ask_result_is_used_when_the_first_answer_is_unusable(self) -> None:
+        # 第一次回答用不了，第二次认出英文：中文格子按英文重筛去掉，说明用的是第二次的结果。
+        sent = _texts_sent_for_translation("zh", ["???", '{"source_langs":["en"]}'])
         self.assertEqual(sent, ["Design drawing", "これは図面です"])
 
 

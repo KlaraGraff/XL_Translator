@@ -195,6 +195,8 @@ def _detect_post_failure_source_language(
                 ),
             ),
             target_lang=target_lang,
+            # 这只是事后诊断：只问一次，认不出就照常报质量问题，不再加问。
+            retry=False,
         )["post_failure"]
     except Exception as exc:  # defensive: diagnosis must not break delivery
         logger.debug("语言方向失败后预检失败：{}", exc)

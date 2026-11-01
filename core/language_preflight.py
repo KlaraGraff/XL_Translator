@@ -25,6 +25,9 @@ MIXED_SOURCE_LANG = "mixed"
 DEFAULT_MAX_SAMPLES = 12
 DEFAULT_SAMPLE_MAX_CHARS = 240
 DEFAULT_TOTAL_MAX_CHARS = 2400
+# 第一次没认出语言时再问一次用的样本：句子多一些、挑最能看出语言的（#283）。
+RETRY_MAX_SAMPLES = 40
+RETRY_TOTAL_MAX_CHARS = 8000
 
 _FORMULA_RE = re.compile(r"^\s*=")
 _NUMBER_ONLY_RE = re.compile(r"^[\s\d\W_]+$", re.UNICODE)
@@ -53,6 +56,8 @@ class LanguagePreflightResult:
     requested: bool = False
     uncertain: bool = False
     error: str = ""
+    #: 第一次没认出、换了更大的样本又问了一次（见 preflight_files）。
+    retried: bool = False
 
     @property
     def primary_source_lang(self) -> str | None:
@@ -60,7 +65,9 @@ class LanguagePreflightResult:
 
     @property
     def request_count(self) -> int:
-        return 1 if self.requested else 0
+        if not self.requested:
+            return 0
+        return 2 if self.retried else 1
 
     def tm_lang_pairs(
         self,
@@ -92,6 +99,8 @@ class LanguagePreflightResult:
             "request_count": self.request_count,
             "uncertain": self.uncertain,
         }
+        if self.retried:
+            payload["retried"] = True
         if self.error:
             payload["error"] = self.error
         if target_lang:
@@ -337,34 +346,91 @@ def normalize_translation_language_result(
     )
 
 
+_LANGUAGE_EVIDENCE_RE = re.compile(
+    r"[\u3041-\u309f\u30a1-\u30ff\uac00-\ud7a3]"  # 假名、谚文：一眼看出是日文、韩文
+)
+
+
+def _evidence_score(text: str) -> tuple[int, int, int]:
+    """越能看出是哪门语言的句子越靠前：带假名/谚文的、字母多的、长的。"""
+    letters = sum(1 for char in text if char.isalpha())
+    return (1 if _LANGUAGE_EVIDENCE_RE.search(text) else 0, min(letters, 200), len(text))
+
+
+def extract_retry_candidates(texts: Iterable[object], first: Iterable[str]) -> list[str]:
+    """第二次问用的样本：更大，先挑第一次没用过、最能看出语言的句子。
+
+    整份文件可用的句子不多时，第一次用过的也补进来，凑够数再问。
+    """
+    used = {str(text).casefold() for text in first}
+    pool: list[str] = []
+    seen: set[str] = set()
+    for raw in texts:
+        candidate = _normalize_candidate(raw)
+        key = candidate.casefold()
+        if key in seen or not _is_representative_candidate(candidate):
+            continue
+        seen.add(key)
+        pool.append(candidate)
+    pool.sort(key=lambda text: (text.casefold() not in used, _evidence_score(text)), reverse=True)
+    return extract_preflight_candidates(
+        pool,
+        max_samples=RETRY_MAX_SAMPLES,
+        max_total_chars=RETRY_TOTAL_MAX_CHARS,
+    )
+
+
+def _ask(candidates, ask) -> tuple[tuple[str, ...], bool, str]:
+    try:
+        return parse_preflight_response(ask(candidates))
+    except Exception as exc:  # noqa: BLE001 - a failed detector must not fail translation
+        return (), True, f"预检请求失败：{exc}"
+
+
+def _preflight_one(texts: Iterable[object], ask, *, retry: bool = True) -> LanguagePreflightResult:
+    """一个文件：先用常规样本问一次；没认出（含请求失败）时换更大的样本再问一次。
+
+    两次都没认出才交给「原文语言未知」的兜底（#283）。一句能判断语言的话都挑不出
+    （全是数字、编号）时不发请求。
+    """
+    texts = list(texts)
+    candidates = tuple(extract_preflight_candidates(texts))
+    if not candidates:
+        return LanguagePreflightResult(candidates=())
+    source_langs, uncertain, error = _ask(candidates, ask)
+    if source_langs or not retry:
+        return LanguagePreflightResult(
+            source_langs=source_langs,
+            candidates=candidates,
+            requested=True,
+            uncertain=uncertain,
+            error=error,
+        )
+    retry_candidates = tuple(extract_retry_candidates(texts, candidates))
+    retry_langs, retry_uncertain, retry_error = _ask(retry_candidates, ask)
+    return LanguagePreflightResult(
+        source_langs=retry_langs,
+        candidates=retry_candidates,
+        requested=True,
+        uncertain=retry_uncertain,
+        error=retry_error,
+        retried=True,
+    )
+
+
 def preflight_file_source_languages(
     texts: Iterable[object],
     *,
     target_lang: str,
     request: Callable[[str, str], object],
 ) -> LanguagePreflightResult:
-    """Run at most one model request for one file's candidate texts."""
-    candidates = tuple(extract_preflight_candidates(texts))
-    if not candidates:
-        return LanguagePreflightResult(candidates=(), requested=False)
-    system, user = build_preflight_prompt(candidates, target_lang=target_lang)
-    try:
-        raw_response = request(system, user)
-        source_langs, uncertain, error = parse_preflight_response(raw_response)
-    except Exception as exc:  # a failed detector must not fail translation
-        return LanguagePreflightResult(
-            candidates=candidates,
-            requested=True,
-            uncertain=True,
-            error=f"预检请求失败：{exc}",
-        )
-    return LanguagePreflightResult(
-        source_langs=source_langs,
-        candidates=candidates,
-        requested=True,
-        uncertain=uncertain,
-        error=error,
-    )
+    """One file: one request, plus one larger retry only when the first finds no language."""
+
+    def ask(candidates):
+        system, user = build_preflight_prompt(candidates, target_lang=target_lang)
+        return request(system, user)
+
+    return _preflight_one(texts, ask)
 
 
 def preflight_files_source_languages(
@@ -404,30 +470,19 @@ def preflight_files(
     detector: Callable[[list[str], str], object],
     *,
     target_lang: str,
+    retry: bool = True,
 ) -> dict[str, LanguagePreflightResult]:
-    """Run a detector once per file using ``detector(samples, target_lang)``."""
-    results: dict[str, LanguagePreflightResult] = {}
-    for file_id, texts in files.items():
-        candidates = tuple(extract_preflight_candidates(texts))
-        if not candidates:
-            results[str(file_id)] = LanguagePreflightResult(candidates=())
-            continue
-        try:
-            raw_response = detector(list(candidates), target_lang)
-            source_langs, uncertain, error = parse_preflight_response(raw_response)
-        except Exception as exc:
-            results[str(file_id)] = LanguagePreflightResult(
-                candidates=candidates,
-                requested=True,
-                uncertain=True,
-                error=f"预检请求失败：{exc}",
-            )
-            continue
-        results[str(file_id)] = LanguagePreflightResult(
-            source_langs=source_langs,
-            candidates=candidates,
-            requested=True,
-            uncertain=uncertain,
-            error=error,
+    """Detect each file with ``detector(samples, target_lang)``.
+
+    One request per file; a file whose first answer names no language (or whose
+    request fails) is asked once more with a larger sample. ``retry=False``
+    keeps it to exactly one request (the post-failure diagnosis probe).
+    """
+    return {
+        str(file_id): _preflight_one(
+            texts,
+            lambda candidates: detector(list(candidates), target_lang),
+            retry=retry,
         )
-    return results
+        for file_id, texts in files.items()
+    }
