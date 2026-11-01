@@ -5038,7 +5038,11 @@ function revisionCountPhrase(entries: Array<{ file: FileItem; count: number }>):
  *  等用户在弹窗里决定（决定完会自己接着往下走）。 */
 function nextRevisionDecision(st: SurfaceState): boolean {
   const entries = filesWithRevisions(st);
-  if (!entries.length) return true;
+  if (!entries.length) {
+    // 这次没有要问的：上一次在弹窗里选的「修订一起翻译」不能带到这一批。
+    st.revisionMode = "skip";
+    return true;
+  }
   showRevisionModal(st, entries);
   return false;
 }

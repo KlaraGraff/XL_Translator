@@ -808,6 +808,106 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertIn("Text in a table", outputs[0])
 
 
+_DRAWING = (
+    '<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+    '<wp:extent cx="1" cy="1"/><wp:docPr id="9" name="图片 1"/></wp:inline></w:drawing></w:r>'
+)
+
+
+class SecondReviewTests(unittest.TestCase):
+    """第二轮审查：修订里的图片、多人叠加的修订、编号撞号、绑定控件。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _source(self, xml: str) -> Path:
+        source = self.root / "source.docx"
+        doc = Document()
+        _append_xml(doc, xml)
+        doc.save(source)
+        return source
+
+    def test_image_inside_an_insertion_survives_translation_only_output(self) -> None:
+        source = self._source(
+            f'<w:p {nsdecls("w")}><w:r><w:t xml:space="preserve">{BODY_TEXT} </w:t></w:r>'
+            f'<w:ins w:id="11" w:author="张三"><w:r><w:t>{INSERTED_TEXT}</w:t></w:r>{_DRAWING}</w:ins></w:p>'
+        )
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations={**TRANSLATIONS, REVISED: "Body text with an inserted sentence"},
+            target_lang="en",
+            revision_mode="translate",
+            output_translation_only=True,
+        )
+
+        paragraph = _revision_paragraphs(output)[0]
+        drawings = list(paragraph.iter(qn("w:drawing")))
+        self.assertEqual(len(drawings), 1)
+        # 图片还在原来那层插入修订里：拒绝全部时它照旧消失。
+        self.assertEqual(drawings[0].getparent().getparent().tag, qn("w:ins"))
+        self.assertNotIn(INSERTED_TEXT, _document_xml(output))
+
+    def test_deleted_insertion_is_in_neither_version(self) -> None:
+        from core.word_revisions import paragraph_versions
+
+        source = self._source(
+            f'<w:p {nsdecls("w")}><w:r><w:t>甲方应在</w:t></w:r>'
+            '<w:ins w:id="1" w:author="甲"><w:del w:id="2" w:author="乙">'
+            "<w:r><w:delText>三十日内</w:delText></w:r></w:del></w:ins>"
+            "<w:r><w:t>付款。</w:t></w:r></w:p>"
+        )
+        paragraph = _revision_paragraphs(source)[0]
+
+        self.assertEqual(paragraph_versions(paragraph), ("甲方应在付款。", "甲方应在付款。"))
+
+    def test_revision_ids_stay_unique_for_an_inserted_paragraph(self) -> None:
+        source = self._source(
+            f'<w:p {nsdecls("w")}><w:pPr><w:rPr><w:ins w:id="7" w:author="张三"/></w:rPr></w:pPr>'
+            f'<w:ins w:id="8" w:author="张三"><w:r><w:t>{INSERTED_TEXT}</w:t></w:r></w:ins></w:p>'
+        )
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations=TRANSLATIONS,
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        body = Document(str(output)).element.body
+        ids = [
+            element.get(qn("w:id"))
+            for element in body.iter(qn("w:ins"), qn("w:del"))
+        ]
+        self.assertEqual(len(ids), len(set(ids)), ids)
+        self.assertIn(TRANSLATIONS[INSERTED_TEXT], _paragraph_texts(output))
+
+    def test_bound_and_placeholder_controls_are_left_alone(self) -> None:
+        source = self.root / "bound.docx"
+        doc = Document()
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:dataBinding w:xpath="/ns0:coreProperties[1]/ns1:title[1]" '
+            'w:storeItemID="{6C3C8BC8-F283-45AE-878A-BAB7291924A1}"/></w:sdtPr>'
+            "<w:sdtContent><w:p><w:r><w:t>封面标题</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+        )
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:showingPlcHdr/></w:sdtPr>'
+            "<w:sdtContent><w:p><w:r><w:t>单击此处输入文字。</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+        )
+        _append_xml(doc, _content_control_xml(CONTROL_TEXT))
+        doc.save(source)
+
+        sources = [segment.source for segment in extract_word_segments(source, target_lang="en")]
+
+        self.assertNotIn("封面标题", sources)
+        self.assertNotIn("单击此处输入文字。", sources)
+        self.assertIn(CONTROL_TEXT, sources)
+
+
 class RunnerRevisionRecordTests(IsolatedAppDataTestCase):
     """D + 状态⑤：任务记录里写明这份文件对修订是怎么处理的。"""
 

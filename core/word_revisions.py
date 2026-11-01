@@ -198,16 +198,21 @@ def paragraph_of(element):
 _REVISION_TAGS = (qn("w:ins"), qn("w:del"))
 
 
-def _revision_kind(run, paragraph) -> str | None:
-    """run 落在哪种修订里（"ins" / "del"），不在修订里返回 None。"""
+def _revision_kinds(run, paragraph) -> set[str]:
+    """run 外面套着哪几种修订（"ins" / "del"），不在修订里是空集。
+
+    要看全部外层，不能只看最近的一层：甲插入、乙又删掉的字是 ``w:ins > w:del``，
+    拒绝全部（撤掉插入）时没有它，接受全部（删除生效）时也没有它。
+    """
+    kinds: set[str] = set()
     parent = run.getparent()
     while parent is not None and parent is not paragraph:
         if parent.tag == qn("w:ins"):
-            return "ins"
-        if parent.tag == qn("w:del"):
-            return "del"
+            kinds.add("ins")
+        elif parent.tag == qn("w:del"):
+            kinds.add("del")
         parent = parent.getparent()
-    return None
+    return kinds
 
 
 def _run_text(run) -> str:
@@ -240,11 +245,11 @@ def paragraph_versions(paragraph) -> tuple[str, str]:
     before: list[str] = []
     after: list[str] = []
     for run in _paragraph_runs(paragraph):
-        kind = _revision_kind(run, paragraph)
+        kinds = _revision_kinds(run, paragraph)
         text = _run_text(run)
-        if kind != "ins":
+        if "ins" not in kinds:
             before.append(text)
-        if kind != "del":
+        if "del" not in kinds:
             after.append(text)
     return "".join(before).strip(), "".join(after).strip()
 
@@ -377,7 +382,7 @@ def revision_layout(doc, *, front_matter=None) -> RevisionLayout:
         plain = "".join(
             _run_text(run)
             for run in _paragraph_runs(paragraph)
-            if _revision_kind(run, paragraph) is None
+            if not _revision_kinds(run, paragraph)
         ).strip()
         units.append(
             RevisionUnit(
@@ -532,13 +537,30 @@ def _absorb_whitespace(pieces: list[tuple[str, str]]) -> list[tuple[str, str]]:
 class _RevisionIds:
     """新写出来的 w:ins / w:del 要有自己的 w:id：从文档里现有的最大编号往上数。"""
 
-    def __init__(self, body) -> None:
+    def __init__(self, doc) -> None:
+        # 页眉、脚注、批注里的修订和正文共用一套编号，都要算进去。
+        roots = [doc.element.body]
+        for part in doc.part.package.iter_parts():
+            element = getattr(part, "_element", None)
+            if element is not None and element is not doc.element:
+                roots.append(element)
         highest = 0
-        for element in body.iter():
-            value = element.get(qn("w:id"))
-            if value is not None and value.lstrip("-").isdigit():
-                highest = max(highest, int(value))
+        for root in roots:
+            for element in root.iter():
+                value = element.get(qn("w:id"))
+                if value is not None and value.lstrip("-").isdigit():
+                    highest = max(highest, int(value))
         self._next = highest + 1
+
+    def renumber_copied_marks(self, paragraph) -> None:
+        """插译文段时会把原段落的段落格式整份复制过来，里面段落标记上的修订（``w:pPr``
+        里的 ``w:ins`` / ``w:del`` / ``w:pPrChange``）带着原来的编号，两段撞号。"""
+        ppr = paragraph.find(qn("w:pPr"))
+        if ppr is None:
+            return
+        for element in ppr.iter():
+            if element.get(qn("w:id")) is not None:
+                element.set(qn("w:id"), self.take())
 
     def take(self) -> str:
         value = self._next
@@ -603,20 +625,23 @@ def _clear_paragraph_text(paragraph) -> None:
     修订）留着，译文接在后面。"""
     from core.word_document import _drop_emptied_hyperlinks
 
-    for element in [
-        node
-        for node in paragraph.iter(*_REVISION_TAGS)
-        if not _in_embedded_story(node, paragraph)
-        and not _has_ancestor_tag(node, "w:pPr", paragraph)
-        and not any(_has_ancestor_tag(node, tag, paragraph) for tag in ("w:ins", "w:del"))
-    ]:
-        element.getparent().remove(element)
+    # 修订里的图片、书签照原样留在原来那层修订里（接受 / 拒绝时它们照旧出现或消失），
+    # 只清文字；清完空了的修订再拿掉。
     for run in _paragraph_runs(paragraph):
         for node in list(run.iterchildren()):
             if node.tag in (qn("w:t"), qn("w:delText"), qn("w:tab"), qn("w:br"), qn("w:cr")):
                 run.remove(node)
         if all(child.tag == qn("w:rPr") for child in run.iterchildren()):
             run.getparent().remove(run)
+    emptied = [
+        node
+        for node in paragraph.iter(*_REVISION_TAGS)
+        if not _in_embedded_story(node, paragraph)
+        and not _has_ancestor_tag(node, "w:pPr", paragraph)
+    ]
+    for element in reversed(emptied):
+        if len(element) == 0 and element.getparent() is not None:
+            element.getparent().remove(element)
     _drop_emptied_hyperlinks(Paragraph(paragraph, None))
 
 
@@ -677,7 +702,7 @@ def apply_revision_translations(
             return source if raw and raw.casefold() == source.casefold() else None
         return resolved.text.strip()
 
-    ids = _RevisionIds(body)
+    ids = _RevisionIds(doc)
     count = 0
     for unit in layout.units:
         if unit.protected:
@@ -702,7 +727,8 @@ def apply_revision_translations(
             if in_place:
                 _replace_paragraph_text(paragraph, pieces[0][1], target_lang=target_lang)
             else:
-                _insert_translation_paragraph_after(paragraph, pieces[0][1], target_lang=target_lang)
+                added = _insert_translation_paragraph_after(paragraph, pieces[0][1], target_lang=target_lang)
+                ids.renumber_copied_marks(added._p)
         else:
             rpr = _translation_run_shape(paragraph, target_lang=target_lang)
             # 只输出译文时原段落马上要清空，作者和日期先取下来。
@@ -712,6 +738,7 @@ def apply_revision_translations(
                 target = unit.paragraph
             else:
                 target = _insert_translation_paragraph_after(paragraph, "", target_lang=target_lang)._p
+                ids.renumber_copied_marks(target)
                 for run in list(target.iterchildren(qn("w:r"))):
                     target.remove(run)
             _append_pieces(target, pieces, rpr=rpr, templates=templates, ids=ids)
@@ -747,6 +774,22 @@ def _owning_content_control(element, body):
     return None
 
 
+def _is_bound_or_placeholder(control) -> bool:
+    """绑定了文档属性的控件（封面标题、作者之类）和还显示着占位提示的控件。
+
+    前者 Word 打开时会按绑定的数据把内容填回去，译文写进去也会被悄悄换回原文；后者
+    里只有「单击此处输入文字」这类提示，一点进去就整段清空，另插的译文段跟着没了。
+    这两种都照原样留着（和 V10.5 之前一样）。
+    """
+    properties = control.find(qn("w:sdtPr"))
+    if properties is None:
+        return False
+    return (
+        properties.find(qn("w:dataBinding")) is not None
+        or properties.find(qn("w:showingPlcHdr")) is not None
+    )
+
+
 def content_control_paragraph_entries(
     body, *, excluded=(), parent=None, front_matter_start=None
 ) -> list[tuple[Paragraph, int, int]]:
@@ -772,6 +815,8 @@ def content_control_paragraph_entries(
     entries: list[tuple[Paragraph, int, int]] = []
     for control_index, control in enumerate(controls):
         if is_front_matter(control, body, front_matter_start):
+            continue
+        if _is_bound_or_placeholder(control):
             continue
         own = [
             paragraph
