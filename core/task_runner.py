@@ -50,6 +50,7 @@ from core.excel_coverage import (
 from core.file_scanner import FileItem
 from core.file_progress import FileProgressReporter
 from core.language_registry import (
+    AUTO_SOURCE_LANG,
     build_lang_pair,
     get_default_source_lang,
     get_source_lang_display,
@@ -76,7 +77,11 @@ from core.mixed_language import (
     translate_mixed_language_texts,
 )
 from core.translation_coverage import format_ignored_coverage_report, resolve_coverage_source_lang
-from core.translation_filter import should_translate
+from core.translation_filter import (
+    drop_file_texts_ruled_out_after_preflight,
+    is_same_han_spelling_in_chinese,
+    should_translate,
+)
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
@@ -1622,15 +1627,35 @@ class TaskRunner(BaseTaskRunner):
                 page_key="excel",
             )
         else:
-            source_lang = get_default_source_lang()
+            source_lang = AUTO_SOURCE_LANG
+        # 一门语言都没认出来时 source_lang 保持 auto，不再假定是中文（#283）：
+        # 假定中文会把日文里只有汉字的格子当成已是中文跳过、补译时把英文法文格子
+        # 当成「不是原文」。原文语言未知时的判法见 translation_filter._is_source_script_text
+        # 和 translation_coverage.looks_like_source_text。
         tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+        if not self._untranslated_only:
+            # 读文件时原文语言未知、多收的只有汉字的格子，按认出的语言去掉（补译
+            # 模式下面会按语言整份重算，不用在这里去）。
+            dropped = drop_file_texts_ruled_out_after_preflight(
+                [file_item.path for file_item in self._files],
+                file_texts,
+                global_unique_texts,
+                {path: result.source_langs for path, result in file_language_preflights.items()},
+                target_lang=target_lang,
+            )
+            if dropped:
+                raw_text_count = max(0, raw_text_count - dropped)
+                self._log(
+                    "INFO",
+                    f"按识别出的原文语言，{dropped} 处已是目标语言的内容不再翻译。",
+                )
         # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
         # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
-        # 译文」跳过。某个文件没定出语言时才退回全局值。
+        # 译文」跳过。某个文件没定出语言时记成 auto（原文语言未知），不借用别的
+        # 文件认出的语言（#283）。
         file_source_langs.update(
-            (file_path, result.source_langs[0])
+            (file_path, result.source_langs[0] if result.source_langs else AUTO_SOURCE_LANG)
             for file_path, result in file_language_preflights.items()
-            if result.source_langs
         )
         for file_item, text_set in zip(self._files, file_texts):
             result = file_language_preflights.get(str(file_item.path))
@@ -2040,6 +2065,15 @@ class TaskRunner(BaseTaskRunner):
                 for source, item in normal_api_language_results.items()
                 if _already_in_target_language(source, item, target_lang)
             }
+            # 「品名」「数量」中日写法相同，目标是中文时原样还回来就是对的（和 Word 同一条规则）。
+            already_target.update(
+                source
+                for source, translation in normal_api_translations.items()
+                # 接口失败、质量校验回退交回的原文不算：那是真没翻成。
+                if source not in batch_stats.untranslated_sources
+                and source not in batch_stats.quality_reset_reasons
+                and is_same_han_spelling_in_chinese(source, translation, target_lang)
+            )
             for source in already_target:
                 api_translations.pop(source, None)
             if already_target:
@@ -3927,12 +3961,20 @@ class TaskRunner(BaseTaskRunner):
         global_unique_texts.clear()
         raw_text_count = 0
         file_source_langs = file_source_langs or {}
-        detected_langs = sorted(set(file_source_langs.values())) or [source_lang]
+        detected_langs = sorted(
+            code
+            for code in set(file_source_langs.values()) or {source_lang}
+            if not is_auto_source_lang(code)
+        )
         self._log(
             "INFO",
-            "[补译模式] 原文语言已识别为 "
-            + "、".join(get_source_lang_display(code) for code in detected_langs)
-            + "，开始按各文件的语言重新识别需补译的内容。",
+            (
+                "[补译模式] 原文语言已识别为 "
+                + "、".join(get_source_lang_display(code) for code in detected_langs)
+                + "，开始按各文件的语言重新识别需补译的内容。"
+            )
+            if detected_langs
+            else "[补译模式] 未能识别原文语言，按「不预设原文语言」重新识别需补译的内容。",
         )
         for fi, file_item in enumerate(self._files):
             if fi >= len(process_paths) or fi >= len(coverage_plans):

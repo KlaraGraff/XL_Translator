@@ -3,6 +3,7 @@
 完整迁移原 GAS 宏的 shouldTranslate() 逻辑。
 """
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -37,6 +38,8 @@ _KANA_OR_HANGUL_RE = re.compile(
 # 日文汉字、韩文汉字与中文汉字共用 \u4e00-\u9fa5 码区。源语言是日/韩时，
 # 「含汉字」不等于「已经是中文」——「工事契約書」这类纯汉字标题是待译原文。
 _HAN_SHARING_SOURCE_LANGS = frozenset({"ja", "ko"})
+# 原文语言还不知道：选了「自动识别」而预检没认出来（或还没识别）。见 _is_source_script_text。
+_UNKNOWN_SOURCE_LANGS = frozenset({"", "auto"})
 _SEMANTIC_NUMBER_RE = re.compile(r"[-+]?" + NUMBER_TOKEN_PATTERN + r"(?:\s*[万亿])?")
 _MAGNITUDE_AFTER_RE = re.compile(r"\s*([万亿])")
 _MAGNITUDES = {"万": Decimal(10000), "亿": Decimal(100000000)}
@@ -350,16 +353,18 @@ def _is_source_script_text(text: str, source_lang: str) -> bool:
 
     判据因此看语言对而不是放宽正则：
       1. 假名 / 谚文是无歧义证据——含它们的文字一定不是中文，源语言选什么都算；
-      2. 源语言明确选了日 / 韩时，含汉字的文字按待译原文处理。
-    源语言是「自动」且整段全是汉字时仍无从分辨，保持旧行为（跳过），由语言
-    预检把 auto 解析成具体语言后再走这里。
+      2. 源语言明确选了日 / 韩时，含汉字的文字按待译原文处理；
+      3. 源语言还不知道（「自动识别」还没识别，或识别失败，source_lang 为 auto
+         或空）时，整段全是汉字也分不出是中文还是日文，按待译原文处理——宁可
+         多送一句由模型认出「已是中文」原样保留，也不替用户假定它是中文跳过
+         （#283）。语言预检认出了具体语言后，任务会按那门语言重筛一遍。
     """
     if _KANA_OR_HANGUL_RE.search(text):
         return True
-    return (
-        _normalize_lang(source_lang) in _HAN_SHARING_SOURCE_LANGS
-        and _contains_chinese(text)
-    )
+    if not _contains_chinese(text):
+        return False
+    source = _normalize_lang(source_lang)
+    return source in _HAN_SHARING_SOURCE_LANGS or source in _UNKNOWN_SOURCE_LANGS
 
 
 def _contains_non_chinese_letters(text: str) -> bool:
@@ -818,3 +823,86 @@ def is_translation_redundant(
         source_lang=source_lang,
         profile=VALIDATION_PROFILE_STRICT,
     ).is_fail
+
+
+def drop_texts_ruled_out_by_detected_source(
+    texts: Iterable[str],
+    *,
+    source_langs: Iterable[str],
+    target_lang: str,
+) -> set[str]:
+    """语言预检认出原文语言后，去掉只在「原文语言未知」时才收进来的文字。
+
+    选了「自动识别」时，读文件那一步还不知道原文是什么语言，should_translate 按未知
+    处理：目标是中文时，只有汉字的格子也先收下（可能是日文原文，见
+    _is_source_script_text）。认出这份文件是英文、中文之类以后，这些格子就是已有的
+    中文，按认出的语言重新判一遍去掉。认不出语言（source_langs 为空）时一条都不去，
+    交给模型判断（#283）。只去掉「未知时收、按认出的语言不收」的文字，别的来路收进来的
+    文字原样保留。
+    """
+    langs = [str(lang or "").strip() for lang in source_langs if str(lang or "").strip()]
+    kept = set(texts)
+    if not langs:
+        return kept
+    return {
+        text
+        for text in kept
+        if not should_translate(text, target_lang=target_lang, source_lang="auto")
+        or any(should_translate(text, target_lang=target_lang, source_lang=lang) for lang in langs)
+    }
+
+
+def drop_file_texts_ruled_out_after_preflight(
+    file_paths: Iterable[object],
+    file_texts: list[set[str]],
+    global_unique_texts: set[str],
+    source_langs_by_path: Mapping[str, Iterable[str]],
+    *,
+    target_lang: str,
+) -> int:
+    """Excel、Word 共用：语言预检之后，按每个文件认出的语言去掉多收的文字。
+
+    ``file_texts[i]`` 是第 i 个文件读出来的待译文字，``global_unique_texts`` 是它们的
+    并集，两者就地更新。认不出语言的文件一条不去。返回去掉的条数（按文件累计）。
+    """
+    dropped_total = 0
+    for index, path in enumerate(file_paths):
+        if index >= len(file_texts):
+            break
+        langs = tuple(source_langs_by_path.get(str(path), ()) or ())
+        if not langs:
+            continue
+        text_set = file_texts[index]
+        kept = drop_texts_ruled_out_by_detected_source(
+            text_set,
+            source_langs=langs,
+            target_lang=target_lang,
+        )
+        if len(kept) != len(text_set):
+            dropped_total += len(text_set) - len(kept)
+            file_texts[index] = kept
+    if dropped_total:
+        global_unique_texts.clear()
+        for text_set in file_texts:
+            global_unique_texts.update(text_set)
+    return dropped_total
+
+
+def is_same_han_spelling_in_chinese(source: str, translation: str | None, target_lang: str) -> bool:
+    """目标是中文、原文只有汉字、模型原样还回来：中日（韩）写法相同的词，算已是中文。
+
+    「品名」「数量」「安全管理」在日文和中文里写法一样，模型原样返回是对的。以前 Word
+    把它当成没翻成功，重翻几轮再标需复核，体检还报「仍有未译原文」（#283 本机复测）。
+    只认整段都是汉字（可夹空格、数字和标点）：带假名、谚文、字母的照常走校验。
+    """
+    if not is_chinese_lang(target_lang):
+        return False
+    text = str(source or "").strip()
+    if not text or str(translation or "").strip() != text:
+        return False
+    if not _contains_chinese(text) or _KANA_OR_HANGUL_RE.search(text):
+        return False
+    if is_traditional_chinese(target_lang) and has_simplified_characters(text):
+        # 译成繁体时原样还回来的简体字是没转成繁体，不是写法相同。
+        return False
+    return not any(char.isalpha() and not _contains_chinese(char) for char in text)

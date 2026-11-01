@@ -66,6 +66,7 @@ from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
 from core.term_session import TaskTermSession
 from core.translation_review import ReviewItem, build_review_prompt, review_translations
 from core.language_registry import (
+    AUTO_SOURCE_LANG,
     build_lang_pair,
     get_default_source_lang,
     get_source_lang_display,
@@ -131,6 +132,8 @@ from core.task_runner import (
     user_facing_reason,
 )
 from core.translation_filter import (
+    drop_file_texts_ruled_out_after_preflight,
+    is_same_han_spelling_in_chinese,
     VALIDATION_STATUS_FAIL,
     VALIDATION_STATUS_SOFT_PASS_REVIEW,
     VALIDATION_PROFILE_STRICT,
@@ -515,6 +518,10 @@ class WordTaskRunner(BaseTaskRunner):
         self._formula_flags: dict[str, list[tuple[int, int, int]]] = {}
         # 行数对不上、但复查判定译文与原文意思一致的表格格子：整格只写译文
         self._layout_only_cells: set[str] = set()
+        # 自动识别时每个文件自己认出的原文语言（路径 → 语言，认不出为 auto）。写出和
+        # 成品体检按这个判，不用全批第一个认出的语言：英文件 A、日文件 B 同批译中文时，
+        # 按 A 的英文去判，B 里只有汉字的段落付费翻了却在写出时被筛掉（#283 复查）。
+        self._file_source_langs: dict[str, str] = {}
         self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # 同一批任务共用的输出文件夹；设了就不再新建自己的。
@@ -1097,6 +1104,8 @@ class WordTaskRunner(BaseTaskRunner):
         self.batch_stats = word_batch_stats
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
+        # 模型真给了回答的段落（请求失败交回的原文不在里面），见 already_in_target_language。
+        model_answered_sources: set[str] = set()
         # 模型报「本来就是目标语言」、原样返回的段落：成品体检不再把它们报成未译源文。
         already_target_sources: set[str] = set()
         recovery_pool: _WordRecoveryPool | None = None
@@ -1179,6 +1188,23 @@ class WordTaskRunner(BaseTaskRunner):
                     target_lang=target_lang,
                     text_source_candidates=text_source_candidates,
                 )
+                if not self._untranslated_only:
+                    # 读文件时原文语言未知、多收的只有汉字的段落，按认出的语言去掉（#283）。
+                    dropped = drop_file_texts_ruled_out_after_preflight(
+                        [file_item.path for file_item in self._files],
+                        file_texts,
+                        global_unique_texts,
+                        {
+                            path: result.source_langs
+                            for path, result in file_language_preflights.items()
+                        },
+                        target_lang=target_lang,
+                    )
+                    if dropped:
+                        self._log(
+                            "INFO",
+                            f"按识别出的原文语言，{dropped} 处已是目标语言的内容不再翻译。",
+                        )
             else:
                 tm_language_pairs = [lang_pair] if lang_pair else []
 
@@ -1347,7 +1373,12 @@ class WordTaskRunner(BaseTaskRunner):
                     # 英文段落）：不是翻译失败，不该占三轮重试再标需复核。
                     # 译文跟原文不一样也算：模型报这段已经是目标语言，却又「翻」出了别的
                     # 东西（本机实测里一段英文被译成了中文插进英文文档），那份译文一律不用。
-                    del candidate
+                    with model_source_results_lock:
+                        model_answered = source in model_answered_sources
+                    if model_answered and is_same_han_spelling_in_chinese(source, candidate, target_lang):
+                        # 「品名」「数量」中日写法相同，模型原样还回来就是对的，不重翻、不标复核。
+                        # 只认模型真给了回答的：请求失败交回的原文不算。
+                        return True
                     if not auto_source_lang:
                         return False
                     with model_source_results_lock:
@@ -1360,6 +1391,8 @@ class WordTaskRunner(BaseTaskRunner):
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
                     if self.stop_requested():
                         return
+                    with model_source_results_lock:
+                        model_answered_sources.add(source)
                     if already_in_target_language(source, candidate):
                         return
                     if _needs_word_translation_retry(
@@ -2649,9 +2682,9 @@ class WordTaskRunner(BaseTaskRunner):
             t0 = datetime.now()
             prepared = None
             resumed_coverage_plan = None
-            resume_source_lang = (
-                source_lang if not auto_source_lang else get_default_source_lang()
-            )
+            # 自动识别时补译计划在识别语言之前就要建：原文语言未知就按未知判，
+            # 不假定是中文（#283，见 translation_coverage.looks_like_source_text）。
+            resume_source_lang = source_lang
             resumed_path = (
                 self._resolve_resume_process_path(file_item, target_lang=target_lang)
                 if self._untranslated_only
@@ -2853,11 +2886,7 @@ class WordTaskRunner(BaseTaskRunner):
                     engine=engine,
                     api_scheduler=api_scheduler,
                     target_lang=target_lang,
-                    source_lang=(
-                        source_lang
-                        if not auto_source_lang
-                        else get_default_source_lang()
-                    ),
+                    source_lang=source_lang,
                     lang_pair=lang_pair,
                     concurrency=concurrency,
                     file_name=file_item.name,
@@ -2879,11 +2908,7 @@ class WordTaskRunner(BaseTaskRunner):
                     header_segments = extract_word_header_footer_segments(
                         process_path,
                         target_lang=target_lang,
-                        source_lang=(
-                            source_lang
-                            if not auto_source_lang
-                            else get_default_source_lang()
-                        ),
+                        source_lang=source_lang,
                     )
                     _remember_segment_locations(
                         segment_locations,
@@ -2904,11 +2929,7 @@ class WordTaskRunner(BaseTaskRunner):
                 story_segments = extract_word_story_segments(
                     process_path,
                     target_lang=target_lang,
-                    source_lang=(
-                        source_lang
-                        if not auto_source_lang
-                        else get_default_source_lang()
-                    ),
+                    source_lang=source_lang,
                     revision_mode=self._revision_mode,
                     protect_front_matter=self._protect_front_matter,
                 )
@@ -2942,11 +2963,7 @@ class WordTaskRunner(BaseTaskRunner):
                 segments = extract_word_segments(
                     process_path,
                     target_lang=target_lang,
-                    source_lang=(
-                        source_lang
-                        if not auto_source_lang
-                        else get_default_source_lang()
-                    ),
+                    source_lang=source_lang,
                     protect_front_matter=self._protect_front_matter,
                     include_headers_footers=self._translate_headers_footers,
                     revision_mode=self._revision_mode,
@@ -3106,6 +3123,10 @@ class WordTaskRunner(BaseTaskRunner):
             on_done=_detected,
         ):
             file_language_preflights.update(detected_result)
+        self._file_source_langs = {
+            path: (result.source_langs[0] if result.source_langs else AUTO_SOURCE_LANG)
+            for path, result in file_language_preflights.items()
+        }
         detected_sources: list[str] = []
         for result in file_language_preflights.values():
             for detected in result.source_langs:
@@ -3120,7 +3141,8 @@ class WordTaskRunner(BaseTaskRunner):
                 page_key="word",
             )
         else:
-            source_lang = get_default_source_lang()
+            # 一门语言都没认出来：保持 auto，不假定是中文（#283）。
+            source_lang = AUTO_SOURCE_LANG
         tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
         for file_item, text_set in zip(self._files, file_texts):
             result = file_language_preflights.get(str(file_item.path))
@@ -3648,6 +3670,8 @@ class WordTaskRunner(BaseTaskRunner):
         reserved_before = set(reserved_output_paths)
         committed_out_path = None
         success_record = None
+        # 自动识别时按这个文件自己认出的语言写出、体检；没做预检（选了具体语言）就是任务的语言。
+        file_source_lang = self._file_source_langs.get(str(file_item.path), source_lang)
         try:
             t0 = datetime.now()
             source_path = process_paths[index] if index < len(process_paths) else file_item.path
@@ -3659,7 +3683,7 @@ class WordTaskRunner(BaseTaskRunner):
                         engine,
                         original_stem,
                         target_lang,
-                        source_lang,
+                        file_source_lang,
                     )
                 except Exception as exc:
                     logger.debug(f"Word 输出文件名翻译失败原始错误：{exc!r}")
@@ -3703,7 +3727,7 @@ class WordTaskRunner(BaseTaskRunner):
                     plan=coverage_plan,
                     translations=global_translations,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     output_name=output_source_name,
                     review_marks=(
                         review_marks
@@ -3732,7 +3756,7 @@ class WordTaskRunner(BaseTaskRunner):
                     output_dir=staged_output_dir,
                     translations=global_translations,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     output_name=output_source_name,
                     review_marks=(
                         review_marks
@@ -3767,7 +3791,7 @@ class WordTaskRunner(BaseTaskRunner):
                 file_name=_file_result_identity(file_item, source_root),
                 output_path=out_path,
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=file_source_lang,
                 protect_front_matter=self._protect_front_matter,
                 review_mark_colors=settings.word_review.mark_colors,
                 existing_highlight_policy=(
