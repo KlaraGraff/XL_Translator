@@ -540,14 +540,13 @@ class TranslationTaskManager:
         }
         # 跨文件夹多选/拖入：界面把第一个文件的上级目录当来源，其他文件夹里的文件不在
         # 它下面，只重扫这一个根再按 selected_paths 收窄，它们就被无声丢掉了。不在根下
-        # 的那几个各扫一次补进来；任务的来源根换成所有路径共同的上级，译文按各自的
-        # 相对位置放，同名文件不会撞在一起。只扫选中的路径，不去扫那个共同上级。
+        # 的那几个各扫一次补进来。来源根不换：换成共同上级会让窗口重载后的找回去扫整个
+        # 主目录甚至整块盘、输出文件夹也跟着挪过去，跨盘符时还根本算不出共同上级。
+        # 根外的文件译文按文件名放在输出文件夹顶层，所以同名的要先拦下来。
         outside = sorted(
             path for path in selected if not _path_is_within(Path(path), root)
         )
         scan_roots = [root, *(Path(path) for path in outside)]
-        if outside:
-            root = Path(os.path.commonpath([str(root), *outside]))
         files = []
         seen_files: set[str] = set()
         for scan_root in scan_roots:
@@ -576,6 +575,8 @@ class TranslationTaskManager:
                 for item in files
                 if str(Path(item.path).expanduser().resolve()) in selected
             ]
+        if outside:
+            _raise_on_output_name_clash(files, root)
         if not files:
             logger.info(f"[任务] 没有找到可翻译的 {normalized_surface} 文件：{root}")
             raise TaskInputError("未找到可翻译的文件，请选择其他文件或文件夹，或检查文件格式。")
@@ -2280,6 +2281,21 @@ def _scanned_file_name(item: Any) -> str:
     raw = getattr(item, "path", None) or getattr(item, "name", "")
     value = str(raw or "").strip()
     return Path(value).name if value else ""
+
+
+def _raise_on_output_name_clash(files: list[Any], root: Path) -> None:
+    """根外的文件按文件名落在输出顶层：两份落到同一个位置时，后一份会盖掉前一份。"""
+    seen: dict[str, Path] = {}
+    for item in files:
+        path = Path(item.path).expanduser().resolve()
+        relative = path.relative_to(root) if _path_is_within(path, root) else Path(path.name)
+        key = str(relative).casefold()
+        if key in seen and seen[key] != path:
+            raise TaskInputError(
+                f"选中的文件里有两份「{path.name}」来自不同文件夹，译文会互相覆盖。"
+                "请分两次翻译，或先给其中一份改名。"
+            )
+        seen[key] = path
 
 
 def _path_is_within(path: Path, root: Path) -> bool:

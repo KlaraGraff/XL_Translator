@@ -61,16 +61,22 @@ class XlsFileCorruptedError(ValueError):
         super().__init__(message)
 
 
-def _open_xls_with_xlrd(xls_path: Path):
+def _open_xls_with_xlrd(xls_path: Path, *, structure_only: bool = False):
     """用 xlrd 打开 .xls；读不出来的（加密除外）一律换成 XlsFileCorruptedError。
 
     加密文件照原样抛 xlrd 的「Workbook is encrypted」，上层把它说成「受密码保护」。
+    ``structure_only``：转换前的检查用。只看容器和流是否完整（截断会在打开时就被
+    认出来），不逐张表解析；也放过 xlrd 自己的「Workbook corruption」严格检查——
+    有些第三方导出的文件触发它，Excel 和 LibreOffice 却能正常打开。
     """
     import xlrd
 
+    extra = {"on_demand": True, "ignore_workbook_corruption": True} if structure_only else {}
     with open(os.devnull, "w", encoding="utf-8") as quiet:
         try:
-            return xlrd.open_workbook(str(xls_path), formatting_info=False, logfile=quiet)
+            return xlrd.open_workbook(
+                str(xls_path), formatting_info=False, logfile=quiet, **extra
+            )
         except xlrd.XLRDError as error:
             if "encrypted" in str(error).lower():
                 raise
@@ -93,9 +99,11 @@ def check_xls_readable(xls_path: Path) -> None:
     import xlrd
 
     try:
-        book = _open_xls_with_xlrd(xls_path)
+        book = _open_xls_with_xlrd(xls_path, structure_only=True)
     except xlrd.XLRDError:
         return  # 加密：LibreOffice 会以非零退出收场，上层另有说法
+    except MemoryError:
+        return  # 太大读不进 Python 不等于坏了：交给 LibreOffice
     book.release_resources()
 
 

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from openpyxl import Workbook
 
-from api.task_manager import TaskConflictError, TranslationTaskManager
+from api.task_manager import TaskConflictError, TaskInputError, TranslationTaskManager
 from core import tm_manager
 from settings import AppSettings, EngineSettings
 
@@ -81,22 +81,20 @@ class CrossDirectoryMultiSelectTests(unittest.TestCase):
 
         scheduled = {Path(item.path).name for item in prepared.files}
         self.assertEqual(scheduled, {"a.xlsx", "b.xlsx"}, f"跨目录多选只排进了 {sorted(scheduled)}")
-        # 来源根换成共同的上级：两个文件的译文各按自己的相对位置放。
-        self.assertEqual(Path(prepared.source_path), root)
+        # 来源根不换成共同上级：窗口重载后找回任务时只重扫第一个文件夹，不去扫整个主目录。
+        self.assertEqual(Path(prepared.source_path), root / "one")
 
-    def test_same_named_files_in_two_folders_are_both_kept(self) -> None:
+    def test_same_named_files_in_two_folders_are_refused_with_a_reason(self) -> None:
+        """根外的文件译文按文件名放：两份同名的会互相覆盖，开始前就说清楚。"""
         root = self._root()
         first = root / "one" / "清单.xlsx"
         second = root / "two" / "清单.xlsx"
         _write_book(first)
         _write_book(second)
 
-        prepared = self._prepare(root, [str(first), str(second)])
-
-        self.assertEqual(
-            sorted(str(Path(item.path).parent.name) for item in prepared.files),
-            ["one", "two"],
-        )
+        with self.assertRaises(TaskInputError) as caught:
+            self._prepare(root, [str(first), str(second)])
+        self.assertIn("清单.xlsx", str(caught.exception))
 
     def test_files_beside_the_first_one_are_not_dragged_in(self) -> None:
         """补扫只扫选中的路径：第一个文件夹里没选的文件照旧不进任务。"""
