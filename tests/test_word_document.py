@@ -6,9 +6,10 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
@@ -39,6 +40,39 @@ from core.word_task_runner import (
 )
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
+
+
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    """追加一个真正的 w:hyperlink（带外部关系），而不是段落级的普通 run。"""
+    rel_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), rel_id)
+    run = OxmlElement("w:r")
+    node = OxmlElement("w:t")
+    node.text = text
+    node.set(qn("xml:space"), "preserve")
+    run.append(node)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def _visible_run_formats(paragraph) -> list[tuple[str, str | None, str | None]]:
+    """有文字的 run 的字符格式：(文字, 上标/下标, 颜色)。"""
+    formats: list[tuple[str, str | None, str | None]] = []
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        r_pr = run._r.find(qn("w:rPr"))
+        vert = r_pr.find(qn("w:vertAlign")) if r_pr is not None else None
+        color = r_pr.find(qn("w:color")) if r_pr is not None else None
+        formats.append(
+            (
+                run.text,
+                vert.get(qn("w:val")) if vert is not None else None,
+                color.get(qn("w:val")) if color is not None else None,
+            )
+        )
+    return formats
 
 
 class RetryWordEngine(TranslationEngine):
@@ -362,6 +396,66 @@ class WordDocumentTests(unittest.TestCase):
                     section.header.paragraphs[0].text,
                     "某某工程 抢工方案 / Plan de rattrapage",
                 )
+
+    def test_first_and_even_page_headers_are_translated_not_left_blank(self) -> None:
+        """首页/偶数页页眉：审计说「实跑仍是空白」，这里钉住四槽都真的取到并写回。
+
+        打开「首页不同」和「奇偶页不同」之后，首页页眉、偶数页页眉各有自己的 part，
+        第一节的普通页眉不再是唯一来源。``_HEADER_FOOTER_SLOTS`` 里四个槽位都要
+        分别取到、分别写回；链接去重只按 part 名做，不能把首页/偶数页当成普通页眉
+        的别名吞掉。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "odd_even.docx"
+            doc = Document()
+            doc.add_paragraph("施工内容")
+            section = doc.sections[0]
+            section.different_first_page_header_footer = True
+            # 「奇偶页不同」是文档级设置，python-docx 没有直接开关，手工写 settings.xml。
+            doc.settings.element.append(OxmlElement("w:evenAndOddHeaders"))
+            section.first_page_header.paragraphs[0].text = "首页页眉文字"
+            section.header.paragraphs[0].text = "普通页眉文字"
+            section.even_page_header.paragraphs[0].text = "偶数页页眉文字"
+            section.first_page_footer.paragraphs[0].text = "首页页脚文字"
+            section.even_page_footer.paragraphs[0].text = "偶数页页脚文字"
+            doc.save(str(source_path))
+
+            segments = extract_word_header_footer_segments(
+                source_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+            self.assertEqual(
+                {segment.source: segment.section_path for segment in segments},
+                {
+                    "首页页眉文字": "首页页眉",
+                    "普通页眉文字": "页眉",
+                    "偶数页页眉文字": "偶数页页眉",
+                    "首页页脚文字": "首页页脚",
+                    "偶数页页脚文字": "偶数页页脚",
+                },
+            )
+            # 每个槽位的 part 不同，location 也就不同——同一份页眉被两处取到会写两遍。
+            self.assertEqual(len({segment.location for segment in segments}), 5)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={segment.source: f"TR:{segment.source}" for segment in segments},
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            out_section = Document(str(out_path)).sections[0]
+            for container, source in (
+                (out_section.first_page_header, "首页页眉文字"),
+                (out_section.header, "普通页眉文字"),
+                (out_section.even_page_header, "偶数页页眉文字"),
+                (out_section.first_page_footer, "首页页脚文字"),
+                (out_section.even_page_footer, "偶数页页脚文字"),
+            ):
+                self.assertEqual([p.text for p in container.paragraphs], [f"{source} / TR:{source}"])
 
     def test_extract_word_segments_protects_front_matter_before_body_heading(self) -> None:
         # 补译模式之外，全文翻译模式（extract_word_segments 直接抽取全部段落/表格）
@@ -1019,6 +1113,64 @@ class WordDocumentTests(unittest.TestCase):
                 if paragraph.text.startswith("Risques de fissures")
             )
             self.assertIsNone(translation.runs[0].bold)
+
+    def test_translation_does_not_inherit_a_leading_superscript_footnote_number(self) -> None:
+        """审计中-23：段首是上标脚注号 / 彩色强调字时，整句译文不许继承它的格式。
+
+        正文整截在超链接里，按字数挑「主体格式」时被明确排除，锚点于是留任——这正是
+        换主体格式那条路治不到的形状，要靠局部字符格式单独判定。
+        """
+        source_text = "1本条款适用于全体员工及外聘人员，详见施工组织设计。"
+        translation = "This clause applies to all employees and outsourced staff; see the construction plan."
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "footnote-number.docx"
+
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            number = paragraph.add_run("1")
+            number.font.superscript = True
+            number.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            _add_hyperlink(paragraph, "本条款适用于全体员工及外聘人员，详见施工组织设计。", "https://example.com")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={source_text: REPLACE_TRANSLATION_PREFIX + translation},
+                target_lang="en",
+                source_lang="zh",
+            )
+            formats = _visible_run_formats(Document(str(out_path)).paragraphs[0])
+
+        self.assertEqual(
+            formats,
+            [(translation, None, None)],
+            f"整句译文继承了段首脚注号的上标与红色：{formats!r}",
+        )
+
+    def test_translation_keeps_a_colour_that_covers_the_whole_paragraph(self) -> None:
+        """反向约束：整段本来就是红色的段落，译文照旧是红的，不能把整段格式也一起摘掉。"""
+        source_text = "本条款适用于全体员工及外聘人员。"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "whole-red.docx"
+
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            paragraph.add_run(source_text).font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={source_text: REPLACE_TRANSLATION_PREFIX + "This clause applies to all employees."},
+                target_lang="en",
+                source_lang="zh",
+            )
+            formats = _visible_run_formats(Document(str(out_path)).paragraphs[0])
+
+        self.assertEqual(formats, [("This clause applies to all employees.", None, "FF0000")])
 
     def test_translation_does_not_repeat_direct_page_or_section_breaks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

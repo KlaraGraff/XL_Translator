@@ -1459,6 +1459,83 @@ def reusable_pdf_pages(
     return reusable
 
 
+def pdf_page_snapshot_entry(
+    page_number: int,
+    page: PdfPageRecord | None,
+    *,
+    pending_action: str = "",
+    user_skipped: bool = False,
+    inplace_active: bool = False,
+    has_source_image: bool = False,
+    has_translated_image: bool = False,
+    has_previous_image: bool = False,
+) -> dict[str, Any]:
+    """逐页表里的一行。运行中的 runner 和重启后从清单恢复的那条路共用这一份投影，
+    两边给出的字段不会各说各话。"""
+    return {
+        "page_number": page_number,
+        "status": page.status if page is not None else "pending",
+        "review_status": page.review_status if page is not None else "skipped",
+        "attempts": int(page.attempts) if page is not None else 0,
+        "placeholder": bool(page.placeholder) if page is not None else False,
+        # 「跳过大幅面页」命中的页面：前端要能区分「未翻译，原样保留」和普通
+        # 失败/占位页，不能只靠 status 字符串。
+        "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
+        "inplace_requested": bool(page.inplace_requested) if page is not None else False,
+        "inplace_status": page.inplace_status if page is not None else "",
+        "inplace_active": inplace_active,
+        "inplace_written": int(page.inplace_written) if page is not None else 0,
+        "inplace_kept": int(page.inplace_kept) if page is not None else 0,
+        "inplace_review": int(page.inplace_review) if page is not None else 0,
+        "inplace_overflow": int(page.inplace_overflow) if page is not None else 0,
+        "inplace_untranslated": int(page.inplace_untranslated) if page is not None else 0,
+        "inplace_term_review": int(page.inplace_term_review) if page is not None else 0,
+        "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
+        "inplace_message": page.inplace_message if page is not None else "",
+        "kept_reason": page.kept_reason if page is not None else "",
+        "word_requested": bool(page.word_requested) if page is not None else False,
+        "word_status": page.word_status if page is not None else "",
+        "word_message": page.word_message if page is not None else "",
+        "route_note": page.route_note if page is not None else "",
+        "error": _short_review_text(page.error if page is not None else ""),
+        # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
+        # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
+        # 小结算进「有疑点仍采用」的页，在逐页表格里却显示成绿色的「通过 · 版式一致，
+        # 文本完整」——同一屏两句话互相打脸，而用户根本找不到是哪一页。
+        "quality_flagged": bool(page.quality_flags) if page is not None else False,
+        "quality_message": _short_review_text(page.quality_message if page is not None else ""),
+        "emergency_ratio_normalized": (
+            bool(page.emergency_ratio_normalized) if page is not None else False
+        ),
+        "review_summary": _page_review_summary(page),
+        "pending_action": pending_action,
+        "user_skipped": user_skipped,
+        "has_source_image": has_source_image,
+        "has_translated_image": has_translated_image,
+        # 这一页留着上一版译文（上一次重生成把旧译图顶下来时留的）。对比弹窗
+        # 靠它决定要不要出「当前版／上一版」切换和「换回这一版」。
+        "has_previous_image": has_previous_image,
+    }
+
+
+def pdf_file_snapshot_entry(
+    record: PdfFileRecord,
+    pages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """逐页表里的一个文件分组；形状见 ``PdfPageFile``。"""
+    return {
+        "name": record.name,
+        "relative_path": record.relative_path,
+        "source_type": record.source_type,
+        "status": record.status,
+        "error": _short_review_text(record.error),
+        "page_count": int(record.page_count),
+        "document_kind": record.document_kind,
+        "translated_docx_path": record.translated_docx_path,
+        "pages": pages,
+    }
+
+
 class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
     """Background runner for PDF image-layout translation."""
 
@@ -1691,19 +1768,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         user_skipped=key in skipped,
                     )
                 )
-            files.append(
-                {
-                    "name": record.name,
-                    "relative_path": record.relative_path,
-                    "source_type": record.source_type,
-                    "status": record.status,
-                    "error": _short_review_text(record.error),
-                    "page_count": int(record.page_count),
-                    "document_kind": record.document_kind,
-                    "translated_docx_path": record.translated_docx_path,
-                    "pages": pages,
-                }
-            )
+            files.append(pdf_file_snapshot_entry(record, pages))
         # 审核开关要跟着快照一起交出去：关着的时候，逐页审核卡片那句「审核模型逐页检查版式
         # 与译文完整性」跟同一张表里 14 行「未审核」是自相矛盾的，界面得知道该改口。
         return {
@@ -2459,49 +2524,15 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         pending_action: str,
         user_skipped: bool,
     ) -> dict[str, Any]:
-        status = page.status if page is not None else "pending"
-        review_status = page.review_status if page is not None else "skipped"
-        entry = {
-            "page_number": page_number,
-            "status": status,
-            "review_status": review_status,
-            "attempts": int(page.attempts) if page is not None else 0,
-            "placeholder": bool(page.placeholder) if page is not None else False,
-            # 「跳过大幅面页」命中的页面：前端要能区分「未翻译，原样保留」和普通
-            # 失败/占位页，不能只靠 status 字符串。
-            "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
-            "inplace_requested": bool(page.inplace_requested) if page is not None else False,
-            "inplace_status": page.inplace_status if page is not None else "",
+        return pdf_page_snapshot_entry(
+            page_number,
+            page,
+            pending_action=pending_action,
+            user_skipped=user_skipped,
             # 原位替换正在做这一页（识别、翻译或写回）。还没轮到的页 inplace_status 也是空的，
             # 界面靠它分开「原位替换中」和「等待原位替换」。
-            "inplace_active": self._inplace_active_page == (str(prepared.item.path), page_number),
-            "inplace_written": int(page.inplace_written) if page is not None else 0,
-            "inplace_kept": int(page.inplace_kept) if page is not None else 0,
-            "inplace_review": int(page.inplace_review) if page is not None else 0,
-            "inplace_overflow": int(page.inplace_overflow) if page is not None else 0,
-            "inplace_untranslated": int(page.inplace_untranslated) if page is not None else 0,
-            "inplace_term_review": int(page.inplace_term_review) if page is not None else 0,
-            "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
-            "inplace_message": page.inplace_message if page is not None else "",
-            "kept_reason": page.kept_reason if page is not None else "",
-            "word_requested": bool(page.word_requested) if page is not None else False,
-            "word_status": page.word_status if page is not None else "",
-            "word_message": page.word_message if page is not None else "",
-            "route_note": page.route_note if page is not None else "",
-            "error": _short_review_text(page.error if page is not None else ""),
-            # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
-            # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
-            # 小结算进「有疑点仍采用」的页，在逐页表格里却显示成绿色的「通过 · 版式一致，
-            # 文本完整」——同一屏两句话互相打脸，而用户根本找不到是哪一页。
-            "quality_flagged": bool(page.quality_flags) if page is not None else False,
-            "quality_message": _short_review_text(page.quality_message if page is not None else ""),
-            "emergency_ratio_normalized": (
-                bool(page.emergency_ratio_normalized) if page is not None else False
-            ),
-            "review_summary": _page_review_summary(page),
-            "pending_action": pending_action,
-            "user_skipped": user_skipped,
-            "has_source_image": bool(
+            inplace_active=self._inplace_active_page == (str(prepared.item.path), page_number),
+            has_source_image=bool(
                 self._page_image_file(
                     prepared,
                     page_number,
@@ -2509,7 +2540,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     PDF_PAGE_IMAGE_KIND_SOURCE,
                 )
             ),
-            "has_translated_image": bool(
+            has_translated_image=bool(
                 self._page_image_file(
                     prepared,
                     page_number,
@@ -2517,9 +2548,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     PDF_PAGE_IMAGE_KIND_TRANSLATED,
                 )
             ),
-            # 这一页留着上一版译文（上一次重生成把旧译图顶下来时留的）。对比弹窗
-            # 靠它决定要不要出「当前版／上一版」切换和「换回这一版」。
-            "has_previous_image": bool(
+            has_previous_image=bool(
                 self._page_image_file(
                     prepared,
                     page_number,
@@ -2527,8 +2556,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     PDF_PAGE_IMAGE_KIND_PREVIOUS,
                 )
             ),
-        }
-        return entry
+        )
 
     def _page_image_file(
         self,

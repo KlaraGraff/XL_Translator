@@ -39,7 +39,23 @@ RESIDUAL_EXEMPT_TARGET_LANGS = frozenset({"zh", "ja"})
 # 测试里核对两者一致）。
 _CUSTOM_TARGET_LANG_PREFIX = "x-custom-"
 _CJK_SCRIPT_RE = re.compile(r"[一-龥぀-ヿ가-힯]")
-_LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ɏ]")
+# 连着两个以上的汉字/假名/谚文才算「这门语言真在用它写字」：汉字书写的译文里总有
+# 「本工程」「工期為」这样的双字词。拉丁文里夹带的「2026年8月9日」只剩单字，
+# 「1,2 万 EUR」也只有孤零零一个「万」。
+_CJK_SCRIPT_WORD_RE = re.compile(r"[一-龥぀-ヿ가-힯]{2,}")
+# 一个汉字抵三个字母：同一句话用汉字写出来只有字母文字三分之一上下的长度
+# （「工期為18個月」对「durée 18 mois」），按 1:1 比字数会把正常译文判成拉丁文，
+# 这正是高-10 的成因。
+_CJK_CHAR_WEIGHT = 3
+# 连着四个以上的拉丁词（中间只隔空格）就是一句拉丁文本身，不是引用的条款名：
+# 「The Contractor shall submit 施工方案」里的汉字是漏翻，不能按 1:3 放过。
+# 引用的条款名、标准号一般只有两三个词（Practical Completion、Notice to Proceed）。
+_LATIN_SENTENCE_RE = re.compile(r"(?:[A-Za-zÀ-ɏ]+\s+){3,}[A-Za-zÀ-ɏ]+")
+
+
+def _non_cjk_letter_count(text: str) -> int:
+    """CJK 以外的字母数：拉丁、西里尔、希腊、阿拉伯等一律算，数字与符号不算。"""
+    return sum(1 for char in text if char.isalpha() and not _CJK_SCRIPT_RE.match(char))
 
 
 def is_residual_exempt_target(target_lang: str, target_text: str | None = None) -> bool:
@@ -49,19 +65,29 @@ def is_residual_exempt_target(target_lang: str, target_text: str | None = None) 
     User-defined target languages carry no script information, and users of
     this app name them in Chinese whatever they are (「繁體中文」「粵語」but also
     「法语（瑞士）」), so a custom language is judged by the translation itself:
-    when it is mostly CJK script, Han characters in it are the language, not
-    leftovers. Before this, a correct Traditional Chinese translation containing
-    「2026年8月9日」was failed as residual Chinese and reset to the source text
-    (audit 高-10).
+    the translation is written in CJK when it contains CJK words (本工程、工期為)
+    and its CJK characters, counted at their own density — one CJK character
+    per three letters — are not outnumbered by the rest of the text. Contract
+    terms and standard numbers (Practical Completion、ISO 9001) do not tip that
+    balance, while a Latin-script translation carrying a leftover
+    「2026年8月9日」does: there the CJK side is a pair of one-character
+    fragments, and 3 × 3 characters do not outweigh a whole French sentence.
+
+    Comparing raw character counts on a 1:1 basis (the earlier rule) is what
+    let a Traditional Chinese translation that quotes English contract terms
+    fall below the threshold and be reset to the source text — the bug this
+    fixes (audit 高-10).
     """
     lang = str(target_lang or "").strip().lower()
     if re.split(r"[-_]", lang, maxsplit=1)[0] in RESIDUAL_EXEMPT_TARGET_LANGS:
         return True
     if not lang.startswith(_CUSTOM_TARGET_LANG_PREFIX) or target_text is None:
         return False
+    if not _CJK_SCRIPT_WORD_RE.search(target_text):
+        return False
     cjk = len(_CJK_SCRIPT_RE.findall(target_text))
-    latin = len(_LATIN_LETTER_RE.findall(target_text))
-    return cjk > 0 and cjk >= latin
+    weight = 1 if _LATIN_SENTENCE_RE.search(target_text) else _CJK_CHAR_WEIGHT
+    return cjk * weight >= _non_cjk_letter_count(target_text)
 
 _CN_NUM_CHARS = "零一二三四五六七八九十"
 _CN_DIGIT_VALUE = {c: i for i, c in enumerate("零一二三四五六七八九")}

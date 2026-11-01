@@ -23,6 +23,7 @@ from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import (
     PdfPageActionError,
 )
+from core.pdf_page_snapshot import restored_page_image_path, restored_pdf_page_review
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
 from core.surface_settings import surface_setting
@@ -1248,7 +1249,15 @@ class TranslationTaskManager:
 
     def pdf_page_review(self, task_id: str) -> dict[str, Any]:
         """Return the pull-only per-page snapshot backing the review panel."""
-        task = self._get_task(task_id)
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            # 重启后历史任务没有 runner，逐页记录只剩运行结束时那份清单：把它读回来，
+            # 而不是让界面只能写「此历史任务的逐页记录已不可用」。
+            restored = restored_pdf_page_review(self._history_record(task_id))
+            if restored is None:
+                raise
+            return restored
         runner = self._pdf_review_runner(task)
         snapshot = runner.pdf_page_snapshot()
         with task.condition:
@@ -1285,7 +1294,20 @@ class TranslationTaskManager:
         kind: str,
     ) -> Path | None:
         """Resolve one page image; comparison stays available after the run."""
-        task = self._get_task(task_id)
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            # 同上：重启后的历史任务只能从清单和页图存档里找这一页，没有任何操作入口
+            # （快照里 actionable / rerun_actionable 都是假），只回答「当时长什么样」。
+            try:
+                return restored_page_image_path(
+                    self._history_record(task_id),
+                    relative_path=relative_path,
+                    page_number=page_number,
+                    kind=kind,
+                )
+            except PdfPageActionError as exc:
+                raise TaskInputError(str(exc)) from exc
         runner = self._pdf_review_runner(task)
         try:
             return runner.resolve_page_image_path(

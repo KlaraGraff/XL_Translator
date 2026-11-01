@@ -7,6 +7,7 @@ deterministic fake runner, so no model credentials or real PDF work is needed.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -24,13 +25,71 @@ from api.task_manager import TranslationTaskManager
 from core.model_api_identity import TaskApiContext
 from core.pdf_image_translation import PdfPageActionError
 from core.task_runner import DoneMsg, StoppedMsg
-from core.task_history import TaskHistoryError
+from core.task_history import TaskHistoryStore, TaskHistoryError
 from settings import AppSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
 def _write_png(path: Path) -> None:
     Image.new("RGB", (60, 80), "white").save(path, format="PNG")
+
+
+def _write_history_manifest_task(
+    app_data_dir: Path,
+    *,
+    task_id: str,
+    output_dir: Path,
+    pages: list[dict],
+    review_enabled: bool = False,
+    in_process_dir: bool = True,
+) -> Path:
+    """把一次「已经结束、清单还在」的 PDF 任务留在磁盘上：模拟 sidecar 重启后只剩历史记录。
+
+    ``in_process_dir`` 复刻今天的真实布局：清单写在任务自己的过程目录里，路径记在任务
+    结果的 ``manifest_path`` 上（见 ``write_pdf_manifest_and_report(artifact_dir=...)``）。
+    关掉它则回到旧版布局：清单直接写在用户打开的输出文件夹里。
+    """
+    manifest_dir = output_dir / "process-run" if in_process_dir else output_dir
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "pdf_translation_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "output_dir": str(output_dir),
+                "review_enabled": review_enabled,
+                "files": [
+                    {
+                        "name": "report.pdf",
+                        "relative_path": "report.pdf",
+                        "source_type": "pdf",
+                        "status": "completed",
+                        "page_count": len(pages),
+                        "pages": pages,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = {"output_dir": str(output_dir), "files": []}
+    if in_process_dir:
+        result["manifest_path"] = str(manifest_path)
+    TaskHistoryStore(app_data_dir / "task_history.json").upsert(
+        {
+            "task_id": task_id,
+            "surface": "pdf",
+            "state": "completed",
+            "terminal": True,
+            "created_at": time.time() - 60,
+            "updated_at": time.time() - 30,
+            "logs": [],
+            "progress": {},
+            "result": result,
+        }
+    )
+    return manifest_path
 
 
 class _ReviewPanelRunner:
@@ -741,6 +800,131 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                     params={"file": "source.pdf", "page": 1, "kind": "../secrets"},
                 )
                 self.assertEqual(bad_kind.status_code, 422, bad_kind.text)
+
+    # -- 重启后的历史任务：逐页记录从清单恢复 ---------------------------------
+
+    def test_page_table_survives_a_restart_when_the_manifest_does(self) -> None:
+        """sidecar 重启后 runner 没了，运行结束时那份清单要能顶上逐页接口。
+
+        以前逐页记录只活在 runner 实例里，重启后这个端点直接 404，界面只能写一句
+        「此历史任务的逐页记录已不可用」——而清单里本来就有每一页的结果。
+        """
+        for in_process_dir in (True, False):
+            with self.subTest(in_process_dir=in_process_dir):
+                output_dir = self.app_data_dir / f"out-{in_process_dir}"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                task_id = f"pdf-before-restart-{in_process_dir}"
+                _write_history_manifest_task(
+                    self.app_data_dir,
+                    task_id=task_id,
+                    output_dir=output_dir,
+                    pages=[
+                        {"page_number": 1, "status": "success", "review_status": "skipped"},
+                        {"page_number": 2, "status": "success", "review_status": "skipped"},
+                    ],
+                    in_process_dir=in_process_dir,
+                )
+
+                # 新的 sidecar：只认得历史记录，没有那次运行的 runner。
+                manager = TranslationTaskManager(
+                    history_store=TaskHistoryStore(self.app_data_dir / "task_history.json")
+                )
+                client = TestClient(create_app(task_manager=manager))
+                response = client.get(f"/api/tasks/{task_id}/pdf-pages")
+
+                self.assertEqual(response.status_code, 200, response.text)
+                body = response.json()
+                self.assertEqual(body["task_id"], task_id)
+                self.assertTrue(body["terminal"])
+                # 没有 runner：只看，不能排队页操作，也不能单独重跑某一页。
+                self.assertFalse(body["actionable"])
+                self.assertFalse(body["rerun_actionable"])
+                self.assertFalse(body["rerun"]["active"])
+                self.assertEqual(
+                    [len(entry.get("pages") or []) for entry in body["files"]],
+                    [2],
+                )
+                self.assertEqual(
+                    [page["status"] for page in body["files"][0]["pages"]],
+                    ["success", "success"],
+                )
+
+    def test_restored_page_image_route_serves_the_archived_page(self) -> None:
+        """历史任务的原图/译图还在页图存档里时照样能看；没有存档就是 404，不是 500。"""
+        output_dir = self.app_data_dir / "out"
+        manifest_path = _write_history_manifest_task(
+            self.app_data_dir,
+            task_id="pdf-before-restart-image",
+            output_dir=output_dir,
+            pages=[{"page_number": 1, "status": "success", "review_status": "skipped"}],
+        )
+        # 页图存档和清单在同一次运行目录下（见 _prepare_pdf_files 的 work_output_dir）。
+        archive = manifest_path.parent / "_pdf_pages" / "translated_pages" / "report"
+        archive.mkdir(parents=True, exist_ok=True)
+        _write_png(archive / "page_001.png")
+
+        manager = TranslationTaskManager(
+            history_store=TaskHistoryStore(self.app_data_dir / "task_history.json")
+        )
+        client = TestClient(create_app(task_manager=manager))
+        served = client.get(
+            "/api/tasks/pdf-before-restart-image/pdf-pages/image",
+            params={"file": "report.pdf", "page": 1, "kind": "translated"},
+        )
+        self.assertEqual(served.status_code, 200, served.text)
+        self.assertTrue(served.content.startswith(b"\x89PNG"))
+
+        # 没生成过译图的原图页就是没有，404 而不是 500。
+        missing = client.get(
+            "/api/tasks/pdf-before-restart-image/pdf-pages/image",
+            params={"file": "report.pdf", "page": 1, "kind": "source"},
+        )
+        self.assertEqual(missing.status_code, 404, missing.text)
+
+        # 「上一版」要重装输出文件，没有 runner 就是没有；返回 404 而不是报错。
+        previous = client.get(
+            "/api/tasks/pdf-before-restart-image/pdf-pages/image",
+            params={"file": "report.pdf", "page": 1, "kind": "previous"},
+        )
+        self.assertEqual(previous.status_code, 404, previous.text)
+
+    def test_history_task_without_a_manifest_still_reports_missing_pages(self) -> None:
+        """清单没了就照旧 404（界面显示「已不可用」），绝不借用别的任务的页表。"""
+        output_dir = self.app_data_dir / "no-manifest"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        TaskHistoryStore(self.app_data_dir / "task_history.json").upsert(
+            {
+                "task_id": "pdf-no-manifest",
+                "surface": "pdf",
+                "state": "completed",
+                "terminal": True,
+                "created_at": time.time() - 60,
+                "updated_at": time.time() - 30,
+                "logs": [],
+                "progress": {},
+                "result": {"output_dir": str(output_dir), "files": []},
+            }
+        )
+        manager = TranslationTaskManager(
+            history_store=TaskHistoryStore(self.app_data_dir / "task_history.json")
+        )
+        client = TestClient(create_app(task_manager=manager))
+        self.assertEqual(
+            client.get("/api/tasks/pdf-no-manifest/pdf-pages").status_code, 404
+        )
+        # 不是 PDF 任务的历史记录同样不给页表。
+        TaskHistoryStore(self.app_data_dir / "task_history.json").upsert(
+            {
+                "task_id": "excel-history",
+                "surface": "excel",
+                "state": "completed",
+                "terminal": True,
+                "result": {"output_dir": str(output_dir)},
+            }
+        )
+        self.assertEqual(
+            client.get("/api/tasks/excel-history/pdf-pages").status_code, 404
+        )
 
 
 if __name__ == "__main__":

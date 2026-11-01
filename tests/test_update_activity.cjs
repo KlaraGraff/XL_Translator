@@ -1,12 +1,12 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const {stripTypeScriptTypes}=require('module');
-let source=fs.readFileSync('ui/src/update-controller.ts','utf8');
+let source=fs.readFileSync(require('path').join(__dirname,'..','ui','src','update-controller.ts'),'utf8');
 source=source.replace(/import[\s\S]*?from "[^"\n]+";/g,'').replace(/export /g,'');
-const code=`const {ApiClient}=require('./api-client');const {openModal,showToast}=require('./components');const {setSettingsAlert}=require('./shell');const {restartApp,resolveUpdate}=require('./update-service');`+stripTypeScriptTypes(source)+`;exports.requestRestart=requestRestart;exports.requestUpdateInstall=requestUpdateInstall;exports.updateSnapshot=updateSnapshot;`;
+const code=`const {ApiClient}=require('./api-client');const {openModal,showToast}=require('./components');const {t,tx,localized}=require('./i18n');const {setSettingsAlert}=require('./shell');const {restartApp,resolveUpdate}=require('./update-service');`+stripTypeScriptTypes(source)+`;exports.requestRestart=requestRestart;exports.requestUpdateInstall=requestUpdateInstall;exports.updateSnapshot=updateSnapshot;`;
 async function scenario(counts, windows=false) {
  let restarted=0,installed=0,modals=0;const toasts=[];
  class ApiClient {async connect(){} async listTasks(){const n=counts.shift();if(n instanceof Error)throw n;return {active:[],active_work_count:n};}}
- const sandbox={exports:{},console,require(name){if(name==='./api-client')return {ApiClient};if(name==='./components')return {openModal(o){modals++;o.actions[0].onClick();},showToast(o){toasts.push(o.message);}};if(name==='./shell')return {setSettingsAlert(){}};return {restartApp:async()=>{restarted++},resolveUpdate:async()=>({version:'10',download:async()=>{},install:async()=>{installed++},close:async()=>{}})}}};
+ const sandbox={exports:{},console,require(name){if(name==='./api-client')return {ApiClient};if(name==='./components')return {openModal(o){modals++;o.actions[0].onClick();},showToast(o){toasts.push(o.message);}};if(name==='./i18n')return {t:(s,...a)=>String(s).replace(/\{(\d+)\}/g,(w,i)=>a[Number(i)]??w),tx:(s)=>String(s),localized:(b)=>b()};if(name==='./shell')return {setSettingsAlert(){}};return {restartApp:async()=>{restarted++},resolveUpdate:async()=>({version:'10',download:async()=>{},install:async()=>{installed++},close:async()=>{}})}}};
  vm.runInNewContext(code,sandbox);const api=sandbox.exports;
  if(windows){api.updateSnapshot().env={installBehavior:'installer_restart'};await api.requestUpdateInstall();}else {api.updateSnapshot().flow.phase='ready';await api.requestRestart();}
  return {restarted,installed,modals,toasts,phase:api.updateSnapshot().flow.phase,flow:api.updateSnapshot().flow};

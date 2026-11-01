@@ -18,6 +18,7 @@ from unittest import mock
 
 from core import xls_converter
 from core.xls_converter import LibreOfficeConversionError, convert_with_libreoffice
+from tests.xls_password_fixture import write_password_protected_xls
 
 HAS_XLWT = importlib.util.find_spec("xlwt") is not None
 
@@ -107,6 +108,32 @@ class ConvertWithLibreofficeMockedTests(unittest.TestCase):
                 convert_with_libreoffice(self.xls_path)
         self.assertIn("未生成", str(ctx.exception))
 
+    def test_source_file_could_not_be_loaded_is_carried_into_the_error(self) -> None:
+        """soffice 的真实形态：损坏或加密的 .xls 以返回码 1 退出，stderr 只有一句。
+
+        本机实测（LibreOffice 26.8）截断的 .xls 返回 0 但产物是乱码；带 FILEPASS 的
+        加密文件才是这条——``Error: source file could not be loaded``。这一句必须原样
+        带进异常，才能和「未安装」「超时」「没有产物」区分开。
+        """
+        observed_stderr = (
+            "Fontconfig warning: no <cachedir> elements found. Check configuration.\n"
+            "Error: source file could not be loaded\n"
+        )
+
+        def _fake_run(_command, **_kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr=observed_stderr)
+
+        with (
+            mock.patch("core.word_converter._find_soffice", return_value=_FAKE_SOFFICE),
+            mock.patch.object(xls_converter.subprocess, "run", side_effect=_fake_run),
+        ):
+            with self.assertRaises(LibreOfficeConversionError) as ctx:
+                convert_with_libreoffice(self.xls_path)
+
+        message = str(ctx.exception)
+        self.assertIn("未能转换此文件", message)
+        self.assertIn("source file could not be loaded", message)
+
 
 @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")
 class ConvertWithLibreofficeRealMachineTests(unittest.TestCase):
@@ -147,3 +174,42 @@ class ConvertWithLibreofficeRealMachineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasswordProtectedXlsTests(unittest.TestCase):
+    """密码保护的 .xls：doc:97 留下的「具体报错形态」里能离线复现的一半。
+
+    夹具由 ``tests/xls_password_fixture.py`` 用标准库现写——一份真的 BIFF8 工作簿，
+    globals 里带 FILEPASS（Excel「另存为 → 常规选项 → 打开权限密码」写的就是它）。
+    同一份内容不加密时 xlrd 能读出格子，所以「打不开」只能归因于密码，不是夹具坏了。
+    """
+
+    def _protected_copy(self, directory: Path) -> Path:
+        return write_password_protected_xls(directory / "protected.xls")
+
+    def test_pure_python_fallback_reports_the_workbook_as_encrypted(self) -> None:
+        from xlrd import XLRDError
+
+        from core.xls_converter import convert_with_fallback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xls_path = self._protected_copy(root)
+            # 明文对照：同一种写法、只是没插 FILEPASS，必须读得出来。
+            plain = write_password_protected_xls(root / "plain.xls", encrypted=False, value=7.0)
+            with mock.patch.object(
+                xls_converter, "_get_temp_xlsx_path", return_value=root / "plain_out.xlsx"
+            ):
+                converted = convert_with_fallback(plain)
+            self.assertTrue(converted.exists())
+
+            with mock.patch.object(
+                xls_converter, "_get_temp_xlsx_path", return_value=root / "protected_out.xlsx"
+            ):
+                with self.assertRaises(XLRDError) as ctx:
+                    convert_with_fallback(xls_path)
+
+            self.assertIn("encrypted", str(ctx.exception))
+            # 失败不能留半成品 .xlsx（xlrd 在 open_workbook 就抛，产物根本没建）。
+            self.assertFalse((root / "protected_out.xlsx").exists())
+

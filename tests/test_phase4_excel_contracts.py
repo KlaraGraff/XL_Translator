@@ -26,6 +26,7 @@ from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.task_runner import DoneMsg, StoppedMsg, TaskRunner
 from settings import AppSettings, EngineSettings
 from tests.rate_pins import pinned_surface_rate
+from tests.xls_password_fixture import write_password_protected_xls
 
 
 class _PreflightEngine:
@@ -581,6 +582,47 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
             done = _done_message(runner)
             self.assertTrue(done.file_results[0]["success"])
             self.assertEqual(done.file_results[0]["conversion_mode"], "compatibility_fallback")
+
+    def test_password_protected_xls_fails_with_the_password_sentence_not_a_crash(self) -> None:
+        """加密的 .xls 走完两条兼容转换路线后要停在「受密码保护」这句话上。
+
+        doc:97 要求补上损坏/加密文件的报错形态。加密文件这一半可以离线复现：夹具
+        由 ``tests/xls_password_fixture.py`` 现写，带真的 FILEPASS 记录。两个转换函数
+        都不打桩，真的让 xlrd 去读，它抛 ``Workbook is encrypted``——这条原始英文不能
+        原样摆到用户面前，任务也不能把这一个文件静静跳过或者整个崩掉。
+        （装了 LibreOffice 时同一份文件走 soffice，返回码 1，由
+        ``tests/test_libreoffice_xls_route.py`` 的真机用例覆盖。）
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = write_password_protected_xls(root / "protected.xls")
+            with ExitStack() as stack:
+                writer = self._run_patches(
+                    stack,
+                    root=root,
+                    engine=_PreflightEngine(),
+                    texts_by_path={},
+                )
+                # 固定走「本机没有 LibreOffice」这一支：两种情况最终都要落到同一句
+                # 用户提示，但只有这一支在哪台机器上都一样跑。
+                stack.enter_context(
+                    patch("core.word_converter._find_soffice", return_value=None)
+                )
+                runner = TaskRunner(
+                    [FileItem(path=legacy, name="protected", size_kb=1.0, format="xls")],
+                    _settings(),
+                    source_root=root,
+                    allow_xls_fallback=True,
+                )
+                runner._run()
+
+            writer.assert_not_called()
+            done = _done_message(runner)
+            result = done.file_results[0]
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("受密码保护", result["error"])
+            self.assertNotIn("encrypted", result["error"])
 
     def test_excel_review_colors_are_not_read_from_word_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
