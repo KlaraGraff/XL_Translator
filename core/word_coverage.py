@@ -178,6 +178,7 @@ def _classify_content_control_paragraphs(
         excluded=toc_controls(body),
         parent=doc._body,
         front_matter_start=front_matter_start(doc, front_matter),
+        protect_cover=front_matter is not _NO_FRONT_MATTER_PROTECTION,
     )
     units: list[CoverageUnit] = []
     consumed: set[int] = set()
@@ -318,7 +319,8 @@ def write_untranslated_docx(
         for table in doc.tables
         for cell in _iter_unique_table_cells(table)
     ]
-    front_matter = plan.front_matter if plan.front_matter.found else None
+    # 保护开着就传边界（哪怕没找到正文标题：封面页控件照样要保护），关着传 None。
+    front_matter = None if plan.front_matter is _NO_FRONT_MATTER_PROTECTION else plan.front_matter
     # 「修订一起翻译」时含修订的段落由修订那一趟接手，下面的常规补译跳过它们。
     revisions = _revision_layout(doc, revision_mode, front_matter)
 

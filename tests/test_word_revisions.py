@@ -908,6 +908,99 @@ class SecondReviewTests(unittest.TestCase):
         self.assertIn(CONTROL_TEXT, sources)
 
 
+class ThirdReviewTests(unittest.TestCase):
+    """第三轮审查：嵌套控件、没有正文标题时的封面、控件那一趟的修订编号。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_paragraphs_in_nested_controls_are_translated_once(self) -> None:
+        source = self.root / "nested.docx"
+        doc = Document()
+        # 重复区：外层控件里每一项又是一个控件；组合控件：外层段落 + 里面一个格子。
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+            "<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>重复区里的字</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt></w:sdtContent></w:sdt>",
+        )
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:group/></w:sdtPr><w:sdtContent>'
+            "<w:p><w:r><w:t>外层的字</w:t></w:r></w:p>"
+            "<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>内层的字</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt></w:sdtContent></w:sdt>",
+        )
+        doc.save(source)
+        translations = {"重复区里的字": "Repeated", "外层的字": "Outer", "内层的字": "Inner"}
+
+        sources = [segment.source for segment in extract_word_segments(source, target_lang="en")]
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations=translations,
+            target_lang="en",
+        )
+        texts = _paragraph_texts(output)
+
+        self.assertEqual(sorted(sources), sorted(translations))
+        for text in translations.values():
+            self.assertEqual(texts.count(text), 1, texts)
+        self.assertEqual(build_word_coverage_plan(output, target_lang="en").source_units, [])
+
+    def test_cover_page_is_protected_even_without_a_body_heading(self) -> None:
+        source = self.root / "cover-no-heading.docx"
+        doc = Document()
+        _append_xml(doc, _cover_page_xml("封面标题"))
+        doc.add_paragraph(BODY_TEXT)
+        doc.save(source)
+
+        protected = [
+            segment.source
+            for segment in extract_word_segments(source, target_lang="en", protect_front_matter=True)
+        ]
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations={**TRANSLATIONS, "封面标题": "Cover title"},
+            target_lang="en",
+            protect_front_matter=True,
+        )
+
+        self.assertNotIn("封面标题", protected)
+        self.assertIn(BODY_TEXT, protected)
+        self.assertEqual(_control_texts(output), [["封面标题"]])
+        plan = build_word_coverage_plan(output, target_lang="en", protect_front_matter=True)
+        self.assertEqual(plan.source_units, [])
+
+    def test_control_pass_gives_copied_paragraph_marks_new_ids(self) -> None:
+        source = self.root / "control-ids.docx"
+        doc = Document()
+        _append_xml(
+            doc,
+            f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+            '<w:p><w:pPr><w:rPr><w:ins w:id="7" w:author="张三"/></w:rPr></w:pPr>'
+            f"<w:r><w:t>{CONTROL_TEXT}</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+        )
+        doc.save(source)
+
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations=TRANSLATIONS,
+            target_lang="en",
+        )
+
+        ids = [
+            element.get(qn("w:id"))
+            for element in Document(str(output)).element.body.iter(qn("w:ins"))
+        ]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2, ids)
+
+
 class RunnerRevisionRecordTests(IsolatedAppDataTestCase):
     """D + 状态⑤：任务记录里写明这份文件对修订是怎么处理的。"""
 

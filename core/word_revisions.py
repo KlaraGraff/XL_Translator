@@ -392,7 +392,8 @@ def revision_layout(doc, *, front_matter=None) -> RevisionLayout:
                 after=after,
                 plain=plain,
                 revision_count=counts.get(paragraph, 0),
-                protected=is_front_matter(paragraph, body, start),
+                protected=is_front_matter(paragraph, body, start)
+                or (front_matter is not None and in_cover_page(paragraph, body)),
             )
         )
     return RevisionLayout(units=units, paragraphs=paragraphs, cells=cells)
@@ -774,6 +775,18 @@ def _owning_content_control(element, body):
     return None
 
 
+def in_cover_page(element, body) -> bool:
+    """element 在 Word 封面页里（自己或外层某个控件的 docPartGallery 是「Cover Pages」）。"""
+    node = element
+    while node is not None and node is not body:
+        if node.tag == qn("w:sdt"):
+            gallery = node.find(f"{qn('w:sdtPr')}/{qn('w:docPartObj')}/{qn('w:docPartGallery')}")
+            if gallery is not None and gallery.get(qn("w:val")) == "Cover Pages":
+                return True
+        node = node.getparent()
+    return False
+
+
 def _is_bound_or_placeholder(control) -> bool:
     """绑定了文档属性的控件（封面标题、作者之类）和还显示着占位提示的控件。
 
@@ -791,7 +804,7 @@ def _is_bound_or_placeholder(control) -> bool:
 
 
 def content_control_paragraph_entries(
-    body, *, excluded=(), parent=None, front_matter_start=None
+    body, *, excluded=(), parent=None, front_matter_start=None, protect_cover=False
 ) -> list[tuple[Paragraph, int, int]]:
     """内容控件里的段落：[(Paragraph, 控件序号, 段落在控件内的序号), ...]。
 
@@ -800,8 +813,12 @@ def content_control_paragraph_entries(
 
     ``front_matter_start``：「保护封面和目录」的正文起点（见 ``front_matter_start()``）。
     排在它前面的控件整个不算——Word 的封面页本身就是一个内容控件（docPartGallery
-    「Cover Pages」），保护封面时它得原样留着。控件序号仍按全文计数，开不开保护同一
-    个控件的定位不变。
+    「Cover Pages」），保护封面时它得原样留着。``protect_cover``（保护封面开着）时，
+    封面页控件不管找没找到正文起点都不算。控件序号仍按全文计数，开不开保护同一个
+    控件的定位不变。
+
+    每个控件都要看，不能只看最外层：重复区里的每一项、组合控件里的格子都是嵌套控件，
+    只看最外层会把它们里面的段落整段漏掉。
 
     ``parent`` 传文档的 ``_Body``：段落包装对象要带上它才读得到样式（``paragraph.style``
     得经 ``part`` 找样式表），复制段内格式、判断标题都靠这一步。不传也改得了文字，
@@ -809,12 +826,14 @@ def content_control_paragraph_entries(
     """
     controls = [
         control
-        for control in _iter_outermost_elements(body, "w:sdt")
+        for control in body.iter(qn("w:sdt"))
         if not (excluded and _inside(control, excluded))
     ]
     entries: list[tuple[Paragraph, int, int]] = []
     for control_index, control in enumerate(controls):
         if is_front_matter(control, body, front_matter_start):
+            continue
+        if protect_cover and in_cover_page(control, body):
             continue
         if _is_bound_or_placeholder(control):
             continue
@@ -848,6 +867,7 @@ def _control_entries(doc, *, front_matter=None):
         excluded=toc_controls(body),
         parent=doc._body,
         front_matter_start=front_matter_start(doc, front_matter),
+        protect_cover=front_matter is not None,
     )
     control_paragraphs: dict[int, list[Paragraph]] = {}
     for paragraph, control_index, _paragraph_index in entries:
@@ -940,6 +960,7 @@ def apply_content_control_translations(
 
     entries, control_paragraphs = _control_entries(doc, front_matter=front_matter)
     skip = layout or EMPTY_REVISION_LAYOUT
+    ids = None
     written = 0
     for paragraph, control_index, paragraph_index in entries:
         if skip.skips_paragraph(paragraph._p):
@@ -966,9 +987,21 @@ def apply_content_control_translations(
         ):
             pass
         else:
-            _insert_translation_paragraph_after(paragraph, resolved.text, target_lang=target_lang)
+            added = _insert_translation_paragraph_after(paragraph, resolved.text, target_lang=target_lang)
+            if ids is None:
+                ids = _RevisionIds(doc)
+            ids.renumber_copied_marks(added._p)
         written += 1
     return written
+
+
+def _inline_parent_control(control, body) -> bool:
+    parent = control.getparent()
+    while parent is not None and parent is not body:
+        if parent.tag == qn("w:sdt") and next(parent.iter(qn("w:p")), None) is None:
+            return True
+        parent = parent.getparent()
+    return False
 
 
 def inline_content_control_count(body, *, excluded=()) -> int:
@@ -978,10 +1011,13 @@ def inline_content_control_count(body, *, excluded=()) -> int:
     调用方据此保留「存在无法读取的内容」告警，而不是悄悄漏掉。
     """
     total = 0
-    for control in _iter_outermost_elements(body, "w:sdt"):
+    for control in body.iter(qn("w:sdt")):
         if excluded and _inside(control, excluded):
             continue
         if next(control.iter(qn("w:p")), None) is not None:
+            continue
+        if _inline_parent_control(control, body):
+            # 行内控件套行内控件：外层那个已经数过了。
             continue
         if _visible_text(control, ("w:t",)):
             total += 1
