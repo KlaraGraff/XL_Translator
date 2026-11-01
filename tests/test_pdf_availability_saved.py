@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import settings as settings_module
+from core.image_generation import ImageModelUnavailableError
 from core.model_roles import ROLE_IMAGE, update_role_connection
 from core.pdf_image_translation import PdfFileItem, PdfImageTranslationRunner
 from tests.test_pdf_image_translation import (
@@ -67,6 +68,17 @@ class PdfAvailabilitySavedTests(unittest.TestCase):
         stored = settings_module.load_settings().image_model_role
         self.assertEqual(stored.availability_status, "unavailable")
         self.assertIn("密钥", stored.availability_message)
+
+    def test_running_out_of_quota_is_not_saved_as_unavailable(self) -> None:
+        """额度用完只算这一次：充值后配置不变，存下的「不可用」会一直挡着自动组合。"""
+
+        class _QuotaClient:
+            def generate_page(self, **_kwargs):
+                raise ImageModelUnavailableError("Error code: 429 insufficient_quota")
+
+        self._run(_QuotaClient())
+        stored = settings_module.load_settings().image_model_role
+        self.assertEqual(stored.availability_status, "unknown")
 
     def test_a_verdict_for_a_model_the_user_since_replaced_is_not_saved(self) -> None:
         task_settings = settings_module.load_settings()

@@ -90,10 +90,12 @@ from core.model_roles import (
     pdf_review_model_signature,
     provider_supports_capability,
     unsupported_capability_message,
+    record_model_role_availability,
     resolve_effective_model_config,
     save_model_role_availability,
 )
 from core.surface_rate import resolve_pdf_page_concurrency, resolve_pdf_review_concurrency
+from core.user_facing_errors import is_quota_problem
 from core.pdf_review import (
     OpenAICompatiblePdfReviewClient,
     PdfPageReviewClient,
@@ -250,12 +252,21 @@ _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 def _save_image_model_availability(settings: AppSettings, **verdict: Any) -> None:
     """任务里得出的图像模型结论：记在任务副本上，同时存进设置（重启后还在）。"""
-    save_model_role_availability(settings, ROLE_IMAGE, **verdict)
+    _save_role_availability(settings, ROLE_IMAGE, **verdict)
 
 
 def _save_pdf_review_model_availability(settings: AppSettings, **verdict: Any) -> None:
     """同上，图像翻译审核模型。"""
-    save_model_role_availability(settings, ROLE_PDF_REVIEW, **verdict)
+    _save_role_availability(settings, ROLE_PDF_REVIEW, **verdict)
+
+
+def _save_role_availability(settings: AppSettings, role: str, **verdict: Any) -> None:
+    # 额度、余额不足只记在这次任务里，不存进设置：充值后配置没变，存下的「不可用」
+    # 会一直挂着，自动组合模式又因此不再调用这个模型，结论永远等不到被成功冲掉。
+    if not verdict.get("ok") and is_quota_problem(verdict.get("message")):
+        record_model_role_availability(settings, role, **verdict)
+        return
+    save_model_role_availability(settings, role, **verdict)
 
 
 class PdfPageActionError(ValueError):
