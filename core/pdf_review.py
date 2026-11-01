@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +11,6 @@ from typing import Any, Protocol
 
 import httpx
 from loguru import logger
-from PIL import Image
 
 from core import system_proxy
 from core.image_generation import is_model_unavailable_error, looks_like_wrong_image_model
@@ -111,6 +109,16 @@ class PdfPageReviewClient(Protocol):
     ) -> PdfPageReviewResult:
         """Return a pass/fail review for one translated page candidate."""
 
+    def read_images(
+        self,
+        *,
+        model_config: EffectiveModelConfig,
+        instructions: str,
+        user_text: str,
+        images: list[Path],
+    ) -> str:
+        """Send instructions, text and images; return the model's reply text."""
+
 
 class OpenAICompatiblePdfReviewClient:
     """Multimodal page-review client for OpenAI-compatible Responses APIs."""
@@ -126,6 +134,32 @@ class OpenAICompatiblePdfReviewClient:
         target_language: str,
         model_config: EffectiveModelConfig,
     ) -> PdfPageReviewResult:
+        user_text = (
+            f"Target language: {target_language}. "
+            "First image is the original source PDF page. "
+            "Second image is the translated candidate page."
+        )
+        text = self.read_images(
+            model_config=model_config,
+            instructions=PDF_PAGE_REVIEW_PROMPT,
+            user_text=user_text,
+            images=[source_image_path, translated_image_path],
+        )
+        return parse_pdf_review_result(text)
+
+    def read_images(
+        self,
+        *,
+        model_config: EffectiveModelConfig,
+        instructions: str,
+        user_text: str,
+        images: list[Path],
+    ) -> str:
+        """把「说明 + 文字 + 图片」发给审核模型，返回它回复的文字。
+
+        逐页审核和「能不能识别图片」的检查（core/image_input_check.py）共用这一条路：
+        同样的接口选择、同样的模型回退，测出来的就是审核时会遇到的。
+        """
         if not provider_supports_capability(model_config.provider, "vision_text"):
             raise PdfReviewModelUnavailableError(
                 unsupported_capability_message(
@@ -148,11 +182,6 @@ class OpenAICompatiblePdfReviewClient:
             model_config.connection_id, model_config.model,
             model_config.base_url, ROLE_PDF_REVIEW,
         )
-        user_text = (
-            f"Target language: {target_language}. "
-            "First image is the original source PDF page. "
-            "Second image is the translated candidate page."
-        )
         headers = {
             "Authorization": f"Bearer {model_config.api_key}",
             "Content-Type": "application/json",
@@ -164,9 +193,9 @@ class OpenAICompatiblePdfReviewClient:
                     payload = build_vision_payload(
                         route,
                         model=effective_model,
-                        instructions=PDF_PAGE_REVIEW_PROMPT,
+                        instructions=instructions,
                         user_text=user_text,
-                        images=[source_image_path, translated_image_path],
+                        images=images,
                     )
                     url = f"{base_url}/{VISION_ROUTE_PATHS[route]}"
                     response = client.post(url, headers=headers, json=payload)
@@ -207,10 +236,8 @@ class OpenAICompatiblePdfReviewClient:
             raise
 
         if route == "chat":
-            text = extract_chat_text(response_payload)
-        else:
-            text = _extract_response_text(response_payload)
-        return parse_pdf_review_result(text)
+            return extract_chat_text(response_payload)
+        return _extract_response_text(response_payload)
 
 
 def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
@@ -275,6 +302,17 @@ def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
 REVIEW_MODEL_ADVICE = "图像翻译审核需要能识别图片的模型，请换一个支持图片输入的模型。"
 
 
+def image_input_availability_message(label: str, result: str, message: str) -> str:
+    """「能不能识别图片」的结论写到审核连接的测试状态上时用的那句，和「测试连接」一致。"""
+    from core.image_input_check import IMAGE_INPUT_NO, IMAGE_INPUT_YES
+
+    if result == IMAGE_INPUT_YES:
+        return "连接测试通过。"
+    if result == IMAGE_INPUT_NO:
+        return f"{label}连接测试失败：{REVIEW_MODEL_ADVICE}"
+    return f"{label}连接测试失败：{message}"
+
+
 def check_pdf_review_connectivity(
     settings: AppSettings,
     *,
@@ -282,6 +320,20 @@ def check_pdf_review_connectivity(
     max_attempts: int = PDF_REVIEW_TEST_MAX_ATTEMPTS,
     connection_id: str = "",
 ) -> PdfReviewConnectivityResult:
+    """「测试连接」：发一张写着随机码的小图，让审核模型读出来。
+
+    以前发两张纯白图，接口不报错就算通过；中转站要是把图丢了、只把文字转给模型，
+    照样「通过」，审核就成了没看图也说通过。现在读对了才算通过，结论同时记成这条
+    连接「能 / 不能识别图片」（见 core/image_input_check.py），开始任务前会查它。
+    """
+    from core.image_input_check import (
+        IMAGE_INPUT_NO,
+        IMAGE_INPUT_UNSEEN,
+        IMAGE_INPUT_YES,
+        probe_image_input,
+        set_image_input_verdict,
+    )
+
     # ``connection_id`` 指定要测的连接池条目；不给就还是主连接。
     config = resolve_effective_model_config(
         settings,
@@ -304,49 +356,54 @@ def check_pdf_review_connectivity(
     client = client or OpenAICompatiblePdfReviewClient(
         timeout_seconds=PDF_REVIEW_TEST_TIMEOUT_SECONDS
     )
-    with tempfile.TemporaryDirectory() as tmp:
-        source = Path(tmp) / "source.png"
-        translated = Path(tmp) / "translated.png"
-        Image.new("RGB", (64, 64), "white").save(source, format="PNG")
-        Image.new("RGB", (64, 64), "white").save(translated, format="PNG")
-        last_error = ""
-        last_exc: BaseException | None = None
-        for _attempt in range(1, max(1, int(max_attempts)) + 1):
-            try:
-                result = client.review_page(
-                    source_image_path=source,
-                    translated_image_path=translated,
-                    target_language="English",
-                    model_config=config,
-                )
-                message = "连接测试通过。"
-                record_pdf_review_model_availability(
-                    settings,
-                    ok=True,
-                    message=message,
-                    signature=signature,
-                    checked_at=_now_iso(),
-                    connection_id=connection_id,
-                )
-                detail = result.summary or "审核模型已正常返回判断结果。"
-                return PdfReviewConnectivityResult(True, message, detail=detail)
-            except Exception as exc:  # noqa: BLE001 - retry and report all review errors.
-                last_error = _sanitize_error(exc)
-                last_exc = exc
-
-    message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
-    if last_exc is not None and looks_like_wrong_image_model(last_exc):
-        # 整句换掉：原来那句「请检查接口地址、API 密钥和模型名称」会把人引去查密钥。
-        message = f"{config.label}连接测试失败：{REVIEW_MODEL_ADVICE}"
+    probe = probe_image_input(
+        lambda instructions, user_text, images: client.read_images(
+            model_config=config,
+            instructions=instructions,
+            user_text=user_text,
+            images=images,
+        ),
+        attempts=max_attempts,
+    )
+    checked_at = _now_iso()
+    if probe.result in {IMAGE_INPUT_YES, IMAGE_INPUT_NO, IMAGE_INPUT_UNSEEN}:
+        set_image_input_verdict(settings, config, probe.result, probe.message, checked_at)
+    if probe.result == IMAGE_INPUT_YES:
+        message = "连接测试通过。"
+        record_pdf_review_model_availability(
+            settings,
+            ok=True,
+            message=message,
+            signature=signature,
+            checked_at=checked_at,
+            connection_id=connection_id,
+        )
+        return PdfReviewConnectivityResult(True, message, detail=probe.message)
+    if probe.result == IMAGE_INPUT_NO:
+        message = image_input_availability_message(config.label, probe.result, probe.message)
+        status = "no_image_input"
+        detail = _sanitize_error(probe.error) if probe.error is not None else ""
+    elif probe.result == IMAGE_INPUT_UNSEEN:
+        message = image_input_availability_message(config.label, probe.result, probe.message)
+        status = "image_unseen"
+        detail = probe.reply[:200]
+    else:
+        last_error = _sanitize_error(probe.error) if probe.error is not None else ""
+        message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
+        if probe.error is not None and looks_like_wrong_image_model(probe.error):
+            # 整句换掉：原来那句「请检查接口地址、API 密钥和模型名称」会把人引去查密钥。
+            message = f"{config.label}连接测试失败：{REVIEW_MODEL_ADVICE}"
+        status = "failed"
+        detail = last_error
     record_pdf_review_model_availability(
         settings,
         ok=False,
         message=message,
         signature=signature,
-        checked_at=_now_iso(),
+        checked_at=checked_at,
         connection_id=connection_id,
     )
-    return PdfReviewConnectivityResult(False, message, detail=last_error, status="failed")
+    return PdfReviewConnectivityResult(False, message, detail=detail, status=status)
 
 
 def _normalize_base_url(config: EffectiveModelConfig) -> str:

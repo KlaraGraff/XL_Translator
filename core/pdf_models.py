@@ -351,6 +351,8 @@ class PdfTaskSummary:
     compression_quality: int = PDF_COMPRESSED_JPEG_QUALITY_DEFAULT
     compression_max_long_edge_px: int = PDF_COMPRESSED_MAX_LONG_EDGE_PX
     review_enabled: bool = False
+    # 审核模型中途确认不能识别图片、后面的页不再送审时的说明（core/image_input_check.py）。
+    review_switched_off: str = ""
     reviewed_page_count: int = 0
     review_passed_page_count: int = 0
     review_repaired_page_count: int = 0

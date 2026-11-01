@@ -40,6 +40,7 @@ from core.model_roles import (
 from core.pdf_review import REVIEW_MODEL_ADVICE, check_pdf_review_connectivity
 from engines.openai_engine import OpenAIEngine
 from settings import AppSettings, _api_key_env_names
+from tests.image_probe_reader import probe_code_in_request
 
 
 class DeepSeekProviderTests(unittest.TestCase):
@@ -126,7 +127,10 @@ class _FakeDeepSeek(BaseHTTPRequestHandler):
         if has_image and payload.get("model") not in VISION_MODELS:
             self._send_json(400, {"error": {"message": "image input is not supported by this model", "type": "invalid_request_error"}})
             return
-        answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
+        # 认图的模型读出测试图里的码；带的是页面图时照常回审核结果。
+        answer = probe_code_in_request(payload) or json.dumps(
+            {"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"}
+        )
         self._send_json(200, {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": answer}}]})
 
 
@@ -162,13 +166,27 @@ class DeepSeekReviewTests(unittest.TestCase):
         # 直接走 chat，不先去试 /v1/responses。
         self.assertEqual([call["path"] for call in _FakeDeepSeek.calls], ["/v1/chat/completions"])
         content = _FakeDeepSeek.calls[0]["json"]["messages"][-1]["content"]
-        self.assertEqual([part["type"] for part in content], ["text", "image_url", "image_url"])
+        # 一张写着随机码的测试图，模型读对了才算通过。
+        self.assertEqual([part["type"] for part in content], ["text", "image_url"])
 
     def test_text_only_model_is_told_to_pick_one_that_reads_images(self) -> None:
         with patch("core.model_roles.get_key", return_value="sk-test"):
             result = check_pdf_review_connectivity(self._settings("deepseek-v4-pro"), max_attempts=1)
         self.assertFalse(result.ok)
         self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
+        self.assertEqual(result.status, "no_image_input")
+
+    def test_a_gateway_that_drops_the_image_no_longer_passes(self) -> None:
+        """以前发两张白图，接口不报错就算通过；中转站把图丢了也「通过」。现在要读对测试图里的字。"""
+        settings = self._settings("deepseek-flash")
+        with patch("core.model_roles.get_key", return_value="sk-test"), patch(
+            "tests.test_deepseek_provider.probe_code_in_request", return_value=""
+        ):
+            result = check_pdf_review_connectivity(settings, max_attempts=1)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "image_unseen")
+        self.assertIn("没有读出测试图中的文字", result.message)
+        self.assertEqual([check.result for check in settings.image_input_checks.values()], ["unseen"])
 
 
 class ProviderDefaultsRouteTests(unittest.TestCase):

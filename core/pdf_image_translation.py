@@ -66,11 +66,21 @@ from core.api_scheduler import (
     WeightedApiScheduler,
 )
 from core.image_generation import (
+    IMAGE_MODEL_ADVICE,
     ImageGenerationClient,
     ImageModelUnavailableError,
     OpenAICompatibleImageGenerationClient,
     is_model_unavailable_error,
     pdf_page_ratio_tolerance,
+)
+from core.image_input_check import (
+    IMAGE_INPUT_NO,
+    IMAGE_INPUT_NO_MESSAGE,
+    ImageInputGuard,
+    image_model_refused_page,
+    looks_like_no_image_input,
+    save_image_input_verdict,
+    save_role_availability,
 )
 from core.language_registry import get_supported_languages, get_target_lang_description, get_target_lang_display
 from core.model_roles import (
@@ -91,6 +101,7 @@ from core.pdf_review import (
     PdfReviewIssue,
     PdfPageReviewResult,
     PdfReviewModelUnavailableError,
+    image_input_availability_message,
 )
 from core.task_logger import TaskLogger, redact_absolute_paths
 from core.task_runner import (
@@ -241,6 +252,14 @@ _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 class PdfPageActionError(ValueError):
     """Raised when a single-page review action cannot be accepted."""
 
+
+
+# 任务中途发现模型不收图 / 生成不了图时说的话（core/image_input_check.py 的保底）。
+REVIEW_SWITCHED_OFF_MESSAGE = (
+    "图像翻译审核模型不能识别图片，之后的页面不再审核，已生成的译图照常保留。"
+    "请在设置中为图像翻译审核更换一个能识别图片的模型。"
+)
+_IMAGE_MODEL_REJECTED_KEPT_REASON = "图像翻译模型无法生成图片，这一页需要整页图像翻译，已保留原样"
 
 def _with_sentence_end(text: str) -> str:
     """给要往后拼安抚句的上游消息补齐句末标点。
@@ -1507,6 +1526,12 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         self._review_api_call_count = 0
         self._fatal_model_error = ""
         self._fatal_review_model_error = ""
+        # 任务中的保底（core/image_input_check.py）：审核模型、图像模型在本次任务里还没成功过，
+        # 又连续两页报「不收图 / 生成不了图」，就不再往它发图。
+        self._review_input_guard = ImageInputGuard()
+        self._image_output_guard = ImageInputGuard(image_model_refused_page)
+        self._review_switched_off = ""
+        self._image_model_rejected = ""
         self._review_lock = threading.Lock()
         self._review_processing_count = 0
         self._review_passed_count = 0
@@ -2345,7 +2370,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             "file_results": [_file_record_to_result(record) for record in file_records],
             "elapsed_sec": summary.elapsed_sec,
             "api_call_count": self._api_call_count,
-            "issues": _summary_issues(file_records),
+            "issues": self._task_issues(file_records),
             "kpi": _done_kpi(summary),
         }
 
@@ -2853,6 +2878,10 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         stopped = False
         self._fatal_model_error = ""
         self._fatal_review_model_error = ""
+        self._review_input_guard = ImageInputGuard()
+        self._image_output_guard = ImageInputGuard(image_model_refused_page)
+        self._review_switched_off = ""
+        self._image_model_rejected = ""
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
@@ -3355,7 +3384,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     elapsed_sec=summary.elapsed_sec,
                     tm_hit_count=0,
                     api_call_count=self._api_call_count,
-                    issues=_summary_issues(file_records),
+                    issues=self._task_issues(file_records),
                     report_path=str(report_path),
                     manifest_path=str(manifest_path),
                     kpi=_done_kpi(summary),
@@ -4915,7 +4944,11 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     route_note = f"{fallback_reason}，改用整页图像翻译"
             if route == ROUTE_IMAGE and self._image_model_missing:
                 route = ROUTE_SKIP
-                kept_reason = "没有设置图像翻译模型，这一页需要整页图像翻译，已保留原样"
+                kept_reason = (
+                    _IMAGE_MODEL_REJECTED_KEPT_REASON
+                    if self._image_model_rejected
+                    else "没有设置图像翻译模型，这一页需要整页图像翻译，已保留原样"
+                )
             word_entry = self._word_pages.get((source_path_key, page_index + 1), {}) if route == ROUTE_WORD else {}
             if route in {ROUTE_SKIP, ROUTE_INPLACE, ROUTE_WORD}:
                 # 不送图像模型的页（原样保留、原位替换）不渲染栅格化预览（A3 在
@@ -5010,7 +5043,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
 
     def _route_unusable_reason(self, route: str, source_path: str, page_number: int) -> str:
         if route == ROUTE_IMAGE and self._image_model_missing:
-            return "没有设置图像翻译模型"
+            return "图像翻译模型无法生成图片" if self._image_model_rejected else "没有设置图像翻译模型"
         if route == ROUTE_INPLACE:
             if self._inplace_hooks is None:
                 return "原位替换不可用"
@@ -5128,6 +5161,9 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             )
         review_enabled = bool(self._settings.pdf.review_enabled and review_model_config is not None)
         page_record.review_enabled = review_enabled
+        if review_enabled and self._review_switched_off:
+            # 审核模型在这次任务里已经确认不收图：这一页不再送审，按「未审核」交付。
+            review_enabled = False
         # 质检容差必须跟着「这一页会被请求成什么尺寸」走，否则对只支持固定
         # 尺寸的模型（gpt-image-1）来说这道门谁都过不去，每页都跑满重试。
         ratio_tolerance = pdf_page_ratio_tolerance(
@@ -5144,6 +5180,8 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             )
         attempt = 1
         while attempt <= max_attempts:
+            if self._image_model_rejected:
+                return self._page_kept_after_image_model_rejected(page_record, source_type)
             try:
                 lease = scheduler.acquire_lease(
                     1,
@@ -5207,6 +5245,10 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     f"{self._page_log_prefix(page_record)}第 {attempt}/{max_attempts} 次生成失败：{last_error}",
                 )
                 page_record.attempts = attempt
+                if self._image_output_guard.failed(exc, key=self._page_status_key(page_record)):
+                    # 还没成功过一页，又连续两页都是「这个模型生成不了图」：不再一页页地试。
+                    # 整页图像翻译时整个任务停下；其他翻译方式里，剩下要整页图像翻译的页保留原样。
+                    self._reject_image_model(model_config)
                 attempt += 1
                 continue
             finally:
@@ -5242,6 +5284,9 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 }
                 page_record.candidate_artifacts.append(candidate_artifact)
             if quality.ok:
+                if self._review_switched_off:
+                    # 别的页刚确认审核模型不收图：这一页（包括重试中的）不再送审。
+                    review_enabled = False
                 if review_enabled and candidate_path is not None and candidate_artifact is not None:
                     page_record.review_attempts = attempt
                     self._begin_page_review(attempt)
@@ -5267,7 +5312,11 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                             except ApiSchedulerAcquireCancelled:
                                 raise
                             except Exception as review_exc:
-                                if isinstance(review_exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(review_exc):
+                                if (
+                                    isinstance(review_exc, PdfReviewModelUnavailableError)
+                                    or is_model_unavailable_error(review_exc)
+                                    or looks_like_no_image_input(review_exc)
+                                ):
                                     raise
                                 decision = handle_api_concurrency_limit(
                                     review_exc,
@@ -5284,7 +5333,10 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         break
                     except Exception as exc:  # noqa: BLE001 - review participates in page recovery.
                         self._finish_page_review()
-                        if isinstance(exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(exc):
+                        refused_images = looks_like_no_image_input(exc)
+                        if not refused_images and (
+                            isinstance(exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(exc)
+                        ):
                             logger.debug(f"[PDF] 审核模型不可用原始错误：{exc!r}")
                             raise PdfReviewModelUnavailableError(
                                 user_facing_reason(
@@ -5297,10 +5349,13 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                             ) from exc
                         review_request_error = exc
                         logger.debug(f"[PDF] 审核请求失败原始错误：{exc!r}")
-                        review_failure_reason = user_facing_reason(
-                            exc,
-                            fallback="审核模型本次未返回可用结果。",
+                        review_failure_reason = (
+                            IMAGE_INPUT_NO_MESSAGE
+                            if refused_images
+                            else user_facing_reason(exc, fallback="审核模型本次未返回可用结果。")
                         )
+                        if self._review_input_guard.failed(exc, key=self._page_status_key(page_record)):
+                            self._switch_off_review(review_model_config)
                         review_result = PdfPageReviewResult(
                             passed=False,
                             blocking_issues=[
@@ -5314,10 +5369,12 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                         )
                     else:
                         self._finish_page_review()
+                        self._review_input_guard.succeeded()
+                        # 只有审核真的回了结果才算「调用成功」；请求出错的那条路不算。
+                        self._mark_pdf_review_model_success()
 
                     review_path = candidate_path.with_name(f"attempt_{attempt:02d}_review.json")
                     _write_review_json(review_path, review_result)
-                    self._mark_pdf_review_model_success()
                     candidate_artifact["review_path"] = str(review_path)
                     if review_request_error is not None:
                         candidate_artifact["review_status"] = "error"
@@ -5747,6 +5804,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         self._queue.put(StatusMsg(self._stop_wait_status()))
 
     def _mark_image_model_success(self) -> None:
+        self._image_output_guard.succeeded()
         if self._settings.image_model_role.availability_status == "available":
             return
         record_image_model_availability(
@@ -5755,6 +5813,84 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             message="图像翻译模型调用成功。",
             checked_at=datetime.now().isoformat(timespec="seconds"),
         )
+
+    def _switch_off_review(self, review_model_config) -> None:
+        """审核模型在这次任务里确认不收图：后面的页不再送审，结论存回设置。"""
+        with self._review_lock:
+            if self._review_switched_off:
+                return
+            self._review_switched_off = REVIEW_SWITCHED_OFF_MESSAGE
+        self._log("WARN", REVIEW_SWITCHED_OFF_MESSAGE)
+        if review_model_config is None:
+            return
+        save_image_input_verdict(
+            review_model_config,
+            IMAGE_INPUT_NO,
+            IMAGE_INPUT_NO_MESSAGE,
+            settings=self._settings,
+            role=ROLE_PDF_REVIEW,
+            availability_message=image_input_availability_message(
+                review_model_config.label, IMAGE_INPUT_NO, IMAGE_INPUT_NO_MESSAGE
+            ),
+        )
+
+    def _reject_image_model(self, model_config) -> None:
+        """图像翻译模型连续两页生成不了图：不再往它发页面。
+
+        整页图像翻译时没有别的路可走，整个任务停下（走「图像模型不可用」那条路，
+        已生成的页和报告照常保留）。其他翻译方式里，图像模型只是扫描页和保底用的：
+        剩下要整页图像翻译的页保留原样，其余照常翻译。
+        """
+        message = f"图像翻译模型连续两页均未能生成图片，可能不是图像生成模型。{IMAGE_MODEL_ADVICE}"
+        if model_config is not None:
+            save_role_availability(model_config, ROLE_IMAGE, ok=False, message=f"图像翻译模型连接测试失败：{IMAGE_MODEL_ADVICE}")
+        if getattr(self._settings.pdf, "translation_route", "image") == "image":
+            raise ImageModelUnavailableError(message)
+        with self._review_lock:
+            if self._image_model_rejected:
+                return
+            self._image_model_rejected = message
+            self._image_model_missing = message
+        self._log("WARN", f"{message}其余需要整页图像翻译的页面将保留原样。")
+
+    def _page_kept_after_image_model_rejected(self, page_record: PdfPageRecord, source_type: str) -> PdfPageRecord:
+        """图像模型已确认生成不了图时，还排着队的页：PDF 页保留原样，图片文件记为未能生成。"""
+        page_record.placeholder = False
+        page_record.translated_image_path = ""
+        if source_type == SOURCE_TYPE_IMAGE:
+            page_record.status = PDF_OUTPUT_STATE_FAILED
+            page_record.error = _with_sentence_end(self._image_model_rejected)
+            self._record_page_failed(page_record)
+            self._log_page_not_generated(page_record)
+            return page_record
+        page_record.status = PDF_PAGE_STATUS_SKIPPED_OVERSIZE
+        page_record.skipped_oversize = True
+        page_record.source_image_path = ""
+        page_record.kept_reason = _IMAGE_MODEL_REJECTED_KEPT_REASON
+        page_record.error = ""
+        # 前面失败过的这一页挂在「重试中」里，不撤掉的话进度上会一直显示它在重试。
+        self._record_page_failed(page_record)
+        self._log("WARN", f"{self._page_log_prefix(page_record)}{_IMAGE_MODEL_REJECTED_KEPT_REASON}。")
+        return page_record
+
+    def _task_issues(self, file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
+        """结果里的待复核清单：逐页的那些，加上「审核中途关掉了」这一条。"""
+        issues = _summary_issues(file_records)
+        if self._review_switched_off:
+            issues.append(
+                {
+                    # 不用 "type"：任务中心的复核表会把 type 当「问题」列显示出来。
+                    "kind": "review_no_image_input",
+                    "file": "",
+                    "location_label": "整个任务",
+                    "severity": "needs_review",
+                    "problem": self._review_switched_off,
+                    "status": "逐页审核",
+                    "source_image_path": "",
+                    "translated_image_path": "",
+                }
+            )
+        return issues
 
     def _mark_pdf_review_model_success(self) -> None:
         if self._settings.pdf_review_model_role.availability_status == "available":
@@ -6066,6 +6202,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             compression_quality=PDF_COMPRESSED_JPEG_QUALITY_DEFAULT,
             compression_max_long_edge_px=PDF_COMPRESSED_MAX_LONG_EDGE_PX,
             review_enabled=review_enabled,
+            review_switched_off=self._review_switched_off if review_enabled else "",
             reviewed_page_count=reviewed_page_count,
             review_passed_page_count=review_passed_page_count,
             review_repaired_page_count=review_repaired_page_count,

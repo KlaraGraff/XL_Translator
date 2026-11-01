@@ -49,6 +49,7 @@ from core.pdf_review import check_pdf_review_connectivity
 from engines.openai_engine import OpenAIEngine
 from settings import AppSettings, _api_key_env_names, load_settings, save_key, save_settings
 from tests.app_data_isolation import IsolatedAppDataTestCase
+from tests.image_probe_reader import probe_code_in_request
 
 CHAT_MODELS = ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed"]
 SPEECH_MODELS = [
@@ -187,8 +188,10 @@ class _FakeMiMo(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"message": "Not supported model"}})
             return
         content = payload["messages"][-1]["content"]
-        if isinstance(content, list):  # 审核：带图
-            answer = json.dumps({"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"})
+        if isinstance(content, list):  # 审核：带图（测试图就读出上面的码）
+            answer = probe_code_in_request(payload) or json.dumps(
+                {"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"}
+            )
         else:  # 文本测试连接要求只回 OK；mimo-v2.6-pro 在这里故意答非所问
             answer = "OK" if payload["model"] != "mimo-v2.6-pro" else "好的"
         self._send_json(200, {"choices": [{"finish_reason": "stop", "message": {
@@ -242,7 +245,7 @@ class XiaomiOverHttpTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         self.assertEqual([call["path"] for call in _FakeMiMo.calls], ["/v1/chat/completions"])
         content = _FakeMiMo.calls[0]["json"]["messages"][-1]["content"]
-        self.assertEqual([part["type"] for part in content], ["text", "image_url", "image_url"])
+        self.assertEqual([part["type"] for part in content], ["text", "image_url"])
 
 
 

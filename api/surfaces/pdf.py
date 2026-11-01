@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +12,23 @@ from loguru import logger
 from api.surfaces.base import PHASE_READ, PHASE_TRANSLATE, PHASE_WRITE, RunnerRequest, Surface, suffixes
 from api.task_contracts import (
     REASON_IMAGE_MODEL_MISSING,
+    REASON_PDF_REVIEW_IMAGE_UNSEEN,
     REASON_PDF_REVIEW_MODEL_MISSING,
+    REASON_PDF_REVIEW_NO_IMAGE_INPUT,
     Runner,
     TaskInputError,
     TaskOptions,
+)
+from core.image_input_check import (
+    IMAGE_INPUT_NO,
+    IMAGE_INPUT_RESULTS,
+    IMAGE_INPUT_UNSEEN,
+    IMAGE_INPUT_YES,
+    PREFLIGHT_PROBE_TIMEOUT_SECONDS,
+    image_input_key,
+    image_input_verdict,
+    probe_image_input,
+    save_image_input_verdict,
 )
 from core.local_endpoint import settings_runs_locally
 from core.language_registry import get_target_lang_display
@@ -88,6 +102,9 @@ class PdfSurface(Surface):
         self, *, files: list[Any], settings: AppSettings, options: TaskOptions
     ) -> None:
         """Validate PDF/image-specific settings before allocating a task lease."""
+        if options.allow_skip_pdf_review and settings.pdf.review_enabled:
+            # 「本次不审核，直接开始」：只改这次任务自己的设置副本，设置里的开关不动。
+            settings.pdf.review_enabled = False
         if not files:
             raise TaskInputError("请至少选择一个 PDF 或图片文件。")
         if not str(settings.pdf.target_lang or "").strip():
@@ -135,6 +152,31 @@ class PdfSurface(Surface):
                 "已开启逐页审核，请先给图像翻译审核模型填写 API 密钥。",
                 reason=REASON_PDF_REVIEW_MODEL_MISSING,
             )
+        # 发用户的页面之前，先确认审核模型能识别图片。没确认过（没测过，或换了模型、密钥、
+        # 地址）就当场发一张小测试图，几秒钟；用户已经说了「仍用它审核」就不再测。
+        verdict = image_input_verdict(settings, review_model)
+        checked_now = False
+        if not verdict and not options.allow_known_review_failure:
+            verdict = _check_review_image_input(settings, review_model)
+            checked_now = bool(verdict)
+        if verdict == IMAGE_INPUT_NO:
+            raise TaskInputError(
+                "逐页审核需要能识别图片的模型，但当前的图像翻译审核模型不能识别图片，用它审核每一页都会出错。"
+                "可以本次不审核直接开始，或在设置中更换模型。",
+                reason=REASON_PDF_REVIEW_NO_IMAGE_INPUT,
+                accept={"allow_skip_pdf_review": True},
+            )
+        if verdict == IMAGE_INPUT_UNSEEN and not options.allow_known_review_failure:
+            raise TaskInputError(
+                "测试时图像翻译审核模型有回复，但没有读出测试图中的文字，图片可能未送达模型，审核结果不可信。"
+                "可以本次不审核直接开始，或在设置中更换模型。",
+                reason=REASON_PDF_REVIEW_IMAGE_UNSEEN,
+                # 命令行 --yes 走更稳妥的「不审核」；界面上另有「仍用它审核」。
+                accept={"allow_skip_pdf_review": True},
+            )
+        if checked_now and verdict == IMAGE_INPUT_YES:
+            # 刚刚实测通过，比设置里那次「测试未通过」新，不再拿旧结论拦。
+            return
         availability = str(settings.pdf_review_model_role.availability_status or "unknown")
         if availability == "unavailable" and not options.allow_known_review_failure:
             # 这一条是有出路的拦截（allow_known_review_failure 就是那条出路），界面必须
@@ -188,6 +230,53 @@ class PdfSurface(Surface):
             profile_concurrency=profile_concurrency,
             inplace_hooks=inplace_hooks,
         )
+
+
+# 开始前那次检查没得出结论的连接（键见 image_input_key）→ 当时的 time.monotonic()。
+# 界面先「预检」再「开始」，两次都会走到这里；刚试过没结论就不再让用户多等一轮。
+_INCONCLUSIVE_PROBES: dict[str, float] = {}
+_INCONCLUSIVE_PROBE_QUIET_SECONDS = 120.0
+
+
+def _check_review_image_input(settings: AppSettings, review_model: Any) -> str:
+    """开始前当场确认审核模型能不能识别图片：yes / no / unseen；没有结论时是 ""。
+
+    只试一次、最多等 30 秒。网络、密钥这类没结论的失败不拦，交给任务中的保底
+    （连续两页不收图就不再审核）。有结论就存进设置，下次不再测。
+    """
+    from core.pdf_review import (
+        OpenAICompatiblePdfReviewClient,
+        image_input_availability_message,
+    )
+
+    key = image_input_key(review_model)
+    tried_at = _INCONCLUSIVE_PROBES.get(key)
+    if tried_at is not None and time.monotonic() - tried_at < _INCONCLUSIVE_PROBE_QUIET_SECONDS:
+        return ""
+    client = OpenAICompatiblePdfReviewClient(timeout_seconds=PREFLIGHT_PROBE_TIMEOUT_SECONDS)
+    probe = probe_image_input(
+        lambda instructions, user_text, images: client.read_images(
+            model_config=review_model,
+            instructions=instructions,
+            user_text=user_text,
+            images=images,
+        ),
+        attempts=1,
+    )
+    if probe.result not in IMAGE_INPUT_RESULTS:
+        logger.info("[PDF] 开始前没能确认审核模型能否识别图片，先开始，任务中再看。")
+        _INCONCLUSIVE_PROBES[key] = time.monotonic()
+        return ""
+    _INCONCLUSIVE_PROBES.pop(key, None)
+    save_image_input_verdict(
+        review_model,
+        probe.result,
+        probe.message,
+        settings=settings,
+        role=ROLE_PDF_REVIEW,
+        availability_message=image_input_availability_message(review_model.label, probe.result, probe.message),
+    )
+    return probe.result
 
 
 def _inplace_enabled(settings: AppSettings) -> bool:

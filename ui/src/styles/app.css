@@ -430,7 +430,10 @@ table.review-tbl { table-layout: fixed; }
 .modal .mi.tint { background: var(--tint); color: var(--tint-ink); }
 .modal h3 { font-size: 15px; font-weight: var(--fw-650); margin-bottom: 7px; }
 .modal p { font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
-.modal .macts { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
+.modal .macts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: 16px; }
+/* 按钮多、英法文又长时，整排换行，每个按钮保持一行写全（docs/UI_TEXT_FIT.md 规则 1：先给空间）；
+   只有单个按钮比整排还宽时才在按钮里折行，这时高度跟着文字走，不把字挤出按钮。 */
+.modal .macts .btn { flex: 0 0 auto; max-width: 100%; height: auto; min-height: 34px; padding-top: 6px; padding-bottom: 6px; }
 .modal input[type="text"] { width: 100%; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; padding: 0 11px; font: inherit; background: var(--surface); color: var(--ink); margin-top: 4px; }
 /* 来源标签放进弹窗里，做成标题上方的一行灰色小字。以前它是浮在弹窗上沿外面的深色
    胶囊，跟弹窗本身不是一套样式，深色主题下还会压到遮罩外的内容上。 */
