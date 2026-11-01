@@ -252,6 +252,9 @@ class PdfPageRecord:
     route_note: str = ""
     review_enabled: bool = False
     review_status: str = "skipped"
+    # 这一页真正送审的轮数（每送审一次 +1），与生成/质检共用的 attempts 无关。
+    # 报告里的「审核重试次数」＝ review_attempts - 1：生成失败或质检不过导致的重跑
+    # 不算审核的轮次，用户才不会把图像模型的弯路记到审核模型头上。
     review_attempts: int = 0
     review_issues: list[dict[str, Any]] = field(default_factory=list)
     review_minor_suggestions: list[str] = field(default_factory=list)

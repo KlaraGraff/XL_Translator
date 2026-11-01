@@ -1935,6 +1935,10 @@ class TranslationTaskManager:
         一份（完成、出错、停止、中断），按诊断模块自己的上限滚动清理。记录里只有
         类型、阶段、计数和服务商类别，不含文件名、路径、原文译文或密钥。写失败
         只记日志：诊断是辅助信息，不能因为它让任务收不了尾。
+
+        PDF 的清单/报告路径不用单独转交：终态消息本来就带着，而 ``_sanitize_task_data``
+        把 ``output_dir``/``manifest_path``/``report_path`` 归在 ``_ARTIFACT_PATH_KEYS``
+        里原样保留，诊断模块直接从严脱敏后的 result 取即可。
         """
         try:
             with task.condition:

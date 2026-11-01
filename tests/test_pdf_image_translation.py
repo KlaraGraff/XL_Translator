@@ -1277,6 +1277,83 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertFalse(any("source" in name or "task/" in name for name in names))
             self.assertTrue(any(name.endswith("manifest.json") for name in names))
 
+    def test_pdf_diagnostics_carry_package_summary_without_paths(self) -> None:
+        """审计 P2：诊断 manifest 里没有 PDF 清单/报告、页级统计，中止时连输出目录都没有。
+
+        ``_build_pdf_diagnostic_summary`` 一直躺在 core/diagnostics.py 里没人调用，
+        归档主流程开头就 ``del source_root, task_artifacts``，PDF 任务排障只能翻日志。
+        修好之后摘要要带上整任务页级统计，但诊断记录承诺不含绝对路径——清单/报告只记
+        固定文件名，输出目录只记「有没有、是不是本程序建的」。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            records = root / "diagnostics" / "records"
+            output_dir = root / "项目A_翻译输出_20260525_101010"
+            output_dir.mkdir()
+            manifest_path = output_dir / PDF_MANIFEST_FILENAME
+            report_path = output_dir / PDF_REPORT_FILENAME
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "status": "stopped",
+                        "file_count": 2,
+                        "total_page_count": 12,
+                        "generated_page_count": 7,
+                        "placeholder_page_count": 2,
+                        "emergency_ratio_normalized_count": 1,
+                        "retry_count": 4,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path.write_text("# report\n", encoding="utf-8")
+            done = DoneMsg(
+                output_dir=str(output_dir),
+                file_results=[
+                    {"name": "a.pdf", "success": True, "placeholder_page_count": 2},
+                ],
+                elapsed_sec=5,
+                tm_hit_count=0,
+                api_call_count=3,
+                report_path=str(report_path),
+                manifest_path=str(manifest_path),
+            )
+
+            with patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", records):
+                record_dir = diagnostics.archive_task_diagnostics(
+                    surface="pdf",
+                    phase="done",
+                    task_id="pdf-summary",
+                    settings=AppSettings(),
+                    selected_files=[],
+                    logs=[],
+                    done=done,
+                    status="stopped",
+                )
+                payload = json.loads((record_dir / "manifest.json").read_text(encoding="utf-8"))
+
+            summary = payload["pdf_summary"]
+            # 审计点名的页级统计：清单是整任务口径，比逐文件加总更全。
+            self.assertEqual(summary["status"], "stopped")
+            self.assertEqual(summary["total_page_count"], 12)
+            self.assertEqual(summary["generated_page_count"], 7)
+            self.assertEqual(summary["placeholder_page_count"], 2)
+            self.assertEqual(summary["emergency_ratio_normalized_count"], 1)
+            self.assertEqual(summary["retry_count"], 4)
+            # 清单/报告能找到，但只留固定文件名。
+            self.assertEqual(summary["pdf_manifest_path"], PDF_MANIFEST_FILENAME)
+            self.assertEqual(summary["pdf_report_path"], PDF_REPORT_FILENAME)
+            # 中止的任务也有输出目录的痕迹，但没有路径本身。
+            self.assertTrue(summary["output_dir_present"])
+            self.assertTrue(summary["output_dir_is_app_managed"])
+            # 诊断记录自己的状态/文件数不能被 PDF 包的口径顶掉。
+            self.assertEqual(payload["status"], "stopped")
+            self.assertEqual(payload["file_count"], 0)
+            for text in (json.dumps(payload, ensure_ascii=False),):
+                self.assertNotIn(str(root), text)
+                self.assertNotIn("项目A", text)
+                self.assertNotIn("a.pdf", text)
+
     def test_model_unavailable_keeps_current_file_artifacts_in_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1392,6 +1469,109 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(image_client.calls[0]["target_language"], "英文")
             self.assertEqual(image_client.calls[0]["target_lang_code"], "en")
             self.assertIn("编号标签误译", image_client.calls[1]["review_feedback"])
+
+    def test_quality_retry_is_not_counted_as_review_work(self) -> None:
+        """生成失败/质检不过导致的重跑不能算成审核模型的功劳。
+
+        审核轮次以前直接拿共用的 ``attempt`` 反推：一页先因为质检（比例不对）重跑
+        一次、再送审一次就通过，报告却写「审核重试 1 次、审核修复 1 页」——审核模型
+        实际只跑了一次、一次就通过。用户是靠这两个数判断审核这一档值不值得开的。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            output_dir = root / "out"
+            settings = _page_review_settings(root)
+            settings.pdf.review_enabled = True
+            settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+            settings.pdf_review_model_role.cloud_provider = "custom_openai"
+            settings.pdf_review_model_role.cloud_model = "vision-review-model"
+            settings.pdf_review_model_role.cloud_base_url = "https://images.example/v1"
+            image_client = _WrongRatioThenGoodImageClient(
+                _png_bytes(1200, 1600),
+                wrong_ratio_bytes=_png_bytes(1200, 600),
+            )
+            review_client = _PassReviewClient()
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                review_client=review_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
+                "core.model_roles.get_key",
+                return_value="secret",
+            ):
+                record = _run_single_file(
+                    runner,
+                    output_dir=output_dir,
+                    max_attempts=max_page_generation_attempts(3),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=resolve_effective_model_config(
+                        settings,
+                        ROLE_PDF_REVIEW,
+                    ),
+                )
+
+            page = record.pages[0]
+            self.assertEqual(image_client.calls, 2)
+            self.assertEqual(review_client.calls, 1)
+            self.assertEqual(page.review_status, "passed")
+            # 审核模型只被调用一次、一次就通过：两个审核指标都必须是 0。
+            self.assertEqual(page.review_attempts, 1)
+            self.assertEqual(record.review_retry_count, 0)
+            self.assertEqual(record.review_repaired_page_count, 0)
+
+    def test_generation_retry_is_not_counted_as_review_work(self) -> None:
+        """生成请求本身失败导致的重跑，同样不能进审核轮次。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            output_dir = root / "out"
+            settings = _page_review_settings(root)
+            settings.pdf.review_enabled = True
+            settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+            settings.pdf_review_model_role.cloud_provider = "custom_openai"
+            settings.pdf_review_model_role.cloud_model = "vision-review-model"
+            settings.pdf_review_model_role.cloud_base_url = "https://images.example/v1"
+            review_client = _PassReviewClient()
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FailThenPassImageClient(_png_bytes(1200, 1600), failures=1),
+                review_client=review_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
+                "core.model_roles.get_key",
+                return_value="secret",
+            ):
+                record = _run_single_file(
+                    runner,
+                    output_dir=output_dir,
+                    max_attempts=max_page_generation_attempts(3),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=resolve_effective_model_config(
+                        settings,
+                        ROLE_PDF_REVIEW,
+                    ),
+                )
+
+            page = record.pages[0]
+            self.assertEqual(review_client.calls, 1)
+            self.assertEqual(page.review_status, "passed")
+            self.assertEqual(page.review_attempts, 1)
+            self.assertEqual(record.review_retry_count, 0)
+            self.assertEqual(record.review_repaired_page_count, 0)
+            # 这一页确实重跑过一次，只是这笔账记在页级重试上，不在审核上。
+            self.assertEqual(record.retry_count, 1)
 
     def test_review_request_error_keeps_candidate_without_regeneration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2931,6 +3111,21 @@ class _AlwaysFailImageClient:
     def generate_page(self, **_kwargs):
         self.calls += 1
         raise RuntimeError(self.message)
+
+
+class _WrongRatioThenGoodImageClient(_FakeImageClient):
+    """第一次返回比例不对的图（质检不过、不送审），之后才返回正常尺寸的图。"""
+
+    def __init__(self, image_bytes: bytes, *, wrong_ratio_bytes: bytes) -> None:
+        super().__init__(image_bytes)
+        self.wrong_ratio_bytes = wrong_ratio_bytes
+        self.calls = 0
+
+    def generate_page(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return self.wrong_ratio_bytes
+        return self.image_bytes
 
 
 class _RecordingImageClient(_FakeImageClient):

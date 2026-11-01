@@ -78,6 +78,7 @@ def convert_doc_to_docx(
 
     errors: list[str] = []
     for method_name, converter in high_fidelity_attempts:
+        output_path: Path | None = None
         try:
             output_path = converter(source_path)
             _validate_docx(output_path)
@@ -89,6 +90,9 @@ def convert_doc_to_docx(
                 fidelity="high_fidelity",
             )
         except Exception as exc:  # noqa: BLE001 - later path requires consent.
+            # 这一份是这次尝试刚落下盘、又被判无效的产物：调用方拿到的是异常，不是
+            # 路径，不会有人再来回收它。
+            _discard_partial_output(output_path)
             user_message = humanize_error(exc)
             errors.append(f"{method_name} 不可用：{user_message}")
             logger.info(f".doc 转换策略不可用 {source_path.name} ({method_name}): {user_message}")
@@ -104,6 +108,7 @@ def convert_doc_to_docx(
         )
 
     for method_name, converter in compatibility_attempts:
+        output_path: Path | None = None
         try:
             output_path = converter(source_path)
             _validate_docx(output_path)
@@ -115,6 +120,7 @@ def convert_doc_to_docx(
                 fidelity="compatibility",
             )
         except Exception as exc:  # noqa: BLE001 - each opted-in strategy falls through.
+            _discard_partial_output(output_path)
             user_message = humanize_error(exc)
             errors.append(f"{method_name} 不可用：{user_message}")
             logger.info(f".doc 兼容转换策略不可用 {source_path.name} ({method_name}): {user_message}")
@@ -265,6 +271,7 @@ def convert_numbering_to_text_with_native_apps(
 
     errors: list[str] = []
     for method_name, converter in attempts:
+        output_path: Path | None = None
         try:
             output_path = converter(source_path)
             _validate_docx(output_path)
@@ -275,6 +282,8 @@ def convert_numbering_to_text_with_native_apps(
                 fallback_messages=list(errors),
             )
         except Exception as exc:  # noqa: BLE001 - each strategy falls through.
+            # 同 .doc 转换：本次尝试的产物没过校验，删掉再试下一种。
+            _discard_partial_output(output_path)
             user_message = humanize_error(exc)
             errors.append(f"{method_name} 不可用：{user_message}")
             logger.info(f"Word 编号预处理策略不可用 {source_path.name} ({method_name}): {user_message}")
@@ -790,6 +799,23 @@ def _get_temp_docx_path(original_path: Path) -> Path:
     temp_dir = Path(tempfile.gettempdir()) / "word_translator_temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir / f"{original_path.stem}_{uuid.uuid4().hex[:8]}.docx"
+
+
+def _discard_partial_output(output_path: Path | None) -> None:
+    """删掉本次转换尝试写下的半成品 .docx。
+
+    转换器都是「先落盘、后校验」：校验不过（产物不是有效 docx）或者落盘之后抛了
+    异常，那份文件没有任何人会回收——调用方拿到的是异常，不是路径，它既不会被
+    后续任务读到，也不在任务结束时的临时文件清理清单上，只会在系统临时目录里
+    一直占着与原文同量级的磁盘。和 xls_converter._discard_partial_output 同形。
+    """
+    if output_path is None:
+        return
+    try:
+        Path(output_path).unlink(missing_ok=True)
+    except OSError as exc:
+        # 清理失败不该盖住真正的转换异常，记一笔就够了。
+        logger.debug(f"清理半成品 .docx 失败（{output_path}）：{exc}")
 
 
 def _run_command(command: list[str], *, timeout: int) -> None:

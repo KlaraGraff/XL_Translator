@@ -2657,6 +2657,35 @@ def _backup_settings_file(stem: str = "settings_unusable") -> str:
     return str(target)
 
 
+def _move_away_settings_dir(*, force: bool = False) -> str:
+    """Move a directory occupying settings.json aside; return its new path.
+
+    A directory where the file belongs is not a configuration this app can
+    read: a sync tool (iCloud / OneDrive / 坚果云) resolving a conflict, or a
+    crashed write, can leave one at the exact path.  It must not become a dead
+    end — it is moved into the backups directory so the user can still look at
+    whatever ended up in there, and only removed when it cannot be moved.
+    """
+    target_dir = BACKUPS_DIR / "settings"
+    target = target_dir / _timestamped_backup_name("settings_unusable_dir", "")
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(SETTINGS_PATH), str(target))
+        return str(target)
+    except OSError as exc:
+        # 挪不动多半是权限或文件被占用。没经用户同意不能删（里面可能有东西），
+        # 只有在「重置设置」这个明确的操作里才删掉它让路。
+        if not force:
+            logger.warning(f"settings.json 的占位目录无法移到备份目录：{exc}")
+            raise SettingsSchemaError(
+                f"设置文件的位置被一个文件夹占住，且无法移到 {BACKUPS_DIR / 'settings'}。该文件夹已原样保留；"
+                "如确定不需要，请在「设置 → 数据与维护」中点击「重置设置」。"
+            ) from exc
+        logger.warning(f"settings.json 的占位目录无法移到备份目录，按显式重置删除：{exc}")
+        shutil.rmtree(SETTINGS_PATH, ignore_errors=True)
+        return ""
+
+
 def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     """Classify settings.json without changing it.
 
@@ -2666,7 +2695,9 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
                  over as-is and restamped on the next write.  A version bump
                  on its own is not a reason to refuse the user's data.
     ``unusable`` invalid content, or written by a newer build (a downgrade) —
-                 backed up, then replaced.
+                 backed up, then replaced.  A directory sitting at the path
+                 belongs here too: it holds no configuration to protect, only
+                 a placeholder the rebuild has to move out of the way.
     ``unreadable`` the file is there but the OS would not hand it over: a
                  permission problem, or Windows AV/backup software holding it
                  open.  Told apart from ``unusable`` on purpose — the content
@@ -2675,6 +2706,10 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     """
     if not SETTINGS_PATH.exists():
         return "missing", None, None
+    if SETTINGS_PATH.is_dir():
+        # 目录不会自己变成可读的文件，也不能被 read_bytes 读出来。归到
+        # unusable，重置时才能先把占位目录挪走再写（审计 低-3）。
+        return "unusable", None, None
     try:
         raw_bytes = SETTINGS_PATH.read_bytes()
     except OSError as exc:
@@ -2719,21 +2754,28 @@ def _recreate_settings_file(
     indistinguishable from deleting the user's configuration.  If the copy
     cannot be made the rebuild is refused — except under ``force``, which is
     the maintenance page's explicit reset, where discarding the old file is
-    the whole point of the button the user pressed.
+    the whole point of the button the user pressed.  A directory occupying the
+    path cannot be copied at all: it holds no configuration, so it is moved
+    into the backups directory first and the rebuild carries on.
     """
     backup_path = ""
-    try:
-        backup_path = _backup_settings_file()
-    except OSError as exc:
-        if not force:
-            logger.warning(f"settings.json 备份失败：{exc}")
-            raise SettingsSchemaError(
-                f"无法读取设置文件，也未能备份到 {BACKUPS_DIR / 'settings'}。原文件已原样保留；如确定放弃该文件，"
-                "请在「设置 → 数据与维护」中点击「重置设置」。"
-            ) from exc
-        # An explicit reset says the old file is expendable, so a failed
-        # backup is not a reason to leave the app unable to save anything.
-        logger.warning(f"settings.json 备份失败，按显式重置继续重建：{exc}")
+    if SETTINGS_PATH.is_dir():
+        # 目录占住路径时不能走 copy2：复制不了，而 os.replace 到目录必然
+        # 抛 IsADirectoryError。先把占位目录挪走，重置才有出路（审计 低-3）。
+        backup_path = _move_away_settings_dir(force=force)
+    else:
+        try:
+            backup_path = _backup_settings_file()
+        except OSError as exc:
+            if not force:
+                logger.warning(f"settings.json 备份失败：{exc}")
+                raise SettingsSchemaError(
+                    f"无法读取设置文件，也未能备份到 {BACKUPS_DIR / 'settings'}。原文件已原样保留；如确定放弃该文件，"
+                    "请在「设置 → 数据与维护」中点击「重置设置」。"
+                ) from exc
+            # An explicit reset says the old file is expendable, so a failed
+            # backup is not a reason to leave the app unable to save anything.
+            logger.warning(f"settings.json 备份失败，按显式重置继续重建：{exc}")
     fresh = AppSettings()
     _write_text_atomic(SETTINGS_PATH, fresh.model_dump_json(indent=2))
     logger.warning(
@@ -2815,13 +2857,76 @@ def carry_settings_baseline(source: AppSettings, target: AppSettings) -> AppSett
 _SETTINGS_FIELD_DELETED = "delete"
 _SETTINGS_FIELD_SET = "set"
 _SETTINGS_FIELD_MERGE = "merge"
+_SETTINGS_FIELD_LIST = "list"
+_SETTINGS_LIST_UPSERT = "upsert"
+_SETTINGS_LIST_ADDED = "added"
+_SETTINGS_LIST_REMOVED = "removed"
+
+
+def _keyed_settings_list(value: object) -> dict[str, dict] | None:
+    """Index a list of settings objects by their stable ``id``.
+
+    ``engine.connections`` and the three role pools are lists whose entries
+    each carry an id, so they can be merged entry by entry.  Anything else — a
+    list of strings, an entry without an id, a duplicate id — returns ``None``
+    and keeps the whole-list replacement these fields have always had.
+    """
+    if not isinstance(value, list):
+        return None
+    indexed: dict[str, dict] = {}
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        entry_id = str(entry.get("id") or "").strip()
+        if not entry_id or entry_id in indexed:
+            return None
+        indexed[entry_id] = entry
+    return indexed
+
+
+def _keyed_list_delta(baseline: list, updated: list) -> dict | None:
+    """Describe a change to an id-keyed list one entry at a time.
+
+    Returns ``None`` when the entries cannot be matched up by id (see
+    ``_keyed_settings_list``) or when their relative order changed: entry 0 of
+    a connection pool *is* the primary, so a reorder is a whole-pool edit and
+    must keep replacing the list wholesale.
+    """
+    old_index = _keyed_settings_list(baseline)
+    new_index = _keyed_settings_list(updated)
+    if old_index is None or new_index is None:
+        return None
+    if [key for key in old_index if key in new_index] != [
+        key for key in new_index if key in old_index
+    ]:
+        return None
+    upsert: dict[str, dict] = {}
+    for key, entry in new_index.items():
+        if key in old_index:
+            changed = _settings_delta(old_index[key], entry)
+            if changed:
+                upsert[key] = changed
+        else:
+            upsert[key] = _settings_delta({}, entry)
+    return {
+        _SETTINGS_LIST_UPSERT: upsert,
+        # 新增条目连同它在这份快照里的位置一起记：已有条目之间的相对顺序变了
+        # 上面已经退回整份替换，这里只需把新增的插回调用方看到的那一处。
+        _SETTINGS_LIST_ADDED: [
+            [key, index] for index, key in enumerate(new_index) if key not in old_index
+        ],
+        _SETTINGS_LIST_REMOVED: [key for key in old_index if key not in new_index],
+    }
 
 
 def _settings_delta(baseline: dict, updated: dict) -> dict:
     """Describe what changed between two settings snapshots.
 
     Entries are tagged rather than stored bare so a nested change can be told
-    apart from a whole-value replacement that happens to be a dict.
+    apart from a whole-value replacement that happens to be a dict.  Lists of
+    id-keyed objects are described entry by entry for the same reason: a
+    connectivity test holds its snapshot across a network round trip, and a
+    whole-list replacement would revert an edit made to another entry meanwhile.
     """
     delta: dict[str, tuple[str, object]] = {}
     for key, new_value in updated.items():
@@ -2833,12 +2938,63 @@ def _settings_delta(baseline: dict, updated: dict) -> dict:
             nested = _settings_delta(old_value, new_value)
             if nested:
                 delta[key] = (_SETTINGS_FIELD_MERGE, nested)
+        elif (
+            isinstance(new_value, list)
+            and isinstance(old_value, list)
+            and new_value != old_value
+        ):
+            per_entry = _keyed_list_delta(old_value, new_value)
+            if per_entry is None:
+                delta[key] = (_SETTINGS_FIELD_SET, new_value)
+            elif (
+                per_entry[_SETTINGS_LIST_UPSERT]
+                or per_entry[_SETTINGS_LIST_ADDED]
+                or per_entry[_SETTINGS_LIST_REMOVED]
+            ):
+                delta[key] = (_SETTINGS_FIELD_LIST, per_entry)
         elif old_value != new_value:
             delta[key] = (_SETTINGS_FIELD_SET, new_value)
     for key in baseline:
         if key not in updated:
             delta[key] = (_SETTINGS_FIELD_DELETED, None)
     return delta
+
+
+def _apply_keyed_list_delta(target: list, delta: dict) -> list:
+    """Replay per-entry edits onto the list as it stands in the file.
+
+    An entry this caller never touched keeps whatever a concurrent writer put
+    there, and so does the order: a reorder is a whole-pool edit and arrives
+    as a plain SET, so the order on disk is the newest one anybody expressed.
+    An entry this caller edited before someone else deleted it stays deleted —
+    resurrecting it would bring back a connection the user removed.
+    """
+    index = _keyed_settings_list(target)
+    if index is None:
+        return list(target)
+    added = [str(entry[0]) for entry in delta.get(_SETTINGS_LIST_ADDED) or ()]
+    for entry_id, entry_delta in (delta.get(_SETTINGS_LIST_UPSERT) or {}).items():
+        current = index.get(entry_id)
+        if current is None:
+            if entry_id not in added:
+                continue
+            current = {}
+        index[entry_id] = _apply_settings_delta(current, entry_delta)
+    for entry_id in delta.get(_SETTINGS_LIST_REMOVED) or ():
+        index.pop(entry_id, None)
+    order = [str(entry.get("id") or "").strip() for entry in target]
+    order = [entry_id for entry_id in order if entry_id in index]
+    # 新增的按调用方那一份里的位置插回去。``add_role_connection`` 是追加，所以
+    # 位置就是末尾；导入配置可能插在中间，照它自己看到的位置放，界面上那一份
+    # 才不会跟盘上对不上。位置越靠后越晚插，前面的插入不会挤掉后面的位置。
+    for entry_id, wanted in sorted(
+        ((item[0], item[1]) for item in delta.get(_SETTINGS_LIST_ADDED) or ()),
+        key=lambda item: int(item[1]),
+    ):
+        if entry_id not in index:
+            continue
+        order.insert(min(int(wanted), len(order)), entry_id)
+    return [index[entry_id] for entry_id in order]
 
 
 def _apply_settings_delta(target: dict, delta: dict) -> dict:
@@ -2851,6 +3007,12 @@ def _apply_settings_delta(target: dict, delta: dict) -> dict:
             current = merged.get(key)
             merged[key] = _apply_settings_delta(
                 current if isinstance(current, dict) else {},
+                value,
+            )
+        elif action == _SETTINGS_FIELD_LIST:
+            current = merged.get(key)
+            merged[key] = _apply_keyed_list_delta(
+                current if isinstance(current, list) else [],
                 value,
             )
         else:

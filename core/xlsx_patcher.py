@@ -1610,17 +1610,15 @@ def _process_sheet(
                 allowed_coordinates is None
                 or f"{_column_letter(col_index)}{row_num}" in allowed_coordinates
             )
-            # allowed_coordinates 非空即补译模式。公式格的产品约定是「译文以值
-            # 覆盖公式」（原公式在「_原文」分表和原始文件里都完好），所以「公式
-            # 显示值回填」开着时补译与全量同一条规则：按显示值命中译文就整格覆盖
-            # 成静态双语文本。只有回填关闭才保护公式——覆盖率层（excel_coverage.
-            # _classify_excel_cell）本该已把公式格挡在坐标集合外，这里再兜一层：
-            # 任何一层的坐标计算算错，都不该把 <f> 删掉换成静态译文。
-            if (
-                allowed_coordinates is not None
-                and formula_el is not None
-                and not formula_display_value_backfill
-            ):
+            # 公式格的产品约定是「译文以值覆盖公式」（原公式在「_原文」分表和
+            # 原始文件里都完好）：「公式显示值回填」开着时全量与补译同一条规则，
+            # 按显示值命中译文就整格覆盖成静态双语文本。回填关闭才保护公式，而
+            # 这一格根本不该有原文——_resolve_source_text 已经返回 None，抽取端
+            # （TaskRunner._collect_texts）和补译计划（excel_coverage 的
+            # _classify_excel_cell）也都是「公式源码不送翻」。这里再按坐标兜一层，
+            # 防止将来把上面的判定改回去：任何一层算错，都不该把 <f> 删掉换成
+            # 静态译文。
+            if formula_el is not None and not formula_display_value_backfill:
                 position_allowed = False
             mutation = (
                 _plan_cell_mutation(
@@ -1893,7 +1891,12 @@ def _resolve_source_text(
             return None
         return _cell_static_text(cell, shared_strings)
     if not formula_display_value_backfill:
-        return "=" + (formula_el.text or "")
+        # 回填关闭 = 用户要保住公式。这一格的「文本」只剩公式源码，不是正文——
+        # 抽取端（TaskRunner._collect_texts）和补译计划（excel_coverage 的
+        # _classify_excel_cell）都按「公式源码不送翻」跳过它，写入端也不能把它
+        # 拼成 "=公式源码" 交给 _plan_cell_mutation：那串一旦命中译文（旧词条、
+        # 别处同名的文本），整格会被换成静态文本，<f> 直接丢掉。
+        return None
     # 回填模式下取的是公式的显示值——算出来是 #N/A 的公式格同理不能动。
     if _is_error_cell(cell):
         return None

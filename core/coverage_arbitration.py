@@ -47,6 +47,10 @@ TRUST_OVER_CAP = "over_cap"
 TRUST_MODEL = "model_equivalent"
 RETRANSLATE_MODEL = "model_not_equivalent"
 RETRANSLATE_UNCERTAIN = "model_uncertain"
+# 「原文」和「译文」两行一字不差：同字母语言（英译德、英译法）里拆分启发式会把两行
+# 原文当成「原文＋译文」配成对，而模型被问「这两句意思一样吗」会如实答一样——
+# 这种格子必须在送模型之前就打回去补译，否则永远补不上。
+RETRANSLATE_IDENTICAL = "identical_lines"
 
 VERDICT_EQUIVALENT = "equivalent"
 VERDICT_NOT_EQUIVALENT = "not_equivalent"
@@ -154,6 +158,9 @@ def review_coverage_pairs(
     reviews: list[PairReview] = []
     needs_model: list[CoverageUnit] = []
     for unit in candidates:
+        if _is_untranslated_copy(unit):
+            reviews.append(PairReview(unit=unit, trusted=False, reason=RETRANSLATE_IDENTICAL))
+            continue
         reason = _cheap_verdict(unit, known)
         if reason is not None:
             reviews.append(PairReview(unit=unit, trusted=True, reason=reason))
@@ -277,6 +284,20 @@ def _cheap_verdict(unit: CoverageUnit, known: dict[str, str]) -> str | None:
         return TRUST_KNOWN_TRANSLATION
 
     return None
+
+
+def _is_untranslated_copy(unit: CoverageUnit) -> bool:
+    """两行一字不差、而且是一句真正的话（不是型号、单位、简称这类本来就不用翻的）。"""
+    source = clean_coverage_text(unit.source_text)
+    candidate = clean_coverage_text(unit.target_text)
+    if not source or not _same_translation(source, candidate):
+        return False
+    if looks_like_short_target_token(candidate):
+        return False
+    # 至少两个含小写字母的词：「Fire door」「Total amount」算；「Siemens」「CCTV」
+    # 「DN100」这类专名和代号在译文里本来就可能原样保留，交给模型去判。
+    words = [word for word in candidate.split() if any(char.islower() for char in word)]
+    return len(words) >= 2
 
 
 def _same_translation(left: str, right: str) -> bool:

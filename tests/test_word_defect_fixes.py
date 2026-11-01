@@ -409,6 +409,114 @@ class WordFrontMatterProtectionTests(unittest.TestCase):
             out_doc = Document(str(out_path))
             self.assertEqual(out_doc.paragraphs[0].text, "1. Project cover list entry")
 
+    def test_numbering_preprocessing_keeps_front_matter_protected(self) -> None:
+        """翻译链路的预处理入口同样受保护边界约束。
+
+        `write_bilingual_docx` 拿到保护边界只管住了写盘这一步，但真正跑在抽取之前的
+        `_prepare_word_source_for_translation` 先调 `normalize_docx_automatic_numbering`
+        对全文扁平化，抽取和写回读的都是那份产物——封面上的「1. Project cover list
+        entry」就是这么来的，`numPr` 也已经换成了抑制编号。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "front_matter.docx"
+            doc = Document()
+            _set_num_id_9_level(doc, number_format="decimal", level_text_value="%1.")
+            cover = doc.add_paragraph("Project cover list entry")
+            _set_num_pr(cover)
+            doc.add_paragraph("第一章 工程概况")
+            body = doc.add_paragraph("Body list entry")
+            _set_num_pr(body)
+            doc.save(source)
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps",
+                return_value=WordConversionResult(path=source, method="本地 Word"),
+            ):
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                    protect_front_matter=True,
+                )
+
+            try:
+                out_doc = Document(str(prepared.path))
+                protected, _heading, translated_body = out_doc.paragraphs[:3]
+
+                self.assertEqual(protected.text, "Project cover list entry")
+                self.assertEqual(
+                    _paragraph_num_id(protected),
+                    "9",
+                    "受保护段落的 numPr 被删掉/改成抑制编号——那也是一次改写",
+                )
+                # 保护边界之外仍按原设计扁平化。
+                self.assertEqual(translated_body.text, "2. Body list entry")
+            finally:
+                for temp_path in prepared.temp_paths:
+                    Path(temp_path).unlink(missing_ok=True)
+
+    def test_numbering_preprocessing_keeps_protected_cover_table_untouched(self) -> None:
+        """封面表格里的编号段落同样在保护范围内。
+
+        封面常用表格排版，而表格段落和正文段落是两套遍历；只保护正文段落的话，
+        封面表格里的编号仍会被扁平化。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "front_matter_table.docx"
+            doc = Document()
+            _set_num_id_9_level(doc, number_format="decimal", level_text_value="%1.")
+            cover = doc.add_paragraph("Project cover list entry")
+            _set_num_pr(cover)
+            cell_paragraph = doc.add_table(rows=1, cols=1).rows[0].cells[0].paragraphs[0]
+            cell_paragraph.add_run("Cover table entry")
+            _set_num_pr(cell_paragraph)
+            doc.add_paragraph("第一章 工程概况")
+            body = doc.add_paragraph("Body list entry")
+            _set_num_pr(body)
+            doc.save(source)
+
+            prepared = _prepare_word_source_for_translation(
+                source,
+                use_native_preprocessing=False,
+                protect_front_matter=True,
+            )
+            try:
+                out_doc = Document(str(prepared.path))
+                protected_cell = out_doc.tables[0].rows[0].cells[0].paragraphs[0]
+                self.assertEqual(protected_cell.text, "Cover table entry")
+                self.assertEqual(_paragraph_num_id(protected_cell), "9")
+                # 表格段落也参与编号计数，正文序号不能因此从头开始。
+                self.assertEqual(out_doc.paragraphs[2].text, "3. Body list entry")
+            finally:
+                for temp_path in prepared.temp_paths:
+                    Path(temp_path).unlink(missing_ok=True)
+
+    def test_numbering_preprocessing_still_flattens_without_protection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "front_matter.docx"
+            doc = Document()
+            _set_num_id_9_level(doc, number_format="decimal", level_text_value="%1.")
+            cover = doc.add_paragraph("Project cover list entry")
+            _set_num_pr(cover)
+            doc.add_paragraph("第一章 工程概况")
+            doc.save(source)
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps",
+                return_value=WordConversionResult(path=source, method="本地 Word"),
+            ):
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                    protect_front_matter=False,
+                )
+
+            try:
+                out_doc = Document(str(prepared.path))
+                self.assertEqual(out_doc.paragraphs[0].text, "1. Project cover list entry")
+            finally:
+                for temp_path in prepared.temp_paths:
+                    Path(temp_path).unlink(missing_ok=True)
+
 
 class WordTableCellReplaceTests(unittest.TestCase):
     """4.5：replace_only 用 cell.text 赋值会压平整格。"""
@@ -1498,6 +1606,51 @@ class WordNumberingPreprocessSelectionTests(unittest.TestCase):
 
             native_preprocess.assert_called_once()
             self.assertEqual(prepared.numbering_method, "本地 Word")
+
+    def test_failed_preprocessing_still_hands_back_its_temp_paths(self) -> None:
+        """预处理中途抛出时，已经生成的临时 docx 必须被删掉。
+
+        ``_prepare_word_source_for_translation`` 原来把 temp_paths 攒在局部，只有
+        正常 return 后调用方才拿得到、才登记得进 ``converted_temp_paths``。于是
+        「.doc 已经转成 docx，接着归一化再失败」这条路，转出来的那份 docx 谁都
+        没登记过，任务结束时的 finally 也清不到，永远留在系统临时目录。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            work = root / "tmp"
+            work.mkdir()
+            source = root / "legacy.doc"
+            source.write_bytes(b"\xd0\xcf\x11\xe0 fake legacy doc")
+
+            def _converted_strategy(doc_path: Path) -> Path:
+                # 模拟真实的转换策略：真的写出一份合法 docx，后面的步骤才失败。
+                output_path = Path(work) / "converted.docx"
+                document = Document()
+                document.add_paragraph("转换出来的正文")
+                document.save(output_path)
+                return output_path
+
+            with (
+                patch("core.word_task_runner.convert_doc_to_docx") as convert_doc,
+                patch(
+                    "core.word_task_runner.normalize_docx_automatic_numbering",
+                    side_effect=OSError("磁盘满了"),
+                ),
+            ):
+                convert_doc.return_value = WordConversionResult(
+                    path=_converted_strategy(source),
+                    method="本地 Word",
+                )
+                with self.assertRaises(OSError):
+                    _prepare_word_source_for_translation(
+                        source,
+                        use_native_preprocessing=False,
+                    )
+
+            self.assertFalse(
+                (work / "converted.docx").exists(),
+                "预处理抛出后，先前生成的临时 docx 没人回收",
+            )
 
     def test_style_inherited_numbering_reference_tries_native_preprocessing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

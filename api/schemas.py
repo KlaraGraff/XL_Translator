@@ -230,7 +230,7 @@ class TmEntryUpdatePayload(BaseModel):
     source_text: str = Field(min_length=1)
     target_text: str = Field(min_length=1)
     sync_reverse: bool = False
-    # None 表示不改；记忆库页不再有「固定」概念，从页面编辑固定词条时带 allow_pinned。
+    # None 表示不改；记忆库页编辑固定词条时，用户确认过才带 allow_pinned=true。
     note: str | None = Field(default=None, max_length=200)
     usage: Literal["", "always", "scene", "segment"] | None = None
     scope: str | None = Field(default=None, max_length=100)

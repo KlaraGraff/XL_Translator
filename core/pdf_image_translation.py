@@ -4732,10 +4732,18 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         record.review_passed_page_count = sum(
             1 for page in record.pages if page.review_status == "passed"
         )
+        # 「审核修复页」要的是「审核模型至少拒过一次稿、最终通过了」。不能用
+        # final_candidate_attempt > 1 判断：那个数还是共用的生成轮次，生成失败或
+        # 质检不过导致的重跑会被当成审核的功劳。候选记录里 review_status 为
+        # "failed" 才是审核真的判过不通过（请求出错那条路写的是 "error"）。
         record.review_repaired_page_count = sum(
             1
             for page in record.pages
-            if page.review_status == "passed" and page.final_candidate_attempt > 1
+            if page.review_status == "passed"
+            and any(
+                isinstance(artifact, dict) and artifact.get("review_status") == "failed"
+                for artifact in page.candidate_artifacts
+            )
         )
         record.review_failed_page_count = sum(
             1 for page in record.pages if page.review_status == "failed"
@@ -4754,6 +4762,9 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                 or page.emergency_ratio_normalized
             )
         )
+        # 审核重试次数只认真正送审的轮次（review_attempts 每送审一次 +1）。以前这里
+        # 和 report.retry_count 共用 attempts：一页因为生成失败或质检不过重跑一次，
+        # 审核模型明明只跑了 1 次、一次就通过，报告却写「审核重试 1 次」。
         record.review_retry_count = sum(max(0, page.review_attempts - 1) for page in record.pages)
         record.review_minor_suggestion_count = sum(
             len(page.review_minor_suggestions) for page in record.pages
@@ -5290,7 +5301,10 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
                     # 别的页刚确认审核模型不收图：这一页（包括重试中的）不再送审。
                     review_enabled = False
                 if review_enabled and candidate_path is not None and candidate_artifact is not None:
-                    page_record.review_attempts = attempt
+                    # 审核轮次必须自己计数，不能拿 attempt：attempt 是生成、质检、审核
+                    # 共用的，生成失败或质检不过导致的重跑也会让它 +1，把它当成审核
+                    # 轮次，报告里就出现「审核重试 1 次」而审核模型其实只跑了一次。
+                    page_record.review_attempts += 1
                     self._begin_page_review(attempt)
                     review_request_error: Exception | None = None
                     try:

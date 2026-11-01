@@ -40,7 +40,7 @@ from core.output_name_translation import (
 from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
-from core.coverage_arbitration import RETRANSLATE_MODEL
+from core.coverage_arbitration import RETRANSLATE_IDENTICAL, RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
 from core.excel_coverage import (
     build_excel_coverage_plan,
@@ -3729,6 +3729,7 @@ class TaskRunner(BaseTaskRunner):
         for review in outcome.retranslated:
             unit = review.unit
             judged = review.reason == RETRANSLATE_MODEL
+            identical = review.reason == RETRANSLATE_IDENTICAL
             if judged:
                 # 模型判了"这一格里的译文说的是另一回事"：程序只能在原有内容后面再补
                 # 一条译文，没法替用户判断旧的那条是错配、是从别的格子复制过来的、
@@ -3747,7 +3748,9 @@ class TaskRunner(BaseTaskRunner):
                     "location": unit.location,
                     "snippet": _build_excel_source_excerpt(unit.source_text),
                     "problem": (
-                        "同一单元格中的译文与该单元格原文不对应"
+                        "同一单元格中的两行完全相同，疑似未翻译"
+                        if identical
+                        else "同一单元格中的译文与该单元格原文不对应"
                         if judged
                         else "无法判定同一单元格中的译文是否与该单元格原文对应"
                     ),
@@ -3758,8 +3761,9 @@ class TaskRunner(BaseTaskRunner):
                         )
                         if judged
                         else (
-                            "未取得判定结果，已从严按未翻译处理并补上译文，"
-                            "原有内容保持不变。"
+                            "已按未翻译处理并补上译文，原有内容保持不变。"
+                            if identical
+                            else "未取得判定结果，已从严按未翻译处理并补上译文，原有内容保持不变。"
                         )
                     ),
                     "severity": "needs_review" if judged else "resolved",

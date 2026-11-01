@@ -20,6 +20,7 @@ from docx import Document
 from core import coverage_review, word_task_runner
 
 from core.coverage_arbitration import (
+    RETRANSLATE_IDENTICAL,
     RETRANSLATE_MODEL,
     RETRANSLATE_UNCERTAIN,
     TRUST_KNOWN_TRANSLATION,
@@ -820,6 +821,39 @@ class BatchRequestTests(unittest.TestCase):
         self.assertNotEqual(
             prompt, word_task_runner._build_semantic_arbitration_prompt()
         )
+
+
+class IdenticalLinesTests(unittest.TestCase):
+    """同字母语言里两行原文被配成对、而且一字不差：不问模型，直接打回补译。"""
+
+    def test_identical_sentence_is_retranslated_without_the_model(self) -> None:
+        seen: list[list[ArbitrationPair]] = []
+
+        outcome = review_coverage_pairs(
+            [_pair("Fire door", "Fire door"), _pair("Total amount", "total  amount")],
+            # 模型被问「意思一样吗」只会答一样，所以不能交给它。
+            arbitrate=_batch_arbitrate("equivalent", seen=seen),
+        )
+
+        self.assertEqual(seen, [])
+        self.assertEqual(
+            [review.reason for review in outcome.retranslated],
+            [RETRANSLATE_IDENTICAL, RETRANSLATE_IDENTICAL],
+        )
+
+    def test_identical_lines_are_retranslated_even_without_a_model(self) -> None:
+        outcome = review_coverage_pairs([_pair("Steel frame", "Steel frame")], arbitrate=None)
+
+        self.assertEqual(outcome.retranslated[0].reason, RETRANSLATE_IDENTICAL)
+
+    def test_names_and_codes_that_stay_the_same_are_not_flagged(self) -> None:
+        # 专名、简称、型号在译文里本来就可能原样保留。
+        outcome = review_coverage_pairs(
+            [_pair("Siemens", "Siemens"), _pair("CCTV", "CCTV"), _pair("DN100", "DN100")],
+            arbitrate=None,
+        )
+
+        self.assertEqual(outcome.retranslated, [])
 
 
 if __name__ == "__main__":

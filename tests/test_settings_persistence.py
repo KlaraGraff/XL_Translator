@@ -279,6 +279,111 @@ class SettingsPersistenceTests(unittest.TestCase):
             )
             self.assertTrue(Path(recovery["settings"]["backup_path"]).is_file())
 
+    def test_a_directory_occupying_settings_json_never_blocks_the_reset(self) -> None:
+        """目录占住 settings.json 时，显式重置仍必须留下一条出路。
+
+        A sync tool resolving a conflict can leave a directory at the exact
+        path: ``read_bytes`` fails, so it is classified ``unusable``, and the
+        rebuild used to die in ``os.replace`` with IsADirectoryError — the
+        maintenance page's reset was blocked too, leaving no way out at all.
+        The placeholder is now moved into the backups directory first.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            app_data_dir = Path(tmp)
+            settings_path = app_data_dir / "settings.json"
+            settings_path.mkdir(parents=True)
+            (settings_path / "leftover.txt").write_text("占位", encoding="utf-8")
+
+            with _isolated_settings(settings_module, app_data_dir):
+                status_before = settings_module.get_settings_schema_status()
+                # A directory holds no configuration to protect, so it is not
+                # lumped in with a file that merely cannot be read right now.
+                self.assertEqual(status_before["state"], "unusable")
+                self.assertFalse(status_before["can_write"])
+
+                rebuilt = settings_module._recreate_settings_file(None, force=True)
+                status_after = settings_module.get_settings_schema_status()
+                recovery = settings_module.read_recovery_record()
+                loaded = settings_module.load_settings()
+                # The rebuilt file must accept writes straight away.
+                settings_module.save_settings(loaded)
+
+            self.assertTrue(settings_path.is_file())
+            self.assertEqual(status_after["state"], "current")
+            self.assertEqual(loaded.settings_version, rebuilt.settings_version)
+            self.assertEqual(loaded.target_lang, rebuilt.target_lang)
+
+            backup = Path(recovery["settings"]["backup_path"])
+            self.assertTrue(backup.is_dir())
+            self.assertEqual(
+                (backup / "leftover.txt").read_text(encoding="utf-8"), "占位"
+            )
+            self.assertEqual(list(app_data_dir.glob(".settings.json.*.tmp")), [])
+
+    def test_a_directory_that_cannot_be_moved_is_never_deleted_without_a_reset(self) -> None:
+        """挪不走的占位目录：没有显式重置就原样保留并报错，不能悄悄删掉。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            app_data_dir = Path(tmp)
+            settings_path = app_data_dir / "settings.json"
+            settings_path.mkdir(parents=True)
+            (settings_path / "leftover.txt").write_text("占位", encoding="utf-8")
+
+            with _isolated_settings(settings_module, app_data_dir), patch.object(
+                settings_module.shutil, "move", side_effect=PermissionError("locked")
+            ):
+                with self.assertRaises(settings_module.SettingsSchemaError):
+                    settings_module._recreate_settings_file(None)
+                self.assertTrue((settings_path / "leftover.txt").is_file())
+
+                # 用户点了「重置设置」才允许删掉它让路。
+                settings_module._recreate_settings_file(None, force=True)
+            self.assertTrue(settings_path.is_file())
+
+    def test_the_maintenance_reset_survives_a_directory_at_settings_json(self) -> None:
+        """维护页那颗「重置设置」按钮本身也必须能用（save_settings 的 force 路径）。
+
+        The button is not a synthetic internal call: it reaches the rebuild
+        through ``save_settings(..., replace_incompatible=True)``, which used
+        to raise the same IsADirectoryError.  Both doors have to open.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            app_data_dir = Path(tmp)
+            settings_path = app_data_dir / "settings.json"
+            settings_path.mkdir(parents=True)
+
+            with _isolated_settings(settings_module, app_data_dir):
+                settings_module.save_settings(
+                    AppSettings(custom_prompt="after-reset"),
+                    replace_incompatible=True,
+                )
+                persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+                status = settings_module.get_settings_schema_status()
+                recovery = settings_module.read_recovery_record()
+
+            self.assertTrue(settings_path.is_file())
+            self.assertEqual(persisted["custom_prompt"], "after-reset")
+            self.assertEqual(status["state"], "current")
+            self.assertTrue(Path(recovery["settings"]["backup_path"]).is_dir())
+
+    def test_startup_recovery_also_clears_a_directory_at_settings_json(self) -> None:
+        """启动自愈同样不能被占位目录挡住，否则应用一起来就废了。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            app_data_dir = Path(tmp)
+            settings_path = app_data_dir / "settings.json"
+            settings_path.mkdir(parents=True)
+
+            with _isolated_settings(settings_module, app_data_dir):
+                self.assertTrue(settings_module.recover_settings_file_if_needed())
+                self.assertEqual(
+                    settings_module.get_settings_schema_status()["state"], "current"
+                )
+                settings_module.save_settings(
+                    AppSettings(custom_prompt="written-after-recovery")
+                )
+                persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(persisted["custom_prompt"], "written-after-recovery")
+
     def test_newer_settings_are_backed_up_and_rebuilt(self) -> None:
         """A downgrade cannot read the future file, but must still let the user work."""
         with tempfile.TemporaryDirectory() as tmp:

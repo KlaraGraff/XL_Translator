@@ -724,6 +724,15 @@ table.review-tbl { table-layout: fixed; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 .ts-toast .toast { max-width: 100%; }
 .toast.error { border-color: var(--danger-l); color: var(--danger); }
+/* 行内操作（「撤销」）：文字在前，按钮贴右，整条仍是一行。不用 :has()，见 library.css 的说明。 */
+.toast.with-act { display: flex; align-items: center; gap: 10px; }
+.toast-act {
+  flex: none; border: 0; padding: 0; background: transparent; cursor: pointer;
+  color: var(--accent); font: inherit; font-size: 12px; font-weight: var(--fw-600);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.toast-act:hover { color: var(--accent-strong); }
+.toast.error .toast-act { color: var(--danger); }
 
 /* ========== 发布说明渲染（markdown.ts 的 .rn；设置页与更新卡片共用） ==========
    markdown.ts 只产出 h3 / p / ul / li / strong / code 六种节点，这里给全它们的样式。

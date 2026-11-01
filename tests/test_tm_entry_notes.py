@@ -306,5 +306,182 @@ class TmEntryNotesTests(unittest.TestCase):
             )
 
 
+class PinnedListFilterTests(unittest.TestCase):
+    """记忆库页「只看固定」：列表接口按 pinned 过滤，条数与分页都按过滤后的范围算。"""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.db_path = self.root / "tm.db"
+        for patcher in (
+            patch.object(tm_manager, "DB_PATH", self.db_path),
+            patch.object(tm_manager, "BACKUPS_DIR", self.root / "backups"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        tm_manager.init_db()
+
+    def seed(self) -> None:
+        for source, target in (("甲", "A"), ("乙方", "B"), ("丙", "C")):
+            tm_manager.insert_manual_entry_detailed(source, target, "zh-fr")
+        rows = {row["source_text"]: row["id"] for row in tm_manager.search_entries("zh-fr")[0]}
+        tm_manager.pin_entry(rows["甲"])
+        tm_manager.pin_entry(rows["丙"])
+
+    def test_search_entries_filters_by_pinned(self) -> None:
+        self.seed()
+        pinned_rows, pinned_total = tm_manager.search_entries("zh-fr", pinned=True)
+        unpinned_rows, unpinned_total = tm_manager.search_entries("zh-fr", pinned=False)
+        all_rows, all_total = tm_manager.search_entries("zh-fr")
+
+        # 顺序是 updated_at DESC, id DESC；同一秒内入库的行之间不保证先后，只比集合。
+        self.assertEqual((pinned_total, {row["source_text"] for row in pinned_rows}), (2, {"甲", "丙"}))
+        self.assertEqual((unpinned_total, {row["source_text"] for row in unpinned_rows}), (1, {"乙方"}))
+        # 不传 pinned 时保持原样，不按固定状态过滤。
+        self.assertEqual((all_total, len(all_rows)), (3, 3))
+
+    def test_pinned_filter_combines_with_keyword_and_paging(self) -> None:
+        self.seed()
+        rows, total = tm_manager.search_entries("zh-fr", "甲", pinned=True)
+        self.assertEqual((total, [row["source_text"] for row in rows]), (1, ["甲"]))
+        rows, total = tm_manager.search_entries("zh-fr", "乙", pinned=True)
+        self.assertEqual((total, rows), (0, []))
+        page_two, total = tm_manager.search_entries("zh-fr", pinned=True, page=2, page_size=1)
+        self.assertEqual((total, len(page_two)), (2, 1))
+
+    def test_list_route_accepts_the_pinned_query_parameter(self) -> None:
+        from fastapi.testclient import TestClient
+
+        import settings as settings_module
+        from api.app import create_app
+
+        self.seed()
+        with (
+            patch.object(settings_module, "APP_DATA_DIR", self.root),
+            patch.object(settings_module, "SETTINGS_PATH", self.root / "settings.json"),
+            patch.object(settings_module, "KEYS_PATH", self.root / "keys.json"),
+        ):
+            client = TestClient(create_app())
+            pinned = client.get("/api/tm/entries", params={"lang_pair": "zh-fr", "pinned": "true"}).json()
+            unpinned = client.get("/api/tm/entries", params={"lang_pair": "zh-fr", "pinned": "false"}).json()
+            everything = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()
+
+        self.assertEqual((pinned["total"], {row["source_text"] for row in pinned["entries"]}), (2, {"甲", "丙"}))
+        self.assertEqual((unpinned["total"], {row["source_text"] for row in unpinned["entries"]}), (1, {"乙方"}))
+        self.assertEqual(everything["total"], 3)
+        # 「只看固定」计数不跟着筛选走：它标的是当前范围内的固定总数。
+        self.assertEqual(pinned["pin_count"], {"pinned": 2, "unpinned": 1})
+        self.assertEqual(unpinned["pin_count"], {"pinned": 2, "unpinned": 1})
+
+
+class PinnedInteractionFlowTests(unittest.TestCase):
+    """按样张状态①–④ 走一遍页面会发出的请求序列（界面代码本身在 test_tm_pin_ui_contracts）。"""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for patcher in (
+            patch.object(tm_manager, "DB_PATH", self.root / "tm.db"),
+            patch.object(tm_manager, "BACKUPS_DIR", self.root / "backups"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        tm_manager.init_db()
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+
+        import settings as settings_module
+        from api.app import create_app
+
+        for patcher in (
+            patch.object(settings_module, "APP_DATA_DIR", self.root),
+            patch.object(settings_module, "SETTINGS_PATH", self.root / "settings.json"),
+            patch.object(settings_module, "KEYS_PATH", self.root / "keys.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return TestClient(create_app())
+
+    def test_state_one_toggle_and_undo_put_the_entry_back(self) -> None:
+        client = self._client()
+        created = client.post(
+            "/api/tm/entries",
+            json={"source_text": "甲方", "target_text": "Party A", "lang_pair": "zh-fr"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        entry = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        self.assertEqual(entry["pinned"], 0)
+
+        # 点图钉 → 固定；提示条上的「撤销」就是再发一次相反的值。
+        client.post(f"/api/tm/entries/{entry['id']}/pin", json={"pinned": True})
+        row = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        self.assertEqual(row["pinned"], 1)
+        client.post(f"/api/tm/entries/{entry['id']}/pin", json={"pinned": False})
+        row = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        self.assertEqual(row["pinned"], 0)
+
+    def test_state_two_editing_a_pinned_entry_needs_allow_pinned(self) -> None:
+        client = self._client()
+        client.post("/api/tm/entries", json={"source_text": "基坑支护", "target_text": "foundation pit support", "lang_pair": "zh-fr"})
+        entry = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        client.post(f"/api/tm/entries/{entry['id']}/pin", json={"pinned": True})
+
+        body = {"source_text": "基坑支护", "target_text": "excavation support"}
+        # 确认框里的「继续编辑」之后才带 allow_pinned=true；不带时后端拒绝，固定也保留着。
+        refused = client.put(f"/api/tm/entries/{entry['id']}", json=body)
+        self.assertEqual(refused.status_code, 409, refused.text)
+        accepted = client.put(f"/api/tm/entries/{entry['id']}", json={**body, "allow_pinned": True})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        row = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        self.assertEqual((row["target_text"], row["pinned"]), ("excavation support", 1))
+
+    def test_state_three_deleting_a_pinned_entry_needs_allow_pinned(self) -> None:
+        client = self._client()
+        client.post("/api/tm/entries", json={"source_text": "甲方", "target_text": "Party A", "lang_pair": "zh-fr"})
+        entry = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"][0]
+        client.post(f"/api/tm/entries/{entry['id']}/pin", json={"pinned": True})
+
+        self.assertEqual(client.delete(f"/api/tm/entries/{entry['id']}", params={"allow_pinned": False}).status_code, 409)
+        self.assertEqual(client.delete(f"/api/tm/entries/{entry['id']}", params={"allow_pinned": True}).status_code, 200)
+        self.assertEqual(client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["total"], 0)
+
+    def test_state_four_bulk_delete_keeps_pinned_unless_allowed(self) -> None:
+        client = self._client()
+        for source, target in (("基坑支护", "foundation pit support"), ("甲方", "Party A"), ("乙方", "Party B")):
+            client.post("/api/tm/entries", json={"source_text": source, "target_text": target, "lang_pair": "zh-fr"})
+        rows = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"]
+        ids = [row["id"] for row in rows]
+        pinned_ids = [row["id"] for row in rows if row["source_text"] in {"基坑支护", "甲方"}]
+        client.post("/api/tm/entries/bulk/pin", json={"ids": pinned_ids, "pinned": True})
+
+        # 勾选框不勾：只删未固定的那条，固定的原样保留，和按钮上的「删除 1 条」一致。
+        kept = client.post("/api/tm/entries/bulk/delete", json={"ids": ids, "allow_pinned": False}).json()
+        self.assertEqual(kept["deleted"], 1)
+        self.assertEqual(kept["protected"], 2)
+        # 勾上之后固定的也一起删。
+        remaining = client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"]
+        rest = client.post(
+            "/api/tm/entries/bulk/delete",
+            json={"ids": [row["id"] for row in remaining], "allow_pinned": True},
+        ).json()
+        self.assertEqual(rest["deleted"], 2)
+        self.assertEqual(rest["protected"], 0)
+
+    def test_bulk_pin_and_unpin_from_the_action_bar(self) -> None:
+        client = self._client()
+        for source in ("甲", "乙方", "丙"):
+            client.post("/api/tm/entries", json={"source_text": source, "target_text": "x", "lang_pair": "zh-fr"})
+        ids = [row["id"] for row in client.get("/api/tm/entries", params={"lang_pair": "zh-fr"}).json()["entries"]]
+        client.post("/api/tm/entries/bulk/pin", json={"ids": ids, "pinned": True})
+        listed = client.get("/api/tm/entries", params={"lang_pair": "zh-fr", "pinned": "true"}).json()
+        self.assertEqual(listed["total"], 3)
+        client.post("/api/tm/entries/bulk/pin", json={"ids": ids[:2], "pinned": False})
+        listed = client.get("/api/tm/entries", params={"lang_pair": "zh-fr", "pinned": "true"}).json()
+        self.assertEqual((listed["total"], listed["pin_count"]["pinned"]), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

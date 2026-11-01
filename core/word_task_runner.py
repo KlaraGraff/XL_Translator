@@ -42,7 +42,7 @@ from core.output_metadata import (
     metadata_parameters,
     write_translation_metadata,
 )
-from core.coverage_arbitration import RETRANSLATE_MODEL
+from core.coverage_arbitration import RETRANSLATE_IDENTICAL, RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
 from core.translation_coverage import format_ignored_coverage_report
 from core.word_coverage import (
@@ -670,6 +670,7 @@ class WordTaskRunner(BaseTaskRunner):
         for review in outcome.retranslated:
             unit = review.unit
             judged = review.reason == RETRANSLATE_MODEL
+            identical = review.reason == RETRANSLATE_IDENTICAL
             if judged:
                 # 模型确实判了"旁边那条不是这一段的译文"：程序只能补一条新译文上去，
                 # 没法替用户判断旧的那条是错配、是别处漏过来的、还是压根不该在这儿。
@@ -689,7 +690,9 @@ class WordTaskRunner(BaseTaskRunner):
                     "section_path": unit.section_path or "正文",
                     "snippet": _build_source_excerpt(unit.source_text),
                     "problem": (
-                        "紧邻段落不是这一段的译文"
+                        "紧邻段落与本段完全相同，疑似未翻译"
+                        if identical
+                        else "紧邻段落不是这一段的译文"
                         if judged
                         else "无法判定紧邻段落是否为本段的译文"
                     ),
@@ -700,8 +703,9 @@ class WordTaskRunner(BaseTaskRunner):
                         )
                         if judged
                         else (
-                            "未取得判定结果，已从严按未翻译处理并补上译文，"
-                            "原有内容保持不变。"
+                            "已按未翻译处理并补上译文，原有内容保持不变。"
+                            if identical
+                            else "未取得判定结果，已从严按未翻译处理并补上译文，原有内容保持不变。"
                         )
                     ),
                     "severity": "needs_review" if judged else "resolved",
@@ -2712,6 +2716,7 @@ class WordTaskRunner(BaseTaskRunner):
                         settings.word_conversion.use_native_preprocessing
                     ),
                     allow_doc_fallback=self._allow_doc_fallback,
+                    protect_front_matter=self._protect_front_matter,
                 )
                 process_path = prepared.path
                 converted_temp_paths.extend(prepared.temp_paths)
@@ -4165,8 +4170,46 @@ def _prepare_word_source_for_translation(
     *,
     use_native_preprocessing: bool,
     allow_doc_fallback: bool = False,
+    # 默认按产品默认值（界面里「保护封面和目录」每次打开都是开着的，见
+    # api/surfaces/word.py 的 saved_request_defaults）。关掉这个选项的调用方必须显式传
+    # False——否则受保护的封面会被编号扁平化改写，跟没保护一样。
+    protect_front_matter: bool = True,
 ) -> _PreparedWordSource:
+    """预处理一份 Word 源文件，中途失败时把本次已生成的临时 docx 一并删掉。
+
+    临时文件是在 _build_prepared_word_source 里边生成边登记的，只有正常返回时
+    调用方（converted_temp_paths）才拿得到这份清单、在任务结束的 finally 里删除。
+    一旦中途抛出——最常见的是一条：.doc 已经转成 docx，接着编号预处理或归一化
+    失败——那一两份和原文档同量级的 docx 就再没有谁登记过，会一直留在系统临时
+    目录里。
+    """
     temp_paths: list[Path] = []
+    try:
+        return _build_prepared_word_source(
+            source_path,
+            use_native_preprocessing=use_native_preprocessing,
+            allow_doc_fallback=allow_doc_fallback,
+            temp_paths=temp_paths,
+            protect_front_matter=protect_front_matter,
+        )
+    except BaseException:
+        # 停止信号、Ctrl-C 也是中途抛出，同样得先回收再往外抛。
+        for temp_path in temp_paths:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug(f"清理预处理临时 Word 文件失败 {temp_path}：{exc}")
+        raise
+
+
+def _build_prepared_word_source(
+    source_path: Path,
+    *,
+    use_native_preprocessing: bool,
+    allow_doc_fallback: bool,
+    temp_paths: list[Path],
+    protect_front_matter: bool,
+) -> _PreparedWordSource:
     fallback_messages: list[str] = []
     process_path = source_path
     conversion_method = "not_required"
@@ -4210,7 +4253,12 @@ def _prepare_word_source_for_translation(
             fallback_messages.append(message)
             numbering_fallback_messages.append(message)
 
-    normalized = normalize_docx_automatic_numbering(process_path)
+    # 「保护封面和目录」也必须管到这一步：预处理产物就是抽取和写回读的那份源文件，
+    # 这里对全文扁平化等于在翻译之前就把封面/目录的自动编号改写成正文文字。
+    normalized = normalize_docx_automatic_numbering(
+        process_path,
+        protect_front_matter=protect_front_matter,
+    )
     process_path = normalized.path
     temp_paths.append(normalized.path)
     # 从 PDF 复制过来的段落里，句中折行的手动换行先换成空格，模型才拿得到整句
