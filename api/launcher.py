@@ -18,9 +18,27 @@ from core import engine_file, text_transport
 # How long uvicorn waits for open connections (mainly SSE streams) before it
 # closes them itself and runs the app's shutdown hook.
 GRACEFUL_SHUTDOWN_SECONDS = 10.0
+# The timeout ``TaskManager.shutdown`` gets from the lifespan hook
+# (``api/app.py`` passes no argument, so this is its default).  Runners delete
+# their own scratch state — the LibreOffice profile, ``word_translator_temp``,
+# the PDF page workspaces — while unwinding inside this window.
+TASK_UNWIND_SECONDS = 12.0
+# A few file writes after that (``mark_active_tasks_interrupted`` plus
+# ``flush_history``); ``api/app.py`` runs them under no timeout of their own,
+# so this is above all a safety band that keeps the outer force-exit deadline
+# from touching the inner one again.
+SHUTDOWN_MARGIN_SECONDS = 3.0
 # Last resort when the orderly shutdown itself wedges after the desktop shell
-# is already gone.
-WATCHDOG_FORCE_EXIT_SECONDS = 20.0
+# is already gone.  After a Force Quit the shell never gets to send SIGTERM, so
+# the chain above runs here instead, serially: this budget has to *cover* it,
+# exactly like ``SIDECAR_STOP_TIMEOUT`` in ``src-tauri/src/main.rs`` —
+# ① 10s drain + ② 12s unwind + ③ 3s bookkeeping = 25s.  Killing earlier cuts a
+# runner's ``finally`` in half, and then headless soffice plus the temp
+# directories outlive the engine.
+# Kept as a literal so the Rust mirror test can pick the number off this line;
+# both sides assert it still equals the sum of the three parts above, so
+# bumping any one part turns them red.
+WATCHDOG_FORCE_EXIT_SECONDS = 25.0
 # How long programs this engine started (LibreOffice, the ODA converter,
 # Tesseract, extension hosts) get to exit after a polite request before they
 # are killed.
@@ -145,8 +163,34 @@ def _shutdown_requester(server: uvicorn.Server, on_exit):
     return request
 
 
-def _start_parent_watchdog(server: uvicorn.Server, on_exit) -> None:
-    """Exit when a Tauri parent dies so a loopback sidecar cannot linger."""
+# How often the watchdog looks whether the orderly shutdown has already ended.
+WATCHDOG_POLL_SECONDS = 0.25
+
+
+def _wait_for_shutdown(stopped: threading.Event, deadline_seconds: float) -> bool:
+    """Block until the server loop has returned, at most ``deadline_seconds``.
+
+    Returns ``True`` when the unwind finished on its own and ``False`` when the
+    budget ran out first.  Sleeping the whole budget unconditionally would make
+    every Force Quit wait ``WATCHDOG_FORCE_EXIT_SECONDS`` even though the usual
+    case (no task running) is over in a few hundred milliseconds.
+    """
+    deadline = time.monotonic() + max(0.0, deadline_seconds)
+    while not stopped.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        stopped.wait(min(WATCHDOG_POLL_SECONDS, remaining))
+    return True
+
+
+def _start_parent_watchdog(server: uvicorn.Server, on_exit, stopped: threading.Event) -> None:
+    """Exit when a Tauri parent dies so a loopback sidecar cannot linger.
+
+    ``stopped`` is set by ``main`` once ``server.run`` has returned, i.e. after
+    uvicorn drained the connections and the app's lifespan ran
+    ``task_manager.shutdown`` (runners delete their scratch state there).
+    """
     raw_parent_pid = os.environ.get("TRANSLATOR_SIDECAR_PARENT_PID", "").strip()
     try:
         parent_pid = int(raw_parent_pid)
@@ -167,9 +211,13 @@ def _start_parent_watchdog(server: uvicorn.Server, on_exit) -> None:
         except Exception:
             pass
         server.should_exit = True
-        deadline = time.monotonic() + WATCHDOG_FORCE_EXIT_SECONDS
-        while time.monotonic() < deadline:
-            time.sleep(0.25)
+        # The budget covers the whole inner chain (drain → unwind → bookkeeping),
+        # so leave as soon as that chain reports it is done, and only use all of
+        # it when the shutdown really is wedged.
+        if not _wait_for_shutdown(stopped, WATCHDOG_FORCE_EXIT_SECONDS):
+            logger.warning(
+                f"父进程消失后收尾 {WATCHDOG_FORCE_EXIT_SECONDS}s 仍未结束，看门狗强制退出"
+            )
         # Leaving now would orphan whatever the engine started.
         end_child_processes(timeout=1.0)
         os._exit(0)
@@ -193,6 +241,10 @@ def _publish_engine_file(port: int, token: str) -> None:
 def main() -> None:
     token = secrets.token_urlsafe(32)
     app = create_app(auth_token=token)
+    # Set once ``server.run`` has returned, so the parent watchdog can leave as
+    # soon as the runners have finished unwinding instead of sleeping out the
+    # whole force-exit budget.
+    stopped = threading.Event()
 
     def begin_shutdown() -> None:
         # Stop advertising first, so a command line reading engine.json from
@@ -224,13 +276,16 @@ def main() -> None:
         )
         server = GracefulSidecarServer(config, on_exit=begin_shutdown)
         app.state.request_shutdown = _shutdown_requester(server, begin_shutdown)
-        _start_parent_watchdog(server, begin_shutdown)
+        _start_parent_watchdog(server, begin_shutdown, stopped)
         try:
             server.run(sockets=[sock])
         finally:
             engine_file.remove_engine_file()
             # Anything a runner started while it was unwinding.
             end_child_processes(timeout=1.0)
+            # Only now may the watchdog leave: it would ``os._exit`` past the
+            # two steps above and orphan whatever the engine started.
+            stopped.set()
 
 
 if __name__ == "__main__":

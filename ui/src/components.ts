@@ -1978,11 +1978,18 @@ export function openModal(options: ModalOptions): ModalHandle {
 // toast
 // ---------------------------------------------------------------------------
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastOptions {
   message: string;
   error?: boolean;
-  /** 毫秒，默认 3200。 */
+  /** 毫秒，默认 3200；带行内操作时默认 6000，让人来得及点。 */
   duration?: number;
+  /** 提示条里的行内操作（例如「撤销」）；点过之后提示条立即收起。 */
+  action?: ToastAction;
 }
 
 /**
@@ -1994,9 +2001,22 @@ export interface ToastOptions {
  * 依赖本模块，互相 import 会成环。
  */
 export function showToast(options: ToastOptions): void {
-  const toast = el("div", { className: options.error ? "toast error" : "toast", text: options.message });
+  const toast = el("div", { className: options.error ? "toast error" : "toast" });
+  if (options.action) {
+    toast.classList.add("with-act");
+    const text = el("span", { className: "toast-text", text: options.message });
+    const action = el("button", { className: "toast-act", text: options.action.label });
+    action.type = "button";
+    action.addEventListener("click", () => {
+      toast.remove();
+      options.action?.onClick();
+    });
+    toast.append(text, action);
+  } else {
+    toast.textContent = options.message;
+  }
   (document.querySelector(".toast-stack .ts-toast") ?? document.body).append(toast);
   window.setTimeout(() => {
     toast.remove();
-  }, options.duration ?? 3200);
+  }, options.duration ?? (options.action ? 6000 : 3200));
 }

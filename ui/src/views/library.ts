@@ -184,6 +184,9 @@ let entries: TmEntry[] = [];
 let stats: JsonObject = {};
 let filterCounts: JsonObject = {};
 let entryFilter: EntryFilter = "all";
+/** 「只看固定」：只列出固定词条。计数来自 pin_count，不跟当前筛选走。 */
+let pinnedOnly = false;
+let pinCount = 0;
 /** 高级模式（设置 tm.advanced_mode）：多出采用方式、生效范围、使用次数等。 */
 let advancedMode = false;
 const selectedIds = new Set<number>();
@@ -204,17 +207,17 @@ let mountGeneration = 0;
 let tmRequestRevision = 0;
 let tmQueryRevision = 0;
 // 回滚到最后一次真正显示的数据，不能回滚到另一个仍在等待的查询。
-let confirmedQuery: { page: number; keyword: string; pageSize: number; sourceLang: string; targetLang: string; entryFilter: EntryFilter } = { page, keyword, pageSize, sourceLang, targetLang, entryFilter };
+let confirmedQuery: { page: number; keyword: string; pageSize: number; sourceLang: string; targetLang: string; entryFilter: EntryFilter; pinnedOnly: boolean } = { page, keyword, pageSize, sourceLang, targetLang, entryFilter, pinnedOnly };
 let confirmedSelectedIds: number[] = [];
 let tmQueryPending = true;
 function tmQueryReady(): boolean {
   return mounted && !tmQueryPending && sourceLang === confirmedQuery.sourceLang
     && targetLang === confirmedQuery.targetLang && keyword === confirmedQuery.keyword
     && page === confirmedQuery.page && pageSize === confirmedQuery.pageSize
-    && entryFilter === confirmedQuery.entryFilter;
+    && entryFilter === confirmedQuery.entryFilter && pinnedOnly === confirmedQuery.pinnedOnly;
 }
 function restoreConfirmedQuery(): void {
-  ({ page, keyword, pageSize, sourceLang, targetLang, entryFilter } = confirmedQuery);
+  ({ page, keyword, pageSize, sourceLang, targetLang, entryFilter, pinnedOnly } = confirmedQuery);
   selectedIds.clear();
   for (const id of confirmedSelectedIds) selectedIds.add(id);
   tmQueryPending = false;
@@ -312,14 +315,20 @@ async function refreshTm(): Promise<boolean> {
   const generation = mountGeneration;
   const queryRevision = tmQueryRevision;
   const requestRevision = ++tmRequestRevision;
-  const query = { pair: tmLangPair(), keyword, page, pageSize, filter: entryFilter };
+  const query = { pair: tmLangPair(), keyword, page, pageSize, filter: entryFilter, pinnedOnly };
   const isCurrent = () => currentTmScope(generation, queryRevision) && requestRevision === tmRequestRevision;
   try {
     const client = await getClient();
     if (!isCurrent()) return false;
     while (true) {
-      const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number; filter_counts?: JsonObject }>(
-        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${query.page}&page_size=${query.pageSize}&entry_filter=${encodeURIComponent(query.filter)}`,
+      const payload = await client.request<{
+        entries: TmEntry[];
+        stats: JsonObject;
+        total?: number;
+        filter_counts?: JsonObject;
+        pin_count?: { pinned?: number; unpinned?: number };
+      }>(
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${query.page}&page_size=${query.pageSize}&entry_filter=${encodeURIComponent(query.filter)}${query.pinnedOnly ? "&pinned=true" : ""}`,
       );
       if (!isCurrent()) return false;
       const nextTotal = num(payload.total, payload.entries.length);
@@ -331,9 +340,20 @@ async function refreshTm(): Promise<boolean> {
       entries = payload.entries;
       stats = payload.stats ?? {};
       filterCounts = record(payload.filter_counts);
+      // 固定总数来自 pin_count（不跟当前筛选走）；「只看固定」打开时列表里全是固定词条，
+      // 总数就是它们自己，不必再取一次。
+      pinCount = num(payload.pin_count?.pinned, query.pinnedOnly ? nextTotal : 0);
       total = nextTotal;
       page = query.page;
-      confirmedQuery = { page, keyword: query.keyword, pageSize: query.pageSize, sourceLang, targetLang, entryFilter: query.filter };
+      confirmedQuery = {
+        page,
+        keyword: query.keyword,
+        pageSize: query.pageSize,
+        sourceLang,
+        targetLang,
+        entryFilter: query.filter,
+        pinnedOnly: query.pinnedOnly,
+      };
       tmQueryPending = false;
       return true;
     }
@@ -384,15 +404,16 @@ const SELECT_ALL_CAP = 5000;
 let selectAllBusy = false;
 
 async function fetchAllMatchingTmIds(): Promise<{ ids: number[]; truncated: boolean }> {
-  const query = { pair: tmLangPair(), keyword, total, filter: entryFilter };
+  const query = { pair: tmLangPair(), keyword, total, filter: entryFilter, pinnedOnly };
   const targetCount = Math.min(query.total, SELECT_ALL_CAP);
   if (targetCount <= 0) return { ids: [], truncated: false };
   const client = await getClient();
   const pageCount = Math.ceil(targetCount / SELECT_ALL_PAGE_SIZE);
+  const pinnedQuery = query.pinnedOnly ? "&pinned=true" : "";
   const pagePayloads = await Promise.all(
     Array.from({ length: pageCount }, (_, index) =>
       client.request<{ entries: TmEntry[] }>(
-        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}&entry_filter=${encodeURIComponent(query.filter)}`,
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}&entry_filter=${encodeURIComponent(query.filter)}${pinnedQuery}`,
       ),
     ),
   );
@@ -681,44 +702,289 @@ async function toggleTmSettings(): Promise<void> {
   window.addEventListener("resize", close);
 }
 
-function confirmBulkDelete(): void {
+// ---------------------------------------------------------------------------
+// 固定（图钉）
+// ---------------------------------------------------------------------------
+
+function isPinned(entry: TmEntry): boolean {
+  return Number(entry.pinned ?? 0) !== 0;
+}
+
+/**
+ * 单条固定 / 取消固定。
+ *
+ * 先按本次请求的结果改内存里的那一行并重画（不整页重取：重取会把表格滚动位置也
+ * 掀掉），失败再退回去并提示。成功后的提示条带「撤销」，点了就再发一次相反的请求。
+ */
+async function togglePin(entry: TmEntry): Promise<void> {
+  if (!tmQueryReady()) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  const next = !isPinned(entry);
+  const row = entries.find((item) => item.id === entry.id);
+  if (!row) return;
+  // 只改这一行的固定状态，不整页重取：重取会把表格滚动位置也掀掉，
+  // 而固定状态不改变行在列表里的顺序（排序键是 updated_at 和 id）。
+  const applyLocally = (pinned: boolean): void => {
+    const live = entries.find((item) => item.id === entry.id);
+    if (live) live.pinned = pinned ? 1 : 0;
+    if (pinned) pinCount += 1;
+    else pinCount = Math.max(0, pinCount - 1);
+    renderTable();
+    renderFilterRow();
+  };
+
+  applyLocally(next);
+  try {
+    const client = await getClient();
+    await client.request(`/api/tm/entries/${entry.id}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned: next }),
+    });
+  } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
+    applyLocally(!next);
+    showToast({ message: t("固定失败：{0}", errorMessage(error)), error: true });
+    return;
+  }
+  if (!currentTmScope(generation, revision)) return;
+  // 「只看固定」里取消固定后这一行就不该再留在表里（连条数、分页一起重算）；
+  // 新增固定时列表不变，同步更新一下 pinCount 就够。
+  if (pinnedOnly && !next) {
+    const ok = await refreshTm();
+    if (ok) {
+      renderTable();
+      renderFilterRow();
+    }
+  }
+  showToast({
+    message: next ? t("已固定「{0}」", entry.source_text) : t("已取消固定「{0}」", entry.source_text),
+    action: {
+      label: t("撤销"),
+      onClick: () => {
+        if (!tmQueryReady()) return;
+        const current = entries.find((item) => item.id === entry.id);
+        if (current) {
+          void togglePin(current);
+          return;
+        }
+        // 「只看固定」里刚取消固定的那一行已经被重取掉了，表里找不到它：
+        // 直接把固定状态改回去，再重取一遍让它回到列表里。
+        void restorePinOutsideList(entry.id, !next);
+      },
+    },
+  });
+}
+
+async function restorePinOutsideList(entryId: number, pinned: boolean): Promise<void> {
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  try {
+    const client = await getClient();
+    await client.request(`/api/tm/entries/${entryId}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    });
+  } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
+    showToast({ message: t("固定失败：{0}", errorMessage(error)), error: true });
+    return;
+  }
+  if (!currentTmScope(generation, revision)) return;
+  if (await refreshTm()) {
+    renderTable();
+    renderFilterRow();
+  }
+}
+
+/**
+ * 批量固定 / 取消固定：走批量接口，成功后按服务端的结果重取一遍列表
+ * （固定状态变了，行、计数和「只看固定」的范围都可能跟着变）。
+ */
+async function bulkSetPinned(pinned: boolean): Promise<void> {
+  if (!tmQueryReady() || !selectedIds.size) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  const ids = [...selectedIds];
+  try {
+    const client = await getClient();
+    await client.request("/api/tm/entries/bulk/pin", {
+      method: "POST",
+      body: JSON.stringify({ ids, pinned }),
+    });
+  } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
+    showToast({ message: t("固定失败：{0}", errorMessage(error)), error: true });
+    return;
+  }
+  if (!currentTmScope(generation, revision)) return;
+  await refreshTm();
+  // 「只看固定」里取消固定后这些行已经不在结果里了，选中集合也要跟着收干净，
+  // 否则「已选 N」会把看不见的行也算进去。
+  for (const id of ids) {
+    if (!entries.some((entry) => entry.id === id)) selectedIds.delete(id);
+  }
+  renderTable();
+  renderFilterRow();
+  showToast({
+    message: pinned
+      ? t("已固定所选 {0} 条词条。", fmtNum(ids.length))
+      : t("已取消固定所选 {0} 条词条。", fmtNum(ids.length)),
+  });
+}
+
+/** 顶部筛选行里的「只看固定」+ 固定条数；勾选后只列出固定词条。 */
+function togglePinnedOnly(): void {
+  if (!tmQueryReady()) return;
+  void applyTmQueryChange(() => {
+    pinnedOnly = !pinnedOnly;
+    page = 1;
+    selectedIds.clear();
+  }).then(() => renderFilterRow());
+}
+
+function openPinnedEditConfirm(entry: TmEntry): void {
+  if (!tmQueryReady()) return;
+  openModal({
+    tone: "warn",
+    icon: "pin",
+    title: t("这是一个固定的词条"),
+    body: [
+      t("「{0} → {1}」已固定，清洗和自动更新都不会改动它。确定要手动修改吗？修改后它仍保持固定。", entry.source_text, entry.target_text),
+    ],
+    actions: [
+      { label: t("取消"), variant: "default" },
+      { label: t("继续编辑"), variant: "primary", onClick: () => openAddEditModal(entry) },
+    ],
+  });
+}
+
+/**
+ * 选中项里哪些是固定词条。
+ *
+ * 表格里只有当前页的行，跨页「选择全部」选中的 id 不在 entries 里；这些 id 的固定
+ * 状态按 /api/tm/entries/by-ids 现取，不能只认当前页——否则跨页选中一批固定词条时
+ * 弹窗会走「没有固定词条」那条路，删除按钮上的条数也跟着错。
+ */
+async function selectedPinnedEntries(): Promise<TmEntry[]> {
+  const known = entries.filter((entry) => selectedIds.has(entry.id));
+  const unknownIds = [...selectedIds].filter((id) => !known.some((entry) => entry.id === id));
+  if (unknownIds.length) {
+    const client = await getClient();
+    const fetched = await client.request<{ entries: TmEntry[] }>(`/api/tm/entries/by-ids?ids=${unknownIds.join(",")}`);
+    if (Array.isArray(fetched.entries)) known.push(...fetched.entries);
+  }
+  return known.filter((entry) => isPinned(entry));
+}
+
+/**
+ * 批量删除。
+ *
+ * 选中项里有固定词条时用样张状态④的弹窗：勾选框默认不勾，名字里写明要删多少条，
+ * 未勾时 allow_pinned=false（固定的原样保留）。没有固定词条时沿用原来的弹窗。
+ */
+async function confirmBulkDelete(): Promise<void> {
   if (!tmQueryReady() || !selectedIds.size) return;
   const count = selectedIds.size;
   const generation = mountGeneration;
   const revision = tmQueryRevision;
   const ids = [...selectedIds];
-  openModal({
+  let pinned: TmEntry[];
+  try {
+    pinned = await selectedPinnedEntries();
+  } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
+    showToast({ message: t("记忆库加载失败：{0}", errorMessage(error)), error: true });
+    return;
+  }
+  if (!currentTmScope(generation, revision)) return;
+  const remove = async (deletePinned: boolean): Promise<void> => {
+    const client = await getClient();
+    if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
+    const result = await client.request<{ deleted: number; protected: number; missing: number }>("/api/tm/entries/bulk/delete", {
+      method: "POST",
+      body: JSON.stringify({ ids, allow_pinned: deletePinned }),
+    });
+    selectedIds.clear();
+    await refreshTm();
+    renderTable();
+    renderFilterRow();
+    showToast({
+      message: result.protected
+        ? t("已删除 {0} 条记忆条目，{1} 条固定词条未删除。", fmtNum(result.deleted), fmtNum(result.protected))
+        : t("已删除 {0} 条记忆条目。", fmtNum(result.deleted)),
+      error: Boolean(result.protected),
+    });
+  };
+
+  if (!pinned.length) {
+    openModal({
+      tone: "danger",
+      icon: "trash",
+      title: t("批量删除记忆条目？"),
+      body: [t("将永久删除已选中的 {0} 条记忆条目。此操作不能撤销。", fmtNum(count))],
+      actions: [
+        { label: t("取消"), variant: "default" },
+        { label: t("删除"), variant: "danger-solid", onClick: () => remove(false) },
+      ],
+    });
+    return;
+  }
+
+  // 勾选框决定固定的那几条删不删；按钮上的数字跟着它变。
+  let deletePinned = false;
+  // 样张这里用 📌 标记；应用本身有图钉图标，正文里就不放 emoji 了（列表里的图钉已经能看出来）。
+  const pinnedNames = pinned.map((entry) => entry.source_text).join(t("、"));
+  const checkbox = document.createElement("label");
+  checkbox.className = "bulk-del-pinned";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "ck";
+  box.checked = false;
+  const boxLabel = document.createElement("span");
+  boxLabel.textContent = t("固定的词条也一起删除");
+  checkbox.append(box, boxLabel);
+
+  // 正文里的元素会被 openModal 各自包一层 <p>，这里只放行内元素，靠 CSS 撑成整行。
+  const note = document.createElement("span");
+  note.className = "bulk-del-note";
+  const handle = openModal({
     tone: "danger",
     icon: "trash",
-    title: t("批量删除记忆条目？"),
-    body: [t("将永久删除已选中的 {0} 条记忆条目。此操作不能撤销。", fmtNum(count))],
+    title: t("删除选中的 {0} 条词条？", fmtNum(count)),
+    body: [
+      t("其中 {0} 条是固定的词条（{1}）。", fmtNum(pinned.length), pinnedNames),
+      checkbox,
+      note,
+    ],
     actions: [
       { label: t("取消"), variant: "default" },
       {
-        label: t("删除"),
+        label: t("删除 {0} 条", fmtNum(count - pinned.length)),
         variant: "danger-solid",
-        onClick: async () => {
-          const client = await getClient();
-          if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
-          const result = await client.request<{ deleted: number; protected: number; missing: number }>("/api/tm/entries/bulk/delete", {
-            method: "POST",
-            // 记忆库页不再有「固定」的概念：页面上选中的就是要删的。
-            body: JSON.stringify({ ids, allow_pinned: true }),
-          });
-          selectedIds.clear();
-          await refreshTm();
-          renderTable();
-          renderFilterRow();
-          showToast({
-            message: result.protected
-              ? t("已删除 {0} 条记忆条目，{1} 条固定词条未删除。", fmtNum(result.deleted), fmtNum(result.protected))
-              : t("已删除 {0} 条记忆条目。", fmtNum(result.deleted)),
-            error: Boolean(result.protected),
-          });
-        },
+        onClick: () => remove(deletePinned),
       },
     ],
   });
+  const deleteBtn = Array.from(handle.element.querySelectorAll<HTMLButtonElement>(".macts button")).pop();
+  // 说明句只在「不勾选」时出现（样张只画了这一种）；勾上之后按钮上的条数已经写明会删多少条。
+  const syncNote = () => {
+    const kept = pinned.length;
+    const deleting = count - (deletePinned ? 0 : kept);
+    // 用 style 而不是 hidden：.bulk-del-note 的 display 会盖过 [hidden] 的默认样式。
+    note.style.display = deletePinned ? "none" : "";
+    note.textContent = t("不勾选时只删 {0} 条，固定的 {1} 条保留。", fmtNum(count - kept), fmtNum(kept));
+    if (deleteBtn) {
+      deleteBtn.textContent = t("删除 {0} 条", fmtNum(deleting));
+      // 选中的全是固定词条又没勾「一起删除」时，一条都不会删，按钮不能点。
+      deleteBtn.disabled = deleting === 0;
+    }
+  };
+  box.addEventListener("change", () => {
+    deletePinned = box.checked;
+    syncNote();
+  });
+  syncNote();
 }
 
 function fieldHint(textContent: string): HTMLDivElement {
@@ -838,8 +1104,10 @@ function openAddEditModal(editing: TmEntry | null): void {
                   note,
                   usage: chosenUsage,
                   scope: advancedMode ? scopeField.input.value.trim() : null,
-                  // 记忆库页不再有「固定」的概念：固定过的旧词条同样可以直接编辑。
-                  allow_pinned: true,
+                  // 固定词条是先过了「这是一个固定的词条」确认框才走到这里的（见
+                  // openPinnedEditConfirm）；未固定的照旧带 false，不再无条件放行。
+                  // 按表格里那一行的当前固定状态读，弹窗打开期间被点过图钉也不会用旧值。
+                  allow_pinned: editing ? isPinned(entries.find((item) => item.id === editing.id) ?? editing) : false,
                 }),
               });
               showToast({ message: t("记忆条目已更新。") });
@@ -908,41 +1176,52 @@ function trackModal<T extends { close(): void }>(handle: T): T {
   return handle;
 }
 
+/**
+ * 删除单条词条。
+ *
+ * 固定词条先弹确认框（样张状态③），用户点「删除」才带 allow_pinned=true；未固定的
+ * 沿用原来的弹窗，并且明确带 allow_pinned=false——以前这里无条件带 true，等于页面上
+ * 的固定状态完全不起作用。
+ */
 function openDeleteModal(entryToDelete: TmEntry): void {
   if (!tmQueryReady()) return;
   const generation = mountGeneration;
   const revision = tmQueryRevision;
+  // 表格里那一行的当前状态，而不是点开弹窗那一刻的快照。
+  const pinned = isPinned(entries.find((item) => item.id === entryToDelete.id) ?? entryToDelete);
+  const remove = async (): Promise<void> => {
+    const client = await getClient();
+    if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
+    try {
+      const allowPinned = pinned ? "true" : "false";
+      await client.request(`/api/tm/entries/${entryToDelete.id}?allow_pinned=${allowPinned}`, { method: "DELETE" });
+    } catch (error) {
+      // 固定词条后端回 409。不接住就只剩一个不关也不报错的弹窗，
+      // 用户点「删除」什么都不发生（openModal 现在兜底，这里再补上「删除失败」前缀）。
+      showToast({ message: t("删除失败：{0}", errorMessage(error)), error: true });
+      return;
+    }
+    // 条目没了，选中集也得跟着少一个：不删的话「已选 xx / xx」的分子会大于分母，
+    // 而且后续批量操作会带上一个已经不存在的 id。
+    selectedIds.delete(entryToDelete.id);
+    await refreshTm();
+    renderTable();
+    renderFilterRow();
+    showToast({ message: pinned ? t("已删除固定的词条「{0}」。", entryToDelete.source_text) : t("记忆条目已删除。") });
+  };
   trackModal(
     openModal({
       tone: "danger",
       icon: "trash",
-      title: t("删除词条「{0}」？", entryToDelete.source_text),
-      body: [t("删除后，之后翻译时不再采用这条译法；已生成的文件不受影响。此操作不能撤销。")],
+      title: pinned ? t("删除固定的词条？") : t("删除词条「{0}」？", entryToDelete.source_text),
+      body: [
+        pinned
+          ? t("「{0} → {1}」已固定。删除后，翻译时不再强制使用这个译法。", entryToDelete.source_text, entryToDelete.target_text)
+          : t("删除后，之后翻译时不再采用这条译法；已生成的文件不受影响。此操作不能撤销。"),
+      ],
       actions: [
         { label: t("取消"), variant: "default" },
-        {
-          label: t("删除"),
-          variant: "danger-solid",
-          onClick: async () => {
-            const client = await getClient();
-            if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
-            try {
-              await client.request(`/api/tm/entries/${entryToDelete.id}?allow_pinned=true`, { method: "DELETE" });
-            } catch (error) {
-              // 固定词条后端回 409。不接住就只剩一个不关也不报错的弹窗，
-              // 用户点「删除」什么都不发生（openModal 现在兜底，这里再补上「删除失败」前缀）。
-              showToast({ message: t("删除失败：{0}", errorMessage(error)), error: true });
-              return;
-            }
-            // 条目没了，选中集也得跟着少一个：不删的话「已选 xx / xx」的分子会大于分母，
-            // 而且后续批量操作会带上一个已经不存在的 id。
-            selectedIds.delete(entryToDelete.id);
-            await refreshTm();
-            renderTable();
-            renderFilterRow();
-            showToast({ message: t("记忆条目已删除。") });
-          },
-        },
+        { label: t("删除"), variant: "danger-solid", onClick: remove },
       ],
     }),
   );
@@ -1904,6 +2183,21 @@ function renderFilterRow(): void {
     });
     filters.append(pill);
   }
+  // 「只看固定」：与上面的来源 / 采用方式页签是并列的筛选条件，打开后只列出固定词条。
+  const pinnedPill = document.createElement("button");
+  pinnedPill.type = "button";
+  pinnedPill.className = pinnedOnly ? "f on" : "f";
+  pinnedPill.dataset.role = "pinned-only";
+  pinnedPill.title = t("只看固定的词条");
+  const pinnedLabel = document.createElement("span");
+  pinnedLabel.className = "pin-filter-label";
+  pinnedLabel.append(icon("pin", { size: "sm" }), document.createTextNode(t("只看固定")));
+  const pinnedTotal = document.createElement("b");
+  pinnedTotal.textContent = fmtNum(pinCount);
+  pinnedPill.append(pinnedLabel, pinnedTotal);
+  pinnedPill.disabled = !tmQueryReady();
+  pinnedPill.addEventListener("click", togglePinnedOnly);
+  filters.append(pinnedPill);
   libFiltersEl.append(filters);
 
   const rule = document.createElement("span");
@@ -2032,11 +2326,13 @@ function updateSelectionUi(): void {
   // 「已选 x / xx」：分母是当前语言对 + 搜索关键词过滤后的匹配总数（与「选择全部」
   // 圈定的范围一致），不是当前页的条数，避免用户误以为只有一页那么多可选。
   if (chip) chip.textContent = t("已选 {0} / {1}", fmtNum(selectedIds.size), fmtNum(total));
-  const deleteBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
-  if (deleteBtn) {
-    // 没选中时不显示「批量删除」；有选中但数据还在加载时显示为禁用。
-    deleteBtn.style.display = selectedIds.size === 0 ? "none" : "";
-    deleteBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
+  const bulkButtons = ["bulk-pin", "bulk-unpin", "bulk-delete"]
+    .map((role) => tcHeadEl!.querySelector<HTMLButtonElement>(`[data-role=${role}]`));
+  for (const button of bulkButtons) {
+    if (!button) continue;
+    // 没选中时不显示批量操作；有选中但数据还在加载时显示为禁用。
+    button.style.display = selectedIds.size === 0 ? "none" : "";
+    button.disabled = !tmQueryReady() || selectedIds.size === 0;
   }
   const selectAllLink = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=select-all]");
   if (selectAllLink) {
@@ -2122,6 +2418,12 @@ function renderTable(): void {
       if (column.width) th.style.width = column.width;
       head.append(th);
     }
+    // 「固定」单独一列，紧挨着行内操作：每一行都有一颗图钉，点一下即切换。
+    const pinTh = document.createElement("th");
+    pinTh.textContent = t("固定");
+    pinTh.dataset.col = "pin";
+    pinTh.className = "pin-col";
+    head.append(pinTh);
     // 操作列表头留空：编辑 / 删除是悬停才出现的图标按钮，读屏仍能读到列名。
     const actionsTh = document.createElement("th");
     actionsTh.dataset.col = "actions";
@@ -2190,12 +2492,32 @@ function renderTable(): void {
       if (entry.updated_at) updatedTd.title = entry.updated_at;
       tr.append(updatedTd);
 
+      const pinTd = document.createElement("td");
+      pinTd.className = "pin-cell";
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      const pinned = isPinned(entry);
+      pinBtn.className = pinned ? "pin-toggle on" : "pin-toggle";
+      pinBtn.title = pinned ? t("已固定，点击取消固定") : t("点击固定");
+      pinBtn.setAttribute("aria-label", pinBtn.title);
+      pinBtn.setAttribute("aria-pressed", pinned ? "true" : "false");
+      pinBtn.append(icon("pin", { size: "sm" }));
+      pinBtn.addEventListener("click", () => void togglePin(entry));
+      pinTd.append(pinBtn);
+      tr.append(pinTd);
+
       // 行内操作：悬停或 Tab 到这一行时出现（library.css .rowacts）。
       const actionsTd = document.createElement("td");
       actionsTd.className = "acts-cell";
       const rowActs = document.createElement("div");
       rowActs.className = "rowacts";
-      const editBtn = createButton({ icon: "edit", variant: "ghost", size: "mini", title: t("编辑"), onClick: () => openAddEditModal(entry) });
+      const editBtn = createButton({
+        icon: "edit",
+        variant: "ghost",
+        size: "mini",
+        title: t("编辑"),
+        onClick: () => (isPinned(entry) ? openPinnedEditConfirm(entry) : openAddEditModal(entry)),
+      });
       editBtn.setAttribute("aria-label", t("编辑"));
       const deleteBtn = createButton({ icon: "trash", variant: "ghost", size: "mini", title: t("删除"), onClick: () => openDeleteModal(entry) });
       deleteBtn.classList.add("del");
@@ -2251,7 +2573,26 @@ function buildFoot(): HTMLDivElement {
   });
   bar.append(selectAllLink);
 
-  const deleteBtn = createButton({ label: t("批量删除"), icon: "trash", size: "mini", variant: "danger", onClick: () => confirmBulkDelete() });
+  // 批量操作栏：勾选后出现「固定 / 取消固定 / 批量删除」三个按钮（样张状态① 的说明）。
+  const pinBtn = createButton({
+    label: t("固定"),
+    icon: "pin",
+    size: "mini",
+    onClick: () => void bulkSetPinned(true),
+  });
+  pinBtn.dataset.role = "bulk-pin";
+  bar.append(pinBtn);
+
+  const unpinBtn = createButton({
+    label: t("取消固定"),
+    icon: "pin",
+    size: "mini",
+    onClick: () => void bulkSetPinned(false),
+  });
+  unpinBtn.dataset.role = "bulk-unpin";
+  bar.append(unpinBtn);
+
+  const deleteBtn = createButton({ label: t("批量删除"), icon: "trash", size: "mini", variant: "danger", onClick: () => void confirmBulkDelete() });
   deleteBtn.dataset.role = "bulk-delete";
   bar.append(deleteBtn);
 
@@ -2409,7 +2750,11 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null, 
   renderTable();
   renderTopbarStatus();
   const focused = focus ? entries.find((item) => item.id === focus.id) : undefined;
-  if (focused) openAddEditModal(focused);
+  // 从任务详情深链进来的编辑同样要过固定词条的确认框，不能因为换了入口就跳过。
+  if (focused) {
+    if (isPinned(focused)) openPinnedEditConfirm(focused);
+    else openAddEditModal(focused);
+  }
   if (reviewTaskId) {
     // 任务中心深链进来：loadCleanSuggestions 自己会把 pendingCleanCount 和
     // stale_count 一起拉齐，不必再单独调 refreshCleanBadge 重复请求一次。

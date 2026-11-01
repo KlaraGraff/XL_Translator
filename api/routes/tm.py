@@ -47,7 +47,9 @@ def register(app: FastAPI) -> None:
         page: int = 1,
         page_size: int = 50,
         entry_filter: str = "all",
+        pinned: bool | None = None,
     ) -> dict[str, Any]:
+        """``pinned`` 是记忆库页「只看固定」的筛选条件；不传时按固定状态不过滤。"""
         tm_manager.init_db()
         rows, total = tm_manager.search_entries(
             lang_pair,
@@ -55,6 +57,7 @@ def register(app: FastAPI) -> None:
             page=max(1, page),
             page_size=min(max(1, page_size), 200),
             entry_filter=entry_filter,
+            pinned=pinned,
         )
         return {
             "entries": rows,

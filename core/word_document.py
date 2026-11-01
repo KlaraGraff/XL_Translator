@@ -1505,8 +1505,16 @@ def build_word_output_dir(
 def normalize_docx_automatic_numbering(
     source_path: str | Path,
     output_path: str | Path | None = None,
+    *,
+    protect_front_matter: bool = False,
 ) -> WordNumberingNormalizationResult:
-    """Materialize automatic numbering once, then suppress residual list metadata."""
+    """Materialize automatic numbering once, then suppress residual list metadata.
+
+    ``protect_front_matter``：与 ``write_bilingual_docx`` 的「保护封面和目录」同一口径。
+    预处理产物就是后面抽取和写回用的源文件，受保护区域必须在预处理这一步就原样保留
+    ——把封面/目录的自动编号扁平化成正文文字并删掉 ``numPr`` 同样是改写，哪怕那几段
+    根本不送翻。
+    """
     source_path = Path(source_path)
     target_path = Path(output_path) if output_path is not None else _temp_docx_path(source_path)
     if source_path.resolve() != target_path.resolve():
@@ -1514,20 +1522,38 @@ def normalize_docx_automatic_numbering(
         shutil.copy2(source_path, target_path)
 
     doc = Document(str(target_path))
-    table_cells = [
-        cell
-        for table in doc.tables
-        for cell in _iter_unique_table_cells(table)
-    ]
+    body_paragraphs = list(doc.paragraphs)
+    front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
+    protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
+    # 身份口径与 write_bilingual_docx 一致：受保护段落必须和下面 all_paragraphs 里
+    # 是同一批包装对象（python-docx 每次访问都新建，id() 只认这一批），因此表与格子
+    # 都留在这两个列表里持有强引用，再按 id() 记保护。
+    table_cells: list = []
+    cell_paragraphs: list[Paragraph] = []
+    protected_paragraph_ids: set[int] = set()
+    for table_index, table in enumerate(doc.tables):
+        table_protected = table_index in protected_tables
+        for cell in _iter_unique_table_cells(table):
+            table_cells.append(cell)
+            own_paragraphs = list(cell.paragraphs)
+            cell_paragraphs.extend(own_paragraphs)
+            if table_protected:
+                protected_paragraph_ids.update(id(item) for item in own_paragraphs)
+    if front_matter is not None:
+        for protected_index in front_matter.protected_paragraph_indices:
+            if 0 <= protected_index < len(body_paragraphs):
+                protected_paragraph_ids.add(id(body_paragraphs[protected_index]))
     all_paragraphs = _order_paragraphs_by_document_position(
         doc,
-        [
-            *list(doc.paragraphs),
-            *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
-        ],
+        [*body_paragraphs, *cell_paragraphs],
     )
+    # 编号标签仍按整篇文档统计，受保护段落也要参与计数，否则正文序号会从头开始。
     numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
-    stats = _flatten_automatic_numbering(all_paragraphs, numbering_labels)
+    stats = _flatten_automatic_numbering(
+        all_paragraphs,
+        numbering_labels,
+        protected_paragraph_ids=protected_paragraph_ids,
+    )
     doc.save(str(target_path))
     return WordNumberingNormalizationResult(path=target_path, stats=stats)
 

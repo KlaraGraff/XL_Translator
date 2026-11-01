@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from config import APP_DATA_DIR, APP_VERSION, LOG_PATH
+from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 
 DIAGNOSTICS_DIR = APP_DATA_DIR / "diagnostics"
 DIAGNOSTIC_RECORDS_DIR = DIAGNOSTICS_DIR / "records"
@@ -39,6 +40,24 @@ _SOURCE_EXCERPT_LIMIT = 220
 _APP_LOG_TAIL_CHARS = 160_000
 _DIAGNOSTIC_MAX_RECORDS = 80
 _DIAGNOSTIC_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+# PDF 输出包里清单和报告的文件名是固定的，不含任何用户信息；诊断摘要只记这两个名字，
+# 不记它们所在的目录（诊断记录承诺不含绝对路径，见 _is_current_safe_manifest）。
+_PDF_MANIFEST_FILENAME = "pdf_translation_manifest.json"
+_PDF_REPORT_FILENAME = "pdf_translation_report.md"
+# 从 PDF 清单里抄进诊断摘要的页级统计。清单是权威口径：同样这几个数，逐文件结果只
+# 记得下每份文件自己的，清单里还有整任务的页数和降速/重试次数。
+_PDF_SUMMARY_MANIFEST_KEYS = (
+    "status",
+    "file_count",
+    "total_page_count",
+    "generated_page_count",
+    "generated_pdf_count",
+    "placeholder_page_count",
+    "emergency_ratio_normalized_count",
+    "retry_count",
+    "rate_limit_reduction_count",
+    "partial_artifacts_available",
+)
 # 必须与 core/word_task_runner.py 里 _WordRecoveryPool 写进运行日志的原文同步。
 _WORD_RUNTIME_EVENT_MARKERS = (
     "正在单独重译",
@@ -81,7 +100,7 @@ def archive_task_diagnostics(
     a specific code like ``checksum_invalid`` into the generic
     ``task_failed``, throwing away the one detail a support triage needs.
     """
-    del source_root, task_artifacts
+    del source_root
     record_dir = _unique_record_dir(surface=surface, task_id=task_id)
     (record_dir / "environment").mkdir(parents=True, exist_ok=True)
 
@@ -97,10 +116,36 @@ def archive_task_diagnostics(
         "progress_event_count": 1 if progress is not None else 0,
         "log_levels": _count_log_levels(logs),
     }
+    surface_key = _safe_category(surface, fallback="task")
+    content_categories = [
+        "runtime",
+        "task_type_and_stage",
+        "anonymous_counts",
+        "redacted_connection_summary",
+    ]
+    pdf_summary: dict[str, Any] = {}
+    if surface_key == "pdf":
+        # PDF 的输出目录、清单/报告、页级统计单独记一份：中止和失败的任务在归档
+        # 时没有别的页级明细，只有清单里这几个数是「跑到第几页、几页是占位」的
+        # 唯一答案。只摘要文件名和计数，不复制 PDF/PNG。
+        artifacts = dict(task_artifacts or {})
+        if isinstance(done_payload, dict):
+            # 终态消息（DoneMsg / StoppedMsg / ErrorMsg）本来就带着这两个路径，调用
+            # 方不必再单独转交一份；显式传入的 task_artifacts 优先。
+            for key in ("manifest_path", "report_path"):
+                if not artifacts.get(key) and done_payload.get(key):
+                    artifacts[key] = str(done_payload[key])
+        pdf_summary = _build_pdf_diagnostic_summary(
+            output_dir=str(done_payload.get("output_dir") or "") if isinstance(done_payload, dict) else "",
+            file_results=file_results,
+            quality_issues=quality_issues,
+            artifacts=artifacts,
+        )
+        content_categories.append("pdf_output_summary")
     manifest = {
         "record_id": record_dir.name,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "surface": _safe_category(surface, fallback="task"),
+        "surface": surface_key,
         "phase": _safe_category(phase, fallback="unknown"),
         "anonymous_locator": _anonymous_locator(task_id),
         "status": _safe_category(status, fallback="unknown"),
@@ -110,16 +155,17 @@ def archive_task_diagnostics(
             else _safe_error_code(error_message)
         ),
         **metrics,
-        "content_categories": [
-            "runtime",
-            "task_type_and_stage",
-            "anonymous_counts",
-            "redacted_connection_summary",
-        ],
+        "content_categories": content_categories,
     }
+    if pdf_summary:
+        # 摘要里的 ``status``/``file_count`` 是 PDF 输出包的口径，和诊断记录自己的
+        # 任务状态、扫描文件数不是一回事。嵌套一层，免得后者被前者顶掉。
+        manifest["pdf_summary"] = pdf_summary
 
     _write_json(record_dir / "manifest.json", manifest)
     _write_json(record_dir / "metrics.json", metrics)
+    if pdf_summary:
+        _write_json(record_dir / "pdf_summary.json", pdf_summary)
     _write_json(
         record_dir / "environment" / "runtime.json",
         {
@@ -235,13 +281,15 @@ def _is_current_safe_manifest(payload: object) -> bool:
     if not isinstance(payload, dict):
         return False
     required = {"record_id", "anonymous_locator", "content_categories"}
+    # ``pdf_manifest_path``/``pdf_report_path`` 只存固定文件名，可以留在当前格式里；
+    # ``output_dir`` 那种整条路径仍然禁止——那是旧诊断格式，读出来会泄露用户路径。
     forbidden = {
         "source_root",
         "output_dir",
         "error_message",
         "task_id",
-        "pdf_manifest_path",
-        "pdf_report_path",
+        "manifest_path",
+        "report_path",
     }
     return required.issubset(payload) and not any(key in payload for key in forbidden)
 
@@ -520,6 +568,29 @@ def _serialize_file_item(item: Any) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value not in (None, [], "")}
 
 
+def _pdf_diagnostic_filename(path: str, default: str) -> str:
+    """Only the fixed file name of a package file, never the folder around it.
+
+    清单和报告的名字是程序写死的 ``pdf_translation_manifest.json`` /
+    ``pdf_translation_report.md``；调用方传进来的却是整条绝对路径。诊断记录承诺
+    不含用户文件路径（D8C-05），所以这里只留文件名，还能顺手核对一下确实是这两份。
+    """
+    name = Path(str(path or "")).name
+    return name if name == default else ""
+
+
+def _pdf_output_summary(output_dir: str) -> dict[str, Any]:
+    """What can be recorded about the delivery folder without naming where it is."""
+    if not output_dir:
+        return {"output_dir_present": False}
+    # 目录名是「源文件夹名_翻译输出_时间戳」，源文件夹名可能带客户名，所以只记
+    # 「有没有」「是不是本程序建的」，不记号名、更不记整条路径。
+    return {
+        "output_dir_present": True,
+        "output_dir_is_app_managed": GENERATED_OUTPUT_DIR_MARKER in Path(output_dir).name,
+    }
+
+
 def _build_pdf_diagnostic_summary(
     *,
     output_dir: str,
@@ -527,21 +598,32 @@ def _build_pdf_diagnostic_summary(
     quality_issues: list[dict[str, Any]],
     artifacts: dict[str, Any],
 ) -> dict[str, Any]:
-    manifest_path = str(artifacts.get("manifest_path") or "")
-    report_path = str(artifacts.get("report_path") or "")
-    if not manifest_path and output_dir:
-        candidate = Path(output_dir) / "pdf_translation_manifest.json"
-        if candidate.exists():
-            manifest_path = str(candidate)
-    if not report_path and output_dir:
-        candidate = Path(output_dir) / "pdf_translation_report.md"
-        if candidate.exists():
-            report_path = str(candidate)
+    """PDF-only counts and package references for the diagnostic manifest.
+
+    只写摘要：清单/报告记文件名，输出目录只记「有没有、是不是本程序建的」，
+    页级统计优先用清单里的整任务口径，清单读不到就按逐文件结果加总。不复制
+    源 PDF、译文 PDF 或任何页图。
+    """
+    manifest_name = _pdf_diagnostic_filename(
+        str(artifacts.get("manifest_path") or ""), _PDF_MANIFEST_FILENAME
+    )
+    report_name = _pdf_diagnostic_filename(
+        str(artifacts.get("report_path") or ""), _PDF_REPORT_FILENAME
+    )
+    package_manifest: dict[str, Any] = {}
+    raw_manifest = str(artifacts.get("manifest_path") or "")
+    if raw_manifest and Path(raw_manifest).is_file():
+        try:
+            loaded = json.loads(Path(raw_manifest).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a broken package manifest is just "no summary".
+            loaded = {}
+        if isinstance(loaded, dict):
+            package_manifest = loaded
 
     summary: dict[str, Any] = {
-        "output_dir": output_dir,
-        "manifest_path": manifest_path,
-        "report_path": report_path,
+        **_pdf_output_summary(output_dir),
+        "pdf_manifest_path": manifest_name,
+        "pdf_report_path": report_name,
         "generated_pdf_count": sum(1 for item in file_results if item.get("success")),
         "placeholder_page_count": sum(
             int(item.get("placeholder_page_count") or 0) for item in file_results
@@ -552,24 +634,9 @@ def _build_pdf_diagnostic_summary(
         ),
         "quality_issue_count": len(quality_issues),
     }
-    if manifest_path and Path(manifest_path).exists():
-        try:
-            package_manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        except Exception:
-            package_manifest = {}
-        for key in (
-            "status",
-            "file_count",
-            "total_page_count",
-            "generated_pdf_count",
-            "placeholder_page_count",
-            "emergency_ratio_normalized_count",
-            "retry_count",
-            "rate_limit_reduction_count",
-            "partial_artifacts_available",
-        ):
-            if key in package_manifest:
-                summary[key] = package_manifest[key]
+    for key in _PDF_SUMMARY_MANIFEST_KEYS:
+        if key in package_manifest:
+            summary[key] = package_manifest[key]
     return _redact(summary)
 
 

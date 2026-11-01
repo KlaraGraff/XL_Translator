@@ -101,6 +101,30 @@
 .lib .rowacts .btn.del { color: var(--danger); }
 .lib .rowacts .btn.del:hover:not(:disabled) { background: var(--danger-t); color: var(--danger); }
 
+/* 固定列：窄窄一列图钉，紧挨着行内操作。已固定是实心强调色，未固定是很淡的灰。
+   不做悬停才出现的显隐——固定状态要一眼看全，不能靠把鼠标移上去才发现。 */
+.lib .tbl th.pin-col { width: 44px; text-align: center; }
+.lib .tbl td.pin-cell { text-align: center; padding-left: 4px; padding-right: 4px; }
+.lib .pin-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--ink-3); opacity: .22; cursor: pointer;
+  transition: opacity var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out);
+}
+.lib .pin-toggle:hover:not(:disabled) { opacity: .75; background: var(--surface-2); }
+.lib .pin-toggle.on { opacity: 1; color: var(--accent); }
+/* 图标本身是描边画法（app.css 里 svg.ic 是 fill:none），固定时把它填实，才有「实心」的分别。 */
+.lib .pin-toggle.on .ic { fill: currentColor; stroke: currentColor; }
+.lib .pin-toggle:focus-visible { outline-offset: 0; }
+.lib .pin-toggle:disabled { cursor: default; }
+
+/* 筛选行里的「只看固定」：图标 + 文字 + 条数，和别的页签同一套胶囊。 */
+.lib .tk-filters .f .pin-filter-label { display: inline-flex; align-items: center; gap: 4px; }
+
+/* 批量删除弹窗里的「固定的词条也一起删除」勾选框与随勾选变化的说明。 */
+.bulk-del-pinned { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); cursor: pointer; }
+.bulk-del-note { display: block; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
+
 /* 数据变化后那一次渲染：行依次浮现。减少动效时 app.css 全局压成 1ms。 */
 .lib tbody.stag tr { animation: lib-rise var(--t-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 28ms); }
 @keyframes lib-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

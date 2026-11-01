@@ -27,7 +27,7 @@ from openpyxl import Workbook, load_workbook
 
 from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
 from core.translation_coverage import COVERAGE_IGNORED, COVERAGE_SOURCE_ONLY
-from core.xlsx_patcher import NS_MAIN, write_bilingual_workbook
+from core.xlsx_patcher import NS_MAIN, _resolve_source_text, write_bilingual_workbook
 
 
 def _m(tag: str) -> str:
@@ -243,6 +243,66 @@ class ExcelBackfillFormulaTests(unittest.TestCase):
             self.assertEqual(wb["报价"]["A2"].value, "施工内容合计\n[EN]施工内容合计")
             # A1 不在坐标集合里，一个字都不许动。
             self.assertEqual(wb["报价"]["A1"].value, "施工内容")
+        finally:
+            wb.close()
+
+
+class FullModeFormulaBackfillOffTests(unittest.TestCase):
+    """全量模式（没有坐标集合）同样要守住「回填关闭 → 公式源码不送翻」。
+
+    审计（CODE_AUDIT_2026-08-31，第 1058 行那条「我没有越界处理」）留下的口子：
+    ``_resolve_source_text`` 在回填关闭时把 ``"=" + 公式源码`` 当原文交给写入判定，
+    只要这串在 ``translations`` 里（旧词条、别处同名的文本），整格就被换成静态
+    文本、``<f>`` 丢掉；而抽取端 ``TaskRunner._collect_texts`` 与补译计划
+    ``excel_coverage._classify_excel_cell`` 都不收公式源码。补译侧早就挡住了，全量
+    侧没有——同一份文件「全量翻会吃掉公式、补译却完好」。
+    """
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        self.fixture = _build_fixture(self.root)
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def test_full_mode_does_not_hand_the_formula_source_to_the_writer(self) -> None:
+        """回填关闭时公式格没有原文可写，别把公式源码拼成假原文。"""
+        with zipfile.ZipFile(self.fixture) as archive:
+            sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+        cell = etree.fromstring(sheet_xml).find(f".//{_m('c')}[@r='A2']")
+        self.assertIsNone(
+            _resolve_source_text(cell, cell.find(_m("f")), [], False),
+            "回填关闭时公式格的「原文」是公式源码，不该再交给写入判定",
+        )
+
+    def test_full_mode_writer_keeps_the_formula(self) -> None:
+        out_path = self.root / "out.xlsx"
+        shutil.copy(self.fixture, out_path)
+
+        write_bilingual_workbook(
+            out_path,
+            translations={
+                "施工内容": "[EN]施工内容",
+                # 旧词条/别处同名的「译文」：没有守卫时这一条会命中公式格。
+                '=A1&"合计"': "[EN]施工内容合计",
+            },
+            target_lang="en",
+            source_lang="zh",
+            keep_original_sheets=False,
+            formula_display_value_backfill=False,
+            mark_review_items=False,
+            # 不传 allowed_positions：这是全量写入路径，不是补译。
+        )
+
+        self.assertIsNotNone(
+            _formula_text(out_path, "报价", "A2"),
+            "公式格 A2 的 <f> 被删掉了，公式丢失",
+        )
+        wb = load_workbook(out_path)
+        try:
+            # 普通格照常翻——证明公式格是被专门挡下来的，不是整表没写。
+            self.assertEqual(wb["报价"]["A1"].value, "施工内容\n[EN]施工内容")
         finally:
             wb.close()
 

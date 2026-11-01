@@ -26,7 +26,7 @@ from unittest.mock import patch
 import settings as settings_module
 from api.app import create_app
 from core import tm_manager
-from settings import AppSettings
+from settings import AppSettings, ModelConnection
 
 
 class IsolatedSettingsFileTestCase(unittest.TestCase):
@@ -195,6 +195,121 @@ class SettingsEndpointConcurrencyTests(IsolatedSettingsFileTestCase):
         self.assertEqual(final["appearance"]["theme"], "dark")
         self.assertTrue(final["spread_tasks_across_connections"])
         self.assertEqual(final["target_lang"], "fr")
+
+
+class KeyedListMergeTests(IsolatedSettingsFileTestCase):
+    """一条连接池是 list，但两个写入者改的可以是各自不同的那一条。
+
+    ``_settings_delta`` 以前对非 dict 一律记整份 SET，于是「测试连接」这种跨网络
+    往返后落盘的请求，会把期间用户对另一条连接的修改整份盖回去。带 id 的列表现在
+    按元素合并；顺序变了、元素认不出 id 时仍整份替换。
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        settings_module.save_settings(AppSettings())
+        loaded = settings_module.load_settings()
+        loaded.engine.mode = "cloud"
+        loaded.engine.cloud_provider = "custom_openai"
+        loaded.engine.cloud_base_url = "https://primary.example/v1"
+        loaded.engine.cloud_model = "model-primary"
+        settings_module.save_settings(loaded)
+
+    def _connections(self) -> list[dict]:
+        return self.persisted()["engine"]["connections"]
+
+    def _append_loaded_connection(self, model: str) -> str:
+        """Add one pool entry the way ``add_role_connection`` does, and save."""
+        loaded = settings_module.load_settings()
+        connection = ModelConnection(
+            label=model,
+            provider="custom_openai",
+            model=model,
+            base_url=f"https://{model}.example/v1",
+        )
+        loaded.engine.connections.append(connection)
+        settings_module.save_settings(loaded)
+        return connection.id
+
+    def test_two_writers_editing_different_connections_both_win(self) -> None:
+        first_id = self._append_loaded_connection("first")
+        second_id = self._append_loaded_connection("second")
+
+        dialling = settings_module.load_settings()
+        editing = settings_module.load_settings()
+        tested = next(
+            connection
+            for connection in dialling.engine.connections
+            if connection.id == second_id
+        )
+        tested.availability_status = "available"
+        tested.availability_message = "连接测试通过。"
+        for connection in editing.engine.connections:
+            if connection.id == first_id:
+                connection.model = "first-edited"
+        settings_module.save_settings(dialling)
+        settings_module.save_settings(editing)
+
+        by_id = {connection["id"]: connection for connection in self._connections()}
+        # 修复前这里落盘的是 "first"：测试结果的整份旧列表把编辑盖了回去。
+        self.assertEqual(by_id[first_id]["model"], "first-edited")
+        self.assertEqual(by_id[second_id]["availability_status"], "available")
+
+    def test_a_connection_deleted_meanwhile_stays_deleted(self) -> None:
+        """另一条连接被删掉后，旧快照里那一条不能借这次保存复活。"""
+        first_id = self._append_loaded_connection("first")
+        second_id = self._append_loaded_connection("second")
+
+        dialling = settings_module.load_settings()
+        removing = settings_module.load_settings()
+        tested = next(
+            connection
+            for connection in dialling.engine.connections
+            if connection.id == second_id
+        )
+        tested.availability_status = "available"
+        removing.engine.connections = [
+            connection
+            for connection in removing.engine.connections
+            if connection.id != second_id
+        ]
+        settings_module.save_settings(removing)
+        settings_module.save_settings(dialling)
+
+        ids = [connection["id"] for connection in self._connections()]
+        self.assertIn(first_id, ids)
+        self.assertNotIn(second_id, ids)
+
+    def test_a_reorder_still_replaces_the_whole_pool(self) -> None:
+        """顺序就是语义（第 0 条是主用），所以顺序变了要整份替换。"""
+        self._append_loaded_connection("first")
+        second_id = self._append_loaded_connection("second")
+
+        dialling = settings_module.load_settings()
+        reordering = settings_module.load_settings()
+        ordered = [connection.id for connection in reordering.engine.connections]
+        reordering.engine.connections = list(reversed(reordering.engine.connections))
+        tested = next(
+            connection
+            for connection in dialling.engine.connections
+            if connection.id == second_id
+        )
+        tested.availability_status = "available"
+        settings_module.save_settings(reordering)
+        settings_module.save_settings(dialling)
+
+        ids = [connection["id"] for connection in self._connections()]
+        self.assertEqual(ids, list(reversed(ordered)))
+
+    def test_a_list_without_ids_still_replaces_wholesale(self) -> None:
+        """元素认不出 id 的列表维持原来的整份替换，不能被误当成连接池合并。"""
+        first = settings_module.load_settings()
+        second = settings_module.load_settings()
+        first.recent_tm_lang_pairs = ["en->zh", "ja->zh"]
+        second.recent_tm_lang_pairs = ["fr->de"]
+        settings_module.save_settings(first)
+        settings_module.save_settings(second)
+        self.assertEqual(self.persisted()["recent_tm_lang_pairs"], ["fr->de"])
 
 
 class _WindowsOs:

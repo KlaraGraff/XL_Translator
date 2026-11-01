@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn the_mirrored_sidecar_budgets_still_match_the_python_side() {
-        // 这两个数跨语言、跨文件，注释拴不住；改了 Python 一侧不改这里，
+        // 这几个数跨语言、跨文件，注释拴不住；改了 Python 一侧不改这里，
         // 外层就会重新缩回内层里去。让它变红，而不是等用户的临时目录残留。
         let drain = python_budget_secs("api/launcher.py", "GRACEFUL_SHUTDOWN_SECONDS = ");
         let unwind = python_budget_secs(
@@ -1297,6 +1297,27 @@ mod tests {
             "api/task_manager.py 的 shutdown(timeout=) 现在是 {unwind}s，和 main.rs 的\
              镜像常量对不上：请同步 SIDECAR_TASK_UNWIND_BUDGET_SECS，并确认 \
              SIDECAR_STOP_TIMEOUT 仍然包得住内层"
+        );
+
+        // 中-5：壳非正常消失时 Rust 发不出 SIGTERM，收尾由 sidecar 自己的 parent
+        // watchdog 接着做，这条链和上面完全一样。看门狗预算只比内层小一点、或者
+        // 干脆写死一个和这里无关的数，强退一样会把 runner 的 finally 砍在半路——
+        // 所以它必须也包住 drain + unwind，并且和 SIDECAR_STOP_TIMEOUT 同一个加法。
+        let watchdog = python_budget_secs("api/launcher.py", "WATCHDOG_FORCE_EXIT_SECONDS = ");
+        let inner_chain = drain + unwind;
+
+        assert!(
+            watchdog >= inner_chain,
+            "api/launcher.py 的 WATCHDOG_FORCE_EXIT_SECONDS 现在是 {watchdog}s，包不住内层\
+             链条 {inner_chain}s（排空 {drain}s + unwind {unwind}s）：Force Quit 时看门狗\
+             会在收尾走到一半时 os._exit，headless soffice 和临时目录一并残留"
+        );
+        assert_eq!(
+            watchdog, SIDECAR_STOP_TIMEOUT.as_secs() as f64,
+            "api/launcher.py 的 WATCHDOG_FORCE_EXIT_SECONDS（{watchdog}s）和 main.rs 的\
+             SIDECAR_STOP_TIMEOUT（{}s）不再是同一个加法：两边都覆盖同一条收尾链，改一侧\
+             就要改另一侧",
+            SIDECAR_STOP_TIMEOUT.as_secs()
         );
     }
 

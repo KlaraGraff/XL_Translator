@@ -1949,8 +1949,7 @@ def update_entry_full(
 def delete_entry(entry_id: int, *, allow_pinned: bool = False) -> bool:
     """Delete one entry, refusing protected/fixed rows unless ``allow_pinned``.
 
-    The memory page no longer shows a pin, so it deletes with ``allow_pinned``:
-    the user pressing 删除 on a row is the explicit instruction.
+    记忆库页对固定词条会先弹确认框，用户确认后才带 ``allow_pinned`` 删除。
     """
     with _get_conn() as conn:
         row = _fetch_entry(conn, entry_id)
@@ -2599,6 +2598,7 @@ def search_entries(
     page_size: int = 50,
     *,
     entry_filter: str = "all",
+    pinned: bool | None = None,
 ) -> tuple[list[dict], int]:
     """
     分页搜索词条。
@@ -2609,6 +2609,8 @@ def search_entries(
     ``entry_filter`` 是记忆库页的筛选项（全部 / 手动维护 / 自动保存 / 三种采用方式 /
     最近 7 天自动保存 / 一年以上未使用）。来源和采用方式要按规则推算，在 Python
     里筛；记忆库通常几千条，整对语言读一遍是毫秒级。
+
+    ``pinned`` 为 True / False 时只返回固定 / 未固定的词条，None 不按固定状态筛。
     """
     base_where = "WHERE lang_pair = ?"
     params: list = [lang_pair]
@@ -2617,6 +2619,10 @@ def search_entries(
         base_where += " AND (source_text LIKE ? OR target_text LIKE ? OR note LIKE ?)"
         kw = f"%{keyword.strip()}%"
         params.extend([kw, kw, kw])
+
+    if pinned is not None:
+        base_where += " AND pinned = ?"
+        params.append(1 if pinned else 0)
 
     entry_filter = str(entry_filter or "all").strip().lower()
     if entry_filter not in ENTRY_FILTERS:

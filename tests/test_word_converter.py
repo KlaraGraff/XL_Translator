@@ -289,6 +289,81 @@ class WordConverterTests(unittest.TestCase):
         # 临时配置目录属于这次转换，用完必须删掉，不能堆在临时目录里。
         for profile in profiles:
             self.assertFalse(profile.exists(), f"临时配置目录没有清理：{profile}")
+    def test_doc_conversion_failure_leaves_no_half_written_docx(self) -> None:
+        """转换器落了盘、产物又没过校验时，那份半成品必须当场删掉。
+
+        每个策略都是「先写文件、再 _validate_docx」：校验不过就走下一个策略，
+        而这份已经写出来的 docx 没有任何调用方拿得到它的路径——不在这里删，
+        它就会一直留在系统临时目录里，和原文档同量级。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            work = root / "tmp"
+            work.mkdir()
+            source_path = root / "legacy.doc"
+            source_path.write_bytes(b"\xd0\xcf\x11\xe0 fake legacy doc")
+
+            def _broken_strategy(doc_path: Path) -> Path:
+                output_path = word_converter._get_temp_docx_path(Path(doc_path))
+                output_path.write_bytes(b"not a real docx")
+                return output_path
+
+            with (
+                patch("tempfile.gettempdir", return_value=str(work)),
+                patch.dict(
+                    convert_doc_to_docx.__globals__,
+                    {
+                        "convert_with_native_word": _broken_strategy,
+                        "convert_with_libreoffice": _broken_strategy,
+                        "convert_with_textutil": _broken_strategy,
+                    },
+                ),
+            ):
+                with self.assertRaises(WordConversionError):
+                    convert_doc_to_docx(
+                        source_path,
+                        prefer_native_word=True,
+                        allow_compatibility_fallback=True,
+                    )
+
+            leftovers = sorted((work / "word_translator_temp").glob("*.docx"))
+            self.assertEqual(
+                leftovers, [], f"失败的转换留下了半成品 docx：{leftovers}"
+            )
+
+    def test_numbering_preprocess_failure_leaves_no_half_written_docx(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            work = root / "tmp"
+            work.mkdir()
+            source_path = root / "source.docx"
+            self._build_docx(source_path)
+
+            def _broken_strategy(doc_path: Path) -> Path:
+                output_path = word_converter._get_temp_docx_path(Path(doc_path))
+                output_path.write_bytes(b"not a real docx")
+                return output_path
+
+            with (
+                patch("tempfile.gettempdir", return_value=str(work)),
+                patch.dict(
+                    convert_numbering_to_text_with_native_apps.__globals__,
+                    {
+                        "convert_numbering_to_text_with_native_word": _broken_strategy,
+                        "convert_numbering_to_text_with_libreoffice": _broken_strategy,
+                    },
+                ),
+            ):
+                with self.assertRaises(WordConversionError):
+                    convert_numbering_to_text_with_native_apps(
+                        source_path,
+                        prefer_native_word=True,
+                    )
+
+            leftovers = sorted((work / "word_translator_temp").glob("*.docx"))
+            self.assertEqual(
+                leftovers, [], f"失败的编号预处理留下了半成品 docx：{leftovers}"
+            )
 
     @staticmethod
     def _build_docx(path: Path) -> None:
