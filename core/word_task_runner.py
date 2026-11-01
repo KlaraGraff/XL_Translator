@@ -512,6 +512,10 @@ class WordTaskRunner(BaseTaskRunner):
         self._formula_flags: dict[str, list[tuple[int, int, int]]] = {}
         # 行数对不上、但复查判定译文与原文意思一致的表格格子：整格只写译文
         self._layout_only_cells: set[str] = set()
+        # 自动识别时每个文件自己认出的原文语言（路径 → 语言，认不出为 auto）。写出和
+        # 成品体检按这个判，不用全批第一个认出的语言：英文件 A、日文件 B 同批译中文时，
+        # 按 A 的英文去判，B 里只有汉字的段落付费翻了却在写出时被筛掉（#283 复查）。
+        self._file_source_langs: dict[str, str] = {}
         self._inline_mark_engine: InlineMarkEngine | None = None
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # 同一批任务共用的输出文件夹；设了就不再新建自己的。
@@ -3100,6 +3104,10 @@ class WordTaskRunner(BaseTaskRunner):
             on_done=_detected,
         ):
             file_language_preflights.update(detected_result)
+        self._file_source_langs = {
+            path: (result.source_langs[0] if result.source_langs else AUTO_SOURCE_LANG)
+            for path, result in file_language_preflights.items()
+        }
         detected_sources: list[str] = []
         for result in file_language_preflights.values():
             for detected in result.source_langs:
@@ -3643,6 +3651,8 @@ class WordTaskRunner(BaseTaskRunner):
         reserved_before = set(reserved_output_paths)
         committed_out_path = None
         success_record = None
+        # 自动识别时按这个文件自己认出的语言写出、体检；没做预检（选了具体语言）就是任务的语言。
+        file_source_lang = self._file_source_langs.get(str(file_item.path), source_lang)
         try:
             t0 = datetime.now()
             source_path = process_paths[index] if index < len(process_paths) else file_item.path
@@ -3654,7 +3664,7 @@ class WordTaskRunner(BaseTaskRunner):
                         engine,
                         original_stem,
                         target_lang,
-                        source_lang,
+                        file_source_lang,
                     )
                 except Exception as exc:
                     logger.debug(f"Word 输出文件名翻译失败原始错误：{exc!r}")
@@ -3695,7 +3705,7 @@ class WordTaskRunner(BaseTaskRunner):
                     plan=coverage_plan,
                     translations=global_translations,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     output_name=output_source_name,
                     review_marks=(
                         review_marks
@@ -3722,7 +3732,7 @@ class WordTaskRunner(BaseTaskRunner):
                     output_dir=staged_output_dir,
                     translations=global_translations,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     output_name=output_source_name,
                     review_marks=(
                         review_marks
@@ -3754,7 +3764,7 @@ class WordTaskRunner(BaseTaskRunner):
                 file_name=_file_result_identity(file_item, source_root),
                 output_path=out_path,
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=file_source_lang,
                 protect_front_matter=self._protect_front_matter,
                 review_mark_colors=settings.word_review.mark_colors,
                 existing_highlight_policy=(
