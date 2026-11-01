@@ -590,11 +590,8 @@ interface SurfaceState {
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
   pdfAlsoSaveWord: boolean;
   /** Word 未接受的修订怎么处理：skip（默认，保持原文）/ translate（连修订一起翻，标记保留）。
-   *  弹窗里选过就记住，同一批里其余文件（以及下一次弹窗）沿用它；点「本批其他有修订的
-   *  文件也按这个处理」时它决定整批。 */
+   *  每次点「开始翻译」弹一次窗，选择对整批生效（样张②/④）。 */
   revisionMode: RevisionMode;
-  /** 「本批其他有修订的文件也按这个处理」：勾上以后这次任务不再逐文件弹窗。 */
-  revisionApplyToBatch: boolean;
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -658,7 +655,6 @@ function freshState(surface: Surface): SurfaceState {
     pdfAutoFallback: "image",
     pdfAlsoSaveWord: false,
     revisionMode: "skip",
-    revisionApplyToBatch: false,
   };
 }
 
@@ -709,9 +705,7 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   st.showBanner = false;
   st.bannerInfo = null;
   st.excelDoneNotice = null;
-  // 新一批文件重新问：上一次「本批其他有修订的文件也按这个处理」不能跟过来。
   st.revisionMode = "skip";
-  st.revisionApplyToBatch = false;
   st.lastTaskId = undefined;
   st.lastOutputPath = undefined;
   st.historyOnly = false;
@@ -4962,6 +4956,12 @@ async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promi
   await preflightAndSubmit(surface, st);
 }
 
+/** 转换方式选完以后接着走启动流程：Word 还要先问未接受的修订怎么处理，不能跳过这一问。 */
+function continueAfterCompatibility(surface: Surface, st: SurfaceState): void {
+  if (surface === "word" && !nextRevisionDecision(st)) return;
+  void submitAfterResumeCheck(surface, st);
+}
+
 function showCompatibilityModal(surface: Surface, st: SurfaceState, count: number): void {
   const legacyExt = surface === "excel" ? ".xls" : ".doc";
   const finalExt = surface === "excel" ? ".xlsx" : ".docx";
@@ -4994,7 +4994,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = true;
           else st.allowDocFallback = true;
-          void submitAfterResumeCheck(surface, st);
+          continueAfterCompatibility(surface, st);
         },
       },
       {
@@ -5003,7 +5003,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = false;
           else st.allowDocFallback = false;
-          void submitAfterResumeCheck(surface, st);
+          continueAfterCompatibility(surface, st);
         },
       },
     ],
@@ -5037,7 +5037,6 @@ function revisionCountPhrase(entries: Array<{ file: FileItem; count: number }>):
 /** 开始前的修订处理决定。返回 true 表示可以接着走启动流程；false 表示弹窗已经开了，
  *  等用户在弹窗里决定（决定完会自己接着往下走）。 */
 function nextRevisionDecision(st: SurfaceState): boolean {
-  if (st.revisionApplyToBatch) return true;
   const entries = filesWithRevisions(st);
   if (!entries.length) return true;
   showRevisionModal(st, entries);
@@ -5054,7 +5053,9 @@ function showRevisionModal(st: SurfaceState, entries: Array<{ file: FileItem; co
   ).length;
   const intro = single
     ? t("修订就是在 Word 里开着「修订」功能时做的改动（新增、删除的文字）。这些文字要怎么处理？")
-    : t("「{0}」。其余 {1} 个文件没有修订，会正常翻译。", revisionCountPhrase(entries), otherSelected);
+    : otherSelected > 0
+      ? t("{0}。其余 {1} 个文件没有修订，会正常翻译。", revisionCountPhrase(entries), otherSelected)
+      : revisionCountPhrase(entries);
 
   const options: Array<{ value: RevisionMode | "resolve"; label: string; hint: string }> = [
     {
@@ -5120,19 +5121,6 @@ function showRevisionModal(st: SurfaceState, entries: Array<{ file: FileItem; co
     list.append(row);
   }
 
-  // 「本批其他有修订的文件也按这个处理」：只有真还有其他带修订的文件时才出现（样张②）。
-  let applyCheckbox: HTMLInputElement | null = null;
-  if (single && filesWithRevisions(st).length - entries.length > 0) {
-    const line = el("label", "rev-apply");
-    applyCheckbox = document.createElement("input");
-    applyCheckbox.type = "checkbox";
-    applyCheckbox.checked = st.revisionApplyToBatch;
-    const words = document.createElement("span");
-    words.textContent = t("本批其他有修订的文件也按这个处理");
-    line.append(applyCheckbox, words);
-    list.append(line);
-  }
-
   body.append(introLine, list);
 
   const acts = el("div", "macts");
@@ -5144,11 +5132,10 @@ function showRevisionModal(st: SurfaceState, entries: Array<{ file: FileItem; co
     onClick: () => {
       if (chosen === "resolve") {
         close();
-        showRevisionResolveModal(st, entries);
+        showRevisionResolveModal(entries);
         return;
       }
       st.revisionMode = chosen;
-      if (applyCheckbox?.checked) st.revisionApplyToBatch = true;
       close();
       void submitAfterResumeCheck("word", st);
     },
@@ -5160,10 +5147,7 @@ function showRevisionModal(st: SurfaceState, entries: Array<{ file: FileItem; co
 }
 
 /** 样张③：选了「先处理修订」之后那一步。这里已经不再启动翻译了。 */
-function showRevisionResolveModal(
-  st: SurfaceState,
-  entries: Array<{ file: FileItem; count: number }>,
-): void {
+function showRevisionResolveModal(entries: Array<{ file: FileItem; count: number }>): void {
   const single = entries.length === 1;
   const name = single ? fileLabel(entries[0].file) : t("这批文件");
   openModal({
@@ -5184,18 +5168,26 @@ function showRevisionResolveModal(
       { label: t("知道了"), variant: "primary" },
     ],
   });
-  // 点过「先处理修订」就等于这次不翻：把「本批其他文件也按这个处理」的状态清掉，
-  // 免得下次点开始翻译时静默跳过这一问。
-  st.revisionApplyToBatch = false;
 }
 
-/** 「在访达中显示」：macOS 是访达，其他平台由壳自己换成文件管理器。 */
+/** 「在访达中显示」：macOS 是访达，其他平台由壳自己换成文件管理器。
+ *  多个文件时按所在文件夹归拢：同一个文件夹里只有一个要处理的文件就选中它，有好几个
+ *  就打开那个文件夹——不能只显示第一个，其余文件让用户自己找。 */
 function revealSourceInFinder(entries: Array<{ file: FileItem; count: number }>): void {
-  const target = entries[0]?.file.path;
-  if (!target) return;
+  const byFolder = new Map<string, string[]>();
+  for (const entry of entries) {
+    const path = entry.file.path;
+    const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    const folder = cut > 0 ? path.slice(0, cut) : path;
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), path]);
+  }
+  if (!byFolder.size) return;
   void (async () => {
     try {
-      await invoke("open_local_path", { path: target, reveal: true });
+      for (const [folder, paths] of byFolder) {
+        if (paths.length === 1) await invoke("open_local_path", { path: paths[0], reveal: true });
+        else await invoke("open_local_path", { path: folder, reveal: false });
+      }
     } catch (error) {
       showToast({ message: redactedText((error as Error)?.message, t("打开路径失败。")), error: true });
     }

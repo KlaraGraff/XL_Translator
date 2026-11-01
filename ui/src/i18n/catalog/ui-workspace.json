@@ -1967,7 +1967,7 @@
     "en": "{0} {0|file in this batch has|files in this batch have} tracked changes",
     "fr": "{0} {0|fichier de ce lot contient|fichiers de ce lot contiennent} des modifications suivies"
   },
-  "「{0}」。其余 {1} 个文件没有修订，会正常翻译。": {
+  "{0}。其余 {1} 个文件没有修订，会正常翻译。": {
     "en": "{0}. The other {1} {1|file has|files have} no tracked changes and will be translated normally.",
     "fr": "{0}. Les {1} autres {1|fichier n'a|fichiers n'ont} pas de modifications suivies et {1|sera|seront} traduit normalement."
   },
@@ -2010,10 +2010,6 @@
   "修订里的文字保持原文不动。（默认）": {
     "en": "Text inside tracked changes stays as it is. (Default)",
     "fr": "Le texte des modifications suivies reste tel quel. (Par défaut)"
-  },
-  "本批其他有修订的文件也按这个处理": {
-    "en": "Apply this to the other files in this batch that have tracked changes",
-    "fr": "Appliquer ce choix aux autres fichiers du lot qui ont des modifications suivies"
   },
   "好的，先处理修订": {
     "en": "Fine — resolve the changes first",
