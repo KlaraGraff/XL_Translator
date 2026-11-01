@@ -42,6 +42,9 @@ def strip_error_noise(value: object) -> str:
     return " ".join(raw.split()).strip()
 
 
+# 接口上没有这个模型（模型名填错，或这个密钥用不了它）。连接测试认出这种情况时也用这句。
+MODEL_NOT_FOUND_MESSAGE = "接口上找不到此模型，请在设置中确认模型名称是否正确。"
+
 # (markers, sentence).  Markers are regexes matched against the whole message
 # case-insensitively; the first rule with any match wins, so specific rules go
 # above general ones.  Bare status codes are wrapped in \b so a count or a byte
@@ -168,7 +171,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"model_not_found", r"do not have access to", r"\b404\b"),
-        "接口上找不到此模型，请在设置中确认模型名称是否正确。",
+        MODEL_NOT_FOUND_MESSAGE,
     ),
     (
         (r"rate limit", r"too many requests", r"\b429\b", r"并发达到上限"),

@@ -9,7 +9,7 @@ pypdfium2>=4.30,<5
 # 用户在「插件」页一键安装（core/pdf_component_install.py），或连接自己装好的 pdf2docx；
 # 原位替换按需加载其中的 PyMuPDF（core/pdf_component.py）。开发和测试另装，见
 # requirements-test.txt；打包脚本把它排除在安装包外（packaging/sidecar/translator_sidecar.spec）。
-Pillow>=10.0.0
+Pillow>=10.1.0
 # 插件页一键安装「文字识别组件」：conda-forge 的包是 zstd 压缩的（core/component_download.py）
 zstandard>=0.23,<1
 # 云端翻译引擎 HTTP 客户端

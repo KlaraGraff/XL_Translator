@@ -1,4 +1,4 @@
 -r requirements.txt
 
 pyinstaller>=6.10,<7
-pillow>=10.0
+pillow>=10.1

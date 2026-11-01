@@ -38,6 +38,7 @@ from core.model_roles import (
     role_capability,
 )
 from core.pdf_review import REVIEW_MODEL_ADVICE, check_pdf_review_connectivity
+from core.user_facing_errors import MODEL_NOT_FOUND_MESSAGE
 from engines.openai_engine import OpenAIEngine
 from settings import AppSettings, _api_key_env_names
 from tests.image_probe_reader import probe_code_in_request
@@ -122,6 +123,10 @@ class _FakeDeepSeek(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions":
             self._send_json(404, {"error": {"message": "Not Found"}})
             return
+        if payload.get("model") == "no-such-model":
+            # DeepSeek 对不存在的模型名回的就是这个（400，不是 404）。
+            self._send_json(400, {"error": {"message": "Model Not Exist", "type": "invalid_request_error"}})
+            return
         content = payload["messages"][-1]["content"]
         has_image = isinstance(content, list) and any(part.get("type") == "image_url" for part in content)
         if has_image and payload.get("model") not in VISION_MODELS:
@@ -175,6 +180,16 @@ class DeepSeekReviewTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{REVIEW_MODEL_ADVICE}")
         self.assertEqual(result.status, "no_image_input")
+
+    def test_a_wrong_model_name_is_not_called_a_model_that_cannot_read_images(self) -> None:
+        settings = self._settings("no-such-model")
+        with patch("core.model_roles.get_key", return_value="sk-test"):
+            result = check_pdf_review_connectivity(settings, max_attempts=1)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, f"图像翻译审核模型连接测试失败：{MODEL_NOT_FOUND_MESSAGE}")
+        self.assertEqual(result.status, "failed")
+        # 没有「能不能识别图片」的结论可记。
+        self.assertEqual(settings.image_input_checks, {})
 
     def test_a_gateway_that_drops_the_image_no_longer_passes(self) -> None:
         """以前发两张白图，接口不报错就算通过；中转站把图丢了也「通过」。现在要读对测试图里的字。"""

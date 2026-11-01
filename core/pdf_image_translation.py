@@ -1532,6 +1532,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         self._image_output_guard = ImageInputGuard(image_model_refused_page)
         self._review_switched_off = ""
         self._image_model_rejected = ""
+        self._image_model_fatal = ""
         self._review_lock = threading.Lock()
         self._review_processing_count = 0
         self._review_passed_count = 0
@@ -2882,6 +2883,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         self._image_output_guard = ImageInputGuard(image_model_refused_page)
         self._review_switched_off = ""
         self._image_model_rejected = ""
+        self._image_model_fatal = ""
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
@@ -5185,13 +5187,13 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             try:
                 lease = scheduler.acquire_lease(
                     1,
-                    should_stop=self._stop_event.is_set,
+                    should_stop=self._stopping_page_attempts,
                 )
             except ApiSchedulerAcquireCancelled:
                 break
             self._note_page_request_started(page_record)
             try:
-                if self._stop_event.is_set():
+                if self._stopping_page_attempts():
                     break
                 self._record_api_call()
                 image_bytes = self._image_client.generate_page(
@@ -5543,7 +5545,7 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             self._log("WARN", f"{self._page_log_prefix(page_record)}已自动修正页面比例{self._page_elapsed_text(page_record)}")
             return page_record
 
-        if self._stop_event.is_set():
+        if self._stopping_page_attempts():
             # 中止时这一页没跑出任何可用结果：它可能一次模型调用都没发生（在队列里
             # 等着，闸门直接取消），也可能跑到一半被截断。无论哪种，它都不是「试过
             # 了没成」，不该被烧成失败占位页塞进交付产物、更不该让整份文件被判成
@@ -5834,6 +5836,11 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
             ),
         )
 
+    def _stopping_page_attempts(self) -> bool:
+        """这一页别再发新的生成请求：用户停止了，或者图像模型已确认生成不了图、整个
+        任务正要停下（还在排队的页按「未开始」退回，续译时重新排队）。"""
+        return self._stop_event.is_set() or bool(self._image_model_fatal)
+
     def _reject_image_model(self, model_config) -> None:
         """图像翻译模型连续两页生成不了图：不再往它发页面。
 
@@ -5845,6 +5852,8 @@ class PdfImageTranslationRunner(PdfWordSegmentsMixin, BaseTaskRunner):
         if model_config is not None:
             save_role_availability(model_config, ROLE_IMAGE, ok=False, message=f"图像翻译模型连接测试失败：{IMAGE_MODEL_ADVICE}")
         if getattr(self._settings.pdf, "translation_route", "image") == "image":
+            # 主循环收到这个报错才会停下整个任务；在那之前，别的页别再向它发请求。
+            self._image_model_fatal = message
             raise ImageModelUnavailableError(message)
         with self._review_lock:
             if self._image_model_rejected:

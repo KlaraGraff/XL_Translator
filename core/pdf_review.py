@@ -13,9 +13,13 @@ import httpx
 from loguru import logger
 
 from core import system_proxy
-from core.image_generation import is_model_unavailable_error, looks_like_wrong_image_model
+from core.image_generation import (
+    is_model_not_found_error,
+    is_model_unavailable_error,
+    looks_like_wrong_image_model,
+)
 from core.image_requests import VISION_ROUTE_PATHS, build_vision_payload, image_base_url, vision_routes
-from core.user_facing_errors import humanize_error
+from core.user_facing_errors import MODEL_NOT_FOUND_MESSAGE, humanize_error
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_PDF_REVIEW,
@@ -386,11 +390,14 @@ def check_pdf_review_connectivity(
     elif probe.result == IMAGE_INPUT_UNSEEN:
         message = image_input_availability_message(config.label, probe.result, probe.message)
         status = "image_unseen"
-        detail = probe.reply[:200]
+        detail = probe.reply
     else:
         last_error = _sanitize_error(probe.error) if probe.error is not None else ""
         message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
-        if probe.error is not None and looks_like_wrong_image_model(probe.error):
+        if probe.error is not None and is_model_not_found_error(probe.error):
+            # 「没有这个模型」常是 400，报错原文里没有 404，上面那句认不出来。
+            message = f"{config.label}连接测试失败：{MODEL_NOT_FOUND_MESSAGE}"
+        elif probe.error is not None and looks_like_wrong_image_model(probe.error):
             # 整句换掉：原来那句「请检查接口地址、API 密钥和模型名称」会把人引去查密钥。
             message = f"{config.label}连接测试失败：{REVIEW_MODEL_ADVICE}"
         status = "failed"
@@ -414,6 +421,14 @@ def _normalize_base_url(config: EffectiveModelConfig) -> str:
 
 
 def _extract_response_text(payload: Any) -> str:
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if isinstance(output, list) and "output_text" not in payload:
+        # 回包里有正文（message）时只取正文：思考过程（reasoning，带一长串加密内容）、
+        # 图像生成结果（整张图的 base64）这些输出项不是模型的回答。没有正文项的
+        # 回包（各家中转站的写法不一）照旧整个找。
+        messages = [item for item in output if isinstance(item, dict) and item.get("type") == "message"]
+        if messages:
+            payload = {"output": messages}
     texts: list[str] = []
     for value in _walk_values(payload):
         if isinstance(value, str) and value.strip():
