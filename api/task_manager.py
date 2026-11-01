@@ -562,6 +562,9 @@ class TranslationTaskManager:
                 # Keep the established call shape for other surfaces; tests and
                 # integrations may provide a narrow scan adapter for them.
                 found = self._scan(scan_root, normalized_surface, selected_options)
+            if not outside:
+                files.extend(found)
+                continue
             for item in found:
                 key = str(Path(item.path).expanduser().resolve())
                 if key not in seen_files:
