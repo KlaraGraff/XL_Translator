@@ -21,6 +21,7 @@ from typing import Callable, Iterable
 from loguru import logger
 
 from core import tm_manager
+from core.source_layout import SourceLayout
 from core.local_endpoint import runtime_mode, settings_runs_locally
 from core.zh_hant import fix_translation, is_traditional_chinese, to_traditional
 from core.runner_base import BaseTaskRunner
@@ -474,6 +475,14 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                 ),
             )
 
+    def _source_layout(self) -> SourceLayout:
+        """译文在输出文件夹里的位置：根外同名的各放进来源文件夹名的子文件夹（#288）。"""
+        layout = getattr(self, "_cached_source_layout", None)
+        if layout is None:
+            layout = SourceLayout([item.path for item in self._files], self._source_root)
+            self._cached_source_layout = layout
+        return layout
+
     def _resolve_resume_process_path(
         self, file_item: WordFileItem, *, target_lang: str
     ) -> Path | None:
@@ -486,12 +495,9 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
         if self._resume_output_dir is None:
             return None
         try:
-            # match_previous_output 的第二个参数是「相对目录」，而扫描器填进
-            # WordFileItem.relative_path 的是【含文件名】的相对路径（word_document
-            # 的 _relative_word_path）。直接透传会拼出 resume_dir/report.docx/
-            # report_英文_双语.docx 这种不可能存在的路径，生产环境恒定失配——
-            # 必须先取父目录。
-            rel_dir = Path(file_item.relative_path).parent if file_item.relative_path else Path(".")
+            # match_previous_output 的第二个参数是「相对目录」（不含文件名），
+            # 和写译文时用的是同一个位置，根外同名文件的子文件夹也算在内。
+            rel_dir = self._source_layout().subdir(file_item.path)
             if self._settings.word_output.output_mode == "source_folder":
                 candidate = match_source_folder_output(
                     file_item.path,
@@ -3440,10 +3446,7 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
             )
         )
         self._log("INFO", f"生成文件：{file_item.name}（{index + 1}/{len(self._files)}）")
-        try:
-            rel_subdir = file_item.path.parent.relative_to(source_root)
-        except ValueError:
-            rel_subdir = Path()
+        rel_subdir = self._source_layout().subdir(file_item.path)
 
         stage_handle = None
         file_issues_at_start = len(quality_issues)

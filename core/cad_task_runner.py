@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
+from core.source_layout import SourceLayout
 from core.runner_base import BaseTaskRunner
 from core.cad_translation import (
     CadPipelineError,
@@ -564,16 +565,15 @@ class CadTaskRunner(BaseTaskRunner):
         )
         try:
             self._log("INFO", f"本次共翻译 {len(self._files)} 个图纸文件")
+            source_layout = SourceLayout([Path(item.path) for item in self._files], self._source_root)
             for file_index, item in enumerate(self._files):
                 self._wait_while_paused(CAD_PAUSED_STATUS)
                 source = Path(item.path)
                 if self._stop_event.is_set():
                     self._file_progress.emit(source, "stopped", "stopped", result={"status": "stopped"})
                     continue
-                try:
-                    relative = source.relative_to(self._source_root) if self._source_root.is_dir() else Path(source.name)
-                except ValueError:
-                    relative = Path(source.name)
+                # 根外同名的图纸各放进来源文件夹名的子文件夹，不互相覆盖（#288）。
+                relative = source_layout.relative(source)
                 translated_stem = output_stem_from_translation(
                     source.stem, filename_translations.get(source.stem, source.stem)
                 )

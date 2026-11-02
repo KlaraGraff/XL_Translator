@@ -218,6 +218,8 @@ def _extract_claude_text(payload: object) -> str:
     text = "".join(parts)
     if payload.get("stop_reason") == "max_tokens":
         # 截断的 JSON 数组解析不过去，会伪装成「格式错」，日志里查不出真因；
-        # 也不该二分重发——半截的输出换一半的量重新请求，还是会被同样的上限截断。
-        raise ValueError("Claude API 输出被截断（stop_reason=max_tokens），本批译文不完整")
+        # 原样重发还会被同样的上限截断；交给调度层按「截断」拆小批次重发。
+        from core.text_transport import TRUNCATED_ANSWER, TRUNCATED_MESSAGE, TextTransportError
+
+        raise TextTransportError(TRUNCATED_MESSAGE, kind=TRUNCATED_ANSWER)
     return text

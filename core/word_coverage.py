@@ -32,7 +32,7 @@ from core.translation_coverage import (
 )
 from core.bilingual_writer import bilingual_output_name
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
-from core.word_revisions import paragraph_coverage_text
+from core.word_revisions import paragraph_coverage_text, renumber_duplicate_revision_ids
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
@@ -460,6 +460,7 @@ def write_untranslated_docx(
         revision_callback(revision_stats)
 
     apply_east_asian_language(doc, target_lang)
+    renumber_duplicate_revision_ids(doc)
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""
@@ -761,6 +762,28 @@ def _classify_table_cells(
     return units
 
 
+def _split_interleaved_cell_lines(
+    lines: list[str], *, source_lang: str, target_lang: str
+) -> tuple[str, str] | None:
+    """格子里「一段原文、一段译文」交替排：(原文各段, 译文各段)，不是这种排法返回 None。
+
+    「修订一起翻译」时，带修订的格子逐段处理，每段原文下面紧跟它自己的译文
+    （core/word_revisions.py）。整格判定只认「原文都在前、译文都在后」，认不出
+    这种排法：续译前核对底稿时把这一格当成「源文件改过」，放弃上次结果整份重翻（#285）。
+    """
+    if len(lines) < 2 or len(lines) % 2:
+        return None
+    sources, targets = lines[0::2], lines[1::2]
+    for source, target in zip(sources, targets):
+        if not looks_like_source_text(source, source_lang=source_lang, target_lang=target_lang):
+            return None
+        if not looks_like_target_text(
+            target, source_lang=source_lang, target_lang=target_lang
+        ) or looks_like_source_text(target, source_lang=source_lang, target_lang=target_lang):
+            return None
+    return join_lines(sources), join_lines(targets)
+
+
 def _classify_cell_text(
     text: str,
     *,
@@ -773,6 +796,28 @@ def _classify_cell_text(
     if not cleaned:
         return None
     paragraph_lines = [line for line in cleaned.splitlines() if line.strip()]
+    interleaved = _split_interleaved_cell_lines(
+        paragraph_lines, source_lang=source_lang, target_lang=target_lang
+    )
+    if interleaved is not None:
+        source, target = interleaved
+        _mark_residual_cjk(
+            data,
+            target,
+            target_lang=target_lang,
+            location=location,
+            index=data.get("cell_index"),
+        )
+        return CoverageUnit(
+            source_text=source,
+            target_text=target,
+            status=COVERAGE_COVERED,
+            location=location,
+            kind="table_cell",
+            section_path="表格",
+            reason="表格单元格内每段原文后都跟着一段译文。",
+            data=data,
+        )
     split = split_existing_bilingual_text(
         join_lines(paragraph_lines),
         source_lang=source_lang,

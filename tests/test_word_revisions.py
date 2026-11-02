@@ -1221,3 +1221,81 @@ class RevisionModeApiTests(IsolatedAppDataTestCase):
             TaskStartRequest(
                 surface="word", source_path="/tmp/x.docx", revision_mode="delete"
             )
+
+
+class RevisionCellResumeTests(unittest.TestCase):
+    """「修订一起翻译」后续译：带修订的格子不能让底稿核对失败、整份重翻（#285 遗留）。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_interleaved_revision_cell_counts_as_translated_baseline(self) -> None:
+        from core.resume_detection import baseline_missing_source_texts
+
+        source = self.root / "cell.docx"
+        doc = Document()
+        cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+        cell.paragraphs[0].add_run("单元格第一行")
+        cell._tc.append(parse_xml(_revision_xml(inserted=INSERTED_TEXT, deleted=DELETED_TEXT)))
+        doc.save(source)
+        output = write_bilingual_docx(
+            source_path=source,
+            output_dir=self.root / "out",
+            translations={**TRANSLATIONS, "单元格第一行": "First line of the cell"},
+            target_lang="en",
+            revision_mode="translate",
+        )
+
+        plan = build_word_coverage_plan(output, target_lang="en")
+        self.assertEqual(plan.source_units, [])
+        # 以前：底稿这一格被认成「原文 + 译文 + 原文」，与源文件对不上，续译放弃底稿整份重翻。
+        self.assertEqual(
+            baseline_missing_source_texts(
+                source, output, surface="word", target_lang="en", source_lang="zh"
+            ),
+            [],
+        )
+
+
+class DuplicateRevisionIdTests(unittest.TestCase):
+    """双语版式复制段落格式时带过去的修订编号不能和原段落重复（#285 遗留，老问题）。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def _revision_ids(self, path: Path) -> list[str]:
+        import re
+
+        return re.findall(
+            r'<w:(?:ins|del|pPrChange|rPrChange)\b[^>]*w:id="(\d+)"', _document_xml(path)
+        )
+
+    def test_paragraph_mark_revisions_get_fresh_ids_in_the_translation_paragraph(self) -> None:
+        source = self.root / "marks.docx"
+        doc = Document()
+        _append_xml(
+            doc,
+            f'<w:p {nsdecls("w")}><w:pPr><w:rPr>'
+            '<w:ins w:id="5" w:author="a" w:date="2026-01-01T00:00:00Z"/></w:rPr>'
+            '<w:pPrChange w:id="6" w:author="a" w:date="2026-01-01T00:00:00Z"><w:pPr/></w:pPrChange>'
+            "</w:pPr><w:r><w:t>新加的一段正文</w:t></w:r></w:p>",
+        )
+        doc.save(source)
+
+        for mode in (REVISION_MODE_SKIP, REVISION_MODE_TRANSLATE):
+            output = write_bilingual_docx(
+                source_path=source,
+                output_dir=self.root / mode,
+                translations={"新加的一段正文": "A newly added paragraph"},
+                target_lang="en",
+                revision_mode=mode,
+            )
+            ids = self._revision_ids(output)
+            self.assertEqual(len(ids), 4, ids)
+            self.assertEqual(len(set(ids)), 4, f"{mode}: 修订编号重复 {ids}")
+            # 原文段的编号保持原样，换号的是新插的译文段。
+            self.assertEqual(ids[:2], ["5", "6"])

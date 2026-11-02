@@ -48,6 +48,7 @@ from typing import Any
 
 from loguru import logger
 
+from core.source_layout import SourceLayout
 from core.bilingual_writer import bilingual_output_name
 from core.output_metadata import build_translation_metadata, write_translation_metadata
 from core.document_profile import append_profile
@@ -250,6 +251,7 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._host = host
         self._service = service
         self._source_root = Path(source_root)
+        self._layout: SourceLayout | None = None
         self._output_dir = Path(output_dir)
         self._target_lang = target_lang
         self._source_lang = str(source_lang or AUTO_SOURCE_LANG)
@@ -411,10 +413,10 @@ class AdapterTaskRunner(BaseTaskRunner):
         }
 
     def _relative(self, path: Path) -> Path:
-        try:
-            return path.resolve().relative_to(self._source_root.resolve())
-        except ValueError:
-            return Path(path.name)
+        # 根外同名的文件各放进来源文件夹名的子文件夹，不互相覆盖（#288）。
+        if self._layout is None:
+            self._layout = SourceLayout([item.path for item in self._files], self._source_root)
+        return self._layout.relative(path)
 
     def _output_path(self, path: Path) -> Path:
         relative = self._relative(path)

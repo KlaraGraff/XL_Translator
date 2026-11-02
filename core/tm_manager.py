@@ -210,9 +210,32 @@ def _ensure_db_ready() -> None:
     init_db()
 
 
+# 「整库导入」要么全部写进去、要么一条不写：single_transaction() 期间，同一线程里
+# 的 _get_conn() 都拿到同一个连接，不各自提交，最后一起提交或一起回滚。
+_shared_conn = threading.local()
+
+
+@contextmanager
+def single_transaction():
+    """同一线程里接下来的记忆库写入合成一次提交；中途出错整体回滚（#281）。"""
+    if getattr(_shared_conn, "conn", None) is not None:
+        yield _shared_conn.conn
+        return
+    with _get_conn() as conn:
+        _shared_conn.conn = conn
+        try:
+            yield conn
+        finally:
+            _shared_conn.conn = None
+
+
 @contextmanager
 def _get_conn():
     """线程安全的连接上下文管理器（每次调用独立连接）。"""
+    shared = getattr(_shared_conn, "conn", None)
+    if shared is not None:
+        yield shared
+        return
     _ensure_db_ready()
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row

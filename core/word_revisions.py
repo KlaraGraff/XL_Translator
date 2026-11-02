@@ -568,6 +568,44 @@ class _RevisionIds:
         return str(value)
 
 
+# 修订标记各自占一个 w:id。批注、书签也用 w:id，但它们是成对的起止标记，编号本来
+# 就要相同，不能动；移动修订的范围标记（moveFromRangeStart/End）同理。
+_REVISION_ID_TAGS = tuple(
+    qn(f"w:{tag}")
+    for tag in (
+        "ins", "del", "moveFrom", "moveTo",
+        "pPrChange", "rPrChange", "sectPrChange", "tblPrChange", "tblGridChange",
+        "trPrChange", "tcPrChange", "tblPrExChange", "numberingChange",
+        "cellIns", "cellDel", "cellMerge",
+    )
+)
+
+
+def renumber_duplicate_revision_ids(doc) -> int:
+    """正文里编号重复的修订换成新编号，返回改了几处。
+
+    双语版式插译文段时会把原段落的段落格式整份复制过去；原段落要是带着「新插入
+    的段落」这类段落标记修订，两段的修订编号就一样了。Word 对重复编号的处理没有
+    保证：「接受 / 拒绝」可能作用到另一段，个别版本打开时提示文件有问题。写完以后
+    统一查一遍，第一次出现的保留，后面重复的换成没用过的编号（#285 遗留）。
+    """
+    ids = None  # 扫全部部件找最大编号要花时间，真有重复才建
+    seen: set[str] = set()
+    changed = 0
+    for element in doc.element.body.iter(*_REVISION_ID_TAGS):
+        value = element.get(qn("w:id"))
+        if value is None:
+            continue
+        if value in seen:
+            if ids is None:
+                ids = _RevisionIds(doc)
+            element.set(qn("w:id"), ids.take())
+            changed += 1
+        else:
+            seen.add(value)
+    return changed
+
+
 def _wrapper_template(paragraph, tag: str):
     """新修订标记沿用原段落里同类修订的作者和日期；没有同类的就借另一类的。"""
     for wanted in (qn(tag), *_REVISION_TAGS):

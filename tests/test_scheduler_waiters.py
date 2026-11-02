@@ -212,5 +212,85 @@ def _wait_until_queued(group: FairApiGroupScheduler, owner_key: str, *, timeout:
 
 
 
+class FairSchedulerHeadOfLineTests(unittest.TestCase):
+    """队首一个放不下的大请求，不再让别的任务放得下的小请求干等（#281 第 3 条）。"""
+
+    def _group(self) -> FairApiGroupScheduler:
+        group = FairApiGroupScheduler()
+        group.add_task("task-a", 4)
+        group.add_task("task-b", 4)
+        return group
+
+    def _start(self, target) -> threading.Thread:
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        return thread
+
+    def test_a_small_request_of_another_task_uses_the_free_slot(self) -> None:
+        group = self._group()
+        held = group.acquire_lease("task-a", 2)
+        big: list[object] = []
+        big_thread = self._start(lambda: big.append(group.acquire_lease("task-a", 4)))
+        self.assertTrue(_wait_until_queued(group, "task-a"))
+
+        # 空着 2 份，队首要 4 份：task-b 只要 1 份，不用等 task-a 的租约还回来。
+        small = group.acquire_lease(
+            "task-b", 1, should_stop=_deadline(2.0)
+        )
+        self.assertEqual(small.weight, 1)
+        self.assertFalse(big)
+
+        group.release(small)
+        group.release(held)
+        big_thread.join(timeout=5)
+        self.assertFalse(big_thread.is_alive())
+        group.release(big[0])
+
+    def test_the_head_is_overtaken_at_most_capacity_times(self) -> None:
+        group = self._group()
+        held = group.acquire_lease("task-a", 1)
+        big: list[object] = []
+        big_thread = self._start(lambda: big.append(group.acquire_lease("task-a", 4)))
+        self.assertTrue(_wait_until_queued(group, "task-a"))
+
+        passed = 0
+        for _ in range(group.capacity):
+            lease = group.acquire_lease("task-b", 1, should_stop=_deadline(2.0))
+            group.release(lease)
+            passed += 1
+        self.assertEqual(passed, group.capacity)
+        # 第 capacity + 1 次就得排在大请求后面了。
+        with self.assertRaises(ApiSchedulerAcquireCancelled):
+            group.acquire_lease("task-b", 1, should_stop=_deadline(0.3))
+
+        group.release(held)
+        big_thread.join(timeout=5)
+        self.assertFalse(big_thread.is_alive())
+        group.release(big[0])
+
+    def test_no_overtaking_while_the_head_fits(self) -> None:
+        group = self._group()
+        held = group.acquire_lease("task-a", 3)
+        head_fits: list[object] = []
+
+        with group._condition:  # noqa: SLF001 - pin the queue order directly
+            group._add_waiter_locked("task-a")  # noqa: SLF001
+            group._waiting_weights["task-a"] = [1]  # noqa: SLF001
+        # 队首只要 1 份、正好放得下：task-b 不能抢在它前面。
+        with self.assertRaises(ApiSchedulerAcquireCancelled):
+            group.acquire_lease("task-b", 1, should_stop=_deadline(0.3))
+        with group._condition:  # noqa: SLF001
+            group._waiting_weights.pop("task-a", None)  # noqa: SLF001
+            group._remove_waiter_locked("task-a")  # noqa: SLF001
+        head_fits.append(group.acquire_lease("task-b", 1, should_stop=_deadline(1.0)))
+        group.release(head_fits[0])
+        group.release(held)
+
+
+def _deadline(seconds: float):
+    end = time.monotonic() + seconds
+    return lambda: time.monotonic() > end
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
