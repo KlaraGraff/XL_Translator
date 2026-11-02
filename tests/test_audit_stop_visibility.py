@@ -108,7 +108,7 @@ class PdfRegenerateFailureKeepsOldArtifactWordingTests(unittest.TestCase):
         # 未来的改动里把这句安抚文案又漏掉（071e130 之前就是「有原因文本时不带
         # 这句话」的老毛病，这里既钉住有文案分支也钉住默认兜底分支）。
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / "core" / "pdf_image_translation.py").read_text(encoding="utf-8")
+        source = (repo / "core" / "pdf_page_actions.py").read_text(encoding="utf-8")
         match = re.search(r"    def _execute_page_rerun\(.*?\n    def ", source, re.S)
         assert match, "在源码里找不到 _execute_page_rerun"
         body = match.group(0)
