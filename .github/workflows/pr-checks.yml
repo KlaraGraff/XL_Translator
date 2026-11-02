@@ -51,6 +51,9 @@ jobs:
       - name: No new silent excepts in changed files
         if: github.event_name == 'pull_request'
         run: python scripts/check_silent_excepts.py "origin/${{ github.base_ref }}"
+      - name: No new type errors in changed files
+        if: github.event_name == 'pull_request'
+        run: python scripts/check_type_errors.py "origin/${{ github.base_ref }}"
       - name: Pytest
         env:
           TRANSLATOR_TEMPLATE_REPO: .runtime/extension-template

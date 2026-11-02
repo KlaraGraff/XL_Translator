@@ -6,8 +6,8 @@
 兜住错误时至少记一行日志；确实可以忽略的，在那一行写
 `# noqa: S110 <为什么可以忽略>`。
 
-只比较这次 PR 改过的业务代码文件（不含 tests/、scripts/），每个文件和基线比：
-数量没变多就通过，所以老代码不用一次改完，碰到时顺手补。
+只比较这次 PR 改过的业务代码文件（不含 tests/、scripts/），加在一起和基线比：
+总数没变多就通过，所以老代码不用一次改完，碰到时顺手补；把代码搬到新文件也不会被误拦。
 
 用法（仓库根目录）：
     python scripts/check_silent_excepts.py <基线提交>
@@ -66,23 +66,27 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     base = _merge_base(argv[1])
-    grown = 0
+    # 比的是这批文件的总数：把代码从一个文件搬到新文件时，带过去的老写法不算新增。
+    total_now = total_before = 0
+    report: list[str] = []
     for path in _changed_python_files(base):
         with open(path, encoding="utf-8") as handle:
             now = _findings(path, handle.read())
         before = _findings(path, _base_source(base, path))
+        total_now += len(now)
+        total_before += len(before)
         if len(now) > len(before):
-            grown += 1
-            print(f"{path}：出错后什么都不做的地方从 {len(before)} 处变成 {len(now)} 处")
-            for item in now:
-                print(f"  第 {item['location']['row']} 行 {item['code']}")
-    if grown:
+            report.append(f"{path}：{len(before)} 处 → {len(now)} 处")
+            report.extend(f"  第 {item['location']['row']} 行 {item['code']}" for item in now)
+    if total_now > total_before:
+        print(f"改过的文件里，出错后什么都不做的地方从 {total_before} 处变成 {total_now} 处：")
+        print("\n".join(report))
         print(
             "\n兜住错误时至少记一行日志（logger.debug 也行）；"
             "确实可以忽略的，在那一行写 `# noqa: S110 <原因>`。"
         )
         return 1
-    print("通过：改过的文件里没有新增「出错后什么都不做」。")
+    print(f"通过：改过的文件里「出错后什么都不做」{total_before} → {total_now} 处，没有变多。")
     return 0
 
 

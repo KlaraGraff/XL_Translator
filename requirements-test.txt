@@ -2,5 +2,7 @@
 pytest==9.1.1
 # 测试分到几个核上同时跑（pytest -n auto）。
 pytest-xdist==3.8.0
+# PR 检查里的类型检查（scripts/check_type_errors.py，只看改过的文件有没有新增错误）。
+pyright==1.1.414
 # 「PDF 处理组件」里的 PyMuPDF：测试要跑原位替换。它不进安装包（spec 里排除了）。
 PyMuPDF>=1.24,<2

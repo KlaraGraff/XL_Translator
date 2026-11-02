@@ -89,8 +89,13 @@ Where new code goes (maple, 2026-10-31):
 Silent excepts (maple, 2026-11-02):
 - A caught error must leave at least one log line (`logger.debug` is enough). `except …: pass` and `except …: continue`
   with nothing else are not allowed in new code. When ignoring is truly right, say why on that line: `# noqa: S110 <reason>`.
-- PR checks run `scripts/check_silent_excepts.py`: in each changed business-code file, the count may not go up.
+- PR checks run `scripts/check_silent_excepts.py`: across the changed business-code files, the count may not go up.
   Old ones in files you touch are worth fixing on the way, but not required.
+
+Type errors (maple, 2026-11-02):
+- PR checks run `scripts/check_type_errors.py` (pyright): across the changed business-code files, the error count may not go up.
+  The project has about 700 old ones; fix them in files you touch when it is cheap. A real false positive gets
+  `# pyright: ignore[<rule>]` on that line. Run it locally with `python scripts/check_type_errors.py origin/main`.
 
 When reusing this rule set in a new project, prefer copying the root `AGENTS.md` and the entire `agent/` directory, then adapt `quality_gate.ps1` and the dynamic test scripts to the new project's actual structure.
 
