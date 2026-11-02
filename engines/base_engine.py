@@ -207,6 +207,52 @@ def _wrap_traditional_fix(method, *, with_sources: bool):
     return wrapper
 
 
+# ── 共用的 JSON 数组批处理 ────────────────────────────────
+
+class BatchTranslateMixin:
+    """Claude / OpenAI 两个 HTTP 引擎共用的 translate_batch。
+
+    流程完全一致：按源/目标语言拼任务指令，交给 ``_call_api`` 发请求，
+    再用 ``parse_response`` 解析 JSON 数组。两边唯一的差别是解析失败文案
+    里的引擎显示名，由子类用 ``_response_label`` 类属性提供（OpenAI 侧
+    还要用它区分百炼、智谱等中转商）。继承顺序放在 TranslationEngine 前面。
+    """
+
+    # parse_response 报错前缀；子类按自己的显示名覆盖。
+    _response_label: str = ""
+
+    def _call_api(self, system: str, user_msg: str) -> str:
+        """子类提供：发一次请求并返回原始文本。"""
+        raise NotImplementedError
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        if not texts:
+            return {}
+
+        source_lang_name = get_source_lang_name(source_lang)
+        target_lang_name = get_target_lang_name(target_lang)
+        instruction = TASK_INSTRUCTION.format(
+            source_lang_name=source_lang_name,
+            target_lang_name=target_lang_name,
+        )
+        full_system = compose_system(system_prompt, instruction)
+        user_msg    = json.dumps(texts, ensure_ascii=False)
+
+        raw = self._call_api(full_system, user_msg)
+        return parse_response(texts, raw, self._response_label)
+
+
+BatchTranslateMixin.translate_batch = _wrap_traditional_fix(  # type: ignore[method-assign]
+    BatchTranslateMixin.translate_batch, with_sources=False
+)
+
+
 class TranslationEngine(ABC):
 
     def __init_subclass__(cls, **kwargs):
