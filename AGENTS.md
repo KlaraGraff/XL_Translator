@@ -77,7 +77,7 @@ Where new code goes (maple, 2026-10-31):
 - A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
 - Known independent parts to move out when you touch them (maple, 2026-11-02):
   - `core/pdf_image_translation.py`: each PDF mode's own steps (in-place, to-Word, image generation).
-  - `ui/src/views/workspace.ts`: the PDF route section, the resume modal, the revision modal, the start-blocked modal, the output-location section.
+  - `ui/src/views/workspace.ts`: done 2026-11-02 — the PDF route section, the resume / revision / start-blocked modals and the output-location section now live in `workspace-*.ts` next to it. New dialogs and sections of the workspace start in their own `workspace-*.ts` file.
   - `settings.py`: the old-data migration rules.
   - `core/word_task_runner.py`: the recovery / gap-fill pool. The main `_run` flow stays.
 - Excel and Word twins: `core/task_runner.py` and `core/word_task_runner.py` each keep a near-copy of the same steps
@@ -89,8 +89,13 @@ Where new code goes (maple, 2026-10-31):
 Silent excepts (maple, 2026-11-02):
 - A caught error must leave at least one log line (`logger.debug` is enough). `except …: pass` and `except …: continue`
   with nothing else are not allowed in new code. When ignoring is truly right, say why on that line: `# noqa: S110 <reason>`.
-- PR checks run `scripts/check_silent_excepts.py`: in each changed business-code file, the count may not go up.
+- PR checks run `scripts/check_silent_excepts.py`: across the changed business-code files, the count may not go up.
   Old ones in files you touch are worth fixing on the way, but not required.
+
+Type errors (maple, 2026-11-02):
+- PR checks run `scripts/check_type_errors.py` (pyright): across the changed business-code files, the error count may not go up.
+  The project has about 700 old ones; fix them in files you touch when it is cheap. A real false positive gets
+  `# pyright: ignore[<rule>]` on that line. Run it locally with `python scripts/check_type_errors.py origin/main`.
 
 When reusing this rule set in a new project, prefer copying the root `AGENTS.md` and the entire `agent/` directory, then adapt `quality_gate.ps1` and the dynamic test scripts to the new project's actual structure.
 

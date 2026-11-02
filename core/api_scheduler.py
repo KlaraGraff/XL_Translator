@@ -217,57 +217,26 @@ class WeightedApiScheduler:
     ) -> ApiConcurrencyLimitDecision:
         """Adjust runtime capacity after an upstream concurrency-limit signal.
 
-        A request carries the scheduler generation it acquired under. When a
-        newer generation is already active, the signal belongs to an older
-        burst and should only cause a retry under the current capacity.
+        The decision itself is :func:`decide_concurrency_limit_hit`, shared with
+        the per-connection group scheduler in :mod:`core.task_resources`.
         """
         with self._condition:
-            previous_capacity = self.capacity
-            if (
-                request_generation is not None
-                and request_generation != self._generation
-            ):
-                return ApiConcurrencyLimitDecision(
-                    action=API_CONCURRENCY_ACTION_RETRY_CURRENT,
-                    previous_capacity=previous_capacity,
-                    current_capacity=previous_capacity,
-                    minimum_capacity=self.minimum_capacity,
-                    generation=self._generation,
-                    request_generation=request_generation,
-                )
-
-            if previous_capacity <= self.minimum_capacity:
-                return ApiConcurrencyLimitDecision(
-                    action=API_CONCURRENCY_ACTION_UNAVAILABLE,
-                    previous_capacity=previous_capacity,
-                    current_capacity=previous_capacity,
-                    minimum_capacity=self.minimum_capacity,
-                    generation=self._generation,
-                    request_generation=request_generation,
-                )
-
-            next_capacity = self._next_reduced_capacity_locked()
-            self.capacity = next_capacity
-            self.normal_soft_limit = max(
-                1,
-                int(math.floor(self.capacity * self._normal_soft_ratio)),
-            )
-            self._generation += 1
-            self._condition.notify_all()
-            return ApiConcurrencyLimitDecision(
-                action=API_CONCURRENCY_ACTION_REDUCED,
-                previous_capacity=previous_capacity,
-                current_capacity=self.capacity,
+            decision = decide_concurrency_limit_hit(
+                capacity=self.capacity,
                 minimum_capacity=self.minimum_capacity,
+                levels=self._adaptive_capacity_levels,
                 generation=self._generation,
                 request_generation=request_generation,
             )
-
-    def _next_reduced_capacity_locked(self) -> int:
-        for capacity in self._adaptive_capacity_levels:
-            if capacity < self.capacity:
-                return max(self.minimum_capacity, capacity)
-        return max(self.minimum_capacity, self.capacity - 1)
+            if decision.action == API_CONCURRENCY_ACTION_REDUCED:
+                self.capacity = decision.current_capacity
+                self.normal_soft_limit = max(
+                    1,
+                    int(math.floor(self.capacity * self._normal_soft_ratio)),
+                )
+                self._generation = decision.generation
+                self._condition.notify_all()
+            return decision
 
     def _can_acquire(self, weight: int, category: str) -> bool:
         if self._active_total_weight + weight > self.capacity:
@@ -303,6 +272,56 @@ def _normalize_release_weight(weight: int | float | None) -> int:
     except (TypeError, ValueError, OverflowError):
         normalized = 1
     return max(1, normalized)
+
+
+def next_reduced_capacity(capacity: int, minimum_capacity: int, levels: tuple[int, ...]) -> int:
+    """Step down to the next adaptive level below ``capacity``."""
+    for level in levels:
+        if level < capacity:
+            return max(minimum_capacity, level)
+    return max(minimum_capacity, capacity - 1)
+
+
+def decide_concurrency_limit_hit(
+    *,
+    capacity: int,
+    minimum_capacity: int,
+    levels: tuple[int, ...],
+    generation: int,
+    request_generation: int | None,
+) -> ApiConcurrencyLimitDecision:
+    """What to do when upstream says "too many concurrent requests".
+
+    Shared by :class:`WeightedApiScheduler` and the per-connection group
+    scheduler in :mod:`core.task_resources`, so both paths back off the same way.
+
+    - The request was acquired under an older generation: the signal belongs to
+      an earlier burst, so only retry under the current capacity.
+    - Already at the minimum: the connection is unavailable for now.
+    - Otherwise: step down one adaptive level and start a new generation.
+      The caller applies ``current_capacity`` / ``generation`` and wakes waiters.
+    """
+    if request_generation is not None and request_generation != generation:
+        action = API_CONCURRENCY_ACTION_RETRY_CURRENT
+    elif capacity <= minimum_capacity:
+        action = API_CONCURRENCY_ACTION_UNAVAILABLE
+    else:
+        return ApiConcurrencyLimitDecision(
+            action=API_CONCURRENCY_ACTION_REDUCED,
+            previous_capacity=capacity,
+            current_capacity=next_reduced_capacity(capacity, minimum_capacity, levels),
+            minimum_capacity=minimum_capacity,
+            generation=generation + 1,
+            request_generation=request_generation,
+        )
+    return ApiConcurrencyLimitDecision(
+        action=action,
+        previous_capacity=capacity,
+        current_capacity=capacity,
+        minimum_capacity=minimum_capacity,
+        generation=generation,
+        request_generation=request_generation,
+    )
 
 
 def build_adaptive_capacity_levels(initial_capacity: int) -> tuple[int, ...]:

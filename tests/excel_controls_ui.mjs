@@ -235,6 +235,16 @@ function createWorkspace() {
 
   vm.runInContext(loadModule("ui/src/components.ts"), context);
   vm.runInContext(loadModule("ui/src/views/workspace.ts"), context);
+  // 从 workspace.ts 搬出去的几块（2026-11-02，只挪位置）：同一个 vm 里接着加载，彼此按名字互相调用。
+  for (const part of [
+    "workspace-resume-modal",
+    "workspace-revision-modal",
+    "workspace-start-blocked",
+    "workspace-pdf-route",
+    "workspace-output-location",
+  ]) {
+    vm.runInContext(loadModule(`ui/src/views/${part}.ts`), context);
+  }
   vm.runInContext(`
     globalThis.__state = { patches: [], toasts: [], renders: 0, failNextSave: false };
     persistSettings = async (patch) => {
