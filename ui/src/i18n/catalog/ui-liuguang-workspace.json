@@ -158,5 +158,25 @@
   "本页设置沿用上次的选择": {
     "en": "This page keeps your last choices",
     "fr": "Cette page reprend vos derniers choix"
+  },
+  "松手添加到当前列表": {
+    "en": "Release to add to the current list",
+    "fr": "Relâchez pour ajouter à la liste actuelle"
+  },
+  "已有的 {0} 个文件（已选 {1} 个）会保留，新拖入的文件追加在后面。": {
+    "en": "The {0} {0|file|files} already listed ({1} selected) stay; the new files are added after them.",
+    "fr": "{0|Le fichier déjà listé est conservé|Les # fichiers déjà listés sont conservés} ({1} {1|sélectionné|sélectionnés}) ; les nouveaux fichiers sont ajoutés à la suite."
+  },
+  "松手开始新的一批": {
+    "en": "Release to start a new batch",
+    "fr": "Relâchez pour commencer un nouveau lot"
+  },
+  "新拖入的文件会替换当前列表，已完成的译文不受影响。": {
+    "en": "The new files replace the current list. Finished translations are not affected.",
+    "fr": "Les nouveaux fichiers remplacent la liste actuelle. Les traductions terminées ne sont pas modifiées."
+  },
+  "拖入的文件已经在列表里了。": {
+    "en": "These files are already in the list.",
+    "fr": "Ces fichiers figurent déjà dans la liste."
   }
 }

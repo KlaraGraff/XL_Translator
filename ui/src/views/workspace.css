@@ -130,6 +130,24 @@
   .scan-notes .chip.oob { white-space: normal; line-height: 1.35; border-radius: 10px; }
 }
 
+/* ---------- 已有清单时再拖入：盖在清单上的投放区 ----------
+   平时不显示；drop-glow 发现拖着的文件经过清单区时给它挂 .dragging，它才盖住路径栏以下的部分
+   （top 由 drop-glow 按路径栏的位置写），底下的清单淡淡透出来。 */
+.ws-main.can-drop-over { position: relative; }
+.ws-main > .drop.drop-over {
+  display: none;
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  min-height: 0;
+  z-index: 5;
+  background: var(--surface-veil);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.ws-main > .drop.drop-over.dragging { display: flex; }
+
 /* ---------- 空：投放区 ---------- */
 .ws-main > .drop {
   min-height: 260px;
