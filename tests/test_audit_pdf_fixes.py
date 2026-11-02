@@ -1419,5 +1419,157 @@ class PdfPagePreviousVersionTests(unittest.TestCase):
             self.assertIn("没有上一版译文", str(ctx.exception))
 
 
+class PdfPageImageCacheDiskUsageTests(unittest.TestCase):
+    """页图存档的磁盘占用有上限：重跑多少次，一页也只留「当前版 + 一个上一版」。
+
+    docs/CODE_AUDIT_2026-08-31.md 的 X1 清单第 4 条说页图缓存的容量没有人查过。实际
+    落在过程目录（``_pdf_pages/{source,translated}_pages/<文件>/``，不在用户的输出目录），
+    每页固定一份原图、一份当前译图，再加最多一份「上一版」；重跑把旧的顶掉而不是堆着。
+    这里用一页反复重跑，把这三种文件的份数钉住——没有这条断言的话，「上一版」将来
+    改成全部留存、或者换格式后清理失效，都不会有任何测试变红。
+    """
+
+    def _runner(self, root: Path, page_count: int = 1) -> PdfImageTranslationRunner:
+        source_pdf = root / "source.pdf"
+        source_pdf.write_bytes(b"%PDF-1.4\n")
+        settings = _page_review_settings(root)
+        settings.pdf.page_retry_attempts = 0
+        return PdfImageTranslationRunner(
+            [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=page_count)],
+            settings,
+            source_root=root,
+            image_client=_SequencedImageClient(
+                [_png_bytes(1200, 1600, color) for color in ("white", "red", "blue", "green")]
+            ),
+            task_logger_enabled=False,
+        )
+
+    def _page_images(self, base_dir: Path) -> list[Path]:
+        if not base_dir.is_dir():
+            return []
+        return sorted(path for path in base_dir.iterdir() if path.is_file())
+
+    def test_rerunning_a_page_keeps_one_source_one_current_and_one_previous_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = self._runner(root)
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+                prepared = runner._prepared_files[0]
+                record = prepared.record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                _drain_all_messages(runner)
+
+                # 跑批刚结束：原图一份、译图一份，没有上一版。
+                self.assertEqual(
+                    [path.name for path in self._page_images(prepared.source_pages_dir)],
+                    ["page_001.png"],
+                )
+                self.assertEqual(
+                    [path.name for path in self._page_images(prepared.translated_pages_dir)],
+                    ["page_001.png"],
+                )
+                self.assertFalse(self._page_images(prepared.review_candidates_dir))
+
+                for _ in range(3):
+                    runner.rerun_page(relative_path="source.pdf", page_number=1)
+                    _await_rerun(self, runner)
+                    self.assertEqual(runner.page_rerun_state()["error"], "")
+
+                    page = next(item for item in record.pages if item.page_number == 1)
+                    translated = self._page_images(prepared.translated_pages_dir)
+                    # 重跑三次之后仍然只有两样：当前译图 + 一个「上一版」（前缀 .previous.）。
+                    self.assertEqual(
+                        [path.name for path in translated],
+                        [".previous.page_001.png", "page_001.png"],
+                    )
+                    self.assertTrue(Path(page.previous_image_path).is_file())
+                    self.assertEqual(Path(page.previous_image_path).name, ".previous.page_001.png")
+                    # 原图不随重跑变多，也不会被塞进译图目录。
+                    self.assertEqual(
+                        [path.name for path in self._page_images(prepared.source_pages_dir)],
+                        ["page_001.png"],
+                    )
+                    # 中转文件（.rerun_backup. / .restore_swap.）不许留在存档目录里。
+                    leftovers = [
+                        path.name
+                        for path in translated
+                        if path.name.startswith((PDF_PAGE_IMAGE_STASH_PREFIX, PDF_PAGE_IMAGE_SWAP_PREFIX))
+                    ]
+                    self.assertEqual(leftovers, [])
+
+                # 页图都在过程目录里，用户点「打开输出目录」看不到这些中间文件。
+                work_dir = runner._process_work_dir
+                self.assertIsNotNone(work_dir)
+                self.assertTrue(
+                    str(prepared.translated_pages_dir).startswith(str(work_dir)),
+                    "页图必须落在过程目录，不能写进用户的交付目录",
+                )
+
+    def test_a_format_switch_during_rerun_leaves_only_one_previous_image(self) -> None:
+        """图片源换了输出格式（png → jpg）时，「上一版」也只有一个，不留孤儿。
+
+        「上一版」的文件名沿用被顶下来的那一份，后缀会跟着模型换。清理用的是
+        ``.previous.page_001*`` 前缀 glob，换个后缀照样清得掉；这条用例把这个前缀
+        匹配钉住，否则换格式后同一页会并排躺着两份「上一版」，记录只认得其中一份。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_image = root / "diagram.png"
+            source_image.write_bytes(_png_bytes(1200, 1600))
+            settings = _page_review_settings(root)
+            settings.pdf.page_retry_attempts = 0
+            runner = PdfImageTranslationRunner(
+                [
+                    PdfFileItem(
+                        path=source_image,
+                        name="diagram",
+                        size_kb=1.0,
+                        page_count=1,
+                        source_type=SOURCE_TYPE_IMAGE,
+                    )
+                ],
+                settings,
+                source_root=root,
+                image_client=_FormatSwitchingImageClient(
+                    _png_bytes(1200, 1600),
+                    _jpeg_bytes(1200, 1600),
+                    png_calls=1,
+                ),
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+                prepared = runner._prepared_files[0]
+                self.assertEqual(
+                    [path.name for path in self._page_images(prepared.translated_pages_dir)],
+                    ["page_001.png"],
+                )
+                _drain_all_messages(runner)
+
+                # 第一次重跑：模型开始吐 jpg，被顶下来的 png 成为「上一版」；再往后
+                # 每轮把更早的那份上一版换成新的 jpg 那份，份数一直是 1。
+                for _ in range(3):
+                    runner.rerun_page(relative_path=prepared.record.relative_path, page_number=1)
+                    _await_rerun(self, runner)
+                    self.assertEqual(runner.page_rerun_state()["error"], "")
+
+                names = sorted(path.name for path in self._page_images(prepared.translated_pages_dir))
+                previous = [name for name in names if name.startswith(PDF_PAGE_IMAGE_PREVIOUS_PREFIX)]
+                current = [name for name in names if not name.startswith(PDF_PAGE_IMAGE_PREVIOUS_PREFIX)]
+                self.assertEqual(len(previous), 1, names)
+                self.assertEqual(current, ["page_001.jpg"], names)
+                self.assertEqual(previous, [".previous.page_001.jpg"], names)
+
+                page = prepared.record.pages[0]
+                self.assertEqual(Path(page.previous_image_path).name, previous[0])
+                self.assertEqual(Path(page.translated_image_path).name, "page_001.jpg")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 ROUTE_IMAGE = "image"
 ROUTE_INPLACE = "inplace"
 ROUTE_WORD = "word"
@@ -144,7 +146,8 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
                     slanted += 1
             if items >= _DRAWING_ITEMS or slanted >= _DRAWING_SLANTED_ITEMS:
                 break  # 已经够判成图纸了，大图纸不必数完
-    except Exception:  # noqa: BLE001 - cannot read the vectors: judge by the text
+    except Exception as exc:  # noqa: BLE001 - cannot read the vectors: judge by the text
+        logger.debug(f"读取页面矢量线条失败，已忽略：{exc!r}")
         pass
     has_ink = bool(drawings)
     image_grid = visible >= _VISIBLE_MIN_CHARS and _lines_over_big_image(page, drawings) >= _IMAGE_GRID_MIN_LINES
@@ -320,13 +323,3 @@ def fallback_route(pdf_settings, *, oversized: bool, image_available: bool) -> s
             and image_available and not oversized):
         return ROUTE_IMAGE
     return ROUTE_SKIP
-
-
-def needs_image_model(pdf_settings) -> bool:
-    """Whether a task with these settings can run without an image model at all.
-
-    Only the single routes that never fall back need no image model; anything
-    else may send a page to the image model, but the task still runs: pages
-    that need it are kept as they are when no image model is set.
-    """
-    return getattr(pdf_settings, "translation_route", ROUTE_IMAGE) == ROUTE_IMAGE

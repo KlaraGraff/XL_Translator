@@ -402,7 +402,8 @@ def _convert_with_windows_word(source_path: Path, output_path: Path) -> None:
         word.DisplayAlerts = 0
         try:
             word.AutomationSecurity = 3
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"设置 Word 宏安全级别失败，已忽略：{exc!r}")
             pass
         document = word.Documents.Open(
             str(source_path),
@@ -422,12 +423,14 @@ def _convert_with_windows_word(source_path: Path, output_path: Path) -> None:
         if document is not None:
             try:
                 document.Close(False)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"关闭 Word 文档失败，已忽略：{exc!r}")
                 pass
         if word is not None:
             try:
                 word.Quit()
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"退出 Word 程序失败，已忽略：{exc!r}")
                 pass
         pythoncom.CoUninitialize()
 
@@ -487,7 +490,8 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
         word.DisplayAlerts = 0
         try:
             word.AutomationSecurity = 3
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"设置 Word 宏安全级别失败，已忽略：{exc!r}")
             pass
         document = word.Documents.Open(
             str(source_path),
@@ -511,12 +515,14 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
         if document is not None:
             try:
                 document.Close(False)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"关闭 Word 文档失败，已忽略：{exc!r}")
                 pass
         if word is not None:
             try:
                 word.Quit()
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"退出 Word 程序失败，已忽略：{exc!r}")
                 pass
         pythoncom.CoUninitialize()
 

@@ -25,7 +25,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, apiErrorReason, type PdfPagesSnapshot, type PdfRouteCapabilities, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, apiErrorReason, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import {
@@ -36,12 +36,10 @@ import {
   createFold,
   createHintBadge,
   createLanguageField,
-  createProgressBar,
   createDropdown,
   createSegmented,
   createSelectField,
   createSwitchRow,
-  createTextField,
   closeLanguagePopover,
   closeMenu,
   hideHint,
@@ -50,9 +48,7 @@ import {
   showToast,
   type ChipTone,
   type LanguageOption,
-  type ModalAction,
   type ModalHandle,
-  type SelectFieldOption,
   type StatusTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
@@ -80,6 +76,11 @@ import { currentLocale, isChineseLocale, fmtNum, isSingularCount, t, tx, localiz
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, type ExtSurface } from "../surface-descriptors";
 import "./workspace.css";
 import { FIT_CLIP, fitPlaceholder } from "../text-fit";
+import { showResumeModal } from "./workspace-resume-modal";
+import { showRevisionModal } from "./workspace-revision-modal";
+import { showStartBlockedModal } from "./workspace-start-blocked";
+import { buildPdfRouteSection, markPdfRouteCapsStale } from "./workspace-pdf-route";
+import { buildOutputLocation } from "./workspace-output-location";
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -91,8 +92,11 @@ export type BuiltinSurface = "excel" | "word" | "pdf" | "cad";
 export type Surface = BuiltinSurface | ExtSurface;
 
 
+/** Word 未接受的修订怎么处理（后端 core/word_revisions.py 的 revision_mode）。 */
+export type RevisionMode = "skip" | "translate";
+
 /** 扫描接口返回的文件条目；字段是后端各 surface 联合，具体用到哪些看 surface。 */
-type FileItem = JsonObject & {
+export type FileItem = JsonObject & {
   path: string;
   file_id?: string;
   name?: string;
@@ -126,6 +130,10 @@ type FileItem = JsonObject & {
   shape_text_count?: number | null;
   comment_count?: number | null;
   anchor_frozen_count?: number;
+  /** Word：扫描时数出的「未接受的修订」处数（w:ins + w:del，有可见文字的）。大于 0 时
+   *  文件旁边挂一枚「有 N 处未接受的修订」，点「开始翻译」还要先问一句怎么处理。
+   *  老后端不产出这个字段，缺失按 0 处理。 */
+  tracked_change_count?: number;
   /** 运行时注册的类型：适配器 scan 数出的单元数，和给用户看的整句提示（「3 张图片中的文字未翻译」）。 */
   unit_count?: number | null;
   warnings?: string[];
@@ -166,7 +174,7 @@ type ResumeSummary = {
   last_time_label: string | null;
 };
 
-interface PreviousOutput {
+export interface PreviousOutput {
   target_lang: string;
   candidates: ResumeCandidate[];
   selected_dir: string | null;
@@ -497,7 +505,7 @@ interface FileOutcome {
   tone?: "warn";
 }
 
-interface SurfaceState {
+export interface SurfaceState {
   sourcePath: string;
   /** 「浏览 → 选择文件」一次挑了多个文件时的原始清单；sourcePath 存它们共同的上级
    *  目录（任务的 source_path 要能被后端重扫，selected_paths 再收窄到这几个文件）。
@@ -582,7 +590,9 @@ interface SurfaceState {
   pdfAutoFallback: "image" | "skip";
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
   pdfAlsoSaveWord: boolean;
-  /** 从多大算大幅面（原位替换、自动组合用）。 */
+  /** Word 未接受的修订怎么处理：skip（默认，保持原文）/ translate（连修订一起翻，标记保留）。
+   *  每次点「开始翻译」弹一次窗，选择对整批生效（样张②/④）。 */
+  revisionMode: RevisionMode;
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -645,6 +655,7 @@ function freshState(surface: Surface): SurfaceState {
     pdfAutoDrawingRoute: "inplace",
     pdfAutoFallback: "image",
     pdfAlsoSaveWord: false,
+    revisionMode: "skip",
   };
 }
 
@@ -695,6 +706,7 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   st.showBanner = false;
   st.bannerInfo = null;
   st.excelDoneNotice = null;
+  st.revisionMode = "skip";
   st.lastTaskId = undefined;
   st.lastOutputPath = undefined;
   st.historyOnly = false;
@@ -793,7 +805,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
 // 各视图自包含，减少跨模块耦合，见文件尾说明）。
 // ---------------------------------------------------------------------------
 
-const client = new ApiClient();
+export const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
 export async function getClient(): Promise<ApiClient> {
   if (!connectPromise) {
@@ -925,7 +937,7 @@ window.addEventListener("xlt:pdf-routes-changed", (event) => {
   const pdf = record((event as CustomEvent<unknown>).detail);
   settings = { ...settings, pdf: { ...record(settings.pdf), ...pdf } };
   applyPdfRouteSettings(stateOf("pdf"), pdf);
-  pdfRouteCapsStale = true;
+  markPdfRouteCapsStale();
 });
 
 function applySettingsToStates(): void {
@@ -977,7 +989,7 @@ function extSettingsRecord(surface: ExtSurface): JsonObject {
 }
 
 /** 写 settings.extensions[<id>].<name> 的补丁。id 里可能有点号，不能走 nestedPatch 的点路径。 */
-function extSettingsPatch(surface: ExtSurface, name: string, value: unknown): JsonObject {
+export function extSettingsPatch(surface: ExtSurface, name: string, value: unknown): JsonObject {
   return { extensions: { [surface.slice("ext:".length)]: { [name]: value } } };
 }
 
@@ -1022,7 +1034,7 @@ function readPath(obj: JsonObject, path: string): unknown {
 }
 
 /** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output、cad_output 没有。 */
-function outputRecord(surface: Surface): JsonObject {
+export function outputRecord(surface: Surface): JsonObject {
   // 运行时注册的类型的输出位置与其他设置一起放在 settings.extensions[<id>]。
   if (isExtSurface(surface)) return extSettingsRecord(surface);
   if (surface === "pdf" || surface === "cad") return record(settings[`${surface}_output`]);
@@ -1030,14 +1042,9 @@ function outputRecord(surface: Surface): JsonObject {
   return Object.keys(isolated).length ? isolated : record(settings.output);
 }
 
-function outputSettingPathPrefix(surface: Surface): string {
+export function outputSettingPathPrefix(surface: Surface): string {
   if (surface === "pdf" || surface === "cad") return `${surface}_output`;
   return hasOwn(settings, `${surface}_output`) ? `${surface}_output` : "output";
-}
-
-/** 写输出位置的一项（use_custom_output_dir / custom_output_dir）的补丁。 */
-function outputSettingPatch(surface: Surface, name: string, value: unknown): JsonObject {
-  return isExtSurface(surface) ? extSettingsPatch(surface, name, value) : nestedPatch(`${outputSettingPathPrefix(surface)}.${name}`, value);
 }
 
 function readOutputPath(surface: Surface, key: string): unknown {
@@ -1099,7 +1106,7 @@ function pageUsesDefaults(surface: Surface): boolean | null {
  *  这一类互斥开关），于是出现「界面显示关、实际按开跑」的假象，用户全程不知道保存
  *  失败过。这里统一收口：失败就把 revert 传回来的旧值改回界面并重绘，同时报一句
  *  尽量简短的事实性 toast，不替用户下「这意味着什么」的结论。 */
-async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, revert: () => void, what: string): Promise<void> {
+export async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, revert: () => void, what: string): Promise<void> {
   try {
     await persistSettings(patch);
   } catch (error) {
@@ -1128,7 +1135,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
   const isCurrent = () => token === mountTokens.get(surface) && st.renderer !== null;
   const taskId = text(params.taskId);
   st.renderer = () => renderInto(container, surface);
-  if (surface === "pdf") pdfRouteCapsStale = true;
+  if (surface === "pdf") markPdfRouteCapsStale();
   // PDF / CAD 页顶栏的「使用说明」：随时再打开图文指引。
   if (surface === "pdf" || surface === "cad") setGuideEntry({ label: t("使用说明"), onClick: () => openGuide(surface) });
   // 中途切走再回来时任务还在跑（st.task 是模块级状态），静默计时器得跟着这一屏重新起。
@@ -1661,6 +1668,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
   if (resumeDismiss) col.append(resumeDismiss);
   const tableCard = buildTableCard(surface, st);
   col.append(tableCard);
+  // 拖着文件经过清单时盖上的投放区（drop-glow 把清单区换成它来点亮），平时不显示。
+  const overlay = buildDropOverlay(surface);
+  if (overlay) {
+    col.classList.add("can-drop-over");
+    col.append(overlay);
+  }
   // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
   // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
   // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
@@ -1759,6 +1772,22 @@ function openSourceMenu(anchor: HTMLElement, surface: Surface, st: SurfaceState)
   ]);
 }
 
+/** 已有清单时的投放区：只在拖着文件经过时出现，盖住路径栏以下的部分，松手或拖走就收起。 */
+function buildDropOverlay(surface: Surface): HTMLElement | null {
+  const words = dropOverlayText(surface);
+  if (!words) return null;
+  const zone = el("div", "drop drop-over");
+  zone.setAttribute("aria-hidden", "true");
+  const big = el("div", "big");
+  big.append(icon(canAppendSource(surface) ? "plus" : surfaceIcon(surface), { size: "lg" }));
+  const title = el("b");
+  title.textContent = words.title;
+  const desc = el("p");
+  desc.textContent = words.body;
+  zone.append(big, title, desc);
+  return zone;
+}
+
 const DROP_TITLE: Record<BuiltinSurface, string> = localized(() => ({
   excel: t("拖入 Excel 表格"),
   word: t("拖入 Word 文档"),
@@ -1842,7 +1871,7 @@ function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; e
   return { name: images.length ? t("PDF 与图片") : "PDF", extensions: ["pdf", ...images] };
 }
 
-/** 取路径的上级目录。系统选择框一次只能在同一个文件夹里多选，取第一个的父目录即可。 */
+/** 取路径的上级目录。 */
 function parentDirOf(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
   const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
@@ -1878,7 +1907,7 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
  * 在跑时不替换来源，返回 false（前台时提示一句）。前台调用方先 navigate 到这一页再调；
  * background 为真时人不在这一页：照样读取，但不弹「已扫描到」的提示，续译弹窗等人进来再弹。
  */
-export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean } = {}): Promise<boolean> {
+export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean; append?: boolean } = {}): Promise<boolean> {
   const list = paths.filter((item) => item.trim().length > 0);
   if (!list.length) return false;
   const st = stateOf(surface);
@@ -1893,8 +1922,67 @@ export async function openSourcePaths(surface: Surface, paths: string[], options
     if (!options.background) showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
     return false;
   }
+  if (options.append && canAppendSource(surface)) {
+    await appendSourcePaths(surface, list, options.background);
+    return true;
+  }
   await applySourcePaths(surface, list, options.background);
   return true;
+}
+
+/**
+ * 页面上已经有一份还没开始翻译的清单：再拖进来的文件加到这份清单里，不换掉它。
+ * 翻译中、读取中、刚翻译完（显示结果）和只剩历史记录时都不算——翻译完再拖入就是新的一批。
+ */
+export function canAppendSource(surface: Surface): boolean {
+  const st = stateOf(surface);
+  if (!st.files.length || st.historyOnly || scanBusy.has(surface)) return false;
+  if (st.task) return false;
+  return !(st.showBanner && st.bannerInfo);
+}
+
+/** 拖入时盖在清单上的那层提示要说的话；不能拖入（没有清单、正在翻译）时为 null。 */
+export function dropOverlayText(surface: Surface): { title: string; body: string } | null {
+  const st = stateOf(surface);
+  if (canAppendSource(surface)) {
+    return {
+      title: t("松手添加到当前列表"),
+      body: t("已有的 {0} 个文件（已选 {1} 个）会保留，新拖入的文件追加在后面。", st.files.length, st.selected.size),
+    };
+  }
+  const active = st.task && !st.task.task.terminal;
+  if (active || scanBusy.has(surface) || st.historyOnly || !st.files.length) return null;
+  return { title: t("松手开始新的一批"), body: t("新拖入的文件会替换当前列表，已完成的译文不受影响。") };
+}
+
+function isPathWithin(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const base = parent.replace(/[\\/]+$/, "");
+  return child.startsWith(`${base}/`) || child.startsWith(`${base}\\`);
+}
+
+/**
+ * 把新拖入的路径并进当前清单的来源：已经在清单里的（同一个文件，或在已有文件夹里面的）不重复加；
+ * 新拖入的是已有来源的上级文件夹时，用它代替被它包住的那几个。来源根（sourcePath）不变，
+ * 所以输出位置和续译都照旧；根外的文件由任务启动时各扫一次补进来（task_manager）。
+ * 原来没勾的文件重新读取后仍然不勾，新加的默认勾上。
+ */
+async function appendSourcePaths(surface: Surface, list: string[], background = false): Promise<void> {
+  const st = stateOf(surface);
+  const existing = (st.sourcePaths.length ? st.sourcePaths : [st.sourcePath]).map(normalizeUserPath).filter(Boolean);
+  const incoming = [...new Set(list.map(normalizeUserPath).filter(Boolean))].filter((path) => !existing.some((source) => isPathWithin(path, source)));
+  if (!incoming.length) {
+    if (!background) showToast({ message: t("拖入的文件已经在列表里了。") });
+    return;
+  }
+  const merged = [...existing.filter((source) => !incoming.some((path) => isPathWithin(source, path))), ...incoming];
+  const unchecked = new Set(st.files.map((item) => item.path).filter((path) => !st.selected.has(path)));
+  const root = st.sourcePath;
+  clearWorkspaceInput(surface);
+  st.sourcePath = root;
+  st.sourcePaths = merged;
+  rerender(surface);
+  await runScan(surface, undefined, background, unchecked);
 }
 
 // ---------------------------------------------------------------------------
@@ -1928,6 +2016,15 @@ export function setDispatchBatch(batch: { surface: Surface; count: number; paths
       }
     : null;
   for (const surface of new Set([...(previous?.counts.keys() ?? []), ...(dispatchBatch?.counts.keys() ?? [])])) rerender(surface);
+}
+
+/** 这一页把拖入的文件加进了原有清单（来源根没变）：这一批按这一页现在的来源和文件数算。 */
+export function keepInDispatchBatch(surface: Surface): void {
+  if (!dispatchBatch?.counts.has(surface)) return;
+  const st = stateOf(surface);
+  dispatchBatch.sources.set(surface, normalizeUserPath(st.sourcePath));
+  dispatchBatch.counts.set(surface, st.files.length);
+  for (const member of dispatchBatch.counts.keys()) rerender(member);
 }
 
 /** 这一页没接住（正在翻译）：从这一批里拿掉，别的页面不再说它「已放到对应页面」。 */
@@ -2091,7 +2188,8 @@ function buildDispatchNote(surface: Surface): HTMLElement | null {
   return bar;
 }
 
-/** 多选时任务的来源记它们共同的上级目录，单选就是它自己（与 applySourcePaths 一致）。 */
+/** 多选时任务的来源记第一个的上级目录，单选就是它自己（与 applySourcePaths 一致）。
+ * 跨文件夹多选/拖入时其他文件不在它下面：后端开始任务时把它们各扫一次补进来（api/task_manager.py）。 */
 export function sourcePathFor(pickedList: string[]): string {
   return pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
 }
@@ -2336,7 +2434,7 @@ function cadCountsPending(f: FileItem): boolean {
   return Boolean(f.counts_pending) || (f.format === "dwg" && f.text_count === null);
 }
 
-function fileLabel(f: FileItem): string {
+export function fileLabel(f: FileItem): string {
   return text(f.name, f.relative_path ?? f.path.split("/").pop() ?? f.path);
 }
 
@@ -2886,11 +2984,27 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   checkCell.append(checkbox);
   row.append(checkCell);
 
-  // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
-  const nameCell = el("td", `fname ${FIT_CLIP}`);
-  nameCell.textContent = fileLabel(file);
-  nameCell.title = file.relative_path || fileLabel(file);
-  row.append(nameCell);
+  // Word：扫描时就标出「这个文件有几处未接受的修订」，挂在文件名右边（样张①）。
+  // 没有修订的文件什么都不显示——每个文件都挂一句「无修订」，真正要注意的那一行反而
+  // 找不出来了。老后端不产出 tracked_change_count，缺失按 0 处理。
+  const revisionCount = surface === "word" && !st.historyOnly ? num(file.tracked_change_count) : 0;
+  if (revisionCount > 0) {
+    const nameCell = el("td", "fname");
+    const nameLine = el("div", "fname-line");
+    const nameText = el("span", FIT_CLIP);
+    nameText.textContent = fileLabel(file);
+    nameText.title = file.relative_path || fileLabel(file);
+    nameLine.append(nameText);
+    nameLine.append(createChip({ label: t("有 {0} 处未接受的修订", fmtNum(revisionCount)), tone: "warn" }));
+    nameCell.append(nameLine);
+    row.append(nameCell);
+  } else {
+    // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
+    const nameCell = el("td", `fname ${FIT_CLIP}`);
+    nameCell.textContent = fileLabel(file);
+    nameCell.title = file.relative_path || fileLabel(file);
+    row.append(nameCell);
+  }
 
   if (surface === "cad") {
     const fmtCell = el("td");
@@ -3213,6 +3327,20 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
 
   const oversized = num(item.skipped_oversize_page_count);
   if (oversized > 0) chips.push(createChip({ label: t("跳过 {0} 页 A3+", oversized), tone: "tint" }));
+
+  // Word 修订的处理结果（状态⑤）：跑完之后这一行要说清这份文件当时是跳过还是连修订
+  // 一起翻的——运行日志会滚走，任务记录里留一句才查得到。
+  const revisions = record(item.revisions);
+  const revisionCount = num(revisions.count);
+  if (revisionCount > 0) {
+    const translated = text(revisions.mode) === "translate";
+    chips.push(createChip({
+      label: translated
+        ? t("翻译了 {0} 处修订（保留修订标记）", fmtNum(revisionCount))
+        : t("跳过了 {0} 处修订（保持原文）", fmtNum(revisionCount)),
+      tone: translated ? "tint" : "mute",
+    }));
+  }
 
   return chips;
 }
@@ -3690,191 +3818,6 @@ function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): st
   return options;
 }
 
-/** 输出位置：先选译文放在单独任务文件夹还是源文件夹，再选单独任务文件夹的首选根目录。
- * 首选位置失效时，备用根目录和桌面由后端自动接管；备用位置对两种译文存放方式都生效。 */
-function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
-  const container = el("div");
-  const outputMode = createSegmented({
-    options: [
-      { value: "task_folder", label: t("单独的翻译文件夹") },
-      { value: "source_folder", label: t("直接放回源文件夹") },
-    ],
-    value: st.outputMode,
-    disabled: active,
-    ariaLabel: t("译文存放"),
-    onChange: (choice) => {
-      const value = choice as SurfaceState["outputMode"];
-      const apply = (): void => {
-        const prev = st.outputMode;
-        st.outputMode = value;
-        rerender(surface);
-        void persistSettingsOrRevert(
-          surface,
-          outputSettingPatch(surface, "output_mode", value),
-          () => { st.outputMode = prev; },
-          t("译文存放"),
-        );
-      };
-      if (value === "source_folder" && st.outputMode !== value) {
-        openModal({
-          tone: "warn",
-          icon: "warn",
-          title: t("确认直接放回源文件夹？"),
-          body: [
-            t("译文会和源文件放在一起，源文件不会被覆盖。"),
-            t("源文件夹无法写入时，仍会使用备用输出文件夹，最后退回桌面。"),
-          ],
-          actions: [
-            { label: t("取消") },
-            { label: t("继续使用"), variant: "primary", onClick: apply },
-          ],
-        });
-      } else {
-        apply();
-      }
-    },
-  });
-  const outputField = createField(t("译文存放"), outputMode);
-  outputField.querySelector("label")?.append(createHintBadge(t("选择单独的翻译文件夹，或把译文放回源文件夹；源文件始终不会被覆盖。")));
-  container.append(outputField);
-
-  const preferred = createSegmented({
-    options: [
-      { value: "source", label: t("源文件旁") },
-      { value: "custom", label: t("指定位置") },
-    ],
-    value: st.useCustomOutputDir ? "custom" : "source",
-    disabled: active || st.outputMode === "source_folder",
-    ariaLabel: t("首选位置"),
-    onChange: (choice) => {
-      const value = choice === "custom";
-      const prev = st.useCustomOutputDir;
-      st.useCustomOutputDir = value;
-      rerender(surface);
-      void persistSettingsOrRevert(
-        surface,
-        outputSettingPatch(surface, "use_custom_output_dir", value),
-        () => { st.useCustomOutputDir = prev; },
-        t("首选位置"),
-      );
-    },
-  });
-  const preferredField = createField(t("首选位置"), preferred);
-  preferredField.querySelector("label")?.append(createHintBadge(t("单独的翻译文件夹会建在源文件旁，或建在你指定的位置。直接放回源文件夹时，这项不参与选择。")));
-  container.append(preferredField);
-
-  if (st.outputMode === "source_folder") {
-    const note = el("p", "rp-note");
-    note.textContent = t("当前会直接放回源文件夹；写入失败时使用下面的备用输出文件夹，最后退回桌面。");
-    container.append(note);
-  } else if (st.useCustomOutputDir) {
-    const { root, input } = createTextField({
-      label: "",
-      value: st.customOutputDir,
-      placeholder: t("自定义输出目录路径…"),
-      disabled: active,
-      onInput: (value) => {
-        st.customOutputDir = value;
-      },
-    });
-    const saveCustomDir = (): void => {
-      // 落盘前的旧值要从「上一次成功落盘的值」取，不能取 st.customOutputDir 自己——
-      // 打字过程中每敲一下 onInput 都已经把它改成了正在输入的新值，到这里已经晚了。
-      // outputRecord() 读的是 settings 模块变量，只在 persistSettings 成功时才会更新，
-      // 是这一刻唯一还留着「磁盘上真实值」的地方。
-      const prevDir = text(outputRecord(surface).custom_output_dir);
-      void persistSettingsOrRevert(
-        surface,
-        outputSettingPatch(surface, "custom_output_dir", st.customOutputDir),
-        () => { st.customOutputDir = prevDir; },
-        t("自定义输出目录"),
-      );
-    };
-    input.addEventListener("change", saveCustomDir);
-    const relayoutDir = showPathWithMiddleEllipsis(input, () => st.customOutputDir);
-    // 输入框后面跟一个「浏览」，在系统选择框里挑文件夹，不必手动粘贴路径。
-    const browseBtn = createButton({
-      label: t("浏览"),
-      icon: "folder",
-      size: "mini",
-      disabled: active,
-      onClick: () => void (async () => {
-        let picked: unknown;
-        try {
-          picked = await open({ title: t("选择输出文件夹"), directory: true, multiple: false, defaultPath: st.customOutputDir.trim() || undefined });
-        } catch (error) {
-          showToast({ message: redactedText((error as Error)?.message, t("选择输出文件夹失败。")), error: true });
-          return;
-        }
-        if (typeof picked !== "string" || !picked.trim()) return;
-        st.customOutputDir = picked;
-        input.value = picked;
-        relayoutDir();
-        saveCustomDir();
-      })(),
-    });
-    root.classList.add("out-dir-input");
-    const line = el("div", "out-dir");
-    line.append(root, browseBtn);
-    container.append(line);
-  }
-
-  const fallbackInput = createTextField({
-    label: "",
-    value: st.fallbackOutputDir,
-    placeholder: t("未设置，失败时使用桌面"),
-    disabled: active,
-    onInput: (value) => { st.fallbackOutputDir = value; },
-  });
-  fitPlaceholder(fallbackInput.input, t("未设置，失败时使用桌面"), t("未设置"));
-  const saveFallbackDir = (): void => {
-    const prevDir = text(outputRecord(surface).fallback_output_dir);
-    void persistSettingsOrRevert(
-      surface,
-      outputSettingPatch(surface, "fallback_output_dir", st.fallbackOutputDir),
-      () => { st.fallbackOutputDir = prevDir; },
-      t("备用输出文件夹"),
-    );
-  };
-  fallbackInput.input.addEventListener("change", saveFallbackDir);
-  const relayoutFallback = showPathWithMiddleEllipsis(fallbackInput.input, () => st.fallbackOutputDir);
-  const browseFallback = createButton({
-    label: t("选择"),
-    icon: "folder",
-    size: "mini",
-    disabled: active,
-    onClick: () => void (async () => {
-      let picked: unknown;
-      try {
-        picked = await open({ title: t("选择备用输出文件夹"), directory: true, multiple: false, defaultPath: st.fallbackOutputDir.trim() || undefined });
-      } catch (error) {
-        showToast({ message: redactedText((error as Error)?.message, t("选择备用输出文件夹失败。")), error: true });
-        return;
-      }
-      if (typeof picked !== "string" || !picked.trim()) return;
-      st.fallbackOutputDir = picked;
-      fallbackInput.input.value = picked;
-      relayoutFallback();
-      saveFallbackDir();
-    })(),
-  });
-  // 「.hint」是「?」角标的类名（15px 圆圈），不能拿来装整句文字，否则会被挤成一字一行。
-  // 备用文件夹和上面两项一样走 .field（名称 + 角标），说明小字用右栏统一的 .rp-note。
-  fallbackInput.root.classList.add("out-dir-input");
-  fallbackInput.input.setAttribute("aria-label", t("备用输出文件夹"));
-  const fallbackLine = el("div", "out-dir");
-  fallbackLine.append(fallbackInput.root, browseFallback);
-  const fallback = createField(t("备用输出文件夹"), fallbackLine);
-  fallback.classList.add("out-dir-fallback");
-  fallback.querySelector("label")?.append(createHintBadge(t("首选位置无法创建或写入时使用；如果这里也不可用，程序会自动退回桌面。")));
-  container.append(fallback);
-
-  const metadataHint = el("p", "rp-note");
-  metadataHint.textContent = t("翻译参数会自动写入输出文件属性，方便以后直接识别和继续翻译。");
-  container.append(metadataHint);
-  return container;
-}
-
 // ---------------------------------------------------------------------------
 // PDF 翻译方式（Beta 分支）：整页图像翻译（原来的做法）或自动组合（逐页按类型）。样张见
 // .runtime/self-tests/pdf-vector-shadow-20261012/mockup/2026-10-13_pdf-auto-combination.html。
@@ -3882,201 +3825,10 @@ function buildOutputLocation(surface: Surface, st: SurfaceState, active: boolean
 // 没有 Word、译成非中文）时用琥珀色字说明后果。落盘路径见 settings.py PdfSettings。
 // ---------------------------------------------------------------------------
 
-type PdfRoute = "image" | "auto";
-
-/** 本机条件：后端 /api/pdf/route-capabilities 给；查不到时不提示。每次进 PDF 页重查一次
- *  （在插件页装好组件、在设置里配好图像模型再回来，提示要跟着消失），重查期间沿用旧值。 */
-let pdfRouteCaps: PdfRouteCapabilities | null = null;
-let pdfRouteCapsLoading = false;
-let pdfRouteCapsStale = true;
-
-function ensurePdfRouteCaps(): void {
-  if (pdfRouteCapsLoading || (pdfRouteCaps && !pdfRouteCapsStale)) return;
-  pdfRouteCapsLoading = true;
-  pdfRouteCapsStale = false;
-  client.pdfRouteCapabilities()
-    .then((caps) => {
-      const changed = JSON.stringify(caps) !== JSON.stringify(pdfRouteCaps);
-      pdfRouteCaps = caps;
-      if (changed) rerender("pdf");
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      pdfRouteCapsLoading = false;
-    });
-}
+export type PdfRoute = "image" | "auto";
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
-}
-
-function buildRouteRow(opts: {
-  label: string;
-  hint: string;
-  /** 提示末尾的蓝色链接（「翻译方式」的「查看图文说明」）。 */
-  hintAction?: { label: string; onClick: () => void };
-  options: SelectFieldOption[];
-  value: string;
-  disabled: boolean;
-  sub?: boolean;
-  wide?: boolean;
-  onChange: (value: string) => void;
-}): HTMLElement {
-  const row = el("div", opts.sub ? "selrow sub" : "selrow");
-  const name = el("span", "selrow-label");
-  name.textContent = opts.label;
-  row.append(name, createHintBadge(opts.hint, "hint", opts.hintAction));
-  const dropdown = createDropdown({
-    options: opts.options,
-    value: opts.value,
-    disabled: opts.disabled,
-    // className 还会拼成菜单的类名（compact-menu），只能是一个词；宽版另加类。
-    className: "compact",
-    onChange: opts.onChange,
-  });
-  if (opts.wide) dropdown.root.classList.add("wide");
-  dropdown.input.setAttribute("aria-label", opts.label);
-  row.append(dropdown.root);
-  return row;
-}
-
-function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
-  // 紧接在上面的开关后面，不另起小标题：小标题和下面这一行的名称都会是「翻译方式」。
-  const wrap = el("div", "route-block");
-  const beta = t("Beta");
-  const imageLabel = t("整页图像翻译");
-  const imageDesc = t("各类页面均可处理，费用较高；大页面受像素限制，清晰度下降");
-
-  wrap.append(buildRouteRow({
-    label: t("翻译方式"),
-    // 细节交给图文指引（guide.ts），问号里只留一句话。
-    hint: t("三种方式适合的页面不同；自动组合会逐页选用合适的方式。"),
-    hintAction: { label: t("查看图文说明"), onClick: () => openGuide("pdf") },
-    options: [
-      { value: "image", label: imageLabel, description: t("每页由图像模型重新生成，适合扫描件和照片") },
-      { value: "auto", label: t("自动组合"), tag: beta, description: t("按每一页的类型分别选方式，合成一份 PDF") },
-    ],
-    value: st.pdfRoute,
-    disabled: active,
-    wide: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfRoute", "pdf.translation_route", value as PdfRoute),
-  }));
-  if (st.pdfRoute !== "auto") return wrap;
-
-  ensurePdfRouteCaps();
-  const keepLabel = t("原样保留");
-  wrap.append(buildRouteRow({
-    label: t("扫描页"),
-    hint: t("提取不到文字的页，比如签字页、盖章的评审意见、拍照件；扫描的大幅面图纸也算扫描页。只有图像模型能翻。"),
-    options: [
-      { value: "image", label: imageLabel, description: imageDesc },
-      { value: "skip", label: keepLabel, description: t("不翻译，完成后列出来") },
-    ],
-    value: st.pdfAutoScanRoute,
-    disabled: active,
-    sub: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoScanRoute", "pdf.auto_scan_route", value as SurfaceState["pdfAutoScanRoute"]),
-  }));
-  wrap.append(buildRouteRow({
-    label: t("可提取文字的页"),
-    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
-    options: [
-      // 转成 Word 已可正式使用，不再标 Beta（maple 2026-10-27）；原位替换、自动组合仍标。
-      { value: "word", label: t("转成 Word"), description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
-      { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变；放不下的译文自动缩小或换行") },
-      { value: "image", label: imageLabel, description: imageDesc },
-    ],
-    value: st.pdfAutoTextRoute,
-    disabled: active,
-    sub: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoTextRoute", "pdf.auto_text_route", value as SurfaceState["pdfAutoTextRoute"]),
-  }));
-  wrap.append(buildRouteRow({
-    label: t("图纸和大图"),
-    hint: t("线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页。原位替换只替换文字，矢量细节完整保留；遇到画成线条的字要先用「文字识别组件」识别，会慢一些；画成线条的韩文暂不能识别，保留原样。原位替换需要在「扩展 → 组件」安装「PDF 处理组件」。"),
-    options: [
-      { value: "inplace", label: t("原位替换"), tag: beta, description: t("只换文字，矢量细节完整保留；识别画成线条的字较慢") },
-      { value: "image", label: imageLabel, description: t("大幅面页面受像素限制，线条会不够清晰") },
-      { value: "skip", label: keepLabel, description: t("不翻译") },
-    ],
-    value: st.pdfAutoDrawingRoute,
-    disabled: active,
-    sub: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoDrawingRoute", "pdf.auto_drawing_route", value as SurfaceState["pdfAutoDrawingRoute"]),
-  }));
-  wrap.append(buildRouteRow({
-    label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、原位替换暂不支持目标语言（如阿拉伯文）。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
-    options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
-    value: st.pdfAutoFallback,
-    disabled: active,
-    sub: true,
-    onChange: (value) => void handlePdfRouteChange(st, "pdfAutoFallback", "pdf.auto_fallback", value as SurfaceState["pdfAutoFallback"]),
-  }));
-  if (st.pdfAutoTextRoute === "word") {
-    const sw = createSwitchRow({
-      label: t("同时输出 Word"),
-      hint: t("整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 再给一份可以修改的 Word。夹有扫描页或图纸的文件不另出 Word。"),
-      checked: st.pdfAlsoSaveWord,
-      disabled: active,
-      onChange: (checked) => void handlePdfRouteChange(st, "pdfAlsoSaveWord", "pdf.also_save_word", checked),
-    });
-    sw.classList.add("sub");
-    wrap.append(sw);
-  }
-
-  // 缺组件的提示右下角带一个「安装 ↗ 组件」，直接跳到「扩展 → 组件」并定位到那张卡片。
-  const note = (text: string, warn = false, link?: string): HTMLElement => {
-    const node = el("div", warn ? "route-note warn" : "route-note");
-    node.textContent = text;
-    if (link) {
-      const go = el("button", "linklike route-note-link");
-      go.type = "button";
-      go.textContent = link;
-      go.addEventListener("click", () => navigate("plugins", { focus: "pdf" }));
-      node.append(go);
-    }
-    return node;
-  };
-  const routeName: Record<string, string> = {
-    image: t("图像翻译"), word: t("Word"), inplace: t("原位替换"), skip: t("原样保留"),
-  };
-  wrap.append(note(t("扫描页 → {0} · 可提取文字的页 → {1} · 图纸 → {2}；用不了时{3}",
-    routeName[st.pdfAutoScanRoute],
-    routeName[st.pdfAutoTextRoute],
-    routeName[st.pdfAutoDrawingRoute],
-    st.pdfAutoFallback === "image" ? t("改用图像翻译") : t("保留原样"),
-  )));
-  const caps = pdfRouteCaps;
-  const usesImage = st.pdfAutoScanRoute === "image" || st.pdfAutoFallback === "image"
-    || st.pdfAutoTextRoute === "image" || st.pdfAutoDrawingRoute === "image";
-  if (caps && usesImage && !caps.image_model_ready) {
-    wrap.append(note(t("没有可用的图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
-  }
-  const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
-  const usesWord = st.pdfAutoTextRoute === "word";
-  if (caps && (usesWord || usesInplace) && !caps.word_component) {
-    wrap.append(note(t("还没有安装「PDF 处理组件」：原位替换和转成 Word 的页改用保底方式，大幅面图纸保留原样。可在「扩展 → 组件」一键安装。"), true, t("安装 ↗ 组件")));
-  } else {
-    if (caps && usesInplace && caps.inplace_component === false) {
-      wrap.append(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：原位替换的页改用保底方式，大幅面图纸保留原样。可在「扩展 → 组件」重新安装。"), true, t("重新安装 ↗ 组件")));
-    }
-    if (caps && usesWord && !caps.office_engine) {
-      wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
-    }
-  }
-  if (usesInplace && !inplaceTargetSupported(st.targetLang)) {
-    wrap.append(note(t("原位替换暂不支持当前的目标语言（文字需要连写排版，如阿拉伯文、泰文、印地文）：这些页会改用保底方式，大幅面图纸保留原样。"), true));
-  }
-  if (!usesImage) wrap.append(note(t("这次不会调用图像模型。")));
-  return wrap;
-}
-
-/** 当前目标语言能不能原位替换。名单来自后端（core/pdf_vector/fonts.py COMPLEX_SCRIPT_TARGETS）；
- *  还没取到时按能处理算，免得一闪而过的误报。 */
-function inplaceTargetSupported(targetLang: string): boolean {
-  const base = targetLang.trim().toLowerCase().replace("_", "-").split("-")[0];
-  return !(pdfRouteCaps?.inplace_unsupported_targets ?? []).includes(base);
 }
 
 /** 自动组合里有一类页选了原位替换。 */
@@ -4086,7 +3838,7 @@ function pdfUsesInplace(st: SurfaceState): boolean {
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，
  *  见 persistSettingsOrRevert 顶部的说明）。 */
-async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfAlsoSaveWord">(
+export async function handlePdfRouteChange<K extends "pdfRoute" | "pdfAutoScanRoute" | "pdfAutoTextRoute" | "pdfAutoDrawingRoute" | "pdfAutoFallback" | "pdfAlsoSaveWord">(
   st: SurfaceState,
   stateKey: K,
   settingPath: string,
@@ -4209,7 +3961,7 @@ function parsePreviousOutput(raw: unknown): PreviousOutput | null {
 }
 
 /** 检测结果里有没有值得开口的命中。none 不算——那只是「这个文件没翻过」。 */
-function resumeHitCount(info: PreviousOutput): number {
+export function resumeHitCount(info: PreviousOutput): number {
   return info.summary.full + info.summary.partial + info.summary.found + info.summary.diverged;
 }
 
@@ -4217,7 +3969,7 @@ function resumeHitCount(info: PreviousOutput): number {
  * 当前仍然有效的检测结果。产物文件名里带目标语言，用户改了目标语言之后这份检测就
  * 对不上号了：这里直接判空，横幅、芯片、角标、payload 全都跟着一起消失，不额外弹提示。
  */
-function resumeState(st: SurfaceState): PreviousOutput | null {
+export function resumeState(st: SurfaceState): PreviousOutput | null {
   const info = st.resumeInfo;
   if (!info) return null;
   if (st.resumeDetectedLang && st.resumeDetectedLang !== st.targetLang) return null;
@@ -4253,20 +4005,20 @@ function restoreUntranslatedToggle(st: SurfaceState): void {
   st.resumeToggleRestore = null;
 }
 
-function chooseResume(surface: Surface, st: SurfaceState): void {
+export function chooseResume(surface: Surface, st: SurfaceState): void {
   st.resumeDecision = "resume";
   st.resumeNoticeDismissed = false;
   forceUntranslatedToggle(surface, st);
   rerender(surface);
 }
 
-function chooseFresh(surface: Surface, st: SurfaceState): void {
+export function chooseFresh(surface: Surface, st: SurfaceState): void {
   st.resumeDecision = "fresh";
   restoreUntranslatedToggle(st);
   rerender(surface);
 }
 
-function basename(path: string): string {
+export function basename(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts.length ? parts[parts.length - 1] : path;
 }
@@ -4371,232 +4123,6 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
   return bar;
 }
 
-// --- 状态 A / B / E：扫描完成后的弹窗 ---------------------------------------
-
-function resumeStatChips(info: PreviousOutput): HTMLElement {
-  const row = el("div", "rf-stats");
-  const s = info.summary;
-  if (s.full > 0) row.append(createChip({ label: t("{0} 个已有完整译文", s.full), tone: "ok" }));
-  if (s.found > 0) row.append(createChip({ label: t("{0} 个已有译文", s.found), tone: "ok" }));
-  if (s.partial > 0) row.append(createChip({ label: t("{0} 个已部分翻译", s.partial), tone: "warn" }));
-  if (s.diverged > 0) row.append(createChip({ label: t("{0} 个源文件已变化", s.diverged), tone: "warn" }));
-  if (s.none > 0) row.append(createChip({ label: t("{0} 个尚无译文", s.none), tone: "mute" }));
-  return row;
-}
-
-/** PDF 专用：page_total 缺失（null 或 0）的文件数。summary.page_done/page_total 只统计
- *  有清单记录的 PDF，这批文件不在里面——续译对它们形同摆设，只能整份重新生成。少了这个
- *  数，「剩余页数」会被当成整批的工作量，漏掉这几个文件的真实成本。
- *  diverged（源文件已变化）单独有自己的文案，不混进「没有页记录」里数两遍。 */
-function pdfFilesMissingPageData(info: PreviousOutput): number {
-  return info.files.filter((file) => file.status !== "diverged" && !file.page_total).length;
-}
-
-/** 弹窗里那个灰底方框：底稿目录 + 统计（或页进度）+ 历史目录下拉。 */
-function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () => ModalHandle | null): HTMLElement {
-  const box = el("div", "resume-found");
-  const pathRow = el("div", "rf-path");
-  pathRow.append(icon(surface === "pdf" ? "pdf" : "folder", { size: "sm" }));
-  const code = el("code", FIT_CLIP);
-  code.textContent = info.selected_dir ? basename(info.selected_dir) : t("（未找到可用的历史目录）");
-  pathRow.append(code);
-  box.append(pathRow);
-
-  const total = info.summary.page_total;
-  const done = info.summary.page_done;
-  if (surface === "pdf" && total !== null && total > 0) {
-    const missing = pdfFilesMissingPageData(info);
-    const line = el("div", "rf-page");
-    line.append(createProgressBar({ percent: ((done ?? 0) / total) * 100 }).root);
-    const span = el("span");
-    // 页进度只覆盖有清单记录的文件；还有 missing 个文件完全没有页记录，不能让这条进度条
-    // 看起来像是「整批」的进度——那会把这几个文件的工作量凭空抹掉。
-    span.textContent = missing > 0
-      ? t("已完成 {0} / {1} 页（另有 {2} 个文件没有页记录，需整份生成）", done ?? 0, total, missing)
-      : t("已完成 {0} / {1} 页", done ?? 0, total);
-    line.append(span);
-    box.append(line);
-  } else {
-    box.append(resumeStatChips(info));
-  }
-
-  if (info.summary.last_task_stopped) {
-    const stoppedRow = el("div", "rf-stats");
-    const when = info.summary.last_time_label;
-    stoppedRow.append(createChip({ label: when ? t("上次任务 {0} 被手动停止", tx(when)) : t("上次任务被手动停止"), tone: "warn" }));
-    box.append(stoppedRow);
-  }
-
-  // 一份历史输出没什么可选的，下拉只在有第二份时出现。
-  if (info.candidates.length >= 2) {
-    const selRow = el("div", "rf-sel");
-    const isLatest = info.selected_dir === info.candidates[0].dir;
-    const hint = el("span");
-    hint.textContent = isLatest
-      ? t("找到 {0} 次历史输出，已选最近一次", info.candidates.length)
-      : t("找到 {0} 次历史输出", info.candidates.length);
-    const select = createDropdown({
-      className: "rf-history-select",
-      options: info.candidates.map((candidate, index) => ({
-        value: candidate.dir,
-        label: index === 0 ? t("{0}（最近）", tx(candidate.label)) : tx(candidate.label),
-      })),
-      value: info.selected_dir ?? undefined,
-      onChange: (next) => {
-      if (!next || next === info.selected_dir) return;
-      // 换底稿要重新逐个文件比对，只有后端算得出来：带着 preferred_resume_dir 重扫一次，
-      // 新结果回来会重新弹这个弹窗（走 runScan 原有的请求序号守卫，旧结果不会落地）。
-      handle()?.close();
-      void runScan(surface, next);
-      },
-    });
-    selRow.append(hint, select.root);
-    box.append(selRow);
-  }
-  return box;
-}
-
-/** 「**加粗词**：正文」这种一句话说明；openModal 会把它包进 <p>。 */
-function resumeLead(lead: string, body: string): HTMLElement {
-  const span = el("span");
-  const bold = el("b");
-  bold.textContent = lead;
-  span.append(bold, document.createTextNode(t("：{0}", body)));
-  return span;
-}
-
-/** 几句说明接在一起：中文直接相连，英法文句子之间补一个空格。 */
-function joinNotes(...notes: string[]): string {
-  const parts = notes.filter(Boolean);
-  if (!parts.length) return "";
-  const glue = isChineseLocale() ? "" : " ";
-  return glue + parts.join(glue);
-}
-
-function resumeFootnote(body: string): HTMLElement {
-  const span = el("span");
-  span.style.cssText = "color:var(--ink-3);font-size:12.5px";
-  span.textContent = body;
-  return span;
-}
-
-/** onDecided：从「开始翻译」进来时，选了「接着上次继续」或「全部重新翻译」就接着启动。
- *  「稍后再说」只关弹窗，不启动。 */
-/** 返回弹窗是否真的打开了。目标语言和上次不一致（resumeState 为空）或没有可续的
- *  产物时不弹，调用方要自己往下走，不能把这次点击吞掉。 */
-function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => void): boolean {
-  const info = resumeState(st);
-  if (!info || resumeHitCount(info) === 0) return false;
-  const fileCount = st.files.length || info.files.length;
-  const single = fileCount === 1;
-  const s = info.summary;
-  // 「上次已全部翻完」只认 full：partial 显然还有活，found 是判定不出完整度的，
-  // diverged 是源文件已经变了的——都不能拿来当「翻完了」，那会把唯一能补译的
-  // 入口从界面上拿掉，或者拿旧版本的产物冒充新版本的成品。
-  const allDone = s.partial === 0 && s.none === 0 && s.found === 0 && s.diverged === 0;
-  const pdfPages = surface === "pdf" && s.page_total !== null && s.page_total > 0;
-  const remaining = pdfPages ? (s.page_total as number) - (s.page_done ?? 0) : 0;
-  // pdfPages 为假说明整批 PDF 一份可用的页存档都没有——续译完全靠这份存档才能只补差额，
-  // 存档不在，「接着上次继续」在后端会整份重新生成，跟「全部重新翻译」没有区别，
-  // 却顶着「不再重复花钱」的许诺，是在骗用户点它。
-  const pdfNoPageData = surface === "pdf" && !pdfPages && !allDone;
-  // pdfPages 为真时页汇总也可能没盖住整批：还有几个文件完全没有页记录（新加进来的、
-  // 或找到产物但读不出页存档），这些文件的工作量不在 s.page_total 里，两个选项的文案
-  // 都得把它们单独点出来，不然「10 页」听起来就是这一批的全部代价。
-  const pdfMissingPages = pdfPages ? pdfFilesMissingPageData(info) : 0;
-  const pdfMissingNote = pdfMissingPages > 0
-    ? t("另有 {0} 个文件没有页面记录，无论选择哪种方式都将整份重新生成，不计入此处页数。", pdfMissingPages)
-    : "";
-  const pdfDivergedNote = surface === "pdf" && s.diverged > 0
-    ? t("另有 {0} 个 PDF 的源文件在上次翻译后已修改，上次的页面无法复用，将整份重新生成。", s.diverged)
-    : "";
-
-  let handle: ModalHandle | null = null;
-  const foundBox = buildResumeFoundBox(surface, info, () => handle);
-  const body: (string | HTMLElement)[] = [foundBox];
-
-  if (allDone) {
-    body.push(t("此批文件上次已全部翻译完成，无需补译；结果位于上方文件夹中。"));
-    body.push(resumeLead(t("全部重新翻译"), t("忽略上次的结果，将 {0} 个文件从头重新翻译。", fileCount)));
-    body.push(resumeFootnote(t("结果将保存到新的输出文件夹，上次的输出不会被覆盖或删除。")));
-  } else if (pdfPages) {
-    body.push(resumeLead(
-      t("继续上次翻译"),
-      t("跳过已完成的 {0} 页，仅生成剩余的 {1} 页，最后合成为完整的 PDF。已生成的页面直接复用，不会重复产生费用。", s.page_done ?? 0, remaining) + joinNotes(pdfMissingNote, pdfDivergedNote),
-    ));
-    const warnBox = el("div", "resume-warn");
-    warnBox.append(icon("warn", { size: "sm" }));
-    const warnText = el("span");
-    warnText.textContent = t("中途停止的任务，最后几页可能未完整生成。继续前将逐页核对，占位页或损坏页面将自动重新生成。");
-    warnBox.append(warnText);
-    body.push(warnBox);
-    body.push(resumeLead(t("全部重新翻译"), t("从头重新生成全部 {0} 页。", s.page_total) + joinNotes(pdfMissingNote, pdfDivergedNote)));
-    body.push(resumeFootnote(t("无论选择哪种方式，结果都将保存到新的输出文件夹，上次的输出不会被覆盖或删除。")));
-  } else if (pdfNoPageData) {
-    // 整批都是「源文件已改动」时按真实原因说话，别拿「读不到页存档」搪塞。
-    const allChanged = s.diverged > 0 && s.partial + s.found + s.full === 0;
-    body.push(allChanged
-      ? resumeLead(t("找到上次的翻译结果"), t("但源文件在上次翻译后已修改，上次的页面无法复用，继续翻译也将整份重新生成。"))
-      : resumeLead(t("找到上次的翻译结果"), t("但无法读取上次的页面存档，继续翻译也将整份重新生成，无法仅补译缺失部分。")));
-    body.push(resumeLead(t("全部重新翻译"), t("忽略上次的结果，将 {0} 个文件从头重新翻译。", fileCount)));
-    body.push(resumeFootnote(t("结果将保存到新的输出文件夹，上次的输出不会被覆盖或删除。")));
-  } else {
-    // diverged 文件的「继续」承诺不了省钱：底稿被拒后整份重翻，只有翻译记忆兜底。
-    // 有一个说一个，不能让「一个字不动」的许诺盖到它们头上。
-    const resumables = s.partial + s.found + s.full;
-    const divergedNote = s.diverged > 0
-      ? t("其中 {0} 个文件的源文件在上次翻译后已修改，上次的输出无法作为底稿，将整份重新翻译（已翻译的内容尽量由记忆库复用）。", s.diverged)
-      : "";
-    body.push(s.diverged > 0 && resumables === 0
-      ? resumeLead(t("继续上次翻译"), t("源文件在上次翻译后已修改，上次的输出无法作为底稿，本次将整份重新翻译；已翻译的内容尽量由记忆库复用。"))
-      : resumeLead(t("继续上次翻译"), t("以上次的译文为底稿，仅翻译缺少译文的部分；已翻译的内容保持不变，不会重复产生费用。") + joinNotes(divergedNote)));
-    body.push(resumeLead(t("全部重新翻译"), t("忽略上次的结果，将 {0} 个文件从头重新翻译。", fileCount)));
-    body.push(resumeFootnote(t("无论选择哪种方式，结果都将保存到新的输出文件夹，上次的输出不会被覆盖或删除。")));
-  }
-
-  const title = allDone
-    ? (single ? t("此文件上次已翻译完成") : t("这批文件上次已全部翻译完成"))
-    : pdfNoPageData
-      ? (single ? t("此 PDF 无可用的续译记录") : t("这些 PDF 无可用的续译记录"))
-      : pdfPages
-        ? (single ? t("此 PDF 上次未翻译完成") : t("这些 PDF 上次未翻译完成"))
-        : (single ? t("此文件已翻译过") : t("此文件夹已部分翻译"));
-
-  const actions: ModalAction[] = [
-    { label: t("稍后再说"), onClick: () => chooseFresh(surface, st) },
-    {
-      label: t("全部重新翻译"),
-      variant: allDone || pdfNoPageData ? "primary" : undefined,
-      onClick: () => {
-        chooseFresh(surface, st);
-        onDecided?.();
-      },
-    },
-  ];
-  // pdfNoPageData 时不给「接着上次继续」——那个按钮在后端会整份重新生成，跟「全部重新
-  // 翻译」结果一样，留着它只会让用户以为还有一条能省钱的路。
-  if (!allDone && !pdfNoPageData) {
-    actions.push({
-      label: t("继续上次翻译"),
-      variant: "primary",
-      onClick: () => {
-        chooseResume(surface, st);
-        onDecided?.();
-      },
-    });
-  }
-
-  handle = openModal({
-    tone: (pdfPages || pdfNoPageData) && !allDone ? "warn" : "tint",
-    icon: surface === "pdf" ? "pdf" : "folder",
-    sourceLabel: onDecided ? t("{0} · 开始前核对", surfaceLabel(surface)) : t("{0} · 扫描完成", surfaceLabel(surface)),
-    title,
-    body,
-    actions,
-  });
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // 扫描
 // ---------------------------------------------------------------------------
@@ -4635,7 +4161,7 @@ function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObje
 }
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
-async function runScan(surface: Surface, preferredResumeDir?: string, background = false): Promise<void> {
+export async function runScan(surface: Surface, preferredResumeDir?: string, background = false, keepUnchecked?: Set<string>): Promise<void> {
   const st = stateOf(surface);
   const path = normalizeUserPath(st.sourcePath);
   if (!path) return;
@@ -4664,7 +4190,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string, background
     // 在缺字段时给回 {}，取值自然落回 false，不用按 surface 分支特判。
     st.libreofficeAvailable = Boolean(record(result.risk).libreoffice_available);
     if (surface === "cad" && Object.keys(record(response.capability)).length) st.cadCapability = record(response.capability);
-    st.selected = new Set(items.map((f) => f.path));
+    st.selected = new Set(items.map((f) => f.path).filter((path) => !keepUnchecked?.has(path)));
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
     st.fileOutcomes = new Map();
@@ -4803,6 +4329,8 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.allow_doc_fallback = st.allowDocFallback;
     payload.protect_front_matter = Boolean(st.toggles.get("protectFrontMatter"));
     payload.translate_headers_footers = Boolean(st.toggles.get("translateHeadersFooters"));
+    // 未接受的修订怎么处理：开始前弹窗问过才有意义，默认 skip（旧行为，不动修订里的原文）。
+    payload.revision_mode = st.revisionMode;
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   if (isExtSurface(surface)) {
@@ -4878,6 +4406,8 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
       showCompatibilityModal(surface, st, riskyCount);
       return;
     }
+    // 未接受的修订：开始前必须让用户决定怎么处理（样张②/④）。默认跳过，最不容易出错。
+    if (!nextRevisionDecision(st)) return;
   }
   await submitAfterResumeCheck(surface, st);
 }
@@ -4887,7 +4417,7 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
  *  「重新扫描」那套续译检测。以前续译弹窗只在重新扫描后出现，停止后点开始会整份从头
  *  重翻，已经付过钱的部分再花一遍。确实有翻了一半的文件才弹窗，其余照常开始。
  *  .xls / .doc 转换方式弹窗的按钮也走这里——直接预检提交会把这道检测绕过去。 */
-async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promise<void> {
+export async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promise<void> {
   const lastState = st.task?.task.terminal ? st.task.task.state : null;
   if ((surface === "excel" || surface === "word") && st.resumeDecision === null && lastState && lastState !== "done") {
     if (submittingSurfaces.has(surface)) return;
@@ -4909,6 +4439,12 @@ async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promi
     }
   }
   await preflightAndSubmit(surface, st);
+}
+
+/** 转换方式选完以后接着走启动流程：Word 还要先问未接受的修订怎么处理，不能跳过这一问。 */
+function continueAfterCompatibility(surface: Surface, st: SurfaceState): void {
+  if (surface === "word" && !nextRevisionDecision(st)) return;
+  void submitAfterResumeCheck(surface, st);
 }
 
 function showCompatibilityModal(surface: Surface, st: SurfaceState, count: number): void {
@@ -4943,7 +4479,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = true;
           else st.allowDocFallback = true;
-          void submitAfterResumeCheck(surface, st);
+          continueAfterCompatibility(surface, st);
         },
       },
       {
@@ -4952,11 +4488,41 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = false;
           else st.allowDocFallback = false;
-          void submitAfterResumeCheck(surface, st);
+          continueAfterCompatibility(surface, st);
         },
       },
     ],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Word：未接受的修订（样张②③④）
+//
+// 扫描时已经数出每个文件有几处未接受的修订。点「开始翻译」时如果有选中文件带着
+// 修订，就不能替他做主——「先处理修订」和「修订一起翻译」差着原件会不会被改动，
+// 所以先问一句，默认「跳过修订，只翻译其余部分」（不改动修订内容，最不容易出错）。
+// ---------------------------------------------------------------------------
+
+/** 这批里被选中、且带未接受修订的文件，按「修订处数从多到少」排。 */
+function filesWithRevisions(st: SurfaceState): Array<{ file: FileItem; count: number }> {
+  return st.files
+    .filter((file) => st.selected.has(file.path))
+    .map((file) => ({ file, count: num(file.tracked_change_count) }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count);
+}
+
+/** 开始前的修订处理决定。返回 true 表示可以接着走启动流程；false 表示弹窗已经开了，
+ *  等用户在弹窗里决定（决定完会自己接着往下走）。 */
+function nextRevisionDecision(st: SurfaceState): boolean {
+  const entries = filesWithRevisions(st);
+  if (!entries.length) {
+    // 这次没有要问的：上一次在弹窗里选的「修订一起翻译」不能带到这一批。
+    st.revisionMode = "skip";
+    return true;
+  }
+  showRevisionModal(st, entries);
+  return false;
 }
 
 /** 预检加提交合起来要跑好几个来回，这段时间里按钮还是可点的。第二次点击最终会被
@@ -4964,7 +4530,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
 const submittingSurfaces = new Set<Surface>();
 const submitFailures = new Set<Surface>();
 
-async function preflightAndSubmit(
+export async function preflightAndSubmit(
   surface: Surface,
   st: SurfaceState,
   overrides: JsonObject = {},
@@ -4995,7 +4561,7 @@ async function preflightAndSubmit(
 
 /** 模型还没配好时后端给的拦截原因（api/task_contracts.py 的 REASON_*_MODEL_MISSING），
  *  值是「设置 › 模型服务」里对应的角色。 */
-const MODEL_MISSING_ROLE: Record<string, string> = {
+export const MODEL_MISSING_ROLE: Record<string, string> = {
   translation_model_missing: "translation",
   image_model_missing: "image",
   pdf_review_model_missing: "pdf_review",
@@ -5006,102 +4572,6 @@ const MODEL_MISSING_ROLE: Record<string, string> = {
 function noteStartFailure(surface: Surface, error: unknown): void {
   if (MODEL_MISSING_ROLE[apiErrorReason(error)]) submitFailures.delete(surface);
   else submitFailures.add(surface);
-}
-
-/** 前置校验把任务拦下来时给一个弹窗，不给两秒就消失的提示：任务根本没开始这件事得留在
- *  屏幕上。更要紧的是有些拦截本身是有出路的——审核模型上次测试失败那条就写着「或明确
- *  确认继续」，而 9.2.6 只在提示文字里说了这句话，界面上没有任何按钮能确认，看起来就
- *  像开始按钮坏了。 */
-function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: JsonObject, error: unknown): void {
-  // 开始前给审核模型发了一张写着字的测试图（core/image_input_check.py）。不能识别图片的
-  // 模型审核每一页都会出错，出路是「本次不审核」或换模型；回了话却没读出字的，图片可能
-  // 没送到模型，另给一个「仍用它审核」。两种都只影响这一次任务，设置里的开关不动。
-  const imageInputReason = apiErrorReason(error);
-  if (imageInputReason === "pdf_review_no_image_input" || imageInputReason === "pdf_review_image_unseen") {
-    const unseen = imageInputReason === "pdf_review_image_unseen";
-    openModal({
-      // 三四个按钮、英法文又长：用宽一些的弹窗，按钮尽量排在一行。
-      wide: true,
-      tone: "warn",
-      icon: "warn",
-      title: unseen ? t("审核模型可能没看到图片") : t("审核模型不能识别图片"),
-      body: unseen
-        ? [
-          t("测试时审核模型有回复，但没有读出测试图中的文字。图片可能未送达模型（例如所用的中转服务没有转发图片），这样的审核结果不可信。"),
-          t("建议本次不审核直接开始，或在「设置 → 模型服务 → 图像翻译审核」中更换模型或连接。"),
-          t("如确认该模型能识别图片，也可以仍用它审核。"),
-        ]
-        : [
-          t("逐页审核已开启，但测试发现当前的图像翻译审核模型不能识别图片，用它审核每一页都会出错。"),
-          t("可以本次不审核直接开始，译文照常生成；或在「设置 → 模型服务 → 图像翻译审核」中换一个能识别图片的模型。"),
-          t("本次不审核只影响这一次任务，设置不会被修改。"),
-        ],
-      actions: [
-        { label: t("取消") },
-        { label: t("前往设置更换模型"), onClick: () => navigate("settings", { page: "models", role: "pdf_review" }) },
-        ...(unseen
-          ? [{
-            label: t("仍用它审核"),
-            onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
-          }]
-          : []),
-        {
-          label: t("本次不审核，直接开始"),
-          variant: "primary" as const,
-          onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_skip_pdf_review: true }),
-        },
-      ],
-    });
-    return;
-  }
-  if (apiErrorReason(error) === "pdf_review_model_unavailable") {
-    openModal({
-      tone: "warn",
-      icon: "warn",
-      title: t("审核模型上次测试未通过"),
-      body: [
-        t("逐页审核已开启，但本机最近一次测试「图像翻译审核」模型时失败。如现在开始，页面将正常翻译，但审核步骤很可能在每一页都出错。"),
-        t("建议先在「设置 → 模型服务 → 图像翻译审核」中重新测试，或关闭逐页审核后再开始。"),
-        t("也可忽略测试结果直接开始：仅影响本次任务，设置不会被修改。"),
-      ],
-      actions: [
-        { label: t("取消") },
-        { label: t("前往设置重新测试"), onClick: () => navigate("settings", { page: "models" }) },
-        {
-          label: t("忽略并开始"),
-          variant: "primary",
-          onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
-        },
-      ],
-    });
-    return;
-  }
-  const missingRole = MODEL_MISSING_ROLE[apiErrorReason(error)];
-  if (missingRole) {
-    // 以前这里和其他拦截一样只有「知道了」：用户读完「尚未填写模型名称」还得自己去找
-    // 设置在哪。直接给一个去「设置 › 模型服务」对应角色的主按钮。
-    openModal({
-      tone: "warn",
-      icon: "warn",
-      title: missingRole === "pdf_review" ? t("尚未配置审核模型") : t("尚未配置翻译模型"),
-      body: [
-        redactedText((error as Error)?.message, t("尚未填写翻译所用的模型。")),
-        t("填写模型名称和 API 密钥后，返回此处点击「开始翻译」。"),
-      ],
-      actions: [
-        { label: t("取消") },
-        { label: t("前往设置"), variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
-      ],
-    });
-    return;
-  }
-  openModal({
-    tone: "warn",
-    icon: "warn",
-    title: t("本次任务未能开始"),
-    body: [redactedText((error as Error)?.message, t("任务准备失败，无更多信息。"))],
-    actions: [{ label: t("知道了"), variant: "primary" }],
-  });
 }
 
 /** 简化版并行风险确认：main.ts 原版还会展示共享连接明细表、活动任务列表、候选任务快照——

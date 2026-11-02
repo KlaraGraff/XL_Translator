@@ -1230,11 +1230,13 @@ def _docx_to_pdf_windows_word(docx_path: Path, pdf_path: Path) -> None:
         if document is not None:
             try:
                 document.Close(False)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"关闭 Word 文档失败，已忽略：{exc!r}")
                 pass
         if word is not None:
             try:
                 word.Quit()
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"退出 Word 进程失败，已忽略：{exc!r}")
                 pass
         pythoncom.CoUninitialize()

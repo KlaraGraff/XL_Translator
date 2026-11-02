@@ -35,7 +35,7 @@ import { refreshTermsAdvancedMode, renderTermsSection, resetTermsEntryCache } fr
 import { createTaskFeedbackButton } from "../task-feedback";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
-import { isChineseLocale, localeTag, t, tx, localized } from "../i18n";
+import { fmtNum, isChineseLocale, localeTag, t, tx, localized } from "../i18n";
 import { extSurfaceIcon, extSurfaceLabel, isExtSurface, localizedText, surfaceDescriptor, surfaceDescriptors } from "../surface-descriptors";
 import { entranceElapsed, motionAllowed } from "../motion";
 import "./tasks.css";
@@ -810,6 +810,9 @@ interface FileRow {
   compressedOutput: string;
   compressedOutputPath: string;
   error: string;
+  /** Word 修订的处理结果（core/word_revisions.py）：这份文件当时跳过了几处、还是连
+   *  修订一起翻的。空串表示这份文件没有未接受的修订，这一列不显示。 */
+  revisions: string;
 }
 
 /** 后端逐文件状态枚举 → 用户读得懂的中文。文件级只说「已生成 / 未生成」（CONTEXT.md
@@ -839,6 +842,7 @@ function fileRows(task: TaskStatus): FileRow[] {
       const outputPath = realPath(firstText(fileResult, ["output_path", "result_path", "output", "translated_image_path"]));
       const compressedOutputPath = realPath(firstText(fileResult, ["compressed_output", "compressed_output_path", "compressed_pdf_path"]));
       const error = plainFailureText(firstText(fileResult, ["error", "error_message", "message", "detail"]));
+      const revisions = revisionSummary(fileResult);
       const displayProgress: FileProgress = {
         ...progress,
         result: fileResult,
@@ -852,6 +856,7 @@ function fileRows(task: TaskStatus): FileRow[] {
         compressedOutput: compressedOutputPath ? fileNameOf(compressedOutputPath) : "",
         compressedOutputPath,
         error,
+        revisions,
       };
     });
   }
@@ -880,8 +885,21 @@ function fileRows(task: TaskStatus): FileRow[] {
       compressedOutput: compressedOutputPath ? fileNameOf(compressedOutputPath) : "",
       compressedOutputPath,
       error: plainFailureText(firstText(entry, ["error", "error_message", "message", "detail"])),
+      revisions: revisionSummary(entry),
     };
   });
+}
+
+/** 逐文件结果里的修订处理结果（core/word_revisions.py 的 RevisionWriteStats.as_dict）。
+ *  后端存的是「跳过了 N 处修订（保持原文）」这句中文原文，界面按当前语言重画一次——
+ *  直接显示后端原句的话，英法界面里这一条会留在中文。 */
+function revisionSummary(entry: JsonObject): string {
+  const revisions = record(entry.revisions);
+  const count = num(revisions.count);
+  if (count <= 0) return "";
+  return text(revisions.mode) === "translate"
+    ? t("翻译了 {0} 处修订（保留修订标记）", fmtNum(count))
+    : t("跳过了 {0} 处修订（保持原文）", fmtNum(count));
 }
 
 // ---------------------------------------------------------------------------
@@ -2100,9 +2118,21 @@ function renderDetail(): void {
       const tr = document.createElement("tr");
       // 文件名同样单行省略 + 悬停看全名，和上面那张表保持一致。
       const nameTd = document.createElement("td");
-      nameTd.className = `fname ${FIT_CLIP}`;
-      nameTd.textContent = file.name || "—";
-      if (file.name) nameTd.title = file.name;
+      nameTd.className = "fname";
+      const nameText = document.createElement("div");
+      nameText.className = FIT_CLIP;
+      nameText.textContent = file.name || "—";
+      if (file.name) nameText.title = file.name;
+      nameTd.append(nameText);
+      // Word 修订的处理结果（状态⑤）挂在文件名下面一行：这张表本来就窄，加一列会把
+      // 状态和输出两列挤没。没有未接受修订的文件这一行不占位。
+      if (file.revisions) {
+        const revisionLine = document.createElement("div");
+        revisionLine.className = "tk-note";
+        revisionLine.style.margin = "2px 0 0";
+        revisionLine.textContent = file.revisions;
+        nameTd.append(revisionLine);
+      }
       tr.append(nameTd);
       // 状态是枚举，用徽章上色；纯文字的「未生成」和「已生成」在窄表里几乎分不出轻重。
       const statusTd = document.createElement("td");

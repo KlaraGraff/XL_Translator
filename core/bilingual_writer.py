@@ -228,14 +228,6 @@ def get_custom_output_dir_error(custom_output_dir: str | Path | None) -> str | N
     return None
 
 
-def custom_output_dir_will_be_created(custom_output_dir: str | Path | None) -> bool:
-    """Whether the custom output root will be created at runtime."""
-    output_root = resolve_custom_output_dir(custom_output_dir)
-    if output_root is None or get_custom_output_dir_error(output_root) is not None:
-        return False
-    return not output_root.exists()
-
-
 def build_output_dir(source_dir: str | Path, custom_output_dir: str | Path | None = None) -> Path:
     """生成带时间戳的输出目录路径（不创建目录）。
     
@@ -419,7 +411,8 @@ def _autofit_keeping_merged_rows(ws, merged_rows) -> None:
     for row_num in sorted(merged_rows):
         try:
             before[row_num] = float(ws.range(f"A{row_num}").row_height)
-        except Exception:  # noqa: BLE001 - 读不到就不保护这一行
+        except Exception as exc:  # noqa: BLE001 - 读不到就不保护这一行
+            logger.debug(f"读取合并单元格行高失败，已忽略：{exc!r}")
             continue
     ws.used_range.rows.autofit()
     for row_num, height in before.items():
@@ -496,7 +489,8 @@ def autofit_files_batch(
                         # staged copy locked so the temp cleanup fails too.
                         try:
                             wb.close()
-                        except Exception:  # noqa: BLE001 - best-effort cleanup only
+                        except Exception as exc:  # noqa: BLE001 - best-effort cleanup only
+                            logger.debug(f"关闭 Excel 工作簿失败，已忽略：{exc!r}")
                             pass
                     shutil.copy2(staged_path, original_path)
                     _ensure_owner_writable(original_path)

@@ -357,5 +357,7 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
         self.assertTrue(any("本批原文中的 YU YUNCHONG 是用拼音书写的中国人名" in prompt for prompt in engine.prompts))
 
 
+
+
 if __name__ == "__main__":
     unittest.main()

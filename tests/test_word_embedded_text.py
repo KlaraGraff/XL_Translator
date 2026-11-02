@@ -343,5 +343,184 @@ class WordStoryTests(unittest.TestCase):
         self.assertEqual([p.text for p in Document(output).paragraphs], ["正文原文", "Texte du corps"])
 
 
+def _part(doc, name: str, content_type: str, payload: bytes, rel_type: str) -> str:
+    """挂一个关系指向的部件，返回正文里引用的关系 id。"""
+    part = Part(PackURI(name), content_type, payload, doc.part.package)
+    return doc.part.relate_to(part, rel_type)
+
+
+def _graphic_paragraph(graphic_data_xml: str, namespace: str, extra_ns: str = "") -> str:
+    """正文里挂一个 ``wp:inline`` 图形；``extra_ns`` 补图形内容自己的命名空间声明。"""
+    return (
+        f'<w:p {nsdecls("w")} xmlns:wp="{WP}" xmlns:a="{A}" xmlns:r='
+        '"http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        f"{extra_ns}>"
+        '<w:r><w:drawing><wp:inline><wp:extent cx="3000000" cy="2000000"/>'
+        f'<a:graphic><a:graphicData uri="{namespace}">{graphic_data_xml}'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+    )
+
+
+class WordCommentTests(unittest.TestCase):
+    """批注（comments.xml）写回时不能被破坏。
+
+    审计 D2 线记的是「批注至今没有翻译路径也不进统计」；那是产品范围问题，靠测试
+    补不上。能补、也值得钉住的是另一条下限：翻正文的时候不能顺手把批注弄坏。
+    ``comments+xml`` 现在列在 ``_WORD_TEXT_PART_TYPES`` 的「允许改动」部件表里，
+    照抄由「没改的部件必须逐字节一致」那条保存后核对兜着；批注的引用标记则落在
+    正文 run 里，重整段落时最容易连带扫掉。这两点都没有现成用例。
+    （若将来真的开始翻译批注，这里的逐字节断言要连同部件表一起改。）
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.source = self.root / "commented.docx"
+        doc = Document()
+        paragraph = doc.add_paragraph("正文原文")
+        doc.add_comment(
+            paragraph.runs, text="这段要请法务复核。", author="张三", initials="ZS"
+        )
+        doc.save(self.source)
+
+    def _comments_xml(self, path: Path) -> bytes:
+        with zipfile.ZipFile(path) as archive:
+            return archive.read("word/comments.xml")
+
+    def test_comment_part_and_its_anchor_markers_survive_a_whole_paragraph_rewrite(
+        self,
+    ) -> None:
+        original = self._comments_xml(self.source)
+        self.assertIn("这段要请法务复核。", original.decode("utf-8"))
+        with zipfile.ZipFile(self.source) as archive:
+            body = archive.read("word/document.xml").decode("utf-8")
+        anchors = re.findall(r"<w:comment(?:RangeStart|RangeEnd|Reference)\b[^>]*>", body)
+        self.assertEqual(len(anchors), 3, anchors)
+
+        # 「仅显示译文」会整段改写正文，是扫掉引用标记风险最大的一条路。
+        output = write_bilingual_docx(
+            source_path=self.source,
+            output_dir=self.root / "out",
+            translations={"正文原文": "Texte du corps"},
+            target_lang="fr",
+            output_translation_only=True,
+        )
+
+        with zipfile.ZipFile(output) as archive:
+            rewritten = archive.read("word/document.xml").decode("utf-8")
+        self.assertEqual(
+            re.findall(r"<w:comment(?:RangeStart|RangeEnd|Reference)\b[^>]*>", rewritten),
+            anchors,
+            "批注的引用标记在改写段落时被扫掉了，Word 里那条批注会挂空",
+        )
+        self.assertEqual(self._comments_xml(output), original)
+        self.assertEqual([c.text for c in Document(output).comments], ["这段要请法务复核。"])
+
+    def test_body_text_next_to_a_comment_is_still_extracted(self) -> None:
+        # 批注挂在正文 run 上时，正文那一段不能被连带跳过。
+        self.assertEqual(
+            [s.source for s in extract_word_segments(self.source, target_lang="fr")],
+            ["正文原文"],
+        )
+        self.assertEqual(
+            [s.source for s in extract_word_story_segments(self.source, target_lang="fr")],
+            [],
+        )
+
+
+class WordChartAndSmartArtTests(unittest.TestCase):
+    """Word 里的图表和 SmartArt：文字住在独立的 chartN.xml / dgm dataN.xml 里。
+
+    审计 D2 线把「Word 内 SmartArt/图表」列为未实测项。它们不在 python-docx 的
+    正文遍历范围内，所以「翻不翻」是产品范围问题；这里补的是实测下限：翻正文的
+    时候图形部件必须一个字节都不动（``_check_untouched_parts`` 会把改动报成部件名
+    并让整次写出失败），图形在正文里的引用也不能丢。
+    """
+
+    CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+    DIAGRAM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.source = self.root / "charts.docx"
+        doc = Document()
+        doc.add_paragraph("正文原文")
+        self.chart_payload = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<c:chartSpace xmlns:c="{self.CHART_NS}" xmlns:a="{A}"><c:chart><c:plotArea>'
+            '<c:barChart><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0">'
+            "<c:v>销售额</c:v></c:pt></c:strCache></c:strRef></c:tx></c:ser></c:barChart>"
+            "</c:plotArea></c:chart></c:chartSpace>"
+        ).encode()
+        self.diagram_payload = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<dgm:dataModel xmlns:dgm="{self.DIAGRAM_NS}" xmlns:a="{A}"><dgm:ptLst>'
+            '<dgm:pt modelId="1"><dgm:t><a:p><a:r><a:t>进度计划</a:t></a:r></a:p>'
+            "</dgm:t></dgm:pt></dgm:ptLst></dgm:dataModel>"
+        ).encode()
+        chart_rid = _part(
+            doc,
+            "/word/charts/chart1.xml",
+            "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+            self.chart_payload,
+            RT.CHART,
+        )
+        diagram_rid = _part(
+            doc,
+            "/word/diagrams/data1.xml",
+            "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml",
+            self.diagram_payload,
+            RT.DIAGRAM_DATA,
+        )
+        end = doc.element.body.find(qn("w:sectPr"))
+        end.addprevious(
+            parse_xml(
+                _graphic_paragraph(
+                    f'<c:chart r:id="{chart_rid}"/>',
+                    self.CHART_NS,
+                    f'xmlns:c="{self.CHART_NS}"',
+                )
+            )
+        )
+        end.addprevious(
+            parse_xml(
+                _graphic_paragraph(
+                    f'<dgm:relIds r:dm="{diagram_rid}"/>',
+                    self.DIAGRAM_NS,
+                    f'xmlns:dgm="{self.DIAGRAM_NS}"',
+                )
+            )
+        )
+        doc.save(self.source)
+
+    def test_chart_and_diagram_labels_stay_out_of_the_translation_scope(self) -> None:
+        sources = [
+            segment.source
+            for segment in extract_word_segments(self.source, target_lang="fr")
+        ]
+        # 图表系列名「销售额」和 SmartArt 的「进度计划」都不在正文遍历范围内。
+        self.assertEqual(sources, ["正文原文"])
+
+    def test_chart_and_diagram_parts_are_copied_byte_for_byte(self) -> None:
+        output = write_bilingual_docx(
+            source_path=self.source,
+            output_dir=self.root / "out",
+            translations={"正文原文": "Texte du corps"},
+            target_lang="fr",
+        )
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read("word/charts/chart1.xml"), self.chart_payload)
+            self.assertEqual(archive.read("word/diagrams/data1.xml"), self.diagram_payload)
+            self.assertIn(b"<w:drawing>", archive.read("word/document.xml"))
+        # 图形段落本身没有文字，只看有字的段落。
+        self.assertEqual(
+            [p.text for p in Document(output).paragraphs if p.text],
+            ["正文原文", "Texte du corps"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

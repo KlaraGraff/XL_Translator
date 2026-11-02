@@ -154,14 +154,16 @@ def _targets(settings: AppSettings) -> list[UpgradeTarget]:
     for role in _ROLE_NAMES:
         try:
             effective_pool = list_effective_role_connections(settings, role)
-        except Exception:  # noqa: BLE001 - one invalid idle role must not block others
+        except Exception as exc:  # noqa: BLE001 - one invalid idle role must not block others
+            logger.debug(f"读取角色可用连接失败，已忽略：{exc!r}")
             continue
         for connection in effective_pool:
             try:
                 config = resolve_effective_model_config(
                     settings, role, connection_id=connection.id,
                 )
-            except Exception:  # noqa: BLE001 - skip an incompatible role
+            except Exception as exc:  # noqa: BLE001 - skip an incompatible role
+                logger.debug(f"解析角色有效模型配置失败，已忽略：{exc!r}")
                 continue
             if config.mode != "cloud" or config.provider not in {"openai", "deepseek"}:
                 continue

@@ -31,10 +31,6 @@ from settings import ModelConnection
 _T = TypeVar("_T")
 
 
-class AllConnectionsExhaustedError(RuntimeError):
-    """Raised when every connection in the chain has been ruled out."""
-
-
 def _mark_no_replay(exc: BaseException) -> None:
     try:
         exc.no_replay = True  # type: ignore[attr-defined]

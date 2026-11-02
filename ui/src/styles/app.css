@@ -147,6 +147,30 @@ svg.ic.lg { width: 22px; height: 22px; }
 .side-search .lb { flex: 1; min-width: 0; white-space: nowrap; }
 .side-search kbd { flex: none; font-family: var(--font); font-size: 10.5px; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink-3); }
 
+/* ========== 窗口顶部（window-chrome.ts） ==========
+   不用系统那条单独的标题栏，画布一直铺到窗口顶上。只在真正的 Tauri 窗口里生效
+   （<html data-chrome>），浏览器开发态界面不变。
+   Mac：红绿灯浮在侧栏左上角（tauri.conf.json 的 trafficLightPosition），侧栏顶部让出一行。
+   Windows：顶部一条与画布同色，右上角自绘三个窗口按钮；侧栏从窗口最顶上开始。 */
+:root[data-chrome="mac"] .side { padding-top: 46px; }
+
+:root[data-chrome="win"] .app-shell { padding-top: 36px; }
+:root[data-chrome="win"] .side { margin-top: -36px; }
+.win-caption { position: absolute; top: 0; right: 0; z-index: 400; display: flex; }
+.win-caption-btn {
+  width: 46px; height: 36px; display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 0; background: transparent; color: var(--ink); cursor: default;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif; font-size: 10px; line-height: 1;
+  transition: background-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.win-caption-btn:hover { background: rgb(0 0 0 / 6%); }
+.win-caption-btn:active { background: rgb(0 0 0 / 10%); }
+:root[data-theme="dark"] .win-caption-btn:hover { background: rgb(255 255 255 / 8%); }
+:root[data-theme="dark"] .win-caption-btn:active { background: rgb(255 255 255 / 5%); }
+/* 关闭按钮悬停变红是 Windows 的固定样子，深浅色都一样。 */
+.win-caption-btn.close:hover { background: #c42b1c; color: #fff; }
+.win-caption-btn.close:active { background: #c84031; color: #fff; }
+
 /* ========== 顶栏与主区 ========== */
 /* position: relative —— 顶部提示栈（.toast-stack）以工作区为定位参照，这样它是相对
    内容区居中，而不是相对整个窗口（那样会被侧栏推偏 116px）。

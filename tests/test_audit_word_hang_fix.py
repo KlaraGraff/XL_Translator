@@ -146,7 +146,7 @@ class WordRecoveryStopBetweenRoundsTest(unittest.TestCase):
             should_stop=stop_flag.is_set,
             enable_semantic=False,
         )
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             pool.add_candidate(source, source)
             finished, outcome, error = _run_pool_with_timeout(pool)
 
@@ -179,7 +179,7 @@ class WordRecoveryStopBetweenRoundsTest(unittest.TestCase):
             should_stop=stop_flag.is_set,
             enable_semantic=False,
         )
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             # 第一段初稿就通过校验，直接被接受
             pool.add_candidate(recovered, "Le paragraphe a bien ete traduit ici.")
             pool.add_candidate(pending, pending)
@@ -211,7 +211,7 @@ class WordRecoveryStopBetweenRoundsTest(unittest.TestCase):
         def _fake_translate(texts, *args, **kwargs):  # pragma: no cover - 不该被调用
             raise AssertionError("停止后不应再发起重试请求")
 
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             pool.add_candidate(source, source)
             stop_flag.set()
             finished, outcome, error = _run_pool_with_timeout(pool)
@@ -244,7 +244,7 @@ class WordRecoveryFutureFailureTest(unittest.TestCase):
             log_callback=lambda level, msg: logs.append((level, msg)),
             enable_semantic=False,
         )
-        with patch("core.word_task_runner.translate_word_texts", _boom):
+        with patch("core.word_recovery_pool.translate_word_texts", _boom):
             pool.add_candidate(source, source)
             finished, outcome, error = _run_pool_with_timeout(pool)
 
@@ -279,7 +279,7 @@ class WordRecoveryFutureFailureTest(unittest.TestCase):
             should_stop=lambda: False,
             enable_semantic=False,
         )
-        with patch("core.word_task_runner.translate_word_texts", _boom_then_ok):
+        with patch("core.word_recovery_pool.translate_word_texts", _boom_then_ok):
             pool.add_candidate(source, source)
             finished, outcome, error = _run_pool_with_timeout(pool)
 
@@ -313,8 +313,8 @@ class WordRecoveryFutureFailureTest(unittest.TestCase):
             should_stop=lambda: False,
             enable_semantic=True,
         )
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate), patch(
-            "core.word_task_runner._run_semantic_arbitration", _boom
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate), patch(
+            "core.word_recovery_pool._run_semantic_arbitration", _boom
         ):
             pool.add_candidate(source, candidate)
             finished, outcome, error = _run_pool_with_timeout(pool)
@@ -345,7 +345,7 @@ class WordRecoveryFutureFailureTest(unittest.TestCase):
             should_stop=stop_flag.is_set,
             enable_semantic=False,
         )
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             pool.add_candidate(source, source)
             finished, _outcome, error = _run_pool_with_timeout(pool)
 
@@ -451,7 +451,7 @@ class WordRecoveryFatalErrorTest(unittest.TestCase):
             enable_semantic=False,
             defer_until_started=True,
         )
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             for source in sources:
                 pool.add_candidate(source, source)
             finished, _outcome, error = _run_pool_with_timeout(pool)
@@ -515,7 +515,7 @@ class WordRecoveryShutdownDeadlockTest(unittest.TestCase):
 
         pool._executor.submit = _slow_submit
 
-        with patch("core.word_task_runner.translate_word_texts", _fake_translate):
+        with patch("core.word_recovery_pool.translate_word_texts", _fake_translate):
             for source in sources:
                 pool.add_candidate(source, source)
             pool.start()

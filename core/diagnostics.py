@@ -17,7 +17,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from config import APP_DATA_DIR, APP_VERSION, LOG_PATH
+from loguru import logger
+
+from config import APP_DATA_DIR, APP_VERSION
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 
 DIAGNOSTICS_DIR = APP_DATA_DIR / "diagnostics"
@@ -188,7 +190,8 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
     for manifest_path in DIAGNOSTIC_RECORDS_DIR.glob("*/manifest.json"):
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取诊断记录清单失败，已忽略：{exc!r}")
             continue
         if not _is_current_safe_manifest(payload):
             # A prior format may contain document-specific locations.  Keep
@@ -201,11 +204,6 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
 
     records.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return records
-
-
-def count_diagnostic_records() -> int:
-    """Return the number of persisted diagnostic records."""
-    return len(list_diagnostic_records())
 
 
 def public_diagnostic_records() -> list[dict[str, Any]]:
@@ -415,18 +413,6 @@ def estimate_record_size(record_dir: str | Path) -> int:
     return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
 
 
-def format_size(num_bytes: int) -> str:
-    """Format byte counts for UI captions."""
-    value = float(max(0, int(num_bytes or 0)))
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB"
-
-
 def _unique_record_dir(*, surface: str, task_id: str) -> Path:
     DIAGNOSTIC_RECORDS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -549,23 +535,6 @@ def _redact(value: Any) -> Any:
         text = _ASSIGNMENT_SECRET_RE.sub(r"\1***", text)
         return _URL_SECRET_RE.sub(r"\1***", text)
     return value
-
-
-def _serialize_file_item(item: Any) -> dict[str, Any]:
-    path = Path(getattr(item, "path", ""))
-    payload = {
-        "name": str(getattr(item, "name", path.stem or "")),
-        "filename": path.name,
-        "path": str(path),
-        "suffix": path.suffix.lower(),
-        "exists": path.exists() if str(path) else False,
-        "size_kb": getattr(item, "size_kb", None),
-        "sheets": list(getattr(item, "sheets", []) or []),
-        "paragraph_count": getattr(item, "paragraph_count", None),
-        "table_count": getattr(item, "table_count", None),
-        "translatable_count": getattr(item, "translatable_count", None),
-    }
-    return {key: value for key, value in payload.items() if value not in (None, [], "")}
 
 
 def _pdf_diagnostic_filename(path: str, default: str) -> str:
@@ -701,129 +670,11 @@ def _build_summary(
     return "\n".join(str(_redact(line)) for line in lines)
 
 
-def _sanitize_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sanitized = []
-    for issue in issues:
-        item = _redact(_json_safe(issue))
-        failed_sources = []
-        for source_item in item.get("failed_sources") or []:
-            source_text = str(source_item.get("source") or "")
-            failed_sources.append(
-                {
-                    "source_hash": _source_hash(source_text),
-                    "source_excerpt": _source_excerpt(source_text),
-                    "error": _redact(str(source_item.get("error") or "")),
-                }
-            )
-        if failed_sources:
-            item["failed_sources"] = failed_sources
-        sanitized.append(item)
-    return sanitized
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(
         json.dumps(_redact(_json_safe(payload)), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(_redact(_json_safe(row)), ensure_ascii=False))
-            handle.write("\n")
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.write_text(str(_redact(text)), encoding="utf-8")
-
-
-def _write_failed_items_csv(
-    path: Path,
-    file_results: list[dict[str, Any]],
-    quality_issues: list[dict[str, Any]],
-) -> None:
-    rows: list[dict[str, Any]] = []
-    for item in file_results:
-        if item.get("success"):
-            continue
-        rows.append(
-            {
-                "item_type": "file",
-                "file": item.get("name", ""),
-                "location": "",
-                "location_label": "",
-                "section_path": "",
-                "severity": "failed",
-                "problem": "文件处理失败",
-                "status": "",
-                "error": item.get("error", ""),
-                "source_hash": "",
-                "source_excerpt": "",
-                "output": item.get("output", ""),
-            }
-        )
-
-    for issue in quality_issues:
-        for failed_source in issue.get("failed_sources") or []:
-            source_text = str(failed_source.get("source") or "")
-            rows.append(
-                {
-                    "item_type": "api",
-                    "file": issue.get("file", ""),
-                    "location": "",
-                    "location_label": issue.get("location_label", ""),
-                    "section_path": issue.get("section_path", ""),
-                    "severity": issue.get("severity", "needs_action"),
-                    "problem": issue.get("message") or issue.get("problem", ""),
-                    "status": issue.get("status", ""),
-                    "error": failed_source.get("error", ""),
-                    "source_hash": _source_hash(source_text),
-                    "source_excerpt": _source_excerpt(source_text),
-                    "output": "",
-                }
-            )
-        if not issue.get("failed_sources"):
-            rows.append(
-                {
-                    "item_type": "quality",
-                    "file": issue.get("file", ""),
-                    "location": issue.get("location", ""),
-                    "location_label": issue.get("location_label", ""),
-                    "section_path": issue.get("section_path", ""),
-                    "severity": issue.get("severity", ""),
-                    "problem": issue.get("message") or issue.get("problem", ""),
-                    "status": issue.get("status", ""),
-                    "error": "",
-                    "source_hash": "",
-                    "source_excerpt": issue.get("snippet", ""),
-                    "output": "",
-                }
-            )
-
-    _write_csv(
-        path,
-        rows,
-        [
-            "item_type",
-            "file",
-            "location",
-            "location_label",
-            "section_path",
-            "severity",
-            "problem",
-            "status",
-            "error",
-            "source_hash",
-            "source_excerpt",
-            "output",
-        ],
-    )
-
-
-def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
-    path.write_text(_csv_text(rows, fieldnames), encoding="utf-8-sig")
 
 
 def _csv_text(rows: list[dict[str, Any]], fieldnames: list[str]) -> str:
@@ -848,198 +699,8 @@ class _TextBuffer:
         return len(text)
 
 
-def _read_app_log_excerpt(*, task_id: str) -> str:
-    if not LOG_PATH.exists():
-        return "未找到应用日志文件。"
-
-    candidates = sorted(LOG_PATH.parent.glob(f"{LOG_PATH.name}*"))
-    lines: list[str] = []
-    for path in candidates:
-        try:
-            text = _read_tail_text(path, _APP_LOG_TAIL_CHARS)
-        except Exception as exc:
-            lines.append(f"[WARN] 读取日志失败 {path.name}: {exc}")
-            continue
-        if task_id:
-            matched = [line for line in text.splitlines() if f"[task:{task_id}]" in line]
-            lines.extend(matched)
-
-    if not lines and task_id:
-        return "未找到匹配当前任务 ID 的应用日志片段。"
-    if not lines:
-        try:
-            return _read_tail_text(LOG_PATH, _APP_LOG_TAIL_CHARS)
-        except Exception as exc:
-            return f"读取应用日志失败：{exc}"
-    return "\n".join(_redact(line) for line in lines[-2000:])
-
-
-def _read_tail_text(path: Path, max_chars: int) -> str:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if len(text) <= max_chars:
-        return text
-    return text[-max_chars:]
-
-
-def _extract_failed_source_texts(quality_issues: list[dict[str, Any]]) -> list[str]:
-    texts: list[str] = []
-    seen: set[str] = set()
-    for issue in quality_issues:
-        for item in issue.get("failed_sources") or []:
-            source = str(item.get("source") or "").strip()
-            if source and source not in seen:
-                texts.append(source)
-                seen.add(source)
-    return texts
-
-
-def _collect_excel_locations(file_items: list[Any], source_texts: list[str]) -> list[dict[str, Any]]:
-    source_set = set(source_texts)
-    rows: list[dict[str, Any]] = []
-    for item in file_items:
-        path = Path(getattr(item, "path", ""))
-        if not path.exists():
-            continue
-        try:
-            if path.suffix.lower() == ".xlsx":
-                rows.extend(_collect_xlsx_locations(path, source_set))
-            elif path.suffix.lower() == ".xls":
-                rows.extend(_collect_xls_locations(path, source_set))
-        except Exception as exc:  # noqa: BLE001 - diagnostics must not block export
-            rows.append(
-                {
-                    "file": path.name,
-                    "sheet": "",
-                    "cell": "",
-                    "row": "",
-                    "column": "",
-                    "source_hash": "",
-                    "source_excerpt": f"定位扫描失败：{exc}",
-                }
-            )
-    return rows
-
-
-def _collect_xlsx_locations(path: Path, source_set: set[str]) -> list[dict[str, Any]]:
-    from core.openpyxl_compat import load_workbook
-    from openpyxl.utils import get_column_letter
-
-    rows: list[dict[str, Any]] = []
-    workbook = load_workbook(str(path), read_only=True, data_only=True)
-    try:
-        for worksheet in workbook.worksheets:
-            for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
-                for column_index, value in enumerate(row, start=1):
-                    text = str(value).strip() if isinstance(value, str) else ""
-                    if text not in source_set:
-                        continue
-                    rows.append(
-                        {
-                            "file": path.name,
-                            "sheet": worksheet.title,
-                            "cell": f"{get_column_letter(column_index)}{row_index}",
-                            "row": row_index,
-                            "column": column_index,
-                            "source_hash": _source_hash(text),
-                            "source_excerpt": _source_excerpt(text),
-                        }
-                    )
-    finally:
-        workbook.close()
-    return rows
-
-
-def _collect_xls_locations(path: Path, source_set: set[str]) -> list[dict[str, Any]]:
-    import xlrd
-
-    rows: list[dict[str, Any]] = []
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
-    try:
-        for sheet in workbook.sheets():
-            for row_index in range(sheet.nrows):
-                for column_index in range(sheet.ncols):
-                    value = sheet.cell_value(row_index, column_index)
-                    text = str(value).strip() if isinstance(value, str) else ""
-                    if text not in source_set:
-                        continue
-                    rows.append(
-                        {
-                            "file": path.name,
-                            "sheet": sheet.name,
-                            "cell": f"R{row_index + 1}C{column_index + 1}",
-                            "row": row_index + 1,
-                            "column": column_index + 1,
-                            "source_hash": _source_hash(text),
-                            "source_excerpt": _source_excerpt(text),
-                        }
-                    )
-    finally:
-        workbook.release_resources()
-    return rows
-
-
-def _extract_word_locations(quality_issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for issue in quality_issues:
-        rows.append(
-            {
-                "file": issue.get("file", ""),
-                "kind": issue.get("kind", ""),
-                "location": issue.get("location", ""),
-                "location_label": issue.get("location_label", ""),
-                "section_path": issue.get("section_path", ""),
-                "severity": issue.get("severity", ""),
-                "problem": issue.get("problem", ""),
-                "status": issue.get("status", ""),
-                "snippet": issue.get("snippet", ""),
-            }
-        )
-    return rows
-
-
-def _extract_word_runtime_events(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in logs:
-        message = str(item.get("message") or "")
-        if " · " not in message:
-            continue
-        parts = message.split(" · ", 2)
-        if len(parts) != 3:
-            continue
-        file_name, section_path, location_and_event = parts
-        marker_match = None
-        marker_index = -1
-        for marker in _WORD_RUNTIME_EVENT_MARKERS:
-            index = location_and_event.find(marker)
-            if index >= 0 and (marker_index < 0 or index < marker_index):
-                marker_match = marker
-                marker_index = index
-        if marker_match is None:
-            continue
-        rows.append(
-            {
-                "ts": item.get("ts", ""),
-                "level": item.get("level", ""),
-                "file": file_name,
-                "section_path": section_path,
-                "location_label": location_and_event[:marker_index].strip(),
-                "event": location_and_event[marker_index:].strip(),
-                "message": message,
-            }
-        )
-    return rows
-
-
 def _source_hash(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
-
-
-def _source_excerpt(text: str) -> str:
-    normalized = " ".join(str(text or "").split())
-    if len(normalized) <= _SOURCE_EXCERPT_LIMIT:
-        return normalized
-    half = max(20, (_SOURCE_EXCERPT_LIMIT - 3) // 2)
-    return f"{normalized[:half]}...{normalized[-half:]}"
 
 
 def _zip_directory(root: Path, *, prefix: str) -> bytes:

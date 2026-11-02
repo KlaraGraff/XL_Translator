@@ -20,10 +20,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _block_real_excel() -> None:
-    import core.excel_automation as excel_automation
-    import core.task_runner as task_runner
+    from core import excel_automation, task_runner
 
-    def _refuse(*_args, **_kwargs):
+    real_create_excel_app = excel_automation.create_excel_app
+
+    def _refuse(*args, **kwargs):
+        # 用例用 patch.dict(sys.modules, {"xlwings": 替身}) 换上假 xlwings 时，
+        # 走的是假 App，不会碰真 Excel，照常调用原函数（这些用例专门测这个包装）。
+        # 只有 import 会拿到真 xlwings（已加载的真模块，或还没加载）时才拒绝。
+        current = sys.modules.get("xlwings")
+        if current is not None and getattr(current, "__file__", None) is None:
+            return real_create_excel_app(*args, **kwargs)
         raise RuntimeError(
             "测试尝试拉起本机 Microsoft Excel。发布构建机上没有装 Office，"
             "这里必然失败——请在用例里把 create_excel_app 挡掉。"

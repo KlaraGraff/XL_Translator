@@ -39,6 +39,7 @@ from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
     _check_semantic_numbers_intact,
+    drop_texts_ruled_out_by_detected_source,
     is_translation_redundant,
     should_translate,
     validate_translation,
@@ -100,7 +101,7 @@ class ChineseTargetRegressionTests(unittest.TestCase):
     """高-1 的反面：其它语言对上「中文已经是目标语言」的跳过必须原样保留。"""
 
     def test_chinese_cell_is_still_skipped_for_non_han_sources(self) -> None:
-        for source_lang in ("en", "fr", "ru", "th", "auto", "zh", ""):
+        for source_lang in ("en", "fr", "ru", "th", "zh"):
             with self.subTest(source_lang=source_lang):
                 self.assertFalse(
                     should_translate(
@@ -108,6 +109,33 @@ class ChineseTargetRegressionTests(unittest.TestCase):
                     ),
                     msg="外译中时已有中文的单元格不该被重复翻译",
                 )
+
+    def test_unknown_source_keeps_han_only_cell_until_language_is_known(self) -> None:
+        # #283：原文语言未知（auto / 空）时分不出「工程概况」是中文还是日文，先收下；
+        # 预检认出是英文等非汉字语言后，按那门语言重筛去掉。
+        for source_lang in ("auto", ""):
+            with self.subTest(source_lang=source_lang):
+                self.assertTrue(
+                    should_translate("工程概况", target_lang="zh", source_lang=source_lang)
+                )
+        self.assertEqual(
+            drop_texts_ruled_out_by_detected_source(
+                {"工程概况", "Design drawing"}, source_langs=("en",), target_lang="zh"
+            ),
+            {"Design drawing"},
+        )
+        self.assertEqual(
+            drop_texts_ruled_out_by_detected_source(
+                {"工程概况"}, source_langs=("ja",), target_lang="zh"
+            ),
+            {"工程概况"},
+        )
+        self.assertEqual(
+            drop_texts_ruled_out_by_detected_source(
+                {"工程概况"}, source_langs=(), target_lang="zh"
+            ),
+            {"工程概况"},
+        )
 
     def test_foreign_text_to_chinese_is_unchanged(self) -> None:
         for text in ("Договор", "สัญญาก่อสร้างอาคาร", "Straße", "Conditions générales"):
@@ -500,10 +528,12 @@ class KanaEvidenceRangeTests(unittest.TestCase):
     """审查的次要观察：中点 ・ 与长音符 ー 不是「这段不是中文」的证据。"""
 
     def test_middle_dot_and_prolonged_mark_do_not_reopen_chinese_cells(self) -> None:
+        # 原文语言已认出（这里是英文）时，「・」「ー」不算假名证据；原文语言未知时
+        # 只有汉字的格子本来就先收下（#283），那条另有测试。
         for text in ("皮埃尔・卡尔丹", "圣罗兰・巴黎工程部", "长音符ー的用法"):
             with self.subTest(text=text):
                 self.assertFalse(
-                    should_translate(text, target_lang="zh", source_lang="auto"),
+                    should_translate(text, target_lang="zh", source_lang="en"),
                     msg="外译中时已有中文的单元格不该被重复送翻",
                 )
 

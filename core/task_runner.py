@@ -8,7 +8,7 @@
 
 优势：打破文件壁垒，最大化利用 API 批次并发能力；跨文件去重减少重复请求。
 """
-import json
+import json  # noqa: F401
 import os
 import queue
 import re
@@ -50,11 +50,12 @@ from core.excel_coverage import (
 from core.file_scanner import FileItem
 from core.file_progress import FileProgressReporter
 from core.language_registry import (
+    AUTO_SOURCE_LANG,
     build_lang_pair,
     get_default_source_lang,
     get_source_lang_display,
     get_target_lang_display,
-    get_tm_language_pairs,
+    get_tm_language_pairs,  # noqa: F401
     is_auto_source_lang,
 )
 from core.language_preflight import (
@@ -75,8 +76,12 @@ from core.mixed_language import (
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
-from core.translation_coverage import format_ignored_coverage_report, resolve_coverage_source_lang
-from core.translation_filter import should_translate
+from core.translation_coverage import format_ignored_coverage_report, resolve_coverage_source_lang  # noqa: F401
+from core.translation_filter import (
+    drop_file_texts_ruled_out_after_preflight,
+    is_same_han_spelling_in_chinese,
+    should_translate,
+)
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
@@ -102,11 +107,11 @@ from core.residual_repair import (
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
-from core.concurrent_calls import map_concurrently, run_in_background, wait_result
+from core.concurrent_calls import map_concurrently, run_in_background, wait_result  # noqa: F401
 from core.document_profile import (
     append_profile,
     is_context_sensitive,
-    request_document_profile,
+    request_document_profile,  # noqa: F401
 )
 from config import REVIEW_MARK_KEY_INFO, REVIEW_MARK_TERM_NOT_APPLIED
 from core.document_terms import make_term_picker
@@ -130,6 +135,9 @@ from core.process_artifacts import ProcessArtifacts
 from core.prompt_cache import carry_meter
 from core.user_facing_errors import humanize_error
 from core.runner_base import BaseTaskRunner
+# core/text_runner_shared.py 里的共用步骤按 `本模块.名字` 取辅助函数（测试 patch 才生效），
+# 本文件里只为它留着的导入标了 noqa: F401，不要当没用的删掉。
+from core.text_runner_shared import TextRunnerSharedMixin
 # 消息类型移到了 core/task_runner_messages.py（所有任务运行器共用），这里照旧可以导入。
 from core.task_runner_messages import (  # noqa: F401 - re-exported, imported from here across the codebase
     ProgressMsg,
@@ -190,6 +198,8 @@ def _detect_post_failure_source_language(
                 ),
             ),
             target_lang=target_lang,
+            # 这只是事后诊断：只问一次，认不出就照常报质量问题，不再加问。
+            retry=False,
         )["post_failure"]
     except Exception as exc:  # defensive: diagnosis must not break delivery
         logger.debug("语言方向失败后预检失败：{}", exc)
@@ -309,11 +319,13 @@ def _already_in_target_language(source: str, item, target_lang: str) -> bool:
 
 # ── TaskRunner ────────────────────────────────────────────────────────────────
 
-class TaskRunner(BaseTaskRunner):
+class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
     """
     封装后台翻译任务（全局聚合流水线）。
     UI 层通过轮询 .get_message() 获取进度/日志/完成消息。
     """
+
+    _RUNNER_MODULE = __name__
 
     def __init__(
         self,
@@ -574,29 +586,13 @@ class TaskRunner(BaseTaskRunner):
             nonlocal process_finished
             if process_artifacts is None or process_finished:
                 return
-            if elapsed_sec is not None:
-                try:
-                    (process_artifacts.work_dir / "run-summary.json").write_text(
-                        json.dumps(
-                            {
-                                "task_id": self.task_id,
-                                "status": status,
-                                "output_dir": str(output_dir),
-                                "files": len(self._files),
-                                "elapsed_sec": round(float(elapsed_sec), 3),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                except OSError as exc:
-                    logger.debug("Excel 过程摘要写入失败：{}", exc)
-            try:
-                process_artifacts.finish(status)
-                process_finished = True
-            except Exception as exc:  # process evidence must never block delivery
-                logger.warning("Excel 过程记录收尾失败：{}", exc)
+            process_finished = self._finish_process_record(
+                process_artifacts,
+                status,
+                elapsed_sec=elapsed_sec,
+                output_dir=output_dir,
+                label="Excel",
+            )
 
         try:
             process_artifacts = ProcessArtifacts.create("excel", output_dir, self.task_id)
@@ -636,7 +632,8 @@ class TaskRunner(BaseTaskRunner):
             """Tune Excel for unattended automation and large batch runs."""
             try:
                 app.display_alerts = False
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"关闭 Excel 告警弹窗失败，已忽略：{exc!r}")
                 pass
             for attr, value in (
                 ("screen_updating", False),
@@ -645,7 +642,8 @@ class TaskRunner(BaseTaskRunner):
             ):
                 try:
                     setattr(app, attr, value)
-                except Exception:
+                except Exception as exc:
+                    logger.debug(f"设置 Excel 属性 {attr} 失败，已忽略：{exc!r}")
                     continue
 
         def _kill_excel_pid(pid: int | None, reason: str) -> None:
@@ -1510,24 +1508,6 @@ class TaskRunner(BaseTaskRunner):
             **contract,
         ))
 
-    def _start_document_profile(self, engine, texts, target_lang):
-        """「自动识别场景」：在后台请模型通读全部文字、写文档说明，返回 Future。"""
-        texts = list(texts)
-
-        def run() -> str:
-            try:
-                return request_document_profile(
-                    engine.chat,
-                    texts,
-                    target_language=get_target_lang_display(target_lang),
-                    log=self._log,
-                )
-            except Exception as exc:  # noqa: BLE001 - the description is optional.
-                logger.debug(f"文档说明请求失败：{exc!r}")
-                return ""
-
-        return run_in_background(run, name="document-profile")
-
     def _preflight_source_languages(
         self,
         *,
@@ -1554,83 +1534,46 @@ class TaskRunner(BaseTaskRunner):
         detect_workers=1,
     ) -> tuple[str, str, int, dict]:
         """自动识别源语言：每个文件做一次语言预检，定出源语言、补译范围和 TM 语言对；返回更新后的源语言、提示词、待译计数和预检结果。"""
-        self._queue.put(
-            StatusMsg(
-                phase_desc=(
-                    "状态：正在识别每个文件的原文语言…"
-                )
-            )
+        (
+            source_lang,
+            system_prompt,
+            detected_sources,
+            tm_language_pairs,
+            file_language_preflights,
+            detector_call_count,
+        ) = self._detect_source_languages(
+            engine=engine,
+            file_texts=file_texts,
+            settings=settings,
+            system_prompt=system_prompt,
+            target_lang=target_lang,
+            detect_workers=detect_workers,
+            page_key="excel",
+            status_text="状态：正在识别每个文件的原文语言…",
         )
-
-        detector_calls = {"count": 0}
-        detector_lock = threading.Lock()
-
-        def _detect_file_language(samples, detected_target):
-            with detector_lock:
-                detector_calls["count"] += 1
-            raw = engine.chat(
-                LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
-                build_language_preflight_prompt(
-                    samples,
-                    target_lang=detected_target,
-                ),
-            )
-            return raw
-
-        file_payloads = {
-            str(file_item.path): texts
-            for file_item, texts in zip(self._files, file_texts)
-        }
-        file_language_preflights = {}
-        # 每个文件一次模型请求，按并发设置同时发出（各文件互不依赖）。每返回一个
-        # 文件推一次进度、报「正在检测语言 x/y」（x 是已识别完的文件数），进度条
-        # 和进度卡标题都看得出还在往前走（先报进度再报状态，标题才是这句状态）。
-        detect_total = len(file_payloads)
-        detect_paths = list(file_payloads)
-        self._translate_progress.report("detect", 0, detect_total)
-        self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 0/{detect_total}…"))
-        for file_path in detect_paths:
-            self._file_progress.emit(file_path, "active", "detect")
-
-        def _detected(index: int, done: int) -> None:
-            self._translate_progress.report("detect", done, detect_total)
-            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {done}/{detect_total}…"))
-            self._file_progress.emit(detect_paths[index], "waiting", "translate")
-
-        for detected_result in map_concurrently(
-            lambda file_path: preflight_files(
-                {file_path: file_payloads[file_path]},
-                _detect_file_language,
+        if not self._untranslated_only:
+            # 读文件时原文语言未知、多收的只有汉字的格子，按认出的语言去掉（补译
+            # 模式下面会按语言整份重算，不用在这里去）。
+            dropped = drop_file_texts_ruled_out_after_preflight(
+                [file_item.path for file_item in self._files],
+                file_texts,
+                global_unique_texts,
+                {path: result.source_langs for path, result in file_language_preflights.items()},
                 target_lang=target_lang,
-            ),
-            detect_paths,
-            max_workers=detect_workers,
-            on_done=_detected,
-        ):
-            file_language_preflights.update(detected_result)
-        detected_sources: list[str] = []
-        for result in file_language_preflights.values():
-            for detected in result.source_langs:
-                if detected not in detected_sources:
-                    detected_sources.append(detected)
-        if detected_sources:
-            source_lang = detected_sources[0]
-            system_prompt = get_system_prompt(
-                settings,
-                target_lang=target_lang,
-                source_lang=source_lang,
-                page_key="excel",
             )
-        else:
-            source_lang = get_default_source_lang()
-        tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+            if dropped:
+                raw_text_count = max(0, raw_text_count - dropped)
+                self._log(
+                    "INFO",
+                    f"按识别出的原文语言，{dropped} 处已是目标语言的内容不再翻译。",
+                )
         # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
         # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
-        # 译文」跳过。某个文件没定出语言时才退回全局值。
+        # 译文」跳过。某个文件没定出语言时记成 auto（原文语言未知），不借用别的
+        # 文件认出的语言（#283）。
         file_source_langs.update(
-            (file_path, result.source_langs[0])
+            (file_path, result.source_langs[0] if result.source_langs else AUTO_SOURCE_LANG)
             for file_path, result in file_language_preflights.items()
-            if result.source_langs
         )
         for file_item, text_set in zip(self._files, file_texts):
             result = file_language_preflights.get(str(file_item.path))
@@ -1640,18 +1583,8 @@ class TaskRunner(BaseTaskRunner):
                 text_source_scopes.setdefault(text, []).append(
                     frozenset(result.source_langs)
                 )
-        logger.info(
-            f"自动语言预检完成：{detector_calls['count']} 次请求，"
-            f"实际源语言={','.join(detected_sources) or '未确定'}，"
-            f"TM 语言对={','.join(tm_language_pairs) or '无'}"
-        )
-        self._log(
-            "INFO",
-            "已识别原文语言："
-            + (
-                "、".join(get_source_lang_display(code) for code in detected_sources)
-                or "未能确定"
-            ),
+        self._log_source_language_summary(
+            detector_call_count, detected_sources, tm_language_pairs
         )
         if self._untranslated_only:
             self._apply_deferred_resume_baselines(
@@ -2040,6 +1973,15 @@ class TaskRunner(BaseTaskRunner):
                 for source, item in normal_api_language_results.items()
                 if _already_in_target_language(source, item, target_lang)
             }
+            # 「品名」「数量」中日写法相同，目标是中文时原样还回来就是对的（和 Word 同一条规则）。
+            already_target.update(
+                source
+                for source, translation in normal_api_translations.items()
+                # 接口失败、质量校验回退交回的原文不算：那是真没翻成。
+                if source not in batch_stats.untranslated_sources
+                and source not in batch_stats.quality_reset_reasons
+                and is_same_han_spelling_in_chinese(source, translation, target_lang)
+            )
             for source in already_target:
                 api_translations.pop(source, None)
             if already_target:
@@ -2439,6 +2381,7 @@ class TaskRunner(BaseTaskRunner):
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
             from core.xls_converter import (
                 convert_with_excel,
+                XlsFileCorruptedError,
                 convert_with_fallback,
                 convert_with_libreoffice,
             )
@@ -2455,6 +2398,9 @@ class TaskRunner(BaseTaskRunner):
                     try:
                         process_path = convert_with_libreoffice(process_path)
                         file_conversion_modes[str(file_item.path)] = "libreoffice_conversion"
+                    except XlsFileCorruptedError:
+                        # 文件本身坏了，换哪条路转都一样：直接报，不说成「兼容转换不可用」。
+                        raise
                     except Exception as lo_error:
                         lo_reason = user_facing_reason(
                             lo_error, fallback="LibreOffice 转换不可用。"
@@ -3803,28 +3749,6 @@ class TaskRunner(BaseTaskRunner):
                     "如该文件尚未翻译过，请关闭「仅补译未翻译内容」后重新运行。",
                 )
 
-    def _log_ignored_coverage_units(self, file_name: str, units: list) -> None:
-        """按理由分组回报补译计划里被跳过（ignored）的格子——审计批次 2 第④条。
-
-        旧版补译日志只报 covered / source_only / ambiguous 三类计数，ignored（看起来
-        已经是译文的格、不符合候选规则的格、回填关闭时被保护的公式格）从不出现在日志
-        里：用户看到"补了几格"，看不到"跳过了几格、为什么跳过"，翻完对着原表发现漏译
-        也无从查起。这里补上这条自查线索，语气是"如实告知"，不是"报警"——大多数
-        ignored 本来就是正确判断（已经是双语的格不用再翻、用户关了回填的公式格不该
-        被覆盖），只有当用户凭位置去核对、发现误判时，这条线索才用得上。
-
-        零 ignored 时一行都不出：仓库立场是"无关提示不挂"，见 CLAUDE.md。
-        """
-        lines, full_detail = format_ignored_coverage_report(file_name, units)
-        for line in lines:
-            self._log("INFO", line)
-        # 全量坐标只进 loguru 调试输出（stderr，本仓库没配文件 sink）：任务面板
-        # 不按 level 过滤，发进任务日志的话会跟分组摘要一起整段刷在用户面前，
-        # 反而淹掉摘要。打包用户看不到 stderr——这是取舍：全量明细服务于开发排
-        # 查，用户核对靠摘要里的样例位置就够。
-        if full_detail:
-            logger.debug(full_detail)
-
     def _apply_deferred_resume_baselines(
         self,
         *,
@@ -3927,12 +3851,20 @@ class TaskRunner(BaseTaskRunner):
         global_unique_texts.clear()
         raw_text_count = 0
         file_source_langs = file_source_langs or {}
-        detected_langs = sorted(set(file_source_langs.values())) or [source_lang]
+        detected_langs = sorted(
+            code
+            for code in set(file_source_langs.values()) or {source_lang}
+            if not is_auto_source_lang(code)
+        )
         self._log(
             "INFO",
-            "[补译模式] 原文语言已识别为 "
-            + "、".join(get_source_lang_display(code) for code in detected_langs)
-            + "，开始按各文件的语言重新识别需补译的内容。",
+            (
+                "[补译模式] 原文语言已识别为 "
+                + "、".join(get_source_lang_display(code) for code in detected_langs)
+                + "，开始按各文件的语言重新识别需补译的内容。"
+            )
+            if detected_langs
+            else "[补译模式] 未能识别原文语言，按「不预设原文语言」重新识别需补译的内容。",
         )
         for fi, file_item in enumerate(self._files):
             if fi >= len(process_paths) or fi >= len(coverage_plans):

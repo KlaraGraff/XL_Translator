@@ -86,7 +86,9 @@ class DashscopeEngineTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["url"], "https://api.anthropic.com/v1/messages")
         self.assertEqual(client.calls[0]["headers"]["x-api-key"], "claude-key")
         self.assertEqual(client.calls[0]["headers"]["anthropic-version"], "2023-06-01")
-        self.assertEqual(client.calls[0]["json"]["max_tokens"], 8096)
+        # 输出上限按型号给：认不出的型号走所有 Claude 型号都接受的保守值，
+        # 不再一律发 8096（CODE_AUDIT_2026-08-31 中-10）。
+        self.assertEqual(client.calls[0]["json"]["max_tokens"], 4096)
         self.assertEqual(
             client.calls[0]["json"]["system"],
             [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}],

@@ -65,10 +65,6 @@ def display_pt_to_page(rect: fitz.Rect, page: fitz.Page) -> fitz.Rect:
     return fitz.Rect(rect) * page.derotation_matrix
 
 
-def page_to_display_pt(rect: fitz.Rect, page: fitz.Page) -> fitz.Rect:
-    return fitz.Rect(rect) * page.rotation_matrix
-
-
 def display_point_to_page(pt: fitz.Point, page: fitz.Page) -> fitz.Point:
     return fitz.Point(pt) * page.derotation_matrix
 
@@ -80,17 +76,6 @@ def insert_rotate(display_rotation: int, page_rotation: int) -> int:
 def adv_up(display_rotation: int):
     r = int(display_rotation) % 360
     return _ADV[r], _UP[r]
-
-
-def along_cross(rect: fitz.Rect, display_rotation: int):
-    """Length along the reading direction and thickness across it."""
-    if int(display_rotation) % 180 == 0:
-        return rect.width, rect.height
-    return rect.height, rect.width
-
-
-def text_has_cjk(s: str) -> bool:
-    return bool(re.search(r"[㐀-鿿豈-﫿]", s or ""))
 
 
 NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")

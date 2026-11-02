@@ -802,7 +802,8 @@ def _extract_image_bytes(payload: Any) -> bytes:
         if _looks_like_base64_image(value):
             try:
                 return base64.b64decode(value)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"解析候选 base64 图片数据失败，已忽略：{exc!r}")
                 continue
     return b""
 
@@ -829,6 +830,11 @@ def _looks_like_base64_image(value: str) -> bool:
     if stripped[:8].startswith("iVBOR") or stripped.startswith("/9j/"):
         return True
     return False
+
+
+def exception_text(exc: BaseException) -> str:
+    """异常的全部可读文字：消息、类型名、HTTP 状态码与响应体、SDK 的 body。"""
+    return _exception_text(exc)
 
 
 def _exception_text(exc: BaseException) -> str:

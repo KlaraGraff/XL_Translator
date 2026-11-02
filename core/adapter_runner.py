@@ -959,7 +959,7 @@ class AdapterTaskRunner(BaseTaskRunner):
         )
 
     def _echo_source_langs(self, path: Path) -> list[str]:
-        """按哪种源语言判断：选了就是它；自动识别时用这个文件的预检结果，没有结果按默认源语言。
+        """按哪种源语言判断：选了就是它；自动识别时用这个文件的预检结果，没有结果按原文语言未知（auto）判断。
 
         与目标语言相同的不算（英译英表里的英文本来就不用翻）。
         """

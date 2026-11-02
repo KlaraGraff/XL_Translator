@@ -223,14 +223,6 @@ def scan_excel_sources(path: str | Path) -> ExcelScanResult:
     return result
 
 
-def scan_folder(root: str | Path) -> list[FileItem]:
-    """
-    递归扫描文件夹，返回所有 Excel 文件列表。
-    跳过以 ~ 开头的临时文件（Excel 打开时产生）。
-    """
-    return scan_excel_sources(root).items
-
-
 def _scan_one_excel_file(
     path: Path,
     root: Path,

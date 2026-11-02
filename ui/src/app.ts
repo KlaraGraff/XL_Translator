@@ -10,6 +10,7 @@ import "./styles/app.css";
 import { installLoopingAnimationSync, withColorFade } from "./motion";
 import { injectIconSprite } from "./icons";
 import { mountShell, relocalizeShell } from "./shell";
+import { applyWindowChromeAttr } from "./window-chrome";
 import { mountRouter, navigate, onNavigate, registerView, registerViewAlias, remountCurrentView } from "./router";
 import { isTauri } from "@tauri-apps/api/core";
 import { dispatchPaths } from "./drop-dispatch";
@@ -139,7 +140,7 @@ async function installFileDrop(): Promise<void> {
         dragOverAt(payload.position.x / ratio, payload.position.y / ratio);
       } else if (payload.type === "drop") {
         dragEnded();
-        void dispatchPaths(payload.paths);
+        void dispatchPaths(payload.paths, { append: true });
       } else {
         dragEnded();
       }
@@ -154,7 +155,7 @@ async function installFileDrop(): Promise<void> {
     if (!data) return;
     const typed = data.getData("text/plain").split(/\r?\n/).map((line) => line.trim()).filter((line) => /^(\/|[A-Za-z]:[\\/]|~)/.test(line));
     const names = Array.from(data.files ?? []).map((file) => file.name);
-    void dispatchPaths(typed.length ? typed : names);
+    void dispatchPaths(typed.length ? typed : names, { append: true });
   });
 }
 
@@ -217,6 +218,8 @@ function main(): void {
     throw new Error("#app root element not found.");
   }
 
+  // 窗口顶部用哪种样子（Mac 红绿灯嵌进侧栏 / Windows 自绘按钮），要在挂外壳前定下来。
+  applyWindowChromeAttr();
   const shell = mountShell(root);
   mountRouter(shell.contentContainer);
   onLocaleChange(() => {

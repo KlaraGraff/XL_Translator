@@ -75,6 +75,34 @@ Where new code goes (maple, 2026-10-31):
   A step-by-step main flow (most of `WordTaskRunner._run`) stays in one place; cutting it into many files only makes it harder to follow.
 - When your change lands inside an independent part of a large file, first move that part into its own module with no behaviour change (tests green). Then make your change there. Keep the move and the change in separate commits.
 - A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
+- Known independent parts to move out when you touch them (maple, 2026-11-02):
+  - `core/pdf_image_translation.py`: done 2026-11-02 — in-place pages (`pdf_inplace_pages.py`), page generation / review attempts
+    (`pdf_image_generation.py`) and single-page rerun / restore (`pdf_page_actions.py`) are mixins next to it; to-Word was already
+    `pdf_word_segments.py`. Inside those mixins, module-level names of `pdf_image_translation` are read as `_pit.<name>`
+    so test patches on the host module still apply; keep that pattern when adding code there.
+  - `ui/src/views/workspace.ts`: done 2026-11-02 — the PDF route section, the resume / revision / start-blocked modals and the output-location section now live in `workspace-*.ts` next to it. New dialogs and sections of the workspace start in their own `workspace-*.ts` file.
+  - `settings.py`: done 2026-11-02 — the old-data migration rules are in `settings_migrations.py`.
+  - `core/word_task_runner.py`: done 2026-11-02 — the recovery / gap-fill pool is in `core/word_recovery_pool.py`. The main `_run` flow stays.
+- Excel and Word twins: done 2026-11-02 for the parts that were word-for-word the same. `core/text_runner_shared.py`
+  (`TextRunnerSharedMixin`) holds the document profile request, the source-language preflight, the ignored-coverage log and
+  the process-record finish; both runners use it. It reads helpers as `self._runner_module().<name>` so patches on
+  `core.task_runner.*` / `core.word_task_runner.*` still apply. What is left per runner is format-specific on purpose: the
+  coverage-review report entries (cell vs paragraph wording; the judgement itself is already shared in `core/coverage_review.py`),
+  Excel's post-preflight steps, text collection and file writing. When a fix touches one of those, check whether the other
+  runner needs the same fix.
+  The batch-translate function (`engines/base_engine.py` BatchTranslateMixin) and the concurrency-limit backoff
+  (`core/api_scheduler.py` decide_concurrency_limit_hit) are already shared.
+
+Silent excepts (maple, 2026-11-02):
+- A caught error must leave at least one log line (`logger.debug` is enough). `except …: pass` and `except …: continue`
+  with nothing else are not allowed in new code. When ignoring is truly right, say why on that line: `# noqa: S110 <reason>`.
+- PR checks run `scripts/check_silent_excepts.py`: across the changed business-code files, the count may not go up.
+  Old ones in files you touch are worth fixing on the way, but not required.
+
+Type errors (maple, 2026-11-02):
+- PR checks run `scripts/check_type_errors.py` (pyright): across the changed business-code files, the error count may not go up.
+  The project has about 700 old ones; fix them in files you touch when it is cheap. A real false positive gets
+  `# pyright: ignore[<rule>]` on that line. Run it locally with `python scripts/check_type_errors.py origin/main`.
 
 When reusing this rule set in a new project, prefer copying the root `AGENTS.md` and the entire `agent/` directory, then adapt `quality_gate.ps1` and the dynamic test scripts to the new project's actual structure.
 

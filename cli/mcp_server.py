@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
 
 import anyio
+from loguru import logger
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
@@ -97,7 +98,8 @@ class EngineSession:
                 self._client = None
         try:
             client.close(timeout=2)
-        except Exception:  # noqa: BLE001 - it is already gone
+        except Exception as exc:  # noqa: BLE001 - it is already gone
+            logger.debug(f"关闭已断开的引擎连接失败，已忽略：{exc!r}")
             pass
 
 

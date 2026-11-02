@@ -1264,26 +1264,6 @@ def _valid_translation(source: str, target: str, *, check_rules: bool = True) ->
     return True, ""
 
 
-def _protect_format_codes(value: str) -> tuple[str, dict[str, str]]:
-    protected: dict[str, str] = {}
-    counter = 0
-
-    def replace(match: re.Match[str]) -> str:
-        nonlocal counter
-        token = f"__CADFMT_{counter}__"
-        protected[token] = match.group(0)
-        counter += 1
-        return token
-
-    return _DXF_FORMAT_RE.sub(replace, value), protected
-
-
-def _restore_format_codes(value: str, protected: Mapping[str, str]) -> str:
-    for token, original in protected.items():
-        value = value.replace(token, original)
-    return value
-
-
 def _safe_translation(original: str, translated: str) -> str:
     result = str(translated or "").strip()
     control_re = re.compile(r"\\[fFhHwWcCaAtTqQsSp][^;]*;|\\[LlOoKk]|\\P|[{}]")

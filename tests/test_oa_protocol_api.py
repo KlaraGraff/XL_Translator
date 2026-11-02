@@ -28,7 +28,6 @@ class OaProtocolApiTests(unittest.TestCase):
             ),
             patch.object(tm_manager, "DB_PATH", root / "app-data" / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", root / "diagnostics"),
-            patch.object(diagnostics, "LOG_PATH", root / "app-data" / "app.log"),
         ]
         for item in patches:
             item.start()

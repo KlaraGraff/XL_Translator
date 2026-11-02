@@ -195,6 +195,21 @@ class FairSchedulerRecoveryPriorityTests(unittest.TestCase):
         for lease in leases:
             group.release(lease, category=API_REQUEST_CATEGORY_NORMAL)
         self.assertEqual(group.snapshot().active_normal_weight, 0)
+def _wait_until_queued(group: FairApiGroupScheduler, owner_key: str, *, timeout: float = 2.0) -> bool:
+    """Wait until ``owner_key`` is really on the group's FIFO queue.
+
+    只睡固定毫秒数在这里不够稳：机器慢一点，线程可能还没走到 ``acquire_lease``
+    里排队，后面「它被卡住了」的断言就变成了在断言一个根本不存在的等待者。
+    """
+    with group._condition:  # noqa: SLF001 - this test pins the scheduler's own queue
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if owner_key in group._waiting_task_set:  # noqa: SLF001
+                return True
+            group._condition.wait(timeout=0.02)  # noqa: SLF001
+    return False
+
+
 
 
 if __name__ == "__main__":

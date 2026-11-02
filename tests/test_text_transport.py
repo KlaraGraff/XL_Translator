@@ -205,6 +205,7 @@ class TextTransportTests(unittest.TestCase):
             ])
         self.assertEqual(caught.exception.kind, "incomplete")
 
+
     def test_concurrent_probe_is_single_flight_and_failure_is_shared(self) -> None:
         started = threading.Event()
         release = threading.Event()

@@ -340,9 +340,6 @@ class CloudModelPersistenceTests(unittest.TestCase):
             patch.object(
                 diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics"
             ),
-            patch.object(
-                diagnostics, "LOG_PATH", self.root / "app-data" / "app.log"
-            ),
         ]
         for patcher in self._patchers:
             patcher.start()
@@ -570,7 +567,6 @@ class DiagnosticsFloodAndCodeFoldingTests(unittest.TestCase):
                 diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics" / "records"
             ),
             patch.object(diagnostics, "DIAGNOSTICS_DIR", self.root / "diagnostics"),
-            patch.object(diagnostics, "LOG_PATH", self.root / "app.log"),
         ]
         for patcher in self._patchers:
             patcher.start()
@@ -655,7 +651,6 @@ class _RecoveryRecordTestCase(unittest.TestCase):
                 "DIAGNOSTIC_RECORDS_DIR",
                 Path(temporary.name) / "diagnostics",
             ),
-            patch.object(diagnostics, "LOG_PATH", self.app_data / "app.log"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

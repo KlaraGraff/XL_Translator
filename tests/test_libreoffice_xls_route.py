@@ -18,6 +18,7 @@ from unittest import mock
 
 from core import xls_converter
 from core.xls_converter import LibreOfficeConversionError, convert_with_libreoffice
+from tests.xls_password_fixture import write_password_protected_xls
 
 HAS_XLWT = importlib.util.find_spec("xlwt") is not None
 
@@ -107,6 +108,32 @@ class ConvertWithLibreofficeMockedTests(unittest.TestCase):
                 convert_with_libreoffice(self.xls_path)
         self.assertIn("未生成", str(ctx.exception))
 
+    def test_source_file_could_not_be_loaded_is_carried_into_the_error(self) -> None:
+        """soffice 的真实形态：损坏或加密的 .xls 以返回码 1 退出，stderr 只有一句。
+
+        本机实测（LibreOffice 26.8）截断的 .xls 返回 0 但产物是乱码；带 FILEPASS 的
+        加密文件才是这条——``Error: source file could not be loaded``。这一句必须原样
+        带进异常，才能和「未安装」「超时」「没有产物」区分开。
+        """
+        observed_stderr = (
+            "Fontconfig warning: no <cachedir> elements found. Check configuration.\n"
+            "Error: source file could not be loaded\n"
+        )
+
+        def _fake_run(_command, **_kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr=observed_stderr)
+
+        with (
+            mock.patch("core.word_converter._find_soffice", return_value=_FAKE_SOFFICE),
+            mock.patch.object(xls_converter.subprocess, "run", side_effect=_fake_run),
+        ):
+            with self.assertRaises(LibreOfficeConversionError) as ctx:
+                convert_with_libreoffice(self.xls_path)
+
+        message = str(ctx.exception)
+        self.assertIn("未能转换此文件", message)
+        self.assertIn("source file could not be loaded", message)
+
 
 @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")
 class ConvertWithLibreofficeRealMachineTests(unittest.TestCase):
@@ -147,3 +174,106 @@ class ConvertWithLibreofficeRealMachineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasswordProtectedXlsTests(unittest.TestCase):
+    """密码保护的 .xls：doc:97 留下的「具体报错形态」里能离线复现的一半。
+
+    夹具由 ``tests/xls_password_fixture.py`` 用标准库现写——一份真的 BIFF8 工作簿，
+    globals 里带 FILEPASS（Excel「另存为 → 常规选项 → 打开权限密码」写的就是它）。
+    同一份内容不加密时 xlrd 能读出格子，所以「打不开」只能归因于密码，不是夹具坏了。
+    """
+
+    def _protected_copy(self, directory: Path) -> Path:
+        return write_password_protected_xls(directory / "protected.xls")
+
+    def test_pure_python_fallback_reports_the_workbook_as_encrypted(self) -> None:
+        from xlrd import XLRDError
+
+        from core.xls_converter import convert_with_fallback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xls_path = self._protected_copy(root)
+            # 明文对照：同一种写法、只是没插 FILEPASS，必须读得出来。
+            plain = write_password_protected_xls(root / "plain.xls", encrypted=False, value=7.0)
+            with mock.patch.object(
+                xls_converter, "_get_temp_xlsx_path", return_value=root / "plain_out.xlsx"
+            ):
+                converted = convert_with_fallback(plain)
+            self.assertTrue(converted.exists())
+
+            with mock.patch.object(
+                xls_converter, "_get_temp_xlsx_path", return_value=root / "protected_out.xlsx"
+            ):
+                with self.assertRaises(XLRDError) as ctx:
+                    convert_with_fallback(xls_path)
+
+            self.assertIn("encrypted", str(ctx.exception))
+            # 失败不能留半成品 .xlsx（xlrd 在 open_workbook 就抛，产物根本没建）。
+            self.assertFalse((root / "protected_out.xlsx").exists())
+
+
+
+class TruncatedXlsTests(unittest.TestCase):
+    """损坏的 .xls：doc:97 留下的另一半。
+
+    soffice 遇到截断的真 .xls 不报错，静默转出一整张乱码表当有效 .xlsx 返回；
+    xlrd 兜底抛裸的 IndexError。转换前先查一遍，读不出来就直说文件坏了。
+    """
+
+    def _truncated(self, directory: Path) -> Path:
+        path = write_password_protected_xls(directory / "truncated.xls", encrypted=False)
+        raw = path.read_bytes()
+        path.write_bytes(raw[: len(raw) // 2])
+        return path
+
+    def test_intact_and_encrypted_files_pass_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xls_converter.check_xls_readable(
+                write_password_protected_xls(root / "plain.xls", encrypted=False)
+            )
+            # 加密不算损坏：交给后面的路线说「受密码保护」。
+            xls_converter.check_xls_readable(write_password_protected_xls(root / "locked.xls"))
+            # 不是 OLE2 容器的（改了扩展名的文件）照旧交给 LibreOffice 去认。
+            renamed = root / "renamed.xls"
+            renamed.write_bytes(b"PK\x03\x04 not really xls")
+            xls_converter.check_xls_readable(renamed)
+
+    def test_libreoffice_route_refuses_a_truncated_file_before_running_soffice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            xls_path = self._truncated(Path(tmp))
+            with (
+                mock.patch("core.word_converter._find_soffice", return_value=_FAKE_SOFFICE),
+                mock.patch.object(xls_converter.subprocess, "run") as run,
+            ):
+                with self.assertRaises(xls_converter.XlsFileCorruptedError) as ctx:
+                    convert_with_libreoffice(xls_path)
+            run.assert_not_called()
+            self.assertIn("已损坏或不完整", str(ctx.exception))
+
+    def test_pure_python_fallback_says_corrupted_instead_of_index_error(self) -> None:
+        from core.task_runner import user_facing_reason
+        from core.xls_converter import convert_with_fallback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xls_path = self._truncated(root)
+            with mock.patch.object(
+                xls_converter, "_get_temp_xlsx_path", return_value=root / "out.xlsx"
+            ):
+                with self.assertRaises(xls_converter.XlsFileCorruptedError) as ctx:
+                    convert_with_fallback(xls_path)
+            self.assertFalse((root / "out.xlsx").exists())
+            self.assertEqual(
+                user_facing_reason(ctx.exception, fallback="x"),
+                xls_converter.XLS_CORRUPTED_MESSAGE,
+            )
+
+    @unittest.skipIf(xls_converter.libreoffice_xls_conversion_available() is False, "需要本机 LibreOffice")
+    def test_real_soffice_never_sees_a_truncated_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            xls_path = self._truncated(Path(tmp))
+            with self.assertRaises(xls_converter.XlsFileCorruptedError):
+                convert_with_libreoffice(xls_path)

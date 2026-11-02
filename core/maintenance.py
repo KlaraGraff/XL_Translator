@@ -209,13 +209,6 @@ def reset_settings() -> MaintenanceResult:
     return MaintenanceResult(category="settings", removed_count=1)
 
 
-def reopen_quick_start() -> MaintenanceResult:
-    settings = AppSettings.model_validate(load_current_settings_or_default())
-    settings.onboarding.quick_start_completed = False
-    save_settings(settings, replace_incompatible=True)
-    return MaintenanceResult(category="quick_start", removed_count=0)
-
-
 def clear_keys() -> MaintenanceResult:
     from settings import delete_all_keys
 

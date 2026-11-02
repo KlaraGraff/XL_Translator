@@ -362,26 +362,3 @@ def get_image_details(ws: Worksheet) -> List[Dict]:
             logger.warning(f"获取图片 {idx} 详细信息异常：{e}")
     
     return details
-
-
-def log_image_summary(ws: Worksheet) -> None:
-    """
-    输出工作表中所有图片的摘要日志。
-    
-    :param ws: openpyxl Worksheet 对象
-    """
-    details = get_image_details(ws)
-    
-    if not details:
-        logger.info("工作表中无浮动图片")
-        return
-    
-    logger.info(f"工作表中检测到 {len(details)} 张浮动图片：")
-    for detail in details:
-        logger.info(
-            f"  图片 {detail['index']}："
-            f" 锚点=({detail['anchor_row']}, {detail['anchor_col']})，"
-            f" 尺寸={detail['width_px']}×{detail['height_px']}px，"
-            f" 覆盖行={detail['row_range']}，"
-            f" 文件={detail['filename']}"
-        )

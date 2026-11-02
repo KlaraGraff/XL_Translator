@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+from contextlib import contextmanager
 import re
 import threading
 import time
@@ -23,6 +24,7 @@ from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import (
     PdfPageActionError,
 )
+from core.pdf_page_snapshot import restored_page_image_path, restored_pdf_page_review
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
 from core.surface_settings import surface_setting
@@ -205,6 +207,9 @@ class TranslationTaskManager:
         self._tasks: dict[str, ApiTask] = {}
         self._confirmation_tokens: dict[str, ConfirmationToken] = {}
         self._lock = threading.RLock()
+        # 维护页的清理正在进行时 >0：检查「没有活动任务」和清理本身之间，新任务和单页操作
+        # 一律不让登记，否则清理会在一个刚开始的任务脚下删掉它要写的数据。
+        self._maintenance_holds = 0
         # Set once the process is on its way out; SSE loops check it so an
         # open stream cannot hold up a graceful shutdown.
         self._shutdown = threading.Event()
@@ -533,23 +538,45 @@ class TranslationTaskManager:
             for path in (selected_paths or [])
             if str(path or "").strip()
         }
-        if spec.scan_honours_selection:
-            files = self._scan(
-                root,
-                normalized_surface,
-                selected_options,
-                selected_paths=selected if selected else None,
-            )
-        else:
-            # Keep the established call shape for other surfaces; tests and
-            # integrations may provide a narrow scan adapter for them.
-            files = self._scan(root, normalized_surface, selected_options)
+        # 跨文件夹多选/拖入：界面把第一个文件的上级目录当来源，其他文件夹里的文件不在
+        # 它下面，只重扫这一个根再按 selected_paths 收窄，它们就被无声丢掉了。不在根下
+        # 的那几个各扫一次补进来。来源根不换：换成共同上级会让窗口重载后的找回去扫整个
+        # 主目录甚至整块盘、输出文件夹也跟着挪过去，跨盘符时还根本算不出共同上级。
+        # 根外的文件译文按文件名放在输出文件夹顶层，所以同名的要先拦下来。
+        outside = sorted(
+            path for path in selected if not _path_is_within(Path(path), root)
+        )
+        scan_roots = [root, *(Path(path) for path in outside)]
+        files = []
+        seen_files: set[str] = set()
+        for scan_root in scan_roots:
+            if spec.scan_honours_selection:
+                found = self._scan(
+                    scan_root,
+                    normalized_surface,
+                    selected_options,
+                    selected_paths=selected if selected else None,
+                )
+            else:
+                # Keep the established call shape for other surfaces; tests and
+                # integrations may provide a narrow scan adapter for them.
+                found = self._scan(scan_root, normalized_surface, selected_options)
+            if not outside:
+                files.extend(found)
+                continue
+            for item in found:
+                key = str(Path(item.path).expanduser().resolve())
+                if key not in seen_files:
+                    seen_files.add(key)
+                    files.append(item)
         if selected:
             files = [
                 item
                 for item in files
                 if str(Path(item.path).expanduser().resolve()) in selected
             ]
+        if outside:
+            _raise_on_output_name_clash(files, root)
         if not files:
             logger.info(f"[任务] 没有找到可翻译的 {normalized_surface} 文件：{root}")
             raise TaskInputError("未找到可翻译的文件，请选择其他文件或文件夹，或检查文件格式。")
@@ -756,6 +783,7 @@ class TranslationTaskManager:
                 task.file_progress[entry["file_id"]] = entry
                 task.file_sources[entry["file_id"]] = str(item.path)
             with self._lock:
+                self._raise_if_maintenance_active()
                 self._tasks[task_id] = task
             self._append_event(
                 task,
@@ -1064,6 +1092,33 @@ class TranslationTaskManager:
                 "recent": [_without_logs(record) for record in recent_records],
                 "active_work_count": self.active_task_count()}
 
+    @contextmanager
+    def maintenance_window(self) -> Generator[int, None, None]:
+        """Hold off new work while a maintenance clean-up runs.
+
+        Yields the number of active tasks seen at entry.  When it is 0 no task
+        or page operation can register until the block exits, so the caller's
+        "no active tasks" check stays true for the whole clean-up.
+        """
+        with self._lock:
+            active = self.active_task_count()
+            if not active:
+                self._maintenance_holds += 1
+        try:
+            yield active
+        finally:
+            if not active:
+                with self._lock:
+                    self._maintenance_holds -= 1
+
+    def _raise_if_maintenance_active(self) -> None:
+        """Caller holds ``self._lock``."""
+        if self._maintenance_holds:
+            raise TaskConflictError(
+                "正在清理本地数据，请稍候再开始。",
+                reason="maintenance_active",
+            )
+
     def active_task_count(self) -> int:
         """Count all work that can write data, including terminal page operations."""
         with self._lock:
@@ -1248,7 +1303,15 @@ class TranslationTaskManager:
 
     def pdf_page_review(self, task_id: str) -> dict[str, Any]:
         """Return the pull-only per-page snapshot backing the review panel."""
-        task = self._get_task(task_id)
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            # 重启后历史任务没有 runner，逐页记录只剩运行结束时那份清单：把它读回来，
+            # 而不是让界面只能写「此历史任务的逐页记录已不可用」。
+            restored = restored_pdf_page_review(self._history_record(task_id))
+            if restored is None:
+                raise
+            return restored
         runner = self._pdf_review_runner(task)
         snapshot = runner.pdf_page_snapshot()
         with task.condition:
@@ -1285,7 +1348,20 @@ class TranslationTaskManager:
         kind: str,
     ) -> Path | None:
         """Resolve one page image; comparison stays available after the run."""
-        task = self._get_task(task_id)
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            # 同上：重启后的历史任务只能从清单和页图存档里找这一页，没有任何操作入口
+            # （快照里 actionable / rerun_actionable 都是假），只回答「当时长什么样」。
+            try:
+                return restored_page_image_path(
+                    self._history_record(task_id),
+                    relative_path=relative_path,
+                    page_number=page_number,
+                    kind=kind,
+                )
+            except PdfPageActionError as exc:
+                raise TaskInputError(str(exc)) from exc
         runner = self._pdf_review_runner(task)
         try:
             return runner.resolve_page_image_path(
@@ -1377,7 +1453,9 @@ class TranslationTaskManager:
                     else "此任务已有一页正在重新生成，请待其完成后再操作下一页。",
                     reason="page_rerun_active",
                 )
-            task.rerun_active = True
+            with self._lock:
+                self._raise_if_maintenance_active()
+                task.rerun_active = True
             task.rerun_kind = "rerun"
         lease: ScheduledTaskLease | None = None
         try:
@@ -1470,7 +1548,9 @@ class TranslationTaskManager:
                     else "此任务有一页正在重新生成，请待其完成后再切换回上一版。",
                     reason="page_rerun_active",
                 )
-            task.rerun_active = True
+            with self._lock:
+                self._raise_if_maintenance_active()
+                task.rerun_active = True
             task.rerun_kind = "restore"
         try:
             accepted = runner.restore_previous_page(
@@ -1508,7 +1588,8 @@ class TranslationTaskManager:
                 if message is None:
                     break
                 self._handle_message(task, message)
-        except Exception:  # noqa: BLE001 - 排空失败只损失日志，锁必须照常放。
+        except Exception as exc:  # noqa: BLE001 - 排空失败只损失日志，锁必须照常放。
+            logger.debug(f"换回后收走 runner 剩余消息失败，已忽略：{exc!r}")
             pass
         patch: dict[str, Any] = {}
         if apply_patch:
@@ -1717,9 +1798,10 @@ class TranslationTaskManager:
                 continue
             try:
                 task.runner.stop()
-            except Exception:
+            except Exception as exc:
                 # A runner that cannot be asked to stop is handled by the
                 # interrupted bookkeeping in ``shutdown``.
+                logger.debug(f"停止任务 runner 失败，已忽略：{exc!r}")
                 pass
 
     def shutdown(self, *, timeout: float = 12.0) -> None:
@@ -2201,6 +2283,30 @@ def _scanned_file_name(item: Any) -> str:
     raw = getattr(item, "path", None) or getattr(item, "name", "")
     value = str(raw or "").strip()
     return Path(value).name if value else ""
+
+
+def _raise_on_output_name_clash(files: list[Any], root: Path) -> None:
+    """根外的文件按文件名落在输出顶层：两份落到同一个位置时，后一份会盖掉前一份。"""
+    seen: dict[str, Path] = {}
+    for item in files:
+        path = Path(item.path).expanduser().resolve()
+        relative = path.relative_to(root) if _path_is_within(path, root) else Path(path.name)
+        key = str(relative).casefold()
+        if key in seen and seen[key] != path:
+            raise TaskInputError(
+                f"选中的文件里有两份「{path.name}」来自不同文件夹，译文会互相覆盖。"
+                "请分两次翻译，或先给其中一份改名。"
+            )
+        seen[key] = path
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """``path`` 是 ``root`` 本身或在它下面（两边都已 resolve）。"""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _selected_files_label(files: list[Any]) -> str:

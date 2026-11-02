@@ -469,7 +469,8 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     for candidate in candidates:
         try:
             payload = json.loads(candidate)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"解析候选 JSON 失败，已忽略：{exc!r}")
             continue
         if isinstance(payload, dict):
             return payload

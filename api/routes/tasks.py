@@ -25,7 +25,7 @@ from api.schemas import (
     TaskStartRequest,
 )
 from api.routes._shared import (
-    _require_no_active_tasks,
+    _no_active_tasks_during,
     _json_safe,
 )
 
@@ -195,10 +195,11 @@ def register(app: FastAPI) -> None:
 
     @app.delete("/api/tasks/history")
     def clear_task_history() -> dict[str, Any]:
-        _require_no_active_tasks(app, category="task_history")
+        with _no_active_tasks_during(app, category="task_history"):
+            removed = app.state.task_manager.clear_history()
         return {
             "category": "task_history",
-            "removed_count": app.state.task_manager.clear_history(),
+            "removed_count": removed,
             "outputs_affected": False,
             "restart_required": False,
         }

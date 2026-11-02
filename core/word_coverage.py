@@ -32,10 +32,14 @@ from core.translation_coverage import (
 )
 from core.bilingual_writer import bilingual_output_name
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
+from core.word_revisions import paragraph_coverage_text
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
     _append_translation_to_cell,
+    _apply_content_control_translations,
+    _apply_revision_translations,
+    _revision_layout,
     _atomic_docx_writer,
     _replace_cell_text,
     _apply_cell_review_mark,
@@ -133,7 +137,129 @@ def build_word_coverage_plan(
             front_matter=front_matter,
         )
     )
+    units.extend(
+        _classify_content_control_paragraphs(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            front_matter=front_matter,
+        )
+    )
     return WordCoveragePlan(path=source_path, units=units, front_matter=front_matter)
+
+
+def _classify_content_control_paragraphs(
+    doc: Document,
+    *,
+    target_lang: str,
+    source_lang: str,
+    front_matter: WordFrontMatterBoundary = _NO_FRONT_MATTER_PROTECTION,
+) -> list[CoverageUnit]:
+    """内容控件里的段落：补译时和正文段落同一套判定。
+
+    控件里的段落不在 ``doc.paragraphs`` 里，覆盖率计划按 body 下标定位也就找不到它们；
+    不单独列一遍的话，补译会跳过这些格子——它们本来就住在表单里，用户最容易只看到
+    正文翻好、格子里还是原文。定位用 ``content_control[i].paragraph[j]``，写回同一套。
+
+    和正文一样成对判定：原文段后面紧跟着一段译文就算已译，那段译文也不再单独算。
+    逐段各判各的话，双语版式里每个原文段都会被报成「未翻译」。封面页控件在「保护封面」
+    时整个不算（和写回时同一条边界）。
+    """
+    from core.word_revisions import (
+        content_control_paragraph_entries,
+        front_matter_start,
+        paragraph_coverage_text,
+        toc_controls,
+    )
+
+    body = doc.element.body
+    entries = content_control_paragraph_entries(
+        body,
+        excluded=toc_controls(body),
+        parent=doc._body,
+        front_matter_start=front_matter_start(doc, front_matter),
+        protect_cover=front_matter is not _NO_FRONT_MATTER_PROTECTION,
+    )
+    units: list[CoverageUnit] = []
+    consumed: set[int] = set()
+    for position, (paragraph, control_index, paragraph_index) in enumerate(entries):
+        if position in consumed:
+            continue
+        text = _paragraph_source_text(paragraph)
+        if not clean_coverage_text(text):
+            continue
+        location = f"content_control[{control_index}].paragraph[{paragraph_index}]"
+        data = {"control_index": control_index, "paragraph_index": paragraph_index}
+        if _is_toc_or_field_paragraph(paragraph):
+            continue
+        if looks_like_source_text(text, source_lang=source_lang, target_lang=target_lang):
+            following = entries[position + 1] if position + 1 < len(entries) else None
+            next_text = (
+                paragraph_coverage_text(following[0])
+                if following is not None and following[1] == control_index
+                else ""
+            )
+            if next_text and looks_like_target_text(
+                next_text, source_lang=source_lang, target_lang=target_lang
+            ):
+                _mark_residual_cjk(
+                    data,
+                    next_text,
+                    target_lang=target_lang,
+                    location=f"content_control[{control_index}].paragraph[{following[2]}]",
+                    index=following[2],
+                )
+                units.append(
+                    CoverageUnit(
+                        source_text=text,
+                        target_text=next_text,
+                        status=COVERAGE_COVERED,
+                        location=location,
+                        kind="content_control",
+                        section_path="内容控件",
+                        reason="内容控件里的下一段为目标语言译文。",
+                        data=data,
+                    )
+                )
+                consumed.add(position + 1)
+                continue
+            units.append(
+                CoverageUnit(
+                    source_text=text,
+                    status=COVERAGE_SOURCE_ONLY,
+                    location=location,
+                    kind="content_control",
+                    section_path="内容控件",
+                    reason="内容控件里的段落是源语言文本，未识别到目标语言译文。",
+                    data=data,
+                )
+            )
+        elif looks_like_target_text(text, source_lang=source_lang, target_lang=target_lang):
+            units.append(
+                CoverageUnit(
+                    source_text="",
+                    target_text=text,
+                    status=COVERAGE_IGNORED,
+                    location=location,
+                    kind="content_control",
+                    section_path="内容控件",
+                    reason="内容控件里的段落疑似目标语言译文，默认跳过。",
+                    data=data,
+                )
+            )
+        else:
+            units.append(
+                CoverageUnit(
+                    source_text=text,
+                    status=COVERAGE_IGNORED,
+                    location=location,
+                    kind="content_control",
+                    section_path="内容控件",
+                    reason="内容控件里的段落不符合补译候选规则。",
+                    data=data,
+                )
+            )
+    return units
 
 
 @_atomic_docx_writer
@@ -153,12 +279,17 @@ def write_untranslated_docx(
     translate_headers_footers: bool = False,
     output_translation_only: bool = False,
     issue_callback=None,
+    revision_mode: str = "skip",
+    revision_callback=None,
 ) -> Path:
     """Copy a Word document and insert translations only at source-only positions.
 
     ``translate_headers_footers``：页眉页脚不在覆盖率计划里（计划只按正文段落和表格
     单元格的下标定位），要单独写一趟；重复追加由 ``apply_header_footer_translations``
     自己挡（原文后面已经有同一句译文就跳过），补译重跑不会越接越长。
+
+    内容控件和未接受的修订同样不在覆盖率计划里，和页眉页脚一样单独写一趟；
+    ``revision_mode`` 见 core/word_revisions.py。
     """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -188,6 +319,10 @@ def write_untranslated_docx(
         for table in doc.tables
         for cell in _iter_unique_table_cells(table)
     ]
+    # 保护开着就传边界（哪怕没找到正文标题：封面页控件照样要保护），关着传 None。
+    front_matter = None if plan.front_matter is _NO_FRONT_MATTER_PROTECTION else plan.front_matter
+    # 「修订一起翻译」时含修订的段落由修订那一趟接手，下面的常规补译跳过它们。
+    revisions = _revision_layout(doc, revision_mode, front_matter)
 
     paragraph_insertions = 0
     table_insertions = 0
@@ -206,6 +341,8 @@ def write_untranslated_docx(
                 continue
             paragraph = body_paragraphs[index]
             if _paragraph_source_text(paragraph) != source_text:
+                continue
+            if revisions.skips_paragraph(paragraph._p):
                 continue
             translation_paragraph = None
             if output_translation_only and not _paragraph_has_field(paragraph):
@@ -244,6 +381,8 @@ def write_untranslated_docx(
             if index < 0 or index >= len(table_cells):
                 continue
             cell = table_cells[index]
+            if revisions.skips_cell(cell._tc):
+                continue
             # 复核打回的单元格里还留着那条可疑译文，格子的文字和 source_text 对不上，
             # 认分类时记下的完整文字。译文照旧追加在格子末尾——旧的那条留着，删不删
             # 得由人对着原件定（报告里已经写明并上了底色）。
@@ -296,6 +435,30 @@ def write_untranslated_docx(
     highlight_count += story_stats.highlight_count
     highlight_skip_count += story_stats.highlight_skip_count
 
+    content_control_insertions = _apply_content_control_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        output_translation_only=output_translation_only,
+        untranslated_only=True,
+        front_matter=front_matter,
+        layout=revisions,
+    )
+    revision_stats = _apply_revision_translations(
+        doc,
+        translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        mode=revision_mode,
+        untranslated_only=True,
+        output_translation_only=output_translation_only,
+        front_matter=front_matter,
+        layout=revisions,
+    )
+    if revision_callback is not None:
+        revision_callback(revision_stats)
+
     apply_east_asian_language(doc, target_lang)
     doc.save(str(out_path))
     if log_callback:
@@ -313,6 +476,10 @@ def write_untranslated_docx(
             f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
         )
         log_story_summary(log_callback, out_path.name, story_stats)
+        if content_control_insertions:
+            log_callback(f"  → {out_path.name}：已补译内容控件 {content_control_insertions} 段")
+        if revision_stats.tracked_change_count:
+            log_callback(f"  → {out_path.name}：{revision_stats.describe()}")
     return out_path
 
 
@@ -473,8 +640,9 @@ def _classify_body_paragraphs(
             continue
         if looks_like_source_text(text, source_lang=source_lang, target_lang=target_lang):
             next_index = index + 1
+            # 「修订一起翻译」写出的译文段可能整段都在修订里，按接受修订后的文字认。
             next_text = (
-                _paragraph_source_text(paragraphs[next_index])
+                paragraph_coverage_text(paragraphs[next_index])
                 if next_index < len(paragraphs)
                 else ""
             )

@@ -553,11 +553,6 @@ def activate_translation_surface(settings: AppSettings, surface: str) -> AppSett
     return settings
 
 
-def get_batch_size(settings: AppSettings) -> int:
-    """获取当前引擎对应的批次大小（UI 已按模式锁定区间，此处直接透传）。"""
-    return settings.engine.batch_size
-
-
 def translate_texts(
     texts: list[str],
     engine: TranslationEngine,

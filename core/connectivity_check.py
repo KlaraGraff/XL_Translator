@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from config import (
     DASHSCOPE_OPENAI_BASE_URL,
@@ -659,8 +660,9 @@ def check_connectivity(
             checked_at=datetime.now().isoformat(timespec="seconds"),
             connection_id=connection_id,
         )
-    except Exception:
+    except Exception as exc:
         # A connectivity result is still useful even if status bookkeeping
         # cannot be updated for malformed settings.
+        logger.debug(f"记录模型角色可用性失败，已忽略：{exc!r}")
         pass
     return result

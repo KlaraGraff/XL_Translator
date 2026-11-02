@@ -184,7 +184,6 @@ class TaskDiagnosticExportTests(unittest.TestCase):
             ),
             patch.object(tm_manager, "DB_PATH", self.root / "app-data" / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics"),
-            patch.object(diagnostics, "LOG_PATH", self.root / "app-data" / "app.log"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

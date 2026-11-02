@@ -494,8 +494,3 @@ def summarize_outcomes(outcomes: Mapping[str, RepairOutcome]) -> tuple[int, int,
 
 
 _WS_RE = re.compile(r"\s+")
-
-
-def short_excerpt(text: str, limit: int = 80) -> str:
-    value = _WS_RE.sub(" ", str(text or "")).strip()
-    return value if len(value) <= limit else value[: limit - 1] + "…"

@@ -1,7 +1,7 @@
 """Centralized app metadata and version helpers."""
 
 APP_NAME = "Translator"
-APP_VERSION = "10.4.0"
+APP_VERSION = "10.5.0"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 
 APP_SAFE_NAME = "_".join(APP_NAME.split())
@@ -57,10 +57,3 @@ def windows_updater_artifact_name() -> str:
 
 
 DEFAULT_DISTRIBUTION_OUTPUT_NAME = f"{APP_SAFE_NAME}_Distribution"
-
-
-def build_versioned_distribution_zip_name(
-    output_name: str = DEFAULT_DISTRIBUTION_OUTPUT_NAME,
-) -> str:
-    """Build the version-suffixed release zip basename."""
-    return f"{output_name}_{APP_VERSION}"

@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from contextlib import contextmanager
+
 from fastapi.testclient import TestClient
 
 import settings as settings_module
@@ -26,6 +28,10 @@ class _TaskManager:
 
     def active_task_count(self) -> int:
         return self._active_count
+
+    @contextmanager
+    def maintenance_window(self):
+        yield self._active_count
 
 
 class Phase8MaintenanceContractsTests(unittest.TestCase):
@@ -68,7 +74,6 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 APP_DATA_DIR=self.app_data,
                 DIAGNOSTICS_DIR=self.app_data / "diagnostics",
                 DIAGNOSTIC_RECORDS_DIR=records_dir,
-                LOG_PATH=log_path,
             ),
             patch.multiple(
                 tm_manager,

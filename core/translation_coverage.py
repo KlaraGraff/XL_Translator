@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from core.language_registry import get_default_source_lang, is_auto_source_lang
+from core.language_registry import AUTO_SOURCE_LANG, is_auto_source_lang
 from core.translation_filter import should_translate
+
+#: 原文语言未知（「自动识别」没认出来）时补译判定用的源语言值。
+AUTO_COVERAGE_SOURCE = AUTO_SOURCE_LANG
 
 COVERAGE_COVERED = "covered"
 COVERAGE_SOURCE_ONLY = "source_only"
@@ -384,6 +387,8 @@ def _is_same_alphabet_pair(source_lang: str | None, target_lang: str | None) -> 
     文字体系（中、日、韩、俄、阿、希、泰……）都不算：那种组合看字符就分得开，用不着
     这道闸，硬套只会误伤。
     """
+    if _is_unknown_source(source_lang):
+        return False
     source = _normalize_lang(resolve_coverage_source_lang(source_lang))
     target = _normalize_lang(target_lang)
     if not source or not target or source == target:
@@ -487,17 +492,22 @@ def _language_evidence(
 
 
 def resolve_coverage_source_lang(source_lang: str | None) -> str:
-    """Turn 「自动识别」 into a concrete source language for coverage checks.
+    """Normalize the coverage source language; an unknown source stays ``auto``.
 
-    补译判定必须先知道源语言是哪一门，才分得清「原文」和「译文」。而自动识别是在
-    提取之后才出结果的，提取阶段拿到的就是字面量 auto——它既不是 zh 也不是任何
-    受支持的语言码，于是所有中文单元格都会被判成「不是源文」，补译清单变成 0 条，
-    最后输出一份一个字都没翻的文件。这里统一落到默认源语言，不让 auto 漏进判定。
+    补译判定要分清「原文」和「译文」。原文语言选了「自动识别」、而语言预检没认出来
+    （或判定发生在识别之前）时，这里以前一律落到默认的中文，于是英文、法文文件的
+    未译格子都因为「不像中文」被判成不是原文、不再补翻；日译中里只有汉字的格子则
+    被当成已是中文（#283）。现在不再替用户假定语言：返回 ``auto``，由
+    looks_like_source_text 按「是不是明显已是目标语言」来判。
     """
     candidate = str(source_lang or "").strip()
     if not candidate or is_auto_source_lang(candidate):
-        return get_default_source_lang()
+        return AUTO_COVERAGE_SOURCE
     return candidate
+
+
+def _is_unknown_source(source_lang: str | None) -> bool:
+    return resolve_coverage_source_lang(source_lang) == AUTO_COVERAGE_SOURCE
 
 
 def looks_like_source_text(
@@ -513,6 +523,28 @@ def looks_like_source_text(
 
     source_lang = resolve_coverage_source_lang(source_lang)
     source = _normalize_lang(source_lang)
+    if source_lang == AUTO_COVERAGE_SOURCE:
+        # 原文语言不知道（#283）：不按任何一门语言预判。明显已是目标语言的（中文
+        # 目标里含汉字、英文目标里像英文）算译文；其余有字的都算原文，送去翻。
+        # 中文目标下只有汉字的格子分不出是中文译文还是日文原文，这里按译文算——
+        # 补译的底稿里这类格子多半就是上次的译文，当原文会把整份译文重翻一遍。
+        # 假名、谚文是硬证据：含它们的一定不是中文译文。
+        if not (contains_non_cjk_letters(cleaned) or contains_cjk(cleaned)):
+            return False
+        chinese_target = _normalize_lang(target_lang) == "zh"
+        if chinese_target and (contains_kana(cleaned) or _HANGUL_RE.search(cleaned)):
+            pass
+        elif looks_like_target_text(
+            cleaned,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        ):
+            return False
+        return should_translate(
+            cleaned,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        )
     if source == "zh":
         if not contains_cjk(cleaned):
             return False

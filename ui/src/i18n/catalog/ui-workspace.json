@@ -1950,5 +1950,97 @@
   "译文比原文长、会压到旁边的文字或伸出图框时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下时照样写入译文，并列入报告，请人工复核。比例按目标语言分两套，分别保存：目标语言为中文时默认 100% / 40%（不预先缩小），其他语言默认 70% / 40%。": {
     "en": "When a translation is longer than the original and would overlap nearby text or run past the drawing frame, it is first narrowed, then its text height is reduced. The initial text scale is the share of the original height used first; if it still does not fit, the height is reduced by 0.1 at a time down to the minimum text scale. Text that still does not fit is written anyway at the minimum scale and listed in the report for manual review. Scales are kept separately for each target language: for Chinese the defaults are 100% / 40% (no shrinking in advance); for other languages, 70% / 40%.",
     "fr": "Si une traduction est plus longue que l'original et chevaucherait le texte voisin ou dépasserait du cadre, elle est d'abord resserrée, puis sa hauteur est réduite. L'échelle initiale du texte est la part de la hauteur d'origine appliquée en premier ; si elle ne tient toujours pas, la hauteur est réduite par pas de 0,1 jusqu'à l'échelle minimale. Le texte qui ne tient toujours pas est tout de même écrit à l'échelle minimale et signalé dans le rapport pour vérification manuelle. Les échelles sont enregistrées séparément selon la langue cible : pour le chinois, 100 % / 40 % par défaut (aucune réduction préalable) ; pour les autres langues, 70 % / 40 %."
+  },
+  "Word 文档 · 开始前核对": {
+    "en": "Word documents · Pre-run check",
+    "fr": "Documents Word · Vérification avant lancement"
+  },
+  "「{0}」{1} 处": {
+    "en": "“{0}”: {1}",
+    "fr": "« {0} » : {1}"
+  },
+  "「{0}」里有 {1} 处未接受的修订": {
+    "en": "“{0}” has {1} {1|tracked change|tracked changes}",
+    "fr": "« {0} » contient {1} {1|modification suivie|modifications suivies}"
+  },
+  "本批有 {0} 个文件含未接受的修订": {
+    "en": "{0} {0|file in this batch has|files in this batch have} tracked changes",
+    "fr": "{0} {0|fichier de ce lot contient|fichiers de ce lot contiennent} des modifications suivies"
+  },
+  "{0}。其余 {1} 个文件没有修订，会正常翻译。": {
+    "en": "{0}. The other {1} {1|file has|files have} no tracked changes and will be translated normally.",
+    "fr": "{0}. Les {1} autres {1|fichier n'a|fichiers n'ont} pas de modifications suivies et {1|sera|seront} traduit normalement."
+  },
+  "修订就是在 Word 里开着「修订」功能时做的改动（新增、删除的文字）。这些文字要怎么处理？": {
+    "en": "Tracked changes are the edits made while Track Changes was on in Word (inserted and deleted text). What should happen to that text?",
+    "fr": "Les modifications suivies sont les retouches effectuées avec le suivi des modifications activé dans Word (texte inséré ou supprimé). Que faire de ce texte ?"
+  },
+  "先处理修订，再翻译": {
+    "en": "Resolve the changes first",
+    "fr": "Traiter les modifications d'abord"
+  },
+  "这次先不翻译。请在 Word 里接受或拒绝修订、保存后，回来重新扫描。最干净。": {
+    "en": "Nothing is translated this time. Accept or reject the changes in Word, save, then come back and scan again. Cleanest option.",
+    "fr": "Rien n'est traduit cette fois. Acceptez ou refusez les modifications dans Word, enregistrez, puis revenez relancer l'analyse. C'est la solution la plus propre."
+  },
+  "这次全部先不开始。处理完修订后重新扫描。": {
+    "en": "Nothing starts this time. Handle the changes, then scan again.",
+    "fr": "Rien ne démarre cette fois. Traitez les modifications, puis relancez l'analyse."
+  },
+  "修订一起翻译": {
+    "en": "Translate the changes too",
+    "fr": "Traduire aussi les modifications"
+  },
+  "新增和删除的文字都翻译，并保留修订标记，对方打开译文仍能看到改了哪些地方。": {
+    "en": "Inserted and deleted text is translated, and the revision marks are kept so the other side can still see what changed.",
+    "fr": "Le texte inséré et supprimé est traduit, et les marques de révision sont conservées pour que l'autre partie voie toujours ce qui a changé."
+  },
+  "新增和删除的文字都翻译，保留修订标记。": {
+    "en": "Inserted and deleted text is translated; revision marks are kept.",
+    "fr": "Le texte inséré et supprimé est traduit ; les marques de révision sont conservées."
+  },
+  "跳过修订，只翻译其余部分": {
+    "en": "Skip the changes and translate the rest",
+    "fr": "Ignorer les modifications et traduire le reste"
+  },
+  "修订里的文字保持原文不动，其余部分正常翻译。（默认）": {
+    "en": "Text inside tracked changes stays as it is; everything else is translated. (Default)",
+    "fr": "Le texte des modifications suivies reste tel quel ; le reste est traduit normalement. (Par défaut)"
+  },
+  "修订里的文字保持原文不动。（默认）": {
+    "en": "Text inside tracked changes stays as it is. (Default)",
+    "fr": "Le texte des modifications suivies reste tel quel. (Par défaut)"
+  },
+  "好的，先处理修订": {
+    "en": "Fine — resolve the changes first",
+    "fr": "D'accord, traitons d'abord les modifications"
+  },
+  "请用 Word 打开「{0}」，在「审阅」里接受或拒绝全部修订并保存。处理完回到这里点「重新扫描」，就可以开始翻译了。": {
+    "en": "Open “{0}” in Word, accept or reject all changes under Review, and save. When you are done, come back and click “Rescan” to start translating.",
+    "fr": "Ouvrez « {0} » dans Word, acceptez ou refusez toutes les modifications dans l'onglet Révision, puis enregistrez. Revenez ensuite ici et cliquez sur « Réanalyser » pour lancer la traduction."
+  },
+  "请用 Word 打开这批文件，在「审阅」里接受或拒绝全部修订并保存。处理完回到这里点「重新扫描」，就可以开始翻译了。": {
+    "en": "Open these files in Word, accept or reject all changes under Review, and save. When you are done, come back and click “Rescan” to start translating.",
+    "fr": "Ouvrez ces fichiers dans Word, acceptez ou refusez toutes les modifications dans l'onglet Révision, puis enregistrez. Revenez ensuite ici et cliquez sur « Réanalyser » pour lancer la traduction."
+  },
+  "这批文件": {
+    "en": "These files",
+    "fr": "Ces fichiers"
+  },
+  "在访达中显示": {
+    "en": "Show in Finder",
+    "fr": "Afficher dans le Finder"
+  },
+  "有 {0} 处未接受的修订": {
+    "en": "{0} {0|tracked change|tracked changes}",
+    "fr": "{0} {0|modification suivie|modifications suivies}"
+  },
+  "跳过了 {0} 处修订（保持原文）": {
+    "en": "Skipped {0} {0|tracked change|tracked changes} (left as is)",
+    "fr": "{0} {0|modification suivie ignorée|modifications suivies ignorées} (texte laissé tel quel)"
+  },
+  "翻译了 {0} 处修订（保留修订标记）": {
+    "en": "Translated {0} {0|tracked change|tracked changes} (marks kept)",
+    "fr": "{0} {0|modification suivie traduite|modifications suivies traduites} (marques conservées)"
   }
 }

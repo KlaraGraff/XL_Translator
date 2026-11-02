@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION, FEEDBACK_ENDPOINT
 from core import diagnostics, install_failures, system_proxy
@@ -352,7 +353,8 @@ def _hardware_summary() -> dict[str, Any]:
         memory = psutil.virtual_memory()
         summary["memory_gb"] = round(memory.total / 1024**3, 1)
         summary["memory_available_gb"] = round(memory.available / 1024**3, 1)
-    except Exception:  # noqa: BLE001 - hardware details are a nice-to-have
+    except Exception as exc:  # noqa: BLE001 - hardware details are a nice-to-have
+        logger.debug(f"读取硬件信息失败，已忽略：{exc!r}")
         pass
     return summary
 
@@ -730,7 +732,8 @@ def _network_error(
 def _log(level: int, message: str) -> None:
     try:
         app_event_logger("feedback").log(level, message)
-    except Exception:  # noqa: BLE001 - 写不了日志也不能挡住发送
+    except Exception as exc:  # noqa: BLE001 - 写不了日志也不能挡住发送
+        logger.debug(f"写反馈日志失败，已忽略：{exc!r}")
         pass
 
 

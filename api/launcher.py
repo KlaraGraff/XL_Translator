@@ -90,7 +90,7 @@ def _keep_ending_child_processes() -> None:
     while True:
         try:
             end_child_processes()
-        except Exception:  # noqa: BLE001 - keep sweeping; one bad pid must not stop it
+        except Exception:  # noqa: BLE001, S110 - keep sweeping; one bad pid must not stop it（每 0.5 秒轮询清理子进程，逐次记录会刷屏）
             pass
         time.sleep(CHILD_SWEEP_INTERVAL_SECONDS)
 
@@ -137,7 +137,8 @@ class GracefulSidecarServer(uvicorn.Server):
         # Runs inside a signal handler: flip flags only, never block here.
         try:
             self._on_exit()
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"收到退出信号后通知任务停止失败，已忽略：{exc!r}")
             pass
         super().handle_exit(sig, frame)
 
@@ -156,7 +157,8 @@ def _shutdown_requester(server: uvicorn.Server, on_exit):
     def request() -> None:
         try:
             on_exit()
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"处理关机请求时通知任务停止失败，已忽略：{exc!r}")
             pass
         server.should_exit = True
 
@@ -208,7 +210,8 @@ def _start_parent_watchdog(server: uvicorn.Server, on_exit, stopped: threading.E
         # that does not finish.
         try:
             on_exit()
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"父进程消失后收尾通知任务停止失败，已忽略：{exc!r}")
             pass
         server.should_exit = True
         # The budget covers the whole inner chain (drain → unwind → bookkeeping),

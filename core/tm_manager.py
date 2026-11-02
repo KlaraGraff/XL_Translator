@@ -1792,12 +1792,6 @@ def insert_manual_entry(
     ).changed
 
 
-def update_entry(entry_id: int, new_target: str) -> None:
-    """更新单条词条的译文（TM 管理页手动编辑用）。"""
-    bulk_update([(entry_id, new_target)], sync_reverse=False)
-    logger.debug(f"TM 更新条目 id={entry_id}")
-
-
 # status 取值：written / missing / pinned / cleaning_locked / conflict / invalid / error
 _ENTRY_UPDATE_MESSAGES = {
     "invalid": "原文和译文都不能为空。",
@@ -2407,26 +2401,6 @@ def list_cleaning_suggestions(
             params,
         ).fetchall()
     return [dict(row) for row in rows]
-
-
-def count_cleaning_suggestions(lang_pair: str | None = None, *, status: str = "stale") -> int:
-    """统计某状态的建议条数（全量口径）。
-
-    复核面板顶部的「失效汇总」不要用这个：stale 行永久累积，全量数半年后
-    会顶着一句「另有 137 条已失效」说陈年旧账——那边走
-    :func:`count_stale_suggestions_in_review_window`。
-    """
-    where = ["status = ?"]
-    params: list[object] = [status]
-    if lang_pair:
-        where.append("lang_pair = ?")
-        params.append(lang_pair)
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS total FROM tm_cleaning_suggestions WHERE " + " AND ".join(where),
-            params,
-        ).fetchone()
-    return int(row["total"] or 0)
 
 
 def count_stale_suggestions_in_review_window(lang_pair: str | None = None) -> int:
