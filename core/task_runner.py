@@ -23,6 +23,7 @@ from loguru import logger
 from lxml import etree
 
 from core import bilingual_writer
+from core.source_layout import SourceLayout
 from core.local_endpoint import runtime_mode, settings_runs_locally
 from core.output_metadata import (
     build_translation_metadata,
@@ -2288,10 +2289,7 @@ class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
         # 清单之前再换（见 _apply_deferred_resume_baselines）。
         deferred_baseline: Path | None = None
         if self._untranslated_only and self._resume_output_dir is not None:
-            try:
-                rel_dir = file_item.path.parent.relative_to(root_for_output)
-            except ValueError:
-                rel_dir = Path()
+            rel_dir = self._source_layout().subdir(file_item.path)
             naming_source_name = (
                 file_item.original_path.name
                 if file_item.original_path
@@ -2686,10 +2684,7 @@ class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
         ):
             naming_original_path = file_item.path
 
-        try:
-            rel_subdir = file_item.path.parent.relative_to(source_root)
-        except ValueError:
-            rel_subdir = Path()
+        rel_subdir = self._source_layout().subdir(file_item.path)
 
         try:
             t0 = datetime.now()
@@ -4016,13 +4011,15 @@ class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
 
     def _relative_source_path(self, path: Path) -> str:
         """Return a stable, user-facing relative path for a file result."""
-        root = self._source_root
-        if root is not None:
-            try:
-                return str(path.relative_to(root))
-            except ValueError:
-                pass
-        return path.name
+        return str(self._source_layout().relative(path))
+
+    def _source_layout(self) -> SourceLayout:
+        """译文在输出文件夹里的位置：根外同名的各放进来源文件夹名的子文件夹（#288）。"""
+        layout = getattr(self, "_cached_source_layout", None)
+        if layout is None:
+            layout = SourceLayout([item.path for item in self._files], self._source_root)
+            self._cached_source_layout = layout
+        return layout
 
     def _build_result_contract(
         self,

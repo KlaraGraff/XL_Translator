@@ -39,6 +39,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.source_layout import SourceLayout
 from core.local_endpoint import runtime_mode
 from core.output_metadata import (
     build_translation_metadata,
@@ -2873,13 +2874,15 @@ class PdfImageTranslationRunner(
         profile_executor: ThreadPoolExecutor | None,
         profile_futures: dict[str, Future[str]],
     ) -> None:
+        source_layout = SourceLayout([item.path for item in self._files], self._source_root)
         for index, item in enumerate(self._files, start=1):
             if self._stop_event.is_set():
                 remaining = [candidate.path for candidate in self._files[index - 1 :]]
                 self._file_progress.emit_many("unstarted", "prepare", remaining)
                 break
             self._file_progress.emit(item.path, "active", "prepare")
-            relative_pdf = _relative_pdf_path(item.path, self._source_root)
+            # 根外同名的 PDF 各放进来源文件夹名的子文件夹，不互相覆盖（#288）。
+            relative_pdf = source_layout.relative(item.path)
             work_output_dir = self._process_work_dir or output_dir
             source_copy_path = work_output_dir / relative_pdf
             source_copy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4943,16 +4946,6 @@ def _should_skip_scanned_input(relative_path: Path) -> bool:
 def _should_skip_scanned_pdf(relative_path: Path) -> bool:
     return _should_skip_scanned_input(relative_path)
 
-
-def _relative_pdf_path(path: Path, source_root: Path | None) -> Path:
-    if source_root is None:
-        return Path(path.name)
-    try:
-        if source_root.is_file():
-            return Path(path.name)
-        return path.relative_to(source_root)
-    except ValueError:
-        return Path(path.name)
 
 
 def _load_pdfium():

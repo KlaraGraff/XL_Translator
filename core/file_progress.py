@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.source_layout import SourceLayout
+
 FILE_TERMINAL_STATES = frozenset({"generated", "failed", "unstarted", "stopped", "interrupted"})
 
 
@@ -18,12 +20,12 @@ def file_progress_id(path: str | Path) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def file_progress_entry(item: Any, source_root: Path | None = None) -> dict[str, Any]:
+def file_progress_entry(
+    item: Any, source_root: Path | None = None, layout: SourceLayout | None = None
+) -> dict[str, Any]:
     path = Path(item.path)
-    try:
-        relative = path.resolve().relative_to(source_root.resolve()) if source_root else Path(path.name)
-    except ValueError:
-        relative = Path(path.name)
+    # 文件清单里显示的位置和译文实际放的位置一致：根外同名的带上来源文件夹名（#288）。
+    relative = (layout or SourceLayout([path], source_root)).relative(path)
     return {
         "file_id": file_progress_id(path),
         "name": path.name,
@@ -54,7 +56,11 @@ class FileProgressReporter:
 
     def __init__(self, queue: Any, files: list[Any], source_root: Path | None = None) -> None:
         self._queue = queue
-        self._entries = {file_progress_id(item.path): file_progress_entry(item, source_root) for item in files}
+        layout = SourceLayout([item.path for item in files], source_root)
+        self._entries = {
+            file_progress_id(item.path): file_progress_entry(item, source_root, layout)
+            for item in files
+        }
         self._lock = threading.RLock()
 
     def emit(
