@@ -802,9 +802,8 @@ def _grid_widths(tbl, columns: int) -> list[int] | None:
         if all(known[index] is None for index in columns_in_span):
             for index in columns_in_span:
                 known[index] = width // span
-    if None in known:
-        return None
-    return [int(width) for width in known]
+    widths = [width for width in known if width is not None]
+    return widths if len(widths) == columns else None
 
 
 def sync_table_grids(path: Path) -> int:
