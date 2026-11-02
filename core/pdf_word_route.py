@@ -25,6 +25,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 
 LogFn = Callable[[str, str], None]
@@ -905,6 +906,8 @@ def convert_pdf_to_docx(
     split_glued_bullets(docx_path)
     sync_table_grids(docx_path)
     move_running_footers(docx_path)
+    # 页眉那种左右分栏改成无边框表格：WPS 会把分栏上下叠起来（core.pdf_word_columns）
+    columns_to_tables(docx_path)
 
 
 def translate_pdf_via_word(
