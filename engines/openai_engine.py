@@ -1,17 +1,13 @@
 """OpenAI-compatible translation through the shared text transport."""
-import json
 
 from config import OPENAI_BASE_URL
-from core.prompt_cache import compose_system
 from core.text_transport import (
     request_text,
 )
-from engines.base_engine import (
-    TASK_INSTRUCTION, TranslationEngine, get_source_lang_name,
-    get_target_lang_name, parse_response,
-)
+from engines.base_engine import BatchTranslateMixin, TranslationEngine
 
-class OpenAIEngine(TranslationEngine):
+
+class OpenAIEngine(BatchTranslateMixin, TranslationEngine):
 
     def __init__(
         self,
@@ -40,28 +36,6 @@ class OpenAIEngine(TranslationEngine):
     @property
     def engine_name(self) -> str:
         return f"{self._engine_name_prefix}/{self._model}"
-
-    def translate_batch(
-        self,
-        texts: list[str],
-        target_lang: str,
-        system_prompt: str,
-        source_lang: str = "zh",
-    ) -> dict[str, str]:
-        if not texts:
-            return {}
-
-        source_lang_name = get_source_lang_name(source_lang)
-        target_lang_name = get_target_lang_name(target_lang)
-        instruction = TASK_INSTRUCTION.format(
-            source_lang_name=source_lang_name,
-            target_lang_name=target_lang_name,
-        )
-        full_system = compose_system(system_prompt, instruction)
-        user_msg    = json.dumps(texts, ensure_ascii=False)
-
-        raw = self._call_api(full_system, user_msg)
-        return parse_response(texts, raw, self._response_label)
 
     def _call_api(self, system: str, user_msg: str) -> str:
         text, self.last_route = request_text(

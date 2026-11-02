@@ -2,7 +2,6 @@
 Claude (Anthropic) 翻译引擎。
 使用 JSON Array 批处理格式，内置指数退避重试。
 """
-import json
 import re
 
 import httpx
@@ -17,14 +16,11 @@ from config import (
     RETRY_WAIT_MAX,
 )
 from core import system_proxy
-from core.prompt_cache import compose_system, record_usage, split_system
+from core.prompt_cache import record_usage, split_system
 from engines.base_engine import (
-    TASK_INSTRUCTION,
+    BatchTranslateMixin,
     TranslationEngine,
-    get_source_lang_name,
-    get_target_lang_name,
     is_retryable_engine_error,
-    parse_response,
 )
 
 
@@ -97,7 +93,10 @@ def rejected_max_tokens(response: httpx.Response, requested: int) -> int | None:
     return limit if limit < requested else None
 
 
-class ClaudeEngine(TranslationEngine):
+class ClaudeEngine(BatchTranslateMixin, TranslationEngine):
+
+    # parse_response 报错前缀；共用实现放在 BatchTranslateMixin。
+    _response_label = "Claude"
 
     def __init__(self, api_key: str, model: str, base_url: str = ""):
         self._api_key = api_key
@@ -109,28 +108,6 @@ class ClaudeEngine(TranslationEngine):
     @property
     def engine_name(self) -> str:
         return f"claude/{self._model}"
-
-    def translate_batch(
-        self,
-        texts: list[str],
-        target_lang: str,
-        system_prompt: str,
-        source_lang: str = "zh",
-    ) -> dict[str, str]:
-        if not texts:
-            return {}
-
-        source_lang_name = get_source_lang_name(source_lang)
-        target_lang_name = get_target_lang_name(target_lang)
-        instruction = TASK_INSTRUCTION.format(
-            source_lang_name=source_lang_name,
-            target_lang_name=target_lang_name,
-        )
-        full_system = compose_system(system_prompt, instruction)
-        user_msg    = json.dumps(texts, ensure_ascii=False)
-
-        raw = self._call_api(full_system, user_msg)
-        return parse_response(texts, raw, "Claude")
 
     def _call_api(self, system: str, user_msg: str) -> str:
         # 正文提取放在重试之外：响应里没有 text 块是这一批内容本身的问题，
