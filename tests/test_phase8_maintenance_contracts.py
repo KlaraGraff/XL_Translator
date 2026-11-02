@@ -74,7 +74,6 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 APP_DATA_DIR=self.app_data,
                 DIAGNOSTICS_DIR=self.app_data / "diagnostics",
                 DIAGNOSTIC_RECORDS_DIR=records_dir,
-                LOG_PATH=log_path,
             ),
             patch.multiple(
                 tm_manager,

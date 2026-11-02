@@ -70,7 +70,6 @@ class DiagnosticsTests(unittest.TestCase):
 
             with (
                 patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", root / "records"),
-                patch.object(diagnostics, "LOG_PATH", log_path),
             ):
                 record_dir = diagnostics.archive_task_diagnostics(
                     surface="excel",
@@ -163,7 +162,6 @@ class DiagnosticsTests(unittest.TestCase):
 
             with (
                 patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", root / "records"),
-                patch.object(diagnostics, "LOG_PATH", log_path),
             ):
                 record_dir = diagnostics.archive_task_diagnostics(
                     surface="word",
