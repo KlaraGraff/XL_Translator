@@ -42,8 +42,26 @@ let installed = false;
 
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
 
-function zoneAt(target: EventTarget | Element | null): HTMLElement | null {
-  return target instanceof Element ? target.closest<HTMLElement>(ZONE) : null;
+function zoneAt(target: EventTarget | Element | null, dragging = true): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  // 已有清单的类型页：清单本身不是投放区，拖着文件经过时换成盖在它上面的 .drop-over（平时隐藏）。
+  const main = target.closest<HTMLElement>(".ws-main.can-drop-over");
+  if (dragging && main && !target.closest(".src")) {
+    const over = main.querySelector<HTMLElement>(":scope > .drop-over");
+    if (over) return over;
+  }
+  return target.closest<HTMLElement>(ZONE);
+}
+
+/** 盖在清单上的投放区从路径栏下面开始，盖到这一栏可见部分的底边（这一栏可能滚动过）。 */
+function placeOverlay(z: HTMLElement): void {
+  if (!z.classList.contains("drop-over")) return;
+  const main = z.parentElement;
+  const src = main?.querySelector<HTMLElement>(":scope > .src");
+  if (!main || !src) return;
+  const top = Math.max(src.offsetTop + src.offsetHeight + 14, main.scrollTop + 4);
+  z.style.top = `${top}px`;
+  z.style.height = `${Math.max(120, main.scrollTop + main.clientHeight - 4 - top)}px`;
 }
 
 function setTargets(clientX: number, clientY: number): void {
@@ -159,6 +177,7 @@ function dragStart(z: HTMLElement, clientX: number, clientY: number): void {
   if (dragZone && dragZone !== z) dragStop();
   dragZone = z;
   G.spin = motionAllowed();
+  placeOverlay(z);
   z.classList.add("dragging");
   if (G.el !== z || !G.on) enter(z, clientX, clientY);
   else {
@@ -217,7 +236,7 @@ export function installDropGlow(): void {
   installed = true;
   document.addEventListener("pointermove", (e) => {
     if (G.spin || dragZone) return;
-    const z = zoneAt(e.target);
+    const z = zoneAt(e.target, false);
     if (z) {
       if (G.el !== z || !G.on) enter(z, e.clientX, e.clientY);
       else {

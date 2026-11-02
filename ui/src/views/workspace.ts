@@ -1668,6 +1668,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
   if (resumeDismiss) col.append(resumeDismiss);
   const tableCard = buildTableCard(surface, st);
   col.append(tableCard);
+  // 拖着文件经过清单时盖上的投放区（drop-glow 把清单区换成它来点亮），平时不显示。
+  const overlay = buildDropOverlay(surface);
+  if (overlay) {
+    col.classList.add("can-drop-over");
+    col.append(overlay);
+  }
   // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
   // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
   // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
@@ -1764,6 +1770,22 @@ function openSourceMenu(anchor: HTMLElement, surface: Surface, st: SurfaceState)
     { label: t("选择文件"), description: t("可多选，只读取并翻译选中的文件"), onSelect: () => void pickSource(surface, st, false) },
     { label: t("选择文件夹"), description: t("读取文件夹及其子文件夹中的全部可翻译文件"), onSelect: () => void pickSource(surface, st, true) },
   ]);
+}
+
+/** 已有清单时的投放区：只在拖着文件经过时出现，盖住路径栏以下的部分，松手或拖走就收起。 */
+function buildDropOverlay(surface: Surface): HTMLElement | null {
+  const words = dropOverlayText(surface);
+  if (!words) return null;
+  const zone = el("div", "drop drop-over");
+  zone.setAttribute("aria-hidden", "true");
+  const big = el("div", "big");
+  big.append(icon(canAppendSource(surface) ? "plus" : surfaceIcon(surface), { size: "lg" }));
+  const title = el("b");
+  title.textContent = words.title;
+  const desc = el("p");
+  desc.textContent = words.body;
+  zone.append(big, title, desc);
+  return zone;
 }
 
 const DROP_TITLE: Record<BuiltinSurface, string> = localized(() => ({
@@ -1885,7 +1907,7 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
  * 在跑时不替换来源，返回 false（前台时提示一句）。前台调用方先 navigate 到这一页再调；
  * background 为真时人不在这一页：照样读取，但不弹「已扫描到」的提示，续译弹窗等人进来再弹。
  */
-export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean } = {}): Promise<boolean> {
+export async function openSourcePaths(surface: Surface, paths: string[], options: { background?: boolean; append?: boolean } = {}): Promise<boolean> {
   const list = paths.filter((item) => item.trim().length > 0);
   if (!list.length) return false;
   const st = stateOf(surface);
@@ -1900,8 +1922,67 @@ export async function openSourcePaths(surface: Surface, paths: string[], options
     if (!options.background) showToast({ message: t("{0}正在翻译，完成后再放入新的文件。", surfaceLabel(surface)), error: true });
     return false;
   }
+  if (options.append && canAppendSource(surface)) {
+    await appendSourcePaths(surface, list, options.background);
+    return true;
+  }
   await applySourcePaths(surface, list, options.background);
   return true;
+}
+
+/**
+ * 页面上已经有一份还没开始翻译的清单：再拖进来的文件加到这份清单里，不换掉它。
+ * 翻译中、读取中、刚翻译完（显示结果）和只剩历史记录时都不算——翻译完再拖入就是新的一批。
+ */
+export function canAppendSource(surface: Surface): boolean {
+  const st = stateOf(surface);
+  if (!st.files.length || st.historyOnly || scanBusy.has(surface)) return false;
+  if (st.task) return false;
+  return !(st.showBanner && st.bannerInfo);
+}
+
+/** 拖入时盖在清单上的那层提示要说的话；不能拖入（没有清单、正在翻译）时为 null。 */
+export function dropOverlayText(surface: Surface): { title: string; body: string } | null {
+  const st = stateOf(surface);
+  if (canAppendSource(surface)) {
+    return {
+      title: t("松手添加到当前列表"),
+      body: t("已有的 {0} 个文件（已选 {1} 个）会保留，新拖入的文件追加在后面。", st.files.length, st.selected.size),
+    };
+  }
+  const active = st.task && !st.task.task.terminal;
+  if (active || scanBusy.has(surface) || st.historyOnly || !st.files.length) return null;
+  return { title: t("松手开始新的一批"), body: t("新拖入的文件会替换当前列表，已完成的译文不受影响。") };
+}
+
+function isPathWithin(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const base = parent.replace(/[\\/]+$/, "");
+  return child.startsWith(`${base}/`) || child.startsWith(`${base}\\`);
+}
+
+/**
+ * 把新拖入的路径并进当前清单的来源：已经在清单里的（同一个文件，或在已有文件夹里面的）不重复加；
+ * 新拖入的是已有来源的上级文件夹时，用它代替被它包住的那几个。来源根（sourcePath）不变，
+ * 所以输出位置和续译都照旧；根外的文件由任务启动时各扫一次补进来（task_manager）。
+ * 原来没勾的文件重新读取后仍然不勾，新加的默认勾上。
+ */
+async function appendSourcePaths(surface: Surface, list: string[], background = false): Promise<void> {
+  const st = stateOf(surface);
+  const existing = (st.sourcePaths.length ? st.sourcePaths : [st.sourcePath]).map(normalizeUserPath).filter(Boolean);
+  const incoming = [...new Set(list.map(normalizeUserPath).filter(Boolean))].filter((path) => !existing.some((source) => isPathWithin(path, source)));
+  if (!incoming.length) {
+    if (!background) showToast({ message: t("拖入的文件已经在列表里了。") });
+    return;
+  }
+  const merged = [...existing.filter((source) => !incoming.some((path) => isPathWithin(source, path))), ...incoming];
+  const unchecked = new Set(st.files.map((item) => item.path).filter((path) => !st.selected.has(path)));
+  const root = st.sourcePath;
+  clearWorkspaceInput(surface);
+  st.sourcePath = root;
+  st.sourcePaths = merged;
+  rerender(surface);
+  await runScan(surface, undefined, background, unchecked);
 }
 
 // ---------------------------------------------------------------------------
@@ -1935,6 +2016,15 @@ export function setDispatchBatch(batch: { surface: Surface; count: number; paths
       }
     : null;
   for (const surface of new Set([...(previous?.counts.keys() ?? []), ...(dispatchBatch?.counts.keys() ?? [])])) rerender(surface);
+}
+
+/** 这一页把拖入的文件加进了原有清单（来源根没变）：这一批按这一页现在的来源和文件数算。 */
+export function keepInDispatchBatch(surface: Surface): void {
+  if (!dispatchBatch?.counts.has(surface)) return;
+  const st = stateOf(surface);
+  dispatchBatch.sources.set(surface, normalizeUserPath(st.sourcePath));
+  dispatchBatch.counts.set(surface, st.files.length);
+  for (const member of dispatchBatch.counts.keys()) rerender(member);
 }
 
 /** 这一页没接住（正在翻译）：从这一批里拿掉，别的页面不再说它「已放到对应页面」。 */
@@ -4071,7 +4161,7 @@ function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObje
 }
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
-export async function runScan(surface: Surface, preferredResumeDir?: string, background = false): Promise<void> {
+export async function runScan(surface: Surface, preferredResumeDir?: string, background = false, keepUnchecked?: Set<string>): Promise<void> {
   const st = stateOf(surface);
   const path = normalizeUserPath(st.sourcePath);
   if (!path) return;
@@ -4100,7 +4190,7 @@ export async function runScan(surface: Surface, preferredResumeDir?: string, bac
     // 在缺字段时给回 {}，取值自然落回 false，不用按 surface 分支特判。
     st.libreofficeAvailable = Boolean(record(result.risk).libreoffice_available);
     if (surface === "cad" && Object.keys(record(response.capability)).length) st.cadCapability = record(response.capability);
-    st.selected = new Set(items.map((f) => f.path));
+    st.selected = new Set(items.map((f) => f.path).filter((path) => !keepUnchecked?.has(path)));
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
     st.fileOutcomes = new Map();
