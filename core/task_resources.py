@@ -195,6 +195,12 @@ class FairApiGroupScheduler:
         self._task_capacities: dict[str, int] = {}
         self._waiting_tasks: deque[str] = deque()
         self._waiting_task_set: set[str] = set()
+        # Weights every waiting thread asked for, per task: lets a later task's
+        # small request go first while the head task's request cannot fit.
+        self._waiting_weights: dict[str, list[int]] = {}
+        # Requests let past the head task since it last got a slot.  Capped at
+        # the capacity so the head cannot be overtaken forever.
+        self._bypassed_head = 0
         self._condition = threading.Condition()
 
     def add_task(self, owner_key: str, capacity: int) -> TaskGroupScheduler:
@@ -240,6 +246,9 @@ class FairApiGroupScheduler:
             if normalized_category != API_REQUEST_CATEGORY_NORMAL:
                 self._waiting_recovery_count += 1
             self._add_waiter_locked(owner_key)
+            entry_weight = normalized_weight
+            waiting_weights = self._waiting_weights.setdefault(owner_key, [])
+            waiting_weights.append(entry_weight)
             try:
                 # Capacity can shrink while we wait (429 feedback); re-clamp
                 # the weight on every check or a waiter sized for the old
@@ -261,6 +270,10 @@ class FairApiGroupScheduler:
                     normalized_weight = min(normalized_weight, max(1, self.capacity))
                 if should_stop is not None and should_stop():
                     raise ApiSchedulerAcquireCancelled("API 请求在获得并发槽位前已取消")
+                if self._waiting_tasks and self._waiting_tasks[0] == owner_key:
+                    self._bypassed_head = 0
+                else:
+                    self._bypassed_head += 1
                 self._remove_waiter_locked(owner_key)
                 self._active_total_weight += normalized_weight
                 if normalized_category == API_REQUEST_CATEGORY_NORMAL:
@@ -271,6 +284,9 @@ class FairApiGroupScheduler:
             finally:
                 if normalized_category != API_REQUEST_CATEGORY_NORMAL:
                     self._waiting_recovery_count = max(0, self._waiting_recovery_count - 1)
+                waiting_weights.remove(entry_weight)
+                if not waiting_weights:
+                    self._waiting_weights.pop(owner_key, None)
                 self._remove_waiter_locked(owner_key)
 
     def release(
@@ -353,9 +369,30 @@ class FairApiGroupScheduler:
     def _can_acquire_locked(self, owner_key: str, weight: int, category: str) -> bool:
         if self._active_total_weight + weight > self.capacity:
             return False
-        if not (self._waiting_tasks and self._waiting_tasks[0] == owner_key):
-            return False
+        if not self._waiting_tasks or self._waiting_tasks[0] != owner_key:
+            if not self._may_pass_head_locked():
+                return False
         return self._passes_normal_soft_limit_locked(weight, category)
+
+    def _may_pass_head_locked(self) -> bool:
+        """A later task may go first while the head task's request cannot fit.
+
+        Strict first-come order used to leave free slots idle: a head request
+        needing 8 of the 3 free slots kept another task's 1-slot request
+        waiting until enough leases came back (#281).  Overtaking is allowed
+        only while the head's smallest request still does not fit, and at
+        most ``capacity`` times before the head gets its slot.
+        """
+        if not self._waiting_tasks:
+            return True
+        if self._bypassed_head >= max(1, self.capacity):
+            return False
+        head = self._waiting_tasks[0]
+        weights = self._waiting_weights.get(head)
+        if not weights:
+            return True
+        need = min(min(weights), max(1, self.capacity))
+        return self._active_total_weight + need > self.capacity
 
     def _passes_normal_soft_limit_locked(self, weight: int, category: str) -> bool:
         """Leave recovery work a share of the group once it becomes active.
