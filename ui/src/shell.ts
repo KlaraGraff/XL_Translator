@@ -8,6 +8,7 @@ import { currentView, navigate, onNavigate, type ViewId } from "./router";
 import { isChineseLocale, t, localized } from "./i18n";
 import { ariaKeyShortcut, shortcutLabel } from "./platform";
 import { version as PACKAGE_VERSION } from "../package.json";
+import { installWindowChrome } from "./window-chrome";
 
 interface SideItemDef {
   id: ViewId;
@@ -341,6 +342,8 @@ export function mountShell(root: HTMLElement): ShellHandle {
   stage.append(content);
 
   root.append(stage);
+  // 窗口顶部（Mac 红绿灯嵌进侧栏 / Windows 自绘窗口按钮）和可拖动区域，见 window-chrome.ts。
+  installWindowChrome({ shell: root, side, brand, topbar });
 
   onNavigate((id) => {
     highlightSideItem(id);
