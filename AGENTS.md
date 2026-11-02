@@ -77,7 +77,7 @@ Where new code goes (maple, 2026-10-31):
 - A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
 - Known independent parts to move out when you touch them (maple, 2026-11-02):
   - `core/pdf_image_translation.py`: each PDF mode's own steps (in-place, to-Word, image generation).
-  - `ui/src/views/workspace.ts`: the PDF route section, the resume modal, the revision modal, the start-blocked modal, the output-location section.
+  - `ui/src/views/workspace.ts`: done 2026-11-02 — the PDF route section, the resume / revision / start-blocked modals and the output-location section now live in `workspace-*.ts` next to it. New dialogs and sections of the workspace start in their own `workspace-*.ts` file.
   - `settings.py`: the old-data migration rules.
   - `core/word_task_runner.py`: the recovery / gap-fill pool. The main `_run` flow stays.
 - Excel and Word twins: `core/task_runner.py` and `core/word_task_runner.py` each keep a near-copy of the same steps
