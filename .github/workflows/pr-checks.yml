@@ -27,6 +27,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6.0.3
+        with:
+          # 下面「出错后什么都不做」的检查要和 PR 的基线比，需要完整历史。
+          fetch-depth: 0
       # 扩展模板仓库须与 cli/adapter_template/ 逐字节相同（tests/test_cli_adapter.py 比对）：
       # 改模板时两边一起改，先推模板仓库。
       - uses: actions/checkout@v6.0.3
@@ -45,10 +48,14 @@ jobs:
           python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt --requirement requirements-test.txt
       - name: Ruff (same targets as quality_gate.ps1)
         run: python -m ruff check config.py settings.py api cli core engines translator_adapter adapters scripts tests
+      - name: No new silent excepts in changed files
+        if: github.event_name == 'pull_request'
+        run: python scripts/check_silent_excepts.py "origin/${{ github.base_ref }}"
       - name: Pytest
         env:
           TRANSLATOR_TEMPLATE_REPO: .runtime/extension-template
-        run: python -m pytest -q -p no:cacheprovider tests
+        # -n auto：用满机器的几个核同时跑（pytest-xdist）。测试本来就各用各的临时目录。
+        run: python -m pytest -q -p no:cacheprovider -n auto tests
 
   ui:
     name: UI (TypeScript)
@@ -80,12 +87,45 @@ jobs:
   # 右栏横向滚动；另跑「法文加长 30%」只出报告。全在本机：临时数据目录、样例文件、假模型。
   # 字体和本机检查一致：拉丁字母 Inter、中文文泉驿正黑（scripts/ui_text_fit_fonts.conf）。
   ui-text-fit:
-    name: UI text fit (zh / en / fr)
+    name: UI text fit (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 按语言拆成几份同时跑，最慢的一份约是原来的三分之一。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: zh
+            args: --locales zh --no-pseudo
+          - name: zh-Hant
+            args: --locales zh-Hant --no-pseudo
+          - name: en
+            args: --locales en --no-pseudo
+          # 「法文加长 30%」只出报告，跟法文放在一份里。
+          - name: fr
+            args: --locales fr
     steps:
       - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+      # 只改了内核翻译逻辑、测试或文档的 PR 不跑这项（界面上的字不会变）。
+      # 推到 main 时总是跑，内核里的提示文字万一放不下，合并后也会马上发现。
+      - name: Decide whether interface text can have changed
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(ui/|api/|settings\.py$|config\.py$|requirements|constraints-|scripts/ui_text_fit|\.github/workflows/pr-checks\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "没有改到界面相关的文件，跳过文字检查。"
+          fi
       - uses: actions/setup-python@v6.2.0
+        if: steps.scope.outputs.run == 'true'
         with:
           python-version: "3.11"
           cache: pip
@@ -93,33 +133,38 @@ jobs:
             requirements.txt
             constraints-release-py311.txt
       - name: Install Python dependencies
+        if: steps.scope.outputs.run == 'true'
         run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt
       - uses: actions/setup-node@v6
+        if: steps.scope.outputs.run == 'true'
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - name: Install UI dependencies and Playwright
+        if: steps.scope.outputs.run == 'true'
         working-directory: ui
         run: |
           npm ci
           npm install --no-save playwright@1.63.0
           npx playwright install --with-deps chromium
       - name: Fonts (Inter for Latin text, WenQuanYi Zen Hei for Chinese)
+        if: steps.scope.outputs.run == 'true'
         run: |
           sudo apt-get install -y --no-install-recommends fonts-inter fonts-wqy-zenhei
           sudo cp scripts/ui_text_fit_fonts.conf /etc/fonts/conf.d/56-prefer-inter.conf
           fc-cache -f
           fc-match system-ui
-      - name: Check interface text in zh / en / fr
+      - name: Check interface text
+        if: steps.scope.outputs.run == 'true'
         env:
           PYTHON: python
-        run: node scripts/ui_text_fit_check.mjs --out ui-text-fit-report
+        run: node scripts/ui_text_fit_check.mjs --out ui-text-fit-report ${{ matrix.args }}
       - name: Upload report
-        if: always()
+        if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: ui-text-fit-report
+          name: ui-text-fit-report-${{ matrix.name }}
           path: ui-text-fit-report
           if-no-files-found: ignore
 
