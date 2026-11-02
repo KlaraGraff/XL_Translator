@@ -55,6 +55,7 @@ from core.word_revisions import (
     REVISION_MODE_TRANSLATE,
     RevisionLayout,
     normalize_revision_mode,
+    renumber_duplicate_revision_ids,
 )
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
@@ -1619,6 +1620,7 @@ def write_bilingual_docx(
 
     apply_east_asian_language(doc, target_lang)
     _trim_trailing_empty_body_paragraphs(doc)
+    renumber_duplicate_revision_ids(doc)
     doc.save(str(out_path))
     if marked_write_count:
         logger.info(f"Word 写回：{out_path.name} 有 {marked_write_count} 处按标记保留了段内格式")

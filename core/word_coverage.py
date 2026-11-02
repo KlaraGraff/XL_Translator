@@ -32,7 +32,7 @@ from core.translation_coverage import (
 )
 from core.bilingual_writer import bilingual_output_name
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
-from core.word_revisions import paragraph_coverage_text
+from core.word_revisions import paragraph_coverage_text, renumber_duplicate_revision_ids
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
@@ -460,6 +460,7 @@ def write_untranslated_docx(
         revision_callback(revision_stats)
 
     apply_east_asian_language(doc, target_lang)
+    renumber_duplicate_revision_ids(doc)
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""
