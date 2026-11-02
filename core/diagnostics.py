@@ -17,6 +17,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from config import APP_DATA_DIR, APP_VERSION
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 
@@ -188,7 +190,8 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
     for manifest_path in DIAGNOSTIC_RECORDS_DIR.glob("*/manifest.json"):
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取诊断记录清单失败，已忽略：{exc!r}")
             continue
         if not _is_current_safe_manifest(payload):
             # A prior format may contain document-specific locations.  Keep

@@ -87,11 +87,6 @@ class UnsealResult:
         return self.status == UNSEAL_OK
 
 
-def embedded_key_id() -> str:
-    """本机这份安装包内置的密钥编号。``"dev"`` 表示是开发兜底密钥，不该出厂。"""
-    return EMBEDDED_KEY_ID
-
-
 def _embedded_private_key() -> X25519PrivateKey:
     raw = base64.b64decode(EMBEDDED_PRIVATE_KEY_B64)
     return X25519PrivateKey.from_private_bytes(raw)

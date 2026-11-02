@@ -448,11 +448,6 @@ def scan_word_sources(path: str | Path) -> WordScanResult:
     return result
 
 
-def scan_word_folder(root: str | Path) -> list[WordFileItem]:
-    """Recursively scan a folder for supported Word files."""
-    return scan_word_sources(root).items
-
-
 def extract_word_segments(
     path: str | Path,
     *,
@@ -799,7 +794,8 @@ def _iter_header_footer_paragraphs(
                 if container.is_linked_to_previous:
                     continue
                 part_name = str(container.part.partname)
-            except Exception:  # noqa: BLE001 - 页眉页脚异常不该拖垮正文翻译
+            except Exception as exc:  # noqa: BLE001 - 页眉页脚异常不该拖垮正文翻译
+                logger.debug(f"读取页眉页脚部件失败，已忽略：{exc!r}")
                 continue
             if part_name in seen_parts:
                 continue
@@ -2490,16 +2486,6 @@ def _apply_paragraph_text_highlight(paragraph: Paragraph, highlight: str) -> boo
     return applied
 
 
-def _apply_paragraph_text_shading(paragraph: Paragraph, fill: str) -> bool:
-    applied = False
-    for run in paragraph.runs:
-        if not run.text:
-            continue
-        _set_shading_fill(run._element.get_or_add_rPr(), fill)
-        applied = True
-    return applied
-
-
 def _apply_paragraph_red_underline(paragraph: Paragraph) -> bool:
     applied = False
     for run in paragraph.runs:
@@ -2509,7 +2495,8 @@ def _apply_paragraph_red_underline(paragraph: Paragraph) -> bool:
             run.font.color.rgb = RGBColor(192, 0, 0)
             run.underline = True
             applied = True
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"设置红色下划线失败，已忽略：{exc!r}")
             continue
     return applied
 
@@ -2528,14 +2515,16 @@ def _paragraph_has_existing_highlight(paragraph: Paragraph) -> bool:
     try:
         if _element_has_existing_shading(getattr(paragraph.style._element, "pPr", None)):
             return True
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"读取段落样式底纹失败，已忽略：{exc!r}")
         pass
 
     for run in paragraph.runs:
         try:
             if run.font.highlight_color is not None:
                 return True
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取文本高亮颜色失败，已忽略：{exc!r}")
             pass
 
         r_pr = getattr(run._element, "rPr", None)
@@ -4084,7 +4073,8 @@ def _copy_run_shape(source_paragraph: Paragraph, target_run, *, target_lang: str
                 _paragraph_default_color(source_paragraph),
                 _style_font_color(source_paragraph),
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"复制文本字体格式失败，已忽略：{exc!r}")
             pass
     _set_latin_run_font(target_run, target_lang=target_lang)
 
@@ -4201,7 +4191,8 @@ def _run_half_points(run) -> int | None:
         size = run.font.size
         if size is not None:
             return round(size.pt * 2)
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"读取文本字号失败，已忽略：{exc!r}")
         pass
     return _rpr_half_points(getattr(run._element, "rPr", None))
 
@@ -4343,7 +4334,8 @@ def _set_latin_run_font(run, *, target_lang: str) -> None:
             r_pr.append(r_fonts)
         for attr in ("w:ascii", "w:hAnsi", "w:cs"):
             r_fonts.set(qn(attr), "Times New Roman")
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"设置西文字体失败，已忽略：{exc!r}")
         pass
 
 

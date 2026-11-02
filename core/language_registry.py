@@ -525,29 +525,6 @@ def append_custom_target_lang(
     return normalized_langs, build_custom_target_lang_code(normalized_display)
 
 
-def update_custom_target_lang_description(
-    custom_target_langs: Iterable[object] | None,
-    target_lang_or_display: str,
-    description: str,
-) -> list[CustomTargetLang]:
-    normalized_langs = normalize_custom_target_langs(custom_target_langs)
-    target_name = _resolve_custom_target_lang_name(target_lang_or_display)
-    if not target_name:
-        return normalized_langs
-
-    target_key = target_name.casefold()
-    normalized_description = normalize_custom_target_lang_description(description)
-    updated_langs: list[CustomTargetLang] = []
-    for entry in normalized_langs:
-        if entry.name.casefold() == target_key:
-            updated_langs.append(
-                entry.model_copy(update={"description": normalized_description})
-            )
-        else:
-            updated_langs.append(entry)
-    return updated_langs
-
-
 def update_custom_target_lang_display(
     custom_target_langs: Iterable[object] | None,
     target_lang_or_code: str,
@@ -768,26 +745,6 @@ def get_target_lang_description(
     return entry.description
 
 
-def get_target_lang_search_aliases(
-    target_lang: str,
-    custom_target_langs: Iterable[object] | None = None,
-    *,
-    include_optional: bool = False,
-) -> list[str]:
-    """Return searchable aliases for a built-in or custom target/source language code."""
-    display_name = get_target_lang_display(
-        target_lang,
-        custom_target_langs,
-        include_optional=include_optional,
-    )
-    aliases = get_language_search_aliases(display_name)
-    code = str(target_lang or "").strip()
-    if code:
-        aliases.append(code)
-        aliases.extend(sorted(BUILTIN_LANGUAGE_ENGLISH_NAMES.get(code, set())))
-    return list(dict.fromkeys(alias for alias in aliases if alias))
-
-
 def get_target_lang_display_from_lang_pair(
     lang_pair: str,
     custom_target_langs: Iterable[object] | None = None,
@@ -801,17 +758,6 @@ def get_target_lang_display_from_lang_pair(
         custom_target_langs,
         include_optional=True,
     )
-
-
-def get_target_lang_description_from_lang_pair(
-    lang_pair: str,
-    custom_target_langs: Iterable[object] | None = None,
-) -> str:
-    split_pair = _split_lang_pair(lang_pair)
-    if split_pair is None:
-        return ""
-    _source_lang, target_lang = split_pair
-    return get_target_lang_description(target_lang, custom_target_langs)
 
 
 def build_target_lang_note_block(
@@ -904,24 +850,6 @@ def remember_recent_target_lang(
     return ordered
 
 
-def remove_recent_target_lang(
-    recent_target_langs: Iterable[str] | None,
-    target_lang: str,
-    custom_target_langs: Iterable[object] | None = None,
-    *,
-    include_optional: bool = False,
-) -> list[str]:
-    return [
-        code
-        for code in normalize_recent_target_langs(
-            recent_target_langs,
-            custom_target_langs,
-            include_optional=include_optional,
-        )
-        if code != target_lang
-    ]
-
-
 def get_ordered_target_lang_codes(
     recent_target_langs: Iterable[str] | None = None,
     custom_target_langs: Iterable[object] | None = None,
@@ -949,22 +877,6 @@ def get_ordered_target_lang_codes(
         if target_lang not in ordered_codes
     ]
     return ordered_codes + remaining_codes
-
-
-def get_first_available_target_lang(
-    recent_target_langs: Iterable[str] | None = None,
-    custom_target_langs: Iterable[object] | None = None,
-    *,
-    include_optional: bool = False,
-) -> str:
-    ordered_codes = get_ordered_target_lang_codes(
-        recent_target_langs,
-        custom_target_langs,
-        include_optional=include_optional,
-    )
-    if ordered_codes:
-        return ordered_codes[0]
-    return get_default_target_lang()
 
 
 def build_lang_pair(

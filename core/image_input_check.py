@@ -271,12 +271,6 @@ def image_input_verdict(settings: Any, config: Any) -> str:
     return result if result in IMAGE_INPUT_RESULTS else ""
 
 
-def image_input_message(settings: Any, config: Any) -> str:
-    checks = getattr(settings, "image_input_checks", None) or {}
-    entry = checks.get(image_input_key(config))
-    return str(getattr(entry, "message", "") or "")
-
-
 def set_image_input_verdict(settings: Any, config: Any, result: str, message: str, checked_at: str) -> None:
     """把结论写进这份设置（只改内存里的这一份；存盘见 ``save_image_input_verdict``）。"""
     from settings import ImageInputCheck

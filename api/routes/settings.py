@@ -219,7 +219,8 @@ def register(app: FastAPI) -> None:
                 before_signatures[role] = model_config_signature(
                     resolve_effective_model_config(before_settings, role, check_capability=False)
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"读取保存前的模型配置签名失败，已忽略：{exc!r}")
                 continue
         current = before_settings.model_dump(mode="json")
         merged = _deep_merge(current, payload)

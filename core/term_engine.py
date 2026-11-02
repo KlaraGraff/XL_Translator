@@ -35,7 +35,6 @@ from core.tm_terms import (
     DEFAULT_BATCH_BUDGET,
     USAGE_ALWAYS,
     USAGE_DOCUMENT,
-    USAGE_SCENE,
     TermHit,
     TermIndex,
     build_correction_block,
@@ -468,7 +467,3 @@ class TermAwareEngine(TranslationEngine):
                 )
             )
         return final
-
-
-def scene_usage_label(usage: str) -> str:
-    return "始终采用" if usage == USAGE_ALWAYS else ("按场景选用" if usage == USAGE_SCENE else "仅整段复用")

@@ -284,11 +284,6 @@ def check_xlwings_available() -> bool:
     return available
 
 
-def is_excel_installed() -> bool:
-    """兼容旧接口：沿用真实可用性作为判断。"""
-    return check_xlwings_available()
-
-
 def _discard_partial_output(out_path: Path) -> None:
     """转换半途失败时删掉写了一半的 .xlsx。
 
@@ -341,7 +336,9 @@ def convert_with_excel(app, xls_path: Path) -> Path:
         if wb is not None:
             try:
                 wb.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup only
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup only
+                # 关不掉工作簿不能盖住真正的转换失败，记一笔就够。
+                logger.debug(f"关闭 Excel 工作簿失败，已忽略：{exc!r}")
                 pass
 
     if failure is not None:

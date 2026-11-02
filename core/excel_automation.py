@@ -51,8 +51,8 @@ def finalize_excel_thread(thread_state: Any | None) -> None:
 
     try:
         pythoncom.CoUninitialize()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"释放 Excel 线程 COM 环境失败，已忽略：{exc!r}")
 
 
 def create_excel_app(*, visible: bool = False, add_book: bool = False):
@@ -98,8 +98,8 @@ def probe_local_excel_automation() -> tuple[bool, str]:
 
         try:
             app.display_alerts = False
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"关闭 Excel 弹窗提示失败，已忽略：{exc!r}")
         return True, ""
     finally:
         if app is not None:
@@ -108,8 +108,8 @@ def probe_local_excel_automation() -> tuple[bool, str]:
             except Exception:
                 try:
                     app.kill()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"强制结束 Excel 进程失败，已忽略：{exc!r}")
         finalize_excel_thread(thread_state)
 
 

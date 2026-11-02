@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from loguru import logger
+
 from config import (
     CHUNK_CLOUD_MAX,
     CHUNK_CLOUD_DEFAULT,
@@ -268,9 +270,10 @@ def throughput_profile_keys(settings: AppSettings) -> dict[ThroughputIdentity, t
         for connection in connections:
             try:
                 config = resolve_effective_model_config(settings, role, connection_id=connection.id)
-            except Exception:
+            except Exception as exc:
                 # A half-edited or illegal entry has no usable key; the edit
                 # route reports that itself, carrying is best-effort.
+                logger.debug(f"解析模型连接配置以生成吞吐档位键失败，已忽略：{exc!r}")
                 continue
             keys[(role, connection.id)] = (model_throughput_key(config), str(config.mode or ""))
     return keys
@@ -300,7 +303,8 @@ def carry_over_throughput_profiles(
         raw = source.model_dump() if isinstance(source, ModelThroughputSettings) else dict(source or {})
         try:
             profiles[new_key] = ModelThroughputSettings.model_validate(raw)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"校验并复制旧吞吐档位到新键失败，已忽略：{exc!r}")
             continue
         copied.append(new_key)
     return copied

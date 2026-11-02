@@ -107,24 +107,6 @@ _CLEAN_IMMUTABLE_PROTOCOL = (
 )
 
 
-def get_clean_system_prompt(
-    custom_prompt: str = "",
-    lang_pair: str = "",
-    custom_target_langs=None,
-) -> str:
-    """Return the user override when provided, otherwise the built-in cleaner prompt."""
-    prompt = str(custom_prompt or "").strip()
-    if prompt:
-        return append_prompt_block(
-            prompt,
-            build_target_lang_note_block_from_lang_pair(lang_pair, custom_target_langs),
-        )
-    return build_clean_system_prompt(
-        lang_pair=lang_pair,
-        custom_target_langs=custom_target_langs,
-    )
-
-
 def get_clean_target_lang_name(lang_pair: str = "", custom_target_langs=None) -> str:
     return get_target_lang_display_from_lang_pair(lang_pair, custom_target_langs)
 

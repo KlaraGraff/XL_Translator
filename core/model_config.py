@@ -41,7 +41,6 @@ from settings import (
     get_key,
     is_imported_connection_key,
     is_imported_provider_key,
-    parse_api_key_scope,
     save_key,
 )
 
@@ -415,7 +414,8 @@ def _model_profiles_for_export(
     for role in MODEL_ROLES:
         try:
             resolve_effective_model_config(settings, role, check_capability=False)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"导出前解析角色模型配置失败，已忽略：{exc!r}")
             pass
     payload = settings.model_dump(mode="json")
     profiles: dict[str, dict[str, Any]] = {}
@@ -1015,65 +1015,3 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
         throughput_profiles={},
         profile_throughputs=profile_throughputs,
     )
-
-
-def _parse_throughput_profiles(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    profiles = raw.get("model_throughput_profiles", {})
-    if profiles in (None, ""):
-        return {}
-    if not isinstance(profiles, dict):
-        raise ValueError("model_throughput_profiles must be a JSON object.")
-    return {
-        str(key): value
-        for key, value in profiles.items()
-        if str(key).strip() and isinstance(value, dict)
-    }
-
-
-def _parse_scoped_api_keys(raw: dict[str, Any]) -> list[dict[str, str]]:
-    scoped_raw = raw.get("scoped_api_keys", [])
-    if scoped_raw in (None, ""):
-        scoped_raw = []
-    cloud_providers = set(CLOUD_ENGINES.values())
-    entries: list[dict[str, str]] = []
-
-    def add_entry(provider: str, base_url: str, api_key: str) -> None:
-        provider = str(provider or "").strip()
-        if provider not in cloud_providers:
-            return
-        api_key = str(api_key or "").strip()
-        if not api_key:
-            return
-        entries.append(
-            {
-                "provider": provider,
-                "base_url": normalize_cloud_base_url(provider, base_url),
-                "api_key": api_key,
-            }
-        )
-
-    if isinstance(scoped_raw, list):
-        for entry in scoped_raw:
-            if not isinstance(entry, dict):
-                continue
-            provider = str(entry.get("provider") or "").strip()
-            base_url = str(entry.get("base_url") or "").strip()
-            if not provider:
-                provider, parsed_base_url = parse_api_key_scope(entry.get("scope", ""))
-                base_url = base_url or parsed_base_url
-            add_entry(provider, base_url, str(entry.get("api_key") or ""))
-        return entries
-
-    if isinstance(scoped_raw, dict):
-        for scope, value in scoped_raw.items():
-            provider, base_url = parse_api_key_scope(scope)
-            if isinstance(value, dict):
-                provider = str(value.get("provider") or provider).strip()
-                base_url = str(value.get("base_url") or base_url).strip()
-                api_key = str(value.get("api_key") or "").strip()
-            else:
-                api_key = str(value or "").strip()
-            add_entry(provider, base_url, api_key)
-        return entries
-
-    raise ValueError("scoped_api_keys must be an array or JSON object.")

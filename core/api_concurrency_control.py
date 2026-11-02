@@ -611,7 +611,8 @@ def _collect_response_texts(response: Any) -> Iterable[str]:
     for attr in ("text", "content"):
         try:
             value = getattr(response, attr, None)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取限流响应正文失败，已忽略：{exc!r}")
             continue
         if value not in (None, b"", ""):
             yield _stringify_payload(value)

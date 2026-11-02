@@ -300,30 +300,10 @@ class TaskLogger:
         del filename
         self.info(f"文件待翻译文本收集完成 | 位置计数={count} | 耗时={elapsed:.3f}s")
 
-    def file_tm_result(self, filename: str, hits: int, misses: int) -> None:
-        """TM 查询结果。"""
-        del filename
-        self.info(f"文件 记忆库命中={hits} | 待接口翻译={misses}")
-
-    def file_api_done(self, filename: str, returned: int, elapsed: float) -> None:
-        """单文件接口翻译完成。"""
-        del filename
-        self.info(f"文件 接口翻译完成 | 返回={returned} 处 | 耗时={elapsed:.3f}s")
-
     def file_write_done(self, filename: str, elapsed: float) -> None:
         """回填写入完成。"""
         del filename
         self.info(f"文件回填写入完成 | 耗时={elapsed:.3f}s")
-
-    def file_autofit_done(self, filename: str, elapsed: float) -> None:
-        """AutoFit 完成。"""
-        del filename
-        self.info(f"文件 Excel AutoFit完成 | 耗时={elapsed:.3f}s")
-
-    def file_autofit_skipped(self, filename: str, reason: str) -> None:
-        """AutoFit 跳过。"""
-        del filename, reason
-        self.warning("文件 Excel AutoFit 跳过")
 
     def file_done(
         self,
