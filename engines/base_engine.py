@@ -221,6 +221,10 @@ class BatchTranslateMixin:
     # parse_response 报错前缀；子类按自己的显示名覆盖。
     _response_label: str = ""
 
+    def _call_api(self, system: str, user_msg: str) -> str:
+        """子类提供：发一次请求并返回原始文本。"""
+        raise NotImplementedError
+
     def translate_batch(
         self,
         texts: list[str],
