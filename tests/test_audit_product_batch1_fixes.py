@@ -239,7 +239,6 @@ class _PatchedAppDataTestCase(unittest.TestCase):
                 "DIAGNOSTIC_RECORDS_DIR",
                 Path(temporary.name) / "diagnostics",
             ),
-            patch.object(diagnostics, "LOG_PATH", self.app_data / "app.log"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

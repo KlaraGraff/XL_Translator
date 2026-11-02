@@ -4,9 +4,13 @@ import errno
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
+from core.api_concurrency_control import (
+    ApiCredentialRejectedError,
+    ApiKeyTemporarilyUnavailableError,
+)
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
@@ -690,8 +694,22 @@ class TransientTransportRetryTests(unittest.TestCase):
     first try and say it 「无法通过重试解决」."""
 
     def setUp(self) -> None:
-        patcher = patch("core.engine_dispatcher.time.sleep")
-        self.sleeps = patcher.start()
+        # A fake clock: each sleep moves time forward instead of waiting, so the
+        # backoff loop ends at once. Patching sleep alone left the loop spinning
+        # until the real deadline passed (about 50 seconds for this class).
+        clock = [0.0]
+
+        def fake_sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        # Only this module's view of `time` is replaced, so other threads and
+        # modules keep the real clock.
+        self.sleeps = Mock(side_effect=fake_sleep)
+        patcher = patch(
+            "core.engine_dispatcher.time",
+            SimpleNamespace(sleep=self.sleeps, monotonic=lambda: clock[0]),
+        )
+        patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_a_503_is_resent_as_the_same_batch(self) -> None:

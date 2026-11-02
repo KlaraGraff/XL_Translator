@@ -103,7 +103,6 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
             ),
             patch.object(tm_manager, "DB_PATH", self.root / "app-data" / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics"),
-            patch.object(diagnostics, "LOG_PATH", self.root / "app-data" / "app.log"),
         ]
         for patcher in self._patchers:
             patcher.start()

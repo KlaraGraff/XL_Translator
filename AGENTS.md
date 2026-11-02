@@ -75,6 +75,22 @@ Where new code goes (maple, 2026-10-31):
   A step-by-step main flow (most of `WordTaskRunner._run`) stays in one place; cutting it into many files only makes it harder to follow.
 - When your change lands inside an independent part of a large file, first move that part into its own module with no behaviour change (tests green). Then make your change there. Keep the move and the change in separate commits.
 - A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
+- Known independent parts to move out when you touch them (maple, 2026-11-02):
+  - `core/pdf_image_translation.py`: each PDF mode's own steps (in-place, to-Word, image generation).
+  - `ui/src/views/workspace.ts`: the PDF route section, the resume modal, the revision modal, the start-blocked modal, the output-location section.
+  - `settings.py`: the old-data migration rules.
+  - `core/word_task_runner.py`: the recovery / gap-fill pool. The main `_run` flow stays.
+- Excel and Word twins: `core/task_runner.py` and `core/word_task_runner.py` each keep a near-copy of the same steps
+  (`_preflight_source_languages`, the coverage-pair arbitration, `_finish_process`, `_start_document_profile`).
+  When a fix touches one of them, first move it into shared code that both use (no behaviour change, its own commit), then fix it once.
+  The same goes for the batch-translate function in `engines/claude_engine.py` / `engines/openai_engine.py`, and for the
+  concurrency-limit backoff in `core/api_scheduler.py` / `core/task_resources.py`.
+
+Silent excepts (maple, 2026-11-02):
+- A caught error must leave at least one log line (`logger.debug` is enough). `except …: pass` and `except …: continue`
+  with nothing else are not allowed in new code. When ignoring is truly right, say why on that line: `# noqa: S110 <reason>`.
+- PR checks run `scripts/check_silent_excepts.py`: in each changed business-code file, the count may not go up.
+  Old ones in files you touch are worth fixing on the way, but not required.
 
 When reusing this rule set in a new project, prefer copying the root `AGENTS.md` and the entire `agent/` directory, then adapt `quality_gate.ps1` and the dynamic test scripts to the new project's actual structure.
 

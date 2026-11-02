@@ -61,7 +61,6 @@ class BuiltinDomainPromptsEndpointTests(unittest.TestCase):
             ),
             patch.object(tm_manager, "DB_PATH", app_data / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", Path(temporary.name) / "diagnostics"),
-            patch.object(diagnostics, "LOG_PATH", app_data / "app.log"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
