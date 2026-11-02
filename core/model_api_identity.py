@@ -242,14 +242,6 @@ def task_api_context_for_page(
     )
 
 
-def task_api_groups_for_page(
-    settings: AppSettings,
-    page_key: str,
-) -> frozenset[ApiGroupSignature]:
-    """Resolve only the API footprint for lock conflict checks."""
-    return task_api_context_for_page(settings, page_key).api_groups
-
-
 def _hash_secret(value: str) -> str:
     text = str(value or "").strip()
     if not text:

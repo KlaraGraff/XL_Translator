@@ -101,19 +101,6 @@ class _NumberToken:
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
-def _check_numbers_intact(original: str, translated: str) -> bool:
-    """
-    数字完整性模糊校验：验证译文是否保留了原文的所有数值。
-
-    允许：符号（* / × / x）或空格的变化（如 100×200 → 100*200），以及各语言
-    的千分位/数字体系写法差异（1500 与 1 500 / 1,500 / １５００ / ١٥٠٠ 同值）。
-    不允许：任何数值缺失或频次减少（如 200*200 被截断为 200）。
-
-    实现：提取数值序列后按「数值」一对一配对（core/residual_classifier）。
-    """
-    return not _missing_number_tokens(original, translated)
-
-
 def _find_number_tokens(text: str, *, with_magnitude: bool = False) -> list[_NumberToken]:
     """``with_magnitude``：原文里紧跟「万」「亿」的数，译文写成换算后的整数也算保留
     （12 万 → 120 000）；照抄 12 也仍算，那个没译的「万」由残留体检管。"""

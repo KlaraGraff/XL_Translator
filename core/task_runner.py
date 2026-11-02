@@ -643,7 +643,8 @@ class TaskRunner(BaseTaskRunner):
             """Tune Excel for unattended automation and large batch runs."""
             try:
                 app.display_alerts = False
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"关闭 Excel 告警弹窗失败，已忽略：{exc!r}")
                 pass
             for attr, value in (
                 ("screen_updating", False),
@@ -652,7 +653,8 @@ class TaskRunner(BaseTaskRunner):
             ):
                 try:
                     setattr(app, attr, value)
-                except Exception:
+                except Exception as exc:
+                    logger.debug(f"设置 Excel 属性 {attr} 失败，已忽略：{exc!r}")
                     continue
 
         def _kill_excel_pid(pid: int | None, reason: str) -> None:

@@ -1588,7 +1588,8 @@ class TranslationTaskManager:
                 if message is None:
                     break
                 self._handle_message(task, message)
-        except Exception:  # noqa: BLE001 - 排空失败只损失日志，锁必须照常放。
+        except Exception as exc:  # noqa: BLE001 - 排空失败只损失日志，锁必须照常放。
+            logger.debug(f"换回后收走 runner 剩余消息失败，已忽略：{exc!r}")
             pass
         patch: dict[str, Any] = {}
         if apply_patch:
@@ -1797,9 +1798,10 @@ class TranslationTaskManager:
                 continue
             try:
                 task.runner.stop()
-            except Exception:
+            except Exception as exc:
                 # A runner that cannot be asked to stop is handled by the
                 # interrupted bookkeeping in ``shutdown``.
+                logger.debug(f"停止任务 runner 失败，已忽略：{exc!r}")
                 pass
 
     def shutdown(self, *, timeout: float = 12.0) -> None:

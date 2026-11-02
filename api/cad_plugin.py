@@ -463,22 +463,6 @@ def _core_compatible(manifest: dict[str, Any]) -> bool:
     return True
 
 
-def _marker_valid(root: Path, manifest: dict[str, Any]) -> bool:
-    try:
-        marker = json.loads((root / ".enabled").read_text(encoding="utf-8"))
-        expected = hashlib.sha256(APP_VERSION.encode("utf-8")).hexdigest()
-        return (
-            isinstance(marker, dict)
-            and marker.get("plugin_id") == PLUGIN_ID
-            and marker.get("plugin_version") == manifest.get("version")
-            and marker.get("core_version") == APP_VERSION
-            and marker.get("core_version_sha256", marker.get("core_version_hash")) == expected
-            and marker.get("wrapper_sha256", marker.get("wrapper_hash")) == hashlib.sha256((root / "plugin.json").read_bytes()).hexdigest()
-        )
-    except (OSError, ValueError, TypeError):
-        return False
-
-
 def probe_status() -> dict[str, Any]:
     with _plugin_lock():
         root = plugin_root()

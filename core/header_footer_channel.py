@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
+from loguru import logger
+
 from core.language_registry import get_source_lang_display, get_target_lang_prompt_name
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 
@@ -162,11 +164,6 @@ def _preserved_token_spans(text: str) -> list[tuple[int, int]]:
         for begin, end in spans
         if any(char.isalnum() or _CJK_RE.match(char) for char in value[begin:end])
     ]
-
-
-def _preserved_tokens(text: str) -> list[str]:
-    value = str(text or "")
-    return [value[begin:end] for begin, end in _preserved_token_spans(value)]
 
 
 def _locate_tokens(
@@ -332,7 +329,8 @@ def parse_header_footer_response(raw: str, count: int) -> list[tuple[str, str]]:
             continue
         try:
             index = int(item.get("id"))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"解析页眉页脚模型返回的 id 失败，已忽略：{exc!r}")
             continue
         if not 0 <= index < len(slots):
             continue

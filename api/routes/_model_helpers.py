@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
+from loguru import logger
 
 from core.model_roles import (
     ROLE_CLEANER,
@@ -228,8 +229,9 @@ def _effective_role_signatures(settings: AppSettings) -> dict[str, str]:
             signatures[role] = model_config_signature(
                 resolve_effective_model_config(settings, role, check_capability=False)
             )
-        except Exception:
+        except Exception as exc:
             # The following validation will return the useful configuration
             # error.  Missing signatures must still cause a reset if repaired.
+            logger.debug(f"计算角色模型签名失败，已忽略：{exc!r}")
             continue
     return signatures

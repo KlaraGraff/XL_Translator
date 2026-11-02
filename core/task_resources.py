@@ -466,21 +466,10 @@ class TaskResourceRegistry:
         with self._lock:
             return tuple(self._reservations.values())
 
-    def release_all(self) -> None:
-        with self._lock:
-            self._reservations.clear()
-            self._scheduled.clear()
-            self._groups.clear()
-            self._revision += 1
-
     @property
     def revision(self) -> int:
         with self._lock:
             return self._revision
-
-    def scheduled_reservations(self) -> tuple[ScheduledTaskReservation, ...]:
-        with self._lock:
-            return tuple(self._scheduled.values())
 
     def reserve_task(
         self,

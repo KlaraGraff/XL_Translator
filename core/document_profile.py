@@ -215,9 +215,3 @@ def drop_unlocked_short_hits(
             hits.pop(text, None)
             dropped += 1
     return dropped
-
-
-def lookup_locked_tm(texts: list[str], lang_pair: str) -> Mapping[str, str | None]:
-    from core import tm_manager
-
-    return tm_manager.lookup_batch(texts, lang_pair, locked_only=True)

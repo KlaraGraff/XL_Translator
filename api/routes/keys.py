@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
+from loguru import logger
 
 from core.model_roles import (
     ROLE_CLEANER,
@@ -111,7 +112,8 @@ def _connection_credentials(settings: AppSettings) -> dict[tuple[str, str], str]
     for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
         try:
             connections = list_role_connections(settings, role)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取连接列表以记录当前密钥失败，已忽略：{exc!r}")
             continue
         for connection in connections:
             snapshot[(role, connection.id)] = get_connection_scoped_key(
@@ -130,7 +132,8 @@ def _reset_connections_with_changed_credential(
     for (role, connection_id), previous in before.items():
         try:
             connections = list_role_connections(settings, role)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"读取连接列表以重置旧密钥的测试状态失败，已忽略：{exc!r}")
             continue
         for connection in connections:
             if connection.id != connection_id:

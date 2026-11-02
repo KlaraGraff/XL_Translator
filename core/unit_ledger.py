@@ -141,13 +141,6 @@ class UnitLedger:
             record.evidence.append(str(evidence))
         return record
 
-    def add_evidence(self, unit_id: str, note: str) -> None:
-        if note:
-            self._require(unit_id).evidence.append(str(note))
-
-    def set_output_anchor(self, unit_id: str, anchor: str) -> None:
-        self._require(unit_id).output_anchor = str(anchor or "")
-
     def get(self, unit_id: str) -> UnitRecord | None:
         return self._records.get(str(unit_id))
 
@@ -158,9 +151,6 @@ class UnitLedger:
         """尚无终态的单元。落盘定稿前必须为空——这就是「静默跳过归零」的
         机器检查点：任何可译单元不允许没有终态。"""
         return [record for record in self.records() if not record.resolved]
-
-    def by_state(self, state: str) -> list[UnitRecord]:
-        return [record for record in self.records() if record.state == state]
 
     def counts(self) -> dict[str, int]:
         result: dict[str, int] = {}

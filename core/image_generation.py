@@ -802,7 +802,8 @@ def _extract_image_bytes(payload: Any) -> bytes:
         if _looks_like_base64_image(value):
             try:
                 return base64.b64decode(value)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"解析候选 base64 图片数据失败，已忽略：{exc!r}")
                 continue
     return b""
 
