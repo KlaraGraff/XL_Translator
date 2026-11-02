@@ -139,7 +139,7 @@ async function installFileDrop(): Promise<void> {
         dragOverAt(payload.position.x / ratio, payload.position.y / ratio);
       } else if (payload.type === "drop") {
         dragEnded();
-        void dispatchPaths(payload.paths);
+        void dispatchPaths(payload.paths, { append: true });
       } else {
         dragEnded();
       }
@@ -154,7 +154,7 @@ async function installFileDrop(): Promise<void> {
     if (!data) return;
     const typed = data.getData("text/plain").split(/\r?\n/).map((line) => line.trim()).filter((line) => /^(\/|[A-Za-z]:[\\/]|~)/.test(line));
     const names = Array.from(data.files ?? []).map((file) => file.name);
-    void dispatchPaths(typed.length ? typed : names);
+    void dispatchPaths(typed.length ? typed : names, { append: true });
   });
 }
 

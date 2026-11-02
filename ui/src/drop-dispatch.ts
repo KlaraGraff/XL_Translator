@@ -10,6 +10,8 @@ import { t } from "./i18n";
 import { isExtSurface, isTypeVisible, refreshTranslateSideItems, surfaceDescriptors } from "./surface-descriptors";
 import {
   dropFromDispatchBatch,
+  keepInDispatchBatch,
+  canAppendSource,
   fileNounPhrase,
   getClient,
   openSourcePaths,
@@ -157,8 +159,12 @@ function isSurfaceView(id: ViewId | undefined): id is Surface {
   return id !== undefined && (BUILTIN_ORDER.includes(id as Surface) || isExtSurface(id));
 }
 
-/** 把一批路径分到合适的类型页。没有可翻译的文件时提示一句，留在当前页（或入口页）。 */
-export async function dispatchPaths(paths: string[]): Promise<void> {
+/**
+ * 把一批路径分到合适的类型页。没有可翻译的文件时提示一句，留在当前页（或入口页）。
+ * append：拖入窗口时为真。人正停在某个类型页上、那一页已有一份还没开始翻译的清单时，
+ * 这一页认的文件加进清单，不换掉它（见 workspace.ts 的 canAppendSource）；其他页照旧换成新来源。
+ */
+export async function dispatchPaths(paths: string[], options: { append?: boolean } = {}): Promise<void> {
   const list = paths.map((path) => path.trim()).filter(Boolean);
   if (!list.length) return;
   // 在任务、设置这类页面上松手：先回到入口页，没有可翻译的文件时就停在那里。
@@ -184,13 +190,16 @@ export async function dispatchPaths(paths: string[]): Promise<void> {
   } else if (here !== target) {
     navigate(target);
   }
+  // 先记下来：读取一开始这一页就不再是「已有清单」了。
+  const appending = Boolean(options.append) && target === here && canAppendSource(target);
   const results = await Promise.all([
-    openSourcePaths(target, buckets.get(target)!.paths, { background: mixed }),
+    openSourcePaths(target, buckets.get(target)!.paths, { background: mixed, append: appending }),
     ...others.map((surface) => openSourcePaths(surface, buckets.get(surface)!.paths, { background: true })),
   ]);
   // 正在翻译的页不换来源：拿出这一批，并说一句哪几页没放进去。
   const busy = [target, ...others].filter((_, index) => !results[index]);
   for (const surface of busy) dropFromDispatchBatch(surface);
+  if (appending && results[0]) keepInDispatchBatch(target);
   if (!mixed) return;
   if (busy.length) {
     showToast({
