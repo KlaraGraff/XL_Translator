@@ -756,6 +756,85 @@ def merge_wrapped_lines(path: Path) -> int:
     return count
 
 
+def _grid_widths(tbl, columns: int) -> list[int] | None:
+    """按格子宽度（tcW）推出每一列的宽度；推不全返回 None。
+
+    先取只占一列的格子；跨几列的格子（gridSpan）若只差一列没定，用它的宽度减去已定的列；
+    整格都没定的，在那一格里平分。"""
+    from docx.oxml.ns import qn
+
+    known: list[int | None] = [None] * columns
+    spans: list[tuple[int, int, int]] = []  # (起始列, 占几列, 宽度)
+    for tr in tbl.findall(qn("w:tr")):
+        before = tr.find(f"{qn('w:trPr')}/{qn('w:gridBefore')}")
+        col = int(before.get(qn("w:val"), "0")) if before is not None else 0
+        for tc in tr.findall(qn("w:tc")):
+            tc_pr = tc.find(qn("w:tcPr"))
+            span_el = tc_pr.find(qn("w:gridSpan")) if tc_pr is not None else None
+            span = int(span_el.get(qn("w:val"), "1")) if span_el is not None else 1
+            width_el = tc_pr.find(qn("w:tcW")) if tc_pr is not None else None
+            if (width_el is not None and width_el.get(qn("w:type")) == "dxa"
+                    and col + span <= columns):
+                try:
+                    width = int(float(width_el.get(qn("w:w"), "0")))
+                except ValueError:
+                    width = 0
+                if width > 0:
+                    if span == 1:
+                        if known[col] is None:
+                            known[col] = width
+                    else:
+                        spans.append((col, span, width))
+            col += span
+    changed = True
+    while changed and None in known:
+        changed = False
+        for start, span, width in spans:
+            missing = [index for index in range(start, start + span) if known[index] is None]
+            if len(missing) == 1:
+                rest = width - sum(known[index] or 0 for index in range(start, start + span))
+                if rest > 0:
+                    known[missing[0]] = rest
+                    changed = True
+    # 只出现在跨列格子里的列（表单里「2 列 + 4 列 + 3 列」拼成一行）：在那一格里平分。
+    for start, span, width in spans:
+        columns_in_span = range(start, start + span)
+        if all(known[index] is None for index in columns_in_span):
+            for index in columns_in_span:
+                known[index] = width // span
+    widths = [width for width in known if width is not None]
+    return widths if len(widths) == columns else None
+
+
+def sync_table_grids(path: Path) -> int:
+    """pdf2docx 只给每个格子写了宽度（tcW），表格的列宽定义（tblGrid）却是 python-docx
+    默认的等宽列。Microsoft Word 按格子宽度排，看不出问题；WPS、LibreOffice、网盘预览
+    按列宽定义排，审核清单这类「窄序号 + 宽正文 + 两个勾选框」的表格，正文列被挤成
+    四分之一宽，字一个一个竖着排。按格子宽度把列宽定义改对，返回改了几张表。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(str(path))
+    count = 0
+    for table in _all_tables(doc.tables):
+        tbl = table._tbl
+        grid_cols = tbl.findall(f"{qn('w:tblGrid')}/{qn('w:gridCol')}")
+        if not grid_cols:
+            continue
+        widths = _grid_widths(tbl, len(grid_cols))
+        if widths is None:
+            continue
+        current = [grid_col.get(qn("w:w")) for grid_col in grid_cols]
+        if current == [str(width) for width in widths]:
+            continue
+        for grid_col, width in zip(grid_cols, widths):
+            grid_col.set(qn("w:w"), str(width))
+        count += 1
+    if count:
+        doc.save(str(path))
+    return count
+
+
 def _all_tables(tables):
     for table in tables:
         yield table
@@ -824,6 +903,7 @@ def convert_pdf_to_docx(
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
     split_glued_bullets(docx_path)
+    sync_table_grids(docx_path)
     move_running_footers(docx_path)
 
 
