@@ -1,6 +1,9 @@
 {
   "取消": {"en": "Cancel", "fr": "Annuler"},
   "关闭": {"en": "Close", "fr": "Fermer"},
+  "最小化": {"en": "Minimize", "fr": "Réduire"},
+  "最大化": {"en": "Maximize", "fr": "Agrandir"},
+  "向下还原": {"en": "Restore Down", "fr": "Niveau inférieur"},
   "停止": {"en": "Stop", "fr": "Arrêter"},
   "加载中…": {"en": "Loading…", "fr": "Chargement…"},
   "已跳过": {"en": "Skipped", "fr": "Ignorée"},

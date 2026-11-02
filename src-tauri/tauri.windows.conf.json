@@ -1,5 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Translator",
+        "width": 1380,
+        "height": 900,
+        "minWidth": 1080,
+        "minHeight": 700,
+        "resizable": true,
+        "decorations": false
+      }
+    ]
+  },
   "bundle": {
     "targets": ["nsis"],
     "windows": {
