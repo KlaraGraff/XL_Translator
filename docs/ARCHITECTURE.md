@@ -56,6 +56,7 @@
 | `core/task_runner.py` | Excel 执行器 |
 | `core/word_task_runner.py` | Word 执行器 |
 | `core/pdf_image_translation.py` | PDF 与图片执行器（按页出图、复核、单页重跑） |
+| `core/pdf_inplace_pages.py` / `pdf_image_generation.py` / `pdf_page_actions.py` | PDF 执行器的三块：原位替换逐页、生图与审图尝试、单页重译与换回 |
 | `core/cad_task_runner.py` + `core/cad_translation.py` + `api/cad_plugin.py` | CAD 执行器、DWG/DXF 处理、外部 CAD 插件探测 |
 | `core/tm_manager.py`、`tm_hygiene.py`、`tm_cleaner.py` | 翻译记忆库：查询、入库前清洗、AI 清洗 |
 | `core/residual_*.py` | 译文残留中文体检、确定性修复、修复阶梯 |

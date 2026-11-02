@@ -76,7 +76,10 @@ Where new code goes (maple, 2026-10-31):
 - When your change lands inside an independent part of a large file, first move that part into its own module with no behaviour change (tests green). Then make your change there. Keep the move and the change in separate commits.
 - A new independent part (a new mode, a new format, a new group of settings) gets its own module from the start. The large file only gets the call into it.
 - Known independent parts to move out when you touch them (maple, 2026-11-02):
-  - `core/pdf_image_translation.py`: each PDF mode's own steps (in-place, to-Word, image generation).
+  - `core/pdf_image_translation.py`: done 2026-11-02 — in-place pages (`pdf_inplace_pages.py`), page generation / review attempts
+    (`pdf_image_generation.py`) and single-page rerun / restore (`pdf_page_actions.py`) are mixins next to it; to-Word was already
+    `pdf_word_segments.py`. Inside those mixins, module-level names of `pdf_image_translation` are read as `_pit.<name>`
+    so test patches on the host module still apply; keep that pattern when adding code there.
   - `ui/src/views/workspace.ts`: done 2026-11-02 — the PDF route section, the resume / revision / start-blocked modals and the output-location section now live in `workspace-*.ts` next to it. New dialogs and sections of the workspace start in their own `workspace-*.ts` file.
   - `settings.py`: the old-data migration rules.
   - `core/word_task_runner.py`: the recovery / gap-fill pool. The main `_run` flow stays.

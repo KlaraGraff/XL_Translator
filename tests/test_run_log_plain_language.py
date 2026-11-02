@@ -199,8 +199,16 @@ class CadStageNameTests(unittest.TestCase):
 
 class PdfStageNameTests(unittest.TestCase):
     def test_pdf_runner_reports_only_shared_stage_names(self) -> None:
-        source = Path(__file__).resolve().parent.parent / "core" / "pdf_image_translation.py"
-        text = source.read_text(encoding="utf-8")
+        core = Path(__file__).resolve().parent.parent / "core"
+        text = "\n".join(
+            (core / name).read_text(encoding="utf-8")
+            for name in (
+                "pdf_image_translation.py",
+                "pdf_inplace_pages.py",
+                "pdf_image_generation.py",
+                "pdf_page_actions.py",
+            )
+        )
         names = set(re.findall(r'ProgressMsg\(\s*\d+,\s*\d+,\s*"([^"]+)"', text))
         self.assertTrue(names)
         self.assertLessEqual(names, CANONICAL_STAGES)
