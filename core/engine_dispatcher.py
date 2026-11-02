@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-from core.text_transport import FAILED_REQUEST_CACHE_SECONDS, cancellable_text_operation
+from core.text_transport import (
+    FAILED_REQUEST_CACHE_SECONDS,
+    TRUNCATED_ANSWER,
+    cancellable_text_operation,
+)
 from core.request_progress import (
     BATCH_EVENT_DONE,
     BATCH_EVENT_PLAN,
@@ -1132,7 +1136,11 @@ def _translate_batch_with_fallback(
                 item_retries=item_retries,
                 context_label=context_label,
             )
-        if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
+        if (
+            _is_permanent_request_error(exc)
+            and not _split_after_slow_answer(exc, batch, split_depth)
+            and not _is_truncated_answer(exc)
+        ):
             logger.error(f"{context_label} 翻译请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
@@ -1481,7 +1489,11 @@ def _translate_batch_with_sources_fallback(
                 item_retries=item_retries,
                 context_label=context_label,
             )
-        if _is_permanent_request_error(exc) and not _split_after_slow_answer(exc, batch, split_depth):
+        if (
+            _is_permanent_request_error(exc)
+            and not _split_after_slow_answer(exc, batch, split_depth)
+            and not _is_truncated_answer(exc)
+        ):
             logger.error(f"{context_label} 语言回报请求不再重发，已停止拆分批次：{exc}")
             if error_callback:
                 error_callback(_unrecoverable_batch_message(exc, len(batch), transient_round))
@@ -1603,6 +1615,15 @@ def _is_transient_request_error(exc: BaseException) -> bool:
     if getattr(exc, "kind", "") in _TRANSIENT_TRANSPORT_KINDS:
         return True
     return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _is_truncated_answer(exc: BaseException) -> bool:
+    """模型的回答写到输出长度上限被截断（finish_reason=length / max_tokens）。
+
+    同一批原样重发只会得到同样长、同样被截断的回答，还要再付一次钱；
+    一半的量译文也短一半，所以这种错误不重发同一批，直接拆小（#281）。
+    """
+    return getattr(exc, "kind", "") == TRUNCATED_ANSWER
 
 
 def _split_after_slow_answer(exc: BaseException, batch: Sequence[str], split_depth: int) -> bool:

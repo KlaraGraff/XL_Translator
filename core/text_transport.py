@@ -43,7 +43,13 @@ FAILED_REQUEST_CACHE_SECONDS = 2.0
 # Failures that belong to the leader's own request body, not to the server or
 # the route: a slow or cut-off answer to one batch says nothing about the
 # next batch.  Waiters do not inherit them; they elect a new leader instead.
-_OWN_REQUEST_FAILURES = frozenset({"read_timeout", "total_timeout", "incomplete"})
+_OWN_REQUEST_FAILURES = frozenset({"read_timeout", "total_timeout", "incomplete", "truncated"})
+# The model stopped because it hit its output-length limit.  Resending the same
+# batch gets the same cut-off answer (and the same bill); only a smaller batch
+# helps, so the dispatcher splits on this kind instead of resending.
+TRUNCATED_ANSWER = "truncated"
+TRUNCATED_MESSAGE = "模型回答超出输出长度上限，被截断。"
+_TRUNCATED_RESPONSE_REASONS = frozenset({"max_output_tokens", "max_tokens", "length"})
 
 
 class TextTransportError(ValueError):
@@ -264,7 +270,17 @@ def candidate_routes(base_url: str, mode: str) -> list[Route]:
     return routes
 
 
+def _responses_truncated(payload: object) -> bool:
+    if not isinstance(payload, dict) or payload.get("status") != "incomplete":
+        return False
+    details = payload.get("incomplete_details")
+    reason = details.get("reason") if isinstance(details, dict) else None
+    return str(reason or "") in _TRUNCATED_RESPONSE_REASONS
+
+
 def _response_text(payload: object) -> str:
+    if _responses_truncated(payload):
+        raise TextTransportError(TRUNCATED_MESSAGE, kind=TRUNCATED_ANSWER)
     if not isinstance(payload, dict) or payload.get("status") != "completed":
         raise TextTransportError("Responses 返回未完成或失败的结果。", kind="incomplete")
     chunks = []
@@ -287,6 +303,8 @@ def extract_chat_text(payload: object) -> str:
         raise TextTransportError("Chat Completions 返回格式异常")
     choices = payload.get("choices")
     first = choices[0] if isinstance(choices, list) and choices else None
+    if isinstance(first, dict) and first.get("finish_reason") == "length":
+        raise TextTransportError(TRUNCATED_MESSAGE, kind=TRUNCATED_ANSWER)
     if not isinstance(first, dict) or first.get("finish_reason") != "stop":
         raise TextTransportError("Chat Completions 结果为空或未正常完成", kind="incomplete")
     message = first.get("message") or {}
@@ -329,6 +347,8 @@ class ResponsesEvents:
         if not isinstance(event, dict):
             raise TextTransportError("Responses 事件格式异常")
         kind = event.get("type")
+        if kind == "response.incomplete" and _responses_truncated(event.get("response")):
+            raise TextTransportError(TRUNCATED_MESSAGE, kind=TRUNCATED_ANSWER)
         if kind in {"response.failed", "response.incomplete", "error"}:
             raise TextTransportError("Responses 返回失败或未完成事件", kind="incomplete")
         if kind == "response.output_text.delta" and isinstance(event.get("delta"), str):
