@@ -81,13 +81,17 @@ Where new code goes (maple, 2026-10-31):
     `pdf_word_segments.py`. Inside those mixins, module-level names of `pdf_image_translation` are read as `_pit.<name>`
     so test patches on the host module still apply; keep that pattern when adding code there.
   - `ui/src/views/workspace.ts`: done 2026-11-02 — the PDF route section, the resume / revision / start-blocked modals and the output-location section now live in `workspace-*.ts` next to it. New dialogs and sections of the workspace start in their own `workspace-*.ts` file.
-  - `settings.py`: the old-data migration rules.
-  - `core/word_task_runner.py`: the recovery / gap-fill pool. The main `_run` flow stays.
-- Excel and Word twins: `core/task_runner.py` and `core/word_task_runner.py` each keep a near-copy of the same steps
-  (`_preflight_source_languages`, the coverage-pair arbitration, `_finish_process`, `_start_document_profile`).
-  When a fix touches one of them, first move it into shared code that both use (no behaviour change, its own commit), then fix it once.
-  The same goes for the batch-translate function in `engines/claude_engine.py` / `engines/openai_engine.py`, and for the
-  concurrency-limit backoff in `core/api_scheduler.py` / `core/task_resources.py`.
+  - `settings.py`: done 2026-11-02 — the old-data migration rules are in `settings_migrations.py`.
+  - `core/word_task_runner.py`: done 2026-11-02 — the recovery / gap-fill pool is in `core/word_recovery_pool.py`. The main `_run` flow stays.
+- Excel and Word twins: done 2026-11-02 for the parts that were word-for-word the same. `core/text_runner_shared.py`
+  (`TextRunnerSharedMixin`) holds the document profile request, the source-language preflight, the ignored-coverage log and
+  the process-record finish; both runners use it. It reads helpers as `self._runner_module().<name>` so patches on
+  `core.task_runner.*` / `core.word_task_runner.*` still apply. What is left per runner is format-specific on purpose: the
+  coverage-review report entries (cell vs paragraph wording; the judgement itself is already shared in `core/coverage_review.py`),
+  Excel's post-preflight steps, text collection and file writing. When a fix touches one of those, check whether the other
+  runner needs the same fix.
+  The batch-translate function (`engines/base_engine.py` BatchTranslateMixin) and the concurrency-limit backoff
+  (`core/api_scheduler.py` decide_concurrency_limit_hit) are already shared.
 
 Silent excepts (maple, 2026-11-02):
 - A caught error must leave at least one log line (`logger.debug` is enough). `except …: pass` and `except …: continue`

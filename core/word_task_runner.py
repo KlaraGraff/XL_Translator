@@ -24,6 +24,9 @@ from core import tm_manager
 from core.local_endpoint import runtime_mode, settings_runs_locally
 from core.zh_hant import fix_translation, is_traditional_chinese, to_traditional
 from core.runner_base import BaseTaskRunner
+# core/text_runner_shared.py 里的共用步骤按 `本模块.名字` 取辅助函数（测试 patch 才生效），
+# 本文件里只为它留着的导入标了 noqa: F401，不要当没用的删掉。
+from core.text_runner_shared import TextRunnerSharedMixin
 from core.api_concurrency_control import (
     ApiCredentialRejectedError,
     ApiKeyTemporarilyUnavailableError,
@@ -44,7 +47,7 @@ from core.output_metadata import (
 )
 from core.coverage_arbitration import RETRANSLATE_IDENTICAL, RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
-from core.translation_coverage import format_ignored_coverage_report
+from core.translation_coverage import format_ignored_coverage_report  # noqa: F401
 from core.word_coverage import (
     build_word_coverage_plan,
     write_untranslated_docx,
@@ -55,11 +58,11 @@ from core.engine_dispatcher import (
     smart_context_enabled,
     is_local_engine_name,
 )
-from core.concurrent_calls import map_concurrently, run_in_background, wait_result
+from core.concurrent_calls import map_concurrently, run_in_background, wait_result  # noqa: F401
 from core.document_profile import (
     append_profile,
     is_context_sensitive,
-    request_document_profile,
+    request_document_profile,  # noqa: F401
 )
 from core.document_terms import _LATIN_STOP, _cjk_ok, make_term_picker
 from core.key_info_check import REVIEW_PROBLEM as KEY_INFO_PROBLEM
@@ -69,17 +72,17 @@ from core.language_registry import (
     AUTO_SOURCE_LANG,
     build_lang_pair,
     get_default_source_lang,
-    get_source_lang_display,
-    get_target_lang_display,
-    get_tm_language_pairs,
+    get_source_lang_display,  # noqa: F401
+    get_target_lang_display,  # noqa: F401
+    get_tm_language_pairs,  # noqa: F401
     is_auto_source_lang,
 )
 from core.language_preflight import (
-    LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,  # noqa: F401
     LanguagePreflightResult,
     TranslationLanguageResult,
-    build_language_preflight_prompt,
-    preflight_files,
+    build_language_preflight_prompt,  # noqa: F401
+    preflight_files,  # noqa: F401
 )
 from core.mixed_language import (
     DEFAULT_MIXED_MAX_BATCH_CHARS,
@@ -353,8 +356,11 @@ def _log_unplaced_marks(failed, outcomes: dict[str, str], reasons: dict[str, str
     )
 
 
-class WordTaskRunner(BaseTaskRunner):
+class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
     """Run the Word translation pipeline on a background thread."""
+
+    _RUNNER_MODULE = __name__
+    _COVERAGE_UNIT_NOUN = "处"
 
     def __init__(
         self,
@@ -467,22 +473,6 @@ class WordTaskRunner(BaseTaskRunner):
                     "前置内容保护未生效，本文件将按未保护方式正常处理。"
                 ),
             )
-
-    def _log_ignored_coverage_units(self, file_name: str, units: list) -> None:
-        """审计批次 2 第④条的 Word 侧：ignored 段落也要留痕。
-
-        与 core/task_runner.py 的同名方法同一立场，只是量词换成 Word 的「处」：
-        分组摘要进任务日志（INFO），全量坐标只进 loguru 调试输出（stderr，本仓库
-        没配文件 sink）——任务面板不按 level 过滤，发任务日志会整段刷屏，淹掉
-        摘要。零 ignored 一行都不出（无关提示不挂）。
-        """
-        ignored_lines, ignored_detail = format_ignored_coverage_report(
-            file_name, units, unit_noun="处"
-        )
-        for line in ignored_lines:
-            self._log("INFO", line)
-        if ignored_detail:
-            logger.debug(ignored_detail)
 
     def _resolve_resume_process_path(
         self, file_item: WordFileItem, *, target_lang: str
@@ -889,29 +879,13 @@ class WordTaskRunner(BaseTaskRunner):
             nonlocal process_finished
             if process_artifacts is None or process_finished:
                 return
-            if elapsed_sec is not None:
-                try:
-                    (process_artifacts.work_dir / "run-summary.json").write_text(
-                        json.dumps(
-                            {
-                                "task_id": self.task_id,
-                                "status": status,
-                                "output_dir": str(output_dir),
-                                "files": len(self._files),
-                                "elapsed_sec": round(float(elapsed_sec), 3),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                except OSError as exc:
-                    logger.debug("Word 过程摘要写入失败：{}", exc)
-            try:
-                process_artifacts.finish(status)
-                process_finished = True
-            except Exception as exc:  # process evidence must never block delivery
-                logger.warning("Word 过程记录收尾失败：{}", exc)
+            process_finished = self._finish_process_record(
+                process_artifacts,
+                status,
+                elapsed_sec=elapsed_sec,
+                output_dir=output_dir,
+                label="Word",
+            )
 
         try:
             process_artifacts = ProcessArtifacts.create("word", output_dir, self.task_id)
@@ -2927,24 +2901,6 @@ class WordTaskRunner(BaseTaskRunner):
                 result={"error": f"Word 文件读取失败: {read_reason}"},
             )
 
-    def _start_document_profile(self, engine, texts, target_lang):
-        """「自动识别场景」：在后台请模型通读全部文字、写文档说明，返回 Future。"""
-        texts = list(texts)
-
-        def run() -> str:
-            try:
-                return request_document_profile(
-                    engine.chat,
-                    texts,
-                    target_language=get_target_lang_display(target_lang),
-                    log=self._log,
-                )
-            except Exception as exc:  # noqa: BLE001 - the description is optional.
-                logger.debug(f"文档说明请求失败：{exc!r}")
-                return ""
-
-        return run_in_background(run, name="document-profile")
-
     def _preflight_source_languages(
         self,
         *,
@@ -2957,96 +2913,35 @@ class WordTaskRunner(BaseTaskRunner):
         detect_workers=1,
     ) -> tuple[str, str, list[str], dict[str, LanguagePreflightResult]]:
         """自动识别源语言：逐个文件做一次语言预检，定下源语言、系统提示词和 TM 语言对，并给每段文本记下候选源语言。"""
-        self._queue.put(
-            StatusMsg(
-                phase_desc="状态：正在识别每个 Word 文件的原文语言…"
-            )
+        (
+            source_lang,
+            system_prompt,
+            detected_sources,
+            tm_language_pairs,
+            file_language_preflights,
+            detector_call_count,
+        ) = self._detect_source_languages(
+            engine=engine,
+            file_texts=file_texts,
+            settings=settings,
+            system_prompt=system_prompt,
+            target_lang=target_lang,
+            detect_workers=detect_workers,
+            page_key="word",
+            status_text="状态：正在识别每个 Word 文件的原文语言…",
         )
-
-        detector_calls = {"count": 0}
-        detector_lock = threading.Lock()
-
-        def _detect_file_language(samples, detected_target):
-            with detector_lock:
-                detector_calls["count"] += 1
-            return engine.chat(
-                LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
-                build_language_preflight_prompt(
-                    samples,
-                    target_lang=detected_target,
-                ),
-            )
-
-        file_payloads = {
-            str(file_item.path): texts
-            for file_item, texts in zip(self._files, file_texts)
-        }
-        file_language_preflights = {}
-        # 每个文件一次模型请求，按并发设置同时发出（各文件互不依赖）。每返回一个
-        # 文件推一次进度、报「正在检测语言 x/y」（x 是已识别完的文件数），进度条
-        # 和进度卡标题都看得出还在往前走（先报进度再报状态，标题才是这句状态）。
-        detect_total = len(file_payloads)
-        detect_paths = list(file_payloads)
-        self._translate_progress.report("detect", 0, detect_total)
-        self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 0/{detect_total}…"))
-        for file_path in detect_paths:
-            self._file_progress.emit(file_path, "active", "detect")
-
-        def _detected(index: int, done: int) -> None:
-            self._translate_progress.report("detect", done, detect_total)
-            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {done}/{detect_total}…"))
-            self._file_progress.emit(detect_paths[index], "waiting", "translate")
-
-        for detected_result in map_concurrently(
-            lambda file_path: preflight_files(
-                {file_path: file_payloads[file_path]},
-                _detect_file_language,
-                target_lang=target_lang,
-            ),
-            detect_paths,
-            max_workers=detect_workers,
-            on_done=_detected,
-        ):
-            file_language_preflights.update(detected_result)
         self._file_source_langs = {
             path: (result.source_langs[0] if result.source_langs else AUTO_SOURCE_LANG)
             for path, result in file_language_preflights.items()
         }
-        detected_sources: list[str] = []
-        for result in file_language_preflights.values():
-            for detected in result.source_langs:
-                if detected not in detected_sources:
-                    detected_sources.append(detected)
-        if detected_sources:
-            source_lang = detected_sources[0]
-            system_prompt = get_system_prompt(
-                settings,
-                target_lang=target_lang,
-                source_lang=source_lang,
-                page_key="word",
-            )
-        else:
-            # 一门语言都没认出来：保持 auto，不假定是中文（#283）。
-            source_lang = AUTO_SOURCE_LANG
-        tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
         for file_item, text_set in zip(self._files, file_texts):
             result = file_language_preflights.get(str(file_item.path))
             if result is None:
                 continue
             for text in text_set:
                 text_source_candidates.setdefault(text, set()).update(result.source_langs)
-        logger.info(
-            f"自动语言预检完成：{detector_calls['count']} 次请求，"
-            f"实际源语言={','.join(detected_sources) or '未确定'}，"
-            f"TM 语言对={','.join(tm_language_pairs) or '无'}"
-        )
-        self._log(
-            "INFO",
-            "已识别原文语言："
-            + (
-                "、".join(get_source_lang_display(code) for code in detected_sources)
-                or "未能确定"
-            ),
+        self._log_source_language_summary(
+            detector_call_count, detected_sources, tm_language_pairs
         )
         return source_lang, system_prompt, tm_language_pairs, file_language_preflights
 
