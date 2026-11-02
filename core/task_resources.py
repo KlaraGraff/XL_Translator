@@ -12,14 +12,13 @@ from dataclasses import dataclass
 
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
-    API_CONCURRENCY_ACTION_RETRY_CURRENT,
-    API_CONCURRENCY_ACTION_UNAVAILABLE,
     API_REQUEST_CATEGORY_NORMAL,
     ApiConcurrencyLimitDecision,
     ApiSchedulerAcquireCancelled,
     ApiSchedulerLease,
     ApiSchedulerSnapshot,
     build_adaptive_capacity_levels,
+    decide_concurrency_limit_hit,
 )
 
 
@@ -322,37 +321,19 @@ class FairApiGroupScheduler:
         request_generation: int | None,
     ) -> ApiConcurrencyLimitDecision:
         with self._condition:
-            previous_capacity = self.capacity
-            if request_generation is not None and request_generation != self._generation:
-                return ApiConcurrencyLimitDecision(
-                    action=API_CONCURRENCY_ACTION_RETRY_CURRENT,
-                    previous_capacity=previous_capacity,
-                    current_capacity=previous_capacity,
-                    minimum_capacity=self.minimum_capacity,
-                    generation=self._generation,
-                    request_generation=request_generation,
-                )
-            if previous_capacity <= self.minimum_capacity:
-                return ApiConcurrencyLimitDecision(
-                    action=API_CONCURRENCY_ACTION_UNAVAILABLE,
-                    previous_capacity=previous_capacity,
-                    current_capacity=previous_capacity,
-                    minimum_capacity=self.minimum_capacity,
-                    generation=self._generation,
-                    request_generation=request_generation,
-                )
-            self.capacity = self._next_reduced_capacity_locked()
-            self._refresh_normal_soft_limit_locked()
-            self._generation += 1
-            self._condition.notify_all()
-            return ApiConcurrencyLimitDecision(
-                action=API_CONCURRENCY_ACTION_REDUCED,
-                previous_capacity=previous_capacity,
-                current_capacity=self.capacity,
+            decision = decide_concurrency_limit_hit(
+                capacity=self.capacity,
                 minimum_capacity=self.minimum_capacity,
+                levels=self._adaptive_capacity_levels,
                 generation=self._generation,
                 request_generation=request_generation,
             )
+            if decision.action == API_CONCURRENCY_ACTION_REDUCED:
+                self.capacity = decision.current_capacity
+                self._refresh_normal_soft_limit_locked()
+                self._generation = decision.generation
+                self._condition.notify_all()
+            return decision
 
     def _reset_capacity_locked(self) -> None:
         # A membership change creates a new runtime group.  Resetting here is
@@ -365,13 +346,6 @@ class FairApiGroupScheduler:
         self._refresh_normal_soft_limit_locked()
         self._generation += 1
         self._condition.notify_all()
-
-    def _next_reduced_capacity_locked(self) -> int:
-        """Step down to the next adaptive level below the current capacity."""
-        for level in self._adaptive_capacity_levels:
-            if level < self.capacity:
-                return max(self.minimum_capacity, level)
-        return max(self.minimum_capacity, self.capacity - 1)
 
     def _refresh_normal_soft_limit_locked(self) -> None:
         self.normal_soft_limit = _normal_soft_limit(self.capacity, self._normal_soft_ratio)
