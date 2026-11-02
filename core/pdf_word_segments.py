@@ -220,6 +220,9 @@ class PdfWordSegmentsMixin:
                     translated_pdf = work / f"{stem}_p{first}-{last}_translated.pdf"
                     engine = docx_to_pdf(Path(result.output_path), translated_pdf)
                     output_pages = _pdf_page_count(translated_pdf)
+                    if output_pages > len(seg):
+                        output_pages = self._fit_word_segment(record, seg, Path(result.output_path),
+                                                              translated_pdf, output_pages)
                 except OfficePdfError as exc:
                     mark("failed", "译好的正文转回 PDF 失败")
                     self._log("WARN", f"[{record.name}] {label}译好的正文转回 PDF 失败：{str(exc)[:200]}")
@@ -243,6 +246,37 @@ class PdfWordSegmentsMixin:
                 finished_pages += len(seg)
                 segment_progress(1, 1)
                 self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
+
+    def _fit_word_segment(self, record: PdfFileRecord, seg: list[int], docx_path: Path,
+                          pdf_path: Path, output_pages: int) -> int:
+        """译文比原文长、一页排不下时，把放不下的那几页缩小字号，一页原文仍是一页译文。"""
+        from core.pdf_word_fit import fit_pages
+        from core.pdf_word_route import docx_to_pdf
+
+        log = self._log  # pyright: ignore[reportAttributeAccessIssue] - PdfImageTranslationRunner 提供
+        # 缩到一半出错时（Word 转 PDF 失败会先删掉旧 PDF）换回缩之前的两份文件
+        backups = [(path, path.with_name(f"{path.stem}.before_fit{path.suffix}")) for path in (docx_path, pdf_path)]
+        for path, backup in backups:
+            shutil.copy2(path, backup)
+        try:
+            fit = fit_pages(docx_path, pdf_path, len(seg), lambda docx, pdf: docx_to_pdf(docx, pdf))
+        except Exception as exc:  # noqa: BLE001 - shrinking is best effort; the unshrunk PDF still stands
+            logger.opt(exception=exc).warning("[PDF] 转 Word 段缩小字号失败")
+            for path, backup in backups:
+                shutil.copy2(backup, path)
+            log("WARN", f"[{record.name}] 译文放不下的页没能缩小字号，按原样拼入："
+                + user_facing_reason(exc, fallback="处理这几页时出错。"))
+            return output_pages
+        finally:
+            for _path, backup in backups:
+                backup.unlink(missing_ok=True)
+        for index, scale in fit.scaled.items():
+            log("INFO", f"[{record.name}] 第 {seg[index - 1]} 页的译文一页放不下，"
+                f"字号缩到原来的 {round(scale * 100)}%。")
+        if fit.still_over:
+            pages = "、".join(str(seg[index - 1]) for index in fit.still_over)
+            log("WARN", f"[{record.name}] 第 {pages} 页缩到最小字号仍放不下，译文多占了页，请复核。")
+        return fit.pages
 
     def _mark_unsuitable_word_pages(self, key: str, pages: list[int], reason: str) -> None:
         """首选转 Word、但不能转的页：随后按保底方式处理，页面说明里写出原因。"""
