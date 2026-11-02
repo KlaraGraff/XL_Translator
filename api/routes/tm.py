@@ -257,26 +257,39 @@ def register(app: FastAPI) -> None:
             mapped["lang_pair"] = remap_pair(mapped.get("lang_pair"))
             mapped_conflicts.append(mapped)
 
+        # 先存自定义语言（词条里的 x-custom 方向要能找到定义），再把所有词条和待定
+        # 冲突放进一次提交。以前每个语言方向各提交一次，写到一半出错时前几组已经
+        # 落库、自定义语言也加上了，界面却报失败；再导一次数字全对不上（#281）。
+        # 现在中途出错：库整体回滚，自定义语言也换回导入之前的那份。
+        previous_custom_langs = list(settings.custom_target_langs)
         settings.custom_target_langs = current
         save_settings(settings)
         inserted = updated = skipped = duplicates = 0
-        for pair, entries in grouped.items():
-            result = tm_manager.import_entries(
-                entries,
-                pair,
-                payload.mode,
-                sync_reverse=payload.sync_reverse and not pair.split("-", 1)[1].startswith("x-custom-"),
-                preserve_status=True,
-            )
-            inserted += result.get("inserted", 0)
-            # overwrite 模式下有多少条是盖掉了库里已有的词条。恢复备份时
-            # 用户就是靠这个数字判断到底恢复了没有。
-            updated += result.get("updated", 0)
-            skipped += result.get("skipped", 0)
-            duplicates += result.get("duplicates", 0)
-        restored_conflicts = tm_manager.import_conflict_candidates(
-            mapped_conflicts,
-        )
+        try:
+            with tm_manager.single_transaction():
+                for pair, entries in grouped.items():
+                    result = tm_manager.import_entries(
+                        entries,
+                        pair,
+                        payload.mode,
+                        sync_reverse=payload.sync_reverse
+                        and not pair.split("-", 1)[1].startswith("x-custom-"),
+                        preserve_status=True,
+                    )
+                    inserted += result.get("inserted", 0)
+                    # overwrite 模式下有多少条是盖掉了库里已有的词条。恢复备份时
+                    # 用户就是靠这个数字判断到底恢复了没有。
+                    updated += result.get("updated", 0)
+                    skipped += result.get("skipped", 0)
+                    duplicates += result.get("duplicates", 0)
+                restored_conflicts = tm_manager.import_conflict_candidates(
+                    mapped_conflicts,
+                )
+        except Exception:
+            restored = load_settings()
+            restored.custom_target_langs = previous_custom_langs
+            save_settings(restored)
+            raise
         return {
             "inserted": inserted,
             "updated": updated,
