@@ -5,12 +5,17 @@ PdfImageTranslationRunner 通过 PdfInplacePagesMixin 用它。
 运行时到原模块里取，和搬家前是同一个对象，测试对原模块的 patch 也照样生效。
 """
 
+# self 标成 PdfImageTranslationRunner（真正用这些方法的类），类型检查才认得 runner 的属性；
+# pyright 不许 self 标成子类，所以本文件关掉这一条。
+# pyright: reportGeneralTypeIssues=false
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.pdf_image_translation import (  # noqa: F401
+        PdfImageTranslationRunner,
         Iterable,
         PageKind,
         Path,
@@ -22,7 +27,7 @@ if TYPE_CHECKING:
 
 class PdfInplacePagesMixin:
     def _run_inplace_pages(
-        self,
+        self: PdfImageTranslationRunner,
         record: PdfFileRecord,
         prepared: _PreparedPdfFile,
         *,
@@ -60,7 +65,7 @@ class PdfInplacePagesMixin:
                 self._inplace_page_fraction.pop(key, None)
 
     def _run_one_inplace_page(
-        self,
+        self: PdfImageTranslationRunner,
         record: PdfFileRecord,
         prepared: _PreparedPdfFile,
         page: PdfPageRecord,
@@ -157,13 +162,13 @@ class PdfInplacePagesMixin:
             )
             self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 
-    def _page_kind_info(self, source_path: str, page_index: int) -> PageKind | None:
+    def _page_kind_info(self: PdfImageTranslationRunner, source_path: str, page_index: int) -> PageKind | None:
         kind = self._document_kinds.get(source_path)
         if kind is None or page_index >= len(kind.pages):
             return None
         return kind.pages[page_index]
 
-    def _document_source_lang(self, record: PdfFileRecord, target_lang: str) -> str:
+    def _document_source_lang(self: PdfImageTranslationRunner, record: PdfFileRecord, target_lang: str) -> str:
         """整份文件的原文语言：页面自己读不到文字（全是线条）时按它决定识别哪种文字。
 
         读文字层的前 30 页，只读一次。整份都读不到文字时按法文（以前的做法），
@@ -181,7 +186,7 @@ class PdfInplacePagesMixin:
             self._document_langs[key] = guess_language(lines, fallback=fallback)
         return self._document_langs[key]
 
-    def _shared_document_profile(self, source_path: str, pages: Iterable[int]) -> str | None:
+    def _shared_document_profile(self: PdfImageTranslationRunner, source_path: str, pages: Iterable[int]) -> str | None:
         """原位替换页、转 Word 段能不能直接用任务开始时为整份 PDF 写的文档说明。
 
         只有这一部分就是整份文件（除空白页外每一页都在 ``pages`` 里：整份转 Word 的一段，

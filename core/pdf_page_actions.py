@@ -5,12 +5,17 @@ PdfImageTranslationRunner 通过 PdfPageActionsMixin 用它。
 运行时到原模块里取，和搬家前是同一个对象，测试对原模块的 patch 也照样生效。
 """
 
+# self 标成 PdfImageTranslationRunner（真正用这些方法的类），类型检查才认得 runner 的属性；
+# pyright 不许 self 标成子类，所以本文件关掉这一条。
+# pyright: reportGeneralTypeIssues=false
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.pdf_image_translation import (  # noqa: F401
+        PdfImageTranslationRunner,
         Any,
         Path,
         PdfPageRecord,
@@ -22,7 +27,7 @@ if TYPE_CHECKING:
 
 class PdfPageActionsMixin:
     def rerun_page(
-        self,
+        self: PdfImageTranslationRunner,
         *,
         relative_path: str,
         page_number: int,
@@ -87,7 +92,7 @@ class PdfPageActionsMixin:
             "applies_on": "now",
         }
 
-    def restore_previous_page(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+    def restore_previous_page(self: PdfImageTranslationRunner, *, relative_path: str, page_number: int) -> dict[str, Any]:
         """把一页换回上一版译文，并按新的页图重新生成输出文件。"""
         try:
             page_number = int(page_number)
@@ -143,7 +148,7 @@ class PdfPageActionsMixin:
             "page_number": page_number,
         }
 
-    def cancel_page_action(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+    def cancel_page_action(self: PdfImageTranslationRunner, *, relative_path: str, page_number: int) -> dict[str, Any]:
         """Withdraw a queued page action before the resume sends any request.
 
         Queued actions only take effect at the pause boundary in ``_run``, so
@@ -179,7 +184,7 @@ class PdfPageActionsMixin:
         }
 
     def _run_page_rerun(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         page_number: int,
         api_scheduler: WeightedApiScheduler | None,
@@ -214,7 +219,7 @@ class PdfPageActionsMixin:
             self._rerun_thread = None
 
     def _execute_page_rerun(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         page_number: int,
         api_scheduler: WeightedApiScheduler | None,
@@ -368,7 +373,7 @@ class PdfPageActionsMixin:
                 )
         self._rewrite_finished_report(extra_elapsed_sec=_pit.time.monotonic() - rerun_started)
 
-    def _execute_restore_previous(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
+    def _execute_restore_previous(self: PdfImageTranslationRunner, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
         record = prepared.record
         page_number = int(page.page_number)
         started = _pit.time.monotonic()
@@ -441,7 +446,7 @@ class PdfPageActionsMixin:
         )
 
     def _swap_page_versions(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         page: PdfPageRecord,
     ) -> list[tuple[Path, Path]]:
@@ -488,7 +493,7 @@ class PdfPageActionsMixin:
             _, page.output_width_px, page.output_height_px = measured
         return done
 
-    def _undo_page_version_swap(self, moves: list[tuple[Path, Path]]) -> None:
+    def _undo_page_version_swap(self: PdfImageTranslationRunner, moves: list[tuple[Path, Path]]) -> None:
         """按相反顺序把互换过的页图搬回去。"""
         for src, dst in reversed(moves):
             try:
@@ -505,7 +510,7 @@ class PdfPageActionsMixin:
         _pit.shutil.copy2(path, backup)
         return backup
 
-    def _put_back_output_file(self, path_text: str, backup: Path | None) -> None:
+    def _put_back_output_file(self: PdfImageTranslationRunner, path_text: str, backup: Path | None) -> None:
         if backup is None or not path_text:
             return
         try:
@@ -514,7 +519,7 @@ class PdfPageActionsMixin:
             _pit.logger.warning(f"[PDF] 换回失败后放回高清 PDF 失败：{backup} -> {path_text}：{exc!r}")
 
     def _commit_page_image_stash(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         stashed: list[tuple[Path, Path]],
         *,
@@ -570,7 +575,7 @@ class PdfPageActionsMixin:
         page.previous_image_path = promoted
         page.previous_page_state = _pit._page_version_state(page_backup) if promoted else {}
 
-    def _restore_page_image_stash(self, stashed: list[tuple[Path, Path]]) -> None:
+    def _restore_page_image_stash(self: PdfImageTranslationRunner, stashed: list[tuple[Path, Path]]) -> None:
         """重生成失败：把挪开的旧译图原样搬回来。"""
         for stashed_path, original in stashed:
             try:
@@ -582,7 +587,7 @@ class PdfPageActionsMixin:
                 _pit.logger.debug(f"[PDF] 恢复旧译图失败：{stashed_path}：{exc!r}")
 
     def _prune_previous_page_images(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         page_number: int,
         *,
@@ -608,7 +613,7 @@ class PdfPageActionsMixin:
             except Exception as exc:  # noqa: BLE001 - 残留文件不影响产物。
                 _pit.logger.debug(f"[PDF] 清除更早的上一版译图失败：{candidate}：{exc!r}")
 
-    def _page_counters_snapshot(self) -> tuple:
+    def _page_counters_snapshot(self: PdfImageTranslationRunner) -> tuple:
         with self._page_status_lock:
             return (
                 self._completed_page_count,
@@ -619,7 +624,7 @@ class PdfPageActionsMixin:
                 set(self._placeholder_pages),
             )
 
-    def _restore_page_counters(self, snapshot: tuple) -> None:
+    def _restore_page_counters(self: PdfImageTranslationRunner, snapshot: tuple) -> None:
         with self._page_status_lock:
             (
                 self._completed_page_count,
@@ -635,7 +640,7 @@ class PdfPageActionsMixin:
             self._placeholder_pages = set(placeholder)
             self._emit_page_status_locked()
 
-    def _raise_if_rerun_active(self, *, locked: bool = False) -> None:
+    def _raise_if_rerun_active(self: PdfImageTranslationRunner, *, locked: bool = False) -> None:
         """Refuse a second rerun; one page at a time keeps the output coherent."""
         if locked:
             active = self._rerun_page_key
@@ -654,7 +659,7 @@ class PdfPageActionsMixin:
             )
 
     def _restore_page_after_failed_rerun(
-        self,
+        self: PdfImageTranslationRunner,
         prepared: _PreparedPdfFile,
         *,
         page_number: int,
@@ -676,7 +681,7 @@ class PdfPageActionsMixin:
             "任务结果未改动。",
         )
 
-    def _rewrite_finished_report(self, *, extra_elapsed_sec: float) -> None:
+    def _rewrite_finished_report(self: PdfImageTranslationRunner, *, extra_elapsed_sec: float) -> None:
         """Rebuild the manifest, the report and the task-result payload."""
         output_dir = self._finished_output_dir
         if output_dir is None:

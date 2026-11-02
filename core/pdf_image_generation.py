@@ -5,6 +5,10 @@ PdfImageTranslationRunner 通过 PdfImageGenerationMixin 用它。
 运行时到原模块里取，和搬家前是同一个对象，测试对原模块的 patch 也照样生效。
 """
 
+# self 标成 PdfImageTranslationRunner（真正用这些方法的类），类型检查才认得 runner 的属性；
+# pyright 不许 self 标成子类，所以本文件关掉这一条。
+# pyright: reportGeneralTypeIssues=false
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -13,6 +17,7 @@ from core.pdf_models import SOURCE_TYPE_PDF
 
 if TYPE_CHECKING:
     from core.pdf_image_translation import (  # noqa: F401
+        PdfImageTranslationRunner,
         Any,
         PageQualityResult,
         Path,
@@ -23,7 +28,7 @@ if TYPE_CHECKING:
 
 class PdfImageGenerationMixin:
     def _generate_page_attempts(
-        self,
+        self: PdfImageTranslationRunner,
         page_record: PdfPageRecord,
         page_count: int,
         translated_pages_dir: Path,
@@ -492,7 +497,7 @@ class PdfImageGenerationMixin:
         return page_record
 
     def _apply_quality_flags(
-        self,
+        self: PdfImageTranslationRunner,
         page_record: PdfPageRecord,
         quality: PageQualityResult,
     ) -> None:
@@ -506,23 +511,23 @@ class PdfImageGenerationMixin:
                 f"{quality.review_message}",
             )
 
-    def _begin_page_review(self, attempt: int) -> None:
+    def _begin_page_review(self: PdfImageTranslationRunner, attempt: int) -> None:
         with self._review_lock:
             self._latest_review_round = max(self._latest_review_round, attempt)
             self._review_processing_count += 1
             self._emit_review_status_locked()
 
-    def _finish_page_review(self) -> None:
+    def _finish_page_review(self: PdfImageTranslationRunner) -> None:
         with self._review_lock:
             self._review_processing_count = max(0, self._review_processing_count - 1)
             self._emit_review_status_locked()
 
-    def _log_page_not_generated(self, page_record: PdfPageRecord) -> None:
+    def _log_page_not_generated(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> None:
         elapsed = self._page_elapsed_text(page_record)
         if elapsed:
             self._log("WARN", f"{self._page_log_prefix(page_record)}未能生成可用译图{elapsed}")
 
-    def _mark_image_model_success(self) -> None:
+    def _mark_image_model_success(self: PdfImageTranslationRunner) -> None:
         self._image_output_guard.succeeded()
         if self._settings.image_model_role.availability_status == "available":
             return
@@ -533,7 +538,7 @@ class PdfImageGenerationMixin:
             checked_at=_pit.datetime.now().isoformat(timespec="seconds"),
         )
 
-    def _mark_pdf_review_model_success(self) -> None:
+    def _mark_pdf_review_model_success(self: PdfImageTranslationRunner) -> None:
         if self._settings.pdf_review_model_role.availability_status == "available":
             return
         _pit._save_pdf_review_model_availability(
@@ -543,7 +548,7 @@ class PdfImageGenerationMixin:
             checked_at=_pit.datetime.now().isoformat(timespec="seconds"),
         )
 
-    def _note_page_request_started(self, page_record: PdfPageRecord) -> None:
+    def _note_page_request_started(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> None:
         """The page got its first model slot: start its clock (later attempts keep it)."""
         key = self._page_status_key(page_record)
         with self._page_status_lock:
@@ -554,7 +559,7 @@ class PdfImageGenerationMixin:
             self._page_started[key] = (index, _pit.time.monotonic())
         self._page_requests.on_event(_pit.BatchRequestEvent(_pit.BATCH_EVENT_SENT, index=index, items=1))
 
-    def _page_elapsed_text(self, page_record: PdfPageRecord) -> str:
+    def _page_elapsed_text(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> str:
         """「，用时 N 秒」since the page's first request; empty before any request."""
         with self._page_status_lock:
             started = self._page_started.get(self._page_status_key(page_record))
@@ -562,7 +567,7 @@ class PdfImageGenerationMixin:
             return ""
         return f"，用时 {_pit.time.monotonic() - started[1]:.1f} 秒"
 
-    def _page_kept_after_image_model_rejected(self, page_record: PdfPageRecord, source_type: str) -> PdfPageRecord:
+    def _page_kept_after_image_model_rejected(self: PdfImageTranslationRunner, page_record: PdfPageRecord, source_type: str) -> PdfPageRecord:
         """图像模型已确认生成不了图时，还排着队的页：PDF 页保留原样，图片文件记为未能生成。"""
         page_record.placeholder = False
         page_record.translated_image_path = ""
@@ -582,13 +587,13 @@ class PdfImageGenerationMixin:
         self._log("WARN", f"{self._page_log_prefix(page_record)}{_pit._IMAGE_MODEL_REJECTED_KEPT_REASON}。")
         return page_record
 
-    def _page_log_prefix(self, page_record: PdfPageRecord) -> str:
+    def _page_log_prefix(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> str:
         if page_record.file_name:
             return f"[{page_record.file_name}] 第 {page_record.page_number} 页 "
         return f"第 {page_record.page_number} 页 "
 
     def _page_success_log(
-        self,
+        self: PdfImageTranslationRunner,
         page_record: PdfPageRecord,
         attempt: int,
         max_attempts: int,
@@ -600,18 +605,18 @@ class PdfImageGenerationMixin:
             return f"{self._page_log_prefix(page_record)}{suffix}"
         return f"{self._page_log_prefix(page_record)}第 {attempt}/{max_attempts} 次{suffix}"
 
-    def _record_api_call(self) -> None:
+    def _record_api_call(self: PdfImageTranslationRunner) -> None:
         """页面工作线程记一次图像生成调用（并发自增必须上锁）。"""
         with self._counter_lock:
             self._api_call_count += 1
 
-    def _record_page_failed(self, page_record: PdfPageRecord) -> None:
+    def _record_page_failed(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> None:
         key = self._page_status_key(page_record)
         with self._page_status_lock:
             self._retrying_pages.discard(key)
             self._emit_page_status_locked()
 
-    def _record_page_recovered(self, page_record: PdfPageRecord) -> None:
+    def _record_page_recovered(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> None:
         key = self._page_status_key(page_record)
         with self._page_status_lock:
             if key in self._retried_pages:
@@ -619,34 +624,34 @@ class PdfImageGenerationMixin:
             self._retrying_pages.discard(key)
             self._emit_page_status_locked()
 
-    def _record_page_retrying(self, page_record: PdfPageRecord) -> None:
+    def _record_page_retrying(self: PdfImageTranslationRunner, page_record: PdfPageRecord) -> None:
         key = self._page_status_key(page_record)
         with self._page_status_lock:
             self._retrying_pages.add(key)
             self._retried_pages.add(key)
             self._emit_page_status_locked()
 
-    def _record_page_review_failed(self) -> None:
+    def _record_page_review_failed(self: PdfImageTranslationRunner) -> None:
         with self._review_lock:
             self._review_failed_count += 1
             self._emit_review_status_locked()
 
-    def _record_page_review_passed(self) -> None:
+    def _record_page_review_passed(self: PdfImageTranslationRunner) -> None:
         with self._review_lock:
             self._review_passed_count += 1
             self._emit_review_status_locked()
 
-    def _record_rate_limit_reduction(self, message: str) -> None:
+    def _record_rate_limit_reduction(self: PdfImageTranslationRunner, message: str) -> None:
         with self._counter_lock:
             self._rate_limit_reduction_count += 1
         self._log("WARN", message)
 
-    def _record_review_api_call(self) -> None:
+    def _record_review_api_call(self: PdfImageTranslationRunner) -> None:
         """页面工作线程记一次审核调用（并发自增必须上锁）。"""
         with self._counter_lock:
             self._review_api_call_count += 1
 
-    def _reject_image_model(self, model_config) -> None:
+    def _reject_image_model(self: PdfImageTranslationRunner, model_config) -> None:
         """图像翻译模型连续两页生成不了图：不再往它发页面。
 
         整页图像翻译时没有别的路可走，整个任务停下（走「图像模型不可用」那条路，
@@ -667,12 +672,12 @@ class PdfImageGenerationMixin:
             self._image_model_missing = message
         self._log("WARN", f"{message}其余需要整页图像翻译的页面将保留原样。")
 
-    def _stopping_page_attempts(self) -> bool:
+    def _stopping_page_attempts(self: PdfImageTranslationRunner) -> bool:
         """这一页别再发新的生成请求：用户停止了，或者图像模型已确认生成不了图、整个
         任务正要停下（还在排队的页按「未开始」退回，续译时重新排队）。"""
         return self._stop_event.is_set() or bool(self._image_model_fatal)
 
-    def _switch_off_review(self, review_model_config) -> None:
+    def _switch_off_review(self: PdfImageTranslationRunner, review_model_config) -> None:
         """审核模型在这次任务里确认不收图：后面的页不再送审，结论存回设置。"""
         with self._review_lock:
             if self._review_switched_off:
@@ -693,7 +698,7 @@ class PdfImageGenerationMixin:
         )
 
     def _write_accepted_page_image(
-        self,
+        self: PdfImageTranslationRunner,
         image_bytes: bytes,
         output_path: Path,
         *,
