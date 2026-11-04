@@ -443,6 +443,38 @@ class PdfImageGenerationMixin:
             and last_quality.status == "ratio_error"
             and last_image_bytes
         ):
+            siliconflow_route = _pit.image_generation_method(
+                str(getattr(model_config, "provider", "") or ""),
+                str(getattr(model_config, "base_url", "") or ""),
+            ) == "siliconflow"
+            source_ratio = _pit._safe_ratio(page_record.source_width_px, page_record.source_height_px)
+            output_ratio = _pit._safe_ratio(last_quality.width, last_quality.height)
+            ratio_delta = (
+                abs(source_ratio - output_ratio) / source_ratio
+                if source_ratio > 0 and output_ratio > 0
+                else 1.0
+            )
+            if siliconflow_route and ratio_delta > _pit.PDF_RATIO_LETTERBOX_THRESHOLD:
+                # SiliconFlow's free-form image-edit route can return a square or otherwise
+                # reshaped page.  Stretching that candidate into A4 creates a misleading
+                # "successful" PDF with unreadable content; keep the failure visible and tell
+                # the user which class of model to switch to instead.
+                page_record.status = "placeholder_pending"
+                page_record.placeholder = True
+                page_record.translated_image_path = str(
+                    translated_pages_dir / _pit.page_image_name(page_record.page_number, page_count, failed=True)
+                )
+                page_record.error = (
+                    "图像模型未能保持原页比例，未采用这页译图。"
+                    f"{_pit.IMAGE_MODEL_ADVICE}"
+                )
+                self._record_page_placeholder(page_record)
+                self._log(
+                    "WARN",
+                    f"{self._page_log_prefix(page_record)}图像模型未能保持原页比例，未强行采用；"
+                    f"{_pit.IMAGE_MODEL_ADVICE}",
+                )
+                return page_record
             width, height = _pit.normalize_image_to_source_ratio(
                 last_image_bytes,
                 source_width=page_record.source_width_px,

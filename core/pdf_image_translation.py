@@ -70,6 +70,7 @@ from core.image_generation import (
     ImageGenerationClient,
     ImageModelUnavailableError,
     OpenAICompatibleImageGenerationClient,
+    image_generation_method,  # noqa: F401
     is_model_unavailable_error,  # noqa: F401
     pdf_page_ratio_tolerance,  # noqa: F401
 )

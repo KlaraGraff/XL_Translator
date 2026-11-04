@@ -24,6 +24,7 @@ from core.file_progress import FileProgressMsg, file_progress_id
 from core.api_scheduler import WeightedApiScheduler
 from core.image_generation import (
     GPT_IMAGE_2_MODEL,
+    IMAGE_MODEL_ADVICE,
     ImageModelUnavailableError,
     pdf_page_ratio_tolerance,
     pdf_page_request_size,
@@ -3738,6 +3739,58 @@ class PdfDefectRegressionTests(unittest.TestCase):
                                 source_ratio,
                                 places=2,
                             )
+
+    def test_siliconflow_ratio_failure_is_not_forced_into_an_unreadable_pdf(self) -> None:
+        """硅基流动改图模型比例失控时，必须失败可见并提示更换图像模型。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = _page_review_settings(root)
+            settings.image_model_role.cloud_provider = "siliconflow"
+            settings.image_model_role.cloud_model = "Qwen/Qwen-Image-Edit-2509"
+            settings.image_model_role.cloud_base_url = "https://api.siliconflow.cn/v1"
+            source_path = root / "page_001.png"
+            source_path.write_bytes(_png_bytes(1200, 1600))
+            image_client = _WrongRatioThenGoodImageClient(
+                _png_bytes(1200, 600),
+                wrong_ratio_bytes=_png_bytes(1200, 600),
+            )
+            runner = PdfImageTranslationRunner(
+                [],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+            page_record = PdfPageRecord(
+                page_number=1,
+                source_image_path=str(source_path),
+                file_name="doc",
+                status="rendered",
+                source_width_px=1200,
+                source_height_px=1600,
+                page_width_pt=288,
+                page_height_pt=384,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                model_config = resolve_effective_model_config(settings, ROLE_IMAGE)
+                runner._generate_page_with_retries(
+                    page_record,
+                    1,
+                    root / "translated",
+                    root / "candidates",
+                    2,
+                    WeightedApiScheduler(1),
+                    WeightedApiScheduler(1),
+                    model_config,
+                    None,
+                )
+
+            self.assertEqual(image_client.calls, 2)
+            self.assertEqual(page_record.status, "placeholder_pending")
+            self.assertTrue(page_record.placeholder)
+            self.assertFalse(page_record.emergency_ratio_normalized)
+            self.assertIn(IMAGE_MODEL_ADVICE, page_record.error)
 
     def test_letterboxing_alone_does_not_mark_a_file_needs_review(self) -> None:
         record = PdfFileRecord(

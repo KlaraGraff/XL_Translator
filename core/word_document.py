@@ -195,6 +195,16 @@ _CHINESE_NUMBER_FORMATS = {
     "chineseCountingThousand2",
 }
 _CHINESE_DIGITS = "零一二三四五六七八九"
+_WORD_SYMBOL_FONTS = frozenset(
+    {
+        "wingdings",
+        "wingdings 2",
+        "wingdings 3",
+        "symbol",
+        "webdings",
+        "marlett",
+    }
+)
 
 
 @dataclass
@@ -3915,6 +3925,11 @@ def _copy_translation_paragraph_shape(
         if p_style is not None:
             copied_p_pr.remove(p_style)
     _strip_translation_flow_controls(source, copied_p_pr)
+    # A list bullet can be represented by a paragraph-level run property using a
+    # symbol font (usually Wingdings).  That property is correct for the source
+    # bullet, but the new bilingual paragraph has no bullet and would otherwise
+    # render its numbers and Latin text as glyphs from that symbol font.
+    _strip_symbol_fonts_from_paragraph_properties(copied_p_pr)
     if not is_chinese_lang(target_lang):
         _materialize_character_first_line_indent(source, copied_p_pr)
     _sort_paragraph_properties(copied_p_pr)
@@ -4042,6 +4057,28 @@ def _sort_paragraph_properties(p_pr) -> None:
 def _remove_ppr_children(p_pr, tag: str) -> None:
     for child in list(p_pr.findall(qn(f"w:{tag}"))):
         p_pr.remove(child)
+
+
+def _strip_symbol_fonts_from_paragraph_properties(p_pr) -> None:
+    """Remove Wingdings-like fonts from a newly copied translation paragraph.
+
+    Word may store the font used by a list marker in ``w:pPr/w:rPr``.  The
+    marker is intentionally removed from a bilingual translation paragraph, so
+    carrying that run property forward would make ordinary text use symbol
+    glyphs.  Keep any non-symbol script font declarations intact.
+    """
+    r_pr = p_pr.find(qn("w:rPr"))
+    if r_pr is None:
+        return
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        return
+    for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        value = str(r_fonts.get(qn(attr)) or "").strip().casefold()
+        if value in _WORD_SYMBOL_FONTS:
+            r_fonts.attrib.pop(qn(attr), None)
+    if not r_fonts.attrib:
+        r_pr.remove(r_fonts)
 
 
 def _copy_run_shape(source_paragraph: Paragraph, target_run, *, target_lang: str) -> None:
