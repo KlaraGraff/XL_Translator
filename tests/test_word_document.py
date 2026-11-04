@@ -1114,6 +1114,48 @@ class WordDocumentTests(unittest.TestCase):
             )
             self.assertIsNone(translation.runs[0].bold)
 
+    def test_bilingual_translation_drops_symbol_font_from_list_paragraph_properties(self) -> None:
+        """A Wingdings list marker must not format the bilingual translation text."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "wingdings-list.docx"
+
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            marker = paragraph.add_run(chr(0xF0D8))
+            marker.font.name = "Wingdings"
+            marker_rfonts = marker._element.get_or_add_rPr().get_or_add_rFonts()
+            marker_rfonts.set(qn("w:ascii"), "Wingdings")
+            marker_rfonts.set(qn("w:hAnsi"), "Wingdings")
+            marker_rfonts.set(qn("w:eastAsia"), "Wingdings")
+            paragraph.add_run("\t").font.name = "Wingdings"
+            paragraph.add_run("Wellhead pressure is 12.6 MPaA.").font.name = "Arial"
+            # Word may promote the list marker font to paragraph-level defaults.
+            p_rpr = OxmlElement("w:rPr")
+            p_rfonts = OxmlElement("w:rFonts")
+            p_rpr.append(p_rfonts)
+            paragraph._p.get_or_add_pPr().append(p_rpr)
+            p_rfonts.set(qn("w:ascii"), "Wingdings")
+            p_rfonts.set(qn("w:hAnsi"), "Wingdings")
+            doc.save(str(source_path))
+
+            source = paragraph.text
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={source: "生产井压力为 12.6 MPa(A)。"},
+                target_lang="zh",
+                source_lang="en",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                item for item in out_doc.paragraphs if item.text == "生产井压力为 12.6 MPa(A)。"
+            )
+            p_rpr = translation._p.pPr.find(qn("w:rPr")) if translation._p.pPr is not None else None
+            self.assertIsNone(p_rpr.find(qn("w:rFonts")) if p_rpr is not None else None)
+            self.assertNotIn("Wingdings", translation._p.xml)
+
     def test_translation_does_not_inherit_a_leading_superscript_footnote_number(self) -> None:
         """审计中-23：段首是上标脚注号 / 彩色强调字时，整句译文不许继承它的格式。
 
