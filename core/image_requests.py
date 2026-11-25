@@ -151,3 +151,32 @@ def image_generation_method(provider: str, base_url: str = "") -> str:
     if is_siliconflow_endpoint(provider, base_url):
         return "siliconflow"
     return IMAGE_GENERATION_METHODS.get(str(provider or "").strip(), "")
+
+
+# ── 出图：gpt-image 系列哪些是「新一代」 ─────────────────────
+# gpt-image-2 起，尺寸可以按 16 像素自由指定，所以能按原页比例要图；gpt-image-1 等老模型
+# 只认三种固定尺寸（1024×1024、1024×1536、1536×1024）。
+# 以前只认名字一字不差的 ``gpt-image-2``，gpt-image-2.5-flare、gpt-image-2.6-flare 这类
+# 后续版本全被当成老模型，只能要固定的 1024×1536，A4 页比例不对，回来又补一圈白边。
+# 现在名字以 gpt-image-2 开头（后面是结尾、「.」或「-」）的都算新一代；
+# gpt-image-20 这种恰好以 2 开头的数字不算。中转站写成「厂商/模型」的取最后一段来认。
+GPT_IMAGE_MODEL_PREFIX = "gpt-image-"
+GPT_IMAGE_2_FAMILY = "gpt-image-2"
+
+
+def _bare_model_name(model: str) -> str:
+    return str(model or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def is_gpt_image_model(model: str) -> bool:
+    """gpt-image 系列（走 /images/edits、请求时带 size）。"""
+    return _bare_model_name(model).startswith(GPT_IMAGE_MODEL_PREFIX)
+
+
+def is_gpt_image_2_family(model: str) -> bool:
+    """gpt-image-2 及其后续版本：尺寸能按原页比例自由指定。"""
+    name = _bare_model_name(model)
+    if not name.startswith(GPT_IMAGE_2_FAMILY):
+        return False
+    rest = name[len(GPT_IMAGE_2_FAMILY):]
+    return rest == "" or rest[0] in ".-"
