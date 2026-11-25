@@ -26,6 +26,7 @@ from typing import Any
 from core import engine_dispatcher, tm_manager
 from core.document_profile import append_profile, is_context_sensitive, request_document_profile
 from core.language_registry import get_target_lang_display
+from core.nothing_translated import raise_if_nothing_translated
 from core.surface_rate import SurfaceRate, engine_settings_for_rate, resolve_surface_rate
 from core.term_session import DocumentTermMemory
 from settings import AppSettings
@@ -158,6 +159,7 @@ class TextTranslationService:
         stats: Any = None,
         source_lang: str | None = None,
         extra_check: Callable[[str, str], str] | None = None,
+        fail_if_nothing_translated: bool = False,
     ) -> TranslationResults:
         """分批翻译，返回 ``{原文: 译文}``。
 
@@ -170,6 +172,10 @@ class TextTranslationService:
 
         ``extra_check(原文, 译文)`` 是这一页自己的规则（CAD 的数字、PDF 的比较符号），和
         公共规则一起只负责放行，没过的交给模型复查；结果见 :class:`TranslationResults`。
+
+        ``fail_if_nothing_translated``：每一条都因为请求失败没拿到译文时抛
+        ``NothingTranslatedError``（``core.nothing_translated``），不交回一份全是原文的结果。
+        只给一份文件只发这一轮请求的调用方（每张 CAD 图纸）用。
         """
         # ``stats`` 给了就记在调用方的那份里（PDF 任务据此统计批次重试和降速次数）。
         stats = stats if stats is not None else engine_dispatcher.TranslationBatchRunStats()
@@ -205,6 +211,8 @@ class TextTranslationService:
             # 复查理由用界面语言写（报告里给用户看）。
             reason_lang=str(getattr(self.settings, "ui_language", "zh") or "zh"),
         )
+        if fail_if_nothing_translated:
+            raise_if_nothing_translated(texts, stats, should_stop=should_stop)
         for text in stats.untranslated_sources | stats.stopped_sources:
             if results.get(text) == text:
                 results.pop(text, None)
@@ -229,6 +237,7 @@ class TextTranslationService:
         progress: Callable[[int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         error_callback: Callable[[str], None] | None = None,
+        fail_if_nothing_translated: bool = False,
     ) -> dict[str, tuple[str, str]]:
         """程序判断不了语种的文字：翻译的同时让模型回报原文语种，返回 ``{原文: (译文, 语种)}``。
 
@@ -252,6 +261,8 @@ class TextTranslationService:
             max_chars=self.rate.batch_chars,
             item_retries=self.rate.item_retry,
         )
+        if fail_if_nothing_translated:
+            raise_if_nothing_translated(texts, stats, should_stop=should_stop)
         failed = stats.untranslated_sources | stats.stopped_sources
         return {text: (item.translation, item.source_lang) for text, item in results.items() if text not in failed}
 

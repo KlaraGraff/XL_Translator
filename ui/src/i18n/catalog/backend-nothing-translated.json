@@ -1,0 +1,10 @@
+{
+  "{0} 条内容的翻译请求全部失败，没有获得任何译文：{1}。未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。": {
+    "en": "All translation requests for {0} {0|item|items} failed and no translations were received: {1}. No source-only file was written. Try again later, or check this connection under “Settings → Models”.",
+    "fr": "Toutes les requêtes de traduction pour {0} {0|élément|éléments} ont échoué, aucune traduction n'a été reçue : {1}. Aucun fichier contenant uniquement le texte source n'a été écrit. Réessayez plus tard ou vérifiez cette connexion dans « Paramètres → Modèles »."
+  },
+  "模型服务返回了错误": {
+    "en": "The model service returned an error",
+    "fr": "Le service de modèle a renvoyé une erreur"
+  }
+}
