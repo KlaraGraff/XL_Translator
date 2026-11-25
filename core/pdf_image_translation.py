@@ -39,6 +39,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.safe_filename import clean_filename_fragment
 from core.source_layout import SourceLayout
 from core.local_endpoint import runtime_mode
 from core.output_metadata import (
@@ -194,6 +195,7 @@ from core.pdf_task_report import (  # noqa: F401
     fully_skipped_oversize_message,
     translated_nothing_message,
     _page_archive_stem,
+    page_archive_dir,
     _format_file_size,
     _review_failure_summary,
     _review_feedback_text,
@@ -255,7 +257,6 @@ PDF_RATIO_LETTERBOX_THRESHOLD = 0.02
 PDF_PAGE_MAX_RENDER_PIXELS = 40_000_000
 PDF_PAGE_MIN_RENDER_DPI = 72.0
 
-_INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
 def _model_unavailable_reason(exc: BaseException, *, fallback: str) -> str:
@@ -1233,15 +1234,15 @@ def build_pdf_output_dir(
 
 
 def resolve_pdf_page_archive_dirs(output_dir: Path, relative_pdf: Path) -> tuple[Path, Path]:
-    archive_stem = _page_archive_stem(relative_pdf)
+    pages_root = output_dir / PDF_PAGES_ROOT
     return (
-        output_dir / PDF_PAGES_ROOT / SOURCE_PAGES_DIRNAME / archive_stem,
-        output_dir / PDF_PAGES_ROOT / TRANSLATED_PAGES_DIRNAME / archive_stem,
+        page_archive_dir(pages_root / SOURCE_PAGES_DIRNAME, relative_pdf),
+        page_archive_dir(pages_root / TRANSLATED_PAGES_DIRNAME, relative_pdf),
     )
 
 
 def resolve_pdf_review_candidates_dir(output_dir: Path, relative_pdf: Path) -> Path:
-    return output_dir / PDF_PAGES_ROOT / REVIEW_CANDIDATES_DIRNAME / _page_archive_stem(relative_pdf)
+    return page_archive_dir(output_dir / PDF_PAGES_ROOT / REVIEW_CANDIDATES_DIRNAME, relative_pdf)
 
 
 def write_pdf_manifest_and_report(
@@ -5077,8 +5078,7 @@ def _safe_ratio(width: int, height: int) -> float:
 
 
 def _sanitize_filename_fragment(value: str) -> str:
-    cleaned = _INVALID_FILENAME_FRAGMENT_RE.sub("_", str(value or "")).strip().rstrip(". ")
-    return cleaned or "目标语言"
+    return clean_filename_fragment(value, "目标语言")
 
 
 def _next_revision_number(target_dir: Path, stem: str, suffix: str) -> int:

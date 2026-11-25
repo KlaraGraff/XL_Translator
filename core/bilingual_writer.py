@@ -12,7 +12,6 @@
   - 可选：保留原始中文分表（sheet 名称加 _原文 后缀）
 """
 import os
-import re
 import shutil
 import stat
 import tempfile
@@ -24,11 +23,11 @@ from pathlib import Path
 from loguru import logger
 
 from config import EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
+from core.safe_filename import clean_filename_fragment
 from core.language_registry import get_target_lang_display
 from core.user_facing_errors import humanize_error
 from core.xlsx_patcher import merged_rows_by_sheet, write_bilingual_workbook
 
-_INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 OUTPUT_MODE_TASK_FOLDER = "task_folder"
 OUTPUT_MODE_SOURCE_FOLDER = "source_folder"
@@ -359,8 +358,7 @@ def write_bilingual_file(
 
 def _sanitize_filename_fragment(value: str) -> str:
     """Remove Windows-illegal filename characters from user-facing fragments."""
-    cleaned = _INVALID_FILENAME_FRAGMENT_RE.sub("_", str(value or "")).strip().rstrip(". ")
-    return cleaned or "目标语言"
+    return clean_filename_fragment(value, "目标语言")
 
 
 #: 双语产物的形态标签。跟 PDF 的 `_高清`/`_压缩` 是同一个位置上的东西——它回答的是

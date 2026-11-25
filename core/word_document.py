@@ -27,6 +27,7 @@ from docx.text.run import Run
 from loguru import logger
 
 from config import REVIEW_MARK_COLOR_DEFAULTS
+from core.safe_filename import clean_filename_fragment
 from core.zh_hant import is_chinese_lang
 from core.bilingual_writer import bilingual_output_name, build_output_dir
 from core.language_registry import get_target_lang_display
@@ -64,7 +65,6 @@ EXISTING_HIGHLIGHT_POLICY_SKIP = "skip"
 EXISTING_HIGHLIGHT_POLICY_OVERWRITE = "overwrite"
 EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE = "red_underline"
 
-_INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _HEADING_STYLE_RE = re.compile(r"heading\s*(\d+)|标题\s*(\d+)", re.IGNORECASE)
 _CHINESE_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百千万]+[章节篇]|[一二三四五六七八九十]+[、.．])")
 _CHINESE_SECTION_RE = re.compile(r"^（[一二三四五六七八九十]+）")
@@ -4386,5 +4386,4 @@ def _ensure_owner_writable(path: Path) -> None:
 
 
 def _sanitize_filename_fragment(value: str) -> str:
-    cleaned = _INVALID_FILENAME_FRAGMENT_RE.sub("_", str(value or "")).strip().rstrip(". ")
-    return cleaned or "目标语言"
+    return clean_filename_fragment(value, "目标语言")
