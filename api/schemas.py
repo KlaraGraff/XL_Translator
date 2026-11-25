@@ -143,6 +143,8 @@ class TaskStartRequest(BaseModel):
     allow_known_review_failure: bool = False
     # 审核模型不能识别图片时「本次不审核，直接开始」（见 TaskOptions）。
     allow_skip_pdf_review: bool = False
+    # 缺「PDF 处理组件」时「仍然开始」（见 TaskOptions）。
+    allow_missing_pdf_component: bool = False
     lang_pair: str | None = None
     confirmation_token: str | None = None
     # 「接着上次继续」：上一次任务的输出目录。runner 只读取它里面的既有译文，

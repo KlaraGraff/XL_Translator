@@ -60,5 +60,10 @@
   "组件安装失败。": {"en": "The component could not be installed.", "fr": "L'installation du composant a échoué."},
   "卸载将删除已下载的 PDF 处理组件，再次使用需重新下载。确定要卸载吗？": {"en": "Uninstalling deletes the downloaded PDF processing component. It will need to be downloaded again to be used. Uninstall?", "fr": "La désinstallation supprime le composant de traitement PDF téléchargé. Il faudra le télécharger à nouveau pour l'utiliser. Désinstaller ?"},
   "安装 ↗ 组件": {"en": "Install ↗ Components", "fr": "Installer ↗ Composants"},
-  "重新安装 ↗ 组件": {"en": "Reinstall ↗ Components", "fr": "Réinstaller ↗ Composants"}
+  "重新安装 ↗ 组件": {"en": "Reinstall ↗ Components", "fr": "Réinstaller ↗ Composants"},
+  "需要先安装「PDF 处理组件」": {"en": "Install the PDF processing component first", "fr": "Installez d'abord le composant de traitement PDF"},
+  "所选文件中有页面要用「PDF 处理组件」，本机还没有安装。": {"en": "Some pages in the selected files need the PDF processing component, which is not installed on this computer.", "fr": "Certaines pages des fichiers sélectionnés nécessitent le composant de traitement PDF, qui n'est pas installé sur cet ordinateur."},
+  "图纸的原位替换和文字页的转 Word 都要用它。可以在「扩展 → 组件」一键安装，装好后回到这里重新点「开始翻译」。": {"en": "In-place replacement on drawings and translating text pages via Word both use it. Install it in one click under Extensions → Components, then come back and click Start translation again.", "fr": "Le remplacement sur place des plans et la traduction des pages de texte via Word l'utilisent tous deux. Installez-le en un clic dans Extensions → Composants, puis revenez cliquer à nouveau sur Démarrer la traduction."},
+  "也可以点「仍要开始」：这些页按上面说的方式处理，完成后会列出来。": {"en": "You can also click Start anyway: these pages are handled as described above and listed when the task finishes.", "fr": "Vous pouvez aussi cliquer sur Démarrer quand même : ces pages sont traitées comme indiqué ci-dessus et listées à la fin de la tâche."},
+  "去安装组件": {"en": "Install component", "fr": "Installer le composant"}
 }

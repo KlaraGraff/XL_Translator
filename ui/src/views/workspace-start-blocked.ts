@@ -76,6 +76,30 @@ export function showStartBlockedModal(surface: Surface, st: SurfaceState, payloa
     });
     return;
   }
+  if (apiErrorReason(error) === "pdf_component_missing") {
+    // 反馈 #33：A3 图纸要原位替换、本机没装「PDF 处理组件」，大幅面页又不改用图像翻译，
+    // 以前一页不翻、跑完才失败。开始前说清楚哪些页会怎样，主按钮直接去安装。
+    openModal({
+      wide: true,
+      tone: "warn",
+      icon: "warn",
+      title: t("需要先安装「PDF 处理组件」"),
+      body: [
+        redactedText((error as Error)?.message, t("所选文件中有页面要用「PDF 处理组件」，本机还没有安装。")),
+        t("图纸的原位替换和文字页的转 Word 都要用它。可以在「扩展 → 组件」一键安装，装好后回到这里重新点「开始翻译」。"),
+        t("也可以点「仍要开始」：这些页按上面说的方式处理，完成后会列出来。"),
+      ],
+      actions: [
+        { label: t("取消") },
+        {
+          label: t("仍要开始"),
+          onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_missing_pdf_component: true }),
+        },
+        { label: t("去安装组件"), variant: "primary", onClick: () => navigate("plugins", { focus: "pdf" }) },
+      ],
+    });
+    return;
+  }
   const missingRole = MODEL_MISSING_ROLE[apiErrorReason(error)];
   if (missingRole) {
     // 以前这里和其他拦截一样只有「知道了」：用户读完「尚未填写模型名称」还得自己去找
