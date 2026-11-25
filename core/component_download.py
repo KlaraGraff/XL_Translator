@@ -129,7 +129,7 @@ def open_client() -> httpx.Client:
 
 
 def direct_client() -> httpx.Client:
-    return httpx.Client(timeout=_TIMEOUT, follow_redirects=True, trust_env=False)
+    return httpx.Client(**system_proxy.with_accept_encoding({"timeout": _TIMEOUT, "follow_redirects": True, "trust_env": False}))
 
 
 class _DirectFallback:

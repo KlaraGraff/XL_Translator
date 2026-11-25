@@ -15,6 +15,12 @@ proxy is a kind it cannot speak: Windows「Internet 选项」里只填了 SOCKS 
 万一缺了也不至于建不了客户端）。这两个函数先照常建；建不了时把 socks4 改成 socks5
 （代理软件的 SOCKS 端口几乎都同时支持 5），实在用不了的那一条代理就直连，
 并记一条日志，而不是让翻译、反馈、检查更新统统报错。
+
+两个函数建出的客户端还固定声明 ``Accept-Encoding: gzip, deflate``（``ACCEPT_ENCODING``）。
+httpx 0.28 只要装了 zstandard（文字识别组件的下载要用它解开 conda 包）就自动加上 zstd；
+DeepSeek 于是改回 zstd，等回答时每段保活空行单独压成一帧，httpx 0.28.1 在一帧刚收完
+时再收下一帧会报 DecodingError（cannot use a decompressobj multiple times），每个请求
+0.3 秒就失败，整张图纸一条都没翻（好友反馈 2026-11-25）。gzip 所有服务商都支持。
 """
 
 from __future__ import annotations
@@ -128,7 +134,19 @@ def _proxy_mounts(kwargs: dict[str, Any], transport_cls: type) -> dict[str, Any]
     return mounts
 
 
+# 不含 zstd，原因见模块说明。调用方自己给了 Accept-Encoding 时以调用方为准。
+ACCEPT_ENCODING = "gzip, deflate"
+
+
+def with_accept_encoding(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """在客户端参数的 headers 里补上 ``Accept-Encoding: gzip, deflate``（已有的不动）。"""
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("Accept-Encoding", ACCEPT_ENCODING)
+    return {**kwargs, "headers": headers}
+
+
 def _build(client_cls: type, transport_cls: type, kwargs: dict[str, Any]) -> Any:
+    kwargs = with_accept_encoding(kwargs)
     try:
         return client_cls(**kwargs)
     except (ValueError, ImportError):
