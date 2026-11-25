@@ -27,6 +27,8 @@ from loguru import logger
 
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
+from core.pdf_word_scripts import restore_scripts_from_pdf
+from core.pdf_word_shading import recolor_cells_from_pdf
 
 LogFn = Callable[[str, str], None]
 # progress(done, total)：整段 Word 翻译做完了多少（按 Word 各阶段的权重折算好，千分之一）。
@@ -900,6 +902,12 @@ def convert_pdf_to_docx(
     broken = broken_docx_pages(docx_path, _pdf_page_count(pdf_path))
     if broken:
         raise BrokenPagesError(broken)
+    # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、丢了的上下标
+    for fix in (recolor_cells_from_pdf, restore_scripts_from_pdf):
+        try:
+            fix(docx_path, pdf_path)
+        except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
+            logger.opt(exception=exc).warning(f"[PDF] {fix.__name__} 没做成，按转出的样子继续：{exc!r}")
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
