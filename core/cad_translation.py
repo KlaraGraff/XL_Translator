@@ -79,6 +79,7 @@ from core.cad_language import (
     is_residual_foreign_text,
 )
 from core.request_log import TICK_SECONDS, WAIT_LOG_SECONDS, BatchRequestLog
+from core.nothing_translated import NothingTranslatedError
 from core.request_progress import InFlightRequestTracker
 from core.translation_review import number_problem
 
@@ -1866,6 +1867,22 @@ class CadTranslationPipeline:
         seconds = f"{time.monotonic() - began:.1f}"
         self._emit(stage, done, total, finished.format(seconds))
 
+    def _call_with_some_translated(
+        self, translations: Mapping[str, str], texts: list[str], glossary: Mapping[str, str], **kwargs: Any
+    ) -> Mapping[str, Any]:
+        """调用翻译器；请求全部失败时，只有这张图纸一条译文都没有才算失败。
+
+        翻译服务在每一条都因为请求失败没拿到译文时抛 ``NothingTranslatedError``
+        （core/nothing_translated）。记忆库、术语表或前一轮已经给出了译文的，图纸照旧
+        写出已有的译文、其余保留原文并标需复核，与以前相同。
+        """
+        try:
+            return self._call_translator(texts, glossary, **kwargs)
+        except NothingTranslatedError:
+            if translations:
+                return {}
+            raise
+
     def _call_translator(
         self,
         remaining: list[str],
@@ -2151,7 +2168,9 @@ class CadTranslationPipeline:
             sent = 0
             translate_seconds = 0.0
             if plain and self.translator is not None:
-                raw_results = self._call_translator(plain, glossary, already=len(translations), total=len(texts))
+                raw_results = self._call_with_some_translated(
+                    translations, plain, glossary, already=len(translations), total=len(texts)
+                )
                 ai_results = dict(raw_results)
                 # 规则没过的已在翻译服务里交给模型复查（core/translation_review）：判意思一致的
                 # 不再用这里的规则否决，复查也没确认的带着原因交回。
@@ -2175,7 +2194,8 @@ class CadTranslationPipeline:
                 self._check_stop()
                 stats.language_checked = len(checked)
                 checked_results = dict(
-                    self._call_translator(
+                    self._call_with_some_translated(
+                        translations,
                         checked,
                         glossary,
                         already=len(translations),

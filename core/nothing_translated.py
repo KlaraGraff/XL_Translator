@@ -1,0 +1,54 @@
+"""一轮翻译里每一条都因为请求失败没拿到译文：任务（或这张图纸）算失败，不交出原文副本。
+
+``translate_texts`` 把接口放弃的批次按原文占位交回，好让其余批次照常写进文件。可如果
+每一批都失败了（例如 DeepSeek 的返回解不开，好友反馈 2026-11-25：53 条一条没翻），
+写出来的就是一份原样的文件，日志却说「已生成翻译图纸」。这里在调用方拿到结果后检查：
+全部条目都记在 ``stats.untranslated_sources`` 里、又不是用户按了停止，就抛
+:class:`NothingTranslatedError`。
+
+它继承 :class:`ApiCredentialRejectedError`（与 Key 被拒同一处理）：各页的批次循环和任务
+收尾已经把这类错误当成「整个任务失败」，不再把已有的占位当成部分结果写出去。
+
+只用在一份文件只发一轮请求的地方（Excel 主翻译、每张 CAD 图纸）。分好几轮发的页面
+（Word、PDF 逐页、扩展格式）某一轮全失败不等于整份文件没翻，不在这里判断。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+
+from core.api_concurrency_control import ApiCredentialRejectedError
+
+
+class NothingTranslatedError(ApiCredentialRejectedError):
+    """Every text of the run came back without a translation because its requests failed."""
+
+
+def nothing_translated_message(count: int, reason: str) -> str:
+    reason = str(reason or "").strip().rstrip("。.") or "模型服务返回了错误"
+    return (
+        f"{count} 条内容的翻译请求全部失败，没有获得任何译文：{reason}。"
+        "未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。"
+    )
+
+
+def raise_if_nothing_translated(
+    texts: Iterable[str],
+    stats: object,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
+    """``texts`` 一条都没拿到译文、全是请求失败时抛 :class:`NothingTranslatedError`。"""
+    unique = {str(text or "") for text in texts} - {""}
+    if not unique or (should_stop is not None and should_stop()):
+        return
+    failed = set(getattr(stats, "untranslated_sources", ()) or ())
+    stopped = set(getattr(stats, "stopped_sources", ()) or ())
+    if unique & stopped or not unique <= failed:
+        return
+    # 原始报错只进调试日志；这里取最后一批失败的原因换成一句人话（与运行日志同一标准）。
+    from core.engine_dispatcher import user_facing_batch_reason
+
+    items = list(getattr(stats, "failed_items", ()) or ())
+    raw = items[-1].get("error", "") if items else ""
+    raise NothingTranslatedError(nothing_translated_message(len(unique), user_facing_batch_reason(raw)))

@@ -445,6 +445,8 @@ class CadSurface(Surface):
                 # CAD 多查一条数字（不分语种，公共数字规则）；没过的和公共规则没过的一起交给
                 # 模型复查，结果带在返回值上（TranslationResults）。
                 extra_check=cad_rule_problem,
+                # 每一条都因为请求失败没拿到译文：这张图纸算失败，不输出原样的图纸。
+                fail_if_nothing_translated=True,
             )
 
         def translate_batch_with_sources(
@@ -465,6 +467,7 @@ class CadSurface(Surface):
                 progress=progress,
                 should_stop=should_stop,
                 error_callback=error_callback,
+                fail_if_nothing_translated=True,
             )
 
         # 记忆库与 Excel / Word 同一套规则：整段复用（手动维护的优先）、句中采用设定译法、
