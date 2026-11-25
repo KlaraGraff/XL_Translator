@@ -26,6 +26,12 @@ from core.task_runner import StatusMsg, user_facing_reason
 
 
 class PdfWordSegmentsMixin:
+    # PdfImageTranslationRunner 提供（这里只写给类型检查看）
+    _settings: Any
+    _word_pages: dict[tuple[str, int], dict[str, Any]]
+    _log: Any
+    _send_translation_progress: Any
+
     def _save_word_copy(self, record: PdfFileRecord, prepared: _PreparedPdfFile) -> None:
         """「同时输出 Word」：整份文件（空白页除外）都在同一段里转 Word 翻好时，把那份
         Word 放到译文 PDF 旁边。混合文件不出 Word：拆成几段的 Word 拼不回一份文件。"""

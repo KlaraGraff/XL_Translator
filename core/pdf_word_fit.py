@@ -149,18 +149,20 @@ def page_starts(anchors: list[list[str]], page_texts: list[str]) -> list[int] | 
         hits = [page for page in hits if page is not None]
         if not hits:
             return None
-        starts[index] = min(hits)
-        previous_index, previous_start = index, starts[index]
+        start = min(hits)
+        starts[index] = start
+        previous_index, previous_start = index, start
     if starts[located[0]] != located[0]:
         return None  # 开头几页（含没定位的页）各占一页，第一个找得到的页应正好排在它们后面
     # 没定位的页：紧挨在下一个找得到的页前面，各占一页；最后几页就排在 PDF 末尾
     following = len(page_texts)
     for index in range(len(anchors) - 1, -1, -1):
-        if starts[index] is None:
+        known = starts[index]
+        if known is None:
             following -= 1
             starts[index] = following
         else:
-            following = starts[index]
+            following = known
     result = [int(start) for start in starts if start is not None]
     if any(later <= earlier for earlier, later in pairwise(result)) or result[-1] >= len(page_texts):
         return None
