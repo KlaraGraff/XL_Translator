@@ -60,6 +60,29 @@ jobs:
         # -n auto：用满机器的几个核同时跑（pytest-xdist）。测试本来就各用各的临时目录。
         run: python -m pytest -q -p no:cacheprovider -n auto tests
 
+  # 文件名在 Windows 上的限制（结尾的点和空格、设备名 CON/NUL…）只有真 Windows 才会暴露：
+  # 反馈 #32 里「DEVIS CHINA CONSTRUCTION...pdf」在 macOS / Linux 上一切正常。
+  # 这里只跑相关的那个测试文件，按生产路径真走一遍 PDF 翻译（假模型）。
+  windows-filenames:
+    name: Windows file names (pytest)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-release-py311.txt
+      - name: Install dependencies
+        run: python -m pip install --constraint constraints-release-py311.txt --requirement requirements.txt --requirement requirements-test.txt
+      - name: Pytest (file names)
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest -q -p no:cacheprovider tests/test_safe_filename.py
+
   ui:
     name: UI (TypeScript)
     runs-on: ubuntu-latest
