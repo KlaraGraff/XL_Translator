@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from core.pdf_models import (
     TRANSLATED_PAGES_DIRNAME,
 )
 from core.pdf_review import PdfPageReviewResult
+from core.safe_filename import safe_relative_path
 
 
 def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
@@ -92,7 +94,32 @@ def translated_nothing_message(record: PdfFileRecord) -> str:
 
 
 def _page_archive_stem(relative_pdf: Path) -> Path:
+    """这份 PDF 的页图文件夹（相对路径）。
+
+    每一段都按 Windows 规则洗过：「DEVIS CHINA CONSTRUCTION...pdf」去掉扩展名后以点结尾，
+    原样当文件夹名在 Windows 上建出来就对不上，往里写页图报「文件不存在」（反馈 #32）。
+    """
+    return safe_relative_path(relative_pdf.with_suffix(""), fallback="未命名 PDF")
+
+
+def _legacy_page_archive_stem(relative_pdf: Path) -> Path:
     return relative_pdf.with_suffix("")
+
+
+def page_archive_dir(kind_dir: Path, relative_pdf: Path) -> Path:
+    """``kind_dir``（原页/译页/候选那一层）下这份 PDF 的页图文件夹。
+
+    旧版在 macOS 上留下的输出里，文件夹名没洗过（比如以点结尾）。续译、单页重译读旧
+    输出时，新名字不存在而旧名字在，就继续用旧的。Windows 上旧名字本来就建不对，
+    而且系统会把结尾的点当成不存在，判断「旧的在」会误认，所以只在非 Windows 上回退。
+    """
+    current = kind_dir / _page_archive_stem(relative_pdf)
+    if os.name == "nt":
+        return current
+    legacy = kind_dir / _legacy_page_archive_stem(relative_pdf)
+    if legacy != current and not current.exists() and legacy.is_dir():
+        return legacy
+    return current
 
 
 def _format_file_size(size_bytes: int) -> str:
@@ -258,16 +285,15 @@ def _pdf_file_material_paths(
     material_root: str | Path | None = None,
 ) -> dict[str, str]:
     output_dir = Path(material_root) if material_root is not None else Path(summary.output_dir)
-    archive_stem = _page_archive_stem(
-        Path(record.relative_path or record.name or "未命名 PDF")
-    )
+    relative_pdf = Path(record.relative_path or record.name or "未命名 PDF")
+    pages_root = output_dir / PDF_PAGES_ROOT
     return {
-        "source_pages": str(output_dir / PDF_PAGES_ROOT / SOURCE_PAGES_DIRNAME / archive_stem),
+        "source_pages": str(page_archive_dir(pages_root / SOURCE_PAGES_DIRNAME, relative_pdf)),
         "translated_pages": str(
-            output_dir / PDF_PAGES_ROOT / TRANSLATED_PAGES_DIRNAME / archive_stem
+            page_archive_dir(pages_root / TRANSLATED_PAGES_DIRNAME, relative_pdf)
         ),
         "review_candidates": str(
-            output_dir / PDF_PAGES_ROOT / REVIEW_CANDIDATES_DIRNAME / archive_stem
+            page_archive_dir(pages_root / REVIEW_CANDIDATES_DIRNAME, relative_pdf)
         ),
     }
 

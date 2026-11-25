@@ -33,7 +33,7 @@ from core.pdf_models import (
     PdfFileRecord,
     PdfPageRecord,
 )
-from core.pdf_task_report import _page_archive_stem
+from core.pdf_task_report import page_archive_dir
 
 # 清单里的键可能比这个版本多、也可能比它少（用户可写的数据、前后版本都会写）：
 # 认识的键照收，不认识的忽略，缺的用记录自己的默认值，绝不因为多一个字段就丢页。
@@ -159,7 +159,7 @@ def _page_archive_dir(
     if not relative or any(part in {"..", ""} for part in parts):
         return None
     dirname = SOURCE_PAGES_DIRNAME if source else TRANSLATED_PAGES_DIRNAME
-    archive = manifest_dir / PDF_PAGES_ROOT / dirname / _page_archive_stem(Path(relative))
+    archive = page_archive_dir(manifest_dir / PDF_PAGES_ROOT / dirname, Path(relative))
     try:
         resolved = archive.resolve(strict=False)
         base = manifest_dir.resolve(strict=False)

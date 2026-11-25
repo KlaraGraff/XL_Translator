@@ -6,9 +6,8 @@ import re
 from pathlib import Path
 
 from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.safe_filename import clean_filename_fragment
 
-
-_ILLEGAL_FILE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def translate_names(
@@ -58,7 +57,7 @@ def translate_names(
     result: dict[str, str] = {}
     for name in originals:
         raw_candidate = str(translated.get(name.strip()) or "").strip().strip('"“”‘’')
-        candidate = _ILLEGAL_FILE_CHARS.sub("_", raw_candidate).rstrip(". ")
+        candidate = clean_filename_fragment(raw_candidate, "")
         # A model response containing a path or multiline explanation is not a name.
         if not candidate or "\n" in raw_candidate or len(candidate) > 180:
             candidate = name
