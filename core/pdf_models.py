@@ -190,6 +190,8 @@ class PageQualityResult:
     # 命中的页照样进产物，只是打上「请复核」并在报告里点名。
     review_reasons: list[str] = field(default_factory=list)
     review_message: str = ""
+    # 译图内容相对原页内容的大小，1.0 是一样大；量不准时为 None。
+    content_scale: float | None = None
 
 
 @dataclass

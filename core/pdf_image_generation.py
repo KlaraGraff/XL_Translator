@@ -11,6 +11,7 @@ PdfImageTranslationRunner 通过 PdfImageGenerationMixin 用它。
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 from core.pdf_models import SOURCE_TYPE_PDF
@@ -49,6 +50,9 @@ class PdfImageGenerationMixin:
         last_image_bytes: bytes = b""
         last_review_failed = False
         review_feedback = ""
+        # 内容被画小的那张图：重做一次，重做没拿到可用结果时就交这张（不能让一页
+        # 能看的译图变成失败占位页）。
+        shrunk_fallback: tuple[bytes, PageQualityResult] | None = None
         target_language = _pit.get_target_lang_display(
             self._settings.pdf.target_lang,
             self._settings.custom_target_langs,
@@ -169,6 +173,24 @@ class PdfImageGenerationMixin:
             )
             page_record.attempts = attempt
             last_quality = quality
+            if _pit.PDF_QC_CONTENT_SHRUNK in quality.review_reasons:
+                if shrunk_fallback is None and attempt < max_attempts:
+                    shrunk_fallback = (image_bytes, quality)
+                    review_feedback = _pit.CONTENT_SHRUNK_RETRY_FEEDBACK
+                    last_error = quality.review_message
+                    self._record_page_retrying(page_record)
+                    self._log(
+                        "WARN",
+                        f"{self._page_log_prefix(page_record)}第 {attempt}/{max_attempts} 次自动检查未通过："
+                        f"{quality.review_message}，重做一次。",
+                    )
+                    attempt += 1
+                    continue
+                quality = _with_final_shrunk_message(quality, retried=shrunk_fallback is not None)
+                last_quality = quality
+            elif shrunk_fallback is not None:
+                # 重做后内容大小正常了：上一张缩小的图作废。
+                shrunk_fallback = None
             self._apply_quality_flags(page_record, quality)
             last_image_bytes = image_bytes
             candidate_artifact: dict[str, Any] | None = None
@@ -435,6 +457,16 @@ class PdfImageGenerationMixin:
             )
             attempt += 1
 
+        if shrunk_fallback is not None and page_record.status != "success":
+            return self._accept_shrunk_fallback(
+                page_record,
+                shrunk_fallback,
+                page_count=page_count,
+                translated_pages_dir=translated_pages_dir,
+                preserve_model_format=preserve_model_format,
+                last_review_failed=last_review_failed,
+            )
+
         if (
             source_type != _pit.SOURCE_TYPE_IMAGE
             and
@@ -526,6 +558,47 @@ class PdfImageGenerationMixin:
         page_record.error = last_error or "此页未能生成译图"
         self._record_page_placeholder(page_record)
         self._log_page_not_generated(page_record)
+        return page_record
+
+    def _accept_shrunk_fallback(
+        self: PdfImageTranslationRunner,
+        page_record: PdfPageRecord,
+        fallback: tuple[bytes, PageQualityResult],
+        *,
+        page_count: int,
+        translated_pages_dir: Path,
+        preserve_model_format: bool,
+        last_review_failed: bool,
+    ) -> PdfPageRecord:
+        """重做那一轮没拿到可用的图：交第一次那张内容偏小的图，标需人工复核。"""
+        image_bytes, quality = fallback
+        quality = _with_final_shrunk_message(quality, retried=True)
+        self._apply_quality_flags(page_record, quality)
+        output_path = _pit._translated_page_output_path(
+            translated_pages_dir,
+            page_record=page_record,
+            page_count=page_count,
+            image_bytes=image_bytes,
+            preserve_model_format=preserve_model_format,
+        )
+        width, height = self._write_accepted_page_image(
+            image_bytes,
+            output_path,
+            page_record=page_record,
+            quality=quality,
+            preserve_model_format=preserve_model_format,
+        )
+        if last_review_failed:
+            page_record.review_status = "failed"
+            self._record_page_review_failed()
+        page_record.status = "success"
+        page_record.placeholder = False
+        page_record.translated_image_path = str(output_path)
+        page_record.output_width_px = width
+        page_record.output_height_px = height
+        page_record.error = ""
+        self._mark_image_model_success()
+        self._record_page_recovered(page_record)
         return page_record
 
     def _apply_quality_flags(
@@ -777,6 +850,13 @@ class PdfImageGenerationMixin:
             visible=False,
         )
         return width, height
+
+
+def _with_final_shrunk_message(quality: PageQualityResult, *, retried: bool) -> PageQualityResult:
+    """这张缩小的图要交出去了：把质检提示换成带「建议换模型」的那一句。"""
+    neutral = _pit.content_shrunk_message(quality.content_scale)
+    final = _pit.content_shrunk_message(quality.content_scale, final=True, retried=retried)
+    return dataclasses.replace(quality, review_message=quality.review_message.replace(neutral, final))
 
 
 # 放在文件末尾：先定义好上面的类，再取原模块，两边谁先被导入都不会循环导入失败。
