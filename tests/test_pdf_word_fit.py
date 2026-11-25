@@ -15,7 +15,7 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 
 from core import pdf_word_fit
-from core.pdf_word_fit import _anchors, fit_pages, page_groups, pages_per_group, shrink_group
+from core.pdf_word_fit import _anchors, fit_pages, page_groups, page_starts, pages_per_group, shrink_group
 
 _PAGE_BREAK = '<w:p {ns}><w:pPr><w:sectPr/></w:pPr></w:p>'
 _COLUMN_BREAK = '<w:p {ns}><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p>'
@@ -76,6 +76,27 @@ class PdfWordFitTests(unittest.TestCase):
         anchors = _anchors(page_groups(doc.element.body))
         self.assertEqual(anchors, [[], []])
         self.assertIsNone(pages_per_group(anchors, ["a", "Page1of2", "Page2of2"]))
+
+    def test_blank_pages_count_as_one_page_each(self):
+        # #30：一段里夹着空白页（没有定位句）。以前一页找不到就整段不缩字号。
+        anchors = [["第一页开头"], [], ["第三页开头"], ["第四页开头"], []]
+        texts = ["第一页开头", "第一页溢出", "", "第三页开头", "第四页开头", "第四页溢出", ""]
+        self.assertEqual(page_starts(anchors, texts), [0, 2, 3, 4, 6])
+        self.assertEqual(pages_per_group(anchors, texts), [2, 1, 1, 2, 1])
+        # 开头就是空白页
+        self.assertEqual(pages_per_group([[], ["第二页开头"]], ["", "第二页开头", "溢出"]), [1, 2])
+        # 空白页挤不下：位置对不上，不猜
+        self.assertIsNone(pages_per_group([["第一页开头"], [], ["第三页开头"]], ["第一页开头", "第三页开头"]))
+        self.assertIsNone(pages_per_group([["第一页开头"], []], ["第一页开头"]))
+
+    def test_fit_shrinks_pages_next_to_a_blank_page(self):
+        doc = self._doc([["第一页开头独有的一句话"], [" "], ["第三页开头独有的一句话"]])
+        path = self._save(doc)
+        rounds = [["第一页开头独有的一句话", "溢出", "", "第三页开头独有的一句话"],
+                  ["第一页开头独有的一句话", "", "第三页开头独有的一句话"]]
+        with mock.patch.object(pdf_word_fit, "pdf_page_texts", side_effect=rounds):
+            result = fit_pages(path, path.with_suffix(".pdf"), 3, lambda _docx, _pdf: None)
+        self.assertEqual((result.pages, result.scaled, result.still_over), (3, {1: 0.9}, []))
 
     def test_first_page_must_start_the_pdf(self):
         self.assertIsNone(pages_per_group([["第一页开头"], ["第二页开头"]], ["溢出", "第一页开头", "第二页开头"]))
@@ -154,7 +175,7 @@ class PdfWordFitTests(unittest.TestCase):
         record.name = "清单.pdf"
         with mock.patch.object(pdf_word_fit, "fit_pages", side_effect=half_done):
             pages = runner._fit_word_segment(record, [1, 2, 3], docx, pdf, 5)
-        self.assertEqual(pages, 5)
+        self.assertEqual(pages, (5, None))
         self.assertEqual((docx.read_bytes(), pdf.read_bytes()), (b"docx-before", b"pdf-before"))
         self.assertEqual(sorted(path.name for path in Path(tmp.name).iterdir()), ["seg.docx", "seg.pdf"])
         self.assertEqual(logs[-1][0], "WARN")

@@ -75,6 +75,22 @@ class SegmentGrowthTests(unittest.TestCase):
         self.assertTrue(segment_grew_too_much(1, 48))
 
 
+class GrowthRunsTests(unittest.TestCase):
+    def test_only_the_block_that_grew_too_much_is_refused(self):
+        from core.pdf_word_guard import growth_runs
+
+        # 25 页：第 11–20 页那一块排成了 30 页，其余一页对一页
+        starts = [*range(10), *range(10, 40, 3), *range(40, 45)]
+        self.assertEqual(growth_runs(starts, 45), [(0, 10, 0, 10, True), (10, 20, 10, 40, False),
+                                                   (20, 25, 40, 45, True)])
+
+    def test_moderate_growth_stays_in_one_run(self):
+        from core.pdf_word_guard import growth_runs
+
+        starts = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]   # 第 1 页排成两页
+        self.assertEqual(growth_runs(starts, 13), [(0, 12, 0, 13, True)])
+
+
 class ImageGridPageTests(unittest.TestCase):
     fitz = None
 

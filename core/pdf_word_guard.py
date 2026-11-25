@@ -32,6 +32,9 @@ MAX_ANCHORS_PER_PAGE = 300
 #: （实测 260 页正文转回 292 页），多出一半以上就是转坏了。
 SEGMENT_PAGE_GROWTH = 1.5
 SEGMENT_PAGE_SLACK = 3
+#: 一整段转回 PDF 后，按这么多页原文一块分别查页数，哪块多得不正常只退哪块（#30：
+#: ICAO 9303 第 4–132 页一整段转回 220 页，整段 129 页全部退回、保留了英文）。
+GROWTH_WINDOW_PAGES = 10
 
 #: 页面路线说明里的原因（后面接「，改用整页图像翻译」）。界面按原文查 i18n 词条。
 REASON_IMAGE_GRID = "整页图片上叠有表格线，不适合转成 Word"
@@ -102,6 +105,25 @@ def broken_docx_pages(docx_path: Path, page_count: int) -> list[int]:
 def segment_grew_too_much(source_pages: int, output_pages: int) -> bool:
     """整段转回 PDF 的页数是不是多得不正常。"""
     return output_pages > max(source_pages * SEGMENT_PAGE_GROWTH, source_pages + SEGMENT_PAGE_SLACK)
+
+
+def growth_runs(starts: list[int], output_pages: int,
+                window: int = GROWTH_WINDOW_PAGES) -> list[tuple[int, int, int, int, bool]]:
+    """按 ``window`` 页原文一块查页数，相邻、结论相同的块合在一起。
+
+    ``starts``：每页原文在转回的 PDF 里从第几页开始（从 0 数，core.pdf_word_fit.page_starts）。
+    返回 [(原文第一页, 原文末页的下一页, PDF 第一页, PDF 末页的下一页, 能不能拼入)]，都从 0 数。"""
+    ends = starts[1:] + [output_pages]
+    runs: list[tuple[int, int, int, int, bool]] = []
+    for low in range(0, len(starts), window):
+        high = min(low + window, len(starts))
+        ok = not segment_grew_too_much(high - low, ends[high - 1] - starts[low])
+        if runs and runs[-1][4] == ok:
+            first, _high, pdf_first, _pdf_high, _ok = runs[-1]
+            runs[-1] = (first, high, pdf_first, ends[high - 1], ok)
+        else:
+            runs.append((low, high, starts[low], ends[high - 1], ok))
+    return runs
 
 
 class BrokenPagesError(Exception):
