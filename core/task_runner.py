@@ -39,6 +39,7 @@ from core.output_name_translation import (
     translate_names,
 )
 from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
+from core.nothing_translated import raise_if_nothing_translated
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
 from core.coverage_arbitration import RETRANSLATE_IDENTICAL, RETRANSLATE_MODEL
@@ -1860,6 +1861,15 @@ class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
             def _run_normal_api_translation() -> dict[str, str]:
                 if not misses:
                     return {}
+                results = _send_normal_api_translation()
+                # 记忆库没命中、没有夹杂多种语言的内容、也不是补译（补译还会按位置另写），
+                # 这一轮就是整个任务唯一的翻译请求。每条都因为请求失败没拿到译文时整个
+                # 任务失败，不写出一份全是原文的表（core/nothing_translated）。
+                if not hits and not mixed_texts and not self._untranslated_only:
+                    raise_if_nothing_translated(misses, batch_stats, should_stop=self.stop_requested)
+                return results
+
+            def _send_normal_api_translation() -> dict[str, str]:
                 if auto_source_lang:
                     language_results = translate_texts_with_sources(
                         misses,
