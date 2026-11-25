@@ -40,6 +40,7 @@ from config import (
 )
 from core import bilingual_writer
 from core.safe_filename import clean_filename_fragment
+from core.pdf_page_content_scale import content_scale, is_content_shrunk
 from core.source_layout import SourceLayout
 from core.local_endpoint import runtime_mode
 from core.output_metadata import (
@@ -250,6 +251,24 @@ PDF_QC_SAMPLE_LONG_EDGE_PX = 512
 # （典型是 gpt-image-2 的 16px 量化，最多约 1.3%）拉伸后肉眼不可见，补边
 # 反而多一次重采样。
 PDF_RATIO_LETTERBOX_THRESHOLD = 0.02
+# 译图把整页内容画小了（见 core/pdf_page_content_scale.py）。和上面几条不同，这条会让
+# 这一页自动重做一次；重做后还是小，页面照样交付，只标「需人工复核」。
+PDF_QC_CONTENT_SHRUNK = "content_shrunk"
+CONTENT_SHRUNK_RETRY_FEEDBACK = (
+    "1. type=content_shrunk; problem=The previous output drew the whole page much smaller than the "
+    "source and surrounded it with blank margins; suggestion=Keep the page content at its original "
+    "scale and position, filling the canvas exactly like the source page. Do not shrink the page or "
+    "add extra margins."
+)
+
+
+def content_shrunk_message(scale: float | None, *, final: bool = False, retried: bool = False) -> str:
+    """``final``：这一页就交这张图了，要带上换模型的建议。"""
+    text = f"图像模型把这页内容画小了（只有原页的约 {round((scale or 0) * 100)}%）"
+    if final:
+        text += "，重做一次后仍然偏小" if retried else ""
+        text += "。建议在设置中换一个图像模型"
+    return text
 
 # 单页渲染的总像素封顶。A4@300dpi 是 8.7MP、A3@300dpi 是 17.4MP，都不受影响；
 # A0 图纸@300dpi 是 139MP（pdfium 位图约 558MB + PIL 副本约 418MB），会被自动
@@ -638,6 +657,11 @@ def check_page_quality(
                 "译图几乎为空白，而原页有内容，可能存在内容丢失"
             )
 
+    scale = content_scale(image_bytes, source_image_path)
+    if is_content_shrunk(scale):
+        reasons.append(PDF_QC_CONTENT_SHRUNK)
+        messages.append(content_shrunk_message(scale))
+
     return PageQualityResult(
         True,
         "ok",
@@ -646,6 +670,7 @@ def check_page_quality(
         height,
         review_reasons=reasons,
         review_message="；".join(messages),
+        content_scale=scale,
     )
 
 
