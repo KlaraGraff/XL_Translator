@@ -464,11 +464,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def _no_fit(pdf):
+    from core.pdf_word_fit import FitResult
+
+    with fitz.open(pdf) as doc:
+        return FitResult(pages=len(doc), located=False)
+
+
 class WordRouteTaskTests(unittest.TestCase):
     """The whole task (``_run``) with a word-route file: stop and review status."""
 
     def _run_task(self, fake_word, *, route="auto", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None,
-                  out_pages=1):
+                  out_pages=1, image_model="image-model", fit=None):
         from core.pdf_routes import DocumentKind, PageKind
         from core.task_runner import DoneMsg, ErrorMsg, StoppedMsg
 
@@ -482,7 +489,7 @@ class WordRouteTaskTests(unittest.TestCase):
                                                    "oversized_page_threshold": threshold})
         settings.image_model_role.source_role = SOURCE_INDEPENDENT
         settings.image_model_role.cloud_provider = "custom_openai"
-        settings.image_model_role.cloud_model = "image-model"
+        settings.image_model_role.cloud_model = image_model
         settings.image_model_role.cloud_base_url = "https://images.example/v1"
         client = _RecordingImageClient(_png_bytes(10, 10))
         runner = PdfImageTranslationRunner(
@@ -502,7 +509,8 @@ class WordRouteTaskTests(unittest.TestCase):
                 patch("core.pdf_word_route.word_route_available", return_value=True), \
                 patch("core.pdf_image_translation.classify_document", return_value=kinds), \
                 patch("core.model_roles.get_key", return_value="secret"), \
-                patch("core.pdf_image_translation._save_image_model_availability", lambda *a, **k: None):
+                patch("core.pdf_image_translation._save_image_model_availability", lambda *a, **k: None), \
+                patch("core.pdf_word_fit.fit_pages", fit or (lambda _docx, pdf, _n, _export: _no_fit(pdf))):
             runner._run()
         final = None
         while True:
@@ -652,6 +660,47 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertTrue(all(REASON_PAGE_GROWTH in page.route_note for page in record.pages))
         with fitz.open(record.translated_pdf_path) as out:
             self.assertEqual(len(out), 2)
+
+    def test_only_the_block_that_grew_too_much_falls_back(self):
+        # #30 ICAO 9303：一整段转回的 PDF 页数多了一大截，以前整段退回。现在按每 10 页一块查，
+        # 只有多出太多页的那一块退回，其余照常拼入。
+        from core.pdf_word_fit import FitResult
+        from core.pdf_word_guard import REASON_PAGE_GROWTH
+        from core.task_runner import DoneMsg
+
+        calls: list[tuple[int, int]] = []
+        # 第 1–10 页各一页；第 11 页排成 6 页，第 12 页排成 6 页：一共 22 页，超过整段的上限 18 页
+        starts = [*range(10), 10, 16]
+        runner, final, client = self._run_task(
+            self._ok_word(calls), sizes=(A4,) * 12, text=(True,) * 12, out_pages=22,
+            fit=lambda *_args: FitResult(pages=22, starts=starts))
+        self.assertIsInstance(final, DoneMsg)
+        record = runner._prepared_files[0].record
+        self.assertEqual(calls, [(12, 1)])                    # translated once, as one segment
+        self.assertEqual([(item["first_page"], item["last_page"], item["status"]) for item in record.word_segments],
+                         [(1, 10, "done"), (11, 12, "failed")])
+        self.assertGreaterEqual(len(client.calls), 2)        # pages 11 and 12 went to the image model
+        pages = sorted(record.pages, key=lambda page: page.page_number)
+        self.assertEqual([page.word_status for page in pages], ["done"] * 10 + ["", ""])
+        self.assertIn(REASON_PAGE_GROWTH, pages[11].route_note)
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 12)                   # 10 pages from Word + 2 image pages
+
+    def test_kept_pages_say_why_image_translation_was_not_used(self):
+        from core.pdf_word_guard import REASON_PAGE_GROWTH
+        from core.task_runner import DoneMsg
+
+        logs: list[str] = []
+        calls: list[tuple[int, int]] = []
+        with patch.object(PdfImageTranslationRunner, "_log", lambda _self, _level, text: logs.append(text)):
+            runner, final, client = self._run_task(self._ok_word(calls), out_pages=9, image_model="")
+        self.assertIsInstance(final, DoneMsg)
+        self.assertEqual(len(client.calls), 0)
+        page = runner._prepared_files[0].record.pages[0]
+        self.assertIn(REASON_PAGE_GROWTH, page.kept_reason)
+        self.assertIn("整页图像翻译也用不了（图像翻译模型的名称不能为空）", page.kept_reason)
+        self.assertTrue(any("整页图像翻译也用不了（图像翻译模型的名称不能为空），这几页保留原文" in line
+                            for line in logs), logs)
 
     def test_large_scans_are_scanned_pages(self):
         from core.pdf_routes import DocumentKind, PageKind

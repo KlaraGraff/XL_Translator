@@ -4316,7 +4316,13 @@ class PdfImageTranslationRunner(
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
             return route, ""
-        return fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing), reason
+        fallback = fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing)
+        if (fallback != ROUTE_IMAGE and route != ROUTE_IMAGE and self._image_model_missing
+                and fallback_route(pdf_settings, oversized=oversized_a3, image_available=True) == ROUTE_IMAGE):
+            # 本该改用整页图像翻译、图像模型却用不了：两个原因都写上，不然用户只看到
+            # 「转回的 PDF 页数比原文多出太多」，不知道为什么没有改用图像翻译（#30）。
+            reason = f"{reason}；整页图像翻译也用不了（{self._image_model_missing}）"
+        return fallback, reason
 
     def _route_unusable_reason(self, route: str, source_path: str, page_number: int) -> str:
         if route == ROUTE_IMAGE and self._image_model_missing:

@@ -103,6 +103,7 @@
   "整页图片上叠有表格线，不适合转成 Word": {"en": "the page is a full-page image overlaid with table lines and is not suited to conversion to Word", "fr": "la page est une image pleine page recouverte de lignes de tableau et ne se prête pas à la conversion en Word"},
   "转成 Word 后版面出错": {"en": "the layout broke during conversion to Word", "fr": "la mise en page s'est dégradée lors de la conversion en Word"},
   "转回的 PDF 页数比原文多出太多": {"en": "the PDF converted back has far more pages than the original", "fr": "le PDF reconverti compte beaucoup plus de pages que l'original"},
+  "整页图像翻译也用不了（{0}）": {"en": "full-page image translation is not available either ({0})", "fr": "la traduction de page en image n'est pas disponible non plus ({0})"},
   "转成 Word 不可用": {"en": "conversion to Word is not available", "fr": "la conversion en Word n'est pas disponible"},
   "转成 Word 失败，这份文件可能不是普通排版的文字文档。": {"en": "Could not convert to Word; this file may not be an ordinary text document.", "fr": "Échec de la conversion en Word ; ce fichier n'est peut-être pas un document texte ordinaire."},
   "转成 Word 的组件不可用": {"en": "the PDF to Word component is not available", "fr": "le composant PDF vers Word n'est pas disponible"},

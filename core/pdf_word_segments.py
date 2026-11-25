@@ -14,11 +14,12 @@ from loguru import logger
 
 from core.output_metadata import build_translation_metadata, metadata_parameters, write_translation_metadata
 from core.pdf_models import PDF_OUTPUT_STATE_FAILED, SOURCE_TYPE_IMAGE, PdfFileRecord, _PreparedPdfFile
-from core.pdf_routes import KIND_BLANK, ROUTE_WORD, page_route
+from core.pdf_routes import KIND_BLANK, ROUTE_IMAGE, ROUTE_WORD, fallback_route, page_route
 from core.pdf_word_guard import (
     REASON_BROKEN_PAGE,
     REASON_IMAGE_GRID,
     REASON_PAGE_GROWTH,
+    growth_runs,
     segment_grew_too_much,
 )
 from core.task_runner import StatusMsg, user_facing_reason
@@ -142,6 +143,7 @@ class PdfWordSegmentsMixin:
         unavailable = self._word_segments_possible()
         hooks = self._inplace_hooks
         finished_pages = 0
+        next_index = 0
         for prepared, page_numbers in plans:
             record = prepared.record
             key = str(prepared.item.path)
@@ -151,10 +153,10 @@ class PdfWordSegmentsMixin:
                     pending[-1].append(number)
                 else:
                     pending.append([number])
-            index = 0
             while pending:
                 seg = pending.pop(0)
-                index += 1
+                next_index += 1
+                index = next_index
                 first, last = seg[0], seg[-1]
                 label = f"第 {first} 页" if first == last else f"第 {first}–{last} 页"
                 entry: dict[str, Any] = {"segment": index, "first_page": first, "last_page": last,
@@ -206,7 +208,8 @@ class PdfWordSegmentsMixin:
                         self._mark_unsuitable_word_pages(key, broken, REASON_BROKEN_PAGE)
                         self._log("WARN", f"[{record.name}] {label}转成 Word 后，"
                                   f"第 {'、'.join(str(number) for number in broken)} 页版面出错"
-                                  "（同一张图片重复几十次，或拆成大量碎块），这几页改用保底方式，其余页重新转换。")
+                                  f"（同一张图片重复几十次，或拆成大量碎块）。{self._word_fallback_phrase()}"
+                                  "其余页重新转换。")
                         pending[:0] = _runs_without(seg, set(broken))
                         continue
                     self._collect_word_terms(result.terms, f"{record.name} {label}")
@@ -220,9 +223,10 @@ class PdfWordSegmentsMixin:
                     translated_pdf = work / f"{stem}_p{first}-{last}_translated.pdf"
                     engine = docx_to_pdf(Path(result.output_path), translated_pdf)
                     output_pages = _pdf_page_count(translated_pdf)
+                    starts: list[int] | None = None
                     if output_pages > len(seg):
-                        output_pages = self._fit_word_segment(record, seg, Path(result.output_path),
-                                                              translated_pdf, output_pages)
+                        output_pages, starts = self._fit_word_segment(record, seg, Path(result.output_path),
+                                                                      translated_pdf, output_pages)
                 except OfficePdfError as exc:
                     mark("failed", "译好的正文转回 PDF 失败")
                     self._log("WARN", f"[{record.name}] {label}译好的正文转回 PDF 失败：{str(exc)[:200]}")
@@ -233,11 +237,34 @@ class PdfWordSegmentsMixin:
                     self._log("WARN", f"[{record.name}] {label}转成 Word 翻译出错："
                               + user_facing_reason(exc, fallback="处理这几页时出错。"))
                     continue
+                runs = growth_runs(starts, output_pages) if starts is not None else []
+                if len(runs) > 1:
+                    # 一段里只有某几块多出太多页：只退那几块，其余照常拼入（#30）。
+                    record.word_segments.remove(entry)
+                    issues_left = len(result.issues)
+                    for low, high, pdf_low, pdf_high, ok in runs:
+                        part = seg[low:high]
+                        part_label = f"第 {part[0]} 页" if len(part) == 1 else f"第 {part[0]}–{part[-1]} 页"
+                        if not ok:
+                            next_index += 1
+                            self._word_segment_failed(record, key, part, next_index, part_label, pdf_high - pdf_low)
+                            continue
+                        next_index += 1
+                        part_pdf = work / f"{stem}_p{part[0]}-{part[-1]}_translated.pdf"
+                        _extract_pdf_pages(translated_pdf, part_pdf, pdf_low + 1, pdf_high)
+                        # 待复核的条目记在整段的 Word 上，分不到页：算在第一块拼入的上面
+                        self._word_segment_done(record, key, part, next_index, part_label, result,
+                                                str(part_pdf), engine, issues=issues_left)
+                        issues_left = 0
+                        finished_pages += len(part)
+                    if total_pages:
+                        self._send_translation_progress(finished_pages, total_pages)
+                    continue
                 if segment_grew_too_much(len(seg), output_pages):
                     # 最后一道：拼进去页码就全部错开了。宁可这几页按保底方式重翻。
                     mark("failed", REASON_PAGE_GROWTH)
                     self._log("WARN", f"[{record.name}] {label}共 {len(seg)} 页，转回 PDF 后变成 "
-                              f"{output_pages} 页，版面已经出错，这几页改用保底方式。")
+                              f"{output_pages} 页，版面已经出错。{self._word_fallback_phrase()}")
                     continue
                 entry.update(docx_path=result.output_path, pdf_path=str(translated_pdf),
                              issue_count=len(result.issues), engine=engine)
@@ -247,9 +274,44 @@ class PdfWordSegmentsMixin:
                 segment_progress(1, 1)
                 self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
 
+    def _word_segment_failed(self, record: PdfFileRecord, key: str, pages: list[int], index: int,
+                             label: str, output_pages: int) -> None:
+        """转回的 PDF 比原文多出太多页的一段（或一块）：不拼入，这几页随后按保底方式处理。"""
+        record.word_segments.append({"segment": index, "first_page": pages[0], "last_page": pages[-1],
+                                     "docx_path": "", "pdf_path": "", "status": "failed",
+                                     "message": REASON_PAGE_GROWTH, "issue_count": 0, "engine": ""})
+        for number in pages:
+            self._word_pages[(key, number)] = {"segment": index, "status": "failed",
+                                               "message": REASON_PAGE_GROWTH, "note": ""}
+        self._log("WARN", f"[{record.name}] {label}共 {len(pages)} 页，转回 PDF 后变成 {output_pages} 页，"
+                  f"版面已经出错。{self._word_fallback_phrase()}")
+
+    def _word_segment_done(self, record: PdfFileRecord, key: str, pages: list[int], index: int, label: str,
+                           result: Any, pdf_path: str, engine: str, *, issues: int) -> None:
+        """一段里页数正常的一块：单独记成一段，装配时拼入这一块转回的 PDF。"""
+        record.word_segments.append({"segment": index, "first_page": pages[0], "last_page": pages[-1],
+                                     "docx_path": result.output_path, "pdf_path": pdf_path, "status": "done",
+                                     "message": "", "issue_count": issues, "engine": engine})
+        record.word_issue_count += issues
+        note = f"{label}的文字可以提取，转成 Word 翻译后转回 PDF 拼入"
+        for number in pages:
+            self._word_pages[(key, number)] = {"segment": index, "status": "done", "message": "", "note": note}
+        self._log("OK", f"[{record.name}] {label}已转成 Word 翻译，并转回 PDF，装配时按原页序拼入。")
+
+    def _word_fallback_phrase(self) -> str:
+        """转不成 Word 的页随后怎么处理，写进日志：图像翻译，还是保留原文、为什么。"""
+        missing = getattr(self, "_image_model_missing", "")
+        if fallback_route(self._settings.pdf, oversized=False, image_available=not missing) == ROUTE_IMAGE:
+            return "这几页改用整页图像翻译。"
+        if missing:
+            return f"整页图像翻译也用不了（{missing}），这几页保留原文。"
+        return "按设置，这几页保留原文。"
+
     def _fit_word_segment(self, record: PdfFileRecord, seg: list[int], docx_path: Path,
-                          pdf_path: Path, output_pages: int) -> int:
-        """译文比原文长、一页排不下时，把放不下的那几页缩小字号，一页原文仍是一页译文。"""
+                          pdf_path: Path, output_pages: int) -> tuple[int, list[int] | None]:
+        """译文比原文长、一页排不下时，把放不下的那几页缩小字号，一页原文仍是一页译文。
+
+        返回（缩完后的页数, 每页原文在 PDF 里从第几页开始；对不上位置时为 None）。"""
         from core.pdf_word_fit import fit_pages
         from core.pdf_word_route import docx_to_pdf
 
@@ -266,7 +328,7 @@ class PdfWordSegmentsMixin:
                 shutil.copy2(backup, path)
             log("WARN", f"[{record.name}] 译文放不下的页没能缩小字号，按原样拼入："
                 + user_facing_reason(exc, fallback="处理这几页时出错。"))
-            return output_pages
+            return output_pages, None
         finally:
             for _path, backup in backups:
                 backup.unlink(missing_ok=True)
@@ -276,7 +338,11 @@ class PdfWordSegmentsMixin:
         if fit.still_over:
             pages = "、".join(str(seg[index - 1]) for index in fit.still_over)
             log("WARN", f"[{record.name}] 第 {pages} 页缩到最小字号仍放不下，译文多占了页，请复核。")
-        return fit.pages
+        if not fit.located:
+            first, last = seg[0], seg[-1]
+            label = f"第 {first} 页" if first == last else f"第 {first}–{last} 页"
+            log("WARN", f"[{record.name}] {label}转回的 PDF 里对不上原文的页，没能缩小放不下的页的字号。")
+        return fit.pages, fit.starts
 
     def _mark_unsuitable_word_pages(self, key: str, pages: list[int], reason: str) -> None:
         """首选转 Word、但不能转的页：随后按保底方式处理，页面说明里写出原因。"""

@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 from loguru import logger
@@ -38,6 +39,10 @@ class FitResult:
     scaled: dict[int, float] = field(default_factory=dict)
     # 缩到下限仍放不下的页
     still_over: list[int] = field(default_factory=list)
+    # 缩完后每页原文在译文 PDF 里从第几页开始（从 0 数）；对不上位置时为 None
+    starts: list[int] | None = None
+    # False：译文 PDF 里找不到某一页原文的位置，一页也没缩
+    located: bool = True
 
 
 def _starts_page(sect_pr) -> bool:
@@ -125,19 +130,47 @@ def pdf_page_texts(pdf_path: Path) -> list[str]:
         doc.close()
 
 
-def pages_per_group(anchors: list[list[str]], page_texts: list[str]) -> list[int] | None:
-    """每页原文在译文 PDF 里占了几页；有一页找不到、或位置对不上就返回 None（不猜）。"""
-    starts: list[int] = []
-    for group_anchors in anchors:
-        # 每页原文都另起一页：从上一页原文开始的下一页往后找
-        begin = starts[-1] + 1 if starts else 0
+def page_starts(anchors: list[list[str]], page_texts: list[str]) -> list[int] | None:
+    """每页原文在译文 PDF 里从第几页开始（从 0 数）；位置对不上就返回 None（不猜）。
+
+    没有定位句的页（空白页，或只有页眉页脚、每页都一样的页）不用找：按占一页算，排在
+    下一个找得到的页前面。#30 的 ICAO 9303 一段夹着三页空白，以前一页找不到就整段
+    不缩字号，129 页转回成了 220 页。"""
+    starts: list[int | None] = [None] * len(anchors)
+    located = [index for index, group in enumerate(anchors) if group]
+    if not located:
+        return None
+    previous_index, previous_start = -1, -1
+    for index in located:
+        # 每页原文都另起一页；中间没定位的页各至少占一页
+        begin = previous_start + (index - previous_index)
         hits = [next((page for page in range(begin, len(page_texts)) if anchor in page_texts[page]), None)
-                for anchor in group_anchors]
+                for anchor in anchors[index]]
         hits = [page for page in hits if page is not None]
         if not hits:
             return None
-        starts.append(min(hits))
-    if not starts or starts[0] != 0:
+        starts[index] = min(hits)
+        previous_index, previous_start = index, starts[index]
+    if starts[located[0]] != located[0]:
+        return None  # 开头几页（含没定位的页）各占一页，第一个找得到的页应正好排在它们后面
+    # 没定位的页：紧挨在下一个找得到的页前面，各占一页；最后几页就排在 PDF 末尾
+    following = len(page_texts)
+    for index in range(len(anchors) - 1, -1, -1):
+        if starts[index] is None:
+            following -= 1
+            starts[index] = following
+        else:
+            following = starts[index]
+    result = [int(start) for start in starts if start is not None]
+    if any(later <= earlier for earlier, later in pairwise(result)) or result[-1] >= len(page_texts):
+        return None
+    return result
+
+
+def pages_per_group(anchors: list[list[str]], page_texts: list[str]) -> list[int] | None:
+    """每页原文在译文 PDF 里占了几页；位置对不上就返回 None（不猜）。"""
+    starts = page_starts(anchors, page_texts)
+    if starts is None:
         return None
     ends = starts[1:] + [len(page_texts)]
     return [end - start for start, end in zip(starts, ends)]
@@ -229,7 +262,7 @@ def fit_pages(docx_path: Path, pdf_path: Path, source_pages: int,
     groups = page_groups(doc.element.body)
     if len(groups) != source_pages:
         logger.info(f"[PDF] 译文 Word 有 {len(groups)} 个分页节，原文 {source_pages} 页，不逐页缩字")
-        return FitResult(pages=len(page_texts))
+        return FitResult(pages=len(page_texts), located=False)
     anchors = _anchors(groups)
     default_size = _default_size(doc)
     scale = [1.0] * source_pages
@@ -238,8 +271,11 @@ def fit_pages(docx_path: Path, pdf_path: Path, source_pages: int,
         used = pages_per_group(anchors, page_texts)
         if used is None:
             logger.info("[PDF] 译文 PDF 里找不到某一页原文的位置，不逐页缩字")
-            over = []
-            break
+            return FitResult(
+                pages=len(page_texts),
+                scaled={index + 1: round(value, 2) for index, value in enumerate(scale) if value < 1.0},
+                located=False,
+            )
         over = [index for index, count in enumerate(used) if count > 1]
         shrinkable = [index for index in over if scale[index] * SHRINK_STEP >= MIN_SCALE - 1e-9]
         if not over or not shrinkable:
@@ -257,4 +293,5 @@ def fit_pages(docx_path: Path, pdf_path: Path, source_pages: int,
         pages=len(page_texts),
         scaled={index + 1: round(value, 2) for index, value in enumerate(scale) if value < 1.0},
         still_over=[index + 1 for index in over],
+        starts=page_starts(anchors, page_texts),
     )
