@@ -12,6 +12,8 @@ from core.image_requests import (
     build_vision_payload,
     image_base_url,
     image_generation_method,
+    is_gpt_image_2_family,
+    is_gpt_image_model,
     supports_image_generation,
     supports_vision,
     vision_routes,
@@ -89,6 +91,19 @@ class ImageGenerationSupportTests(unittest.TestCase):
             "智谱 GLM的生成图片功能尚未接入本软件。"
             "如需使用，请在设置中为图像翻译模型改用「自定义配置」，填写兼容 OpenAI 接口的地址。",
         )
+
+
+class GptImageFamilyTests(unittest.TestCase):
+    def test_every_gpt_image_2_version_counts_as_the_new_family(self) -> None:
+        for model in ("gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.6-flare", " GPT-Image-2-mini ", "openai/gpt-image-2.5-sunburst"):
+            with self.subTest(model=model):
+                self.assertTrue(is_gpt_image_2_family(model))
+                self.assertTrue(is_gpt_image_model(model))
+
+    def test_older_and_lookalike_models_do_not(self) -> None:
+        for model in ("gpt-image-1", "gpt-image-1.5", "gpt-image-20", "gpt-image-", "", "gemini-2.5-flash-image"):
+            with self.subTest(model=model):
+                self.assertFalse(is_gpt_image_2_family(model))
 
 
 if __name__ == "__main__":

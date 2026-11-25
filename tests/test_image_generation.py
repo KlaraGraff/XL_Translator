@@ -164,6 +164,24 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(portrait_size, "1024x1536")
         self.assertEqual(landscape_size, "1536x1024")
 
+    def test_later_gpt_image_2_versions_request_the_page_ratio(self) -> None:
+        # gpt-image-2.5-flare / 2.6-flare 以前被当成老模型，只能要 1024x1536，A4 页要补白边。
+        with tempfile.TemporaryDirectory() as tmp:
+            a4 = Path(tmp) / "a4.png"
+            Image.new("RGB", (1240, 1754), "white").save(a4, format="PNG")
+            for model in (
+                "gpt-image-2",
+                "gpt-image-2.5-flare",
+                "gpt-image-2.6-flare",
+                "GPT-Image-2-mini",
+                "openai/gpt-image-2.6-flare",
+            ):
+                with self.subTest(model=model):
+                    self.assertEqual(_pdf_page_image_size_for_model(a4, model), "1440x2048")
+            for model in ("gpt-image-1", "gpt-image-1.5", "gpt-image-20"):
+                with self.subTest(model=model):
+                    self.assertEqual(_pdf_page_image_size_for_model(a4, model), "1024x1536")
+
     def test_gpt_image_edit_retries_with_minimal_payload_after_400(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "page.png"

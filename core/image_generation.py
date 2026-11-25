@@ -24,7 +24,13 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import system_proxy
-from core.image_requests import image_data_url, image_generation_method
+from core.image_requests import (
+    GPT_IMAGE_2_FAMILY,
+    image_data_url,
+    image_generation_method,
+    is_gpt_image_2_family,
+    is_gpt_image_model,
+)
 from core.zh_hant import TRADITIONAL_CHINESE, is_traditional_chinese
 from core.model_roles import (
     EffectiveModelConfig,
@@ -48,8 +54,7 @@ IMAGE_GENERATION_TIMEOUT_SECONDS = 240.0
 # 耗时量级，上面那份延迟统计对它不适用；而它是同步端点、界面上转圈还没有取消按钮，
 # 240 x 3 次重试 = 12 分钟，用户只能干等。测试要的是「通不通」，不是「等得出结果」。
 IMAGE_TEST_TIMEOUT_SECONDS = 90.0
-GPT_IMAGE_MODEL_PREFIX = "gpt-image-"
-GPT_IMAGE_2_MODEL = "gpt-image-2"
+GPT_IMAGE_2_MODEL = GPT_IMAGE_2_FAMILY  # 老名字，测试里还在用
 GPT_IMAGE_2_MIN_PIXELS = 655_360
 GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
@@ -668,7 +673,7 @@ def _normalize_base_url(config: EffectiveModelConfig) -> str:
 
 
 def _is_gpt_image_model(model: str) -> bool:
-    return str(model or "").strip().lower().startswith(GPT_IMAGE_MODEL_PREFIX)
+    return is_gpt_image_model(model)
 
 
 def _pdf_page_image_size_for_model(source_image_path: Path, model: str) -> str:
@@ -680,7 +685,7 @@ def _pdf_page_image_size_for_model(source_image_path: Path, model: str) -> str:
 
 def _pdf_page_size_for_model(width: int, height: int, model: str) -> tuple[int, int]:
     """The pixel size one page of `width`×`height` will actually be requested at."""
-    if model != GPT_IMAGE_2_MODEL:
+    if not is_gpt_image_2_family(model):
         if width > height:
             return 1536, 1024
         if height > width:
@@ -734,7 +739,7 @@ def pdf_page_ratio_tolerance(
 
     The page QC gate and the size request have to come from the same place, or
     the gate turns into a judgement no answer can pass.  ``gpt-image-1`` (and
-    every non-``gpt-image-2`` member of the family) only accepts three fixed
+    every member older than the ``gpt-image-2`` family of the family) only accepts three fixed
     sizes: asking it for an A4 page and then demanding the reply match A4's
     aspect ratio within 1% is arithmetically impossible — every page burns the
     full retry budget and every retry is a paid API call.  ``gpt-image-2`` has
