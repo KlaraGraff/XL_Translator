@@ -110,6 +110,7 @@ function confirmShared(view: BatchView, labels: string[], repaint: () => void): 
 
 function showFailed(failed: NonNullable<BatchStartResponse["failed"]>): void {
   const needsModel = failed.some((item) => MODEL_MISSING.has(item.reason ?? ""));
+  const needsPdfComponent = failed.some((item) => item.reason === "pdf_component_missing");
   openModal({
     tone: "warn",
     icon: "warn",
@@ -120,7 +121,9 @@ function showFailed(failed: NonNullable<BatchStartResponse["failed"]>): void {
     ],
     actions: needsModel
       ? [{ label: t("知道了") }, { label: t("前往设置"), variant: "primary", onClick: () => navigate("settings", { page: "models" }) }]
-      : [{ label: t("知道了"), variant: "primary" }],
+      : needsPdfComponent
+        ? [{ label: t("知道了") }, { label: t("去安装组件"), variant: "primary", onClick: () => navigate("plugins", { focus: "pdf" }) }]
+        : [{ label: t("知道了"), variant: "primary" }],
   });
 }
 

@@ -12,6 +12,7 @@ from loguru import logger
 from api.surfaces.base import PHASE_READ, PHASE_TRANSLATE, PHASE_WRITE, RunnerRequest, Surface, suffixes
 from api.task_contracts import (
     REASON_IMAGE_MODEL_MISSING,
+    REASON_PDF_COMPONENT_MISSING,
     REASON_PDF_REVIEW_IMAGE_UNSEEN,
     REASON_PDF_REVIEW_MODEL_MISSING,
     REASON_PDF_REVIEW_NO_IMAGE_INPUT,
@@ -118,14 +119,19 @@ class PdfSurface(Surface):
                 ) from exc
             if not text_model.model:
                 raise TaskInputError("所选的 PDF 翻译方式要用文本翻译模型，请先在模型设置里填好它。")
+        image_available = True
         try:
             _validate_image_model(settings)
         except TaskInputError:
             # 原位替换、转 Word、自动组合不一定用到图像模型：没设置也能开始，
             # 需要整页图像翻译的页保留原样，完成后列出来。
-            if _inplace_enabled(settings):
-                return
-            raise
+            if not _inplace_enabled(settings):
+                raise
+            image_available = False
+        if not options.allow_missing_pdf_component:
+            _check_pdf_component(files, settings, image_available=image_available)
+        if not image_available:
+            return
         if not settings.pdf.review_enabled:
             return
         try:
@@ -277,6 +283,45 @@ def _check_review_image_input(settings: AppSettings, review_model: Any) -> str:
         availability_message=image_input_availability_message(review_model.label, probe.result, probe.message),
     )
     return probe.result
+
+
+def _check_pdf_component(files: list[Any], settings: AppSettings, *, image_available: bool) -> None:
+    """自动组合里要用「PDF 处理组件」的页（图纸原位替换、文字页转 Word），本机没装时开始前就说。
+
+    反馈 #33：A3 图纸要原位替换，没装组件；大幅面页又不改用图像翻译，一页没翻，任务跑完
+    才失败。现在开始前拦一下，给「去安装」和「仍然开始」（allow_missing_pdf_component）。
+    """
+    if getattr(settings.pdf, "translation_route", "image") != "auto":
+        return
+    from core.pdf_component import is_available
+
+    if is_available(refresh=True):
+        return
+    from core.pdf_component_needs import pdf_component_need
+
+    need = pdf_component_need(files, settings.pdf, image_available=image_available)
+    if not need.needed:
+        return
+    if need.kept_pages >= need.pages:
+        message = (
+            f"所选文件中有 {need.pages} 页要用「PDF 处理组件」，本机还没有安装。"
+            "这些页没有别的方式可以翻译，会保留原样。"
+        )
+    elif need.kept_pages:
+        message = (
+            f"所选文件中有 {need.pages} 页要用「PDF 处理组件」，本机还没有安装。"
+            f"其中 {need.kept_pages} 页会保留原样，其余改用整页图像翻译。"
+        )
+    else:
+        message = (
+            f"所选文件中有 {need.pages} 页要用「PDF 处理组件」，本机还没有安装。"
+            "这些页会改用整页图像翻译，排版和清晰度不如原位替换和转 Word。"
+        )
+    raise TaskInputError(
+        message,
+        reason=REASON_PDF_COMPONENT_MISSING,
+        accept={"allow_missing_pdf_component": True},
+    )
 
 
 def _inplace_enabled(settings: AppSettings) -> bool:
