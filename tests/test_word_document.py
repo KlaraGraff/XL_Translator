@@ -1619,7 +1619,9 @@ class WordDocumentTests(unittest.TestCase):
     def test_word_recovery_pool_keeps_review_when_semantic_is_uncertain(self) -> None:
         source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
         candidate = "Signing Date / Date: February 10, 2026"
-        engine = SemanticWordEngine({source: source}, verdict="uncertain")
+        # 重译还是同一稿英文（不是原样还回）：复查拿不准就照旧保留复核。原样还回、复查拿不准的
+        # 另见 tests/test_word_echo_review.py。
+        engine = SemanticWordEngine({source: candidate}, verdict="uncertain")
         retry_settings = WordBatchSettings()
         retry_settings.max_paragraphs_per_batch = 1
         pool = _WordRecoveryPool(

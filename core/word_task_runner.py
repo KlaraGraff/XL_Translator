@@ -111,6 +111,7 @@ from core.residual_repair import (
     REPAIR_METHOD_LABELS,
     run_repair_ladder,
 )
+from core.review_context import contexts_by_file
 from core.resume_detection import (
     baseline_missing_source_texts,
     describe_baseline_divergence,
@@ -1233,6 +1234,8 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                     ),
                     source_locations=segment_locations,
                     defer_until_started=True,
+                    # 复查时带上前后几段/几格原文：单独一格「pi」离开上下文说不准是什么（反馈 #28）
+                    review_contexts=contexts_by_file(segment_locations),
                 )
                 main_drain_gate = _MainTranslationDrainGate(
                     queue_count=int(bool(misses)) + int(bool(mixed_texts)),

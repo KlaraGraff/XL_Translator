@@ -8,6 +8,10 @@
              最多重译「单段重试次数」轮；
 * 拿不准、请求出错、超时、模型漏答 → 一律当作拿不准，按各模式原来的办法处理。
   **绝不会因为复查出错就放行一条译文。**
+* 例外只有一种：译文就是原文（模型原样还回，只差大小写、空白、标点），模型复查也答了、
+  答的是拿不准。这时文件里留下的本来就是原文，采用和不采用写进去的字一模一样，差别只在
+  要不要涂需复核、重译三轮；复查没指出哪里没翻，就不该当失败（「Ai」这种单独的变量名，
+  离开上下文谁也说不准）。请求出错、模型漏答的照旧不算。
 
 分批：每批最多 10 条、合计约 3000 字，很长的一段单独一批；按编号对答案，漏答的
 单独再问一次，还没答就算拿不准。请求走 ``API_REQUEST_CATEGORY_RECOVERY``、同一个
@@ -22,6 +26,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -66,12 +71,16 @@ class ReviewItem:
     source: str
     translation: str
     problem: str = ""
+    #: 这一条在文档里前后紧挨着的原文（core/review_context），只用来看清它是什么。
+    context: str = ""
 
 
 @dataclass(frozen=True)
 class ReviewVerdict:
     verdict: str = VERDICT_UNCERTAIN
     reason: str = ""
+    #: 模型真的答了这一条。出错、超时、漏答、已停止时补上的「拿不准」是 False。
+    answered: bool = False
 
     @property
     def equivalent(self) -> bool:
@@ -80,6 +89,35 @@ class ReviewVerdict:
     @property
     def not_equivalent(self) -> bool:
         return self.verdict == VERDICT_NOT_EQUIVALENT
+
+
+def is_kept_as_is(source: str, translation: str) -> bool:
+    """译文就是原文：只差大小写、空白、标点（「xyz,」还回「xyz，」也算）。"""
+
+    def letters(text: str) -> str:
+        return "".join(ch for ch in unicodedata.normalize("NFKC", str(text or "")).casefold() if ch.isalnum())
+
+    source_letters = letters(source)
+    if source_letters:
+        return source_letters == letters(translation)
+    return str(source or "").strip() == str(translation or "").strip() != ""
+
+
+def review_accepts(source: str, translation: str, verdict: ReviewVerdict | None) -> bool:
+    """复查认可这条译文：模型判意思一致；或者原样还回的、模型答了拿不准（见模块说明）。
+    没拿到模型的回答（``None``，或出错、漏答、已停止时补上的拿不准）一律不认可。"""
+    if verdict is None:
+        return False
+    if verdict.equivalent:
+        return True
+    return verdict.answered and verdict.verdict == VERDICT_UNCERTAIN and is_kept_as_is(source, translation)
+
+
+def accepted_reason(verdict: ReviewVerdict) -> str:
+    if verdict.equivalent:
+        return verdict.reason
+    note = "原样保留：复查没有指出要翻译的内容"
+    return f"{note}（{verdict.reason}）" if verdict.reason else note
 
 
 @dataclass(frozen=True)
@@ -172,6 +210,8 @@ def build_review_prompt(reason_lang: str = "zh") -> str:
         "- 整句或其中一部分没有翻译、只翻了一部分、只是摘要；\n"
         "- 译文夹杂既不属于原文也不属于目标语言的其他语言文字；\n"
         "- 遗漏主体、义务、条件、范围或关键限制。\n"
+        "有 context 的条目，context 是这一条在文档里前后紧挨着的原文，只用来看清这一条是什么"
+        "（下标变量、编号、名称，还是要翻译的词）；context 本身不用复查，也不要求译文包含它。\n"
         "无法确定时判定为 uncertain。\n"
         f"reason 用{reason_language}写一句话：一致时说明为什么程序的提示是误判，"
         "不一致时说清楚具体错在哪里（会原样交给翻译模型重译）。\n"
@@ -192,7 +232,7 @@ def build_review_batches(
     current_chars = 0
     max_items = max(1, int(max_items))
     for item in items:
-        size = len(item.source) + len(item.translation)
+        size = len(item.source) + len(item.translation) + len(item.context)
         if size >= max_chars:
             batches.append([item])
             continue
@@ -241,7 +281,7 @@ def _parse_verdicts(raw: str, ids: set[str]) -> dict[str, ReviewVerdict]:
         verdict = str(row.get("verdict") or "").strip().lower()
         if verdict not in _VERDICTS:
             verdict = VERDICT_UNCERTAIN
-        verdicts[item_id] = ReviewVerdict(verdict, str(row.get("reason") or "").strip())
+        verdicts[item_id] = ReviewVerdict(verdict, str(row.get("reason") or "").strip(), answered=True)
     return verdicts
 
 
@@ -268,6 +308,7 @@ def _review_batch(
                     "source": item.source,
                     "translation": item.translation,
                     "rule_finding": item.problem,
+                    **({"context": item.context} if item.context else {}),
                 }
                 for item in batch
             ],
@@ -439,8 +480,8 @@ def review_and_repair(
         for source in sources:
             translation, problem = pending[source]
             verdict = verdicts.get(ids[source], ReviewVerdict())
-            if verdict.equivalent:
-                outcomes[source] = RepairOutcome(OUTCOME_ACCEPTED, translation, verdict.reason, rounds)
+            if review_accepts(source, translation, verdict):
+                outcomes[source] = RepairOutcome(OUTCOME_ACCEPTED, translation, accepted_reason(verdict), rounds)
             elif verdict.not_equivalent and retranslate is not None and rounds < max_rounds and not stopped:
                 redo[source] = (translation, verdict.reason or problem)
             else:
