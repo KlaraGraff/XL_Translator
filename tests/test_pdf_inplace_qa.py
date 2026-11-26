@@ -67,3 +67,50 @@ class RemovedPathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImageListTests(unittest.TestCase):
+    """手册封底：软蒙版里画的投影图在 MuPDF 整理内容时被合并，图片清单 16 条变 10 条，
+    页面一点没变，原来报「图片有变化」整页退回英文。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def _page(self, name: str, *, hidden: bool, visible: bool) -> Path:
+        from PIL import Image
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        if hidden:  # 被上面那张不透明的图整个盖住
+            page.insert_image(fitz.Rect(300, 300, 360, 330), stream=_png())
+        buf = io.BytesIO()
+        Image.new("RGB", (40, 30), (200, 60, 40)).save(buf, "PNG")
+        page.insert_image(fitz.Rect(290, 290, 370, 340), stream=buf.getvalue())
+        if visible:
+            page.insert_image(fitz.Rect(100, 600, 200, 680), stream=_png())
+        path = self.root / f"{name}.pdf"
+        doc.save(path)
+        return path
+
+    def _check(self, output: Path) -> dict:
+        from core.pdf_vector import qa
+
+        source = self._page("source", hidden=True, visible=True)
+        manifest, report = self.root / "manifest.json", self.root / "writeback.json"
+        manifest.write_text(json.dumps({"rows": []}), encoding="utf-8")
+        report.write_text(json.dumps({"written": [], "skipped": [], "metrics": {"candidates": 0, "fit_modes": {}}}),
+                          encoding="utf-8")
+        return qa.run(source, output, manifest, report, self.root / "qa.json", self.root / "ledger.csv")
+
+    def test_an_image_draw_that_never_showed_does_not_fail_the_page(self):
+        res = self._check(self._page("out", hidden=False, visible=True))
+        self.assertEqual((res["images"]["source"], res["images"]["output"]), (3, 2))
+        self.assertTrue(res["images"]["identical"])
+        self.assertEqual(res["status"], "pass")
+
+    def test_a_visible_image_that_disappears_still_fails_the_page(self):
+        res = self._check(self._page("out", hidden=True, visible=False))
+        self.assertFalse(res["images"]["identical"])
+        self.assertEqual(res["status"], "review")
