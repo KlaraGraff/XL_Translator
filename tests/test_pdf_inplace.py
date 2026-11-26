@@ -387,6 +387,28 @@ class InplaceTaskTests(unittest.TestCase):
         with fitz.open(record.translated_pdf_path) as out:
             self.assertEqual(len(out), 3)
 
+    def test_blank_letter_page_is_called_blank_not_oversized(self):
+        # #30 ICAO 9303：空白的第 2 页（Letter）不在转 Word 的段里，原样放进输出，
+        # 日志、报告计数和逐页表都不能把它说成「大幅面」。
+        from core.pdf_image_translation import pdf_page_snapshot_entry
+        from core.pdf_task_report import _file_record_to_result
+
+        letter = (612.0, 792.0)
+        logs: list[str] = []
+        with patch.object(PdfImageTranslationRunner, "_log", lambda _self, _level, text, **_k: logs.append(text)):
+            runner, record, client = self._run(sizes=(A4, letter, A4), text=(False, False, True), blank=(1,))
+        blank = sorted(record.pages, key=lambda p: p.page_number)[1]
+        self.assertTrue(blank.blank_page)
+        self.assertTrue(blank.skipped_oversize)          # still copied from the source, not sent anywhere
+        self.assertEqual(len(client.calls), 2)           # pages 1 and 3 only
+        self.assertIn("[source.pdf] 第 2 页是空白页，原页将直接放入输出 PDF。", logs)
+        self.assertFalse(any("大幅面" in line for line in logs), logs)
+        self.assertEqual(record.skipped_oversize_page_count, 0)
+        self.assertNotIn("大幅面", str(_file_record_to_result(record)))
+        self.assertTrue(pdf_page_snapshot_entry(2, blank)["blank_page"])
+        with fitz.open(record.translated_pdf_path) as out:
+            self.assertEqual(len(out), 3)
+
     def test_rerouted_and_kept_pages_are_explained_in_the_report(self):
         from core.pdf_task_report import _file_record_to_result, _route_report_lines
 

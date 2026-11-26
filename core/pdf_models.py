@@ -246,6 +246,9 @@ class PdfPageRecord:
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
     # 照样能跑）：原页放进输出，这里写原因。
     kept_reason: str = ""
+    # 自动识别里判断为空白页、按原页放进输出的页（也记 skipped_oversize，不送图像模型）。
+    # 说法和计数要靠它和大幅面页分开，否则空白的 Letter 页会被写成「为大幅面」。
+    blank_page: bool = False
     # 自动组合里转 Word 翻译的页（Beta）：连续几页合成一段，word_segment 是段号
     # （从 1 起），word_status 为 "" | done | failed | stopped。
     word_requested: bool = False

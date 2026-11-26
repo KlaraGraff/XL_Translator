@@ -305,6 +305,8 @@ export type PdfPage = {
   inplace_message?: string;
   /** 首选方式用不了、保底也用不了而保留原样的原因（比如没有设置图像翻译模型）。 */
   kept_reason?: string;
+  /** 自动识别里判断为空白页、按原页放进输出的页（同时也是 skipped_oversize）。 */
+  blank_page?: boolean;
   /** 首选方式用不了、改用整页图像翻译的原因。 */
   route_note?: string;
   /** 混合文件里转 Word 翻译的正文页（Beta）："" | done | failed | stopped。 */
