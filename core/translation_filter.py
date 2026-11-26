@@ -415,24 +415,16 @@ def _is_non_latin_letter(char: str) -> bool:
     return char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF" or "\u1F00" <= char <= "\u1FFF")
 
 
-def _next_to_formula_sign(text: str, start: int, end: int) -> bool:
-    """隔着空格紧挨运算符：是运算的一项，也就是变量（「bs + 」「(as −a′s)」「xiy + c」）。"""
-    left = text[:start].rstrip()
-    right = text[end:].lstrip()
-    return bool((left and _FORMULA_SIGN_RE.match(left[-1])) or (right and _FORMULA_SIGN_RE.match(right[0])))
-
-
 def has_real_word(text: str) -> bool:
     """这段字里有没有要翻的文字（反馈 #28 讲义：真值表、公式、变量名一律原样保留）。
 
     - 有汉字、假名、带重音的字母等非 ASCII 文字：有。
     - 公式（带运算符或下划线）里，只有单独成词的才算：前后是空白、句读或引号括号，
       三个字母以上、又不是 sin、log 这种函数名；或两个字母的常用虚词（「x ≥ 0 if x ∈ A」）。
-      贴着括号、运算符、数字、下划线的是变量或标识符：pred(b)、is_empty(S)、anbn+、−nbi；
-      隔着空格挨着运算符的是运算的一项，也是变量：「(as −a′s) bs + …」「xiy + c」「(qtb + rt)」。
+      贴着括号、运算符、数字、下划线的是变量或标识符：pred(b)、is_empty(S)、anbn+、−nbi。
     - 别的文字里：三个字母以上的字母串就算；只有两个字母的，单独一截时只认常用虚词
       （pi、xi、Ai、OK 不算），几截连在一起时算（法文「Il y a」）。
-    - 只有单个字母（T T F F、p ∨ q、x y z），或只由 x、y、z 拼成的排列（xyz, xzy, …）：没有。
+    - 只有单个字母（T T F F、p ∨ q、x y z）：没有。
 
     送不送去翻（should_translate）、模型原样还回来算不算没翻（validate_translation）、
     交付前查「疑似未翻译」都用这一个判据，三处说法一致。"""
@@ -443,16 +435,14 @@ def has_real_word(text: str) -> bool:
     for match in runs:
         word = match.group()
         lower = word.lower()
-        if len(word) < 2 or not lower.strip("xyz"):
-            continue  # 单个字母；只由 x、y、z 拼成的（xyz、zyx）是变量的排列，没有哪种语言的词这样拼
+        if len(word) < 2:
+            continue
         if formula:
             if lower in _MATH_FUNCTIONS:
                 continue
             before = text[match.start() - 1] if match.start() else " "
             after = text[match.end()] if match.end() < len(text) else " "
             if not ((before.isspace() or before in _WORD_BEFORE) and (after.isspace() or after in _WORD_AFTER)):
-                continue
-            if _next_to_formula_sign(text, match.start(), match.end()):
                 continue
             if len(word) >= 3 or lower in _TWO_LETTER_WORDS:
                 return True

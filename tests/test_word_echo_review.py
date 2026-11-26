@@ -1,0 +1,167 @@
+"""Word 这条路上模型原样还回来的段落，交给模型复查「原样保留对不对」（反馈 #28）。
+
+讲义里「xyz,」「(as −a′s) bs + …」「xiy + c」这类公式、变量，模型原样还回来是对的；
+以前 Word 把它直接当成没翻成功，重译三轮后保留原文、涂需复核底色。Excel、PPT、CAD、
+PDF 原位替换早就把原样还回的交给复查，Word 现在也一样：复查认可的采用，不认可的照旧。
+"""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from docx import Document
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from core.translation_review import build_review_prompt  # noqa: E402
+from core.word_recovery_pool import (  # noqa: E402
+    _evaluate_word_translation,
+    _semantic_candidate_is_eligible,
+    _SemanticArbitrationResult,
+    _WordRecoveryPool,
+)
+from core.word_document import WordFileItem, WordSegment  # noqa: E402
+from core.word_task_runner import WordTaskRunner  # noqa: E402
+from tests import test_phase5_word_contracts as _contracts  # noqa: E402
+from tests.app_data_isolation import IsolatedAppDataTestCase  # noqa: E402
+from tests.test_audit_word_hang_fix import _ChatStubEngine, _retry_settings, _run_pool_with_timeout  # noqa: E402
+
+
+def _echo_translate(texts, *args, **kwargs):
+    return {text: text for text in texts}
+
+
+def _pool() -> _WordRecoveryPool:
+    return _WordRecoveryPool(
+        engine=_ChatStubEngine(),
+        target_lang="zh",
+        retry_prompt="retry",
+        retry_batch_settings=_retry_settings(),
+        retry_attempts=2,
+        source_lang="en",
+        api_scheduler=None,
+        concurrency=2,
+        should_stop=lambda: False,
+        enable_semantic=True,
+    )
+
+
+class EchoReviewTests(unittest.TestCase):
+    def test_echo_is_eligible_for_review(self) -> None:
+        for text in ("xyz,", "xiy + c", "Pump"):
+            with self.subTest(text=text):
+                validation = _evaluate_word_translation(
+                    text, text, source_lang="en", target_lang="zh", allow_recovery=True
+                ).validation
+                self.assertEqual({issue.code for issue in validation.issues}, {"same_as_source"})
+                self.assertTrue(
+                    _semantic_candidate_is_eligible(
+                        text, text, target_lang="zh", source_lang="en", validation=validation
+                    )
+                )
+
+    def test_review_accepts_formula_kept_as_is(self) -> None:
+        source = "(as −a′s) bs + (as−1−a′s−1) bs−1 + · · · + (ai−a′i) bi."
+        problems: list[str] = []
+
+        def _review(engine, src, candidate, **kwargs):
+            problems.append(kwargs.get("problem", ""))
+            return _SemanticArbitrationResult("equivalent", "公式，没有要翻的文字")
+
+        pool = _pool()
+        with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+            "core.word_recovery_pool._run_semantic_arbitration", _review
+        ):
+            pool.add_candidate(source, source)
+            pool.start()
+            finished, outcome, error = _run_pool_with_timeout(pool)
+
+        self.assertTrue(finished)
+        self.assertIsNone(error)
+        self.assertEqual(outcome.unresolved_sources, [])
+        self.assertEqual(outcome.accepted_translations[source], source)
+        self.assertIn(source, outcome.semantic_review_results)
+        self.assertTrue(problems and "相同" in problems[0], problems)
+
+    def test_review_rejects_untranslated_word(self) -> None:
+        def _review(*args, **kwargs):
+            return _SemanticArbitrationResult("not_equivalent", "没有翻译")
+
+        pool = _pool()
+        with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+            "core.word_recovery_pool._run_semantic_arbitration", _review
+        ):
+            pool.add_candidate("Pump", "Pump")
+            pool.start()
+            finished, outcome, error = _run_pool_with_timeout(pool)
+
+        self.assertTrue(finished)
+        self.assertIsNone(error)
+        self.assertEqual(outcome.unresolved_sources, ["Pump"])
+
+    def test_review_prompt_allows_formulas_and_variables_unchanged(self) -> None:
+        prompt = build_review_prompt()
+        self.assertIn("公式、变量", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+class EchoReviewRunnerTests(IsolatedAppDataTestCase):
+    def test_echo_accepted_by_review_is_not_reported_as_untranslated(self) -> None:
+        text = "xiy + c"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.docx"
+            Document().save(source)
+            prepared = SimpleNamespace(
+                path=source, method="编号预处理：Python 兜底", temp_paths=(),
+                fallback_messages=(), labels_seen=0, labels_prepended=0,
+                conversion_method="not_required", conversion_fidelity="not_required",
+                numbering_method="python_conservative", numbering_fallback_messages=(),
+            )
+            settings = _contracts.WordTaskResultContractTests._settings()
+            settings.target_lang = "zh"
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                settings, source_root=root, source_lang="en",
+            )
+
+            def translate(texts, *_args, **kwargs):
+                callback = kwargs.get("candidate_callback")
+                for item in texts:
+                    if callback is not None:
+                        callback(item, item)
+                return {item: item for item in texts}
+
+            with ExitStack() as stack:
+                writer = _contracts.WordTaskResultContractTests._runner_patches(
+                    self, stack, root=root, prepared_by_path={source: prepared}
+                )
+                coverage = stack.enter_context(
+                    patch("core.word_task_runner._append_post_write_coverage_issues", return_value=0)
+                )
+                stack.enter_context(patch("core.word_task_runner.build_engine", return_value=_ChatStubEngine()))
+                stack.enter_context(patch(
+                    "core.word_task_runner.extract_word_segments",
+                    return_value=[WordSegment(source=text, kind="paragraph", location="正文第 1 段")],
+                ))
+                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", return_value={text: None}))
+                stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
+                stack.enter_context(patch("core.word_recovery_pool.translate_word_texts", _echo_translate))
+                stack.enter_context(patch(
+                    "core.word_recovery_pool._run_semantic_arbitration",
+                    lambda *a, **k: _SemanticArbitrationResult("equivalent", "公式，没有要翻的文字"),
+                ))
+                runner._run()
+
+            self.assertIn(text, coverage.call_args.kwargs["already_target_sources"])
+            self.assertEqual(writer.call_args.kwargs["translations"].get(text, text), text)
+            self.assertNotIn(text, writer.call_args.kwargs.get("review_marks") or {})

@@ -1614,6 +1614,13 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                 # 但它们仍然不写记忆库：接受的是"这一段可以用"，不是"这条译文可以复用"。
                 recovery_review_sources.update(recovery_outcome.recovery_review_results)
                 recovery_review_sources.update(recovery_outcome.semantic_review_results)
+                # 复查认定原样保留是对的（公式、变量、型号）：成品体检里也不算「未译源文」。
+                already_target_sources.update(
+                    source
+                    for source in recovery_outcome.semantic_review_results
+                    if recovery_outcome.accepted_translations.get(source, "").strip().casefold()
+                    == source.strip().casefold()
+                )
                 standard_fixed_sources = [
                     source
                     for source in recovery_outcome.fixed_sources
