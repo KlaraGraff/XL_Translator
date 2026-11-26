@@ -119,7 +119,7 @@ class TexGlyphTests(unittest.TestCase):
     def test_display_operators_keep_their_size(self) -> None:
         from core.pdf_word_symbols import tex_glyphs_to_unicode
 
-        # 独立公式的 ∑（X）高 1.4em、∫（Z）高 2.222em；行内的 ∑（P）和正文一样高
+        # 独立公式的 ∑（X）、∫（Z）放大到原文画出来的高度；行内的 ∑（P）和正文一样高
         path = self._doc([("LMMathExtension10", "P"), ("LMRoman10", " and "), ("CMEX10", "X Z")], size="20")
         tex_glyphs_to_unicode(path)
         looks = []
@@ -131,8 +131,8 @@ class TexGlyphTests(unittest.TestCase):
             looks.append((text, size, position.get(qn("w:val")) if position is not None else None))
             if position is not None:  # Word 要求 w:position 排在 w:sz 前面
                 self.assertLess(list(r_pr).index(position), list(r_pr).index(r_pr.find(qn("w:sz"))))
-        # 放大后往下挪（放大的部分 × 0.25em），中心留在数学轴上：∑ 挪 1 磅，∫ 挪 2.5 磅
-        self.assertEqual(looks, [("∑", "20", None), (" and ", "20", None), ("∑ ", "28", "-2"), ("∫", "40", "-5")])
+        # 放大后往下挪（放大的部分 × 0.25em），中心留在数学轴上：∑ 挪 1 磅，∫ 挪 2 磅（w:position 按半磅算）
+        self.assertEqual(looks, [("∑", "20", None), (" and ", "20", None), ("∑ ", "30", "-2"), ("∫", "34", "-4")])
 
     def test_display_operator_without_size_is_only_mapped(self) -> None:
         from core.pdf_word_symbols import tex_glyphs_to_unicode

@@ -26,6 +26,7 @@ from typing import TypedDict
 
 from loguru import logger
 
+from core.pdf_word_bars import trim_bar_padding
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_scripts import restore_scripts_from_pdf
@@ -992,7 +993,7 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、丢了的上下标
-    for fix in (recolor_cells_from_pdf, restore_scripts_from_pdf, _tex_glyphs):
+    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs):
         try:
             fix(docx_path, pdf_path)
         except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
