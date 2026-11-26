@@ -36,6 +36,9 @@ from core.translation_review import (
     accepted_reason,
     build_review_prompt,
     describe_validation,
+    is_kept_as_is,
+    kept_after_objection_reason,
+    retranslation_hint,
     review_accepts,
     review_translations,
 )
@@ -280,6 +283,14 @@ class _WordRecoveryState:
     # 最近一稿未通过的候选译文：重试时据此提取残留片段做结构化反馈
     last_candidate: str = ""
     seen_semantic_candidates: set[str] = field(default_factory=set)
+    #: 原样还回的一稿被复查判「不一致」时给的理由；之后的重译带上它（和共用复查 review_and_repair 一样）
+    review_objection: str = ""
+    review_objected: bool = False
+    #: 已经有一轮重译带着这条意见跑过
+    objection_heard: bool = False
+    #: 翻译模型给过一稿真正的译文（不是原样还回）。给过的，后来再交回原文是翻译失败，
+    #: 不按「看过意见仍原样保留」处理。
+    translated_once: bool = False
 
     @property
     def accepted(self) -> bool:
@@ -309,6 +320,8 @@ class _WordRecoveryTicket:
     source: str
     attempt_index: int = 0
     settled: bool = False
+    #: 这一轮重译的提示词里带上了复查的反对意见
+    saw_review_objection: bool = False
 
 
 class _MainTranslationDrainGate:
@@ -496,6 +509,8 @@ class _WordRecoveryPool:
                 state = self._states.setdefault(
                     source_text, _WordRecoveryState(source=source_text)
                 )
+                if candidate_text and not is_kept_as_is(source_text, candidate_text):
+                    state.translated_once = True
                 if state.accepted:
                     return
                 if evaluation.accepted:
@@ -673,6 +688,20 @@ class _WordRecoveryPool:
         self._submit_locked(self._run_retry_attempt, ticket)
         self._emit_status_locked()
 
+    def _ensure_objection_retry_locked(self, state: _WordRecoveryState) -> None:
+        """复查的反对意见到得晚、重译轮数已经用完时，留出一轮带着这条意见重译。
+
+        重译和复查是同时跑的，第一轮重译常常在复查答复之前就发出去了；不留这一轮的话，
+        翻译模型可能从头到尾都没看到复查为什么不满意，结果取决于两边谁先跑完。
+        """
+        if not state.review_objected or state.objection_heard or state.accepted or state.retry_inflight:
+            return
+        if self._stop_requested() or state.attempts_done < self._max_attempts:
+            return
+        state.attempts_done = self._max_attempts - 1
+        self._log_source_locations("INFO", state.source, "带着复查意见再重译一轮")
+        self._schedule_retry_locked(state)
+
     def _schedule_semantic_locked(
         self,
         state: _WordRecoveryState,
@@ -827,7 +856,23 @@ class _WordRecoveryPool:
                 # 回调走到这里是安全的。
                 self._flush_pending_submits()
 
-    def _build_attempt_retry_prompt(self, source: str) -> str:
+    def _build_attempt_retry_prompt(self, source: str, ticket: _WordRecoveryTicket | None = None) -> str:
+        """重试提示词，复查判过「不一致」的再接上复查的意见（core.translation_review.retranslation_hint，
+        和 Excel、PPT、CAD 的复查重译同一句话）。以前 Word 的重译和复查各跑各的，模型重译三轮
+        都不知道复查为什么不满意。"""
+        prompt = self._build_attempt_retry_feedback_prompt(source)
+        with self._condition:
+            state = self._states.get(source)
+            objected = bool(state and state.review_objected)
+            objection = state.review_objection if state else ""
+            previous = state.last_candidate if state else ""
+        if not objected:
+            return prompt
+        if ticket is not None:
+            ticket.saw_review_objection = True
+        return prompt + retranslation_hint(previous, objection)
+
+    def _build_attempt_retry_feedback_prompt(self, source: str) -> str:
         """上一稿残留中文时，把残留片段作为结构化反馈附进重试 prompt。
 
         反馈话术与修复阶梯的「带反馈重译」共用一份（build_feedback_note，
@@ -871,7 +916,7 @@ class _WordRecoveryPool:
             [source],
             self._engine,
             self._target_lang,
-            self._build_attempt_retry_prompt(source),
+            self._build_attempt_retry_prompt(source, ticket),
             self._retry_batch_settings,
             concurrency=1,
             progress_callback=None,
@@ -921,6 +966,10 @@ class _WordRecoveryPool:
                 return
             state.retry_inflight = False
             state.attempts_done = max(state.attempts_done, attempt_index)
+            if ticket.saw_review_objection:
+                state.objection_heard = True
+            if str(candidate or "").strip() and not is_kept_as_is(source, candidate):
+                state.translated_once = True
             if state.accepted:
                 self._emit_status_locked()
                 self._condition.notify_all()
@@ -934,9 +983,21 @@ class _WordRecoveryPool:
                 self._accept_locked(state, candidate, accepted_by, evaluation.validation)
                 self._log_source_locations("OK", source, "重译成功")
                 return
+            if ticket.saw_review_objection and not state.translated_once and is_kept_as_is(source, candidate):
+                # 翻译模型看过复查「这里该译」的意见，还是原样还回：两边意见相左时以看过
+                # 对方理由的这一方为准。真没翻的句子，看到具体指正就会译出来。
+                self._accept_locked(
+                    state,
+                    candidate,
+                    "semantic",
+                    _kept_after_objection_validation(evaluation.validation, state.review_objection),
+                )
+                self._log_source_locations("OK", source, "翻译模型看过复查意见，仍原样保留")
+                return
             state.last_validation = evaluation.validation
             state.last_candidate = candidate
-            if attempt_index >= self._max_attempts:
+            self._ensure_objection_retry_locked(state)
+            if state.attempts_done >= self._max_attempts:
                 self._log_source_locations("WARN", source, "重译未成功")
             else:
                 self._log_source_locations(
@@ -991,15 +1052,27 @@ class _WordRecoveryPool:
                     "semantic",
                     _semantic_review_validation(validation, result),
                 )
-                self._log_source_locations("OK", source, "复查通过，采用译文")
+                self._log_source_locations(
+                    "OK", source, "复查通过，采用译文" + (f"（{result.reason}）" if result.reason else "")
+                )
             elif not state.accepted and not result.equivalent:
                 self._semantic_uncertain_sources.add(source)
+                if (
+                    result.verdict == _SEMANTIC_VERDICT_NOT_EQUIVALENT
+                    and not state.translated_once
+                    and is_kept_as_is(source, candidate)
+                ):
+                    # 只记「原样还回」这一稿收到的反对意见（见 core/translation_review 模块说明）
+                    state.review_objected = True
+                    state.review_objection = result.reason
+                    self._ensure_objection_retry_locked(state)
                 logger.info(f"语义仲裁未接受：verdict={result.verdict} reason={result.reason}")
                 self._log_source_locations(
                     "WARN",
                     source,
                     "复查未通过（"
                     + _SEMANTIC_VERDICT_LABELS.get(result.verdict, "无法确定意思是否一致")
+                    + (f"：{result.reason}" if result.reason else "")
                     + "）",
                 )
             self._emit_status_locked()
@@ -1101,6 +1174,23 @@ def _run_semantic_arbitration(
 
 def _build_semantic_arbitration_prompt() -> str:
     return build_review_prompt()
+
+
+def _kept_after_objection_validation(
+    validation: TranslationValidationResult,
+    objection: str,
+) -> TranslationValidationResult:
+    issues = list(validation.issues)
+    issues.append(
+        TranslationValidationIssue(
+            code="semantic_equivalence",
+            message=(
+                kept_after_objection_reason(objection)
+            ),
+            fragments=validation.review_fragments,
+        )
+    )
+    return TranslationValidationResult(status=VALIDATION_STATUS_SOFT_PASS_REVIEW, issues=tuple(issues))
 
 
 def _semantic_review_validation(
