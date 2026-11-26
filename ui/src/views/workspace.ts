@@ -4567,10 +4567,21 @@ export const MODEL_MISSING_ROLE: Record<string, string> = {
   pdf_review_model_missing: "pdf_review",
 };
 
-/** 启动没成功时记一笔，开始按钮会改叫「重试启动」。没配模型不算：那一次什么都还没
- *  试过，按钮照旧叫「开始翻译」，出路在弹窗的「去设置」里。 */
+/** 开始前检查拦下、弹窗里给了出路的几种原因（workspace-start-blocked.ts）：任务还没开始，
+ *  算不上启动失败。缺「PDF 处理组件」那条在弹窗里点「取消」后，按钮曾变成「重试启动」，
+ *  看着像出过错（Mac 验证 #33）。 */
+const START_BLOCK_REASONS = new Set([
+  "pdf_component_missing",
+  "pdf_review_no_image_input",
+  "pdf_review_image_unseen",
+  "pdf_review_model_unavailable",
+]);
+
+/** 启动没成功时记一笔，开始按钮会改叫「重试启动」。没配模型、开始前检查拦下的都不算：
+ *  那一次什么都还没试过，按钮照旧叫「开始翻译」，出路在弹窗的按钮里。 */
 function noteStartFailure(surface: Surface, error: unknown): void {
-  if (MODEL_MISSING_ROLE[apiErrorReason(error)]) submitFailures.delete(surface);
+  const reason = apiErrorReason(error);
+  if (MODEL_MISSING_ROLE[reason] || START_BLOCK_REASONS.has(reason)) submitFailures.delete(surface);
   else submitFailures.add(surface);
 }
 
