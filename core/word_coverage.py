@@ -149,7 +149,7 @@ def build_word_coverage_plan(
     return WordCoveragePlan(path=source_path, units=_ignore_code(doc, units), front_matter=front_matter)
 
 
-def _ignore_code(doc: Document, units: list[CoverageUnit]) -> list[CoverageUnit]:
+def _ignore_code(doc, units: list[CoverageUnit]) -> list[CoverageUnit]:
     """代码段（整段等宽字体）本来就原样保留、不送翻（core/word_code.py），不算漏翻。"""
     code = code_only_texts(doc)
     if not code:
