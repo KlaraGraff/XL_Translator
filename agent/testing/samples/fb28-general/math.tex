@@ -1,0 +1,170 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[most]{tcolorbox}
+\usepackage{lmodern}
+\tcbuselibrary{breakable}
+\newtcolorbox{thmbox}[1]{breakable,colback=blue!5,colframe=blue!60!black,fonttitle=\bfseries,title={#1}}
+\newtcolorbox{defbox}[1]{breakable,colback=green!6,colframe=green!45!black,fonttitle=\bfseries,title={#1}}
+\newtcolorbox{warnbox}[1]{breakable,colback=orange!8,colframe=orange!80!black,coltitle=black,fonttitle=\bfseries,title={#1}}
+\newtcolorbox{darkbox}{colback=black!85,colframe=black,coltext=white}
+\begin{document}
+\section{Sets and Functions}
+A \emph{set} is a collection of distinct objects, called its elements. We write $x \in A$ when $x$ is an element of $A$, and $A \subseteq B$ when every element of $A$ is also an element of $B$.
+\begin{defbox}{Definition 1.1 (Union and intersection)}
+For sets $A$ and $B$ we define
+\[ A \cup B = \{x : x \in A \lor x \in B\}, \qquad A \cap B = \{x : x \in A \land x \in B\}. \]
+The empty set $\emptyset$ satisfies $\emptyset \subseteq A$ for every set $A$.
+\end{defbox}
+\begin{thmbox}{Theorem 1.2 (De Morgan's laws)}
+For all sets $A, B \subseteq U$ we have $\overline{A \cup B} = \overline{A} \cap \overline{B}$ and $\overline{A \cap B} = \overline{A} \cup \overline{B}$.
+\end{thmbox}
+\begin{proof}
+Let $x \in U$. Then $x \in \overline{A \cup B}$ if and only if $x \notin A$ and $x \notin B$, which holds if and only if $x \in \overline{A} \cap \overline{B}$. The second law follows by the same argument.
+\end{proof}
+\begin{align}
+f(x) &= a_n x^n + a_{n-1} x^{n-1} + \cdots + a_1 x + a_0 \\
+f'(x) &= n a_n x^{n-1} + (n-1) a_{n-1} x^{n-2} + \cdots + a_1 \\
+\int_0^1 x^k \, dx &= \frac{1}{k+1}, \quad k \geq 0
+\end{align}
+\begin{warnbox}{Common mistake}
+Do not confuse $A \subseteq B$ with $A \in B$. For example $\{1\} \subseteq \{1,2\}$ but $\{1\} \notin \{1,2\}$.
+\end{warnbox}
+\section{Relations}
+A relation $R$ on $A$ is \emph{reflexive} if $(a,a) \in R$ for all $a \in A$, \emph{symmetric} if $(a,b) \in R \Rightarrow (b,a) \in R$, and \emph{transitive} if $(a,b),(b,c) \in R \Rightarrow (a,c) \in R$.
+\begin{enumerate}
+\item[(i)] Equality on any set is an equivalence relation.
+\item[(ii)] The relation $\leq$ on $\mathbb{R}$ is reflexive and transitive but not symmetric.
+\item[(iii)] Congruence modulo $n$, $a \equiv b \pmod n$, is an equivalence relation.
+\end{enumerate}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+$p$ & $q$ & $p \land q$ & $p \Rightarrow q$ \\ \hline
+T & T & T & T \\ T & F & F & F \\ F & T & F & T \\ F & F & F & T \\ \hline
+\end{tabular}
+\end{center}
+\begin{darkbox}
+\textbf{Key idea.} Every equivalence relation on $A$ partitions $A$ into disjoint equivalence classes $[a] = \{x \in A : x \sim a\}$.
+\end{darkbox}
+\section{Sequences}
+\begin{thmbox}{Theorem 3.1}
+If $a_n \to L$ and $b_n \to M$, then $a_n + b_n \to L + M$ and $a_n b_n \to LM$. Moreover, if $M \neq 0$ then $a_n / b_n \to L/M$.
+\end{thmbox}
+For the geometric series with $|r| < 1$,
+\[ \sum_{k=0}^{\infty} r^k = \frac{1}{1-r}, \qquad \sum_{k=0}^{n} r^k = \frac{1 - r^{n+1}}{1-r}. \]
+\begin{defbox}{Exercise 3.2}
+Prove by induction that $\sum_{k=1}^{n} k = n(n+1)/2$ for all $n \geq 1$. Then show that $\sum_{k=1}^{n} k^2 = n(n+1)(2n+1)/6$.
+\end{defbox}
+\foreach \i in {1,...,6}{\par Paragraph \i: the limit of a convergent sequence is unique, because if $a_n \to L$ and $a_n \to L'$ then $|L - L'| \leq |L - a_n| + |a_n - L'| < 2\varepsilon$ for every $\varepsilon > 0$. Hence $L = L'$.\par}
+\begin{thmbox}{Theorem 3.3 (Squeeze theorem)}
+Suppose $a_n \le b_n \le c_n$ for all $n$ and $a_n \to L$, $c_n \to L$. Then $b_n \to L$. \foreach \i in {1,...,8}{ This statement is used repeatedly in later chapters, for instance to show that $\sin(n)/n \to 0$.}
+\end{thmbox}
+
+
+\section{Sets and Functions}
+A \emph{set} is a collection of distinct objects, called its elements. We write $x \in A$ when $x$ is an element of $A$, and $A \subseteq B$ when every element of $A$ is also an element of $B$.
+\begin{defbox}{Definition 1.1 (Union and intersection)}
+For sets $A$ and $B$ we define
+\[ A \cup B = \{x : x \in A \lor x \in B\}, \qquad A \cap B = \{x : x \in A \land x \in B\}. \]
+The empty set $\emptyset$ satisfies $\emptyset \subseteq A$ for every set $A$.
+\end{defbox}
+\begin{thmbox}{Theorem 1.2 (De Morgan's laws)}
+For all sets $A, B \subseteq U$ we have $\overline{A \cup B} = \overline{A} \cap \overline{B}$ and $\overline{A \cap B} = \overline{A} \cup \overline{B}$.
+\end{thmbox}
+\begin{proof}
+Let $x \in U$. Then $x \in \overline{A \cup B}$ if and only if $x \notin A$ and $x \notin B$, which holds if and only if $x \in \overline{A} \cap \overline{B}$. The second law follows by the same argument.
+\end{proof}
+\begin{align}
+f(x) &= a_n x^n + a_{n-1} x^{n-1} + \cdots + a_1 x + a_0 \\
+f'(x) &= n a_n x^{n-1} + (n-1) a_{n-1} x^{n-2} + \cdots + a_1 \\
+\int_0^1 x^k \, dx &= \frac{1}{k+1}, \quad k \geq 0
+\end{align}
+\begin{warnbox}{Common mistake}
+Do not confuse $A \subseteq B$ with $A \in B$. For example $\{1\} \subseteq \{1,2\}$ but $\{1\} \notin \{1,2\}$.
+\end{warnbox}
+\section{Relations}
+A relation $R$ on $A$ is \emph{reflexive} if $(a,a) \in R$ for all $a \in A$, \emph{symmetric} if $(a,b) \in R \Rightarrow (b,a) \in R$, and \emph{transitive} if $(a,b),(b,c) \in R \Rightarrow (a,c) \in R$.
+\begin{enumerate}
+\item[(i)] Equality on any set is an equivalence relation.
+\item[(ii)] The relation $\leq$ on $\mathbb{R}$ is reflexive and transitive but not symmetric.
+\item[(iii)] Congruence modulo $n$, $a \equiv b \pmod n$, is an equivalence relation.
+\end{enumerate}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+$p$ & $q$ & $p \land q$ & $p \Rightarrow q$ \\ \hline
+T & T & T & T \\ T & F & F & F \\ F & T & F & T \\ F & F & F & T \\ \hline
+\end{tabular}
+\end{center}
+\begin{darkbox}
+\textbf{Key idea.} Every equivalence relation on $A$ partitions $A$ into disjoint equivalence classes $[a] = \{x \in A : x \sim a\}$.
+\end{darkbox}
+\section{Sequences}
+\begin{thmbox}{Theorem 3.1}
+If $a_n \to L$ and $b_n \to M$, then $a_n + b_n \to L + M$ and $a_n b_n \to LM$. Moreover, if $M \neq 0$ then $a_n / b_n \to L/M$.
+\end{thmbox}
+For the geometric series with $|r| < 1$,
+\[ \sum_{k=0}^{\infty} r^k = \frac{1}{1-r}, \qquad \sum_{k=0}^{n} r^k = \frac{1 - r^{n+1}}{1-r}. \]
+\begin{defbox}{Exercise 3.2}
+Prove by induction that $\sum_{k=1}^{n} k = n(n+1)/2$ for all $n \geq 1$. Then show that $\sum_{k=1}^{n} k^2 = n(n+1)(2n+1)/6$.
+\end{defbox}
+\foreach \i in {1,...,6}{\par Paragraph \i: the limit of a convergent sequence is unique, because if $a_n \to L$ and $a_n \to L'$ then $|L - L'| \leq |L - a_n| + |a_n - L'| < 2\varepsilon$ for every $\varepsilon > 0$. Hence $L = L'$.\par}
+\begin{thmbox}{Theorem 3.3 (Squeeze theorem)}
+Suppose $a_n \le b_n \le c_n$ for all $n$ and $a_n \to L$, $c_n \to L$. Then $b_n \to L$. \foreach \i in {1,...,8}{ This statement is used repeatedly in later chapters, for instance to show that $\sin(n)/n \to 0$.}
+\end{thmbox}
+
+
+\section{Sets and Functions}
+A \emph{set} is a collection of distinct objects, called its elements. We write $x \in A$ when $x$ is an element of $A$, and $A \subseteq B$ when every element of $A$ is also an element of $B$.
+\begin{defbox}{Definition 1.1 (Union and intersection)}
+For sets $A$ and $B$ we define
+\[ A \cup B = \{x : x \in A \lor x \in B\}, \qquad A \cap B = \{x : x \in A \land x \in B\}. \]
+The empty set $\emptyset$ satisfies $\emptyset \subseteq A$ for every set $A$.
+\end{defbox}
+\begin{thmbox}{Theorem 1.2 (De Morgan's laws)}
+For all sets $A, B \subseteq U$ we have $\overline{A \cup B} = \overline{A} \cap \overline{B}$ and $\overline{A \cap B} = \overline{A} \cup \overline{B}$.
+\end{thmbox}
+\begin{proof}
+Let $x \in U$. Then $x \in \overline{A \cup B}$ if and only if $x \notin A$ and $x \notin B$, which holds if and only if $x \in \overline{A} \cap \overline{B}$. The second law follows by the same argument.
+\end{proof}
+\begin{align}
+f(x) &= a_n x^n + a_{n-1} x^{n-1} + \cdots + a_1 x + a_0 \\
+f'(x) &= n a_n x^{n-1} + (n-1) a_{n-1} x^{n-2} + \cdots + a_1 \\
+\int_0^1 x^k \, dx &= \frac{1}{k+1}, \quad k \geq 0
+\end{align}
+\begin{warnbox}{Common mistake}
+Do not confuse $A \subseteq B$ with $A \in B$. For example $\{1\} \subseteq \{1,2\}$ but $\{1\} \notin \{1,2\}$.
+\end{warnbox}
+\section{Relations}
+A relation $R$ on $A$ is \emph{reflexive} if $(a,a) \in R$ for all $a \in A$, \emph{symmetric} if $(a,b) \in R \Rightarrow (b,a) \in R$, and \emph{transitive} if $(a,b),(b,c) \in R \Rightarrow (a,c) \in R$.
+\begin{enumerate}
+\item[(i)] Equality on any set is an equivalence relation.
+\item[(ii)] The relation $\leq$ on $\mathbb{R}$ is reflexive and transitive but not symmetric.
+\item[(iii)] Congruence modulo $n$, $a \equiv b \pmod n$, is an equivalence relation.
+\end{enumerate}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+$p$ & $q$ & $p \land q$ & $p \Rightarrow q$ \\ \hline
+T & T & T & T \\ T & F & F & F \\ F & T & F & T \\ F & F & F & T \\ \hline
+\end{tabular}
+\end{center}
+\begin{darkbox}
+\textbf{Key idea.} Every equivalence relation on $A$ partitions $A$ into disjoint equivalence classes $[a] = \{x \in A : x \sim a\}$.
+\end{darkbox}
+\section{Sequences}
+\begin{thmbox}{Theorem 3.1}
+If $a_n \to L$ and $b_n \to M$, then $a_n + b_n \to L + M$ and $a_n b_n \to LM$. Moreover, if $M \neq 0$ then $a_n / b_n \to L/M$.
+\end{thmbox}
+For the geometric series with $|r| < 1$,
+\[ \sum_{k=0}^{\infty} r^k = \frac{1}{1-r}, \qquad \sum_{k=0}^{n} r^k = \frac{1 - r^{n+1}}{1-r}. \]
+\begin{defbox}{Exercise 3.2}
+Prove by induction that $\sum_{k=1}^{n} k = n(n+1)/2$ for all $n \geq 1$. Then show that $\sum_{k=1}^{n} k^2 = n(n+1)(2n+1)/6$.
+\end{defbox}
+\foreach \i in {1,...,6}{\par Paragraph \i: the limit of a convergent sequence is unique, because if $a_n \to L$ and $a_n \to L'$ then $|L - L'| \leq |L - a_n| + |a_n - L'| < 2\varepsilon$ for every $\varepsilon > 0$. Hence $L = L'$.\par}
+\begin{thmbox}{Theorem 3.3 (Squeeze theorem)}
+Suppose $a_n \le b_n \le c_n$ for all $n$ and $a_n \to L$, $c_n \to L$. Then $b_n \to L$. \foreach \i in {1,...,8}{ This statement is used repeatedly in later chapters, for instance to show that $\sin(n)/n \to 0$.}
+\end{thmbox}
+
+\end{document}

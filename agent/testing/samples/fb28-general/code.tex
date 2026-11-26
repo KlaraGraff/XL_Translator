@@ -1,0 +1,219 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{listings,xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{lmodern}
+\lstset{basicstyle=\ttfamily\small,keywordstyle=\color{blue!70!black}\bfseries,commentstyle=\color{green!50!black},backgroundcolor=\color{gray!10},frame=single,breaklines=true}
+\newtcolorbox{tipbox}[1]{colback=yellow!10,colframe=yellow!60!black,coltitle=black,fonttitle=\bfseries,title={#1}}
+\newtcolorbox{notebox}{colback=cyan!5,colframe=cyan!50!black,enhanced,borderline west={4pt}{0pt}{cyan!50!black}}
+\begin{document}
+\section{Stacks}
+A stack supports two operations: \texttt{push(x)} adds an element on top, and \texttt{pop()} removes and returns the top element. The function \texttt{is\_empty(S)} returns true if the stack $S$ has no elements.
+\begin{lstlisting}[language=Python]
+class Stack:
+    def __init__(self):
+        self.items = []          # the underlying list
+
+    def push(self, x):
+        self.items.append(x)
+
+    def pop(self):
+        if self.is_empty():
+            raise IndexError("pop from empty stack")
+        return self.items.pop()
+
+    def is_empty(self):
+        return len(self.items) == 0
+\end{lstlisting}
+\begin{tipbox}{Tip}
+Use \texttt{collections.deque} when you need fast appends and pops from both ends. Calling \texttt{list.pop(0)} takes $O(n)$ time.
+\end{tipbox}
+\section{Linked lists in C}
+Each node stores a value and a pointer to the next node:
+\begin{lstlisting}[language=C]
+struct node {
+    int value;
+    struct node *next;
+};
+
+int length(struct node *head) {
+    int n = 0;
+    for (struct node *p = head; p != NULL; p = p->next)
+        n++;
+    return n;
+}
+\end{lstlisting}
+\begin{notebox}
+\textbf{Note.} If \texttt{head == NULL} the list is empty and \texttt{length} returns 0. Always check for \texttt{NULL} before dereferencing a pointer.
+\end{notebox}
+\section{Algorithm: binary search}
+\begin{tcolorbox}[colback=white,colframe=red!60!black,title={Algorithm 1: BinarySearch(A, x)}]
+\begin{tabbing}
+\quad\=\quad\=\quad\=\kill
+1: $lo \gets 0$, $hi \gets n - 1$\\
+2: \textbf{while} $lo \le hi$ \textbf{do}\\
+3: \> $mid \gets \lfloor (lo + hi)/2 \rfloor$\\
+4: \> \textbf{if} $A[mid] = x$ \textbf{then return} $mid$\\
+5: \> \textbf{else if} $A[mid] < x$ \textbf{then} $lo \gets mid + 1$\\
+6: \> \textbf{else} $hi \gets mid - 1$\\
+7: \textbf{return} $-1$
+\end{tabbing}
+\end{tcolorbox}
+Binary search runs in $O(\log n)$ time because the search interval halves at each step. The loop invariant is: if $x$ is in $A$, then $x \in A[lo..hi]$.
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Command} & \textbf{Meaning} & \textbf{Example}\\
+\texttt{git status} & show changed files & \texttt{git status -s}\\
+\texttt{git add} & stage changes & \texttt{git add main.py}\\
+\texttt{git commit} & record a snapshot & \texttt{git commit -m "fix"}\\
+\texttt{ls -la} & list all files & \texttt{ls -la /tmp}\\
+\end{tabular}
+\end{center}
+\section{Exercises}
+\begin{enumerate}
+\item Write a function \texttt{reverse(head)} that reverses a linked list in place.
+\item What is the output of \texttt{print([x*x for x in range(5)])}?
+\item Explain why \texttt{a == b} and \texttt{a is b} can give different results in Python.
+\end{enumerate}
+
+
+\section{Stacks}
+A stack supports two operations: \texttt{push(x)} adds an element on top, and \texttt{pop()} removes and returns the top element. The function \texttt{is\_empty(S)} returns true if the stack $S$ has no elements.
+\begin{lstlisting}[language=Python]
+class Stack:
+    def __init__(self):
+        self.items = []          # the underlying list
+
+    def push(self, x):
+        self.items.append(x)
+
+    def pop(self):
+        if self.is_empty():
+            raise IndexError("pop from empty stack")
+        return self.items.pop()
+
+    def is_empty(self):
+        return len(self.items) == 0
+\end{lstlisting}
+\begin{tipbox}{Tip}
+Use \texttt{collections.deque} when you need fast appends and pops from both ends. Calling \texttt{list.pop(0)} takes $O(n)$ time.
+\end{tipbox}
+\section{Linked lists in C}
+Each node stores a value and a pointer to the next node:
+\begin{lstlisting}[language=C]
+struct node {
+    int value;
+    struct node *next;
+};
+
+int length(struct node *head) {
+    int n = 0;
+    for (struct node *p = head; p != NULL; p = p->next)
+        n++;
+    return n;
+}
+\end{lstlisting}
+\begin{notebox}
+\textbf{Note.} If \texttt{head == NULL} the list is empty and \texttt{length} returns 0. Always check for \texttt{NULL} before dereferencing a pointer.
+\end{notebox}
+\section{Algorithm: binary search}
+\begin{tcolorbox}[colback=white,colframe=red!60!black,title={Algorithm 1: BinarySearch(A, x)}]
+\begin{tabbing}
+\quad\=\quad\=\quad\=\kill
+1: $lo \gets 0$, $hi \gets n - 1$\\
+2: \textbf{while} $lo \le hi$ \textbf{do}\\
+3: \> $mid \gets \lfloor (lo + hi)/2 \rfloor$\\
+4: \> \textbf{if} $A[mid] = x$ \textbf{then return} $mid$\\
+5: \> \textbf{else if} $A[mid] < x$ \textbf{then} $lo \gets mid + 1$\\
+6: \> \textbf{else} $hi \gets mid - 1$\\
+7: \textbf{return} $-1$
+\end{tabbing}
+\end{tcolorbox}
+Binary search runs in $O(\log n)$ time because the search interval halves at each step. The loop invariant is: if $x$ is in $A$, then $x \in A[lo..hi]$.
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Command} & \textbf{Meaning} & \textbf{Example}\\
+\texttt{git status} & show changed files & \texttt{git status -s}\\
+\texttt{git add} & stage changes & \texttt{git add main.py}\\
+\texttt{git commit} & record a snapshot & \texttt{git commit -m "fix"}\\
+\texttt{ls -la} & list all files & \texttt{ls -la /tmp}\\
+\end{tabular}
+\end{center}
+\section{Exercises}
+\begin{enumerate}
+\item Write a function \texttt{reverse(head)} that reverses a linked list in place.
+\item What is the output of \texttt{print([x*x for x in range(5)])}?
+\item Explain why \texttt{a == b} and \texttt{a is b} can give different results in Python.
+\end{enumerate}
+
+
+\section{Stacks}
+A stack supports two operations: \texttt{push(x)} adds an element on top, and \texttt{pop()} removes and returns the top element. The function \texttt{is\_empty(S)} returns true if the stack $S$ has no elements.
+\begin{lstlisting}[language=Python]
+class Stack:
+    def __init__(self):
+        self.items = []          # the underlying list
+
+    def push(self, x):
+        self.items.append(x)
+
+    def pop(self):
+        if self.is_empty():
+            raise IndexError("pop from empty stack")
+        return self.items.pop()
+
+    def is_empty(self):
+        return len(self.items) == 0
+\end{lstlisting}
+\begin{tipbox}{Tip}
+Use \texttt{collections.deque} when you need fast appends and pops from both ends. Calling \texttt{list.pop(0)} takes $O(n)$ time.
+\end{tipbox}
+\section{Linked lists in C}
+Each node stores a value and a pointer to the next node:
+\begin{lstlisting}[language=C]
+struct node {
+    int value;
+    struct node *next;
+};
+
+int length(struct node *head) {
+    int n = 0;
+    for (struct node *p = head; p != NULL; p = p->next)
+        n++;
+    return n;
+}
+\end{lstlisting}
+\begin{notebox}
+\textbf{Note.} If \texttt{head == NULL} the list is empty and \texttt{length} returns 0. Always check for \texttt{NULL} before dereferencing a pointer.
+\end{notebox}
+\section{Algorithm: binary search}
+\begin{tcolorbox}[colback=white,colframe=red!60!black,title={Algorithm 1: BinarySearch(A, x)}]
+\begin{tabbing}
+\quad\=\quad\=\quad\=\kill
+1: $lo \gets 0$, $hi \gets n - 1$\\
+2: \textbf{while} $lo \le hi$ \textbf{do}\\
+3: \> $mid \gets \lfloor (lo + hi)/2 \rfloor$\\
+4: \> \textbf{if} $A[mid] = x$ \textbf{then return} $mid$\\
+5: \> \textbf{else if} $A[mid] < x$ \textbf{then} $lo \gets mid + 1$\\
+6: \> \textbf{else} $hi \gets mid - 1$\\
+7: \textbf{return} $-1$
+\end{tabbing}
+\end{tcolorbox}
+Binary search runs in $O(\log n)$ time because the search interval halves at each step. The loop invariant is: if $x$ is in $A$, then $x \in A[lo..hi]$.
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Command} & \textbf{Meaning} & \textbf{Example}\\
+\texttt{git status} & show changed files & \texttt{git status -s}\\
+\texttt{git add} & stage changes & \texttt{git add main.py}\\
+\texttt{git commit} & record a snapshot & \texttt{git commit -m "fix"}\\
+\texttt{ls -la} & list all files & \texttt{ls -la /tmp}\\
+\end{tabular}
+\end{center}
+\section{Exercises}
+\begin{enumerate}
+\item Write a function \texttt{reverse(head)} that reverses a linked list in place.
+\item What is the output of \texttt{print([x*x for x in range(5)])}?
+\item Explain why \texttt{a == b} and \texttt{a is b} can give different results in Python.
+\end{enumerate}
+
+\end{document}

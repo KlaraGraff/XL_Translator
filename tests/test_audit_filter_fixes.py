@@ -581,14 +581,13 @@ class SingleLetterTokenTests(unittest.TestCase):
         self.assertTrue(should_translate("civil.", target_lang="zh", source_lang="en"))
 
     def test_echo_without_a_real_word_is_accepted(self) -> None:
-        # pi、xi、Pn 是公式变量（p 下标 i），也可能是 OK 这种缩写，交给模型判断；
-        # 模型原样还回来不算失败，不重译、不标黄
+        # 只有单个字母、符号的（T T F F、p ∨ q）、公式里的变量：模型原样还回来不算失败
         from core.translation_filter import validate_translation
 
-        for text in ("pi", "xi", "Pn", "OK"):
+        for text in ("T T F F", "p ∨ q", "pred(b) ←a"):
             with self.subTest(text=text):
                 self.assertFalse(validate_translation(text, text, target_lang="zh", source_lang="en").is_fail)
-        for text in ("Fig", "mix", "是 否", "Summary"):
+        for text in ("Fig", "mix", "是 否", "Summary", "pi", "OK"):
             with self.subTest(text=text):
                 result = validate_translation(text, text, target_lang="en" if "是" in text else "zh",
                                               source_lang="zh" if "是" in text else "en")
@@ -599,12 +598,19 @@ class SingleLetterTokenTests(unittest.TestCase):
         # Mac 复验 #321 剩下的 30 段黄底：带下标的变量、标识符、长式子
         from core.translation_coverage import looks_like_source_text
 
-        for text in ("pi", "xi", "Ai", "pred(b) ←a", "is_empty(S)", "6: r ←r −nbi", "(⌊logb m⌋+ 1)c",
+        for text in ("pred(b) ←a", "is_empty(S)", "6: r ←r −nbi", "(⌊logb m⌋+ 1)c",
                      "anbn+ an−1bn−1+ ⋯", "= qtbt+1+ rtbt+ ⋯"):
             with self.subTest(text=text):
                 self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
                 # 交付前查「疑似未翻译」用的是同一个判据
                 self.assertFalse(looks_like_source_text(text, source_lang="en", target_lang="zh"))
+
+    def test_lone_two_letter_words_are_translated(self) -> None:
+        # 10.5.2 里单独一个两字母的（德文 Ja、OK、Up）不送翻了。分不清是词还是变量（pi、xi）
+        # 的照常送：模型原样还回来时再交给模型复查，复查认可的原样保留、不标黄。
+        for text, source in (("Ja", "de"), ("OK", "en"), ("Up", "en"), ("Go", "en"), ("pi", "en"), ("xi", "en")):
+            with self.subTest(text=text):
+                self.assertTrue(should_translate(text, target_lang="zh", source_lang=source))
 
     def test_words_next_to_formulas_are_still_translated(self) -> None:
         for text in ("is_empty(S) returns true if S is empty", "x_1 + x_2 where x is real", "(see below)",
