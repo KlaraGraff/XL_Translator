@@ -127,7 +127,7 @@ jobs:
           # Apple Silicon only: the runner is native, not cross-compiled or
           # a Rosetta build. Intel (x86_64) DMGs are no longer distributed.
           - architecture: arm64
-            runner: macos-14
+            runner: macos-15
     env:
       MACOS_ARCH: ${{ matrix.architecture }}
       MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
