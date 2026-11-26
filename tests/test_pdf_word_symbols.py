@@ -60,6 +60,20 @@ class MathSymbolFontTests(unittest.TestCase):
                   if run.find(f"{qn('w:rPr')}/{qn('w:i')}") is not None]
         self.assertEqual(len(italic), 3)
 
+    def test_symbols_next_to_tabs_and_breaks_are_split_too(self) -> None:
+        # 证明步骤表「11. ¬P1 12. P2 ∧(¬P2)」：一段字里夹着制表符和换行
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")}><w:r><w:rPr><w:rFonts w:ascii="Chivo" w:hAnsi="Chivo"/></w:rPr>'
+            '<w:t>11. ¬P1</w:t><w:tab/><w:t xml:space="preserve">12. P2 ∧(¬P2)</w:t><w:br/><w:t>13.</w:t></w:r></w:p>'))
+        doc.save(str(self.path))
+        self.assertEqual(math_symbols_in_math_font(self.path), 1)
+        runs = list(Document(str(self.path)).element.body.iter(qn("w:r")))
+        shapes = [[child.tag.split("}")[1] for child in run if child.tag != qn("w:rPr")] for run in runs]
+        self.assertEqual(shapes, [["t", "tab", "t"], ["t"], ["t", "br", "t"]])
+        fonts = [run.find(f"{qn('w:rPr')}/{qn('w:rFonts')}").get(qn("w:ascii")) for run in runs]
+        self.assertEqual(fonts, ["Chivo", MATH_FONT, "Chivo"])
+
     def test_running_twice_changes_nothing(self) -> None:
         math_symbols_in_math_font(self.path)
         self.assertEqual(math_symbols_in_math_font(self.path), 0)
