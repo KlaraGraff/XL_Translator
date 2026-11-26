@@ -215,9 +215,9 @@
     "en": "The illustrated guide covers how translations are shown, how long translations shrink to fit, how to keep title blocks unchanged, and the drawing converter needed for DWG drawings.",
     "fr": "Le guide illustré présente l'affichage des traductions, la réduction des traductions trop longues, la conservation des cartouches et le convertisseur de plans nécessaire aux plans DWG."
   },
-  "已测试多种图像模型，目前仅建议使用 ChatGPT 的 Images 2.5 或 Images 2.0，模型名为 gpt-image-2.5-flare、gpt-image-2.5-sunburst 或 gpt-image-2。": {
-    "en": "We tested many image models and currently recommend only ChatGPT Images 2.5 or Images 2.0, with the model name gpt-image-2.5-flare, gpt-image-2.5-sunburst or gpt-image-2.",
-    "fr": "Après avoir testé de nombreux modèles d'image, nous ne recommandons actuellement que ChatGPT Images 2.5 ou Images 2.0, avec le nom de modèle gpt-image-2.5-flare, gpt-image-2.5-sunburst ou gpt-image-2."
+  "已测试多种图像模型，目前效果最好的是 ChatGPT 的 Images 2.6，模型名为 gpt-image-2.6-sunburst；其次是 gpt-image-2.6-flare。": {
+    "en": "We tested many image models. ChatGPT Images 2.6 currently works best, with the model name gpt-image-2.6-sunburst; gpt-image-2.6-flare comes second.",
+    "fr": "Après avoir testé de nombreux modèles d'image, c'est actuellement ChatGPT Images 2.6 qui donne les meilleurs résultats, avec le nom de modèle gpt-image-2.6-sunburst ; gpt-image-2.6-flare arrive en second."
   },
   "导出为线条的文字另需「文字识别组件」": {
     "en": "Text exported as lines also requires the text recognition component",

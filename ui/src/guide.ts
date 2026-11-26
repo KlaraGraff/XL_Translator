@@ -234,7 +234,7 @@ function card(opts: {
 function withNowrapModels(text: string): DocumentFragment {
   const frag = document.createDocumentFragment();
   let last = 0;
-  for (const match of text.matchAll(/gpt-image-2(?:\.5-(?:flare|sunburst))?|Images 2\.[05]/g)) {
+  for (const match of text.matchAll(/gpt-image-2(?:\.[56]-(?:flare|sunburst))?|Images 2\.[056]/g)) {
     const index = match.index ?? 0;
     if (index > last) frag.append(text.slice(last, index));
     frag.append(el("span", "g-nw", match[0]));
@@ -385,7 +385,7 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   const note = el("div", "g-note");
   note.append(statusDot("warn"));
   const noteText = el("span");
-  noteText.append(withNowrapModels(t("已测试多种图像模型，目前仅建议使用 ChatGPT 的 Images 2.5 或 Images 2.0，模型名为 gpt-image-2.5-flare、gpt-image-2.5-sunburst 或 gpt-image-2。")));
+  noteText.append(withNowrapModels(t("已测试多种图像模型，目前效果最好的是 ChatGPT 的 Images 2.6，模型名为 gpt-image-2.6-sunburst；其次是 gpt-image-2.6-flare。")));
   note.append(noteText);
 
   const cards = el("div", "g-cards");
