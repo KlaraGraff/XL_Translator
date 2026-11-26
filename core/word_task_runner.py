@@ -1224,7 +1224,9 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                     api_scheduler=api_scheduler,
                     concurrency=concurrency,
                     should_stop=self.stop_requested,
-                    log_callback=self._log,
+                    # 逐段重译、复查的过程（「正在复查译文意思」「复查通过，采用译文」）PDF 转 Word
+                    # 时也要转进 PDF 任务日志，否则只看得到「重译未成功」，看不到后来复查采用了。
+                    log_callback=self._log_relayed,
                     status_callback=lambda msg: self._queue.put(msg),
                     progress_callback=lambda done, total: self._translate_progress.report(
                         "recovery", done, total
@@ -1614,6 +1616,13 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                 # 但它们仍然不写记忆库：接受的是"这一段可以用"，不是"这条译文可以复用"。
                 recovery_review_sources.update(recovery_outcome.recovery_review_results)
                 recovery_review_sources.update(recovery_outcome.semantic_review_results)
+                # 复查认可的译文（含原样保留的公式、变量「xyz,」、只改了标点的「xyz，」）：
+                # 成品体检里也不算「未译源文」。体检看的是写进文档的那段字，所以记译文。
+                already_target_sources.update(
+                    translation
+                    for source in recovery_outcome.semantic_review_results
+                    if (translation := recovery_outcome.accepted_translations.get(source, "").strip())
+                )
                 standard_fixed_sources = [
                     source
                     for source in recovery_outcome.fixed_sources

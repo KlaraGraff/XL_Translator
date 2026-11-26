@@ -31,7 +31,7 @@ from core.translation_filter import (
     validate_translation,
 )
 from core.translation_protocol import extract_replace_translation, is_replace_translation
-from core.translation_review import ReviewItem, build_review_prompt, review_translations
+from core.translation_review import ReviewItem, build_review_prompt, describe_validation, review_translations
 from core.word_batching import WordBatchRunStats, translate_word_texts
 from core.zh_hant import lang_base
 from engines.base_engine import engine_supports_chat
@@ -960,6 +960,7 @@ class _WordRecoveryPool:
                 else None
             ),
             should_stop=self._should_stop,
+            problem=describe_validation(validation),
         )
         with self._condition:
             # 记账已经由本函数接手，_future_done 不再兜底复位
@@ -1016,16 +1017,19 @@ def _semantic_candidate_is_eligible(
     source_text = str(source or "").strip()
     if not source_text or not candidate_text:
         return False
+    codes = {issue.code for issue in validation.issues}
+    # 原样还回来（「xyz,」），或只改了标点、没有一个汉字（「xyz，」）：这样保留对不对（公式、变量、
+    # 型号可以，没翻的句子不行），交给复查判断，和 Excel、PPT、CAD、PDF 原位替换同一个做法
+    # （反馈 #28：讲义里的公式、变量重译三轮后涂黄）。
     if source_text.casefold() == candidate_text.casefold():
-        return False
+        return codes == {"same_as_source"}
 
     hard_codes = {
         "empty_translation",
         "same_as_source",
         "source_non_chinese_only",
-        "missing_target_chinese",
     }
-    if any(issue.code in hard_codes for issue in validation.issues):
+    if codes & hard_codes:
         return False
 
     source_len = len(re.sub(r"\s+", "", source_text))
