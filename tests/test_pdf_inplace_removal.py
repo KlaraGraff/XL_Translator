@@ -15,6 +15,14 @@ import pytest
 fitz = pytest.importorskip("fitz")
 
 
+def _latin_font() -> bool:
+    from core.pdf_vector.fonts import FontSet
+
+    return bool(FontSet("fr").pick("Manuel AQ 0%"))
+
+
+# 译成法文：构建机上没有中文字体，拉丁字体总有
+@unittest.skipUnless(_latin_font(), "no Latin font on this machine")
 class FrameEdgeTests(unittest.TestCase):
     def _run(self, build) -> dict:
         from core.pdf_vector import translate_page_inplace
@@ -26,8 +34,8 @@ class FrameEdgeTests(unittest.TestCase):
             build(page)
             doc.save(root / "source.pdf")
             translate_page_inplace(root / "source.pdf", 0, root / "work",
-                                   translate=lambda texts, prompt, **_: {t: "手动 AQ 0%" for t in texts},
-                                   source_lang="en", target_lang="zh")
+                                   translate=lambda texts, prompt, **_: {t: "Manuel AQ 0%" for t in texts},
+                                   source_lang="en", target_lang="fr")
             return json.loads((root / "work" / "writeback.json").read_text(encoding="utf-8"))
 
     def test_a_frame_edge_through_the_label_does_not_block_it(self):
