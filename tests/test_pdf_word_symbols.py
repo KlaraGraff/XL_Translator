@@ -81,3 +81,44 @@ class MathSymbolFontTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TexGlyphTests(unittest.TestCase):
+    """TeX 的大号运算符字体不按 Unicode 编码：∑ 存成 P / X，∫ 是 R / Z；黑板粗体 R 是 ℝ。"""
+
+    def _doc(self, runs: list[tuple[str, str]]) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "out.docx"
+        doc = Document()
+        body = "".join(
+            f'<w:r><w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}"/></w:rPr>'
+            f'<w:t xml:space="preserve">{text}</w:t></w:r>'
+            for font, text in runs
+        )
+        doc.element.body[-1].addprevious(parse_xml(f'<w:p {nsdecls("w")}>{body}</w:p>'))
+        doc.save(str(path))
+        return path
+
+    def test_big_operators_and_blackboard_letters(self) -> None:
+        from core.pdf_word_symbols import tex_glyphs_to_unicode
+
+        path = self._doc([
+            ("LMRoman10", "Prove that "), ("LMMathExtension10", "P"), ("LMMathItalic10", "n k"),
+            ("LMRoman10", " and "), ("CMEX10", "X Z"), ("LMRoman10", " on "), ("ABCDEF+MSBM10", "R N"),
+            ("LMRoman10", " PXZ stays"),
+        ])
+        self.assertEqual(tex_glyphs_to_unicode(path), 3)
+        runs = _runs(path)
+        self.assertEqual([text for text, _ in runs],
+                         ["Prove that ", "∑", "n k", " and ", "∑ ∫", " on ", "ℝ ℕ", " PXZ stays"])
+        self.assertEqual(runs[1][1].get(qn("w:ascii")), MATH_FONT)
+        self.assertEqual(runs[7][1].get(qn("w:ascii")), "LMRoman10")  # 正文里的字母不动
+
+    def test_tall_delimiter_pieces_become_one_character(self) -> None:
+        from core.pdf_word_symbols import tex_glyphs_to_unicode
+
+        # 拼高的大括号：上段 { + 中段 + 下段 + 竖线段，只留一个 {
+        path = self._doc([("CMEX10", "8&lt;:&gt;")])
+        tex_glyphs_to_unicode(path)
+        self.assertEqual(_runs(path)[0][0], "{")

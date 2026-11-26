@@ -12,6 +12,7 @@ Cambria Math（西文、东亚、复杂文种几种字体都设，主题字体�
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 
 from loguru import logger
@@ -155,4 +156,78 @@ def math_symbols_in_math_font(docx_path: Path) -> int:
     if changed:
         doc.save(str(docx_path))
         logger.info(f"[PDF] 译文里 {changed} 处数学符号改用 {MATH_FONT}")
+    return changed
+
+
+# ── TeX 字体里的字符换成 Unicode ─────────────────────────────────────────────
+# TeX 的大号运算符、大括号字体（CMEX / Latin Modern 的 LMMathExtension）不按 Unicode 编码：
+# ∑ 存成字母 P（行内）或 X（独立公式），∫ 是 R / Z，∏ 是 Q / Y。PDF 里没有对照表，转出来
+# 就是一个字母，Word 里没有这个字体时直接显示成 P、X（反馈 #28 之外的数学讲义实测）。
+# 下表按字体自带的字形名（cmex10.pfb 的编码表）整理：同一个符号的大小几号都对到同一个
+# Unicode 字符；拼高括号用的中段、下段（ex / bt / mid）去掉，只留一个。
+_TEX_EXTENSION_FONT = re.compile(r"(?:[A-Z]{6}\+)?(?:CMEX|LMMathExtension)\d*(?:-\w+)?")
+_TEX_EXTENSION_CHARS = {
+    0: "(", 1: ")", 2: "[", 3: "]", 4: "⌊", 5: "⌋", 6: "⌈", 7: "⌉", 8: "{", 9: "}", 10: "⟨", 11: "⟩",
+    12: "|", 13: "‖", 14: "/", 15: "\\", 16: "(", 17: ")", 18: "(", 19: ")", 20: "[", 21: "]",
+    22: "⌊", 23: "⌋", 24: "⌈", 25: "⌉", 26: "{", 27: "}", 28: "⟨", 29: "⟩", 30: "/", 31: "\\",
+    32: "(", 33: ")", 34: "[", 35: "]", 36: "⌊", 37: "⌋", 38: "⌈", 39: "⌉", 40: "{", 41: "}",
+    42: "⟨", 43: "⟩", 44: "/", 45: "\\", 46: "/", 47: "\\", 48: "(", 49: ")", 50: "[", 51: "]",
+    52: "", 53: "", 54: "", 55: "", 56: "{", 57: "}", 58: "", 59: "", 60: "", 61: "", 62: "", 63: "",
+    64: "", 65: "", 66: "", 67: "", 68: "⟨", 69: "⟩", 70: "⨆", 71: "⨆", 72: "∮", 73: "∮",
+    74: "⨀", 75: "⨀", 76: "⨁", 77: "⨁", 78: "⨂", 79: "⨂", 80: "∑", 81: "∏", 82: "∫", 83: "⋃",
+    84: "⋂", 85: "⨄", 86: "⋀", 87: "⋁", 88: "∑", 89: "∏", 90: "∫", 91: "⋃", 92: "⋂", 93: "⨄",
+    94: "⋀", 95: "⋁", 96: "∐", 97: "∐", 98: "ˆ", 99: "ˆ", 100: "ˆ", 101: "˜",
+    102: "˜", 103: "˜", 104: "[", 105: "]", 106: "⌊", 107: "⌋", 108: "⌈", 109: "⌉",
+    110: "{", 111: "}", 112: "√", 113: "√", 114: "√", 115: "√", 116: "√", 117: "", 118: "",
+    119: "", 120: "", 121: "", 122: "", 123: "", 124: "", 125: "", 126: "", 127: "",
+    128: "(", 159: "√", 161: "(", 162: ")", 163: "[", 164: "]", 165: "⌊", 166: "⌋", 167: "⌈",
+    168: "⌉", 169: "{", 170: "}", 173: "⟨", 174: "⟩", 175: "|", 176: "‖", 177: "/", 178: "\\",
+    179: "(", 180: ")", 181: "(", 182: ")", 183: "[", 184: "]", 185: "⌊", 186: "⌋", 187: "⌈",
+    188: "⌉", 189: "{", 190: "}", 191: "⟨", 192: "⟩", 193: "/", 194: "\\", 195: "(", 196: "",
+}
+# AMS 黑板粗体（MSBM）的大写字母是 ℝ ℕ ℤ 这一套，不是普通的 R N Z。
+_TEX_BLACKBOARD_FONT = re.compile(r"(?:[A-Z]{6}\+)?MSBM\d*(?:-\w+)?")
+_DOUBLE_STRUCK_SPECIAL = {"C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ"}
+
+
+def _double_struck(char: str) -> str:
+    if "A" <= char <= "Z":
+        return _DOUBLE_STRUCK_SPECIAL.get(char) or chr(0x1D538 + ord(char) - ord("A"))
+    return char
+
+
+def _tex_char_map(r_pr):
+    fonts = r_pr.find(f"{_W}rFonts") if r_pr is not None else None
+    if fonts is None:
+        return None
+    name = fonts.get(f"{_W}ascii") or fonts.get(f"{_W}hAnsi") or ""
+    if _TEX_EXTENSION_FONT.fullmatch(name):
+        return lambda char: _TEX_EXTENSION_CHARS.get(ord(char), char)
+    if _TEX_BLACKBOARD_FONT.fullmatch(name):
+        return _double_struck
+    return None
+
+
+def tex_glyphs_to_unicode(docx_path: Path) -> int:
+    """PDF 转出的 Word 里，TeX 大号运算符字体、黑板粗体字体的字符换成对应的 Unicode
+    （P → ∑、Z → ∫、R → ℝ），字体改成 Cambria Math。要在字体名还没统一改掉之前做。返回改了几段。"""
+    from docx import Document
+
+    doc = Document(str(docx_path))
+    changed = 0
+    for run in doc.element.body.iter(f"{_W}r"):
+        r_pr = run.find(f"{_W}rPr")
+        char_map = _tex_char_map(r_pr)
+        if char_map is None:
+            continue
+        for node in run.findall(f"{_W}t"):
+            text = node.text or ""
+            new = "".join(char if char.isspace() else char_map(char) for char in text)
+            if new != text:
+                node.text = new
+                changed += 1
+        _set_math_font(r_pr)
+    if changed:
+        doc.save(str(docx_path))
+        logger.info(f"[PDF] {changed} 段 TeX 数学字体的字符换成 Unicode")
     return changed

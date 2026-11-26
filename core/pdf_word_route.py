@@ -30,7 +30,7 @@ from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
-from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font
+from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font, tex_glyphs_to_unicode
 
 LogFn = Callable[[str, str], None]
 # progress(done, total)：整段 Word 翻译做完了多少（按 Word 各阶段的权重折算好，千分之一）。
@@ -55,7 +55,10 @@ EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
 # PDF 里嵌了它们的子集，转成 Word 后字体名还是 CMSY10，可用户电脑上一般没有，Word 换成
 # 别的字体又缺这些字形，就显示成方框（反馈 #28，Mac 上的 Word）。Office 在 Windows 和
 # macOS 上都带 Cambria Math，它有全部数学符号。译文里新写出来的符号见 core.pdf_word_symbols。
-_TEX_MATH_FONT = re.compile(r"(?:CMSY|CMBSY|CMMI|CMMIB|CMEX|MSAM|MSBM|EUFM|EUFB|EUSM|EUSB|EUEX|RSFS|STMARY|LASY|WASY)\d*")
+_TEX_MATH_FONT = re.compile(
+    r"(?:CMSY|CMBSY|CMMI|CMMIB|CMEX|MSAM|MSBM|EUFM|EUFB|EUSM|EUSB|EUEX|RSFS|STMARY|LASY|WASY"
+    r"|LMMathSymbols|LMMathItalic|LMMathExtension)\d*(?:-\w+)?"
+)
 
 
 class WordRouteStopped(Exception):
@@ -941,6 +944,11 @@ def _pdf_page_count(pdf_path: Path) -> int:
         doc.close()
 
 
+def _tex_glyphs(docx_path: Path, _pdf_path: Path) -> int:
+    """TeX 大号运算符、黑板粗体的字符换成 Unicode（P → ∑）；要在 normalize_docx_fonts 改掉字体名之前做。"""
+    return tex_glyphs_to_unicode(docx_path)
+
+
 def convert_pdf_to_docx(
     pdf_path: Path,
     docx_path: Path,
@@ -967,7 +975,7 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、丢了的上下标
-    for fix in (recolor_cells_from_pdf, restore_scripts_from_pdf):
+    for fix in (recolor_cells_from_pdf, restore_scripts_from_pdf, _tex_glyphs):
         try:
             fix(docx_path, pdf_path)
         except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
