@@ -1018,16 +1018,16 @@ def _semantic_candidate_is_eligible(
     if not source_text or not candidate_text:
         return False
     codes = {issue.code for issue in validation.issues}
+    # 原样还回来（「xyz,」），或只改了标点、没有一个汉字（「xyz，」）：这样保留对不对（公式、变量、
+    # 型号可以，没翻的句子不行），交给复查判断，和 Excel、PPT、CAD、PDF 原位替换同一个做法
+    # （反馈 #28：讲义里的公式、变量重译三轮后涂黄）。
     if source_text.casefold() == candidate_text.casefold():
-        # 原样还回来：原样保留对不对（公式、变量、型号可以，没翻的句子不行），交给复查判断，
-        # 和 Excel、PPT、CAD、PDF 原位替换同一个做法（反馈 #28：讲义里的公式、变量重译三轮后涂黄）。
         return codes == {"same_as_source"}
 
     hard_codes = {
         "empty_translation",
         "same_as_source",
         "source_non_chinese_only",
-        "missing_target_chinese",
     }
     if codes & hard_codes:
         return False

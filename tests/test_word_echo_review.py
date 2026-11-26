@@ -66,6 +66,21 @@ class EchoReviewTests(unittest.TestCase):
                     )
                 )
 
+    def test_echo_with_only_punctuation_changed_is_eligible_for_review(self) -> None:
+        # 本机复验 #332：「xyz,」「yxz,」「yzx,」模型还回「xyz，」这类（标点换成全角、或去掉逗号），
+        # 没有一个汉字，被当成硬失败、不交复查，重译三轮后保留原文需复核。
+        for source, candidate in (("xyz,", "xyz，"), ("yxz,", "yxz"), ("Pump", "Pump。")):
+            with self.subTest(candidate=candidate):
+                validation = _evaluate_word_translation(
+                    source, candidate, source_lang="en", target_lang="zh", allow_recovery=True
+                ).validation
+                self.assertEqual({issue.code for issue in validation.issues}, {"missing_target_chinese"})
+                self.assertTrue(
+                    _semantic_candidate_is_eligible(
+                        source, candidate, target_lang="zh", source_lang="en", validation=validation
+                    )
+                )
+
     def test_review_accepts_formula_kept_as_is(self) -> None:
         source = "(as −a′s) bs + (as−1−a′s−1) bs−1 + · · · + (ai−a′i) bi."
         problems: list[str] = []
@@ -114,9 +129,20 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
+def _queued(runner) -> list:
+    items = []
+    while not runner._queue.empty():
+        items.append(runner._queue.get_nowait())
+    return items
+
+
 class EchoReviewRunnerTests(IsolatedAppDataTestCase):
     def test_echo_accepted_by_review_is_not_reported_as_untranslated(self) -> None:
-        text = "xiy + c"
+        for text, returned in (("xiy + c", "xiy + c"), ("xyz,", "xyz，")):
+            with self.subTest(returned=returned):
+                self._check_runner(text, returned)
+
+    def _check_runner(self, text: str, returned: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.docx"
@@ -138,8 +164,11 @@ class EchoReviewRunnerTests(IsolatedAppDataTestCase):
                 callback = kwargs.get("candidate_callback")
                 for item in texts:
                     if callback is not None:
-                        callback(item, item)
-                return {item: item for item in texts}
+                        callback(item, returned)
+                return {item: returned for item in texts}
+
+            def retry_translate(texts, *args, **kwargs):
+                return {item: returned for item in texts}
 
             with ExitStack() as stack:
                 writer = _contracts.WordTaskResultContractTests._runner_patches(
@@ -155,13 +184,15 @@ class EchoReviewRunnerTests(IsolatedAppDataTestCase):
                 ))
                 stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", return_value={text: None}))
                 stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
-                stack.enter_context(patch("core.word_recovery_pool.translate_word_texts", _echo_translate))
+                stack.enter_context(patch("core.word_recovery_pool.translate_word_texts", retry_translate))
                 stack.enter_context(patch(
                     "core.word_recovery_pool._run_semantic_arbitration",
                     lambda *a, **k: _SemanticArbitrationResult("equivalent", "公式，没有要翻的文字"),
                 ))
                 runner._run()
 
-            self.assertIn(text, coverage.call_args.kwargs["already_target_sources"])
-            self.assertEqual(writer.call_args.kwargs["translations"].get(text, text), text)
+            self.assertIn(returned, coverage.call_args.kwargs["already_target_sources"])
+            self.assertEqual(writer.call_args.kwargs["translations"].get(text, text), returned)
             self.assertNotIn(text, writer.call_args.kwargs.get("review_marks") or {})
+            logged = [getattr(m, "message", "") for m in _queued(runner) if getattr(m, "relay", False)]
+            self.assertTrue(any("复查通过" in line for line in logged), logged)
