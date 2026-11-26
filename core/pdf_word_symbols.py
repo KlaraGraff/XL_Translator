@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -196,13 +197,17 @@ def _double_struck(char: str) -> str:
     return char
 
 
-def _tex_char_map(r_pr):
+def _extension_char(char: str) -> str:
+    return _TEX_EXTENSION_CHARS.get(ord(char), char)
+
+
+def _tex_char_map(r_pr) -> Callable[[str], str] | None:
     fonts = r_pr.find(f"{_W}rFonts") if r_pr is not None else None
     if fonts is None:
         return None
-    name = fonts.get(f"{_W}ascii") or fonts.get(f"{_W}hAnsi") or ""
+    name = str(fonts.get(f"{_W}ascii") or fonts.get(f"{_W}hAnsi") or "")
     if _TEX_EXTENSION_FONT.fullmatch(name):
-        return lambda char: _TEX_EXTENSION_CHARS.get(ord(char), char)
+        return _extension_char
     if _TEX_BLACKBOARD_FONT.fullmatch(name):
         return _double_struck
     return None
