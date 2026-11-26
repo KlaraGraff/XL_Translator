@@ -46,7 +46,7 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "build-distributions.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("macos-14", workflow)
+        self.assertIn("runner: macos-15\n", workflow)
         self.assertIn("architecture: arm64", workflow)
         # macOS distribution is Apple Silicon only; the Intel matrix leg must
         # not come back silently.
