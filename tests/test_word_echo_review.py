@@ -19,7 +19,7 @@ from docx import Document
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.translation_review import build_review_prompt  # noqa: E402
+from core.translation_review import ReviewVerdict, build_review_prompt  # noqa: E402
 from core.word_recovery_pool import (  # noqa: E402
     _evaluate_word_translation,
     _semantic_candidate_is_eligible,
@@ -119,6 +119,26 @@ class EchoReviewTests(unittest.TestCase):
         self.assertTrue(finished)
         self.assertIsNone(error)
         self.assertEqual(outcome.unresolved_sources, ["Pump"])
+
+    def test_echo_the_review_is_unsure_about_is_kept_without_marking(self) -> None:
+        # 本机复验 #335：讲义表格里单独的「Ai」，复查答「无法确定」→ 重译三轮 → 保留原文、标黄。
+        for answered, kept in ((True, True), (False, False)):
+            with self.subTest(answered=answered):
+                verdict = ReviewVerdict("uncertain", "看不出是变量还是缩写", answered=answered)
+                pool = _pool()
+                with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+                    "core.word_recovery_pool.review_translations", lambda *a, **k: {"1": verdict}
+                ):
+                    pool.add_candidate("Ai", "Ai")
+                    pool.start()
+                    finished, outcome, error = _run_pool_with_timeout(pool)
+                self.assertTrue(finished)
+                self.assertIsNone(error)
+                if kept:
+                    self.assertEqual(outcome.unresolved_sources, [])
+                    self.assertEqual(outcome.accepted_translations["Ai"], "Ai")
+                else:
+                    self.assertEqual(outcome.unresolved_sources, ["Ai"])
 
     def test_review_prompt_allows_formulas_and_variables_unchanged(self) -> None:
         prompt = build_review_prompt()

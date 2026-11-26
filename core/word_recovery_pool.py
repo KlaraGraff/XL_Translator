@@ -31,7 +31,14 @@ from core.translation_filter import (
     validate_translation,
 )
 from core.translation_protocol import extract_replace_translation, is_replace_translation
-from core.translation_review import ReviewItem, build_review_prompt, describe_validation, review_translations
+from core.translation_review import (
+    ReviewItem,
+    accepted_reason,
+    build_review_prompt,
+    describe_validation,
+    review_accepts,
+    review_translations,
+)
 from core.word_batching import WordBatchRunStats, translate_word_texts
 from core.zh_hant import lang_base
 from engines.base_engine import engine_supports_chat
@@ -1082,6 +1089,8 @@ def _run_semantic_arbitration(
     ).get("1")
     if verdict is None:
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "")
+    if review_accepts(source, candidate_text, verdict):
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_EQUIVALENT, accepted_reason(verdict))
     return _SemanticArbitrationResult(verdict.verdict, verdict.reason)
 
 

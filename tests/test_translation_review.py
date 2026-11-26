@@ -362,3 +362,60 @@ def test_service_drops_rejected_sources_and_carries_the_review(monkeypatch):
     assert dict(results) == {"好": "Good"}
     assert results.rejected == {"坏": "数字丢了"} and results.review_accepted == {"好": "意思一致"}
     assert OUTCOME_ACCEPTED and OUTCOME_FIXED  # constants exported
+
+
+# ── 原样还回、复查拿不准（反馈 #28 本机复验：讲义表格里的「Ai」）──────────────
+
+
+def _echo_repair(engine, source="Ai", translation="Ai"):
+    calls: list[str] = []
+
+    def retranslate(src, previous, reason):
+        calls.append(src)
+        return translation
+
+    outcomes = review_and_repair(
+        [RuleFailure(source, translation, "译文和原文相同")],
+        engine=engine,
+        rule_problem=lambda s, t: "译文和原文相同",
+        retranslate=retranslate,
+        max_rounds=3,
+        source_lang="en",
+        target_lang="zh",
+    )
+    return outcomes[source], calls
+
+
+def test_echo_the_review_is_unsure_about_is_kept_as_is_without_retranslating():
+    outcome, calls = _echo_repair(ReviewEngine(verdicts={"Ai": ("uncertain", "单独的 Ai 看不出是变量还是缩写")}))
+    assert outcome.status == OUTCOME_ACCEPTED and outcome.translation == "Ai"
+    assert outcome.reason.startswith("原样保留") and "看不出" in outcome.reason
+    assert calls == []
+
+
+def test_echo_with_only_punctuation_changed_counts_as_kept_as_is():
+    outcome, _ = _echo_repair(ReviewEngine(verdicts={"xyz,": "uncertain"}), "xyz,", "xyz，")
+    assert outcome.status == OUTCOME_ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "engine",
+    [ReviewEngine(chat_error=RuntimeError("超时")), ReviewEngine(skip_ids={"1"})],
+    ids=["error", "left-out"],
+)
+def test_echo_is_not_kept_when_the_model_never_answered(engine):
+    outcome, _ = _echo_repair(engine)
+    assert outcome.status == OUTCOME_REJECTED
+
+
+def test_echo_the_review_says_is_untranslated_is_retranslated():
+    outcome, calls = _echo_repair(ReviewEngine(verdicts={"Ai": ("not_equivalent", "没有翻译")}))
+    assert outcome.status == OUTCOME_REJECTED and calls == ["Ai"] * 3
+
+
+def test_kept_as_is_only_ignores_case_spacing_and_punctuation():
+    from core.translation_review import is_kept_as_is
+
+    assert is_kept_as_is("Ai", "Ai") and is_kept_as_is("xyz,", "xyz，") and is_kept_as_is("x + y", "X+Y")
+    assert is_kept_as_is("∑", "∑")
+    assert not is_kept_as_is("Ai", "人工智能") and not is_kept_as_is("∑", "") and not is_kept_as_is("Pump", "Pumps")
