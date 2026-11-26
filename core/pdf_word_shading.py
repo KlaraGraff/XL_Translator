@@ -33,6 +33,8 @@ _SNIPPET_CHARS = 30
 #: 整段找不到时只用开头这么多个字再找一次。
 _SHORT_KEY_CHARS = 8
 _MIN_SNIPPET_CHARS = 3
+#: 没字的深色格子至少这么高（1/20 磅，约一行字）才当成框的一块；更矮的可能是一条线。
+_MIN_BLOCK_HEIGHT = 200
 #: 取色时把页面放大到这么多倍（72 dpi 的倍数），细字的笔画不会占多数。
 _RENDER_ZOOM = 2
 
@@ -204,21 +206,60 @@ def _table_of(tc):
     return row.getparent() if row is not None else None
 
 
-def _recolor_blank_cells(cells: list, table_changes: dict) -> int:
-    """没字的格子找不到位置，但 pdf2docx 给它上的是和同一张表里有字的格子一样的错色
-    （深色外层）：那几个有字的格子从这个颜色改成了什么，它也改成什么。多个颜色对不上
-    或表里没有改过的格子时不动。"""
-    changed = 0
-    for tc in cells:
-        shd, fill = _cell_fill(tc)
-        if fill is None:
-            continue
-        replacement = table_changes.get(_table_of(tc), {}).get(fill)
-        if replacement is None:
-            continue
-        _set_fill(tc, shd, replacement)
-        changed += 1
-    return changed
+def _only_choice(choices: list | None):
+    """几个格子学到的颜色都差不多（取色时边上差一两个色阶）就用最多的那个；差得明显
+    （同一种错色有的该改成浅蓝、有的该改成白）就不猜。"""
+    if not choices:
+        return None
+    first = choices[0]
+    if any(_differs(first, other) for other in choices):
+        return None
+    return Counter(choices).most_common(1)[0][0]
+
+
+class _Learned:
+    """有字的格子找到位置后学到的「pdf2docx 给的颜色 → 原页面的颜色」。
+
+    找不到位置的格子（「T」「F」这种短字、真值表一格一列、没字的格子）照着改：
+    先看同一张表里有没有同色的格子找到了位置（标题条上空着的那一格跟着标题条，
+    不会被改浅）；同一张表里没有，再看同一页、最后看整份文件，深色字压在这个颜色
+    上的格子是不是都改成了同一个颜色。"""
+
+    def __init__(self) -> None:
+        self.by_table: dict = {}
+        self.by_page: dict = {}
+        self.overall: dict = {}
+
+    def add(self, tc, page_index: int, fill, original, dark_text: bool) -> None:
+        self.by_table.setdefault(_table_of(tc), {}).setdefault(fill, []).append((original, dark_text))
+        if dark_text:
+            self.by_page.setdefault(page_index, {}).setdefault(fill, []).append(original)
+            self.overall.setdefault(fill, []).append(original)
+
+    def guess(self, tc, page_index: int, fill, has_text: bool):
+        in_table = self.by_table.get(_table_of(tc), {}).get(fill, [])
+        if not has_text:
+            if in_table:
+                return _only_choice([original for original, _dark in in_table])
+            if _row_height(tc) < _MIN_BLOCK_HEIGHT:
+                return None  # 没字的矮格子：可能就是一条深色的线，不动
+        else:
+            dark_in_table = [original for original, dark in in_table if dark]
+            if dark_in_table:
+                return _only_choice(dark_in_table)
+        # 没字的一大块（框跨页时留在这一页顶上的空白部分）、找不到位置的短字：
+        # 同一页、再到整份文件里这种错色都改成了什么
+        return (_only_choice(self.by_page.get(page_index, {}).get(fill))
+                or _only_choice(self.overall.get(fill)))
+
+
+def _row_height(tc) -> int:
+    row = tc.getparent()
+    height = row.find(f"{_W}trPr/{_W}trHeight") if row is not None else None
+    try:
+        return int(float(height.get(f"{_W}val"))) if height is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def recolor_cells_from_pdf(docx_path: Path, pdf_path: Path) -> int:
@@ -243,9 +284,8 @@ def recolor_cells_from_pdf(docx_path: Path, pdf_path: Path) -> int:
         if len(groups) != len(pdf):
             logger.info(f"[PDF] 转出的 Word 有 {len(groups)} 个分页节，原文 {len(pdf)} 页，不对照格子底色")
             return 0
-        # 同一张表里有字的格子从什么颜色改成了什么颜色：没字的格子照着改（见下）
-        table_changes: dict = {}
-        blank_cells: list = []
+        learned = _Learned()
+        unresolved: list = []  # (页序, 格子, 有没有字)
         for page_index, group in enumerate(groups):
             cells = [tc for element in group for tc in element.iter(f"{_W}tc")]
             if not cells:
@@ -254,25 +294,33 @@ def recolor_cells_from_pdf(docx_path: Path, pdf_path: Path) -> int:
             for tc in cells:
                 paragraphs = _own_paragraphs(tc)
                 keys = _keys(paragraphs)
-                if not keys:
-                    blank_cells.append(tc)
-                    continue
-                # 每个有字的格子都按顺序占一处，同样的字出现几次时才对得上是哪一处
-                rect = chars.find(keys, fitz)
                 shd, fill = _cell_fill(tc)
                 text_rgb = _text_color(paragraphs)
-                if fill is None and (text_rgb is None or _luminance(text_rgb) <= LIGHT_TEXT):
+                dark_text = text_rgb is None or _luminance(text_rgb) <= LIGHT_TEXT
+                # 每个有字的格子都按顺序占一处，同样的字出现几次时才对得上是哪一处
+                rect = chars.find(keys, fitz) if keys else None
+                if fill is None and dark_text:
                     continue  # 白底深色字：普通表格，不动
-                if rect is None:
-                    continue
-                original = _background_color(pdf[page_index], rect, fitz)
-                if original is None or not _differs(original, fill or (255, 255, 255)):
+                original = _background_color(pdf[page_index], rect, fitz) if rect is not None else None
+                if original is None:
+                    if fill is not None and dark_text:  # 没字的格子也在这里（text_rgb 为 None）
+                        # 自己没字、里面套着表格的格子（框里的真值表）：里面的字也压在它的底色上
+                        has_text = bool("".join(node.text or "" for node in tc.iter(f"{_W}t")).strip())
+                        unresolved.append((page_index, tc, has_text))
                     continue
                 if fill is not None:
-                    table_changes.setdefault(_table_of(tc), {})[fill] = original
+                    learned.add(tc, page_index, fill, original, dark_text)
+                if not _differs(original, fill or (255, 255, 255)):
+                    continue
                 _set_fill(tc, shd, original)
                 changed += 1
-        changed += _recolor_blank_cells(blank_cells, table_changes)
+        for page_index, tc, has_text in unresolved:
+            shd, fill = _cell_fill(tc)
+            replacement = learned.guess(tc, page_index, fill, has_text)
+            if replacement is None or fill is None or not _differs(replacement, fill):
+                continue
+            _set_fill(tc, shd, replacement)
+            changed += 1
     if changed:
         doc.save(str(docx_path))
         logger.info(f"[PDF] 按原页面颜色改正了 {changed} 个格子的底色")

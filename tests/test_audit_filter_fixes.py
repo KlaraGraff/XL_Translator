@@ -560,5 +560,18 @@ class SingleLetterTokenTests(unittest.TestCase):
         self.assertTrue(should_translate("Fig. 3", target_lang="zh", source_lang="en"))
         self.assertTrue(should_translate("是 否", target_lang="en", source_lang="zh"))
 
+    def test_formula_lines_are_skipped(self) -> None:
+        # #28 讲义里标黄的 92 段公式：模型照原样还回来，被判没翻成功、重译三轮
+        for text in ("(A1 ∧A2 ∧· · · ∧An) ⇒C", "P1⇒P2, P2⇒P3, …, P1∴P6", "(ii) A ∪B = B ∪A.",
+                     "an10n+ an−1 10n−1+ · · · + a1101+ a0100.", "α + β = γ"):
+            with self.subTest(text=text):
+                self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
+
+    def test_formulas_with_words_are_still_translated(self) -> None:
+        for text in ("x ≥ 0 if x ∈ A", "Let A ⊆ B", "f(x) = sin x", "温度 > 30"):
+            with self.subTest(text=text):
+                self.assertTrue(should_translate(text, target_lang="en" if "温" in text else "zh",
+                                                 source_lang="zh" if "温" in text else "en"))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
