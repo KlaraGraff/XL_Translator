@@ -1080,8 +1080,12 @@ WORD_PDF_FORMAT = 17  # wdFormatPDF
 
 def cjk_text_visible(pdf_path: Path, max_pages: int = 3) -> bool:
     """转回的 PDF 里中文看不看得见。本机缺中文字体时（实测 macOS 上的 LibreOffice）
-    中文照样写进了文字层，却画成空白；按中文字所在区域的墨迹判断。没有中文时算看得见。"""
+    中文照样写进了文字层，却画成空白；按中文字所在区域的墨迹判断。没有中文时算看得见。
+
+    墨迹是「和这块地方的底色不一样的点」，不是「比某个灰度深的点」：浅灰色正文、
+    深底上的白字都画出来了，画成空白时整块只有底色（反馈：浅灰正文的设备手册）。"""
     import statistics
+    from collections import Counter
 
     from core.pdf_component import PdfComponentMissing, require_fitz
 
@@ -1103,13 +1107,15 @@ def cjk_text_visible(pdf_path: Path, max_pages: int = 3) -> bool:
                 rect = fitz.IRect(fitz.Rect(span["bbox"])) & pix.irect
                 if rect.is_empty:
                     continue
-                dark = total = 0
-                for y in range(rect.y0, rect.y1):
-                    row = pix.samples[y * pix.stride + rect.x0: y * pix.stride + rect.x1]
-                    dark += sum(1 for value in row if value < 160)
-                    total += len(row)
-                values.append(dark / total if total else 0.0)
+                pixels = [value for y in range(rect.y0, rect.y1)
+                          for value in pix.samples[y * pix.stride + rect.x0: y * pix.stride + rect.x1]]
+                ground = Counter(pixels).most_common(1)[0][0]
+                ink = sum(1 for value in pixels if abs(value - ground) > _INK_STEP)
+                values.append(ink / len(pixels))
     return not values or statistics.median(values) >= 0.03
+
+
+_INK_STEP = 16  # 和底色差这么多灰度才算画了东西：浅灰字的边缘也够，纸面杂色不够
 
 
 class OfficePdfError(Exception):
