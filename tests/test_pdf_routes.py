@@ -197,6 +197,14 @@ class FontNormalizationTests(unittest.TestCase):
         self.assertIn('<w:rFonts w:eastAsia="Microsoft YaHei"', out)
         self.assertIn('<w:lang w:val="en-US" w:eastAsia="zh-CN"/>', out)  # untouched
 
+    def test_tex_math_fonts_become_cambria_math(self) -> None:
+        # LaTeX 讲义的 ∨ ⊆ ∅ 用 CMSY10：用户电脑上没有这个字体，Mac 的 Word 显示成方框（反馈 #28）
+        xml = ('<w:rFonts w:ascii="QWERTY+CMSY10" w:hAnsi="CMSY10"/><w:rFonts w:ascii="MSBM10" w:hAnsi="CMMI7"/>'
+               '<w:rFonts w:ascii="CMR10" w:hAnsi="Chivo-Light"/>')
+        out = normalize_fonts_xml(xml)
+        self.assertEqual(out.count('"Cambria Math"'), 4)
+        self.assertIn('w:ascii="CMR10" w:hAnsi="Chivo-Light"', out)  # 正文字体不动
+
 
 if __name__ == "__main__":
     unittest.main()

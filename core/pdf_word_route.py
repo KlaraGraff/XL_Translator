@@ -49,6 +49,12 @@ def _word_run_fraction(phase_index: int, phase_total: int, done: int, total: int
 EAST_ASIAN_FONT = "Microsoft YaHei"
 # 繁体：微軟正黑體（Windows 自带，字形按台湾标准）；macOS 上同样会换成苹方。
 EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
+# LaTeX 讲义里的数学符号（∨ ⊆ ∅ ∧ …）用的是 TeX 自己的字体：CMSY10、CMMI10、MSAM10 等。
+# PDF 里嵌了它们的子集，转成 Word 后字体名还是 CMSY10，可用户电脑上一般没有，Word 换成
+# 别的字体又缺这些字形，就显示成方框（反馈 #28，Mac 上的 Word）。Office 在 Windows 和
+# macOS 上都带 Cambria Math，它有全部数学符号。
+MATH_FONT = "Cambria Math"
+_TEX_MATH_FONT = re.compile(r"(?:CMSY|CMBSY|CMMI|CMMIB|CMEX|MSAM|MSBM|EUFM|EUFB|EUSM|EUSB|EUEX|RSFS|STMARY|LASY|WASY)\d*")
 
 
 class WordRouteStopped(Exception):
@@ -83,6 +89,8 @@ def word_route_available() -> bool:
 def _fix_rfonts(tag: str, font: str = EAST_ASIAN_FONT) -> str:
     tag = re.sub(r'w:(ascii|hAnsi|cs)="[A-Z]{6}\+([^"]+)"', r'w:\1="\2"', tag)
     tag = re.sub(r'w:(ascii|hAnsi|cs)="CIDFont\+F\d+"', r'w:\1="Arial"', tag)
+    tag = re.sub(r'w:(ascii|hAnsi|cs)="([^"]+)"',
+                 lambda m: f'w:{m.group(1)}="{MATH_FONT}"' if _TEX_MATH_FONT.fullmatch(m.group(2)) else m.group(0), tag)
     tag = re.sub(r'\s?w:eastAsiaTheme="[^"]*"', "", tag)
     tag = re.sub(r'\s?w:eastAsia="[^"]*"', "", tag)
     return tag.replace("<w:rFonts", f'<w:rFonts w:eastAsia="{font}"', 1)
