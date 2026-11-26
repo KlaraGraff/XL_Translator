@@ -382,6 +382,11 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         smart_mode=smart_mode,
     )
 
+    from core.engine_dispatcher import TranslationBatchRunStats
+    from core.nothing_translated import failed_request_reason
+
+    failure = {"reason": ""}
+
     def translate(texts: list[str], prompt: str, should_stop=None, term_session=None,
                   request_callback=None, error_callback=None, resend_unchanged=None, stats=None,
                   source_lang=None, extra_check=None) -> dict:
@@ -392,10 +397,14 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         # resend_unchanged：哪一批先回来就先补问那一批原样退回的词，不等其它批次。
         # stats：这一页的批次重试和降速次数，PDF 报告据此计数。
         # source_lang：这一页认出的原文语种，引擎的任务说明里写「从中文译成法文」而不是「从 auto」。
-        return service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session,
-                                 request_callback=request_callback, error_callback=error_callback,
-                                 resend_unchanged=resend_unchanged, stats=stats, source_lang=source_lang,
-                                 extra_check=extra_check)
+        # failure：最近一次请求失败的原因，送去翻译的全部失败时写进文件的失败提示。
+        stats = stats if stats is not None else TranslationBatchRunStats()
+        result = service.translate(texts, prompt=prompt, should_stop=should_stop, term_session=term_session,
+                                   request_callback=request_callback, error_callback=error_callback,
+                                   resend_unchanged=resend_unchanged, stats=stats, source_lang=source_lang,
+                                   extra_check=extra_check)
+        failure["reason"] = failed_request_reason(stats) or failure["reason"]
+        return result
 
     profile = None
     if smart_mode:
@@ -418,6 +427,7 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         source_lang="auto",
         ocr_wanted=True,
         memory=memory,
+        last_failure_reason=lambda: failure["reason"],
     )
 
 

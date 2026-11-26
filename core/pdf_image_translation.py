@@ -195,7 +195,7 @@ from core.pdf_task_report import (  # noqa: F401
     _record_is_fully_skipped_oversize,
     _record_translated_nothing,
     fully_skipped_oversize_message,
-    inplace_requests_all_failed,
+    text_requests_all_failed,
     translated_nothing_message,
     _page_archive_stem,
     page_archive_dir,
@@ -1642,6 +1642,8 @@ class PdfImageTranslationRunner(
         self._settings = settings
         # 「原位替换文字（Beta）」用到的翻译回调、Tesseract 路径；不开这个功能时为 None。
         self._inplace_hooks = inplace_hooks
+        # 最近一次文字翻译请求失败的原因（原位替换页、转 Word 的段）：全部失败时写进文件的失败提示。
+        self._text_failure_reason = ""
         self._pdf_component_ok: bool | None = None
         # 转 Word 翻译的各段正文的「记忆库」结果；收尾时和原位替换页的合并（_terms_result）。
         self._word_terms: list[dict[str, Any]] = []
@@ -2766,7 +2768,7 @@ class PdfImageTranslationRunner(
             not stopped
             and not fatal_error
             and file_records
-            and all(inplace_requests_all_failed(record) for record in file_records)
+            and all(text_requests_all_failed(record) for record in file_records)
         ):
             # 每个文件送去翻译的请求都全部失败、一个文件都没生成：任务算失败（与 Excel 相同），
             # 不报「完成」。各文件的原因已逐个写进日志。
@@ -3732,6 +3734,17 @@ class PdfImageTranslationRunner(
             page_height_pt=float(height_pt),
         )
 
+    def _failed_because_text_requests_all_failed(self, record: PdfFileRecord) -> bool:
+        """送去翻译的每一处都因为请求失败没拿到译文、一页都没翻成：这个文件算失败，
+        不拼出一份原样的 PDF（core/pdf_task_report.text_requests_all_failed）。"""
+        failed_requests = text_requests_all_failed(record)
+        if not failed_requests:
+            return False
+        record.status = PDF_OUTPUT_STATE_FAILED
+        record.error = nothing_translated_message(failed_requests, self._text_failure_reason)
+        self._log("ERROR", f"[{record.name}] {record.error}")
+        return True
+
     def _finalize_file_record(
         self,
         prepared: _PreparedPdfFile,
@@ -3761,6 +3774,8 @@ class PdfImageTranslationRunner(
         if record.source_type != SOURCE_TYPE_IMAGE:
             self._finalize_placeholders(record, prepared.translated_pages_dir)
         self._refresh_file_record_counts(record)
+        if self._failed_because_text_requests_all_failed(record):
+            return
         if not _record_has_usable_translated_pages(record):
             record.status = PDF_OUTPUT_STATE_FAILED
             record.error = _no_usable_translated_pages_error(record)
@@ -3772,12 +3787,7 @@ class PdfImageTranslationRunner(
 
         self._run_inplace_pages(record, prepared)
         self._refresh_file_record_counts(record)
-        failed_requests = inplace_requests_all_failed(record)
-        if failed_requests:
-            # 送去翻译的每一处都因为请求失败没拿到译文：这个文件算失败，不拼出一份原样的 PDF。
-            record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = nothing_translated_message(failed_requests, "")
-            self._log("ERROR", f"[{record.name}] {record.error}")
+        if self._failed_because_text_requests_all_failed(record):
             return
         try:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)

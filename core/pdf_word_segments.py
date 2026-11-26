@@ -221,11 +221,17 @@ class PdfWordSegmentsMixin:
                     self._collect_word_terms(result.terms, f"{record.name} {label}")
                     self._record_text_batch_counts(result.retry_count, result.rate_limit_reduction_count)
                     if not result.ok:
+                        if result.nothing_translated:
+                            # 送去翻译的请求全部失败：整份文件一页都没翻成时，文件算失败
+                            # （core/pdf_task_report.text_requests_all_failed）。
+                            entry["untranslated"] = result.nothing_translated
+                            self._text_failure_reason = result.nothing_translated_reason
                         mark("stopped" if result.stopped else "failed",
                              "任务已停止" if result.stopped else "转成 Word 翻译失败")
                         if not result.stopped:
                             self._log("WARN", f"[{record.name}] {label}转成 Word 翻译失败：{result.error}")
                         continue
+                    entry["answered"] = True  # 拿到了译文（之后转回 PDF 失败也算）
                     translated_pdf = work / f"{stem}_p{first}-{last}_translated.pdf"
                     engine = docx_to_pdf(Path(result.output_path), translated_pdf)
                     output_pages = _pdf_page_count(translated_pdf)
@@ -285,7 +291,8 @@ class PdfWordSegmentsMixin:
         """转回的 PDF 比原文多出太多页的一段（或一块）：不拼入，这几页随后按保底方式处理。"""
         record.word_segments.append({"segment": index, "first_page": pages[0], "last_page": pages[-1],
                                      "docx_path": "", "pdf_path": "", "status": "failed",
-                                     "message": REASON_PAGE_GROWTH, "issue_count": 0, "engine": ""})
+                                     "message": REASON_PAGE_GROWTH, "issue_count": 0, "engine": "",
+                                     "answered": True})
         for number in pages:
             self._word_pages[(key, number)] = {"segment": index, "status": "failed",
                                                "message": REASON_PAGE_GROWTH, "note": ""}
@@ -297,7 +304,7 @@ class PdfWordSegmentsMixin:
         """一段里页数正常的一块：单独记成一段，装配时拼入这一块转回的 PDF。"""
         record.word_segments.append({"segment": index, "first_page": pages[0], "last_page": pages[-1],
                                      "docx_path": result.output_path, "pdf_path": pdf_path, "status": "done",
-                                     "message": "", "issue_count": issues, "engine": engine})
+                                     "message": "", "issue_count": issues, "engine": engine, "answered": True})
         record.word_issue_count += issues
         note = f"{label}的文字可以提取，转成 Word 翻译后转回 PDF 拼入"
         for number in pages:

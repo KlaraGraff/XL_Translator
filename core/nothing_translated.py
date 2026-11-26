@@ -48,9 +48,17 @@ def raise_if_nothing_translated(
     stopped = set(getattr(stats, "stopped_sources", ()) or ())
     if unique & stopped or not unique <= failed:
         return
-    # 原始报错只进调试日志；这里取最后一批失败的原因换成一句人话（与运行日志同一标准）。
+    raise NothingTranslatedError(nothing_translated_message(len(unique), failed_request_reason(stats)))
+
+
+def failed_request_reason(stats: object) -> str:
+    """最后一批失败的原因，换成一句人话（与运行日志同一标准）；没有失败的批次时为空。
+
+    原始报错只进调试日志。Word 按单段失败时的同一个函数（user_facing_batch_reason）取原因。
+    """
+    items = list(getattr(stats, "failed_items", ()) or ())
+    if not items:
+        return ""
     from core.engine_dispatcher import user_facing_batch_reason
 
-    items = list(getattr(stats, "failed_items", ()) or ())
-    raw = items[-1].get("error", "") if items else ""
-    raise NothingTranslatedError(nothing_translated_message(len(unique), user_facing_batch_reason(raw)))
+    return user_facing_batch_reason(items[-1].get("error", ""))

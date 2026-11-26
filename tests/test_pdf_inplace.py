@@ -838,22 +838,22 @@ class InplaceApiGaveUpTests(unittest.TestCase):
         # （core/nothing_translated，与 CAD、Excel 相同）。
         self.assertEqual(record.status, PDF_OUTPUT_STATE_FAILED)
         self.assertEqual(record.error, (
-            "3 条内容的翻译请求全部失败，没有获得任何译文：模型服务返回了错误。"
+            "3 条内容的翻译请求全部失败，没有获得任何译文：接口所在的服务暂时不可用，请稍后重试，或在设置里换一条连接。"
             "未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。"
         ))
         self.assertFalse(record.translated_pdf_path)
 
     def test_memory_hit_on_a_page_whose_requests_all_fail_still_writes_it(self):
-        from core.pdf_task_report import inplace_requests_all_failed
+        from core.pdf_task_report import text_requests_all_failed
 
         hooks, _calls = self._service_hooks(set(LABELS))
         _runner, record, _client = self._run(hooks=hooks, sizes=(A2,), text=(True,))
         page = record.pages[0]
         # 这一页拿到过一条译文（记忆库、术语表或模型），就不是「请求全部失败」：照旧需复核。
         page.inplace_answered = 1
-        self.assertEqual(inplace_requests_all_failed(record), 0)
+        self.assertEqual(text_requests_all_failed(record), 0)
         page.inplace_answered = 0
-        self.assertEqual(inplace_requests_all_failed(record), 3)
+        self.assertEqual(text_requests_all_failed(record), 3)
 
 
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
@@ -893,6 +893,67 @@ class InplaceProgressTests(unittest.TestCase):
         errors = [m for m in messages if isinstance(m, ErrorMsg)]
         self.assertEqual(len(errors), 1)
         self.assertTrue(errors[0].message.startswith("3 条内容的翻译请求全部失败"), errors[0].message)
+        self.assertFalse(list((root / "out").rglob("*.pdf")))
+
+    def test_whole_task_whose_word_segment_requests_all_fail_ends_as_failed(self):
+        # Mac 实测（#315 之后）：PDF 转 Word 的那一段报了「全部失败」，整个任务却显示
+        # 「完成但有问题」、提示为空。转 Word 的段和原位替换页一样计入整份文件的判断。
+        from docx import Document
+
+        from core.task_runner_messages import DoneMsg, ErrorMsg
+
+        class Refused:
+            engine_name = "fake/refused"
+
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                raise ValueError("503 Service Unavailable")
+
+        def fake_convert(_pdf_path, docx, **_kwargs):
+            doc = Document()
+            for text in ("Plan de toiture", "Mur coupe feu 1 heure", "Escalier de secours"):
+                doc.add_paragraph(text)
+            doc.save(docx)
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        source_pdf = root / "notice.pdf"
+        _write_pdf(source_pdf, [A4, A4, A4], with_text=[True, True, True])
+        settings = AppSettings(target_lang="zh")
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto",
+                                                   "auto_fallback": "skip"})
+        settings.output.use_custom_output_dir = True
+        settings.output.custom_output_dir = str(root / "out")
+        settings.rate.pdf_text.request_retry = 0
+        runner = PdfImageTranslationRunner(
+            [PdfFileItem(path=source_pdf, name="notice.pdf", size_kb=1.0, page_count=3)],
+            settings, source_root=root, image_client=_RecordingImageClient(_png_bytes(2481, 3508)),
+            task_logger_enabled=False, inplace_hooks=_hooks(),
+        )
+        with patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_word_route.word_route_available", return_value=True), \
+                patch("core.pdf_word_route.office_pdf_engine", return_value=("word", "test")), \
+                patch("core.pdf_word_route.convert_pdf_to_docx", fake_convert), \
+                patch("core.word_task_runner.build_engine", return_value=Refused()), \
+                patch("core.word_task_runner.check_translation_api_config") as check, \
+                patch("core.word_task_runner.tm_manager.lookup_batch", return_value={}), \
+                patch("core.engine_dispatcher._backoff_sleep", lambda *args, **kwargs: None):
+            check.return_value.ok = True
+            runner._run()
+        messages = []
+        while not runner._queue.empty():
+            messages.append(runner._queue.get_nowait())
+        record = runner._prepared_files[0].record
+        self.assertEqual(record.word_segments[0]["untranslated"], 3)
+        self.assertFalse([m for m in messages if isinstance(m, DoneMsg)])
+        errors = [m for m in messages if isinstance(m, ErrorMsg)]
+        self.assertEqual(len(errors), 1)
+        # 原因与 Word、PPT 同一套判断（拆到单段仍失败的那一次）。
+        self.assertEqual(errors[0].message, (
+            "3 条内容的翻译请求全部失败，没有获得任何译文：接口所在的服务暂时不可用，请稍后重试，或在设置里换一条连接。"
+            "未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。"
+        ))
+        self.assertEqual(record.error, errors[0].message)
         self.assertFalse(list((root / "out").rglob("*.pdf")))
 
     def test_whole_task_reports_in_place_work_inside_the_translate_phase(self):
