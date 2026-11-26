@@ -377,32 +377,23 @@ _STANDARD_CODE_RE = re.compile(
 )
 
 
-def _single_character_tokens(text: str) -> bool:
-    """每一截（按空白分开）最多一个字母，且是 ASCII 字母；符号、数字不算字母。
-    pdf2docx 常把「p ∨ q」转成「p ∨q」，所以按字母数而不是按长度数。"""
-    for token in text.split():
-        letters = [char for char in token if char.isalpha()]
-        if len(letters) > 1 or (letters and not letters[0].isascii()):
-            return False
-    return True
-
-
-# 公式里的运算符：箭头、数学运算符、数学符号补充、补充运算符，加上键盘上能打的几个。
-_FORMULA_OPERATOR_RE = re.compile(r"[\u2190-\u21FF\u2200-\u22FF\u27C0-\u27FF\u2900-\u2AFF=<>+·×÷±¬|^]")
+# 公式的记号：箭头、数学运算符、数学符号补充、补充运算符、键盘上能打的几个运算符，
+# 以及标识符里的下划线（is_empty）。
+_FORMULA_SIGN_RE = re.compile(r"[\u2190-\u21FF\u2200-\u22FF\u27C0-\u27FF\u2900-\u2AFF=<>+·×÷±¬|^_]")
 _LETTER_RUN_RE = re.compile(r"[A-Za-z]+")
-# 公式行里独立成词的两个字母的英文虚词（「x ≥ 0 if x ∈ A」要翻）。挨着数字、符号的
-# 两个字母（「an10n」「∧An)」「(ii)」）是下标变量或编号，不算词。
+# 两个字母的常用虚词。别的两个字母（pi、xi、Ai、Pn、OK）多半是带下标的变量或缩写。
 _TWO_LETTER_WORDS = frozenset({
-    "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
-    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    "as", "at", "be", "by", "if", "in", "is", "it", "no", "of", "on", "or", "so", "to", "we",
+    "et", "ou", "si",
 })
-
-
 # 公式里的标准函数名，原样保留，不算要翻的词。
 _MATH_FUNCTIONS = frozenset({
     "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
     "log", "ln", "lg", "exp", "lim", "max", "min", "sup", "inf", "mod", "gcd", "lcm", "det", "deg", "arg",
 })
+# 一个词前后可以挨着的字符（公式里挨着括号、运算符、数字、下划线的是变量或函数名）。
+_WORD_BEFORE = "(\"“‘'"
+_WORD_AFTER = ",.;:!?)\"”’'"
 # 列表编号：(ii)、(iv)、ii.、(a)、b)、(3)、12.。罗马数字按写法认（到 39），「civil.」不算。
 _ROMAN = r"(?=[ivxlc])x{0,3}(?:ix|iv|v?i{0,3})"
 _LIST_LABEL_RE = re.compile(
@@ -415,37 +406,50 @@ def _list_label(text: str) -> bool:
     return bool(_LIST_LABEL_RE.match(text))
 
 
+# 两个以上希腊字母连在一起是希腊文的词（Σύμβαση）；单个的（α β）是变量。
+_GREEK_WORD_RE = re.compile(r"[\u0370-\u03FF\u1F00-\u1FFF]{2,}")
+
+
+def _is_non_latin_letter(char: str) -> bool:
+    # 汉字、假名、é、西里尔字母……都是要翻的文字；单个希腊字母（α β）是变量
+    return char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF" or "\u1F00" <= char <= "\u1FFF")
+
+
 def has_real_word(text: str) -> bool:
-    """有没有一个要翻的词：三个字母以上的 ASCII 字母串，或任何非 ASCII 字母（汉字、é、
-    западн…，希腊字母除外，那是变量）。两个字母以下的（pi、xi、Pn、OK）说不准是变量
-    还是缩写，交给模型判断：模型原样还回来也算对（见 _validate_translation_strict）。"""
-    for char in text:
-        if char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF"):
-            return True
-    return any(len(match.group()) >= 3 for match in _LETTER_RUN_RE.finditer(text))
+    """这段字里有没有要翻的文字（反馈 #28 讲义：真值表、公式、变量名一律原样保留）。
 
+    - 有汉字、假名、带重音的字母等非 ASCII 文字：有。
+    - 公式（带运算符或下划线）里，只有单独成词的才算：前后是空白、句读或引号括号，
+      三个字母以上、又不是 sin、log 这种函数名；或两个字母的常用虚词（「x ≥ 0 if x ∈ A」）。
+      贴着括号、运算符、数字、下划线的是变量或标识符：pred(b)、is_empty(S)、anbn+、−nbi。
+    - 别的文字里：三个字母以上的字母串就算；只有两个字母的，单独一截时只认常用虚词
+      （pi、xi、Ai、OK 不算），几截连在一起时算（法文「Il y a」）。
+    - 只有单个字母（T T F F、p ∨ q、x y z）：没有。
 
-def _formula_only(text: str) -> bool:
-    """有运算符，且去掉变量、数字、符号、(i)(ii) 编号后剩不下一个词：一行公式。"""
-    if not _FORMULA_OPERATOR_RE.search(text):
-        return False
-    for char in text:
-        # 希腊字母是变量（α β），别的非 ASCII 字母（汉字、é）说明有要翻的文字
-        if char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF"):
-            return False
-    for match in _LETTER_RUN_RE.finditer(text):
+    送不送去翻（should_translate）、模型原样还回来算不算没翻（validate_translation）、
+    交付前查「疑似未翻译」都用这一个判据，三处说法一致。"""
+    if any(_is_non_latin_letter(char) for char in text) or _GREEK_WORD_RE.search(text):
+        return True
+    runs = list(_LETTER_RUN_RE.finditer(text))
+    formula = bool(_FORMULA_SIGN_RE.search(text))
+    for match in runs:
         word = match.group()
-        if word.lower() in _MATH_FUNCTIONS:
-            continue  # 「f(x) = sin x」里的 sin 是函数名，不是要翻的词
-        if len(word) >= 3:
-            return False
-        if len(word) == 2:
+        lower = word.lower()
+        if len(word) < 2:
+            continue
+        if formula:
+            if lower in _MATH_FUNCTIONS:
+                continue
             before = text[match.start() - 1] if match.start() else " "
             after = text[match.end()] if match.end() < len(text) else " "
-            standalone = before.isspace() and (after.isspace() or after in ",.;:")
-            if standalone and word.lower() in _TWO_LETTER_WORDS:
-                return False
-    return True
+            if not ((before.isspace() or before in _WORD_BEFORE) and (after.isspace() or after in _WORD_AFTER)):
+                continue
+            if len(word) >= 3 or lower in _TWO_LETTER_WORDS:
+                return True
+            continue
+        if len(word) >= 3 or lower in _TWO_LETTER_WORDS or len(text.split()) > 1:
+            return True
+    return False
 
 
 _LOWERCASE_WORD_RE = re.compile(r"[a-z]{4,}")
@@ -515,12 +519,10 @@ def should_translate(
     if _STANDARD_CODE_RE.match(text):
         return False
 
-    # 规则 1c：一个个单独的字母或符号（真值表一列「T T F F」、「p ∨ q」、「x y z」），
-    # 以及只有变量、数字和数学符号的公式（「(A1 ∧A2 ∧· · · ∧An) ⇒C」「(ii) A ∪B = B ∪A.」）。
-    # 没有可翻的，模型只会照原样还回来，写入端判成没翻成功、重译三轮、最后涂上需复核
-    # 底色，还把固定行高放开撑高表格（反馈 #28：92 段公式全标黄，白白重试 279 次）。
-    # 只认 ASCII 字母和希腊字母：中日韩的单字（「是 否」）有意思，照常翻。
-    if _single_character_tokens(text) or _formula_only(text) or _list_label(text):
+    # 规则 1c：没有要翻的文字（has_real_word）：真值表「T T F F」、公式「(A1 ∧A2) ⇒C」
+    # 「pred(b) ←a」、变量「pi」、编号「(ii)」。模型只会照原样还回来，写入端判成没翻成功、
+    # 重译三轮、最后涂上需复核底色（反馈 #28：讲义里 92 段公式全标黄）。
+    if not has_real_word(text) or _list_label(text):
         return False
 
     # 繁体目标、原文是中文：没有简体字的（本来就是繁体，或两岸写法一样）不用再送。

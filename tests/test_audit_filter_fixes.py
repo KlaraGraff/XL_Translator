@@ -595,5 +595,23 @@ class SingleLetterTokenTests(unittest.TestCase):
                 self.assertTrue(result.is_fail)
 
 
+    def test_variables_identifiers_and_long_formulas_are_skipped(self) -> None:
+        # Mac 复验 #321 剩下的 30 段黄底：带下标的变量、标识符、长式子
+        from core.translation_coverage import looks_like_source_text
+
+        for text in ("pi", "xi", "Ai", "pred(b) ←a", "is_empty(S)", "6: r ←r −nbi", "(⌊logb m⌋+ 1)c",
+                     "anbn+ an−1bn−1+ ⋯", "= qtbt+1+ rtbt+ ⋯"):
+            with self.subTest(text=text):
+                self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
+                # 交付前查「疑似未翻译」用的是同一个判据
+                self.assertFalse(looks_like_source_text(text, source_lang="en", target_lang="zh"))
+
+    def test_words_next_to_formulas_are_still_translated(self) -> None:
+        for text in ("is_empty(S) returns true if S is empty", "x_1 + x_2 where x is real", "(see below)",
+                     "No", "Il y a", "Σύμβαση"):
+            with self.subTest(text=text):
+                self.assertTrue(should_translate(text, target_lang="zh", source_lang="en"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
