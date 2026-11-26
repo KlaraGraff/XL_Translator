@@ -71,6 +71,8 @@ class ReviewItem:
     source: str
     translation: str
     problem: str = ""
+    #: 这一条在文档里前后紧挨着的原文（core/review_context），只用来看清它是什么。
+    context: str = ""
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,8 @@ def build_review_prompt(reason_lang: str = "zh") -> str:
         "- 整句或其中一部分没有翻译、只翻了一部分、只是摘要；\n"
         "- 译文夹杂既不属于原文也不属于目标语言的其他语言文字；\n"
         "- 遗漏主体、义务、条件、范围或关键限制。\n"
+        "有 context 的条目，context 是这一条在文档里前后紧挨着的原文，只用来看清这一条是什么"
+        "（下标变量、编号、名称，还是要翻译的词）；context 本身不用复查，也不要求译文包含它。\n"
         "无法确定时判定为 uncertain。\n"
         f"reason 用{reason_language}写一句话：一致时说明为什么程序的提示是误判，"
         "不一致时说清楚具体错在哪里（会原样交给翻译模型重译）。\n"
@@ -228,7 +232,7 @@ def build_review_batches(
     current_chars = 0
     max_items = max(1, int(max_items))
     for item in items:
-        size = len(item.source) + len(item.translation)
+        size = len(item.source) + len(item.translation) + len(item.context)
         if size >= max_chars:
             batches.append([item])
             continue
@@ -304,6 +308,7 @@ def _review_batch(
                     "source": item.source,
                     "translation": item.translation,
                     "rule_finding": item.problem,
+                    **({"context": item.context} if item.context else {}),
                 }
                 for item in batch
             ],

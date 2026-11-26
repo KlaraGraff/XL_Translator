@@ -8,7 +8,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Mapping
 
 from loguru import logger
 
@@ -379,6 +379,7 @@ class _WordRecoveryPool:
         source_locations: dict[str, list[dict]] | None = None,
         enable_semantic: bool = True,
         defer_until_started: bool = False,
+        review_contexts: Mapping[str, str] | None = None,
     ) -> None:
         try:
             self._max_attempts = max(1, int(retry_attempts))
@@ -395,6 +396,8 @@ class _WordRecoveryPool:
         self._status_callback = status_callback
         self._progress_callback = progress_callback
         self._source_locations = source_locations or {}
+        #: 复查时给模型看的前后文（core/review_context）
+        self._review_contexts = review_contexts or {}
         self._enable_semantic = enable_semantic and engine_supports_chat(engine)
         self._states: dict[str, _WordRecoveryState] = {}
         self._futures: dict[object, _WordRecoveryTicket] = {}
@@ -968,6 +971,7 @@ class _WordRecoveryPool:
             ),
             should_stop=self._should_stop,
             problem=describe_validation(validation),
+            context=self._review_contexts.get(source, ""),
         )
         with self._condition:
             # 记账已经由本函数接手，_future_done 不再兜底复位
@@ -1068,6 +1072,7 @@ def _run_semantic_arbitration(
     error_callback: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     problem: str = "",
+    context: str = "",
 ) -> _SemanticArbitrationResult:
     """一条译文的「意思是否一致」复查：请求、提示词和解析都在 core/translation_review，
     与 Excel、CAD、PDF 原位替换、扩展格式共用。拿不准、出错一律 uncertain。"""
@@ -1079,7 +1084,7 @@ def _run_semantic_arbitration(
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "候选译文为空")
     verdict = review_translations(
         engine,
-        [ReviewItem("1", source, candidate_text, problem)],
+        [ReviewItem("1", source, candidate_text, problem, context)],
         source_lang=source_lang,
         target_lang=target_lang,
         api_scheduler=api_scheduler,

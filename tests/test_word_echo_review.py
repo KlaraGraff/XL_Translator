@@ -140,6 +140,29 @@ class EchoReviewTests(unittest.TestCase):
                 else:
                     self.assertEqual(outcome.unresolved_sources, ["Ai"])
 
+    def test_review_sees_the_text_around_the_cell(self) -> None:
+        seen: list[str] = []
+
+        def _review(engine, items, **kwargs):
+            seen.extend(item.context for item in items)
+            return {"1": ReviewVerdict("equivalent", "下标变量", answered=True)}
+
+        pool = _WordRecoveryPool(
+            engine=_ChatStubEngine(), target_lang="zh", retry_prompt="retry",
+            retry_batch_settings=_retry_settings(), retry_attempts=2, source_lang="en",
+            api_scheduler=None, concurrency=2, should_stop=lambda: False, enable_semantic=True,
+            review_contexts={"pi": "前面：p1 ｜ p2；后面：pn"},
+        )
+        with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+            "core.word_recovery_pool.review_translations", _review
+        ):
+            pool.add_candidate("pi", "pi")
+            pool.start()
+            finished, outcome, error = _run_pool_with_timeout(pool)
+        self.assertTrue(finished)
+        self.assertEqual(outcome.accepted_translations["pi"], "pi")
+        self.assertEqual(seen, ["前面：p1 ｜ p2；后面：pn"])
+
     def test_review_prompt_allows_formulas_and_variables_unchanged(self) -> None:
         prompt = build_review_prompt()
         self.assertIn("公式、变量", prompt)
@@ -162,7 +185,11 @@ class EchoReviewRunnerTests(IsolatedAppDataTestCase):
             with self.subTest(returned=returned):
                 self._check_runner(text, returned)
 
-    def _check_runner(self, text: str, returned: str) -> None:
+    def test_review_in_a_real_run_sees_the_neighbouring_cells(self) -> None:
+        self._check_runner("pi", "pi", neighbours=("p1", "pn"))
+        self.assertIn("前面：p1；后面：pn", self._contexts)
+
+    def _check_runner(self, text: str, returned: str, neighbours: tuple[str, str] | None = None) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.docx"
@@ -200,17 +227,28 @@ class EchoReviewRunnerTests(IsolatedAppDataTestCase):
                 stack.enter_context(patch("core.word_task_runner.build_engine", return_value=_ChatStubEngine()))
                 stack.enter_context(patch(
                     "core.word_task_runner.extract_word_segments",
-                    return_value=[WordSegment(source=text, kind="paragraph", location="正文第 1 段")],
+                    return_value=[
+                        WordSegment(source=item, kind="table_cell", location=f"table[0].cell[{i}]")
+                        for i, item in enumerate((neighbours[0], text, neighbours[1]) if neighbours else (text,))
+                    ],
                 ))
-                stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", return_value={text: None}))
+                stack.enter_context(patch(
+                    "core.word_task_runner.tm_manager.lookup_batch",
+                    side_effect=lambda texts, *a, **k: {item: None for item in texts},
+                ))
                 stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
                 stack.enter_context(patch("core.word_recovery_pool.translate_word_texts", retry_translate))
-                stack.enter_context(patch(
-                    "core.word_recovery_pool._run_semantic_arbitration",
-                    lambda *a, **k: _SemanticArbitrationResult("equivalent", "公式，没有要翻的文字"),
-                ))
+                self._contexts: list[str] = []
+
+                def _review(*a, **k):
+                    self._contexts.append(k.get("context", ""))
+                    return _SemanticArbitrationResult("equivalent", "公式，没有要翻的文字")
+
+                stack.enter_context(patch("core.word_recovery_pool._run_semantic_arbitration", _review))
                 runner._run()
 
+            if not neighbours:
+                self.assertEqual(self._contexts, [""])  # 只有一段，没有前后文
             self.assertIn(returned, coverage.call_args.kwargs["already_target_sources"])
             self.assertEqual(writer.call_args.kwargs["translations"].get(text, text), returned)
             self.assertNotIn(text, writer.call_args.kwargs.get("review_marks") or {})
