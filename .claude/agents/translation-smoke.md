@@ -2,7 +2,7 @@
 name: translation-smoke
 description: 执行 Translator 的翻译跑批测试，回收产物路径与机械核查结果。用于验证翻译流程能否跑通、产物是否齐全，不做排版审美判断，不改代码。
 model: sonnet
-effort: medium
+effort: high
 tools: Bash, Read, Glob, Grep
 maxTurns: 40
 background: true
