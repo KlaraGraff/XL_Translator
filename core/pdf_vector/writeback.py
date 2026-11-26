@@ -237,6 +237,10 @@ class Layout:
         self.k = dpi / 72.0
         self.occupied: list[tuple[float, float, float, float]] = []
         self.bounds = bounds
+        # 擦掉了原文的各行，原来那块地方留给它自己的译文：别的行只能长进页面上本来就空着的
+        # 地方（手册第 8 页三行红字写成一长行，占了右边「Sufficient power for distance」的位置）
+        self.reserved: list[tuple[str, tuple[float, float, float, float]]] = []
+        self.owner = ""
 
     def blank(self, box) -> bool:
         if self.bounds is not None:
@@ -249,6 +253,9 @@ class Layout:
         if ink > max(2, area * 0.0015):
             return False
         x0, y0, x1, y1 = box
+        if any(rid != self.owner and not (x1 <= a or x0 >= c or y1 <= b or y0 >= d)
+               for rid, (a, b, c, d) in self.reserved):
+            return False
         return not any(not (x1 <= a or x0 >= c or y1 <= b or y0 >= d) for a, b, c, d in self.occupied)
 
     def extend(self, box, rot: int, forward: bool, limit_px: float) -> float:
@@ -726,6 +733,7 @@ def layout_row(
     overflow_policy: str = "write_translation",
 ):
     fit = (fit or DEFAULT_FIT_SETTINGS_ZH).normalized()
+    layout.owner = row["id"]
     font = row["_font"].font
     rot = int(row.get("display_rotation", 0))
     lines = row.get("line_boxes") or [row["display_box"]]
@@ -976,6 +984,7 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     after_gray = render(page, dpi).convert("L")
     layout = Layout(after_gray, dpi, bounds=content_box(src_gray, pad_px=2 * dpi / 72.0,
                                                         rows=[b for r in rows for b in (r.get("line_boxes") or [r["display_box"]])]))
+    layout.reserved = [(r["id"], tuple(b)) for r in ok for b in (r.get("line_boxes") or [r["display_box"]])]
     smooth_em(ok, dpi)
     for r in ok:
         r["_base"] = row_base_size(r)
