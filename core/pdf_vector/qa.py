@@ -41,6 +41,7 @@ def _imid(it):
 
 #: 同一份内容两次渲染逐点相同；差过这么多级灰度，就是那块画面变了（比整页像素检查的 24 严）。
 _SEEN_STEP = 8
+_SEEN_LUT = [255 if v > _SEEN_STEP else 0 for v in range(256)]
 
 
 def path_sigs(page: fitz.Page, keep=None):
@@ -176,7 +177,7 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
         box = rect * sp.rotation_matrix
         crop = (max(0, int(box.x0 * k) - 1), max(0, int(box.y0 * k) - 1),
                 min(sg.width, int(box.x1 * k) + 2), min(sg.height, int(box.y1 * k) + 2))
-        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).getextrema()[1] > _SEEN_STEP
+        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).point(_SEEN_LUT).getbbox() is not None
 
     unexpected = []
     n_unseen = 0
