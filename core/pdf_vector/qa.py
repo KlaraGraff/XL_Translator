@@ -39,6 +39,11 @@ def _imid(it):
     return _item_geom(it)[0]
 
 
+#: 同一份内容两次渲染逐点相同；差过这么多级灰度，就是那块画面变了（比整页像素检查的 24 严）。
+_SEEN_STEP = 8
+_SEEN_LUT = [255 if v > _SEEN_STEP else 0 for v in range(256)]
+
+
 def path_sigs(page: fitz.Page, keep=None):
     sigs = Counter()
     rects = {}
@@ -161,7 +166,21 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
         for lb in r.get("line_boxes") or [r["display_box"]]:
             a = redaction_rect(dict(r, display_box=lb), sp, dpi)[1]
             allowed.append(fitz.Rect(a.x0 - 0.5, a.y0 - 0.5, a.x1 + 0.5, a.y1 + 0.5))  # float edge tolerance
+    # 消失的路径算不算删坏了，看它原来那一小块画面变没变：被图片盖住的、重复画的路径
+    # 从页面数据里没了，页面看起来一点没变（设备手册接线图上画成线条的端子字母）。
+    sg = render(sp, dpi).convert("L")
+    og = render(op, dpi).convert("L")
+    seen_diff = ImageChops.difference(sg, og)
+    k = dpi / 72.0
+
+    def looks_changed(rect) -> bool:
+        box = rect * sp.rotation_matrix
+        crop = (max(0, int(box.x0 * k) - 1), max(0, int(box.y0 * k) - 1),
+                min(sg.width, int(box.x1 * k) + 2), min(sg.height, int(box.y1 * k) + 2))
+        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).point(_SEEN_LUT).getbbox() is not None
+
     unexpected = []
+    n_unseen = 0
     replayed = {tuple(x["rect"]) for x in rep.get("replayed_paths", [])}
     n_replayed = 0
     n_letters_from_compound = 0
@@ -182,11 +201,15 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
         half = any(rr.intersects(a) and (rr & a).width * (rr & a).height >= 0.5 * max(rr.width * rr.height, 1e-6)
                    for a in allowed)
         if not inside and not half:
+            if not looks_changed(rr):
+                n_unseen += n
+                continue
             unexpected.append({"rect": [round(v, 1) for v in rr], "count": n, "type": key[0]})
     res["vector_paths"] = {"source": sum(ss.values()), "output": sum(os_.values()),
                            "removed": sum(removed.values()), "added": sum((os_ - ss).values()),
                            "removed_outside_written_rects": len(unexpected), "replayed_non_letter_parts": n_replayed,
                            "letters_removed_from_compound_paths": n_letters_from_compound,
+                           "removed_without_visible_change": n_unseen,
                            "examples": unexpected[:20]}
 
     # numbers
@@ -195,9 +218,7 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
     res["numbers"] = {"checked": len(written), "failures": num_fail}
 
     # pixels
-    sg = render(sp, dpi).convert("L")
-    og = render(op, dpi).convert("L")
-    diff = ImageChops.difference(sg, og).point(lambda v: 255 if v > 24 else 0)
+    diff = seen_diff.point(lambda v: 255 if v > 24 else 0)
     mask = Image.new("L", sg.size, 0)
     from PIL import ImageDraw
     dr = ImageDraw.Draw(mask)

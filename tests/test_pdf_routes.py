@@ -510,15 +510,17 @@ class NumberedLineMergeTests(unittest.TestCase):
 
 
 class OfficePdfTests(unittest.TestCase):
-    def _pdf(self, render_mode: int) -> Path:
+    def _pdf(self, render_mode: int, color=(0, 0, 0), ground=None, fontsize: float = 14) -> Path:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / f"cjk_{render_mode}.pdf"
         doc = fitz.open()
         page = doc.new_page(width=A4[0], height=A4[1])
+        if ground is not None:
+            page.draw_rect(page.rect, fill=ground, color=None)
         for i in range(6):
-            page.insert_text((60, 100 + i * 30), "砌筑砂浆在中小型施工现场的水泥消耗中占很大比例", fontsize=14,
-                             fontname="china-s", render_mode=render_mode)
+            page.insert_text((60, 100 + i * 30), "砌筑砂浆在中小型施工现场的水泥消耗中占很大比例", fontsize=fontsize,
+                             fontname="china-s", render_mode=render_mode, color=color)
         doc.save(path)
         return path
 
@@ -527,6 +529,16 @@ class OfficePdfTests(unittest.TestCase):
 
         self.assertTrue(cjk_text_visible(self._pdf(0)))
         self.assertFalse(cjk_text_visible(self._pdf(3)))   # text layer present, nothing drawn
+
+    def test_light_grey_and_white_on_dark_chinese_counts_as_visible(self) -> None:
+        """设备手册的浅灰正文译成中文、转回 PDF 后照样看得见，不能当成「中文显示不出来」。"""
+        from core.pdf_word_route import cjk_text_visible
+
+        for grey in (0.55, 0.7, 0.8):
+            self.assertTrue(cjk_text_visible(self._pdf(0, color=(grey, grey, grey), fontsize=9)), grey)
+        self.assertTrue(cjk_text_visible(self._pdf(0, color=(1, 1, 1), ground=(0.2, 0.3, 0.5))))
+        self.assertFalse(cjk_text_visible(self._pdf(3, color=(0.6, 0.6, 0.6), fontsize=9)))
+        self.assertFalse(cjk_text_visible(self._pdf(3, ground=(0.2, 0.3, 0.5))))
 
     def test_route_capabilities_shape(self) -> None:
         from unittest.mock import patch
