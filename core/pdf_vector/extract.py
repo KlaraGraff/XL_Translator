@@ -53,36 +53,74 @@ def font_family(name: str) -> str:
     return _FONT_STYLE.sub("", base).casefold()
 
 
+def _graphic_between(a, b, drawings, band) -> bool:
+    """A drawing (an arrow, an icon) sits wholly in the gap between two characters of a line."""
+    lo, hi = a.x1 - 0.5, b.x0 + 0.5
+    return any(lo <= r.x0 and r.x1 <= hi and r.y1 > band.y0 and r.y0 < band.y1 for r in drawings)
+
+
+def _line_pieces(ln, drawings) -> list[list[tuple]]:
+    """The line's characters, cut where a drawing sits between two words: 「Press → (right)」
+    on a device screen is two labels with an arrow between them, not one phrase."""
+    chars = [(c["c"], fitz.Rect(c["bbox"]), s) for s in ln["spans"] for c in s["chars"]]
+    horizontal = abs(ln["dir"][1]) < 0.01 and ln["dir"][0] > 0
+    pieces: list[list] = [[]]
+    last = None
+    band = fitz.Rect(ln["bbox"])
+    for ch in chars:
+        if not ch[0].isspace():
+            if (horizontal and last is not None and drawings
+                    and ch[1].x0 - last[1].x1 > 0.3 * ch[2]["size"]
+                    and _graphic_between(last[1], ch[1], drawings, band)):
+                pieces.append([])
+            last = ch
+        pieces[-1].append(ch)
+    return [p for p in pieces if any(not c.isspace() for c, _b, _s in p)]
+
+
 def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
+    """One row per text line (or per label, where a drawing separates the words).
+
+    The row's box covers its characters, not the leading and trailing spaces: a legend
+    line 「     Black    zone +」 begins with spaces over the colour dot, and a box from
+    the line's start would put the translation on the dot."""
     k = dpi / 72.0
     rm = page.rotation_matrix
     out = []
-    d = page.get_text("dict")
+    d = page.get_text("rawdict")
+    drawings = None
     for b in d["blocks"]:
         if b.get("type") != 0:
             continue
         for ln in b["lines"]:
-            spans = [s for s in ln["spans"] if s["text"].strip()]
-            if not spans:
+            if not any(c["c"].strip() for s in ln["spans"] for c in s["chars"]):
                 continue
-            text = norm_text("".join(s["text"] for s in ln["spans"]))
-            r = fitz.Rect(ln["bbox"]) * rm
+            if drawings is None:
+                drawings = [fitz.Rect(dr["rect"]) for dr in page.get_drawings()]
             dx, dy = ln["dir"]
             vx, vy = dx * rm.a + dy * rm.c, dx * rm.b + dy * rm.d
             rot = 0 if vx > 0.7 else 180 if vx < -0.7 else 90 if vy < -0.7 else 270 if vy > 0.7 else None
             if rot is None:
                 rot = 0  # oblique native text: written horizontal, flagged
-            col = spans[0]["color"]
-            out.append({
-                "origin": "native", "source_text": text,
-                "display_box": [round(v * k, 1) for v in (r.x0, r.y0, r.x1, r.y1)],
-                "display_rotation": rot, "oblique": not any(abs(v) > 0.99 for v in (vx, vy)),
-                "font_size_pt": max(s["size"] for s in spans), "font": spans[0]["font"],
-                "font_families": sorted({font_family(s["font"]) for s in spans} - {""}),
-                "font_flags": int(spans[0].get("flags") or 0),
-                "color": [((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255],
-                "ocr_score": None, "source_passes": ["native"],
-            })
+            for piece in _line_pieces(ln, drawings):
+                inked = [(c, box, s) for c, box, s in piece if not c.isspace()]
+                spans = list({id(s): s for _c, _b, s in inked}.values())
+                text = norm_text("".join(c for c, _b, _s in piece))
+                r = fitz.Rect(inked[0][1])
+                for _c, box, _s in inked[1:]:
+                    r |= box
+                r = r * rm
+                col = spans[0]["color"]
+                out.append({
+                    "origin": "native", "source_text": text,
+                    "display_box": [round(v * k, 1) for v in (r.x0, r.y0, r.x1, r.y1)],
+                    "display_rotation": rot, "oblique": not any(abs(v) > 0.99 for v in (vx, vy)),
+                    "font_size_pt": max(s["size"] for s in spans), "font": spans[0]["font"],
+                    "font_families": sorted({font_family(s["font"]) for s in spans} - {""}),
+                    "font_flags": int(spans[0].get("flags") or 0),
+                    "color": [((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255],
+                    "ocr_score": None, "source_passes": ["native"],
+                })
     return out
 
 
@@ -622,7 +660,9 @@ def continues(prev: str, nxt: str) -> bool:
     if n[0].islower():
         return True
     last = p.split()[-1].casefold()
-    return p.endswith((",", "-")) or last in FUNCTION_TAIL
+    # 断词的连字符紧贴在字母后面（「exam-」）；「zone -」前面有空格，是独立的减号
+    hyphen = p.endswith("-") and len(p) > 1 and p[-2].isalpha()
+    return p.endswith(",") or hyphen or last in FUNCTION_TAIL
 
 
 def group_paragraphs(rows, V, Hs):

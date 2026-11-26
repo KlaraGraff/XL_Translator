@@ -51,3 +51,49 @@ class FontFamilyParagraphTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegendAndArrowTests(unittest.TestCase):
+    """设备手册第 5 页颜色图例、第 8 页「Press → (right)」（2026-11-26）。"""
+
+    def _page(self, build):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        build(page)
+        return doc, page
+
+    def test_leading_spaces_do_not_stretch_the_box_over_the_colour_dot(self):
+        from core.pdf_vector.extract import native_rows
+
+        def build(page):
+            page.draw_circle((79, 210), 5, color=None, fill=(0.14, 0.12, 0.13))
+            page.insert_text((73.7, 214), "      Black    zone +", fontsize=12, fontname="helv")
+
+        doc, page = self._page(build)
+        (row,) = native_rows(page, 72)
+        self.assertEqual(row["source_text"], "Black zone +")
+        self.assertGreater(row["display_box"][0], 85)  # starts at 'B', right of the dot
+
+    def test_a_drawn_arrow_between_two_words_makes_two_labels(self):
+        from core.pdf_vector.extract import native_rows
+
+        def build(page):
+            page.insert_text((242.6, 308), "Press          (right)", fontsize=10, fontname="helv")
+            page.draw_line((269.5, 304.6), (279.1, 304.6), color=(0, 0, 0), width=0.99)
+            page.draw_polyline([(278.6, 300.7), (282.8, 304.6), (278.6, 308.5), (278.6, 300.7)],
+                               color=None, fill=(0, 0, 0), closePath=True)
+
+        doc, page = self._page(build)
+        self.assertEqual([r["source_text"] for r in native_rows(page, 72)], ["Press", "(right)"])
+
+    def test_words_with_only_space_between_stay_one_line(self):
+        from core.pdf_vector.extract import native_rows
+
+        doc, page = self._page(lambda page: page.insert_text((100, 300), "Press          enter", fontsize=10))
+        self.assertEqual([r["source_text"] for r in native_rows(page, 72)], ["Press enter"])
+
+    def test_a_standalone_minus_at_the_end_does_not_continue_into_the_next_line(self):
+        from core.pdf_vector.extract import continues
+
+        self.assertFalse(continues("Grey zone -", "Green earth (screen)"))
+        self.assertTrue(continues("the exam-", "Ple of the beam"))
