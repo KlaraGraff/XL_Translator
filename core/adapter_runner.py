@@ -69,6 +69,7 @@ from core.mixed_language import (
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
+from core.nothing_translated import NothingTranslatedError
 from core.request_log import BatchRequestLog
 from core.request_progress import BATCH_EVENT_DONE
 from core.residual_pipeline import run_residual_pass
@@ -442,7 +443,10 @@ class AdapterTaskRunner(BaseTaskRunner):
         self._log("INFO", f"{name}：共 {len(units)} 段，需要翻译 {len(plan.sent)} 段")
         self._progress(index, _EXTRACT_SHARE, _STAGE_READ, "读取完成")
 
-        translated = self._translate(index, item, plan)
+        try:
+            translated = self._translate(index, item, plan)
+        except NothingTranslatedError as exc:
+            return self._failed(item, exc, fallback=str(exc))
         translations, origins, reasons, unfinished = (
             translated.translations,
             translated.origins,
@@ -758,7 +762,7 @@ class AdapterTaskRunner(BaseTaskRunner):
             request_log.on_event(event)
             self._count_requests(event)
 
-        def model_translate(batch: list[str], offset: int) -> dict[str, str]:
+        def model_translate(batch: list[str], offset: int, *, fail_if_nothing_translated: bool = False) -> dict[str, str]:
             return service.translate(
                 batch,
                 prompt=prompt,
@@ -769,11 +773,14 @@ class AdapterTaskRunner(BaseTaskRunner):
                 error_callback=on_error,
                 request_callback=on_request,
                 engine=result.mark_engine,
+                fail_if_nothing_translated=fail_if_nothing_translated,
             )
 
         with request_log:
             if remaining and not self._stop_event.is_set():
-                model = model_translate(remaining, 0)
+                # 记忆库没命中、也没有夹杂多种语言的内容：这一轮就是这个文件唯一的翻译请求，
+                # 每一条都因为请求失败没拿到译文时这个文件算失败（core/nothing_translated）。
+                model = model_translate(remaining, 0, fail_if_nothing_translated=not translations and not mixed)
                 accepted = dict(getattr(model, "review_accepted", {}) or {})
                 for text, why in (getattr(model, "rejected", {}) or {}).items():
                     # 以前退回的译文按「译文 = 原文」交回，这里误报成「模型原样返回」。

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from core.api_scheduler import WeightedApiScheduler
 from core.model_roles import ROLE_IMAGE, SOURCE_INDEPENDENT, resolve_effective_model_config
 from core.pdf_image_translation import (
+    PDF_OUTPUT_STATE_FAILED,
     PDF_OUTPUT_STATE_NEEDS_REVIEW,
     PdfFileItem,
     _page_has_text_layer,
@@ -780,6 +781,7 @@ class InplaceApiGaveUpTests(unittest.TestCase):
         self.assertEqual(page.inplace_status, "done")
         self.assertEqual(page.inplace_written, 2)
         self.assertEqual(page.inplace_untranslated, 1)
+        self.assertEqual(page.inplace_answered, 2)
         # 不算「认不准」，也不算「数字和编号等不需要翻译」
         self.assertEqual(page.inplace_review, 0)
         self.assertEqual(page.inplace_kept, 0)
@@ -810,7 +812,26 @@ class InplaceApiGaveUpTests(unittest.TestCase):
         self.assertEqual(page.inplace_status, "kept_original")
         self.assertEqual(page.inplace_untranslated, 3)
         self.assertEqual(page.inplace_message, "识别到 3 处文字，均未替换（未获得译文），这一页保留原样")
-        self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+        # 送去翻译的每一处都因为请求失败没拿到译文：文件算失败，不拼出一份与原文一样的 PDF
+        # （core/nothing_translated，与 CAD、Excel 相同）。
+        self.assertEqual(record.status, PDF_OUTPUT_STATE_FAILED)
+        self.assertEqual(record.error, (
+            "3 条内容的翻译请求全部失败，没有获得任何译文：模型服务返回了错误。"
+            "未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。"
+        ))
+        self.assertFalse(record.translated_pdf_path)
+
+    def test_memory_hit_on_a_page_whose_requests_all_fail_still_writes_it(self):
+        from core.pdf_task_report import inplace_requests_all_failed
+
+        hooks, _calls = self._service_hooks(set(LABELS))
+        _runner, record, _client = self._run(hooks=hooks, sizes=(A2,), text=(True,))
+        page = record.pages[0]
+        # 这一页拿到过一条译文（记忆库、术语表或模型），就不是「请求全部失败」：照旧需复核。
+        page.inplace_answered = 1
+        self.assertEqual(inplace_requests_all_failed(record), 0)
+        page.inplace_answered = 0
+        self.assertEqual(inplace_requests_all_failed(record), 3)
 
 
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
@@ -820,6 +841,37 @@ class InplaceProgressTests(unittest.TestCase):
     放在「生成文件」里做：进度条几秒就到 90%，然后几分钟不动、日志一行没有。"""
 
     _service_hooks = InplaceApiGaveUpTests._service_hooks
+
+    def test_whole_task_whose_requests_all_fail_ends_as_failed(self):
+        from core.task_runner_messages import DoneMsg, ErrorMsg
+
+        hooks, _calls = self._service_hooks(set(LABELS))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        source_pdf = root / "drawing.pdf"
+        _write_pdf(source_pdf, [A2], with_text=[True])
+        settings = AppSettings(target_lang="zh")
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto"})
+        settings.output.use_custom_output_dir = True
+        settings.output.custom_output_dir = str(root / "out")
+        runner = PdfImageTranslationRunner(
+            [PdfFileItem(path=source_pdf, name="drawing.pdf", size_kb=1.0, page_count=1)],
+            settings, source_root=root, image_client=_RecordingImageClient(_png_bytes(2481, 3508)),
+            task_logger_enabled=False, inplace_hooks=hooks,
+        )
+        with patch("core.model_roles.get_key", return_value="secret"), \
+                patch("core.pdf_word_route.word_route_available", return_value=True), \
+                patch("core.pdf_word_route.office_pdf_engine", return_value=("", "no office engine in tests")):
+            runner._run()
+        messages = []
+        while not runner._queue.empty():
+            messages.append(runner._queue.get_nowait())
+        self.assertFalse([m for m in messages if isinstance(m, DoneMsg)])
+        errors = [m for m in messages if isinstance(m, ErrorMsg)]
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].message.startswith("3 条内容的翻译请求全部失败"), errors[0].message)
+        self.assertFalse(list((root / "out").rglob("*.pdf")))
 
     def test_whole_task_reports_in_place_work_inside_the_translate_phase(self):
         from core.task_runner_messages import LogMsg, ProgressMsg, StatusMsg

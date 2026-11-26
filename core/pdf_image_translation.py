@@ -187,6 +187,7 @@ from core.pdf_models import (  # noqa: F401
 from core.pdf_word_segments import PdfWordSegmentsMixin, _extract_pdf_pages  # noqa: F401
 # 下面三个 mixin 里的方法用 `_pit.名字` 回到本模块取模块级名字；
 # 本文件里只为它们留着的导入标了 noqa: F401，不要当没用的删掉。
+from core.nothing_translated import nothing_translated_message
 from core.pdf_image_generation import PdfImageGenerationMixin
 from core.pdf_inplace_pages import PdfInplacePagesMixin
 from core.pdf_page_actions import PdfPageActionsMixin
@@ -194,6 +195,7 @@ from core.pdf_task_report import (  # noqa: F401
     _record_is_fully_skipped_oversize,
     _record_translated_nothing,
     fully_skipped_oversize_message,
+    inplace_requests_all_failed,
     translated_nothing_message,
     _page_archive_stem,
     page_archive_dir,
@@ -2759,6 +2761,15 @@ class PdfImageTranslationRunner(
             )
             self._log("ERROR", fatal_error)
 
+        if (
+            not stopped
+            and not fatal_error
+            and file_records
+            and all(inplace_requests_all_failed(record) for record in file_records)
+        ):
+            # 每个文件送去翻译的请求都全部失败、一个文件都没生成：任务算失败（与 Excel 相同），
+            # 不报「完成」。各文件的原因已逐个写进日志。
+            fatal_error = file_records[0].error
         if output_dir is not None:
             summary = self._build_summary(
                 output_dir=output_dir,
@@ -3754,6 +3765,13 @@ class PdfImageTranslationRunner(
 
         self._run_inplace_pages(record, prepared)
         self._refresh_file_record_counts(record)
+        failed_requests = inplace_requests_all_failed(record)
+        if failed_requests:
+            # 送去翻译的每一处都因为请求失败没拿到译文：这个文件算失败，不拼出一份原样的 PDF。
+            record.status = PDF_OUTPUT_STATE_FAILED
+            record.error = nothing_translated_message(failed_requests, "")
+            self._log("ERROR", f"[{record.name}] {record.error}")
+            return
         try:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)
             metadata = build_translation_metadata(

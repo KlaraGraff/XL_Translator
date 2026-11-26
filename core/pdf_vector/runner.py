@@ -101,6 +101,7 @@ class InplaceResult:
     kept: int = 0               # numbers, codes, names: nothing to translate
     review: int = 0             # unsure: source kept, listed for the user
     untranslated: int = 0       # the service gave up on it: source kept, listed for review
+    answered: int = 0           # got a translation (model, memory or glossary), written or not
     term_review: int = 0        # written, but a set translation from the memory was not used
     not_written: int = 0        # translated but could not be placed safely
     overflow_written: int = 0    # written despite insufficient verified space
@@ -281,6 +282,7 @@ def translate_page_inplace(
         # 接口放弃、没拿到译文的（与 CAD 的「未获得译文」同一类）单独计数，不算「认不准」。
         review=sum(1 for r in rows if r["decision"] == "review") - len(missing),
         untranslated=len(missing),
+        answered=sum(1 for r in rows if r.get("model_output") or r.get("translation_source") == "glossary"),
         not_written=len(decided_write - written_ids),
         overflow_written=overflow_written,
         term_review=sum(1 for r in rows if r.get("term_review") and r["id"] in written_ids),

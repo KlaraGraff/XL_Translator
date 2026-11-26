@@ -71,6 +71,21 @@ def _record_translated_nothing(record: PdfFileRecord) -> bool:
     )
 
 
+def inplace_requests_all_failed(record: PdfFileRecord) -> int:
+    """整份文件一个字没翻，原因是原位替换送去翻译的请求全部失败：返回没拿到译文的处数，否则 0。
+
+    每一页都是原页、至少一处「未获得译文」、哪一页都没拿到过一条译文（模型、记忆库、术语表）。
+    这时文件算失败，不拼出一份与原文一样的 PDF（core/nothing_translated，与 CAD、Excel 相同）。
+    """
+    if not _record_translated_nothing(record):
+        return 0
+    pages = [page for page in record.pages if getattr(page, "inplace_requested", False)]
+    failed = sum(int(getattr(page, "inplace_untranslated", 0) or 0) for page in pages)
+    if not failed or any(int(getattr(page, "inplace_answered", 0) or 0) for page in pages):
+        return 0
+    return failed
+
+
 def _page_kept_reason(page: Any) -> str:
     if getattr(page, "inplace_requested", False) and getattr(page, "inplace_status", ""):
         reason = page.inplace_message or ""

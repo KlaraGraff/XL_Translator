@@ -206,3 +206,90 @@ def test_text_service_flag_is_off_by_default():
     for name in ("translate", "translate_with_sources"):
         parameter = inspect.signature(getattr(TextTranslationService, name)).parameters["fail_if_nothing_translated"]
         assert parameter.default is False
+
+
+# ── 分几轮发请求的格式：Word（含 PDF 转 Word）、扩展格式（PPT 等）、PDF 原位替换 ──
+
+
+def _word_run(tmp_path, engine, paragraphs):
+    from contextlib import ExitStack
+
+    from docx import Document
+
+    from core.word_document import WordFileItem
+    from core.word_task_runner import WordTaskRunner
+    from settings import AppSettings
+    from tests.test_word_resume import WordResumeTests
+
+    path = tmp_path / "plan.docx"
+    doc = Document()
+    for text in paragraphs:
+        doc.add_paragraph(text)
+    doc.save(path)
+    settings = AppSettings(source_lang="zh", target_lang="en")
+    settings.rate.word.request_retry = 0
+    runner = WordTaskRunner([WordFileItem(path=path, name=path.name, size_kb=1.0)], settings,
+                            source_root=tmp_path, source_lang="zh")
+    with ExitStack() as stack:
+        WordResumeTests._runner_patches(None, stack, root=tmp_path)
+        stack.enter_context(patch("core.word_task_runner.build_engine", return_value=engine))
+        stack.enter_context(patch("core.word_task_runner.tm_manager.lookup_batch", return_value={}))
+        runner._run()
+    return list(runner._queue.queue)
+
+
+def test_word_task_fails_when_every_request_fails(tmp_path, broken_engine):
+    from core.task_runner import DoneMsg, LogMsg
+
+    messages = _word_run(tmp_path, broken_engine, ["第一段说明文字。", "第二段说明文字。", "第三段说明文字。"])
+    errors = [m for m in messages if isinstance(m, ErrorMsg)]
+    assert len(errors) == 1 and not any(isinstance(m, DoneMsg) for m in messages)
+    assert errors[0].message.startswith("3 " + _MESSAGE_START), errors[0].message
+    assert not list((tmp_path / "out").rglob("*.docx"))
+    logs = [m.message for m in messages if isinstance(m, LogMsg)]
+    assert not any("全部 Word 文件已生成" in line for line in logs)
+
+
+def test_word_task_with_one_failing_paragraph_still_finishes(tmp_path):
+    from core.task_runner import DoneMsg
+
+    class OneBroken:
+        engine_name = "fake/one-broken"
+
+        def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+            if "坏段落。" in texts:
+                raise ValueError("503 Service Unavailable")
+            return {text: f"EN {text}" for text in texts}
+
+    messages = _word_run(tmp_path, OneBroken(), ["好段落。", "坏段落。"])
+    # 部分失败照旧：写出已翻的，没翻的保留原文、标需复核。
+    assert any(isinstance(m, DoneMsg) for m in messages)
+    assert not any(isinstance(m, ErrorMsg) for m in messages)
+
+
+def test_pdf_via_word_reports_the_same_failure(tmp_path, broken_engine):
+    from docx import Document
+
+    from core.pdf_word_route import translate_pdf_via_word
+    from settings import AppSettings
+
+    def fake_convert(_pdf_path, docx, **_kwargs):
+        doc = Document()
+        doc.add_paragraph("第一段说明文字。")
+        doc.add_paragraph("第二段说明文字。")
+        doc.save(docx)
+
+    settings = AppSettings(source_lang="zh", target_lang="en")
+    settings.pdf.target_lang = "en"
+    with patch("core.pdf_word_route.convert_pdf_to_docx", fake_convert), \
+            patch("core.word_task_runner.build_engine", return_value=broken_engine), \
+            patch("core.word_task_runner.check_translation_api_config") as check, \
+            patch("core.word_task_runner.tm_manager.lookup_batch", return_value={}):
+        check.return_value.ok = True
+        result = translate_pdf_via_word(
+            tmp_path / "plan.pdf", tmp_path / "work", tmp_path / "final.docx", settings,
+            source_lang="zh", should_stop=lambda: False, log=lambda *_args: None,
+        )
+    assert not result.ok
+    assert result.error.startswith("2 " + _MESSAGE_START), result.error
+    assert not (tmp_path / "final.docx").exists()

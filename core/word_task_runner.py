@@ -180,6 +180,7 @@ from core.word_inline_marks import (
 )
 from core.word_layout_fixes import join_wrapped_line_breaks_in_file
 from core.word_revisions import RevisionWriteStats, normalize_revision_mode
+from core.nothing_translated import NothingTranslatedError, nothing_translated_message
 from core.word_batching import (
     WordBatchRunStats,
     _join_translated_parts,
@@ -1334,6 +1335,24 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                 def _run_normal_main_translation() -> dict[str, str]:
                     if not misses:
                         return {}
+                    results = _send_normal_main_translation()
+                    # 记忆库没命中、没有夹杂多种语言的内容、也不是补译，这一轮就是整个任务
+                    # 的翻译请求。每一段都拆到单段仍失败、没拿到译文时整个任务失败，不再逐段
+                    # 重译一遍、写出一份全是原文的文件（core/nothing_translated，与 Excel 相同）。
+                    if (
+                        not hits
+                        and not mixed_texts
+                        and not self._untranslated_only
+                        and not self.stop_requested()
+                        and word_batch_stats.unit_count
+                        and len(word_batch_stats.failed_unit_keys) >= word_batch_stats.unit_count
+                    ):
+                        raise NothingTranslatedError(
+                            nothing_translated_message(len(misses), word_batch_stats.last_failure_reason)
+                        )
+                    return results
+
+                def _send_normal_main_translation() -> dict[str, str]:
                     return translate_word_texts(
                         misses,
                         term_engine,

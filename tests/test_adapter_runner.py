@@ -273,6 +273,31 @@ class AdapterRunnerTests(IsolatedAppDataTestCase):
             }
         ]
 
+    def test_a_file_whose_requests_all_fail_fails_and_writes_nothing(self) -> None:
+        # 每一条都因为请求失败没拿到译文：这个文件算失败，不写一份全是原文的文件
+        # （core/nothing_translated，与 CAD、Excel 相同）。另一个文件照常写出。
+        broken = self._file("broken.txt", "Broken\nAlso broken\n")
+        fine = self._file("fine.txt", "Hello\n")
+        engine = FakeEngine(fail={"Broken", "Also broken"})
+        _runner, messages = self._run(engine, [broken, fine])
+        done = self._end(messages)
+        assert isinstance(done, DoneMsg)
+        failed, written = done.file_results
+        assert failed["status"] == "failed" and not failed["success"]
+        assert failed["error"] == (
+            "2 条内容的翻译请求全部失败，没有获得任何译文：接口故障。"
+            "未生成仅含原文的文件。请稍后重试，或在「设置 → 模型服务」中检查此连接。"
+        )
+        assert written["status"] == "completed"
+        assert not list(Path(written["output_path"]).parent.glob("broken*"))
+
+    def test_the_only_file_whose_requests_all_fail_ends_the_task_as_failed(self) -> None:
+        path = self._file("a.txt", "Broken\n")
+        _runner, messages = self._run(FakeEngine(fail={"Broken"}), [path])
+        end = self._end(messages)
+        assert isinstance(end, ErrorMsg)
+        assert end.message.startswith("1 条内容的翻译请求全部失败")
+
     def test_residual_chinese_keeps_the_translation_and_is_listed(self) -> None:
         path = self._file("a.txt", "设备清单\n")
 
