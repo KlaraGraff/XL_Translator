@@ -42,6 +42,17 @@ def clean_leaders(text: str) -> str:
     return re.sub(r"[.\u2026·]{3,}\S*", lambda m: "......" if len(m.group(0)) >= 6 else m.group(0), text)
 
 
+_FONT_STYLE = re.compile(r"(Bold|Italic|Oblique|Light|Medium|Regular|Semibold|Black|Book|Roman)+$", re.I)
+
+
+def font_family(name: str) -> str:
+    """「ABCDEF+Arial-BoldMT」→「arial」：同一段正文的粗体、斜体字算同一种字体。"""
+    base = re.sub(r"^[A-Z]{6}\+", "", name or "").split(",")[0]
+    base = base.split("-")[0]
+    base = re.sub(r"(PSMT|MT|PS)$", "", base)
+    return _FONT_STYLE.sub("", base).casefold()
+
+
 def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
     k = dpi / 72.0
     rm = page.rotation_matrix
@@ -67,6 +78,7 @@ def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
                 "display_box": [round(v * k, 1) for v in (r.x0, r.y0, r.x1, r.y1)],
                 "display_rotation": rot, "oblique": not any(abs(v) > 0.99 for v in (vx, vy)),
                 "font_size_pt": max(s["size"] for s in spans), "font": spans[0]["font"],
+                "font_families": sorted({font_family(s["font"]) for s in spans} - {""}),
                 "font_flags": int(spans[0].get("flags") or 0),
                 "color": [((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255],
                 "ocr_score": None, "source_passes": ["native"],
@@ -648,6 +660,11 @@ def group_paragraphs(rows, V, Hs):
                 same_start = abs(si - sj) <= tol
                 same_centre = abs((si + li / 2) - (sj + lj / 2)) <= tol
                 if not (same_start or same_centre) or rows[i]["origin"] != rows[j]["origin"]:
+                    continue
+                # 一段正文的各行用同一种字体：设备手册屏幕框里的按键名「Press」（打字机体）
+                # 不是下面那段正文（窄体）的第一行
+                fi, fj = set(rows[i].get("font_families") or ()), set(rows[j].get("font_families") or ())
+                if fi and fj and not fi & fj:
                     continue
                 # a full-width rule (table border) separates the lines -- except
                 # when the next line plainly runs on in lower case: on plans,
