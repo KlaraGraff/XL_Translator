@@ -354,8 +354,20 @@ def _hang_after_bullet(paragraph) -> None:
 # 列表项开头的符号。只认不会出现在正文中间的那几个：「-」「–」也常用作连字符、破折号。
 _BULLET_CHARS = "•▪●◦■○‣⁃\uf0b7\uf0a7\uf0d8\uf076"
 _BULLET_START = re.compile(f"^\\s*[{_BULLET_CHARS}]")
+# 拆列表项时还认「-」「–」开头的：后面跟两个以上空格或制表符（Word 列表转成 PDF 后常见的
+# 「-          Décision…」）。正文里的连字符、破折号后面最多一个空格，不会被当成列表符号。
+_ITEM_MARK = f"(?:[{_BULLET_CHARS}]|[-–](?:\\s{{2,}}|\\t))"
+_ITEM_START = re.compile(f"^\\s*{_ITEM_MARK}")
 # 同一段里一句话结束、紧接着另一个列表符号：「…programme validé.• Enregistrement…」
-_GLUED_BULLET = re.compile(f"(?<=[.!?;:。！？；：])\\s*(?=[{_BULLET_CHARS}])")
+_GLUED_BULLET = re.compile(f"(?<=[.!?;:。！？；：])\\s*(?={_ITEM_MARK})")
+
+
+def _is_line_break(element) -> bool:
+    """普通的换行（w:br 不带 type，或 type=textWrapping，也没有绕排图片用的 clear）。"""
+    from docx.oxml.ns import qn
+
+    return (element.tag == qn("w:br") and element.get(qn("w:type")) in (None, "textWrapping")
+            and not element.get(qn("w:clear")))
 
 
 def _split_run_at(run, offset: int):
@@ -380,9 +392,18 @@ def _split_run_at(run, offset: int):
 
 
 def _split_glued_bullets_in(paragraph) -> int:
-    """pdf2docx 把相邻两条「•」（PDF 里各占一行、各是一块）合进了同一段，Word 里接着排成
-    「…programme validé.• Enregistrement…」。只输出译文时这一格行数就和译文对不上
-    （模型会把两条拆回两行）。前一条以句末标点结束、后一条以列表符号开头的，拆回两段。"""
+    """一段里装着好几条列表项时，每条拆成单独一段。两种来路：
+
+    - pdf2docx 把相邻两条「•」（PDF 里各占一行、各是一块）合进了同一段，Word 里接着排成
+      「…programme validé.• Enregistrement…」。只输出译文时这一格行数就和译文对不上
+      （模型会把两条拆回两行）。
+    - pdf2docx 把一块里的几行写成一段、行间用换行（w:br）隔开，可一行快排满整行宽时它当成
+      句中折行，不加换行：「…du terrain ; -          Plan d’exécution… ; -          Rapport…」，
+      三条挤成一行（DAT 土方许可资料清单）。
+
+    前一条以句末标点结束、或刚换过行、或整段本来就是列表项，后一条以列表符号开头的，
+    拆开；拆开处的换行随之去掉。每条单独成段，送翻和写回都按段走，条目之间的分隔不再
+    靠模型照抄换行符。"""
     import copy
 
     from docx.oxml.ns import qn
@@ -390,25 +411,41 @@ def _split_glued_bullets_in(paragraph) -> int:
     runs = [child for child in paragraph._p if child.tag == qn("w:r")]
     if len(runs) != len(paragraph._p.findall(f".//{qn('w:r')}")):
         return 0  # 超链接、域里的 run 不动
-    # 只有纯文字的 run 才拆，图片、制表符、换行不跟着搬家
-    if any(el.tag not in (qn("w:rPr"), qn("w:t")) for run in runs for el in run):
+    # 只有纯文字的 run 和只装着普通换行的 run 才拆，图片、制表符、分页符不跟着搬家
+    def plain(run) -> bool:
+        tags = {el.tag for el in run if el.tag != qn("w:rPr")}
+        return tags <= {qn("w:t")} or (tags == {qn("w:br")} and all(map(_is_line_break, run.findall(qn("w:br")))))
+
+    if not all(map(plain, runs)):
         return 0
     # 一个 run 里就粘着两条的，先在列表符号前把 run 切开
     for run in list(runs):
         text = "".join(node.text or "" for node in run.findall(qn("w:t")))
+        if run.find(qn("w:br")) is not None:
+            continue
         cuts = [match.end() for match in _GLUED_BULLET.finditer(text) if match.end() < len(text)]
         for offset in reversed(cuts):
             if text[:offset].strip():
                 _split_run_at(run, offset)
     runs = [child for child in paragraph._p if child.tag == qn("w:r")]
     starts: list[int] = []
+    breaks_to_drop: list = []
     head = ""
+    after_break = None  # 紧挨在前面的那个换行 run
     for index, run in enumerate(runs):
+        if run.find(qn("w:br")) is not None:
+            after_break = run
+            head += "\n"
+            continue
         text = "".join(node.text or "" for node in run.findall(qn("w:t")))
-        if index and head.strip() and _BULLET_START.match(text) and (
-            head.rstrip().endswith(_SENTENCE_END) or _BULLET_START.match(head)
+        if index and head.strip() and _ITEM_START.match(text) and (
+            after_break is not None or head.rstrip().endswith(_SENTENCE_END) or _ITEM_START.match(head)
         ):
             starts.append(index)
+            if after_break is not None:
+                breaks_to_drop.append(after_break)
+        if text:
+            after_break = None
         head += text
     if not starts:
         return 0
@@ -423,6 +460,8 @@ def _split_glued_bullets_in(paragraph) -> int:
             piece.append(run)
         anchor.addnext(piece)
         anchor = piece
+    for run in breaks_to_drop:
+        run.getparent().remove(run)
     pieces = [paragraph._p]
     node = paragraph._p
     for _ in starts:

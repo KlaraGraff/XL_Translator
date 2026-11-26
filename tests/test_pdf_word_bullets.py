@@ -5,6 +5,9 @@
    写回行数对不上，这一格就成了法文 + 中文。现在拆回两段。
 2. 列表项的折行被写成制表符：「…si elle<tab>est prévue au programme.」，后半截被译成
    了俄文词「предусмотр」。现在换成空格，并用悬挂缩进让折行和正文对齐。
+3. 「-」开头的列表（Word 列表转成 PDF，法文 DAT 土方许可资料清单）：pdf2docx 把八条写成一段、
+   行间用换行隔开，但最长的三条排满了整行宽，它当成折行没加换行，三条挤成一行。现在每条
+   单独成段，换行处一并去掉。
 """
 from __future__ import annotations
 
@@ -119,6 +122,65 @@ class PdfWordBulletTests(unittest.TestCase):
         merge_wrapped_lines(path)
         paragraph = next(p for p in Document(str(path)).paragraphs if p.text.strip())
         self.assertEqual(paragraph.text, "Date\t12/10/2026")
+
+
+def _line_list(*lines: str, breaks_after: tuple[int, ...]) -> str:
+    """pdf2docx 的写法：每行一个 run，换行单独一个 run。"""
+    run = '<w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r>'
+    parts = []
+    for index, line in enumerate(lines):
+        parts.append(run.format(line))
+        if index in breaks_after:
+            parts.append("<w:r><w:br/></w:r>")
+    return '<w:p {ns}><w:pPr><w:spacing w:before="40" w:after="120"/></w:pPr>' + "".join(parts) + "</w:p>"
+
+
+DASH_ITEMS = (
+    "-          Demande formelle signée et cachetée par l’investisseur ; ",
+    "-          Décision d’installation ; ",
+    "-          Plan d’implantation des bornes du terrain établi par un topographe ; ",
+    "-          Plan d’exécution des travaux de terrassements établi par un bureau d’études ; ",
+    "-          Rapport géotechnique établie par un laboratoire ; ",
+    "-          Caution bancaire (selon la surface du terrain) ; ",
+)
+
+
+class PdfWordLineListTests(unittest.TestCase):
+    _docx = PdfWordBulletTests._docx
+
+    def test_dash_items_glued_on_full_lines_each_become_a_paragraph(self) -> None:
+        # 第 3、4、5 条排满了整行，pdf2docx 在它们后面没加换行
+        path = self._docx(_line_list(*DASH_ITEMS, breaks_after=(0, 1, 4)))
+        merge_wrapped_lines(path)
+        self.assertEqual(split_glued_bullets(path), 5)
+        paragraphs = [p for p in Document(str(path)).paragraphs if p.text.strip()]
+        self.assertEqual([p.text for p in paragraphs], list(DASH_ITEMS))
+        self.assertFalse(any(p._p.findall(f".//{qn('w:br')}") for p in paragraphs))
+        self.assertEqual(paragraphs[0]._p.pPr.find(qn("w:spacing")).get(qn("w:before")), "40")
+        self.assertEqual(paragraphs[-1]._p.pPr.find(qn("w:spacing")).get(qn("w:after")), "120")
+
+    def test_dash_items_in_a_table_cell(self) -> None:
+        path = self._docx(_line_list(*DASH_ITEMS[:3], breaks_after=(0,)), in_cell=True)
+        self.assertEqual(split_glued_bullets(path), 2)
+        cell = Document(str(path)).tables[0].cell(0, 0)
+        self.assertEqual([p.text for p in cell.paragraphs if p.text.strip()], list(DASH_ITEMS[:3]))
+
+    def test_line_breaks_that_are_not_list_items_stay(self) -> None:
+        path = self._docx(_line_list("Direction régionale", "Rabat", "Maroc", breaks_after=(0, 1)))
+        self.assertEqual(split_glued_bullets(path), 0)
+        paragraph = next(p for p in Document(str(path)).paragraphs if p.text.strip())
+        self.assertEqual(paragraph.text, "Direction régionale\nRabat\nMaroc")
+
+    def test_a_dash_used_as_a_hyphen_or_dash_is_not_a_list_mark(self) -> None:
+        path = self._docx(_line_list("Température minimale ; ", "- 5 °C la nuit ; ", "– voir annexe.",
+                                     breaks_after=()))
+        self.assertEqual(split_glued_bullets(path), 0)
+
+    def test_page_breaks_keep_the_paragraph_whole(self) -> None:
+        xml = _line_list(*DASH_ITEMS[:2], breaks_after=()).replace(
+            "</w:t></w:r><w:r>", '</w:t></w:r><w:r><w:br w:type="page"/></w:r><w:r>', 1)
+        path = self._docx(xml)
+        self.assertEqual(split_glued_bullets(path), 0)
 
 
 if __name__ == "__main__":
