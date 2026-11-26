@@ -205,6 +205,14 @@ class FontNormalizationTests(unittest.TestCase):
         self.assertEqual(out.count('"Cambria Math"'), 4)
         self.assertIn('w:ascii="CMR10" w:hAnsi="Chivo-Light"', out)  # 正文字体不动
 
+    def test_latin_modern_math_fonts_become_cambria_math(self) -> None:
+        # 很多 LaTeX 文档用 Latin Modern（lmodern）：数学符号在 LMMathSymbols10 里，同样换成 Cambria Math
+        xml = ('<w:rFonts w:ascii="QDTWCG+LMMathSymbols10" w:hAnsi="LMMathItalic10-Regular"/>'
+               '<w:rFonts w:ascii="LMMathExtension10" w:hAnsi="LMRoman10"/>')
+        out = normalize_fonts_xml(xml)
+        self.assertEqual(out.count('"Cambria Math"'), 3)
+        self.assertIn('w:hAnsi="LMRoman10"', out)  # 正文字体不动
+
 
 if __name__ == "__main__":
     unittest.main()
