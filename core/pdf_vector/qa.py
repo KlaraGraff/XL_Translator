@@ -154,12 +154,25 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
     og = render(op, dpi).convert("L")
     seen_diff = ImageChops.difference(sg, og)
     k = dpi / 72.0
+    # 写译文的地方（擦掉的原文、写上的译文）本来就会变，各项检查只看这以外
+    mask = Image.new("L", sg.size, 0)
+    from PIL import ImageDraw
+    dr = ImageDraw.Draw(mask)
+    for w in written:
+        r = rows[w["id"]]
+        for lb in r.get("line_boxes") or [r["display_box"]]:
+            b = redaction_rect(dict(r, display_box=lb), sp, dpi)[0]
+            dr.rectangle([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2], fill=255)
+        for b in w["written_rects_px"]:
+            dr.rectangle([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2], fill=255)
+    seen_outside = ImageChops.subtract(seen_diff, mask)
 
     def looks_changed(rect) -> bool:
         box = rect * sp.rotation_matrix
         crop = (max(0, int(box.x0 * k) - 1), max(0, int(box.y0 * k) - 1),
                 min(sg.width, int(box.x1 * k) + 2), min(sg.height, int(box.y1 * k) + 2))
-        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).point(_SEEN_LUT).getbbox() is not None
+        return (crop[0] < crop[2] and crop[1] < crop[3]
+                and seen_outside.crop(crop).point(_SEEN_LUT).getbbox() is not None)
 
     # compare what is actually placed on the page (content hash + position);
     # unused image resources may be dropped by garbage collection on save
@@ -225,16 +238,6 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
 
     # pixels
     diff = seen_diff.point(lambda v: 255 if v > 24 else 0)
-    mask = Image.new("L", sg.size, 0)
-    from PIL import ImageDraw
-    dr = ImageDraw.Draw(mask)
-    for w in written:
-        r = rows[w["id"]]
-        for lb in r.get("line_boxes") or [r["display_box"]]:
-            b = redaction_rect(dict(r, display_box=lb), sp, dpi)[0]
-            dr.rectangle([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2], fill=255)
-        for b in w["written_rects_px"]:
-            dr.rectangle([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2], fill=255)
     outside = ImageChops.subtract(diff, mask)
     ch = outside.histogram()[255]
     total = sg.size[0] * sg.size[1]
