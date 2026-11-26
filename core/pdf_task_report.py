@@ -687,9 +687,12 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     kept_pages = sum(1 for page in record.pages if getattr(page, "kept_reason", ""))
     if kept_pages:
         detail_parts.append(f"{kept_pages} 页没能按所选方式翻译，保留原样，原因见任务报告")
-    rerouted_pages = sum(1 for page in record.pages if getattr(page, "route_note", ""))
-    if rerouted_pages:
-        detail_parts.append(f"{rerouted_pages} 页改用整页图像翻译，原因见任务报告")
+    rerouted = [page for page in record.pages if getattr(page, "route_note", "")]
+    to_inplace = sum(1 for page in rerouted if getattr(page, "inplace_requested", False))
+    if to_inplace:
+        detail_parts.append(f"{to_inplace} 页改用原位替换，原因见任务报告")
+    if len(rerouted) - to_inplace:
+        detail_parts.append(f"{len(rerouted) - to_inplace} 页改用整页图像翻译，原因见任务报告")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     elif untranslated:
