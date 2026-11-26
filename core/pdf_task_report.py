@@ -71,19 +71,25 @@ def _record_translated_nothing(record: PdfFileRecord) -> bool:
     )
 
 
-def inplace_requests_all_failed(record: PdfFileRecord) -> int:
-    """整份文件一个字没翻，原因是原位替换送去翻译的请求全部失败：返回没拿到译文的处数，否则 0。
+def text_requests_all_failed(record: PdfFileRecord) -> int:
+    """整份文件一页都没翻成，原因是送去翻译的文字请求全部失败：返回没拿到译文的处数，否则 0。
 
-    每一页都是原页、至少一处「未获得译文」、哪一页都没拿到过一条译文（模型、记忆库、术语表）。
-    这时文件算失败，不拼出一份与原文一样的 PDF（core/nothing_translated，与 CAD、Excel 相同）。
+    输出里没有一页译好的（都是原页，或根本没有可用的页）；原位替换的「未获得译文」和转 Word
+    时请求全部失败的段落至少有一处；哪里都没拿到过一条译文（原位替换的模型、记忆库、术语表，
+    或转 Word 的任何一段）。这时文件算失败，不拼出一份与原文一样的 PDF
+    （core/nothing_translated，与 CAD、Excel、Word、PPT 相同）。
     """
-    if not _record_translated_nothing(record):
+    if _record_has_usable_translated_pages(record) and not _record_translated_nothing(record):
         return 0
-    pages = [page for page in record.pages if getattr(page, "inplace_requested", False)]
-    failed = sum(int(getattr(page, "inplace_untranslated", 0) or 0) for page in pages)
-    if not failed or any(int(getattr(page, "inplace_answered", 0) or 0) for page in pages):
+    segments = list(getattr(record, "word_segments", None) or [])
+    if any(segment.get("answered") for segment in segments):
         return 0
-    return failed
+    if any(int(getattr(page, "inplace_answered", 0) or 0) for page in record.pages):
+        return 0
+    return sum(int(getattr(page, "inplace_untranslated", 0) or 0) for page in record.pages
+               if getattr(page, "inplace_requested", False)) + sum(
+        int(segment.get("untranslated") or 0) for segment in segments
+    )
 
 
 def _page_kept_reason(page: Any) -> str:

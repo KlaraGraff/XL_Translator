@@ -65,6 +65,9 @@ class InplaceHooks:
     ocr_reader: Callable[..., list[dict]] | None = None
     # 记忆库（core.term_session.DocumentTermMemory）：与 Excel / Word 同一套规则。
     memory: object | None = None
+    # 最近一次请求失败的原因（一句人话，core.nothing_translated.failed_request_reason）：
+    # 送去翻译的全部失败时，文件的失败提示写这个原因，与 Word、PPT 相同。
+    last_failure_reason: Callable[[], str] | None = None
 
 
 _STOPWORDS = {

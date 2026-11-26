@@ -70,6 +70,9 @@ class WordRouteResult:
     rate_limit_reduction_count: int = 0
     # pdf2docx 转坏了的页（从 1 数，按这一段的页序），见 core.pdf_word_guard。
     broken_pages: list[int] = field(default_factory=list)
+    # 这一段送去翻译的请求全部失败（core/nothing_translated）：没拿到译文的段数和原因。
+    nothing_translated: int = 0
+    nothing_translated_reason: str = ""
 
 
 def word_route_available() -> bool:
@@ -1024,7 +1027,9 @@ def translate_pdf_via_word(
     }
     if done is None:
         return WordRouteResult(ok=False, stopped=stopped or stop_sent, terms=terms, **counts,
-                               error="任务已停止" if (stopped or stop_sent) else (failure or "Word 翻译没有完成。"))
+                               error="任务已停止" if (stopped or stop_sent) else (failure or "Word 翻译没有完成。"),
+                               nothing_translated=int(getattr(runner, "nothing_translated_count", 0) or 0),
+                               nothing_translated_reason=str(getattr(runner, "nothing_translated_reason", "") or ""))
     outputs = [item for item in done.file_results if item.get("success") and item.get("output")]
     if not outputs or not Path(outputs[0]["output"]).is_file():
         errors = [str(item.get("error") or "") for item in done.file_results]

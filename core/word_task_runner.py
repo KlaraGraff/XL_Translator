@@ -397,6 +397,9 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
         self._rate = resolve_surface_rate(settings, "word")
         self._word_batch = self._rate.word_batch_settings()
         self._untranslated_only = bool(untranslated_only)
+        # 请求全部失败、任务因此失败时：没拿到译文的段数和原因（PDF 转 Word 据此判断整份文件）。
+        self.nothing_translated_count = 0
+        self.nothing_translated_reason = ""
         self._protect_front_matter = bool(protect_front_matter)
         self._translate_headers_footers = bool(translate_headers_footers)
         self._allow_doc_fallback = bool(allow_doc_fallback)
@@ -1347,6 +1350,8 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                         and word_batch_stats.unit_count
                         and len(word_batch_stats.failed_unit_keys) >= word_batch_stats.unit_count
                     ):
+                        self.nothing_translated_count = len(misses)
+                        self.nothing_translated_reason = word_batch_stats.last_failure_reason
                         raise NothingTranslatedError(
                             nothing_translated_message(len(misses), word_batch_stats.last_failure_reason)
                         )
