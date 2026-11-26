@@ -398,6 +398,33 @@ _TWO_LETTER_WORDS = frozenset({
 })
 
 
+# 公式里的标准函数名，原样保留，不算要翻的词。
+_MATH_FUNCTIONS = frozenset({
+    "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
+    "log", "ln", "lg", "exp", "lim", "max", "min", "sup", "inf", "mod", "gcd", "lcm", "det", "deg", "arg",
+})
+# 列表编号：(ii)、(iv)、ii.、(a)、b)、(3)、12.。罗马数字按写法认（到 39），「civil.」不算。
+_ROMAN = r"(?=[ivxlc])x{0,3}(?:ix|iv|v?i{0,3})"
+_LIST_LABEL_RE = re.compile(
+    rf"^\((?:{_ROMAN}|[a-z]|\d{{1,3}})\)$|^(?:{_ROMAN}|[a-z]|\d{{1,3}})[.)]$",
+    re.IGNORECASE,
+)
+
+
+def _list_label(text: str) -> bool:
+    return bool(_LIST_LABEL_RE.match(text))
+
+
+def has_real_word(text: str) -> bool:
+    """有没有一个要翻的词：三个字母以上的 ASCII 字母串，或任何非 ASCII 字母（汉字、é、
+    западн…，希腊字母除外，那是变量）。两个字母以下的（pi、xi、Pn、OK）说不准是变量
+    还是缩写，交给模型判断：模型原样还回来也算对（见 _validate_translation_strict）。"""
+    for char in text:
+        if char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF"):
+            return True
+    return any(len(match.group()) >= 3 for match in _LETTER_RUN_RE.finditer(text))
+
+
 def _formula_only(text: str) -> bool:
     """有运算符，且去掉变量、数字、符号、(i)(ii) 编号后剩不下一个词：一行公式。"""
     if not _FORMULA_OPERATOR_RE.search(text):
@@ -408,6 +435,8 @@ def _formula_only(text: str) -> bool:
             return False
     for match in _LETTER_RUN_RE.finditer(text):
         word = match.group()
+        if word.lower() in _MATH_FUNCTIONS:
+            continue  # 「f(x) = sin x」里的 sin 是函数名，不是要翻的词
         if len(word) >= 3:
             return False
         if len(word) == 2:
@@ -491,7 +520,7 @@ def should_translate(
     # 没有可翻的，模型只会照原样还回来，写入端判成没翻成功、重译三轮、最后涂上需复核
     # 底色，还把固定行高放开撑高表格（反馈 #28：92 段公式全标黄，白白重试 279 次）。
     # 只认 ASCII 字母和希腊字母：中日韩的单字（「是 否」）有意思，照常翻。
-    if _single_character_tokens(text) or _formula_only(text):
+    if _single_character_tokens(text) or _formula_only(text) or _list_label(text):
         return False
 
     # 繁体目标、原文是中文：没有简体字的（本来就是繁体，或两岸写法一样）不用再送。
@@ -638,14 +667,17 @@ def _validate_translation_strict(
         )
         return _validation_result_from_issues(issues)
 
-    # 条件1：完全相同（大小写不敏感）
+    # 条件1：完全相同（大小写不敏感）。原文里没有一个要翻的词（pi、xi、Pn、OK）时，
+    # 原样还回来是模型判断它不用翻，不算失败：否则重译三轮后还要涂需复核底色（反馈 #28：
+    # 讲义里 40 段这样的公式变量）。
     if orig.lower() == tran.lower():
-        issues.append(
-            TranslationValidationIssue(
-                code="same_as_source",
-                message="译文与原文相同。",
+        if has_real_word(orig):
+            issues.append(
+                TranslationValidationIssue(
+                    code="same_as_source",
+                    message="译文与原文相同。",
+                )
             )
-        )
         return _validation_result_from_issues(issues)
 
     if is_chinese_lang(target_lang):

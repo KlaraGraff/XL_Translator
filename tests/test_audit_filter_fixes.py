@@ -563,15 +563,37 @@ class SingleLetterTokenTests(unittest.TestCase):
     def test_formula_lines_are_skipped(self) -> None:
         # #28 讲义里标黄的 92 段公式：模型照原样还回来，被判没翻成功、重译三轮
         for text in ("(A1 ∧A2 ∧· · · ∧An) ⇒C", "P1⇒P2, P2⇒P3, …, P1∴P6", "(ii) A ∪B = B ∪A.",
-                     "an10n+ an−1 10n−1+ · · · + a1101+ a0100.", "α + β = γ"):
+                     "an10n+ an−1 10n−1+ · · · + a1101+ a0100.", "α + β = γ", "f (x) = sin x"):
             with self.subTest(text=text):
                 self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
 
     def test_formulas_with_words_are_still_translated(self) -> None:
-        for text in ("x ≥ 0 if x ∈ A", "Let A ⊆ B", "f(x) = sin x", "温度 > 30"):
+        for text in ("x ≥ 0 if x ∈ A", "Let A ⊆ B", "f(x) = sin x for all x", "温度 > 30"):
             with self.subTest(text=text):
                 self.assertTrue(should_translate(text, target_lang="en" if "温" in text else "zh",
                                                  source_lang="zh" if "温" in text else "en"))
+
+    def test_list_labels_are_skipped(self) -> None:
+        # 讲义里单独成段的 (ii)、(iii) 有 15 段被标黄
+        for text in ("(ii)", "(iii)", "(iv)", "ii.", "(a)", "b)", "(12)"):
+            with self.subTest(text=text):
+                self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
+        self.assertTrue(should_translate("civil.", target_lang="zh", source_lang="en"))
+
+    def test_echo_without_a_real_word_is_accepted(self) -> None:
+        # pi、xi、Pn 是公式变量（p 下标 i），也可能是 OK 这种缩写，交给模型判断；
+        # 模型原样还回来不算失败，不重译、不标黄
+        from core.translation_filter import validate_translation
+
+        for text in ("pi", "xi", "Pn", "OK"):
+            with self.subTest(text=text):
+                self.assertFalse(validate_translation(text, text, target_lang="zh", source_lang="en").is_fail)
+        for text in ("Fig", "mix", "是 否", "Summary"):
+            with self.subTest(text=text):
+                result = validate_translation(text, text, target_lang="en" if "是" in text else "zh",
+                                              source_lang="zh" if "是" in text else "en")
+                self.assertTrue(result.is_fail)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

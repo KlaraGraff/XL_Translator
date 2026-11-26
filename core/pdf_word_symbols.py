@@ -75,45 +75,60 @@ def _pieces(text: str) -> list[tuple[str, bool]]:
     return pieces
 
 
+def _new_run(run, r_pr, math: bool):
+    new_run = run.makeelement(f"{_W}r", dict(run.attrib))
+    if r_pr is not None:
+        new_run.append(copy.deepcopy(r_pr))
+    if math:
+        if new_run.find(f"{_W}rPr") is None:
+            new_run.insert(0, new_run.makeelement(f"{_W}rPr", {}))
+        _set_math_font(new_run.find(f"{_W}rPr"))
+    return new_run
+
+
 def _fix_run(run) -> int:
-    """返回这一段改了几处。只拆只含文字（w:t）的一段；带制表符、换行的整段只在全是符号时改。"""
+    """返回这一段改了几处。符号拆成单独的一段；制表符、换行等原样留在各自那一段里。"""
     texts = [child for child in run if child.tag == f"{_W}t"]
-    if not texts:
-        return 0
     text = "".join(node.text or "" for node in texts)
     if not any(is_math_symbol(char) for char in text):
         return 0
     r_pr = run.find(f"{_W}rPr")
     if _has_math_font(r_pr):
         return 0
-    others = [child for child in run if child.tag not in (f"{_W}t", f"{_W}rPr")]
-    pieces = _pieces(text)
-    if len(pieces) == 1 or others:
-        if not all(is_math_symbol(char) or char.isspace() for char in text):
-            return 0  # 符号和别的东西（制表符、换行）混在一段里：少见，不拆
+    # 按顺序切成（内容, 是不是符号）：文字按符号切开，别的子元素（制表符、换行）自成一截
+    parts: list[tuple[object, bool]] = []
+    for child in run:
+        if child.tag == f"{_W}rPr":
+            continue
+        if child.tag == f"{_W}t":
+            parts.extend(_pieces(child.text or ""))
+        else:
+            parts.append((child, False))
+    if all(math or (isinstance(part, str) and not part.strip()) for part, math in parts):
         if r_pr is None:
             r_pr = run.makeelement(f"{_W}rPr", {})
             run.insert(0, r_pr)
-        _set_math_font(r_pr)
+        _set_math_font(r_pr)  # 整段都是符号：不用拆
         return 1
     changed = 0
     anchor = run
-    for piece, math in pieces:
-        new_run = run.makeelement(f"{_W}r", dict(run.attrib))
-        if r_pr is not None:
-            new_run.append(copy.deepcopy(r_pr))
-        if math:
-            if new_run.find(f"{_W}rPr") is None:
-                new_run.insert(0, new_run.makeelement(f"{_W}rPr", {}))
-            _set_math_font(new_run.find(f"{_W}rPr"))
-            changed += 1
-        node = new_run.makeelement(f"{_W}t", {})
-        node.text = piece
-        if piece != piece.strip():
-            node.set(_XML_SPACE, "preserve")
-        new_run.append(node)
-        anchor.addnext(new_run)
-        anchor = new_run
+    current = None
+    current_math = None
+    for part, math in parts:
+        if current is None or math != current_math or math:
+            current = _new_run(run, r_pr, math)
+            current_math = math
+            anchor.addnext(current)
+            anchor = current
+            changed += 1 if math else 0
+        if isinstance(part, str):
+            node = current.makeelement(f"{_W}t", {})
+            node.text = part
+            if part != part.strip():
+                node.set(_XML_SPACE, "preserve")
+            current.append(node)
+        else:
+            current.append(part)  # 挪过来（lxml 会从原来那段里摘下）
     run.getparent().remove(run)
     return changed
 
