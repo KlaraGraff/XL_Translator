@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from docx import Document
@@ -31,6 +31,7 @@ from core.translation_coverage import (
     split_existing_bilingual_text,
 )
 from core.bilingual_writer import bilingual_output_name
+from core.word_code import code_only_texts
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
 from core.word_revisions import paragraph_coverage_text, renumber_duplicate_revision_ids
 from core.word_document import (
@@ -145,7 +146,20 @@ def build_word_coverage_plan(
             front_matter=front_matter,
         )
     )
-    return WordCoveragePlan(path=source_path, units=units, front_matter=front_matter)
+    return WordCoveragePlan(path=source_path, units=_ignore_code(doc, units), front_matter=front_matter)
+
+
+def _ignore_code(doc, units: list[CoverageUnit]) -> list[CoverageUnit]:
+    """代码段（整段等宽字体）本来就原样保留、不送翻（core/word_code.py），不算漏翻。"""
+    code = code_only_texts(doc)
+    if not code:
+        return units
+    return [
+        replace(unit, status=COVERAGE_IGNORED, reason="代码（整段等宽字体）原样保留。")
+        if unit.status == COVERAGE_SOURCE_ONLY and unit.source_text in code
+        else unit
+        for unit in units
+    ]
 
 
 def _classify_content_control_paragraphs(

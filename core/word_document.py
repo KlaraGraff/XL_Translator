@@ -37,6 +37,7 @@ from core.mixed_language import (
 )
 from core.ooxml_package_check import PackagePartsChanged, changed_untouched_parts
 from core.translation_filter import should_translate
+from core.word_code import code_only_texts
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
 from core.word_inline_marks import (
@@ -483,6 +484,7 @@ def extract_word_segments(
     protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
     protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
     revisions = _revision_layout(doc, revision_mode, front_matter)
+    code_texts = code_only_texts(doc)
     seen: set[str] = set()
     segments: list[WordSegment] = []
     section_stack: dict[int, str] = {}
@@ -505,7 +507,7 @@ def extract_word_segments(
             continue
         if _is_toc_or_field_paragraph(paragraph):
             continue
-        if source in seen:
+        if source in seen or source in code_texts:
             continue
         seen.add(source)
         marks = paragraph_marks(paragraph)
@@ -533,7 +535,7 @@ def extract_word_segments(
                 source_lang=source_lang,
             ):
                 continue
-            if source in seen:
+            if source in seen or source in code_texts:
                 continue
             seen.add(source)
             marks = cell_marks(_cell_text_paragraphs(cell))
