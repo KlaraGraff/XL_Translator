@@ -104,7 +104,13 @@ def normalize_fonts_xml(xml: str, font: str = EAST_ASIAN_FONT) -> str:
 def loosen_row_heights_xml(xml: str) -> str:
     """pdf2docx 把表格行高定成「固定值」，正好装下原文那几行。中文换行位置不同、
     字形也高，固定行高会把多出来的一行裁掉；改成「最小值」，原文一样高，译文长了
-    行跟着长。"""
+    行跟着长。
+
+    只用在页眉页脚上。正文的表格由 Word 流程在写入译文时逐行放开
+    （core.word_layout_fixes.loosen_row_height）：没写译文的行不放开。pdf2docx 的固定
+    行高常比 Word 排出来的内容矮一点，超出的部分被裁掉、不占地方；一律放开后，
+    这些行（真值表一格里一列 T/F、每个各占一段）都被撑高，#28 的讲义英文原文没翻译
+    就从 110 页变成 124 页。"""
     return re.sub(r'(<w:trHeight\b[^>]*?)w:hRule="exact"', r'\1w:hRule="atLeast"', xml)
 
 
@@ -144,7 +150,9 @@ def normalize_docx_fonts(path: Path, east_asian_lang: str = "") -> None:
             if item.filename in ("word/document.xml", "word/styles.xml") or (
                 item.filename.startswith(("word/header", "word/footer")) and item.filename.endswith(".xml")
             ):
-                text = loosen_row_heights_xml(normalize_fonts_xml(data.decode("utf-8"), font))
+                text = normalize_fonts_xml(data.decode("utf-8"), font)
+                if item.filename != "word/document.xml":
+                    text = loosen_row_heights_xml(text)
                 if item.filename == "word/styles.xml":
                     text = set_default_east_asian_lang_xml(text, east_asian_lang)
                 data = text.encode("utf-8")

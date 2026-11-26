@@ -115,14 +115,19 @@ def join_wrapped_line_breaks_in_file(path) -> int:
 
 
 def loosen_row_height(cell) -> bool:
-    """单元格所在行的固定行高改成最小行高；改了返回 True。"""
-    row = cell._tc.getparent()
-    tr_pr = row.find(qn("w:trPr")) if row is not None else None
-    height = tr_pr.find(qn("w:trHeight")) if tr_pr is not None else None
-    if height is None or height.get(qn("w:hRule")) != "exact":
-        return False
-    height.set(qn("w:hRule"), "atLeast")
-    return True
+    """单元格所在行的固定行高改成最小行高；改了返回 True。
+
+    格子在嵌套的表格里时，外面那几层表格里装着它的行也一起放开：里面的行长高了，
+    外面的固定行高照样会把它裁掉（PDF 转 Word 的彩色框常是表格套表格）。"""
+    changed = False
+    for row in cell._tc.iterancestors(qn("w:tr")):
+        tr_pr = row.find(qn("w:trPr"))
+        height = tr_pr.find(qn("w:trHeight")) if tr_pr is not None else None
+        if height is None or height.get(qn("w:hRule")) != "exact":
+            continue
+        height.set(qn("w:hRule"), "atLeast")
+        changed = True
+    return changed
 
 
 _EAST_ASIAN_LOCALES = {
