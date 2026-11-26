@@ -175,7 +175,7 @@ class TextTranslationService:
 
         ``fail_if_nothing_translated``：每一条都因为请求失败没拿到译文时抛
         ``NothingTranslatedError``（``core.nothing_translated``），不交回一份全是原文的结果。
-        只给一份文件只发这一轮请求的调用方（每张 CAD 图纸）用。
+        只给这一轮就是整份文件翻译请求的调用方（每张 CAD 图纸、扩展格式的每个文件）用。
         """
         # ``stats`` 给了就记在调用方的那份里（PDF 任务据此统计批次重试和降速次数）。
         stats = stats if stats is not None else engine_dispatcher.TranslationBatchRunStats()

@@ -86,6 +86,8 @@ class WordBatchRunStats:
     local_resource_retry_count: int = 0
     # 拆到单段仍失败、按原文交回的片段（source, part_index），逐批日志据此数「未获得译文」。
     failed_unit_keys: set[tuple[str, int]] = dataclass_field(default_factory=set)
+    # 最后一个拆到单段仍失败的原因（一句人话）：全部失败时任务的失败提示用它（core/nothing_translated）。
+    last_failure_reason: str = ""
     _local_resource_notice_sent: bool = False
     _resource_lock: threading.Lock = dataclass_field(default_factory=threading.Lock, repr=False)
 
@@ -590,15 +592,14 @@ def _translate_units_with_fallback(
             return {**left, **right}
 
         stats.failed_unit_count += len(units)
+        reason = user_facing_batch_reason(exc)
         with stats._resource_lock:
             stats.failed_unit_keys.update((item.source, item.part_index) for item in units)
+            stats.last_failure_reason = reason
         unit = units[0]
         logger.debug(f"Word 单段翻译仍失败，已暂时保留原文：{unit.text[:40]}... | {exc!r}")
         if error_callback:
-            error_callback(
-                f"有一个段落仍未翻译成功，暂时保留原文（如「{unit.text[:40]}…」）："
-                + user_facing_batch_reason(exc)
-            )
+            error_callback(f"有一个段落仍未翻译成功，暂时保留原文（如「{unit.text[:40]}…」）：" + reason)
         return {(unit.source, unit.part_index): unit.text}
 
 

@@ -124,8 +124,9 @@ class MarksRunnerTests(IsolatedAppDataTestCase):
 
     def test_an_untranslated_unit_keeps_its_marked_source(self) -> None:
         engine = MarkEngine(fail={"Press <g1>Start</g1> now"})
-        done, output = self._run(engine, "Press *Start* now\n")
-        assert output == "Press *Start* now\n"
+        # 另一行照常翻好：整个文件的请求都失败时文件算失败（core/nothing_translated）。
+        done, output = self._run(engine, "Press *Start* now\nPlain line\n")
+        assert output == "Press *Start* now\n[fr] Plain line\n"
         assert done.review["total_count"] == 1
 
 

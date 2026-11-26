@@ -129,6 +129,7 @@ class PdfInplacePagesMixin:
         page.inplace_review = result.review + result.not_written
         page.inplace_overflow = int(getattr(result, "overflow_written", 0) or 0)
         page.inplace_untranslated = int(getattr(result, "untranslated", 0) or 0)
+        page.inplace_answered = int(getattr(result, "answered", 0) or 0)
         page.inplace_term_review = int(getattr(result, "term_review", 0) or 0)
         page.inplace_review_items = result.review_items
         if result.ok and result.written > 0:

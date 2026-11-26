@@ -9,8 +9,10 @@
 它继承 :class:`ApiCredentialRejectedError`（与 Key 被拒同一处理）：各页的批次循环和任务
 收尾已经把这类错误当成「整个任务失败」，不再把已有的占位当成部分结果写出去。
 
-只用在一份文件只发一轮请求的地方（Excel 主翻译、每张 CAD 图纸）。分好几轮发的页面
-（Word、PDF 逐页、扩展格式）某一轮全失败不等于整份文件没翻，不在这里判断。
+用在这一轮就是整份文件的翻译请求的地方：Excel 主翻译、每张 CAD 图纸、扩展格式（PPT 等）
+每个文件的主翻译。Word 的主翻译（core/word_task_runner，PDF 转 Word 也走它）按拆到单段
+仍失败的片段判断；PDF 原位替换逐页发请求，整份文件判断（core/pdf_task_report
+``inplace_requests_all_failed``）。三处用的是同一句 :func:`nothing_translated_message`。
 """
 
 from __future__ import annotations

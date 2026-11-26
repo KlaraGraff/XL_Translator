@@ -236,6 +236,9 @@ class PdfPageRecord:
     # 接口放弃、没拿到译文而保留原文的处数（与 CAD「未获得译文」同类，也列在 inplace_review_items，
     # kind 为 untranslated）；有就要复核。
     inplace_untranslated: int = 0
+    # 拿到了译文的处数（模型、记忆库或术语表，写没写进去都算）：为 0 而 inplace_untranslated
+    # 不为 0，就是这一页送去翻译的请求全部失败了（core/pdf_task_report.inplace_requests_all_failed）。
+    inplace_answered: int = 0
     # 译文已写入、但未采用记忆库「始终采用」词条设定译法的处数（也列在 inplace_review_items）。
     inplace_term_review: int = 0
     inplace_review_items: list[dict[str, Any]] = field(default_factory=list)
