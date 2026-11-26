@@ -147,11 +147,30 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
     res["page"] = {"source_rect": list(sp.rect), "output_rect": list(op.rect), "source_rotation": sp.rotation,
                    "output_rotation": op.rotation, "pages": [len(src), len(dst)],
                    "same": tuple(sp.rect) == tuple(op.rect) and sp.rotation == op.rotation and len(src) == len(dst) == 1}
+    # 页面数据里少了（或多了）的东西算不算改坏了，看它那一小块画面变没变：被图片盖住的、
+    # 重复画的路径没了，页面一点没变（设备手册接线图上画成线条的端子字母）；软蒙版里画的
+    # 图被 MuPDF 整理内容时合并，图片清单少了几条，页面也一点没变（手册封底的投影）。
+    sg = render(sp, dpi).convert("L")
+    og = render(op, dpi).convert("L")
+    seen_diff = ImageChops.difference(sg, og)
+    k = dpi / 72.0
+
+    def looks_changed(rect) -> bool:
+        box = rect * sp.rotation_matrix
+        crop = (max(0, int(box.x0 * k) - 1), max(0, int(box.y0 * k) - 1),
+                min(sg.width, int(box.x1 * k) + 2), min(sg.height, int(box.y1 * k) + 2))
+        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).point(_SEEN_LUT).getbbox() is not None
+
     # compare what is actually placed on the page (content hash + position);
     # unused image resources may be dropped by garbage collection on save
     def placed(pg):
-        return sorted((i["digest"].hex(), tuple(round(v, 1) for v in i["bbox"])) for i in pg.get_image_info(hashes=True))
-    res["images"] = {"source": len(placed(sp)), "output": len(placed(op)), "identical": placed(sp) == placed(op),
+        return Counter((i["digest"].hex(), tuple(round(v, 1) for v in i["bbox"])) for i in pg.get_image_info(hashes=True))
+    src_images, out_images = placed(sp), placed(op)
+    image_changes = (src_images - out_images) + (out_images - src_images)
+    unseen_images = sum(n for (_digest, bbox), n in image_changes.items() if not looks_changed(fitz.Rect(bbox)))
+    res["images"] = {"source": sum(src_images.values()), "output": sum(out_images.values()),
+                     "identical": unseen_images == sum(image_changes.values()),
+                     "changed_without_visible_change": unseen_images,
                      "xref_source": len(sp.get_images(full=True)), "xref_output": len(op.get_images(full=True))}
 
     # vector paths: which disappeared, and were they all inside a written row?
@@ -166,19 +185,6 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
         for lb in r.get("line_boxes") or [r["display_box"]]:
             a = redaction_rect(dict(r, display_box=lb), sp, dpi)[1]
             allowed.append(fitz.Rect(a.x0 - 0.5, a.y0 - 0.5, a.x1 + 0.5, a.y1 + 0.5))  # float edge tolerance
-    # 消失的路径算不算删坏了，看它原来那一小块画面变没变：被图片盖住的、重复画的路径
-    # 从页面数据里没了，页面看起来一点没变（设备手册接线图上画成线条的端子字母）。
-    sg = render(sp, dpi).convert("L")
-    og = render(op, dpi).convert("L")
-    seen_diff = ImageChops.difference(sg, og)
-    k = dpi / 72.0
-
-    def looks_changed(rect) -> bool:
-        box = rect * sp.rotation_matrix
-        crop = (max(0, int(box.x0 * k) - 1), max(0, int(box.y0 * k) - 1),
-                min(sg.width, int(box.x1 * k) + 2), min(sg.height, int(box.y1 * k) + 2))
-        return crop[0] < crop[2] and crop[1] < crop[3] and seen_diff.crop(crop).point(_SEEN_LUT).getbbox() is not None
-
     unexpected = []
     n_unseen = 0
     replayed = {tuple(x["rect"]) for x in rep.get("replayed_paths", [])}
