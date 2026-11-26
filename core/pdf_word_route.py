@@ -22,6 +22,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 from loguru import logger
 
@@ -53,6 +54,11 @@ EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
 
 class WordRouteStopped(Exception):
     pass
+
+
+class _BatchCounts(TypedDict):
+    retry_count: int
+    rate_limit_reduction_count: int
 
 
 @dataclass
@@ -1020,11 +1026,12 @@ def translate_pdf_via_word(
         elif isinstance(message, StoppedMsg):
             stopped = True
     stats = getattr(runner, "batch_stats", None)
-    counts = {
-        "retry_count": (int(getattr(stats, "retry_count", 0) or 0)
-                        + int(getattr(stats, "transient_retry_count", 0) or 0)),
-        "rate_limit_reduction_count": int(getattr(stats, "adaptive_concurrency_reductions", 0) or 0),
-    }
+    # 写成两个具名参数：dict 展开时类型检查认不出键，会以为整数也可能传给别的参数。
+    counts = _BatchCounts(
+        retry_count=(int(getattr(stats, "retry_count", 0) or 0)
+                     + int(getattr(stats, "transient_retry_count", 0) or 0)),
+        rate_limit_reduction_count=int(getattr(stats, "adaptive_concurrency_reductions", 0) or 0),
+    )
     if done is None:
         return WordRouteResult(ok=False, stopped=stopped or stop_sent, terms=terms, **counts,
                                error="任务已停止" if (stopped or stop_sent) else (failure or "Word 翻译没有完成。"),
