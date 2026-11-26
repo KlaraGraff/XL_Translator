@@ -91,6 +91,29 @@ class BoxShadingTests(unittest.TestCase):
         self.assertEqual(body, "E0EAFF")  # 正文格子从深蓝改回浅蓝
         self.assertIsNone(plain)  # 白底黑字的普通格子不动
 
+    def test_cells_are_found_when_the_converter_dropped_the_spaces(self) -> None:
+        # pdf2docx 转 LaTeX 讲义时常丢词间空格（「Twosetsareequal…」），按原句找不到
+        doc = Document()
+        final = doc.element.body[-1]
+        final.addprevious(parse_xml(_cell(_run(BODY.replace(" ", "")), "0a0a5a")))
+        doc.save(str(self.docx))
+        self.assertEqual(recolor_cells_from_pdf(self.docx, self.pdf), 1)
+        self.assertEqual(_fills(self.docx), ["E0EAFF"])
+
+    def test_blank_cell_follows_the_cells_of_its_table(self) -> None:
+        # 两格一行：右边那格没字，pdf2docx 给它上的也是深色外层的颜色
+        row = (f'<w:tbl {nsdecls("w")}><w:tblPr/><w:tblGrid><w:gridCol w:w="7000"/><w:gridCol w:w="2500"/></w:tblGrid>'
+               f'<w:tr><w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p>{_run(BODY)}</w:p></w:tc>'
+               f'<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p/></w:tc></w:tr></w:tbl>')
+        blank_elsewhere = _cell("", "0a0a5a")  # 别的表里没字的深色格子：不知道该是什么颜色，不动
+        doc = Document()
+        final = doc.element.body[-1]
+        final.addprevious(parse_xml(row))
+        final.addprevious(parse_xml(blank_elsewhere))
+        doc.save(str(self.docx))
+        self.assertEqual(recolor_cells_from_pdf(self.docx, self.pdf), 2)
+        self.assertEqual(_fills(self.docx), ["E0EAFF", "E0EAFF", "0A0A5A"])
+
     def test_matching_colour_is_left_alone(self) -> None:
         recolor_cells_from_pdf(self.docx, self.pdf)
         self.assertEqual(recolor_cells_from_pdf(self.docx, self.pdf), 0)

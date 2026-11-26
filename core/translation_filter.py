@@ -377,6 +377,16 @@ _STANDARD_CODE_RE = re.compile(
 )
 
 
+def _single_character_tokens(text: str) -> bool:
+    """每一截（按空白分开）最多一个字母，且是 ASCII 字母；符号、数字不算字母。
+    pdf2docx 常把「p ∨ q」转成「p ∨q」，所以按字母数而不是按长度数。"""
+    for token in text.split():
+        letters = [char for char in token if char.isalpha()]
+        if len(letters) > 1 or (letters and not letters[0].isascii()):
+            return False
+    return True
+
+
 _LOWERCASE_WORD_RE = re.compile(r"[a-z]{4,}")
 _ADDRESS_OR_FILENAME_RE = re.compile(r"@|://|^www\.|\.[A-Za-z][A-Za-z0-9]{1,4}$")
 # 网址 / 邮箱 / 文件路径在哪个目标语言里都该原样保留，所以两个方向共用同一份
@@ -442,6 +452,13 @@ def should_translate(
     # 又把「译文 == 原文」判成没翻成功，整格涂上需复核底色——一份施工图材料表
     # 里几百格标准号全黄。标准号在任何目标语言里都原样保留，不必花这笔 API 钱。
     if _STANDARD_CODE_RE.match(text):
+        return False
+
+    # 规则 1c：一个个单独的字母或符号（真值表一列「T T F F」、「p ∨ q」、「x y z」）。
+    # 单个字母本来就不翻（规则 6）；几个连在一起也没有可翻的，模型只会照原样还回来，
+    # 写入端判成没翻成功、整格涂上需复核底色，还把固定行高放开撑高表格（反馈 #28）。
+    # 只认 ASCII 字母和符号：中日韩的单字（「是 否」）有意思，照常翻。
+    if _single_character_tokens(text):
         return False
 
     # 繁体目标、原文是中文：没有简体字的（本来就是繁体，或两岸写法一样）不用再送。

@@ -157,6 +157,21 @@ class RowHeightTests(unittest.TestCase):
                 height = out.tables[0].rows[0]._tr.find(qn("w:trPr")).find(qn("w:trHeight"))
                 self.assertEqual(height.get(qn("w:val")), str(14 * 20))
 
+    def test_rows_around_a_nested_table_grow_too(self) -> None:
+        # PDF 转 Word 的彩色框常是表格套表格：里面的行长高了，外面的固定行高照样裁掉它
+        with tempfile.TemporaryDirectory() as temporary:
+            doc = Document()
+            outer = _exact_row_table(doc, "")
+            inner = outer.cell(0, 0).add_table(rows=1, cols=1)
+            inner.cell(0, 0).text = "基坑支护"
+            inner.rows[0].height = Pt(14)
+            inner.rows[0]._tr.get_or_add_trPr().find(qn("w:trHeight")).set(qn("w:hRule"), "exact")
+            out = self._write(Path(temporary), doc, {"基坑支护": "Soutènement de la fouille"}, translation_only=True)
+            outer_row = out.tables[0].rows[0]._tr
+            inner_row = out.tables[0].cell(0, 0).tables[0].rows[0]._tr
+            for row in (outer_row, inner_row):
+                self.assertEqual(row.find(qn("w:trPr")).find(qn("w:trHeight")).get(qn("w:hRule")), "atLeast")
+
 
 class EastAsianLanguageTests(unittest.TestCase):
     def test_locale_mapping(self) -> None:

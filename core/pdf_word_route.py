@@ -50,6 +50,12 @@ def _word_run_fraction(phase_index: int, phase_total: int, done: int, total: int
 EAST_ASIAN_FONT = "Microsoft YaHei"
 # 繁体：微軟正黑體（Windows 自带，字形按台湾标准）；macOS 上同样会换成苹方。
 EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
+# LaTeX 讲义里的数学符号（∨ ⊆ ∅ ∧ …）用的是 TeX 自己的字体：CMSY10、CMMI10、MSAM10 等。
+# PDF 里嵌了它们的子集，转成 Word 后字体名还是 CMSY10，可用户电脑上一般没有，Word 换成
+# 别的字体又缺这些字形，就显示成方框（反馈 #28，Mac 上的 Word）。Office 在 Windows 和
+# macOS 上都带 Cambria Math，它有全部数学符号。
+MATH_FONT = "Cambria Math"
+_TEX_MATH_FONT = re.compile(r"(?:CMSY|CMBSY|CMMI|CMMIB|CMEX|MSAM|MSBM|EUFM|EUFB|EUSM|EUSB|EUEX|RSFS|STMARY|LASY|WASY)\d*")
 
 
 class WordRouteStopped(Exception):
@@ -92,6 +98,8 @@ def word_route_available() -> bool:
 def _fix_rfonts(tag: str, font: str = EAST_ASIAN_FONT) -> str:
     tag = re.sub(r'w:(ascii|hAnsi|cs)="[A-Z]{6}\+([^"]+)"', r'w:\1="\2"', tag)
     tag = re.sub(r'w:(ascii|hAnsi|cs)="CIDFont\+F\d+"', r'w:\1="Arial"', tag)
+    tag = re.sub(r'w:(ascii|hAnsi|cs)="([^"]+)"',
+                 lambda m: f'w:{m.group(1)}="{MATH_FONT}"' if _TEX_MATH_FONT.fullmatch(m.group(2)) else m.group(0), tag)
     tag = re.sub(r'\s?w:eastAsiaTheme="[^"]*"', "", tag)
     tag = re.sub(r'\s?w:eastAsia="[^"]*"', "", tag)
     return tag.replace("<w:rFonts", f'<w:rFonts w:eastAsia="{font}"', 1)
@@ -105,7 +113,13 @@ def normalize_fonts_xml(xml: str, font: str = EAST_ASIAN_FONT) -> str:
 def loosen_row_heights_xml(xml: str) -> str:
     """pdf2docx 把表格行高定成「固定值」，正好装下原文那几行。中文换行位置不同、
     字形也高，固定行高会把多出来的一行裁掉；改成「最小值」，原文一样高，译文长了
-    行跟着长。"""
+    行跟着长。
+
+    只用在页眉页脚上。正文的表格由 Word 流程在写入译文时逐行放开
+    （core.word_layout_fixes.loosen_row_height）：没写译文的行不放开。pdf2docx 的固定
+    行高常比 Word 排出来的内容矮一点，超出的部分被裁掉、不占地方；一律放开后，
+    这些行（真值表一格里一列 T/F、每个各占一段）都被撑高，#28 的讲义英文原文没翻译
+    就从 110 页变成 124 页。"""
     return re.sub(r'(<w:trHeight\b[^>]*?)w:hRule="exact"', r'\1w:hRule="atLeast"', xml)
 
 
@@ -145,7 +159,9 @@ def normalize_docx_fonts(path: Path, east_asian_lang: str = "") -> None:
             if item.filename in ("word/document.xml", "word/styles.xml") or (
                 item.filename.startswith(("word/header", "word/footer")) and item.filename.endswith(".xml")
             ):
-                text = loosen_row_heights_xml(normalize_fonts_xml(data.decode("utf-8"), font))
+                text = normalize_fonts_xml(data.decode("utf-8"), font)
+                if item.filename != "word/document.xml":
+                    text = loosen_row_heights_xml(text)
                 if item.filename == "word/styles.xml":
                     text = set_default_east_asian_lang_xml(text, east_asian_lang)
                 data = text.encode("utf-8")

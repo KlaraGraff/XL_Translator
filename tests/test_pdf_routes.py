@@ -197,6 +197,14 @@ class FontNormalizationTests(unittest.TestCase):
         self.assertIn('<w:rFonts w:eastAsia="Microsoft YaHei"', out)
         self.assertIn('<w:lang w:val="en-US" w:eastAsia="zh-CN"/>', out)  # untouched
 
+    def test_tex_math_fonts_become_cambria_math(self) -> None:
+        # LaTeX 讲义的 ∨ ⊆ ∅ 用 CMSY10：用户电脑上没有这个字体，Mac 的 Word 显示成方框（反馈 #28）
+        xml = ('<w:rFonts w:ascii="QWERTY+CMSY10" w:hAnsi="CMSY10"/><w:rFonts w:ascii="MSBM10" w:hAnsi="CMMI7"/>'
+               '<w:rFonts w:ascii="CMR10" w:hAnsi="Chivo-Light"/>')
+        out = normalize_fonts_xml(xml)
+        self.assertEqual(out.count('"Cambria Math"'), 4)
+        self.assertIn('w:ascii="CMR10" w:hAnsi="Chivo-Light"', out)  # 正文字体不动
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -350,6 +358,34 @@ class WordConversionCleanupTests(unittest.TestCase):
         from core.pdf_word_route import loosen_row_heights_xml
 
         self.assertIn('w:hRule="atLeast"', loosen_row_heights_xml('<w:trHeight w:hRule="exact" w:val="306"/>'))
+
+    def test_body_rows_keep_their_exact_height_until_translated(self) -> None:
+        # 正文的行由 Word 流程写译文时逐行放开；转换后一律放开会把没翻译的真值表撑高（反馈 #28 多了 14 页）
+        import zipfile
+
+        from docx import Document
+        from docx.oxml.ns import qn
+
+        from core.pdf_word_route import normalize_docx_fonts
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rows.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=1)
+            table.cell(0, 0).text = "T"
+            height = table.rows[0]._tr.get_or_add_trPr()
+            height.append(height.makeelement(qn("w:trHeight"), {qn("w:val"): "240", qn("w:hRule"): "exact"}))
+            footer_table = doc.sections[0].footer.add_table(rows=1, cols=1, width=doc.sections[0].page_width)
+            footer_pr = footer_table.rows[0]._tr.get_or_add_trPr()
+            footer_pr.append(footer_pr.makeelement(qn("w:trHeight"), {qn("w:val"): "240", qn("w:hRule"): "exact"}))
+            doc.save(str(path))
+            normalize_docx_fonts(path, "zh-CN")
+            with zipfile.ZipFile(path) as package:
+                body = package.read("word/document.xml").decode("utf-8")
+                footer = "".join(package.read(name).decode("utf-8") for name in package.namelist()
+                                 if name.startswith("word/footer"))
+            self.assertIn('w:hRule="exact"', body)
+            self.assertIn('w:hRule="atLeast"', footer)
 
 
 class DominantRunShapeTests(unittest.TestCase):

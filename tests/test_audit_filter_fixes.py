@@ -545,5 +545,20 @@ class KanaEvidenceRangeTests(unittest.TestCase):
                 )
 
 
+
+class SingleLetterTokenTests(unittest.TestCase):
+    """真值表一列「T T F F」、公式「p ∨q」：没有可翻的，送去只会照原样回来、被涂成需复核（反馈 #28）。"""
+
+    def test_runs_of_single_letters_and_symbols_are_skipped(self) -> None:
+        for text in ("T T F F", "T\nF\nT", "p ∨q", "¬(¬P1)", "x y z"):
+            for target, source in (("zh", "en"), ("fr", "en"), ("en", "fr")):
+                with self.subTest(text=text, target=target):
+                    self.assertFalse(should_translate(text, target_lang=target, source_lang=source))
+
+    def test_words_and_chinese_single_characters_are_still_translated(self) -> None:
+        self.assertTrue(should_translate("A or B", target_lang="zh", source_lang="en"))
+        self.assertTrue(should_translate("Fig. 3", target_lang="zh", source_lang="en"))
+        self.assertTrue(should_translate("是 否", target_lang="en", source_lang="zh"))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
