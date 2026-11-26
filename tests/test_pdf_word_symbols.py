@@ -86,13 +86,14 @@ if __name__ == "__main__":
 class TexGlyphTests(unittest.TestCase):
     """TeX 的大号运算符字体不按 Unicode 编码：∑ 存成 P / X，∫ 是 R / Z；黑板粗体 R 是 ℝ。"""
 
-    def _doc(self, runs: list[tuple[str, str]]) -> Path:
+    def _doc(self, runs: list[tuple[str, str]], size: str = "") -> Path:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / "out.docx"
         doc = Document()
+        sizes = f'<w:sz w:val="{size}"/><w:szCs w:val="{size}"/>' if size else ""
         body = "".join(
-            f'<w:r><w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}"/></w:rPr>'
+            f'<w:r><w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}"/>{sizes}</w:rPr>'
             f'<w:t xml:space="preserve">{text}</w:t></w:r>'
             for font, text in runs
         )
@@ -111,9 +112,36 @@ class TexGlyphTests(unittest.TestCase):
         self.assertEqual(tex_glyphs_to_unicode(path), 3)
         runs = _runs(path)
         self.assertEqual([text for text, _ in runs],
-                         ["Prove that ", "∑", "n k", " and ", "∑ ∫", " on ", "ℝ ℕ", " PXZ stays"])
+                         ["Prove that ", "∑", "n k", " and ", "∑ ", "∫", " on ", "ℝ ℕ", " PXZ stays"])
         self.assertEqual(runs[1][1].get(qn("w:ascii")), MATH_FONT)
-        self.assertEqual(runs[7][1].get(qn("w:ascii")), "LMRoman10")  # 正文里的字母不动
+        self.assertEqual(runs[8][1].get(qn("w:ascii")), "LMRoman10")  # 正文里的字母不动
+
+    def test_display_operators_keep_their_size(self) -> None:
+        from core.pdf_word_symbols import tex_glyphs_to_unicode
+
+        # 独立公式的 ∑（X）高 1.4em、∫（Z）高 2.222em；行内的 ∑（P）和正文一样高
+        path = self._doc([("LMMathExtension10", "P"), ("LMRoman10", " and "), ("CMEX10", "X Z")], size="20")
+        tex_glyphs_to_unicode(path)
+        looks = []
+        for run in Document(str(path)).element.body.iter(qn("w:r")):
+            r_pr = run.find(qn("w:rPr"))
+            size = r_pr.find(qn("w:sz")).get(qn("w:val"))
+            position = r_pr.find(qn("w:position"))
+            text = "".join(node.text or "" for node in run.iter(qn("w:t")))
+            looks.append((text, size, position.get(qn("w:val")) if position is not None else None))
+            if position is not None:  # Word 要求 w:position 排在 w:sz 前面
+                self.assertLess(list(r_pr).index(position), list(r_pr).index(r_pr.find(qn("w:sz"))))
+        # 放大后往下挪（放大的部分 × 0.25em），中心留在数学轴上：∑ 挪 1 磅，∫ 挪 2.5 磅
+        self.assertEqual(looks, [("∑", "20", None), (" and ", "20", None), ("∑ ", "28", "-2"), ("∫", "40", "-5")])
+
+    def test_display_operator_without_size_is_only_mapped(self) -> None:
+        from core.pdf_word_symbols import tex_glyphs_to_unicode
+
+        path = self._doc([("CMEX10", "X")])
+        tex_glyphs_to_unicode(path)
+        run = next(Document(str(path)).element.body.iter(qn("w:r")))
+        self.assertEqual("".join(node.text or "" for node in run.iter(qn("w:t"))), "∑")
+        self.assertIsNone(run.find(f"{qn('w:rPr')}/{qn('w:position')}"))
 
     def test_tall_delimiter_pieces_become_one_character(self) -> None:
         from core.pdf_word_symbols import tex_glyphs_to_unicode
