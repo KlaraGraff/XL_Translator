@@ -422,8 +422,9 @@ def has_real_word(text: str) -> bool:
     - 公式（带运算符或下划线）里，只有单独成词的才算：前后是空白、句读或引号括号，
       三个字母以上、又不是 sin、log 这种函数名；或两个字母的常用虚词（「x ≥ 0 if x ∈ A」）。
       贴着括号、运算符、数字、下划线的是变量或标识符：pred(b)、is_empty(S)、anbn+、−nbi。
-    - 别的文字里：三个字母以上的字母串就算；只有两个字母的，单独一截时只认常用虚词
-      （pi、xi、Ai、OK 不算），几截连在一起时算（法文「Il y a」）。
+    - 别的文字里：两个字母以上的字母串就算（OK、Ja、Up，以及 pi、xi 这种变量也算）。
+      分不清是词还是变量的交给模型：模型原样还回来时，再请模型复查原样保留对不对
+      （Word、Excel、PPT、CAD 都一样），程序不在这里替模型拦。
     - 只有单个字母（T T F F、p ∨ q、x y z）：没有。
 
     送不送去翻（should_translate）、模型原样还回来算不算没翻（validate_translation）、
@@ -447,8 +448,7 @@ def has_real_word(text: str) -> bool:
             if len(word) >= 3 or lower in _TWO_LETTER_WORDS:
                 return True
             continue
-        if len(word) >= 3 or lower in _TWO_LETTER_WORDS or len(text.split()) > 1:
-            return True
+        return True
     return False
 
 
