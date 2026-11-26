@@ -132,7 +132,7 @@ export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLEle
   }));
   wrap.append(buildRouteRow({
     label: t("保底方式"),
-    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、原位替换暂不支持目标语言（如阿拉伯文）。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
+    hint: t("上面选的方式在某一页用不了时改用它，比如没装「PDF 处理组件」、转 Word 失败、电脑上没有 Word、原位替换暂不支持目标语言（如阿拉伯文）。转 Word 失败的页先试原位替换。A3 及以上的大幅面页不会改用图像翻译（会不够清晰），用不了就保留原样。换了方式的页完成后都会列出来。"),
     options: [{ value: "image", label: imageLabel }, { value: "skip", label: keepLabel }],
     value: st.pdfAutoFallback,
     disabled: active,

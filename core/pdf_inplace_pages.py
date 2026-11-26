@@ -166,6 +166,37 @@ class PdfInplacePagesMixin:
             )
             self._log("WARN", f"[{record.name}] 第 {page.page_number} 页：{page.inplace_message}")
 
+    def _requeue_failed_word_inplace_pages(self: PdfImageTranslationRunner, prepared_files: list) -> bool:
+        """转不成 Word、改走原位替换也没成功的页：保底方式是整页图像翻译时，撤掉页记录，
+        回到页面循环重新判断路线（_decide_page_route 这次跳过原位替换）。返回有没有撤掉的页。
+
+        保底方式用不了（保留原样、没有图像模型、大幅面页）时不动：这一页照旧保留原样，
+        原位替换的原因已写在页面说明里。"""
+        if self._stop_event.is_set() or not self._word_inplace_pages:
+            return False
+        pdf_settings = self._settings.pdf
+        image_available = not self._image_model_missing
+        requeued = False
+        for prepared in prepared_files:
+            record = prepared.record
+            key_path = str(prepared.item.path)
+            for page in list(record.pages):
+                key = (key_path, page.page_number)
+                if (key not in self._word_inplace_pages or not page.inplace_requested
+                        or page.inplace_status != "kept_original"):
+                    continue
+                self._word_inplace_pages[key] = page.inplace_message or "原位替换没有成功"
+                oversized = _pit.is_oversized_page(page.page_width_pt, page.page_height_pt)
+                if _pit.fallback_route(pdf_settings, oversized=oversized,
+                                       image_available=image_available) != _pit.ROUTE_IMAGE:
+                    continue
+                record.pages.remove(page)
+                self._forget_page_progress(page)
+                requeued = True
+        if requeued:
+            self._emit_page_status()
+        return requeued
+
     def _page_kind_info(self: PdfImageTranslationRunner, source_path: str, page_index: int) -> PageKind | None:
         kind = self._document_kinds.get(source_path)
         if kind is None or page_index >= len(kind.pages):

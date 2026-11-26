@@ -14,7 +14,7 @@ from loguru import logger
 
 from core.output_metadata import build_translation_metadata, metadata_parameters, write_translation_metadata
 from core.pdf_models import PDF_OUTPUT_STATE_FAILED, SOURCE_TYPE_IMAGE, PdfFileRecord, _PreparedPdfFile
-from core.pdf_routes import KIND_BLANK, ROUTE_IMAGE, ROUTE_WORD, fallback_route, page_route
+from core.pdf_routes import KIND_BLANK, ROUTE_IMAGE, ROUTE_INPLACE, ROUTE_WORD, fallback_route, page_route
 from core.pdf_word_guard import (
     REASON_BROKEN_PAGE,
     REASON_IMAGE_GRID,
@@ -228,6 +228,10 @@ class PdfWordSegmentsMixin:
                             self._text_failure_reason = result.nothing_translated_reason
                         mark("stopped" if result.stopped else "failed",
                              "任务已停止" if result.stopped else "转成 Word 翻译失败")
+                        if result.nothing_translated:
+                            # 翻译模型一条译文也没给：原位替换用的是同一个模型，不再去试。
+                            for number in seg:
+                                self._word_pages[(key, number)]["no_text_answer"] = True
                         if not result.stopped:
                             self._log("WARN", f"[{record.name}] {label}转成 Word 翻译失败：{result.error}")
                         continue
@@ -314,6 +318,8 @@ class PdfWordSegmentsMixin:
     def _word_fallback_phrase(self) -> str:
         """转不成 Word 的页随后怎么处理，写进日志：图像翻译，还是保留原文、为什么。"""
         missing = getattr(self, "_image_model_missing", "")
+        if not self._route_unusable_reason(ROUTE_INPLACE, "", 0):  # pyright: ignore[reportAttributeAccessIssue]
+            return "这几页改用原位替换。"
         if fallback_route(self._settings.pdf, oversized=False, image_available=not missing) == ROUTE_IMAGE:
             return "这几页改用整页图像翻译。"
         if missing:

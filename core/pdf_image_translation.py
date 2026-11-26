@@ -1766,6 +1766,9 @@ class PdfImageTranslationRunner(
         # 自动组合里转 Word 的正文页：(源文件路径, 页码) → {segment, status, message}。
         # 在页面翻译开始前就转好（见 _run_word_segments），失败的页随后按保底方式处理。
         self._word_pages: dict[tuple[str, int], dict[str, Any]] = {}
+        # 转不成 Word、改走原位替换的页：(源文件路径, 页码) → 原位替换失败的原因（还没失败为 ""）。
+        # 原位替换也失败的页重新排队，按保底方式处理（见 _requeue_failed_word_inplace_pages）。
+        self._word_inplace_pages: dict[tuple[str, int], str] = {}
 
     @property
     def task_id(self) -> str:
@@ -2623,6 +2626,8 @@ class PdfImageTranslationRunner(
                     # 原位替换的页在整份文件的其余页翻完后处理，仍算「翻译」阶段：它的识别、
                     # 翻译和写回占了这类图纸的大部分时间，放到「生成文件」里进度会停在 90%。
                     self._run_inplace_pages_for_translation(prepared_files, total_pages)
+                    if self._requeue_failed_word_inplace_pages(prepared_files):
+                        continue  # 原位替换也没成功的页回到页面循环，按保底方式翻译
                 has_unfinished_pages = self._has_unfinished_pages(file_records)
                 # Ending a paused task is terminal even if its last submitted
                 # page settled while the user made that choice.
@@ -4278,6 +4283,8 @@ class PdfImageTranslationRunner(
             if fallback_reason:
                 if route == ROUTE_SKIP:
                     kept_reason = f"{fallback_reason}，这一页保留原样"
+                elif route == ROUTE_INPLACE:
+                    route_note = f"{fallback_reason}，改用原位替换"
                 else:
                     route_note = f"{fallback_reason}，改用整页图像翻译"
             if route == ROUTE_IMAGE and self._image_model_missing:
@@ -4304,6 +4311,7 @@ class PdfImageTranslationRunner(
                     word_status="done" if route == ROUTE_WORD else "",
                     word_message=str(word_entry.get("note", "")),
                     kept_reason=kept_reason,
+                    route_note=route_note,
                     blank_page=(route == ROUTE_SKIP and not kept_reason
                                 and self._page_kind(source_path_key, page_index) == KIND_BLANK),
                     page_width_pt=float(page_width_pt),
@@ -4379,6 +4387,19 @@ class PdfImageTranslationRunner(
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
             return route, ""
+        kind_info = self._page_kind_info(source_path, page_index)
+        key = (source_path, page_index + 1)
+        if (route == ROUTE_WORD and page_kind == KIND_TEXT and not (kind_info and kind_info.image_grid)
+                and not self._word_pages.get(key, {}).get("no_text_answer")):
+            # 转不成 Word 的文字页先试原位替换：数字、编号照原样留着，图像翻译会画错（maple 2026-11-26）。
+            # 不试的：整页大图上叠表格线的页（字在图片里，原位替换换不到），以及翻译模型
+            # 一条译文也没给的段（原位替换用同一个模型）。这些照旧按保底方式。
+            inplace_failed = self._word_inplace_pages.get(key)
+            if inplace_failed is None and not self._route_unusable_reason(ROUTE_INPLACE, source_path, page_index + 1):
+                self._word_inplace_pages[key] = ""
+                return ROUTE_INPLACE, reason
+            if inplace_failed:
+                reason = f"{reason}；原位替换也没成功"
         fallback = fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing)
         if (fallback != ROUTE_IMAGE and route != ROUTE_IMAGE and self._image_model_missing
                 and fallback_route(pdf_settings, oversized=oversized_a3, image_available=True) == ROUTE_IMAGE):
