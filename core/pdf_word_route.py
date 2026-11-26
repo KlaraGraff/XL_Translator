@@ -30,6 +30,7 @@ from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
+from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font
 
 LogFn = Callable[[str, str], None]
 # progress(done, total)：整段 Word 翻译做完了多少（按 Word 各阶段的权重折算好，千分之一）。
@@ -53,8 +54,7 @@ EAST_ASIAN_TRADITIONAL_FONT = "Microsoft JhengHei"
 # LaTeX 讲义里的数学符号（∨ ⊆ ∅ ∧ …）用的是 TeX 自己的字体：CMSY10、CMMI10、MSAM10 等。
 # PDF 里嵌了它们的子集，转成 Word 后字体名还是 CMSY10，可用户电脑上一般没有，Word 换成
 # 别的字体又缺这些字形，就显示成方框（反馈 #28，Mac 上的 Word）。Office 在 Windows 和
-# macOS 上都带 Cambria Math，它有全部数学符号。
-MATH_FONT = "Cambria Math"
+# macOS 上都带 Cambria Math，它有全部数学符号。译文里新写出来的符号见 core.pdf_word_symbols。
 _TEX_MATH_FONT = re.compile(r"(?:CMSY|CMBSY|CMMI|CMMIB|CMEX|MSAM|MSBM|EUFM|EUFB|EUSM|EUSB|EUEX|RSFS|STMARY|LASY|WASY)\d*")
 
 
@@ -1060,6 +1060,11 @@ def translate_pdf_via_word(
                                error=next((e for e in errors if e), "Word 翻译没有生成文件。"))
     final_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs[0]["output"], final_path)
+    try:
+        # 译文里的「A ∨ B」用的是正文字体，用户电脑上没有这些符号的字形（反馈 #28）
+        math_symbols_in_math_font(final_path)
+    except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the translation
+        logger.opt(exception=exc).warning(f"[PDF] 译文数学符号换字体没做成，按原样交付：{exc!r}")
     return WordRouteResult(ok=True, output_path=str(final_path), issues=list(done.issues or []),
                            word_result=dict(outputs[0]), terms=terms, **counts)
 

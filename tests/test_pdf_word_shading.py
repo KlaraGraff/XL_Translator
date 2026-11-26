@@ -114,6 +114,38 @@ class BoxShadingTests(unittest.TestCase):
         self.assertEqual(recolor_cells_from_pdf(self.docx, self.pdf), 2)
         self.assertEqual(_fills(self.docx), ["E0EAFF", "E0EAFF", "0A0A5A"])
 
+    def _row_table(self, cells: str, height: int = 400) -> str:
+        return (f'<w:tbl {nsdecls("w")}><w:tblPr/><w:tblGrid><w:gridCol w:w="9500"/></w:tblGrid>'
+                f'<w:tr><w:trPr><w:trHeight w:hRule="exact" w:val="{height}"/></w:trPr>{cells}</w:tr></w:tbl>')
+
+    def test_short_and_unfound_cells_take_the_colour_learned_on_the_page(self) -> None:
+        # 框里的真值表：「T」「F」太短找不到位置，套着它的外层格子自己没字；同一页正文格子
+        # 学到「深蓝 → 浅蓝」，它们照着改。标题条上空着的那格跟着同表的标题，仍是深蓝。
+        title_row = self._row_table(
+            f'<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p>{_run("Note 1.1", color="FFFFFF")}</w:p></w:tc>'
+            '<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p/></w:tc>')
+        truth = self._row_table(
+            '<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr>'
+            + self._row_table(f'<w:tc><w:p>{_run("T")}</w:p></w:tc><w:tc><w:p>{_run("F")}</w:p></w:tc>')
+            + '<w:p/></w:tc>')
+        doc = Document()
+        final = doc.element.body[-1]
+        for xml in (title_row, _cell(_run(BODY.replace(" ", "")), "0a0a5a"), truth,
+                    self._row_table(f'<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p>{_run("T")}</w:p></w:tc>'),
+                    self._row_table('<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p/></w:tc>', height=600),
+                    self._row_table('<w:tc><w:tcPr><w:shd w:fill="0a0a5a"/></w:tcPr><w:p/></w:tc>', height=20)):
+            final.addprevious(parse_xml(xml))
+        doc.save(str(self.docx))
+        recolor_cells_from_pdf(self.docx, self.pdf)
+        self.assertEqual(_fills(self.docx), [
+            "0A0A5A", "0A0A5A",  # 标题和同一条上空着的格子
+            "E0EAFF",  # 找到位置的正文
+            "E0EAFF", None, None,  # 套着真值表的外层格子；里面的格子本来就没底色
+            "E0EAFF",  # 只有一个「T」的格子
+            "E0EAFF",  # 没字的一大块（框跨页留下的空白）
+            "0A0A5A",  # 没字的一条细线：不动
+        ])
+
     def test_matching_colour_is_left_alone(self) -> None:
         recolor_cells_from_pdf(self.docx, self.pdf)
         self.assertEqual(recolor_cells_from_pdf(self.docx, self.pdf), 0)

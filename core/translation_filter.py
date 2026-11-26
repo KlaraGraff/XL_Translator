@@ -387,6 +387,38 @@ def _single_character_tokens(text: str) -> bool:
     return True
 
 
+# 公式里的运算符：箭头、数学运算符、数学符号补充、补充运算符，加上键盘上能打的几个。
+_FORMULA_OPERATOR_RE = re.compile(r"[\u2190-\u21FF\u2200-\u22FF\u27C0-\u27FF\u2900-\u2AFF=<>+·×÷±¬|^]")
+_LETTER_RUN_RE = re.compile(r"[A-Za-z]+")
+# 公式行里独立成词的两个字母的英文虚词（「x ≥ 0 if x ∈ A」要翻）。挨着数字、符号的
+# 两个字母（「an10n」「∧An)」「(ii)」）是下标变量或编号，不算词。
+_TWO_LETTER_WORDS = frozenset({
+    "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+})
+
+
+def _formula_only(text: str) -> bool:
+    """有运算符，且去掉变量、数字、符号、(i)(ii) 编号后剩不下一个词：一行公式。"""
+    if not _FORMULA_OPERATOR_RE.search(text):
+        return False
+    for char in text:
+        # 希腊字母是变量（α β），别的非 ASCII 字母（汉字、é）说明有要翻的文字
+        if char.isalpha() and not char.isascii() and not ("\u0370" <= char <= "\u03FF"):
+            return False
+    for match in _LETTER_RUN_RE.finditer(text):
+        word = match.group()
+        if len(word) >= 3:
+            return False
+        if len(word) == 2:
+            before = text[match.start() - 1] if match.start() else " "
+            after = text[match.end()] if match.end() < len(text) else " "
+            standalone = before.isspace() and (after.isspace() or after in ",.;:")
+            if standalone and word.lower() in _TWO_LETTER_WORDS:
+                return False
+    return True
+
+
 _LOWERCASE_WORD_RE = re.compile(r"[a-z]{4,}")
 _ADDRESS_OR_FILENAME_RE = re.compile(r"@|://|^www\.|\.[A-Za-z][A-Za-z0-9]{1,4}$")
 # 网址 / 邮箱 / 文件路径在哪个目标语言里都该原样保留，所以两个方向共用同一份
@@ -454,11 +486,12 @@ def should_translate(
     if _STANDARD_CODE_RE.match(text):
         return False
 
-    # 规则 1c：一个个单独的字母或符号（真值表一列「T T F F」、「p ∨ q」、「x y z」）。
-    # 单个字母本来就不翻（规则 6）；几个连在一起也没有可翻的，模型只会照原样还回来，
-    # 写入端判成没翻成功、整格涂上需复核底色，还把固定行高放开撑高表格（反馈 #28）。
-    # 只认 ASCII 字母和符号：中日韩的单字（「是 否」）有意思，照常翻。
-    if _single_character_tokens(text):
+    # 规则 1c：一个个单独的字母或符号（真值表一列「T T F F」、「p ∨ q」、「x y z」），
+    # 以及只有变量、数字和数学符号的公式（「(A1 ∧A2 ∧· · · ∧An) ⇒C」「(ii) A ∪B = B ∪A.」）。
+    # 没有可翻的，模型只会照原样还回来，写入端判成没翻成功、重译三轮、最后涂上需复核
+    # 底色，还把固定行高放开撑高表格（反馈 #28：92 段公式全标黄，白白重试 279 次）。
+    # 只认 ASCII 字母和希腊字母：中日韩的单字（「是 否」）有意思，照常翻。
+    if _single_character_tokens(text) or _formula_only(text):
         return False
 
     # 繁体目标、原文是中文：没有简体字的（本来就是繁体，或两岸写法一样）不用再送。
