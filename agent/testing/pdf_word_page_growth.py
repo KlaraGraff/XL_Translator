@@ -15,7 +15,7 @@
 --translated 给的是软件翻好的 Word（「同时输出 Word」或任务过程文件夹里的那份）：
 数它自己转回 PDF 的页数，再做「正文换字体」两种对照。
 
-只写到临时文件夹，不动原文件。
+只写到临时文件夹，不动原文件。加 --keep 文件夹 时，转出的 Word 和 Word 转回的 PDF 都留在那个文件夹里。
 """
 from __future__ import annotations
 
@@ -27,14 +27,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from docx import Document  # noqa: E402
-from docx.oxml.ns import qn  # noqa: E402
+from docx import Document
+from docx.oxml.ns import qn
 
-import core.pdf_word_route as route  # noqa: E402
-from core.pdf_word_fit import _anchors, page_groups, pages_per_group, pdf_page_texts  # noqa: E402
+import core.pdf_word_route as route
+from core.pdf_word_fit import _anchors, page_groups, pages_per_group, pdf_page_texts
 
 # LaTeX 正文字体（不含数学字体：那些已经换成 Cambria Math）
-_TEX_TEXT_FONT = re.compile(r"^(?:[A-Z]{6}\+)?(?:LMRoman|LMSans|CMR\d|CMBX|CMTI|CMSL|CMSS|SFRM|SFBX|SFTI)", re.I)
+_TEX_TEXT_FONT = re.compile(r"^(?:[A-Z]{6}\+)?(?:LMRoman|LMSans|CMR\d|CMBX|CMTI|CMSL|CMSS|SFRM|SFBX|SFTI)", re.IGNORECASE)
 
 
 def _render(docx: Path, out: Path) -> tuple[int, list[int] | None, str]:
@@ -103,10 +103,15 @@ def measure_translated(docx: Path, work: Path) -> None:
 def main(argv: list[str]) -> int:
     pdfs: list[Path] = []
     translated: list[Path] = []
+    keep: Path | None = None
     target = pdfs
-    for arg in argv:
+    args = iter(argv)
+    for arg in args:
         if arg == "--translated":
             target = translated
+            continue
+        if arg == "--keep":
+            keep = Path(next(args))
             continue
         target.append(Path(arg))
     if not pdfs and not translated:
@@ -118,6 +123,11 @@ def main(argv: list[str]) -> int:
             measure_pdf(pdf, work)
         for docx in translated:
             measure_translated(docx, work)
+        if keep is not None:
+            keep.mkdir(parents=True, exist_ok=True)
+            for item in work.iterdir():
+                shutil.copy2(item, keep / item.name)
+            print(f"转出的 Word 和 PDF 留在：{keep}")
     return 0
 
 
