@@ -697,6 +697,7 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertFalse(page.inplace_requested)   # the words are in the picture: in place cannot reach them
         self.assertIn("改用整页图像翻译", page.route_note)
 
+    @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine: in place cannot write Chinese")
     def test_segment_that_comes_back_far_longer_is_not_assembled(self):
         from core.pdf_word_guard import REASON_PAGE_GROWTH
         from core.task_runner import DoneMsg
