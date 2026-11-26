@@ -606,9 +606,24 @@ class SingleLetterTokenTests(unittest.TestCase):
                 # 交付前查「疑似未翻译」用的是同一个判据
                 self.assertFalse(looks_like_source_text(text, source_lang="en", target_lang="zh"))
 
+    def test_operands_next_to_operators_are_variables(self) -> None:
+        # Mac 复验 #323 剩下的 6 段：下标丢了的变量隔着空格挨着运算符（as、bs、xiy、qtb）
+        from core.translation_coverage import looks_like_source_text
+
+        for text in ("0 = m −m = (as −a′s) bs + (as−1−a′s−1) bs−1 + · · · + (a1−a′1) b + (a0−a′0).",
+                     "0 = (as −a′s) bs + (as−1−a′s−1) bs−1 + · · · + (ai−a′i) bi.",
+                     "(a′i−ai) bi= (as −a′s) bs + … + (ai+1−a′i+1) bi+1.",
+                     "xiy + c", "xyz,", "xzy,", "yxz,", "zyx.",
+                     "= (· · · (qtb + rt) b + rt−1) b + rt−2) · · · + r1) b + r0"):
+            with self.subTest(text=text):
+                self.assertFalse(should_translate(text, target_lang="zh", source_lang="en"))
+                self.assertFalse(looks_like_source_text(text, source_lang="en", target_lang="zh"))
+                self.assertFalse(validate_translation(text, text, target_lang="zh", source_lang="en").is_fail)
+
     def test_words_next_to_formulas_are_still_translated(self) -> None:
         for text in ("is_empty(S) returns true if S is empty", "x_1 + x_2 where x is real", "(see below)",
-                     "No", "Il y a", "Σύμβαση"):
+                     "No", "Il y a", "Σύμβαση", "x ≥ 0 if x ∈ A", "for all x ∈ A", "x = y and y = z",
+                     "Then A ⊆ B holds."):
             with self.subTest(text=text):
                 self.assertTrue(should_translate(text, target_lang="zh", source_lang="en"))
 
