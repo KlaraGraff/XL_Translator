@@ -408,9 +408,44 @@ def test_echo_is_not_kept_when_the_model_never_answered(engine):
     assert outcome.status == OUTCOME_REJECTED
 
 
-def test_echo_the_review_says_is_untranslated_is_retranslated():
-    outcome, calls = _echo_repair(ReviewEngine(verdicts={"Ai": ("not_equivalent", "没有翻译")}))
-    assert outcome.status == OUTCOME_REJECTED and calls == ["Ai"] * 3
+def test_echo_the_review_says_is_untranslated_is_retranslated_with_the_reason():
+    reasons: list[str] = []
+
+    def retranslate(source, previous, reason):
+        reasons.append(reason)
+        return "泵"
+
+    outcomes = review_and_repair(
+        [RuleFailure("Pump", "Pump", "译文和原文相同")],
+        engine=ReviewEngine(verdicts={"Pump": ("not_equivalent", "没有翻译")}),
+        rule_problem=lambda s, t: "译文和原文相同" if s == t else "",
+        retranslate=retranslate,
+        max_rounds=3,
+        source_lang="en",
+        target_lang="zh",
+    )
+    assert outcomes["Pump"].status == OUTCOME_FIXED and outcomes["Pump"].translation == "泵"
+    assert reasons == ["没有翻译"]
+
+
+def test_echo_kept_after_the_translator_saw_the_objection():
+    outcome, calls = _echo_repair(ReviewEngine(verdicts={"Ai": ("not_equivalent", "Ai 可能是 AI 的缩写")}))
+    assert outcome.status == OUTCOME_ACCEPTED and outcome.translation == "Ai"
+    assert "看过复查意见" in outcome.reason and "AI 的缩写" in outcome.reason
+    assert calls == ["Ai"]
+
+
+def test_translation_turned_back_into_source_after_objection_is_not_kept():
+    outcomes = review_and_repair(
+        [RuleFailure("共3层", "Floors", "原文中的数字在译文里没找到：3")],
+        engine=ReviewEngine(verdicts={"共3层": ("not_equivalent", "漏了 3")}),
+        rule_problem=lambda s, t: "原文中的数字在译文里没找到：3",
+        retranslate=lambda source, previous, reason: "共3层",
+        max_rounds=1,
+        source_lang="zh",
+        target_lang="en",
+    )
+    assert outcomes["共3层"].status == OUTCOME_REJECTED
 
 
 def test_kept_as_is_only_ignores_case_spacing_and_punctuation():

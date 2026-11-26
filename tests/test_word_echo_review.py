@@ -104,21 +104,77 @@ class EchoReviewTests(unittest.TestCase):
         self.assertIn(source, outcome.semantic_review_results)
         self.assertTrue(problems and "相同" in problems[0], problems)
 
-    def test_review_rejects_untranslated_word(self) -> None:
-        def _review(*args, **kwargs):
-            return _SemanticArbitrationResult("not_equivalent", "没有翻译")
+    def _objection_run(self, retry_answer, *, review_delay: float = 0.0):
+        """复查判「要译」；重译按 retry_answer(prompt) 作答。返回 (outcome, 重译提示词们, 日志)。"""
+        import threading
+        import time
 
-        pool = _pool()
-        with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+        prompts: list[str] = []
+        logs: list[str] = []
+        lock = threading.Lock()
+
+        def _retry(texts, engine, target_lang, prompt, *args, **kwargs):
+            with lock:
+                prompts.append(prompt)
+            return {text: retry_answer(prompt) for text in texts}
+
+        def _review(*args, **kwargs):
+            time.sleep(review_delay)
+            return _SemanticArbitrationResult("not_equivalent", "Pump 是英文单词，没有翻译")
+
+        pool = _WordRecoveryPool(
+            engine=_ChatStubEngine(), target_lang="zh", retry_prompt="retry",
+            retry_batch_settings=_retry_settings(), retry_attempts=2, source_lang="en",
+            api_scheduler=None, concurrency=2, should_stop=lambda: False, enable_semantic=True,
+            log_callback=lambda level, message: logs.append(message),
+        )
+        with patch("core.word_recovery_pool.translate_word_texts", _retry), patch(
             "core.word_recovery_pool._run_semantic_arbitration", _review
         ):
             pool.add_candidate("Pump", "Pump")
             pool.start()
             finished, outcome, error = _run_pool_with_timeout(pool)
-
         self.assertTrue(finished)
         self.assertIsNone(error)
-        self.assertEqual(outcome.unresolved_sources, ["Pump"])
+        return outcome, prompts, logs
+
+    def test_objection_reaches_the_retry_and_a_real_translation_is_used(self) -> None:
+        outcome, prompts, logs = self._objection_run(lambda prompt: "泵" if "没有翻译" in prompt else "Pump")
+        self.assertEqual(outcome.accepted_translations["Pump"], "泵")
+        self.assertTrue(any("Pump 是英文单词，没有翻译" in prompt for prompt in prompts))
+        self.assertTrue(any("复查未通过（意思与原文不一致：Pump 是英文单词，没有翻译）" in line for line in logs), logs)
+
+    def test_echo_kept_after_the_translator_saw_the_objection(self) -> None:
+        # 本机复验 #338：表格 743 的「Ai」复查判「不一致」，三轮重译都不知道复查为什么不满意。
+        outcome, prompts, logs = self._objection_run(lambda prompt: "Pump")
+        self.assertEqual(outcome.unresolved_sources, [])
+        self.assertEqual(outcome.accepted_translations["Pump"], "Pump")
+        self.assertIn("Pump", outcome.semantic_review_results)
+        self.assertTrue(any("没有翻译" in prompt for prompt in prompts))
+        self.assertTrue(any("看过复查意见，仍原样保留" in line for line in logs), logs)
+
+    def test_late_objection_still_gets_one_retry(self) -> None:
+        # 两轮重译在复查答复之前就跑完了：留出一轮带着意见重译，结果不取决于谁先跑完。
+        outcome, prompts, logs = self._objection_run(lambda prompt: "Pump", review_delay=0.3)
+        self.assertEqual(outcome.accepted_translations.get("Pump"), "Pump")
+        self.assertIn("没有翻译", prompts[-1])
+        self.assertTrue(any("带着复查意见再重译一轮" in line for line in logs), logs)
+
+    def test_translation_turned_back_into_source_is_not_kept(self) -> None:
+        # 上一稿是译文、复查不满意，重译却交回原文：那是翻译失败，不是「原样保留」。
+        def _review(*args, **kwargs):
+            return _SemanticArbitrationResult("not_equivalent", "漏了 3")
+
+        pool = _pool()
+        with patch("core.word_recovery_pool.translate_word_texts", _echo_translate), patch(
+            "core.word_recovery_pool._run_semantic_arbitration", _review
+        ):
+            pool.add_candidate("Pump 3", "泵")
+            pool.start()
+            finished, outcome, error = _run_pool_with_timeout(pool)
+        self.assertTrue(finished)
+        self.assertIsNone(error)
+        self.assertEqual(outcome.unresolved_sources, ["Pump 3"])
 
     def test_echo_the_review_is_unsure_about_is_kept_without_marking(self) -> None:
         # 本机复验 #335：讲义表格里单独的「Ai」，复查答「无法确定」→ 重译三轮 → 保留原文、标黄。

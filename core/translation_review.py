@@ -12,6 +12,10 @@
   答的是拿不准。这时文件里留下的本来就是原文，采用和不采用写进去的字一模一样，差别只在
   要不要涂需复核、重译三轮；复查没指出哪里没翻，就不该当失败（「Ai」这种单独的变量名，
   离开上下文谁也说不准）。请求出错、模型漏答的照旧不算。
+* 原样还回、复查判「不一致」（复查认为这里要译）：照常带着复查的理由重译。翻译模型看过
+  理由还是原样还回，就原样保留，不再算失败。两个模型意见相左时，以看过对方理由的一方为准；
+  真没翻的句子，看到「整句没有翻译」这样的具体指正就会译出来。只对一开始就是原样还回的
+  条目这样处理：上一稿是译文、重译却交回原文的，照旧不算。
 
 分批：每批最多 10 条、合计约 3000 字，很长的一段单独一批；按编号对答案，漏答的
 单独再问一次，还没答就算拿不准。请求走 ``API_REQUEST_CATEGORY_RECOVERY``、同一个
@@ -111,6 +115,11 @@ def review_accepts(source: str, translation: str, verdict: ReviewVerdict | None)
     if verdict.equivalent:
         return True
     return verdict.answered and verdict.verdict == VERDICT_UNCERTAIN and is_kept_as_is(source, translation)
+
+
+def kept_after_objection_reason(objection: str) -> str:
+    note = "原样保留：翻译模型看过复查意见后仍原样保留"
+    return f"{note}（复查：{objection}）" if objection else note
 
 
 def accepted_reason(verdict: ReviewVerdict) -> str:
@@ -511,6 +520,10 @@ def review_and_repair(
             candidate = str(value or "").strip()
             if not candidate or hard_failure(candidate):
                 outcomes[source] = RepairOutcome(OUTCOME_REJECTED, previous, reason, rounds)
+                continue
+            if is_kept_as_is(source, previous) and is_kept_as_is(source, candidate):
+                # 翻译模型原样还回，复查说要译，翻译模型带着复查的理由重译还是原样还回（见模块说明）。
+                outcomes[source] = RepairOutcome(OUTCOME_ACCEPTED, candidate, kept_after_objection_reason(reason), rounds)
                 continue
             problem = rule_problem(source, candidate)
             if not problem:
