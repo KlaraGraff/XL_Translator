@@ -1567,6 +1567,7 @@ def pdf_page_snapshot_entry(
         "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
         "inplace_message": page.inplace_message if page is not None else "",
         "kept_reason": page.kept_reason if page is not None else "",
+        "blank_page": bool(page.blank_page) if page is not None else False,
         "word_requested": bool(page.word_requested) if page is not None else False,
         "word_status": page.word_status if page is not None else "",
         "word_message": page.word_message if page is not None else "",
@@ -3366,6 +3367,12 @@ class PdfImageTranslationRunner(
                                     f"[{prepared.record.name}] 第 {page_record.page_number} 页（{short_mm:.0f}×{long_mm:.0f} mm）"
                                     "将原位替换文字（Beta），在整份文件翻译完后处理。",
                                 )
+                            elif page_record.blank_page:
+                                self._log(
+                                    "INFO",
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页是空白页，"
+                                    "原页将直接放入输出 PDF。",
+                                )
                             else:
                                 self._log(
                                     "INFO",
@@ -4023,11 +4030,11 @@ class PdfImageTranslationRunner(
         # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
         # 模型而保留的页、原位替换试过但没换成的页（大幅面页也一样）另有说法，不算
         # 在这里——那一页是试过了没换成，说成「因幅面过大被跳过」会让用户去关一个
-        # 跟它无关的开关。
+        # 跟它无关的开关。空白页也不算：它本来就没有要翻的内容。
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages
             if page.skipped_oversize and page.inplace_status != "done" and not page.kept_reason
-            and not page.word_requested
+            and not page.word_requested and not page.blank_page
             and (not page.inplace_requested
                  or (not page.inplace_status
                      and is_oversized_page(page.page_width_pt, page.page_height_pt)))
@@ -4287,6 +4294,8 @@ class PdfImageTranslationRunner(
                     word_status="done" if route == ROUTE_WORD else "",
                     word_message=str(word_entry.get("note", "")),
                     kept_reason=kept_reason,
+                    blank_page=(route == ROUTE_SKIP and not kept_reason
+                                and self._page_kind(source_path_key, page_index) == KIND_BLANK),
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
                 )
@@ -4503,7 +4512,7 @@ class PdfImageTranslationRunner(
                     1
                     for prepared in self._prepared_files
                     for page in prepared.record.pages
-                    if page.skipped_oversize
+                    if page.skipped_oversize and not page.blank_page
                     and not (page.inplace_requested and page.inplace_status in {"", "done"})
                     and not (page.word_requested and page.word_status == "done")
                 ),

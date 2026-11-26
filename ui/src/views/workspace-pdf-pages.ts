@@ -917,6 +917,7 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
   if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("转 Word 未成功"), tone: "warn" });
   if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
   if (page.kept_reason) return createChip({ label: t("保留原样"), tone: "warn" });
+  if (page.blank_page) return createChip({ label: t("空白页"), tone: "mute" });
   if (page.skipped_oversize) return createChip({ label: t("按幅面跳过"), tone: "mute" });
   if (page.status === "failed" || page.placeholder) {
     return createChip({ label: page.user_skipped ? t("已跳过占位") : t("生成失败"), tone: "dgr" });
@@ -1016,6 +1017,7 @@ function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): 
   }
   if (page.word_requested && page.word_status) return tx(page.word_message ?? "");
   if (page.kept_reason) return tx(page.kept_reason);
+  if (page.blank_page) return t("空白页，没有要翻译的内容，原页已放入输出文件。");
   if (page.skipped_oversize) return t("幅面较大，未送翻译，原始内容已原样保留在输出文件中。");
   if (page.pending_action === "regenerate") return t("待执行重新生成，继续翻译后执行。");
   if (page.pending_action === "skip") return t("待执行跳过，继续翻译后执行。");
@@ -1081,6 +1083,8 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
     : page.kept_reason
       ? t("{0}；没有页图。", tx(page.kept_reason))
+      : page.blank_page
+      ? t("{0}；没有页图。", t("空白页"))
       : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或在「翻译方式」里改选原位替换后重新翻译。");
 
   actionsCell.append(
