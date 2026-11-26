@@ -61,3 +61,35 @@ class FrameEdgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(_latin_font(), "no Latin font on this machine")
+class ReservedSpaceTests(unittest.TestCase):
+    """手册第 8 页：四行红字的译文写成一长行，占了右边「Sufficient power for distance」擦掉原文
+    后空出来的地方，那条译文被挤到 5.7pt。擦掉的原文那块地方留给它自己的译文。"""
+
+    def test_a_paragraph_does_not_grow_into_the_place_of_another_line(self):
+        from core.pdf_vector import translate_page_inplace
+
+        red = (0.82, 0.14, 0.16)
+        lines = ["Reflections from nearby objects will", "limit the output power and prevent",
+                 "ability of the beam to cover the", "required distance"]
+        table = {" ".join(lines): "Les reflets proches limitent la puissance et la portee du faisceau",
+                 "Sufficient power for distance": "Puissance suffisante pour la distance"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = fitz.open()
+            page = doc.new_page(width=612, height=792)
+            for i, text in enumerate(lines):
+                page.insert_text((88.35, 525 + 14 * i), text, fontsize=12, fontname="helv", color=red)
+            page.insert_text((296.7, 524), "Sufficient power for distance", fontsize=11.5, fontname="helv")
+            doc.save(root / "source.pdf")
+            translate_page_inplace(root / "source.pdf", 0, root / "work",
+                                   translate=lambda texts, prompt, **_: {t: table.get(t, t) for t in texts},
+                                   source_lang="en", target_lang="fr")
+            rep = json.loads((root / "work" / "writeback.json").read_text(encoding="utf-8"))
+        by_text = {w["source_text"]: w for w in rep["written"]}
+        sufficient = by_text["Sufficient power for distance"]
+        self.assertNotEqual(sufficient["fit"], "overflow")
+        left = by_text[" ".join(lines)]["written_rects_px"]
+        self.assertTrue(all(r[2] <= 296.7 * 200 / 72 for r in left), left)
