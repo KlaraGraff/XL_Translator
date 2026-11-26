@@ -76,6 +76,58 @@ def ink_count(gray: Image.Image, box, light: bool = False) -> tuple[int, int]:
     return ink, (b[2] - b[0]) * (b[3] - b[1])
 
 
+def through_lines(page, dpi: float) -> list[tuple[float, float, float, float]]:
+    """Straight horizontal / vertical strokes of the page in display px, padded by half their width:
+    frame edges, table borders, underlines (thin filled bars count too)."""
+    k = dpi / 72.0
+    rm = page.rotation_matrix
+    out = []
+
+    def add(p, q, half):
+        p, q = p * rm * k, q * rm * k
+        if abs(p.x - q.x) < 1.5 or abs(p.y - q.y) < 1.5:
+            out.append((min(p.x, q.x) - half, min(p.y, q.y) - half, max(p.x, q.x) + half, max(p.y, q.y) + half))
+
+    for d in page.get_drawings():
+        stroke = d.get("color") is not None and "s" in (d.get("type") or "")
+        half = max(float(d.get("width") or 0) * k / 2, 0.5) + 1
+        for it in d["items"]:
+            if it[0] == "l" and stroke:
+                add(it[1], it[2], half)
+            elif it[0] == "re":
+                r = it[1]
+                if stroke:
+                    for a, b in ((r.tl, r.tr), (r.bl, r.br), (r.tl, r.bl), (r.tr, r.br)):
+                        add(a, b, half)
+                elif min(r.width, r.height) <= 2:  # a rule drawn as a thin filled bar
+                    add(r.tl, r.br, 1)
+    return out
+
+
+def ink_count_beside_lines(gray: Image.Image, box, light: bool, lines) -> int:
+    """Ink in the box, leaving out straight strokes that run on past the box: a frame
+    edge crossing a line of text is not that text's ink, and it stays when the text goes
+    (the device-manual screen boxes: their top edge runs through the label's box)."""
+    b = clamp_box(box, gray)
+    if b[2] <= b[0] or b[3] <= b[1]:
+        return 0
+    crop = gray.crop(b)
+    draw = None
+    for x0, y0, x1, y1 in lines:
+        if x1 <= b[0] or x0 >= b[2] or y1 <= b[1] or y0 >= b[3]:
+            continue
+        horizontal = (x1 - x0) >= (y1 - y0)
+        runs_on = (x0 < b[0] - 1 or x1 > b[2] + 1) if horizontal else (y0 < b[1] - 1 or y1 > b[3] + 1)
+        if not runs_on:
+            continue  # a stroke inside the box may be the text itself (an outlined 'I', an underline)
+        if draw is None:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(crop)
+        draw.rectangle([x0 - b[0], y0 - b[1], x1 - b[0], y1 - b[1]], fill=0 if light else 255)
+    hist = crop.histogram()
+    return sum(hist[256 - (256 - INK_GRAY) // 2:]) if light else sum(hist[:INK_GRAY])
+
+
 def dark_ground(gray: Image.Image, box) -> bool:
     b = clamp_box(box, gray)
     if b[2] <= b[0] or b[3] <= b[1]:
@@ -896,12 +948,14 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     if trial_preview:
         trial_gray.save(trial_preview)
     ok = []
+    kept_lines = through_lines(src_page, dpi)
     for r in active:
         # 亮色字只在深色底上按亮墨迹算（深色标题栏里的白字）；白底上的黄字、青字
         # （CAD 常见）照常按深色墨迹算，否则整片白底都会被当成残留。
         light = is_light(r["_color"]) and dark_ground(src_gray, r["display_box"])
-        si = sum(ink_count(src_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
-        ti = sum(ink_count(trial_gray, b, light)[0] for b in (r.get("line_boxes") or [r["display_box"]]))
+        boxes = r.get("line_boxes") or [r["display_box"]]
+        si = sum(ink_count_beside_lines(src_gray, b, light, kept_lines) for b in boxes)
+        ti = sum(ink_count_beside_lines(trial_gray, b, light, kept_lines) for b in boxes)
         r["_residual"] = (ti / si) if si else 0.0
         if si and ti / si > RESIDUAL_LIMIT:
             skipped[r["id"]] = "source_not_removable"
