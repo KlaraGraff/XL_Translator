@@ -79,8 +79,8 @@ def curves_measured_on_the_curve() -> Iterator[None]:
     def is_iso_oriented(self) -> bool:
         return fills_its_box(outline(self, curve_class), share)
 
-    segments_class.is_iso_oriented = property(is_iso_oriented)
+    setattr(segments_class, "is_iso_oriented", property(is_iso_oriented))
     try:
         yield
     finally:
-        segments_class.is_iso_oriented = original
+        setattr(segments_class, "is_iso_oriented", original)
