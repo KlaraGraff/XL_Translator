@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import textwrap
 import threading
@@ -329,6 +330,49 @@ def _translate(kind: str, text: str) -> str:
     if text == "World":
         raise RuntimeError("model said no")
     return f"{kind}:{text.upper()}"
+
+
+_PIPES_CHILD = textwrap.dedent('''
+    import json, multiprocessing, os, stat, sys
+    sys.path.insert(0, sys.argv[1])
+    from core.babeldoc_component import _Calls, _Protocol
+
+    def child(queue):
+        # BabelDOC 写 PDF 时另开的进程接过的标准输入，不能是收回话的管道。
+        queue.put(stat.S_ISFIFO(os.fstat(0).st_mode))
+
+    if __name__ == "__main__":
+        protocol = _Protocol()
+        calls = _Calls(protocol)
+        print("library noise")  # 进 stderr，不混进回话通道
+        context = multiprocessing.get_context("spawn")
+        queue = context.Queue()
+        process = context.Process(target=child, args=(queue,))
+        process.start()
+        child_stdin_is_pipe = queue.get(timeout=60)
+        process.join(60)
+        text = calls.call("llm", "hello")
+        protocol.send({"done": {"text": text, "child_stdin_is_pipe": child_stdin_is_pipe}})
+''')
+
+
+def test_worker_pipes_stay_private_to_the_worker(tmp_path):
+    script = tmp_path / "pipes_child.py"
+    script.write_text(_PIPES_CHILD, encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(script), str(ROOT)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None and proc.stdin is not None
+    call = json.loads(proc.stdout.readline())["call"]
+    assert call["kind"] == "llm" and call["text"] == "hello"
+    proc.stdin.write((json.dumps({"id": call["id"], "text": "你好"}) + "\n").encode("utf-8"))
+    proc.stdin.flush()
+    done = json.loads(proc.stdout.readline())["done"]
+    proc.stdin.close()
+    assert proc.stderr is not None
+    err = proc.stderr.read()
+    proc.wait(timeout=60)
+    assert done == {"text": "你好", "child_stdin_is_pipe": False}
+    assert b"library noise" in err
 
 
 def test_translation_requests_go_through_our_engine(fake_worker, tmp_path):

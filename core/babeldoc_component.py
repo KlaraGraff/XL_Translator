@@ -126,11 +126,28 @@ def page_ranges(pages: list[int]) -> str:
 
 
 class _Protocol:
-    """子进程这边的 stdout：一行一条 JSON。fd 1 改指 stderr，库里的 print 进不来。"""
+    """子进程这边的管道：stdout 一行一条 JSON，stdin 收回话（``replies``）。
+
+    两个管道都另拿一份私用，标准输入输出不再指着它们：fd 1 改指 stderr，库里的 print 进不来；
+    fd 0 改指空设备。BabelDOC 写 PDF 时会另开进程（multiprocessing），新进程接过标准输入输出；
+    Windows 上另一个线程正等着读的管道，会让新进程一启动就卡住，直到超时。
+    """
 
     def __init__(self) -> None:
         self._out = os.fdopen(os.dup(1), "w", encoding="ascii", errors="backslashreplace", buffering=1)
+        self.replies = os.fdopen(os.dup(0), "rb")
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, 0)
+        os.close(null)
         os.dup2(2, 1)
+        if sys.platform == "win32":
+            # 新进程按 Win32 的标准句柄接过去，不看 C 运行库的 fd：两个都跟着改。
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetStdHandle(-10, msvcrt.get_osfhandle(0))  # STD_INPUT_HANDLE
+            kernel32.SetStdHandle(-11, msvcrt.get_osfhandle(1))  # STD_OUTPUT_HANDLE
         sys.stdout = sys.stderr
         self._lock = threading.Lock()
 
@@ -169,7 +186,7 @@ class _Calls:
         return str(reply["text"])
 
     def _read(self) -> None:
-        for raw in iter(sys.stdin.buffer.readline, b""):
+        for raw in iter(self._protocol.replies.readline, b""):
             try:
                 reply = json.loads(raw.decode("utf-8"))
                 call_id = int(reply["id"])
