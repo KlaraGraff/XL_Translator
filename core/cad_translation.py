@@ -565,6 +565,8 @@ def list_cad_files(paths: Iterable[str | Path]) -> list[Path]:
                 for candidate in sorted(path.rglob("*"))
                 if candidate.is_file()
                 and candidate.suffix.lower() in CAD_SUPPORTED_EXTENSIONS
+                # 点开头的不是图纸（macOS 在 U 盘、网络盘上的「._文件名」）。
+                and not candidate.name.startswith(".")
                 and not is_translation_output(candidate)
                 and not any(
                     part in {"CAD翻译输出", ".cad-work", ".cad-review"}

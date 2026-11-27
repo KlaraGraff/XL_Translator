@@ -1850,6 +1850,11 @@ export interface ModalAction {
   variant?: ButtonVariant;
   /** 点击后是否保留模态打开（例如需要等待异步请求）。默认点击后自动关闭。 */
   keepOpen?: boolean;
+  /**
+   * 按 Esc 等于点这个按钮（「什么都不做、关掉弹窗」的那个）。不写时，第一个按钮是「取消」
+   * 「关闭」「知道了」就算它；别的叫法（如「继续执行」）要自己标上。没有这样的按钮，Esc 不起作用。
+   */
+  dismiss?: boolean;
   onClick?: () => void | Promise<void>;
 }
 
@@ -1888,6 +1893,11 @@ export interface ModalHandle {
 export function openModal(options: ModalOptions): ModalHandle {
   const overlay = el("div", { className: "overlay" });
   const modal = el("div", { className: options.wide ? "modal wide" : "modal" });
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.tabIndex = -1;
+  // 弹窗打开前焦点在哪（通常是打开它的那个按钮），关掉后还回去。
+  const opener = document.activeElement as HTMLElement | null;
 
   const mi = el("div", { className: `mi ${options.tone === "danger" ? "dgr" : options.tone}` });
   mi.append(icon(options.icon));
@@ -1914,7 +1924,13 @@ export function openModal(options: ModalOptions): ModalHandle {
   }
   modal.append(bodyWrap);
 
-  const close = () => overlay.remove();
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    const hadFocus = overlay.contains(document.activeElement);
+    overlay.remove();
+    // 焦点还在弹窗里才还回去；按钮的回调已经把焦点放到别处（比如新开的弹窗）时不抢。
+    if (hadFocus && opener?.isConnected) opener.focus?.();
+  };
 
   const actionButtons: HTMLButtonElement[] = [];
   const actsRow = el("div", { className: "macts" });
@@ -1970,6 +1986,30 @@ export function openModal(options: ModalOptions): ModalHandle {
   modal.append(actsRow);
   overlay.append(modal);
   document.body.append(overlay);
+
+  // 焦点移进弹窗。以前焦点留在后面那个按钮上：用键盘时再按一次回车，同一个弹窗会再叠出一个，
+  // Tab 也会走到被遮住的页面上去。放在弹窗本身而不是某个按钮上，回车不会误触任何操作。
+  (confirmInputEl ?? modal).focus();
+
+  // Esc = 点「什么都不做」的那个按钮。只有最上面一层弹窗响应；下拉框自己收起时已拦住 Esc。
+  const plainDismiss = [t("取消"), t("关闭"), t("知道了")];
+  const dismissIndex = options.actions.findIndex((action, index) =>
+    action.dismiss ?? (index === 0 && (!action.variant || action.variant === "default") && !action.keepOpen && plainDismiss.includes(action.label)));
+  function onKey(event: KeyboardEvent): void {
+    if (!overlay.isConnected) {
+      // 调用方没走 close()、直接把弹窗摘掉了。
+      document.removeEventListener("keydown", onKey);
+      return;
+    }
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const overlays = document.querySelectorAll(".overlay");
+    if (overlays[overlays.length - 1] !== overlay) return;
+    const button = actionButtons[dismissIndex];
+    if (!button || button.disabled) return;
+    event.preventDefault();
+    button.click();
+  }
+  document.addEventListener("keydown", onKey);
 
   return { element: modal, close };
 }

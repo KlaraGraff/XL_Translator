@@ -54,7 +54,7 @@ def classify_source_paths(paths: list[str], *, file_limit: int = DEFAULT_FILE_LI
                 # 和扫描器一样跳过程序自己的输出目录（名字里带「_翻译输出_」）。
                 dirs[:] = sorted(d for d in dirs if GENERATED_OUTPUT_DIR_MARKER not in d)
                 for name in files:
-                    if name.startswith("~"):
+                    if name.startswith(("~", ".")):
                         continue
                     suffix = _suffix(name)
                     if suffix:
