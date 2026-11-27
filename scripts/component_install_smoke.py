@@ -184,8 +184,7 @@ def _babeldoc() -> bool:
             pages = out.page_count
             text = " ".join(page.get_text() for page in out)
         print(f"[babeldoc] output: {pages} pages, text: {text[:300]!r}")
-    else:
-        print(f"[babeldoc] detail: {result.detail[-1500:]}")
+    print(f"[babeldoc] worker output (tail): {result.detail[-1500:]}")
     installer.uninstall()
     if own_pdf:
         pdf_installer.uninstall()

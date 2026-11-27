@@ -585,6 +585,11 @@ def translate_pdf(
     result.failed_requests = counts["failed"]
     if not result.ok and result.detail:
         logger.warning(f"[段落重排组件] {result.error}：{result.detail[-1500:]}")
+    elif result.ok:
+        # 译好了也留着 BabelDOC 的警告（例如写 PDF 时另开的进程超时），日志里查得到。
+        result.detail = worker.stderr_tail()
+        if result.detail:
+            logger.debug(f"[段落重排组件] BabelDOC 的输出：{result.detail[-1500:]}")
     return result
 
 
