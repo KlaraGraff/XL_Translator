@@ -441,7 +441,7 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
   // 按幅面跳过的 A3+ 页没有翻译，只是原样保留——不能算进「通过」。以前一份只有一页
   // A3 的文件汇总写着「1 页全部通过」，展开才看到那一页是「按幅面跳过」。
   const isSkippedOversize = (page: PdfPage): boolean =>
-    Boolean(page.skipped_oversize) && page.inplace_status !== "done" && !inplacePending(page) && !page.kept_reason && page.word_status !== "done";
+    Boolean(page.skipped_oversize) && page.inplace_status !== "done" && !inplacePending(page) && !page.kept_reason && page.word_status !== "done" && page.babeldoc_status !== "done";
   const oversize = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !flagged.includes(page) && !unfinished.includes(page) && isSkippedOversize(page));
   const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length - oversize.length;
 
@@ -913,6 +913,7 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
     if (page.inplace_active) return createChip({ label: t("原位替换中"), tone: "tint" });
     return taskStopped ? createChip({ label: t("已停止"), tone: "warn" }) : createChip({ label: t("等待原位替换"), tone: "mute" });
   }
+  if (page.babeldoc_status === "done") return createChip({ label: t("段落重排"), tone: "ok" });
   if (page.word_status === "done") return createChip({ label: t("转 Word"), tone: "ok" });
   if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("转 Word 未成功"), tone: "warn" });
   if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
@@ -1007,6 +1008,7 @@ function pageNote(page: PdfPage, taskStopped: boolean, reviewEnabled: boolean): 
 }
 
 function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
+  if (page.babeldoc_status === "done") return tx(page.babeldoc_message ?? "");
   if (page.word_status === "done") return tx(page.word_message ?? "");
   if (page.inplace_requested && page.inplace_status) return inplaceNote(page);
   if (inplacePending(page)) {
@@ -1077,7 +1079,9 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   // 按幅面跳过的页既没有原页图也没有译文页图（压根没渲染过），重新生成也只会按同一条尺寸
   // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
   const oversizeSkipped = page.skipped_oversize;
-  const oversizeReason = page.word_requested
+  const oversizeReason = page.babeldoc_status === "done"
+    ? t("这一页用段落重排在原 PDF 上排入译文，没有单独的页图；如需重做，请对整份文件重新翻译。")
+    : page.word_requested
     ? t("这一页的文字可以提取，和相邻几页一起转成 Word 翻译后拼回 PDF，没有单独的页图。")
     : page.inplace_requested
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")

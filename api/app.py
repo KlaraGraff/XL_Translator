@@ -32,6 +32,7 @@ from api.routes import (
     extensions as extensions_routes,
     ocr as ocr_routes,
     pdf2docx as pdf2docx_routes,
+    pdf_components as pdf_components_routes,
     pdf_routes as pdf_route_routes,
     settings as settings_routes,
     surfaces as surfaces_routes,
@@ -193,6 +194,7 @@ def create_app(
     cad_routes.register(app)
     ocr_routes.register(app)
     pdf2docx_routes.register(app)
+    pdf_components_routes.register(app)
     pdf_route_routes.register(app)
 
     @app.middleware("http")

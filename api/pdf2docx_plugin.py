@@ -87,6 +87,10 @@ def start_install() -> dict[str, Any]:
     """后台开始一键安装；进度用 install_progress() 查。已在安装时不重复开始。"""
     if not installer.manifest_files():
         raise ValueError("当前系统不支持一键安装，可自行安装 pdf2docx 后选择它的安装位置。")
+    from api import pdf_components_plugin
+
+    if pdf_components_plugin.running():
+        raise ValueError("「PDF 组件」正在安装，请稍候。")
     return _JOB.start(installer.download_size())
 
 

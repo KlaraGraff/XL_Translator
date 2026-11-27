@@ -105,8 +105,10 @@ export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLEle
   }));
   wrap.append(buildRouteRow({
     label: t("可提取文字的页"),
-    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。转成 Word 和原位替换都需要在「扩展 → 组件」安装「PDF 处理组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
+    hint: t("能直接提取文字的页，比如由 Word 导出的正文、表格、说明。段落重排在原 PDF 上按段落排入译文，公式、图和表格线原样保留，每页检查不过的页改为转成 Word；转成 Word 翻译后再转回 PDF，拼回原来的位置。页面大到放不进 Word 的（长边超过 55.9 厘米，约 A2 及以上）按图纸和大图处理。这几种方式都需要在「扩展 → 组件」安装「PDF 组件」；转成 Word 还要电脑上有 Microsoft Word 或 LibreOffice 把译文转回 PDF。"),
     options: [
+      // 段落重排（BabelDOC，2026-11-27）：装好「段落重排组件」后自动选上（maple 2026-11-27）。
+      { value: "babeldoc", label: t("段落重排"), tag: beta, description: t("公式、图和表格线原样保留；每页检查，不过的页改为转成 Word") },
       // 转成 Word 已可正式使用，不再标 Beta（maple 2026-10-27）；原位替换、自动组合仍标。
       { value: "word", label: t("转成 Word"), description: t("费用较低；由 Word 导出的文件可保留大部分排版") },
       { value: "inplace", label: t("原位替换"), tag: beta, description: t("版面保持不变；放不下的译文自动缩小或换行") },
@@ -165,11 +167,14 @@ export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLEle
     return node;
   };
   const routeName: Record<string, string> = {
-    image: t("图像翻译"), word: t("Word"), inplace: t("原位替换"), skip: t("原样保留"),
+    image: t("图像翻译"), word: t("Word"), inplace: t("原位替换"), skip: t("原样保留"), babeldoc: t("段落重排"),
   };
+  // 选着段落重排但组件没装：这一行写实际会用的方式（转 Word），下面的提示说原因。
+  const textRoute = st.pdfAutoTextRoute === "babeldoc" && pdfRouteCaps?.babeldoc_component === false
+    ? "word" : st.pdfAutoTextRoute;
   wrap.append(note(t("扫描页 → {0} · 可提取文字的页 → {1} · 图纸 → {2}；用不了时{3}",
     routeName[st.pdfAutoScanRoute],
-    routeName[st.pdfAutoTextRoute],
+    routeName[textRoute],
     routeName[st.pdfAutoDrawingRoute],
     st.pdfAutoFallback === "image" ? t("改用图像翻译") : t("保留原样"),
   )));
@@ -180,19 +185,29 @@ export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLEle
     wrap.append(note(t("没有可用的图像翻译模型：扫描页和需要保底的页会保留原样。"), true));
   }
   const usesInplace = st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace";
-  const usesWord = st.pdfAutoTextRoute === "word";
+  const usesBabeldoc = st.pdfAutoTextRoute === "babeldoc";
+  // 段落重排没用上的页（没装组件、没通过检查）转 Word：转 Word 的条件同样要说。
+  const usesWord = st.pdfAutoTextRoute === "word" || usesBabeldoc;
   if (caps && (usesWord || usesInplace) && !caps.word_component) {
     wrap.append(note(t("还没有安装「PDF 处理组件」：原位替换和转成 Word 的页改用保底方式，大幅面图纸保留原样。可在「扩展 → 组件」一键安装。"), true, t("安装 ↗ 组件")));
   } else {
     if (caps && usesInplace && caps.inplace_component === false) {
       wrap.append(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：原位替换的页改用保底方式，大幅面图纸保留原样。可在「扩展 → 组件」重新安装。"), true, t("重新安装 ↗ 组件")));
     }
+    if (caps && usesBabeldoc && caps.babeldoc_component === false) {
+      wrap.append(note(t("还没有安装「段落重排组件」：能提取文字的页照旧转成 Word 翻译。可在「扩展 → 组件」的「PDF 组件」里一键安装。"), true, t("安装 ↗ 组件")));
+    }
     if (caps && usesWord && !caps.office_engine) {
-      wrap.append(note(t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
+      wrap.append(note(usesBabeldoc
+        ? t("电脑上没有 Microsoft Word 或 LibreOffice：段落重排没通过检查的页转不回 PDF，改用保底方式。")
+        : t("电脑上没有 Microsoft Word 或 LibreOffice，译好的 Word 转不回 PDF：能提取文字的页改用保底方式。"), true));
     }
   }
   if (usesInplace && !inplaceTargetSupported(st.targetLang)) {
     wrap.append(note(t("原位替换暂不支持当前的目标语言（文字需要连写排版，如阿拉伯文、泰文、印地文）：这些页会改用保底方式，大幅面图纸保留原样。"), true));
+  }
+  if (usesBabeldoc && !inplaceTargetSupported(st.targetLang)) {
+    wrap.append(note(t("段落重排暂不支持当前的目标语言（文字需要连写排版，如阿拉伯文、泰文、印地文）：能提取文字的页照旧转成 Word 翻译。"), true));
   }
   if (!usesImage) wrap.append(note(t("这次不会调用图像模型。")));
   return wrap;

@@ -150,6 +150,10 @@ def start_install() -> dict[str, Any]:
     ocr_files = installer.manifest_files()
     if not ocr_files:
         raise ValueError(_unsupported_reason("ocr", ocr_files))
+    from api import pdf_components_plugin
+
+    if pdf_components_plugin.running():
+        raise ValueError("「PDF 组件」正在安装，请稍候。")
     needs_pdf = ppocr_component.numpy_site_dir() is None
     if needs_pdf:
         pdf_files = pdf_installer.manifest_files()
