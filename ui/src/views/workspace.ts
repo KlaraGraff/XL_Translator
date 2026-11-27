@@ -4849,6 +4849,9 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
     // 底栏按钮、进度条颜色、顶栏、文件状态全都看 local.task.state。
     case "stopping":
       syncEventState(local, data, "stopping");
+      // 这个事件只在用户要求停止时才有。任务状态是开始时拿到的那份，stop_requested 还是 false；
+      // 不在这里记下，结束横幅就认不出「是用户自己停的」，会把剩余数量说两遍（Excel 还说成「段」）。
+      if (!local.task.terminal) local.task = { ...local.task, stop_requested: true };
       local.phaseName = t("正在停止…");
       break;
     case "pausing":
@@ -5440,7 +5443,7 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
     title: t("停止当前任务？"),
     body: [stopConfirmBody(surface)],
     actions: [
-      { label: t("继续执行"), onClick: () => { stopModals.delete(surface); } },
+      { label: t("继续执行"), dismiss: true, onClick: () => { stopModals.delete(surface); } },
       { label: t("停止"), variant: "danger-solid", onClick: () => { stopModals.delete(surface); void stopTask(taskId); } },
     ],
   }));

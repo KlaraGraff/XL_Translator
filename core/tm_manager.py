@@ -1402,6 +1402,17 @@ def _sync_reverse_pin(
     return cur.rowcount
 
 
+# 搜索词按字面找：「%」「_」在 LIKE 里是通配符，不转义的话搜「%」会搜出全部词条，
+# 搜「0%」会搜出「50」。
+_LIKE = "LIKE ? ESCAPE '\\'"
+
+
+def _like_contains(keyword: str) -> str:
+    """把搜索词变成「包含这串字」的 LIKE 参数，和 ``_LIKE`` 一起用。"""
+    escaped = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _select_scope_rows(
     conn: sqlite3.Connection,
     lang_pair: str,
@@ -1414,8 +1425,8 @@ def _select_scope_rows(
     if only_unpinned:
         base_where += " AND pinned = 0"
     if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
-        kw = f"%{keyword.strip()}%"
+        base_where += f" AND (source_text {_LIKE} OR target_text {_LIKE})"
+        kw = _like_contains(keyword)
         params.extend([kw, kw])
     return conn.execute(
         f"""
@@ -2528,8 +2539,8 @@ def get_pin_count(lang_pair: str, keyword: str = "") -> dict[str, int]:
     base_where = "WHERE lang_pair = ?"
     params: list = [lang_pair]
     if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
-        kw = f"%{keyword.strip()}%"
+        base_where += f" AND (source_text {_LIKE} OR target_text {_LIKE})"
+        kw = _like_contains(keyword)
         params.extend([kw, kw])
     sql = f"""
         SELECT pinned, COUNT(*) as cnt FROM tm_entries {base_where}
@@ -2613,8 +2624,8 @@ def search_entries(
     params: list = [lang_pair]
 
     if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ? OR note LIKE ?)"
-        kw = f"%{keyword.strip()}%"
+        base_where += f" AND (source_text {_LIKE} OR target_text {_LIKE} OR note {_LIKE})"
+        kw = _like_contains(keyword)
         params.extend([kw, kw, kw])
 
     if pinned is not None:
@@ -2655,8 +2666,8 @@ def get_filter_counts(lang_pair: str, keyword: str = "") -> dict[str, int]:
     base_where = "WHERE lang_pair = ?"
     params: list = [lang_pair]
     if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ? OR note LIKE ?)"
-        kw = f"%{keyword.strip()}%"
+        base_where += f" AND (source_text {_LIKE} OR target_text {_LIKE} OR note {_LIKE})"
+        kw = _like_contains(keyword)
         params.extend([kw, kw, kw])
     with _get_conn() as conn:
         rows = conn.execute(

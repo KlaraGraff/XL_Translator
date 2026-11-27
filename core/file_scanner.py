@@ -197,7 +197,9 @@ def scan_excel_sources(path: str | Path) -> ExcelScanResult:
         for candidate in sorted(source.rglob("*")):
             if not candidate.is_file():
                 continue
-            if candidate.name.startswith("~"):
+            # 点开头的也不算：macOS 在 U 盘、网络盘上给每个文件配的「._文件名」不是表格，
+            # 以前会逐个报成「读取失败」。PDF 和扩展类型的扫描一直是这样跳过的。
+            if candidate.name.startswith(("~", ".")):
                 continue
             try:
                 relative = candidate.relative_to(source)
