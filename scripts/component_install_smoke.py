@@ -184,7 +184,8 @@ def _babeldoc() -> bool:
     if result.ok:
         with fitz.open(result.output_pdf) as out:
             pages = out.page_count
-            text = " ".join(page.get_text() for page in out)
+            # BabelDOC 排出来的词与词之间是不换行空格（\xa0），比对前换回普通空格
+            text = " ".join(page.get_text() for page in out).replace("\xa0", " ")
         print(f"[babeldoc] output: {pages} pages, text: {text[:300]!r}")
     print(f"[babeldoc] worker output (tail): {result.detail[-1500:]}")
     installer.uninstall()
