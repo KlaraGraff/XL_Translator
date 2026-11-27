@@ -432,6 +432,7 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   );
   const flow = el("div", "g-flow");
   const pages = el("div", "g-pages");
+  const textChips: HTMLElement[] = [];
   const pageSpecs: ["text" | "table" | "draw" | "scan", string, string][] = [
     ["text", t("文字页"), wordName],
     ["table", t("表格页"), wordName],
@@ -443,7 +444,9 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
     const pic = el("div");
     pic.style.display = "contents";
     pic.innerHTML = thumb(kind);
-    pg.append(pic, el("small", undefined, name), el("span", "g-chip", route));
+    const chip = el("span", "g-chip", route);
+    if (kind === "text" || kind === "table") textChips.push(chip);
+    pg.append(pic, el("small", undefined, name), chip);
     pages.append(pg);
   }
   const out = el("div", "g-out");
@@ -457,11 +460,21 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   band.append(bandText, flow);
 
   body.append(cards, band);
-  void fillPdfStats({ wordStats, inplaceStats, imageStats }, go);
+  void fillPdfStats({ wordStats, inplaceStats, imageStats, textChips }, go);
+}
+
+/** 「自动组合」条里文字页、表格页的方式按本机设置写：装了段落重排且选着它时写「段落重排」。 */
+function textRouteName(caps: { babeldoc_component?: boolean; auto_text_route?: string }): string {
+  switch (caps.auto_text_route) {
+    case "babeldoc": return caps.babeldoc_component ? t("段落重排") : t("转成 Word");
+    case "inplace": return t("原位替换");
+    case "image": return t("整页图像翻译");
+    default: return t("转成 Word");
+  }
 }
 
 async function fillPdfStats(
-  hosts: { wordStats: HTMLElement; inplaceStats: HTMLElement; imageStats: HTMLElement },
+  hosts: { wordStats: HTMLElement; inplaceStats: HTMLElement; imageStats: HTMLElement; textChips: HTMLElement[] },
   go: Go,
 ): Promise<void> {
   let client;
@@ -484,6 +497,17 @@ async function fillPdfStats(
     if (component) hosts.wordStats.append(component);
     else if (!caps.office_engine) hosts.wordStats.append(stat("warn", t("需要电脑上安装 Microsoft Word 或 LibreOffice")));
     else hosts.wordStats.append(stat("ok", t("本机可以使用")));
+    // 段落重排：装好且选着它时这类页面先用它（排得不好的页仍转 Word），卡片里不另写一段，免得一屏放不下。
+    if (!caps.babeldoc_component) {
+      hosts.wordStats.append(stat("idle", t("另装「段落重排组件」可先在原 PDF 上排版"),
+        { label: t("安装"), onClick: go(() => navigate("plugins", { focus: "babeldoc" })) }));
+    } else if (caps.auto_text_route === "babeldoc") {
+      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」，这类页面先用段落重排")));
+    } else {
+      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」")));
+    }
+    const textRoute = textRouteName(caps);
+    for (const chip of hosts.textChips) chip.textContent = textRoute;
     // 原位替换：组件里的 PyMuPDF 要能加载。
     if (!caps.word_component) hosts.inplaceStats.append(stat("warn", t("需先安装「PDF 处理组件」"), installPdf));
     else if (caps.inplace_component === false) {

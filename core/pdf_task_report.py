@@ -59,6 +59,7 @@ def _page_copied_from_source(page: Any) -> bool:
         getattr(page, "skipped_oversize", False)
         and getattr(page, "inplace_status", "") != "done"
         and getattr(page, "word_status", "") != "done"
+        and getattr(page, "babeldoc_status", "") != "done"
     )
 
 
@@ -472,7 +473,7 @@ def _real_generated_page_count(record: PdfFileRecord) -> int:
     finished = _finished_page_count(record)
     # 原页照搬的页（按设定保留、没有图像模型、原位替换没成功）都不是译文
     copied = sum(1 for page in record.pages if page.skipped_oversize and page.inplace_status != "done"
-                 and getattr(page, "word_status", "") != "done")
+                 and getattr(page, "word_status", "") != "done" and getattr(page, "babeldoc_status", "") != "done")
     not_translated = max(0, int(record.placeholder_page_count or 0)) + max(
         copied, max(0, int(record.skipped_oversize_page_count or 0))
     )
@@ -689,10 +690,15 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         detail_parts.append(f"{kept_pages} 页没能按所选方式翻译，保留原样，原因见任务报告")
     rerouted = [page for page in record.pages if getattr(page, "route_note", "")]
     to_inplace = sum(1 for page in rerouted if getattr(page, "inplace_requested", False))
+    # 段落重排没用上、改转 Word 的页（没装组件、没通过逐页检查）
+    to_word = sum(1 for page in rerouted if getattr(page, "word_requested", False)
+                  and not getattr(page, "inplace_requested", False))
+    if to_word:
+        detail_parts.append(f"{to_word} 页改为转成 Word 翻译，原因见任务报告")
     if to_inplace:
         detail_parts.append(f"{to_inplace} 页改用原位替换，原因见任务报告")
-    if len(rerouted) - to_inplace:
-        detail_parts.append(f"{len(rerouted) - to_inplace} 页改用整页图像翻译，原因见任务报告")
+    if len(rerouted) - to_inplace - to_word:
+        detail_parts.append(f"{len(rerouted) - to_inplace - to_word} 页改用整页图像翻译，原因见任务报告")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     elif untranslated:

@@ -587,7 +587,7 @@ export interface SurfaceState {
   pdfRoute: PdfRoute;
   /** 自动组合里扫描页、正文页、图纸和大图的首选方式，以及首选用不了时的保底方式。 */
   pdfAutoScanRoute: "image" | "skip";
-  pdfAutoTextRoute: "word" | "inplace" | "image";
+  pdfAutoTextRoute: "babeldoc" | "word" | "inplace" | "image";
   pdfAutoDrawingRoute: "inplace" | "skip" | "image";
   pdfAutoFallback: "image" | "skip";
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
@@ -928,7 +928,7 @@ function applyPdfRouteSettings(st: SurfaceState, pdf: JsonObject): void {
   // 分支早先的 inplace / word 两个单一路线由后端换算成自动组合，这里只认两种。
   st.pdfRoute = text(pdf.translation_route) === "image" || !text(pdf.translation_route) ? "image" : "auto";
   st.pdfAutoScanRoute = oneOf(text(pdf.auto_scan_route), ["image", "skip"] as const, "image");
-  st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["word", "inplace", "image"] as const, "word");
+  st.pdfAutoTextRoute = oneOf(text(pdf.auto_text_route), ["babeldoc", "word", "inplace", "image"] as const, "word");
   st.pdfAutoDrawingRoute = oneOf(text(pdf.auto_drawing_route), ["inplace", "skip", "image"] as const, "inplace");
   st.pdfAutoFallback = oneOf(text(pdf.auto_fallback), ["image", "skip"] as const, "image");
 }

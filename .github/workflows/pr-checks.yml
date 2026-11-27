@@ -221,10 +221,10 @@ jobs:
         run: python scripts/oda_install_smoke.py
 
 
-  # 「PDF 处理组件」「文字识别组件」一键安装：从 PyPI / conda-forge 真下载、解压、试运行。
-  # 依赖外部网站，同样只在手动触发时跑；改了 core/component_download.py、
-  # core/pdf_component_install.py、core/ocr_component_install.py、
-  # core/ppocr_component_install.py 时跑一遍。
+  # 「PDF 处理组件」「文字识别组件」「段落重排组件」一键安装：从 PyPI / conda-forge / GitHub /
+  # Hugging Face 真下载、解压、试运行。依赖外部网站，同样只在手动触发时跑；改了
+  # core/component_download.py、core/pdf_component_install.py、core/ocr_component_install.py、
+  # core/ppocr_component_install.py、core/babeldoc_component*.py 时跑一遍。
   # Windows 上模拟一台「干净」的电脑：系统目录里没有 VC++ 运行库，数据目录带中文和空格
   # （英文系统的代码页写不出这几个字）。
   component-install:
@@ -235,7 +235,7 @@ jobs:
       matrix:
         os: [macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: actions/setup-python@v6.2.0
@@ -257,7 +257,7 @@ jobs:
             Rename-Item $item.FullName "$($item.Name).hidden"
           }
           "TRANSLATOR_APP_DATA_DIR=$env:RUNNER_TEMP\用户 张三\Translator" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: Download, verify, unpack and run both components
+      - name: Download, verify, unpack and run the components
         env:
           PYTHONIOENCODING: utf-8
         run: python scripts/component_install_smoke.py

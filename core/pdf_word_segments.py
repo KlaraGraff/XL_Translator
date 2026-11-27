@@ -14,7 +14,15 @@ from loguru import logger
 
 from core.output_metadata import build_translation_metadata, metadata_parameters, write_translation_metadata
 from core.pdf_models import PDF_OUTPUT_STATE_FAILED, SOURCE_TYPE_IMAGE, PdfFileRecord, _PreparedPdfFile
-from core.pdf_routes import KIND_BLANK, ROUTE_IMAGE, ROUTE_INPLACE, ROUTE_WORD, fallback_route, page_route
+from core.pdf_routes import (
+    KIND_BLANK,
+    ROUTE_BABELDOC,
+    ROUTE_IMAGE,
+    ROUTE_INPLACE,
+    ROUTE_WORD,
+    fallback_route,
+    page_route,
+)
 from core.pdf_word_guard import (
     REASON_BROKEN_PAGE,
     REASON_IMAGE_GRID,
@@ -29,6 +37,8 @@ class PdfWordSegmentsMixin:
     # PdfImageTranslationRunner 提供（这里只写给类型检查看）
     _settings: Any
     _word_pages: dict[tuple[str, int], dict[str, Any]]
+    _pretranslated_pages: int
+    _babeldoc_done_entry: Any
     _log: Any
     _send_translation_progress: Any
 
@@ -65,8 +75,15 @@ class PdfWordSegmentsMixin:
         record.translated_docx_path = str(target)
         self._log("OK", f"[{record.name}] 另存了一份 Word：{target.name}")
 
+    def _wants_word(self, item: Any, key: str) -> bool:
+        """这一页要转 Word：设置成转 Word，或设置成段落重排、但段落重排没用上（没装组件、没通过检查）。"""
+        route = page_route(self._settings.pdf, oversized_a3=False, oversized=item.oversized, page_kind=item.kind)
+        if route == ROUTE_BABELDOC:
+            return self._babeldoc_done_entry(key, item.page_number) is None
+        return route == ROUTE_WORD
+
     def _planned_word_pages(self, prepared: _PreparedPdfFile) -> list[int]:
-        """自动组合里首选转 Word 的页（可提取文字的页，且设置成转 Word）。"""
+        """自动组合里首选转 Word 的页（可提取文字的页，且设置成转 Word；选了段落重排时是它没译成的页）。"""
         record = prepared.record
         kind = self._document_kinds.get(str(prepared.item.path))
         if kind is None or not self._planned_word_pages_possible(prepared):
@@ -86,8 +103,7 @@ class PdfWordSegmentsMixin:
                 continue
             if item.image_grid:
                 planned.append(-1)  # 整页大图上叠着表格线：不转 Word（_run_word_segments 记原因）
-            elif page_route(self._settings.pdf, oversized_a3=False, oversized=item.oversized,
-                            page_kind=item.kind) == ROUTE_WORD:
+            elif self._wants_word(item, str(prepared.item.path)):
                 # 夹在两页转 Word 的页中间的空白页随段一起转：一份文字文件中间插一页
                 # 空白，不该被拆成两段（拆开就出不了「同时输出 Word」）。
                 if planned and planned[-1] > 0:
@@ -113,7 +129,7 @@ class PdfWordSegmentsMixin:
         return [item.page_number for item in (kind.pages if kind else [])
                 if item.image_grid and item.page_number not in reused
                 and page_route(self._settings.pdf, oversized_a3=False, oversized=item.oversized,
-                               page_kind=item.kind) == ROUTE_WORD]
+                               page_kind=item.kind) in (ROUTE_WORD, ROUTE_BABELDOC)]
 
     def _collect_word_terms(self, terms: dict[str, Any], where: str) -> None:
         """一段转 Word 翻译的「记忆库」结果：位置前面补上文件名和页码。"""
@@ -148,7 +164,8 @@ class PdfWordSegmentsMixin:
             return
         unavailable = self._word_segments_possible()
         hooks = self._inplace_hooks
-        finished_pages = 0
+        # 段落重排已经译好的页先算上，转 Word 的进度接着往后走。
+        finished_pages = self._pretranslated_pages
         next_index = 0
         for prepared, page_numbers in plans:
             record = prepared.record

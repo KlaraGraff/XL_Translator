@@ -247,7 +247,7 @@ def _fake_sources(monkeypatch, *, runtime: bytes | None = None, model_hash: str 
     if runtime is not None:
         from tests.test_ocr_component import _conda
 
-        blobs["vc14_runtime-test.conda"] = _conda({name: runtime + name.encode() for name in installer._WINDOWS_RUNTIME})
+        blobs["vc14_runtime-test.conda"] = _conda({name: runtime + name.encode() for name in installer.WINDOWS_RUNTIME})
     files = tuple(_remote(name, data) for name, data in blobs.items())
     monkeypatch.setattr(installer, "manifest_files", lambda: files)
     routes = {f"https://primary.test/{name}": data for name, data in blobs.items()}
@@ -291,7 +291,7 @@ def test_windows_gets_the_vc_runtime_next_to_onnxruntime(hermetic, monkeypatch):
     monkeypatch.setattr(ppocr_component, "probe_in_subprocess", lambda *args: (True, "9.9.9", ""))
     installer.install()
     site_dir, _models = installer.installed_dirs()
-    for name in installer._WINDOWS_RUNTIME:
+    for name in installer.WINDOWS_RUNTIME:
         assert (site_dir / "onnxruntime" / "capi" / name).read_bytes() == b"runtime:" + name.encode()
 
 

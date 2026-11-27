@@ -120,7 +120,8 @@ const PDF_ROUTES_CHANGED_EVENT = "xlt:pdf-routes-changed";
 
 function pdfUsesTextRoutes(): boolean {
   const pdf = record(settings?.pdf);
-  return text(pdf.translation_route) === "auto" && text(pdf.auto_text_route, "word") === "word";
+  // 段落重排没通过检查的页也转 Word：同样不用图像模型。
+  return text(pdf.translation_route) === "auto" && ["word", "babeldoc"].includes(text(pdf.auto_text_route, "word"));
 }
 
 function buildUseTextRoutesButton(): HTMLElement {
