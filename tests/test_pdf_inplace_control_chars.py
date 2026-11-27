@@ -15,6 +15,12 @@ import pytest
 fitz = pytest.importorskip("fitz")
 
 
+def _latin_font() -> bool:
+    from core.pdf_vector.fonts import FontSet
+
+    return bool(FontSet("fr").pick("Important : suivez les étapes."))
+
+
 class ControlCharacterTests(unittest.TestCase):
     def test_norm_text_turns_control_characters_into_spaces(self):
         from core.pdf_vector.common import norm_text
@@ -31,6 +37,8 @@ class ControlCharacterTests(unittest.TestCase):
         self.assertEqual([r["source_text"] for r in native_rows(page, 72)],
                          ["1. Important. Do not put the reflector up."])
 
+    # 译成法文：构建机上没有中文字体，拉丁字体总有
+    @unittest.skipUnless(_latin_font(), "no Latin font on this machine")
     def test_a_numbered_item_with_a_control_character_is_written(self):
         from core.pdf_vector import translate_page_inplace
 
@@ -49,10 +57,10 @@ class ControlCharacterTests(unittest.TestCase):
             def translate(texts, prompt, **_extra):
                 seen.extend(texts)
                 # 模型照抄了控制字符：写回前也要把它当空白。
-                return {t: t[:3] + "\x07重要说明，请按步骤操作。" for t in texts}
+                return {t: t[:3] + "\x07Important : suivez les étapes." for t in texts}
 
             translate_page_inplace(root / "source.pdf", 0, root / "work", translate=translate,
-                                   source_lang="en", target_lang="zh")
+                                   source_lang="en", target_lang="fr")
             report = json.loads((root / "work" / "writeback.json").read_text(encoding="utf-8"))
 
         self.assertTrue(seen)
