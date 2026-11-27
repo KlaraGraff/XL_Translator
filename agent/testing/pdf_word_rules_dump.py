@@ -56,7 +56,7 @@ def _word_side(docx: Path, page_number: int) -> None:
     print(f"  转出的 Word 第 {page_number} 页：")
     for element in groups[page_number - 1]:
         for paragraph in ([element] if element.tag == f"{_W}p" else element.iter(f"{_W}p")):
-            for math in paragraph.findall(f"{_M}oMath"):
+            for math in paragraph.iter(f"{_M}oMath"):
                 before = "".join(_word_text(node) for node in reversed(list(math.itersiblings(preceding=True))))
                 after = "".join(_word_text(node) for node in math.itersiblings())
                 kind = "分数" if math.find(f"{_M}f") is not None else "横线"

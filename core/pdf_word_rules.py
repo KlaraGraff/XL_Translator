@@ -22,6 +22,7 @@ LaTeX 的 \\overline{A ∪ B}（补集）、\\frac{1}{1 − r} 的分数线在 P
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -118,31 +119,31 @@ def pdf_rules(page) -> tuple[str, list[tuple[list[int], str, tuple[list[int], li
     chars = _page_chars(page)
     found = []
     for x0, x1, y in _strokes(page):
-        fraction = None
         below = _covered(chars, x0, x1, lambda box, y=y: -1 < box[1] - y <= _FRACTION_GAP)
         above = _covered(chars, x0, x1, lambda box, y=y: -1 < y - box[3] <= _FRACTION_GAP)
-        if not _one_line(below) or (above and not _one_line(above)):
+        if not _one_line(below):
             continue  # 同时挨着好几行字：表格线
         below = _with_scripts(chars, below, x0, x1)
-        above = _with_scripts(chars, above, x0, x1)
         close = [char for char in below if char[1][1] - y <= _OVERLINE_GAP]
-        if not above and close and len(close) == len(below) and _aligned(below, x0, x1):
-            target, mark = below, OVERLINE  # 上划线
-        elif above:
-            # 分数线：和分子、分母里较宽的那个一样长
-            if _aligned(below, x0, x1) or _extent(below)[1] - _extent(below)[0] >= _extent(above)[1] - _extent(above)[0]:
-                target, mark = below, OVERLINE
-            else:
-                target, mark = above, UNDERLINE
-            left = min(_extent(below)[0], _extent(above)[0])
-            right = max(_extent(below)[1], _extent(above)[1])
-            if abs(left - x0) > _FRACTION_SLACK or abs(right - x1) > _FRACTION_SLACK:
-                continue  # 比分子分母都宽得多：框线
-            height = max(char[1][3] for char in below) - min(char[1][1] for char in above)
-            fraction = (_indices(above), _indices(below), round(height * 20))
-        else:
+        if close and len(close) == len(below) and _aligned(below, x0, x1):
+            # 上划线：紧贴在字上沿。上面挨着的是上一行字的下沿（字母的尾巴），不是分子——
+            # 分数的分母离分数线有一两磅（TeX 的规矩），不会贴得这么近
+            found.append((_indices(below), OVERLINE, None))
             continue
-        found.append((_indices(target), mark, fraction))
+        if not above or not _one_line(above):
+            continue  # 上面没有字（不是分数），或者同时挨着好几行字（表格线）
+        above = _with_scripts(chars, above, x0, x1)
+        # 分数线：和分子、分母里较宽的那个一样长
+        if _aligned(below, x0, x1) or _extent(below)[1] - _extent(below)[0] >= _extent(above)[1] - _extent(above)[0]:
+            target, mark = below, OVERLINE
+        else:
+            target, mark = above, UNDERLINE
+        left = min(_extent(below)[0], _extent(above)[0])
+        right = max(_extent(below)[1], _extent(above)[1])
+        if abs(left - x0) > _FRACTION_SLACK or abs(right - x1) > _FRACTION_SLACK:
+            continue  # 比分子分母都宽得多：框线
+        height = max(char[1][3] for char in below) - min(char[1][1] for char in above)
+        found.append((_indices(target), mark, (_indices(above), _indices(below), round(height * 20))))
     return "".join(char[0] for char in chars), found
 
 
@@ -336,14 +337,58 @@ def _fit_fraction_line(paragraph, height: int) -> None:
     spacing, line = _line_spacing(paragraph)
     if spacing is None or not line:
         return
-    new_line = max(line, height)
     try:
         before = int(spacing.get(f"{_W}before") or 0)
     except ValueError:
         before = 0
-    spacing.set(f"{_W}before", str(max(0, before - (new_line - 2 * line) // 2)))
-    spacing.set(f"{_W}line", str(new_line))
+    # 行高按 Word 排出来的分数自己定（「至少」原来一行那么高）；硬撑成原文的高度时，多出来的
+    # 空白垫在分数上面，同一行的「rᵏ =」被压到下面
+    spacing.set(f"{_W}before", str(max(0, before - (max(line, height) - 2 * line) // 2)))
     spacing.set(f"{_W}lineRule", "atLeast")
+
+
+_WORD = re.compile(r"[^\W\d_]{2,}")
+
+
+def _display(paragraph, math) -> None:
+    """这一段除了分数只有算式（rᵏ =、逗号、句点，没有成词的字）时，整段做成一个独立公式：
+    分数按独立公式的大小排（行内公式里的分数 Word 会缩小），等号对准分数中间。
+    段首的制表符换成同样宽的缩进。有别的东西（超链接、图片、成词的字）时不动。"""
+    others = [child for child in paragraph if child.tag != f"{_W}pPr" and child is not math]
+    if any(not (_plain_run(child, paragraph) or _separator(child, paragraph)) for child in others):
+        return
+    if any(_WORD.search(child.find(f"{_W}t").text or "") for child in others if _plain_run(child, paragraph)):
+        return
+    lead = 0
+    for child in paragraph:
+        if child is math or _plain_run(child, paragraph):
+            break
+        lead += len(child.findall(f"{_W}tab"))
+    before = [child for child in math.itersiblings(preceding=True) if _plain_run(child, paragraph)][::-1]
+    after = [child for child in math.itersiblings() if _plain_run(child, paragraph)]
+    for item in reversed(_math_items(before)):
+        math.insert(0, item)
+    for item in _math_items(after):
+        math.append(item)
+    p_pr = paragraph.find(f"{_W}pPr")
+    jc = p_pr.find(f"{_W}jc") if p_pr is not None else None
+    align = {"center": "center", "right": "right", "end": "right"}.get(jc.get(f"{_W}val") if jc is not None else "", "left")
+    para = paragraph.makeelement(f"{_M}oMathPara", {})
+    para_pr = para.makeelement(f"{_M}oMathParaPr", {})
+    para_pr.append(para_pr.makeelement(f"{_M}jc", {f"{_M}val": align}))
+    para.append(para_pr)
+    math.addprevious(para)
+    para.append(math)
+    for child in others:
+        paragraph.remove(child)
+    if lead and p_pr is not None:
+        stop = p_pr.find(f"{_W}tabs/{_W}tab")
+        ind = p_pr.find(f"{_W}ind")
+        if stop is not None and ind is not None:
+            try:
+                ind.set(f"{_W}left", str(int(ind.get(f"{_W}left") or 0) + int(stop.get(f"{_W}pos") or 0)))
+            except ValueError:
+                pass
 
 
 def _apply_fraction(paragraph, where, start: int, numerator: int, denominator: int, height: int) -> bool:
@@ -373,6 +418,7 @@ def _apply_fraction(paragraph, where, start: int, numerator: int, denominator: i
     _space_beside(before, True, paragraph)
     _space_beside(after, False, paragraph)
     _fit_fraction_line(paragraph, height)
+    _display(paragraph, math)
     return True
 
 

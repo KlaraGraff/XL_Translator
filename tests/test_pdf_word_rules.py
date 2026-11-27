@@ -148,11 +148,33 @@ class RestoreRulesTests(unittest.TestCase):
         self.assertEqual("".join(t.text for t in fraction.find(f"{m}den").iter(f"{m}t")), "1 - r")
         self.assertIsNone(paragraph.find(f".//{qn('w:tab')}"), "分子分母中间的制表符去掉")
         spacing = paragraph.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
-        # 合成一行：行距「至少」原文分数那么高，段前距减掉多出来的一半，不往下推
-        line = int(spacing.get(qn("w:line")))
-        self.assertEqual(spacing.get(qn("w:lineRule")), "atLeast")
-        self.assertGreater(line, 300)
-        self.assertEqual(int(spacing.get(qn("w:before"))), 338 - (line - 300) // 2)
+        # 合成一行：行高按 Word 排出来的分数定（至少原来一行），段前距减掉原文分数比两行高出的一半
+        self.assertEqual((spacing.get(qn("w:line")), spacing.get(qn("w:lineRule"))), ("150", "atLeast"))
+        self.assertLess(int(spacing.get(qn("w:before"))), 338)
+        self.assertIsNone(paragraph.find(f"{m}oMathPara"), "有成词的字（we have、here）：分数留在行内")
+
+    def test_display_fraction_paragraph_becomes_a_display_equation(self) -> None:
+        # math 第 2 页「rᵏ = (1 − rⁿ⁺¹)/(1 − r)」：整段只有算式，做成独立公式，分数不被 Word 缩小
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")}><w:pPr><w:tabs><w:tab w:val="left" w:pos="240"/></w:tabs>'
+            '<w:spacing w:before="42" w:line="298" w:lineRule="exact"/><w:ind w:left="54"/></w:pPr>'
+            '<w:r><w:t>r</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>k</w:t></w:r>'
+            '<w:r><w:t xml:space="preserve"> = </w:t></w:r><w:r><w:tab/></w:r>'
+            '<w:r><w:t xml:space="preserve">1 </w:t></w:r><w:r><w:br/></w:r>'
+            '<w:r><w:t xml:space="preserve">1 - r</w:t></w:r><w:r><w:t>,</w:t></w:r></w:p>'
+        ))
+        paragraph = doc.paragraphs[0]._p
+        from core.pdf_word_rules import _apply_fraction, _positions
+
+        _text, where = _positions(paragraph)
+        self.assertTrue(_apply_fraction(paragraph, where, 3, 1, 3, 520))
+        m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+        math = paragraph.find(f"{m}oMathPara/{m}oMath")
+        self.assertIsNotNone(math)
+        self.assertEqual([child.tag.split("}")[1] for child in math], ["sSup", "r", "f", "r"])
+        self.assertEqual(paragraph.find(f"{m}oMathPara/{m}oMathParaPr/{m}jc").get(f"{m}val"), "left")
+        self.assertEqual([child.tag.split("}")[1] for child in paragraph], ["pPr", "oMathPara"])
 
     def test_bar_goes_on_the_same_letter_not_on_another_one_with_the_same_neighbours(self) -> None:
         # 讲义第 48 页：「A 和 B 的交集」里的 A 本来没有横线，横线在后面「Ā, the complement of A」那个 A 上
