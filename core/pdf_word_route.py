@@ -735,8 +735,7 @@ def move_running_footers(path: Path) -> int:
 
 # 相邻两段文字之间补空格的条件：前一段以西文字母、数字或句读结尾，后一段以西文字母、
 # 数字或左括号、左引号开头。中日韩文字不在里面，不会被插进空格。
-# 字后面可以跟着组合符（补回的上划线 U+0305 这类，core.pdf_word_rules）。
-_SPACE_BEFORE = re.compile(r"[A-Za-z0-9.,;:!?)\]’'\"”%][\u0300-\u036f]*$")
+_SPACE_BEFORE = re.compile(r"[A-Za-z0-9.,;:!?)\]’'\"”%]$")
 _SPACE_AFTER = re.compile(r"^[A-Za-z0-9(\[“‘\"]")
 _TOKEN_END = re.compile(r"[\w’'-]+$")
 _TOKEN_START = re.compile(r"^[\w’'-]+")
@@ -995,9 +994,9 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
-    # 上划线和分数线
-    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, restore_rules_from_pdf,
-                _tex_glyphs):
+    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
+    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
+                restore_rules_from_pdf):
         try:
             fix(docx_path, pdf_path)
         except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion

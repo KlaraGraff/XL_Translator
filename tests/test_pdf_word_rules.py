@@ -1,4 +1,7 @@
-"""PDF 转 Word 后，公式里画出来的上划线、分数线补回来（反馈 #28 数学讲义：Ā ∪ B̄ 成了 A ∪ B）。"""
+"""PDF 转 Word 后，公式里画出来的上划线、分数线补回来（反馈 #28 数学讲义：A ∪ B 的补集成了 A ∪ B）。
+
+一条线整条盖住它下面的整段字：做成一个带横线的 Word 公式，不是每个字各加一截。
+"""
 from __future__ import annotations
 
 import tempfile
@@ -53,6 +56,12 @@ def _make_docx(path: Path) -> None:
     doc.save(str(path))
 
 
+def _bars(paragraph) -> list[tuple[str, str]]:
+    m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+    return [(bar.find(f"{m}barPr/{m}pos").get(f"{m}val"), "".join(t.text or "" for t in bar.iter(f"{m}t")))
+            for bar in paragraph.iter(f"{m}bar")]
+
+
 @unittest.skipIf(pymupdf is None, "PyMuPDF not installed")
 class RestoreRulesTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -68,11 +77,34 @@ class RestoreRulesTests(unittest.TestCase):
         self.assertEqual(sorted((covered, mark) for _before, covered, _after, mark in rules),
                          sorted([("AB", OVERLINE), ("1-r", OVERLINE)]))
 
-    def test_marks_go_after_each_covered_character_in_word(self) -> None:
+    def test_covered_text_becomes_one_barred_formula(self) -> None:
         self.assertEqual(restore_rules_from_pdf(self.docx, self.pdf), 2)
-        texts = [p.text for p in Document(str(self.docx)).paragraphs]
-        self.assertEqual(texts, [f"we have A{OVERLINE}B{OVERLINE} = BA here", "1",
-                                 f"1{OVERLINE} -{OVERLINE} r{OVERLINE}", "Boxed text"])
+        paragraphs = Document(str(self.docx)).paragraphs
+        self.assertEqual([p.text for p in paragraphs], ["we have  = BA here", "1", "", "Boxed text"])
+        self.assertEqual(_bars(paragraphs[0]._p), [("top", "AB")], "一条横线盖住 AB 整段")
+        self.assertEqual(_bars(paragraphs[2]._p), [("top", "1 - r")], "分母上面一条线")
+        self.assertEqual(_bars(paragraphs[1]._p) + _bars(paragraphs[3]._p), [], "分子、框线里的字不动")
+
+    def test_superscript_inside_the_bar_becomes_a_formula_superscript(self) -> None:
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")}><w:r><w:t xml:space="preserve">1 - r</w:t></w:r>'
+            '<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>n+1</w:t></w:r></w:p>'
+        ))
+        paragraph = doc.paragraphs[0]._p
+        from core.pdf_word_rules import _apply, _positions
+
+        _text, where = _positions(paragraph)
+        self.assertTrue(_apply(paragraph, where, 0, 6, UNDERLINE))
+        m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+        bar = paragraph.find(f"{m}oMath/{m}bar")
+        self.assertEqual(bar.find(f"{m}barPr/{m}pos").get(f"{m}val"), "bot")
+        body = bar.find(f"{m}e")
+        self.assertEqual([child.tag.split("}")[1] for child in body], ["r", "sSup"])
+        self.assertEqual(body.find(f"{m}r/{m}t").text, "1 - ")
+        self.assertEqual(body.find(f"{m}sSup/{m}e/{m}r/{m}t").text, "r")
+        self.assertEqual(body.find(f"{m}sSup/{m}sup/{m}r/{m}t").text, "n+1")
+        self.assertIsNone(body.find(f".//{qn('w:vertAlign')}"), "公式里的上标不再带 w:vertAlign")
 
     def test_wider_numerator_gets_the_line_under_it(self) -> None:
         doc = pymupdf.open()
@@ -84,34 +116,3 @@ class RestoreRulesTests(unittest.TestCase):
         page.draw_line((num.x0, bar_y), (num.x1, bar_y), width=0.4)
         rules = pdf_rules(page)
         self.assertEqual([(covered, mark) for _b, covered, _a, mark in rules], [("1-r+s", UNDERLINE)])
-
-
-class CombiningMarkFollowsItsLetterTests(unittest.TestCase):
-    """补回的上划线是跟在字后面的组合符，后面几步不能把它和字拆开，也不能因此少补空格。"""
-
-    def _docx(self, runs: list[tuple[str, str]]) -> Path:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        path = Path(tmp.name) / "out.docx"
-        doc = Document()
-        body = "".join(f'<w:r><w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}"/></w:rPr>'
-                       f'<w:t xml:space="preserve">{text}</w:t></w:r>' for font, text in runs)
-        doc.element.body[-1].addprevious(parse_xml(f'<w:p {nsdecls("w")}>{body}</w:p>'))
-        doc.save(str(path))
-        return path
-
-    def test_overline_stays_in_the_math_symbol_run(self) -> None:
-        from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font
-
-        path = self._docx([("Chivo", f"x in A{OVERLINE}∪{OVERLINE}B{OVERLINE} now")])
-        math_symbols_in_math_font(path)
-        runs = [("".join(t.text or "" for t in r.iter(qn("w:t"))), r.find(f"{qn('w:rPr')}/{qn('w:rFonts')}").get(qn("w:ascii")))
-                for r in Document(str(path)).element.body.iter(qn("w:r"))]
-        self.assertEqual(runs, [(f"x in A{OVERLINE}", "Chivo"), (f"∪{OVERLINE}", MATH_FONT), (f"B{OVERLINE} now", "Chivo")])
-
-    def test_space_is_restored_after_an_overlined_letter(self) -> None:
-        from core.pdf_word_route import restore_word_spaces
-
-        path = self._docx([("LMMathItalic10", f"A{OVERLINE}∩{OVERLINE}B{OVERLINE}"), ("LMRoman10", "and")])
-        restore_word_spaces(path)
-        self.assertEqual(Document(str(path)).paragraphs[0].text, f"A{OVERLINE}∩{OVERLINE}B{OVERLINE} and")

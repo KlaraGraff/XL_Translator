@@ -1,21 +1,23 @@
 """PDF 转 Word 后，把公式里画出来的横线（上划线、分数线）补回来。
 
 LaTeX 的 \\overline{A ∪ B}（补集）、\\frac{1}{1 − r} 的分数线在 PDF 里不是字，是画的一条细
-横线。pdf2docx 只留文字和表格线，这些线丢了：「Ā ∪ B̄ = A ∩ B 的补集」成了
+横线。pdf2docx 只留文字和表格线，这些线丢了：「A ∪ B 的补集 = Ā ∩ B̄」成了
 「A ∪ B = A ∩ B」，德摩根律读出来是错的；分数成了上下两行字（反馈 #28 数学讲义）。
 
 做法：在原 PDF 里找短的细横线，看它和上下的字怎么挨着：
 - 上划线：线紧贴在一段字的上沿（不到 1 磅），线的左右两头和这段字对齐；
-- 分数线：线上面紧挨着分子、下面紧挨着分母，线和分子、分母里较宽的那个一样长。
-在 Word 里找到同一段字（连同它前面几个字，好认出是哪一处），上划线、分数线的分母在每个
-字后面加 U+0305（组合上划线），分子比分母宽时在分子每个字后面加 U+0332（组合下划线）。
-这是字的一部分，翻译、复制都跟着走，Word 和 WPS 都能显示。
+- 分数线：线上面紧挨着分子、下面紧挨着分母，线和分子、分母合起来一样宽。
+在 Word 里找到同一段字（连同它前后几个字，好认出是哪一处），把这段字做成一个 Word 公式：
+上划线、分数线的分母用「上横线」，分子比分母宽时给分子用「下横线」。一条线整条盖住
+它下面的整段字（A ∪ B 上面是一条，不是 A、B 各一截）。上下标跟着做成公式里的上下标。
+翻译时 Word 公式整个原样保留（core.word_inline_marks 当占位符发给模型）。
 
 框线、表格线不算：它们比上下的字宽得多，或者同时挨着好几行字。
-找不到对应的字、PDF 打不开、没有 PyMuPDF 时什么都不改。
+那段字跨了超链接、夹着制表符或图片时不改。找不到对应的字、PDF 打不开、没有 PyMuPDF 时什么都不改。
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from loguru import logger
@@ -23,9 +25,12 @@ from loguru import logger
 from core.pdf_word_fit import page_groups
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
-OVERLINE = "̅"
-UNDERLINE = "̲"
+#: 横线在字的上面、下面（Word 公式 m:bar 的 m:pos）
+OVERLINE = "top"
+UNDERLINE = "bot"
 
 #: 细横线：粗细不超过这么多磅；太短的（不到 2 磅）多半是字的一部分。
 _MAX_THICKNESS = 1.2
@@ -112,7 +117,7 @@ def _context(all_chars, chars) -> tuple[str, str]:
 
 
 def pdf_rules(page) -> list[tuple[str, str, str, str]]:
-    """这一页要补的线：[(前文末尾, 线下面或上面的那段字, 后文开头, 组合符)]。"""
+    """这一页要补的线：[(前文末尾, 线下面或上面的那段字, 后文开头, 横线在上还是在下)]。"""
     chars = _page_chars(page)
     found = []
     for x0, x1, y in _strokes(page):
@@ -155,21 +160,140 @@ def _positions(paragraph) -> tuple[str, list[tuple[object, int]]]:
     return "".join(text), where
 
 
-def _mark(where, start: int, length: int, mark: str, pending: dict) -> None:
-    for node, index in where[start:start + length]:
-        pending.setdefault(node, set()).add((index, mark))
+def _plain_run(run, paragraph) -> bool:
+    """段落直属、只有格式和一段字的 run 才动（超链接里的、夹着制表符图片的不动）。"""
+    return (run.tag == f"{_W}r" and run.getparent() is paragraph
+            and all(child.tag in (f"{_W}rPr", f"{_W}t") for child in run)
+            and len(run.findall(f"{_W}t")) == 1)
 
 
-def _apply(pending: dict) -> None:
-    for node, marks in pending.items():
-        text = node.text or ""
-        for index, mark in sorted(marks, reverse=True):
-            text = text[:index + 1] + mark + text[index + 1:]
-        node.text = text
+def _split(run, offset: int):
+    """run 在第 offset 个字处切成两个格式一样的 run，返回后一个。"""
+    clone = copy.deepcopy(run)
+    node, clone_node = run.find(f"{_W}t"), clone.find(f"{_W}t")
+    text = node.text or ""
+    node.text, clone_node.text = text[:offset], text[offset:]
+    for item in (node, clone_node):
+        item.set(_XML_SPACE, "preserve")
+    run.addnext(clone)
+    return clone
+
+
+def _script(run) -> str | None:
+    found = run.find(f"{_W}rPr/{_W}vertAlign")
+    value = found.get(f"{_W}val") if found is not None else None
+    return value if value in ("superscript", "subscript") else None
+
+
+def _math_run(run, text: str):
+    """w:r → m:r：字体、字号照抄（上下标标记去掉，公式里用 m:sSup / m:sSub）。"""
+    math_run = run.makeelement(f"{_M}r", {})
+    r_pr = run.find(f"{_W}rPr")
+    if r_pr is not None:
+        r_pr = copy.deepcopy(r_pr)
+        for node in r_pr.findall(f"{_W}vertAlign"):
+            r_pr.remove(node)
+        math_run.append(r_pr)
+    node = math_run.makeelement(f"{_M}t", {_XML_SPACE: "preserve"})
+    node.text = text
+    math_run.append(node)
+    return math_run
+
+
+def _math_items(runs) -> list:
+    """一串 w:r 换成公式里的一串元素：上下标接在前一个字后面做成 m:sSup / m:sSub。"""
+    items: list = []
+    for run in runs:
+        text = run.find(f"{_W}t").text or ""
+        kind = _script(run)
+        base_run = items[-1] if items and items[-1].tag == f"{_M}r" else None
+        stripped = (base_run.find(f"{_M}t").text or "").rstrip() if base_run is not None else ""
+        if kind is None or not stripped:
+            if text:
+                items.append(_math_run(run, text))
+            continue
+        # 底数是前面最后一个字
+        base = copy.deepcopy(base_run)
+        base.find(f"{_M}t").text = stripped[-1]
+        if len(stripped) > 1:
+            base_run.find(f"{_M}t").text = stripped[:-1]
+        else:
+            items.pop()
+        name, part_name = ("sSup", "sup") if kind == "superscript" else ("sSub", "sub")
+        script = run.makeelement(f"{_M}{name}", {})
+        base_holder = script.makeelement(f"{_M}e", {})
+        base_holder.append(base)
+        part = script.makeelement(f"{_M}{part_name}", {})
+        part.append(_math_run(run, text))
+        script.append(base_holder)
+        script.append(part)
+        items.append(script)
+    return items
+
+
+def _bar(paragraph, runs: list, position: str) -> None:
+    """几个 run 做成一个带横线的 Word 公式，放回原来的位置。"""
+    math = paragraph.makeelement(f"{_M}oMath", {})
+    bar = math.makeelement(f"{_M}bar", {})
+    props = bar.makeelement(f"{_M}barPr", {})
+    props.append(props.makeelement(f"{_M}pos", {f"{_M}val": position}))
+    body = bar.makeelement(f"{_M}e", {})
+    for item in _math_items(runs):
+        body.append(item)
+    bar.append(props)
+    bar.append(body)
+    math.append(bar)
+    runs[0].addprevious(math)
+    for run in runs:
+        paragraph.remove(run)
+
+
+def _space_beside(neighbour, at_end: bool, paragraph) -> None:
+    """TeX 的 PDF 里没有空格字：公式和前后紧挨的字母、数字之间补一个空格。"""
+    if neighbour is None or neighbour.tag != f"{_W}r" or neighbour.getparent() is not paragraph:
+        return
+    node = neighbour.find(f"{_W}t")
+    text = node.text if node is not None else None
+    if not text:
+        return
+    edge = text[-1] if at_end else text[0]
+    if edge.isalnum():
+        node.text = text + " " if at_end else " " + text
+        node.set(_XML_SPACE, "preserve")
+
+
+def _apply(paragraph, where, start: int, length: int, position: str) -> bool:
+    """段落里第 start 个字起的 length 个字（不算空白）做成带横线的公式。动不了时返回 False。"""
+    first_node, first_index = where[start]
+    last_node, last_index = where[start + length - 1]
+    first_run, last_run = first_node.getparent(), last_node.getparent()
+    runs = []
+    run = first_run
+    while run is not None:
+        if not _plain_run(run, paragraph):
+            return False
+        runs.append(run)
+        if run is last_run:
+            break
+        run = run.getnext()
+    if not runs or runs[-1] is not last_run:
+        return False
+    if (last_node.text or "")[last_index + 1:]:
+        _split(last_run, last_index + 1)
+    if first_index:
+        piece = _split(first_run, first_index)
+        if runs[-1] is first_run:
+            runs[-1] = piece
+        runs[0] = piece
+    before, after = runs[0].getprevious(), runs[-1].getnext()
+    _bar(paragraph, runs, position)
+    _space_beside(before, True, paragraph)
+    _space_beside(after, False, paragraph)
+    return True
 
 
 def restore_rules_from_pdf(docx_path: Path, pdf_path: Path) -> int:
-    """把原 PDF 里的上划线、分数线在转出的 Word 里补回来，返回补了几处。"""
+    """把原 PDF 里的上划线、分数线在转出的 Word 里补回来（做成带横线的 Word 公式），返回补了几处。"""
     try:
         from core.pdf_component import require_fitz
 
@@ -195,21 +319,20 @@ def restore_rules_from_pdf(docx_path: Path, pdf_path: Path) -> int:
                 continue
             paragraphs = [p for element in group
                           for p in ([element] if element.tag == f"{_W}p" else element.iter(f"{_W}p"))]
-            texts = [_positions(p) for p in paragraphs]
-            used: set = set()
-            pending: dict = {}
-            for before, covered, after, mark in rules:
-                hit = _locate(texts, before, covered, after, used)
-                if hit is None:
-                    continue
-                where, start = hit
-                used.add((id(where), start))
-                _mark(where, start, len(covered), mark, pending)
-                marked += 1
-            _apply(pending)
+            texts = [(p, *_positions(p)) for p in paragraphs]
+            hits: dict = {}
+            for before, covered, after, position in rules:
+                hit = _locate(texts, before, covered, after, hits)
+                if hit is not None:
+                    paragraph, where, start = hit
+                    hits.setdefault(id(paragraph), (paragraph, where, []))[2].append((start, len(covered), position))
+            # 同一段里从后往前改：前面的字在哪个 w:t、第几个不会因为后面切开 run 而变
+            for paragraph, where, spans in hits.values():
+                for start, length, position in sorted(spans, reverse=True):
+                    marked += _apply(paragraph, where, start, length, position)
     if marked:
         doc.save(str(docx_path))
-        logger.info(f"[PDF] 按原文补回了 {marked} 处上划线、分数线")
+        logger.info(f"[PDF] 按原文补回了 {marked} 处上划线、分数线（Word 公式）")
     return marked
 
 
@@ -225,16 +348,17 @@ def _patterns(before: str, covered: str, after: str):
         yield "", ""
 
 
-def _locate(texts, before: str, covered: str, after: str, used: set):
+def _locate(texts, before: str, covered: str, after: str, hits: dict):
+    """covered 在哪一段、从第几个字起。同一处不用两次，也不和已经找到的重叠。"""
     for head, tail in _patterns(before, covered, after):
-        if not head and not tail and len(covered) < 2:
-            continue
         pattern = head + covered + tail
-        for text, where in texts:
+        for paragraph, text, where in texts:
+            taken = hits.get(id(paragraph), (None, None, []))[2]
             start = text.find(pattern)
             while start != -1:
                 position = start + len(head)
-                if (id(where), position) not in used:
-                    return where, position
+                end = position + len(covered)
+                if not any(position < other + length and other < end for other, length, _pos in taken):
+                    return paragraph, where, position
                 start = text.find(pattern, start + 1)
     return None
