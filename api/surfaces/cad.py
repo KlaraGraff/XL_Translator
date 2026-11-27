@@ -191,6 +191,7 @@ class CadSurface(Surface):
                 for candidate in sorted(root.rglob("*"))
                 if candidate.is_file()
                 and candidate.suffix.lower() in {".dwg", ".dxf"}
+                and not candidate.name.startswith(".")
                 and not is_translation_output(candidate)
                 and not under(candidate, output_root)
                 and not any(

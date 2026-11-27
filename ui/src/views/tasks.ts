@@ -1396,7 +1396,7 @@ function confirmStopTask(taskId: string, surface: string): void {
     title: t("停止当前任务？"),
     body: [stopConfirmBody(surface)],
     actions: [
-      { label: t("继续执行"), variant: "default" },
+      { label: t("继续执行"), variant: "default", dismiss: true },
       { label: t("停止"), variant: "danger-solid", onClick: () => stopTask(taskId) },
     ],
   });

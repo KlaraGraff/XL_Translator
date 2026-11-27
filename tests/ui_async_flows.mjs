@@ -158,6 +158,9 @@ class FakeNode {
     return [];
   }
   scrollIntoView() {}
+  contains() {
+    return false;
+  }
   focus() {}
   setSelectionRange() {}
   click() {

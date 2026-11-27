@@ -433,7 +433,9 @@ def scan_word_sources(path: str | Path) -> WordScanResult:
             # Office lock files and Translator's own output folders are not
             # user-visible failed inputs: they are deliberately excluded from
             # the selectable source boundary.
-            if candidate.name.startswith("~"):
+            # 点开头的也不算：macOS 在 U 盘、网络盘上给每个文件配的「._文件名」不是文档，
+            # 以前会逐个报成「读取失败」。PDF 和扩展类型的扫描一直是这样跳过的。
+            if candidate.name.startswith(("~", ".")):
                 continue
             relative = _relative_word_path(candidate, source)
             if _is_generated_output(Path(relative)):
@@ -1851,8 +1853,14 @@ def _scan_one_word_file(path: Path, root: Path, result: WordScanResult) -> None:
     try:
         result.items.append(_build_word_file_item(path, root=root))
     except Exception as exc:  # scan errors must remain visible and non-fatal
-        reason = f"读取失败：{exc}"
-        logger.warning(f"扫描 Word 文件失败 {path.name}：{exc}")
+        # 这句会原样出现在「查看扫描报告」里，和 Excel 扫描一样换成看得懂的一句话
+        # （原来是 Package not found at '…' 这类英文库报错）。
+        from core.user_facing_errors import humanize_error
+
+        reason = "读取失败：" + humanize_error(
+            exc, fallback="无法读取该文件，可能已损坏或格式与扩展名不符。"
+        )
+        logger.warning(f"扫描 Word 文件失败 {path.name}：{exc!r}")
         result.skipped.append(
             WordScanSkippedItem(
                 path=path,
