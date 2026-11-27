@@ -169,9 +169,10 @@ def _cuts(cells: list) -> list[list[set[int]]]:
     也切开（证明右边那一列依据「Premise」「Premise」，每一行都对着左边的一步）。"""
     first: list[list[set[int]]] = []
     starts: list[list[float]] = []
-    for located in cells:
+    laid = [bool(located) and (_interleaved(located) or _hard_break(located)) for located in cells]
+    every = [[line.top for *_rest, lines in located for _start, line in lines] for located in cells]
+    for located, by_lines in zip(cells, laid, strict=True):
         widest = _widest(located)
-        by_lines = _interleaved(located) or _hard_break(located)
         cell_cuts, tops = [], []
         for *_rest, lines in located:
             cut = set()
@@ -190,6 +191,10 @@ def _cuts(cells: list) -> list[list[set[int]]]:
         changed = False
         for index, located in enumerate(cells):
             others = [top for other, tops in enumerate(starts) if other != index for top in tops]
+            if laid[index]:
+                # 两格都是一行一行摆的（证明的步骤和依据）：对着另一格任何一行的，都是另起的一行。
+                # 两边最长的那一行（「13. …」和「⇒Intro 11-12」）各自看都像排满了的折行，要靠这个分开
+                others += [top for other, tops in enumerate(every) if other != index and laid[other] for top in tops]
             for (*_rest, lines), cut in zip(located, first[index], strict=True):
                 for number in range(1, len(lines)):
                     line = lines[number][1]

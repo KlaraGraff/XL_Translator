@@ -7,8 +7,8 @@
 只转换、不翻译（这一步先不去底色），然后每一页列出：
 - 每张图片：浮动还是嵌在字里、是否在文字下方（behindDoc）、相对什么定位、位置和大小（磅）、
   在不在表格里；在文字下方、按页面定位的，再列出原 PDF 上落在图里的字；
-- 每张表：位置（第几个块、套在哪张表里）、每格的字和底色（tcPr/shd），
-  以及「去底色」会不会处理它、为什么（哪一格的字不在图里）；
+- 每张表：套在哪张表里、每格的字和底色（tcPr/shd）、格子里的字对上了原 PDF 的几个字、是不是都压在
+  图片上，以及「去底色」处理哪几行；
 - 这一页别的会涂底色的地方：段落底色（pPr/shd）、字的底色（rPr/shd、highlight）、带填充的文本框和形状。
 只写到临时文件夹。
 """
@@ -80,26 +80,20 @@ def _fill(node) -> str:
     return f"{shd.get(f'{_W}val')}/{shd.get(f'{_W}fill')}"
 
 
-def _tables(group: list, inside: list[str]) -> None:
+def _tables(group: list, inside: list[str], glyphs: dict, pictures) -> None:
     tables = [table for element in group
               for table in ([element] if element.tag == f"{_W}tbl" else element.iter(f"{_W}tbl"))]
     for number, table in enumerate(tables, 1):
-        cells = []
-        for tc in table.iter(f"{_W}tc"):
-            text = _compact(figures._cell_text(tc))
-            cells.append((text, _fill(tc.find(f"{_W}tcPr"))))
-        texts = [text for text, _fill_value in cells if text]
-        outside = [text for text in texts if not any(text in words for words in inside)]
-        if not texts:
-            verdict = "不处理：没有字"
-        elif outside:
-            verdict = f"不处理：这几格的字不在图里 {outside[:4]}"
-        else:
-            verdict = "会去掉底色"
-        filled = [cell for cell in cells if cell[1] != "无"]
-        print(f"    表 {number}：{len(cells)} 格，{len(filled)} 格有底色，{_inside_table(table)}；{verdict}")
-        for text, fill in cells[:40]:
-            print(f"      格 底色 {fill}「{text[:30]}」")
+        chosen = figures._rows_on_pictures(table, inside, glyphs, pictures)
+        rows = table.findall(f"{_W}tr")
+        print(f"    表 {number}：{len(rows)} 行，{_inside_table(table)}；去底色的行：{[rows.index(row) + 1 for row in chosen]}")
+        for row_number, row in enumerate(rows, 1):
+            for tc in row.findall(f"{_W}tc"):
+                text = _compact(figures._cell_text(tc))
+                boxes = glyphs.get(tc, [])
+                where = (f"对上 {len(boxes)} 个字，{'都压在图片上' if figures._on_picture(boxes, pictures) else '不全在图片上'}"
+                         if boxes else "没对上")
+                print(f"      行 {row_number} 格 底色 {_fill(tc.find(f'{_W}tcPr'))}「{text[:30]}」{where if text else ''}")
 
 
 def _other_fills(group: list) -> None:
@@ -152,7 +146,7 @@ def main() -> None:
                 inside = figures._text_inside(document[page_number - 1], behind) if behind else []
                 for rect, words in zip(behind, inside, strict=True):
                     print(f"    在文字下方的图 {tuple(round(v, 1) for v in rect)} 里的字：「{words[:60]}」")
-                _tables(group, inside)
+                _tables(group, inside, figures._glyphs(group, document[page_number - 1]) if behind else {}, behind)
                 _other_fills(group)
 
 

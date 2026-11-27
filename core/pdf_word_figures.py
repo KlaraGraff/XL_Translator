@@ -6,7 +6,8 @@
 （图 13）；白格子在标签下面盖出一小块白底（图 14、15）。图片里本来就有这些颜色。
 
 做法：找出这一页在文字下方、按页面定位的图片占的地方，以及原 PDF 上落在图里的那几个字。
-一张表里按行看：一行里每个有字的格子，字都在图里那几个字里，这一行就是摆在图上的标签：
+一张表里按行看：一行里每个有字的格子，字都在图里那几个字里、而且原 PDF 上这几个字就压在图片上
+（整页把 Word 的字和 PDF 的字对齐，看格子里的字落在哪），这一行就是摆在图上的标签：
 这一行格子的底色都去掉，让下面的图露出来；夹在两行标签中间、一个字也没有的行也在图上，一样去掉。
 图注那一行（字不在图里）、正文表格（有一格的字不在图里）不动。讲义第 48 页图 14、15 的标签和
 图注在同一张表里，以前按整张表看，有图注就整张不动，白底留着。
@@ -76,19 +77,55 @@ def _text_inside(page, pictures) -> list[str]:
     return found
 
 
-def _rows_on_pictures(table, inside: list[str]) -> list:
-    """这张表里摆在图上的那几行：有字的格子都是图里的字（图上的标签）的行，以及夹在这样两行
-    中间、一个字也没有的行（标签上下之间，也在图上）。图下面的图注那一行（字不在图里）不算。
+def _glyphs(group: list, page) -> dict:
+    """Word 这一页每个格子里的字对上了 PDF 上的哪些字：{格子: [字框]}（整页对齐，和重排表格同一个办法）。"""
+    from core.pdf_word_lines import _full_alignment
+    from core.pdf_word_rules import _page_chars, _positions
+
+    chars = _page_chars(page)
+    paragraphs = [p for element in group
+                  for p in ([element] if element.tag == f"{_W}p" else element.iter(f"{_W}p"))]
+    texts = [_positions(p) for p in paragraphs]
+    starts, offset = [], 0
+    for text, _where in texts:
+        starts.append(offset)
+        offset += len(text)
+    mapping = _full_alignment("".join(char[0] for char in chars), "".join(text for text, _where in texts), starts)
+    reverse = {value: key for key, value in mapping.items()}
+    found: dict = {}
+    for paragraph, start, (text, _where) in zip(paragraphs, starts, texts, strict=True):
+        cell = paragraph.getparent()
+        if cell is None or cell.tag != f"{_W}tc":
+            continue
+        boxes = found.setdefault(cell, [])
+        boxes += [chars[reverse[start + number]][1] for number in range(len(text)) if start + number in reverse]
+    return found
+
+
+def _on_picture(boxes: list, pictures) -> bool:
+    def inside(box, picture) -> bool:
+        middle = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+        return picture.x0 <= middle[0] <= picture.x1 and picture.y0 <= middle[1] <= picture.y1
+
+    return bool(boxes) and all(any(inside(box, picture) for picture in pictures) for box in boxes)
+
+
+def _rows_on_pictures(table, inside: list[str], glyphs: dict, pictures) -> list:
+    """这张表里摆在图上的那几行：有字的格子都是图上的标签——字是图里的字，而且这几个字在原 PDF 上
+    就压在这张图片上——的行，以及夹在这样两行中间、一个字也没有的行（标签上下之间，也在图上）。
+    图下面的图注那一行（字不在图里）不算。讲义第 48 页图 13 在 Word 里没有图片，灰底就是格子的底色
+    （两个圆转换时就丢了），它的标签 A、B 别的图里也有，以前只比字就把灰底去掉了，只剩一个白框。
     只看这张表自己的行，套在里面的表单独算。"""
     rows = table.findall(f"{_W}tr")
     kinds = []
     for row in rows:
-        texts = [_compact(_cell_text(tc)) for tc in row.findall(f"{_W}tc")]
-        texts = [text for text in texts if text]
-        if not texts:
+        cells = [(tc, _compact(_cell_text(tc))) for tc in row.findall(f"{_W}tc")]
+        cells = [(tc, text) for tc, text in cells if text]
+        if not cells:
             kinds.append(None)
         else:
-            kinds.append(all(any(text in words for words in inside) for text in texts))
+            kinds.append(all(any(text in words for words in inside) and _on_picture(glyphs.get(tc, []), pictures)
+                             for tc, text in cells))
     labels = [number for number, kind in enumerate(kinds) if kind]
     if not labels:
         return []
@@ -145,10 +182,11 @@ def uncover_pictures(docx_path: Path, pdf_path: Path) -> int:
             if not pictures:
                 continue
             inside = _text_inside(pdf[page_index], pictures)
+            glyphs = _glyphs(group, pdf[page_index])
             tables = [table for element in group
                       for table in ([element] if element.tag == f"{_W}tbl" else element.iter(f"{_W}tbl"))]
             for table in tables:
-                cleared += sum(_clear_fills(row) for row in _rows_on_pictures(table, inside))
+                cleared += sum(_clear_fills(row) for row in _rows_on_pictures(table, inside, glyphs, pictures))
     if cleared:
         doc.save(str(docx_path))
         logger.info(f"[PDF] 摆在图上的标签表格去掉了 {cleared} 个格子的底色，下面的图露出来")
