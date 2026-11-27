@@ -1903,7 +1903,7 @@ def _word_file_counts(path: Path) -> tuple[int, int, int, int]:
     from core.word_revisions import count_tracked_changes, toc_controls
 
     body = doc.element.body
-    tracked_changes = count_tracked_changes(body, excluded=toc_controls(body))
+    tracked_changes = count_tracked_changes(body, excluded=toc_controls(body), parent=doc._body)
     counts = (len(doc.paragraphs), len(doc.tables), len(segments), tracked_changes)
     with _WORD_COUNT_CACHE_LOCK:
         _WORD_COUNT_CACHE[key] = counts

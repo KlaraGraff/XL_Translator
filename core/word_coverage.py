@@ -33,7 +33,12 @@ from core.translation_coverage import (
 from core.bilingual_writer import bilingual_output_name
 from core.word_code import code_only_texts
 from core.word_layout_fixes import apply_east_asian_language, loosen_row_height
-from core.word_revisions import paragraph_coverage_text, renumber_duplicate_revision_ids
+from core.word_revisions import (
+    REVISION_MODE_SKIP,
+    paragraph_coverage_text,
+    paragraph_has_revisions,
+    renumber_duplicate_revision_ids,
+)
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
@@ -47,12 +52,12 @@ from core.word_document import (
     _apply_paragraph_review_mark,
     _apply_story_translations,
     _cell_has_review_highlight,
-    _cell_source_text,
     _cell_text_paragraphs,
     _copy_math_to_translation,
     _ensure_owner_writable,
     _insert_translation_paragraph_after,
     _is_toc_or_field_paragraph,
+    _iter_cell_direct_paragraphs,
     _iter_unique_table_cells,
     _normalize_existing_highlight_policy,
     _normalize_review_mark_colors,
@@ -74,6 +79,15 @@ from core.word_document import (
 # 不会保护任何段落或表格——不需要另外一个 if protect_front_matter 分支。
 _NO_FRONT_MATTER_PROTECTION = WordFrontMatterBoundary(body_start_index=None)
 
+# unit.data 里的标记：「修订一起翻译」时这一处（含修订的段落、含修订的单元格）由修订
+# 那一路判断和写回（core/word_revisions.py），常规补译不碰它。
+REVISION_OWNED = "revision_owned"
+
+
+def _front_matter_or_none(front_matter: WordFrontMatterBoundary) -> WordFrontMatterBoundary | None:
+    """保护开着就传边界（哪怕没找到正文标题：封面页控件照样要保护），关着传 None。"""
+    return None if front_matter is _NO_FRONT_MATTER_PROTECTION else front_matter
+
 
 @dataclass
 class WordCoveragePlan:
@@ -82,8 +96,13 @@ class WordCoveragePlan:
     front_matter: WordFrontMatterBoundary = field(default_factory=lambda: _NO_FRONT_MATTER_PROTECTION)
 
     @property
+    def ordinary_units(self) -> list[CoverageUnit]:
+        """常规补译负责的位置：去掉「修订一起翻译」时归修订那一路的段落和单元格。"""
+        return [unit for unit in self.units if not unit.data.get(REVISION_OWNED)]
+
+    @property
     def source_units(self) -> list[CoverageUnit]:
-        return [unit for unit in self.units if unit.status == COVERAGE_SOURCE_ONLY]
+        return [unit for unit in self.ordinary_units if unit.status == COVERAGE_SOURCE_ONLY]
 
     @property
     def residual_units(self) -> list[CoverageUnit]:
@@ -112,8 +131,14 @@ def build_word_coverage_plan(
     target_lang: str,
     source_lang: str = "zh",
     protect_front_matter: bool = False,
+    revision_mode: str = REVISION_MODE_SKIP,
 ) -> WordCoveragePlan:
-    """Classify app-style bilingual Word content by coverage status."""
+    """Classify app-style bilingual Word content by coverage status.
+
+    ``revision_mode`` 要和这一趟写回用的一致：「修订一起翻译」时，含修订的段落和单元格
+    由修订那一路逐段判断、逐段补译，计划里标成 :data:`REVISION_OWNED`，不进
+    ``source_units``——否则这些位置的原文会被常规补译再送一次，译文却用不上（#285）。
+    """
     source_path = Path(path)
     doc = Document(str(source_path))
     front_matter = (
@@ -121,6 +146,8 @@ def build_word_coverage_plan(
         if protect_front_matter
         else _NO_FRONT_MATTER_PROTECTION
     )
+    revisions = _revision_layout(doc, revision_mode, _front_matter_or_none(front_matter))
+    owned = frozenset(revisions.paragraphs | revisions.cells)
     units: list[CoverageUnit] = []
     units.extend(
         _classify_body_paragraphs(
@@ -128,6 +155,7 @@ def build_word_coverage_plan(
             target_lang=target_lang,
             source_lang=source_lang,
             front_matter=front_matter,
+            owned=owned,
         )
     )
     units.extend(
@@ -136,6 +164,7 @@ def build_word_coverage_plan(
             target_lang=target_lang,
             source_lang=source_lang,
             front_matter=front_matter,
+            owned=owned,
         )
     )
     units.extend(
@@ -144,6 +173,7 @@ def build_word_coverage_plan(
             target_lang=target_lang,
             source_lang=source_lang,
             front_matter=front_matter,
+            owned=owned,
         )
     )
     return WordCoveragePlan(path=source_path, units=_ignore_code(doc, units), front_matter=front_matter)
@@ -168,6 +198,7 @@ def _classify_content_control_paragraphs(
     target_lang: str,
     source_lang: str,
     front_matter: WordFrontMatterBoundary = _NO_FRONT_MATTER_PROTECTION,
+    owned: frozenset = frozenset(),
 ) -> list[CoverageUnit]:
     """内容控件里的段落：补译时和正文段落同一套判定。
 
@@ -204,6 +235,8 @@ def _classify_content_control_paragraphs(
             continue
         location = f"content_control[{control_index}].paragraph[{paragraph_index}]"
         data = {"control_index": control_index, "paragraph_index": paragraph_index}
+        if paragraph._p in owned:
+            data[REVISION_OWNED] = True
         if _is_toc_or_field_paragraph(paragraph):
             continue
         if looks_like_source_text(text, source_lang=source_lang, target_lang=target_lang):
@@ -333,8 +366,7 @@ def write_untranslated_docx(
         for table in doc.tables
         for cell in _iter_unique_table_cells(table)
     ]
-    # 保护开着就传边界（哪怕没找到正文标题：封面页控件照样要保护），关着传 None。
-    front_matter = None if plan.front_matter is _NO_FRONT_MATTER_PROTECTION else plan.front_matter
+    front_matter = _front_matter_or_none(plan.front_matter)
     # 「修订一起翻译」时含修订的段落由修订那一趟接手，下面的常规补译跳过它们。
     revisions = _revision_layout(doc, revision_mode, front_matter)
 
@@ -401,7 +433,9 @@ def write_untranslated_docx(
             # 认分类时记下的完整文字。译文照旧追加在格子末尾——旧的那条留着，删不删
             # 得由人对着原件定（报告里已经写明并上了底色）。
             expected = str(unit.data.get("cell_text") or source_text)
-            if _cell_source_text(cell) not in {source_text, expected}:
+            if _cell_coverage_text(
+                cell, source_lang=source_lang, target_lang=target_lang
+            ) not in {source_text, expected}:
                 continue
             if output_translation_only:
                 _replace_cell_text(cell, translation, target_lang=target_lang)
@@ -611,6 +645,7 @@ def _classify_body_paragraphs(
     target_lang: str,
     source_lang: str,
     front_matter: WordFrontMatterBoundary = _NO_FRONT_MATTER_PROTECTION,
+    owned: frozenset = frozenset(),
 ) -> list[CoverageUnit]:
     units: list[CoverageUnit] = []
     paragraphs = list(doc.paragraphs)
@@ -620,7 +655,9 @@ def _classify_body_paragraphs(
         paragraph = paragraphs[index]
         text = _paragraph_source_text(paragraph)
         location = f"body.paragraph[{index}]"
-        data = {"paragraph_index": index}
+        data: dict = {"paragraph_index": index}
+        if paragraph._p in owned:
+            data[REVISION_OWNED] = True
         if not text:
             index += 1
             continue
@@ -736,22 +773,25 @@ def _classify_table_cells(
     target_lang: str,
     source_lang: str,
     front_matter: WordFrontMatterBoundary = _NO_FRONT_MATTER_PROTECTION,
+    owned: frozenset = frozenset(),
 ) -> list[CoverageUnit]:
     units: list[CoverageUnit] = []
     cell_index = 0
     for table_index, table in enumerate(doc.tables):
         protect_table = table_index in front_matter.protected_table_indices
         for cell in _iter_unique_table_cells(table):
-            text = _cell_source_text(cell)
+            text = _cell_coverage_text(cell, source_lang=source_lang, target_lang=target_lang)
             location = f"table[{table_index}].cell[{cell_index}]"
             # cell_text 是这一格当时的完整文字。补译复核会把「原文＋译文挤在同一格」
             # 的单元格打回重译，那种 unit 的 source_text 只是格子里的原文那一半，
             # 写入器拿它去核对格子会对不上（格里还有旧译文）——认这一条。
-            data = {
+            data: dict = {
                 "cell_index": cell_index,
                 "table_index": table_index,
                 "cell_text": text,
             }
+            if cell._tc in owned:
+                data[REVISION_OWNED] = True
             if protect_table and clean_coverage_text(text):
                 unit = CoverageUnit(
                     source_text=text,
@@ -769,6 +809,10 @@ def _classify_table_cells(
                     data=data,
                     source_lang=source_lang,
                     target_lang=target_lang,
+                    has_revisions=any(
+                        paragraph_has_revisions(paragraph._p)
+                        for paragraph in _iter_cell_direct_paragraphs(cell)
+                    ),
                 )
             if unit is not None:
                 units.append(unit)
@@ -776,25 +820,65 @@ def _classify_table_cells(
     return units
 
 
+def _is_translation_line(text: str, *, source_lang: str, target_lang: str) -> bool:
+    return looks_like_target_text(
+        text, source_lang=source_lang, target_lang=target_lang
+    ) and not looks_like_source_text(text, source_lang=source_lang, target_lang=target_lang)
+
+
+def _cell_coverage_text(cell, *, source_lang: str, target_lang: str) -> str:
+    """覆盖率判定用的整格文字：各段原文，加上整段都在修订里的译文段。
+
+    「修订一起翻译」写出的译文段，修改前、修改后两句译文差得多时整段是一删一增，
+    普通读法读出来是空段，这一格就被认成「只有原文」（#285）。这种段按接受修订后的
+    文字认——但只认译文：整段都在修订里的原文段，常规写回本来就不碰它（「跳过修订」
+    时保持原样），算进来反而会让补译把修订里的字送去翻。
+    """
+    lines: list[str] = []
+    for paragraph in _iter_cell_direct_paragraphs(cell):
+        text = _paragraph_source_text(paragraph)
+        if not text:
+            revised = paragraph_coverage_text(paragraph)
+            if revised and _is_translation_line(
+                revised, source_lang=source_lang, target_lang=target_lang
+            ):
+                text = revised
+        if text:
+            lines.append(text)
+    return "\n".join(lines).strip()
+
+
 def _split_interleaved_cell_lines(
-    lines: list[str], *, source_lang: str, target_lang: str
+    lines: list[str], *, source_lang: str, target_lang: str, allow_missing: bool = False
 ) -> tuple[str, str] | None:
     """格子里「一段原文、一段译文」交替排：(原文各段, 译文各段)，不是这种排法返回 None。
 
     「修订一起翻译」时，带修订的格子逐段处理，每段原文下面紧跟它自己的译文
     （core/word_revisions.py）。整格判定只认「原文都在前、译文都在后」，认不出
     这种排法：续译前核对底稿时把这一格当成「源文件改过」，放弃上次结果整份重翻（#285）。
+
+    ``allow_missing``：有的原文段后面还没有译文（上次中途停下、这一段没译成）也认。
+    只对带修订的格子开——只有修订那一路会逐段写，普通格子里「中文、英文、中文」
+    多半是原文本身就中英混排，拆开会把中间那行英文从原文里丢掉。
     """
-    if len(lines) < 2 or len(lines) % 2:
+    sources: list[str] = []
+    targets: list[str] = []
+    previous_is_source = False
+    for line in lines:
+        if _is_translation_line(line, source_lang=source_lang, target_lang=target_lang):
+            if not previous_is_source:
+                return None
+            targets.append(line)
+            previous_is_source = False
+        elif looks_like_source_text(line, source_lang=source_lang, target_lang=target_lang):
+            if previous_is_source and not allow_missing:
+                return None
+            sources.append(line)
+            previous_is_source = True
+        else:
+            return None
+    if not targets or (previous_is_source and not allow_missing):
         return None
-    sources, targets = lines[0::2], lines[1::2]
-    for source, target in zip(sources, targets):
-        if not looks_like_source_text(source, source_lang=source_lang, target_lang=target_lang):
-            return None
-        if not looks_like_target_text(
-            target, source_lang=source_lang, target_lang=target_lang
-        ) or looks_like_source_text(target, source_lang=source_lang, target_lang=target_lang):
-            return None
     return join_lines(sources), join_lines(targets)
 
 
@@ -805,6 +889,7 @@ def _classify_cell_text(
     data: dict,
     source_lang: str,
     target_lang: str,
+    has_revisions: bool = False,
 ) -> CoverageUnit | None:
     cleaned = clean_coverage_text(text)
     if not cleaned:
@@ -854,6 +939,27 @@ def _classify_cell_text(
             kind="table_cell",
             section_path="表格",
             reason="表格单元格内已包含源文和目标语言译文。",
+            data=data,
+        )
+    partial = (
+        _split_interleaved_cell_lines(
+            paragraph_lines, source_lang=source_lang, target_lang=target_lang, allow_missing=True
+        )
+        if has_revisions
+        else None
+    )
+    if partial is not None:
+        # 有的段已译、有的还没：原文半边记全部原文段（续译核对底稿时和源文件那一格
+        # 对得上），状态是待补。「修订一起翻译」时这一格归修订那一路，只补没译的那几段。
+        source, target = partial
+        return CoverageUnit(
+            source_text=source,
+            target_text=target,
+            status=COVERAGE_SOURCE_ONLY,
+            location=location,
+            kind="table_cell",
+            section_path="表格",
+            reason="表格单元格里有的段落已有译文，有的还没有。",
             data=data,
         )
     if looks_like_source_text(cleaned, source_lang=source_lang, target_lang=target_lang):
