@@ -137,3 +137,139 @@ class NumberedListPageTests(unittest.TestCase):
         self.assertIn("7. The next screen is", groups)
         self.assertIn("Pre-alignment sets up the amount of power you need for the distance and can indicate if "
                       "you are receiving unwanted reflections from anything else in the beam path.", groups)
+
+
+class BadgeAndRunInTests(unittest.TestCase):
+    """说明书第 7 页（2026-11-27 Mac 复查）：标题里的带圈编号 ❸、从行中间开始折回行首的红字。"""
+
+    GREY, RED, WHITE, BLACK = (0.63, 0.64, 0.65), (0.82, 0.14, 0.16), (1, 1, 1), (0.14, 0.12, 0.13)
+
+    def _rows(self, build, grouped=False):
+        from core.pdf_vector.extract import group_paragraphs, native_rows, rules
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        build(page)
+        rows = native_rows(page, 72)
+        if grouped:
+            V, Hs = rules(page, 72)
+            rows = group_paragraphs(rows, V, Hs)
+        return [r["source_text"] for r in rows]
+
+    def _heading(self, page):
+        font = fitz.Font("hebo")
+        x = 75.0
+        for text, colour in (("step  ", self.BLACK), ("3", self.WHITE), ("  commissioning", self.BLACK)):
+            if colour == self.WHITE:
+                page.draw_circle((x + 5.8, 83), 10.9, color=None, fill=self.BLACK)
+            tw = fitz.TextWriter(page.rect)
+            x = tw.append((x, 90), text, font=font, fontsize=21)[1].x
+            tw.write_text(page, color=colour)
+
+    def test_a_white_number_on_a_black_disc_is_kept_apart_from_the_words(self):
+        self.assertEqual(self._rows(self._heading), ["step", "3", "commissioning"])
+
+    def test_white_words_on_one_dark_bar_stay_one_line(self):
+        def build(page):
+            page.draw_rect(fitz.Rect(70, 70, 330, 96), color=None, fill=self.BLACK)
+            page.insert_text((75, 90), "stage one commissioning", fontsize=18, fontname="hebo", color=self.WHITE)
+
+        self.assertEqual(self._rows(build), ["stage one commissioning"])
+
+    def test_a_dark_word_on_a_light_highlight_stays_in_its_sentence(self):
+        def build(page):
+            page.draw_rect(fitz.Rect(110, 78, 145, 94), color=None, fill=(1, 0.95, 0.4))
+            page.insert_text((75, 90), "Do NOT put the reflector up.", fontsize=12, fontname="helv",
+                             color=self.BLACK)
+
+        self.assertEqual(self._rows(build), ["Do NOT put the reflector up."])
+
+    def _wrapped_red(self, head_text, head_colour, below_right=False):
+        def build(page):
+            page.insert_text((86, 220), head_text, fontsize=12, fontname="helv", color=head_colour)
+            page.draw_rect(fitz.Rect(245, 205, 290, 236), color=self.RED, width=1)  # the crossed-out picture
+            page.insert_text((300, 220), "You cannot commission the beam if the reflector can be", fontsize=12,
+                             fontname="helv", color=self.RED)
+            page.insert_text((86, 234), "seen", fontsize=12, fontname="helv", color=self.RED)
+            if below_right:
+                page.insert_text((300, 234), "Power up the unit and wait", fontsize=12, fontname="helv",
+                                 color=self.RED)
+        return self._rows(build, grouped=True)
+
+    def test_a_sentence_starting_mid_line_takes_its_wrapped_word_from_the_line_start(self):
+        rows = self._wrapped_red("non-reflective black cloth or similar.", self.GREY)
+        self.assertIn("You cannot commission the beam if the reflector can be seen", rows)
+        self.assertIn("non-reflective black cloth or similar.", rows)
+
+    def test_the_line_start_still_goes_to_the_head_of_its_own_line_when_that_runs_on(self):
+        rows = self._wrapped_red("non-reflective black cloth or", self.RED)
+        self.assertNotIn("You cannot commission the beam if the reflector can be seen", rows)
+
+    def test_no_run_in_when_the_row_has_its_own_next_line(self):
+        rows = self._wrapped_red("non-reflective black cloth or similar.", self.GREY, below_right=True)
+        self.assertNotIn("You cannot commission the beam if the reflector can be seen", rows)
+        self.assertIn("seen", rows)
+
+    def test_whole_page_keeps_the_disc_number_and_writes_the_sentence_where_it_began(self):
+        from core.pdf_vector import translate_page_inplace
+
+        T = {"step": "步骤", "commissioning": "调试",
+             "You cannot commission the beam if the reflector can be seen": "如果能看到反射器，则无法调试光束"}
+
+        def build(page):
+            self._heading(page)
+            page.insert_text((86, 220), "non-reflective black cloth or similar.", fontsize=12, fontname="helv",
+                             color=self.GREY)
+            page.draw_rect(fitz.Rect(245, 205, 290, 236), color=self.RED, width=1)
+            page.insert_text((300, 220), "You cannot commission the beam if the reflector can be", fontsize=12,
+                             fontname="helv", color=self.RED)
+            page.insert_text((86, 234), "seen", fontsize=12, fontname="helv", color=self.RED)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = fitz.open()
+            build(doc.new_page(width=595, height=842))
+            doc.save(root / "source.pdf")
+            seen: list[str] = []
+
+            def translate(texts, prompt, **_extra):
+                seen.extend(texts)
+                return {t: T.get(t, "灰色译文") for t in texts}
+
+            res = translate_page_inplace(root / "source.pdf", 0, root / "work", translate=translate,
+                                         source_lang="en", target_lang="zh")
+            self.assertTrue(res.ok, res.error)
+            self.assertNotIn("3", seen)
+            out = fitz.open(res.output_pdf)[0]
+            words = {w[4]: fitz.Rect(w[:4]) for w in out.get_text("words")}
+            self.assertIn("3", words)  # the white 「3」 on the disc is untouched
+            disc = fitz.Rect(words["3"].x0 - 3, 72, words["3"].x1 + 3, 94)
+            for w, box in words.items():
+                if "调试" in w or "步骤" in w:
+                    self.assertFalse(box.intersects(disc), (w, box))
+            sentence = next(box for w, box in words.items() if "反射器" in w)
+            self.assertGreaterEqual(sentence.x0, 295)  # where the red sentence began, not under 「seen」
+            self.assertFalse(any(w.startswith("看到") for w in words))
+
+
+class RunInHeadingTests(unittest.TestCase):
+    """讲义的粗体小标题后面接正文（「Negation.  We start with …」）：正文从行中间开始，
+    折回行首继续。整段一起翻，按左对齐写，不因第一行起点靠右被当成居中。"""
+
+    def test_paragraph_after_a_run_in_heading_is_one_left_aligned_paragraph(self):
+        from core.pdf_vector.extract import group_paragraphs, native_rows, rules
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Negation.", fontsize=11, fontname="hebo")
+        page.insert_text((135, 100), "We start with the simplest logical operation: negation. If A is any", fontsize=11,
+                         fontname="helv")
+        page.insert_text((72, 113.5), "logical statement, then not A stands for the negation of A, and it is again",
+                         fontsize=11, fontname="helv")
+        page.insert_text((72, 127), "a logical statement whose value is the opposite one.", fontsize=11, fontname="helv")
+        V, Hs = rules(page, 72)
+        rows = group_paragraphs(native_rows(page, 72), V, Hs)
+        (para,) = [r for r in rows if r["source_text"].startswith("We start")]
+        self.assertTrue(para["source_text"].endswith("the opposite one."), para["source_text"])
+        self.assertEqual(para["line_align"], "start")
+        self.assertIn("Negation.", [r["source_text"] for r in rows])
