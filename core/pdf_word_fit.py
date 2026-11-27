@@ -19,6 +19,8 @@ from pathlib import Path
 from loguru import logger
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+_EMU_PER_TWIP = 635
 
 #: 每轮在上一轮基础上再缩这么多；三轮后约为原来的 73%。
 SHRINK_STEP = 0.9
@@ -210,7 +212,7 @@ def _ensure_mark_size(paragraph, default_size: int) -> None:
 
 
 def shrink_group(group: list, ratio: float, default_size: int = 22) -> None:
-    """一页原文里的字号、段前段后、固定或最小行距、表格行高（有图片的固定行高除外）都乘以 ratio。"""
+    """一页原文里的字号、段前段后、固定或最小行距、表格行高（有图片的表的固定行高除外）、浮动图片的竖直位置都乘以 ratio。"""
     for element in group:
         for run in element.iter(f"{_W}r"):
             if not "".join(node.text or "" for node in run.iter(f"{_W}t")).strip():
@@ -248,6 +250,43 @@ def shrink_group(group: list, ratio: float, default_size: int = 22) -> None:
             if height.get(f"{_W}hRule") == "exact" and (table is None or _has_picture(table)):
                 continue
             _scale_value(height, f"{_W}val", ratio)
+    _move_floating_pictures(group, ratio)
+
+
+def _top_margin(group: list) -> int:
+    """这一页（分节）的上边距，1/20 磅。最后一页的分节写在正文末尾的 sectPr 里。找不到时按 0。"""
+    margins = [margin for element in group for margin in element.iter(f"{_W}pgMar")]
+    body = group[0].getparent() if group else None
+    if not margins and body is not None:
+        final = body.find(f"{_W}sectPr/{_W}pgMar")
+        margins = [final] if final is not None else []
+    try:
+        return int(margins[0].get(f"{_W}top") or 0) if margins else 0
+    except ValueError:
+        return 0
+
+
+def _move_floating_pictures(group: list, ratio: float) -> None:
+    """浮动图片的竖直位置跟着这一页的字一起往上收。
+
+    pdf2docx 把图摆在「离页顶多少」的固定位置，图又在文字下方（behindDoc）。字缩了、图不动，
+    下面带底色的框（例题框）往上挪，正好盖住图：讲义图 28 的箭头、自环在译文里不见了。
+    离页顶的位置按上边距以下的部分乘 ratio；离段落、行的位置直接乘 ratio。横向不动。"""
+    top = _top_margin(group) * _EMU_PER_TWIP
+    for element in group:
+        for position in element.iter(f"{_WP}positionV"):
+            offset = position.find(f"{_WP}posOffset")
+            if offset is None or offset.text is None:
+                continue
+            try:
+                value = int(offset.text)
+            except ValueError:
+                continue
+            if position.get("relativeFrom") == "page":
+                value = top + (value - top) * ratio if value > top else value
+            else:
+                value = value * ratio
+            offset.text = str(round(value))
 
 
 def _has_picture(table) -> bool:
