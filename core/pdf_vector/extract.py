@@ -28,7 +28,7 @@ from PIL import Image
 
 from core.ocr_engine import png_bytes, tesseract_options
 
-from .common import fitz, join_words, norm_text, sha256, write_json
+from .common import fitz, is_blank, join_words, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
 TILE, STEP = 1800, 1560
@@ -62,7 +62,7 @@ def _graphic_between(a, b, drawings, band) -> bool:
 def _line_pieces(ln, drawings) -> list[list[tuple]]:
     """The line's characters, cut where a drawing sits between two words: 「Press → (right)」
     on a device screen is two labels with an arrow between them, not one phrase."""
-    chars = [(c["c"], fitz.Rect(c["bbox"]), s) for s in ln["spans"] for c in s["chars"]]
+    chars = [(" " if is_blank(c["c"]) else c["c"], fitz.Rect(c["bbox"]), s) for s in ln["spans"] for c in s["chars"]]
     horizontal = abs(ln["dir"][1]) < 0.01 and ln["dir"][0] > 0
     pieces: list[list] = [[]]
     last = None
@@ -93,7 +93,7 @@ def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
         if b.get("type") != 0:
             continue
         for ln in b["lines"]:
-            if not any(c["c"].strip() for s in ln["spans"] for c in s["chars"]):
+            if all(is_blank(c["c"]) for s in ln["spans"] for c in s["chars"]):
                 continue
             if drawings is None:
                 drawings = [fitz.Rect(dr["rect"]) for dr in page.get_drawings()]
