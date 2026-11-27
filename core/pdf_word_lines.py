@@ -32,6 +32,7 @@ from typing import Any
 from loguru import logger
 
 from core.pdf_word_fit import page_groups
+from core.pdf_word_line_art import bare_tables, replace_bars
 from core.pdf_word_rules import (
     _MIN_MATCH,
     _alignment,
@@ -287,14 +288,15 @@ def _origin_top(located) -> float | None:
 
 
 def _reorder_cell(tc, located: list[tuple[Any, Any, int, list[tuple[int, _Line]]]], cuts: list[set[int]],
-                  origin_top: float) -> bool:
+                  origin_top: float) -> float | None:
     """一格里的段在该切的行前面切开，按 PDF 上的位置从上到下重排。自动折行的几行留在一段里。
-    origin_top 是这一行格子的上沿：同一行的几个格子用同一个，左右两列才对得齐。"""
+    origin_top 是这一行格子的上沿：同一行的几个格子用同一个，左右两列才对得齐。
+    重排了返回格子文字左边在 PDF 上的位置，没重排返回 None。"""
     pieces: list[tuple[list[_Line], Any, list]] = []
     origin_left = None
     for (paragraph, where, _offset, lines), cut in zip(located, cuts, strict=True):
         if not lines:
-            return False
+            return None
         p_pr = paragraph.find(f"{_W}pPr")
         ind = p_pr.find(f"{_W}ind") if p_pr is not None else None
         jc = p_pr.find(f"{_W}jc") if p_pr is not None else None
@@ -303,14 +305,14 @@ def _reorder_cell(tc, located: list[tuple[Any, Any, int, list[tuple[int, _Line]]
         heads = [0, *sorted(cut)]
         blocks = _cut_paragraph(paragraph, where, [lines[number][0] for number in heads[1:]])
         if blocks is None or len(blocks) != len(heads):
-            return False
+            return None
         for begin, end, nodes in zip(heads, [*heads[1:], len(lines)], blocks, strict=True):
             pieces.append(([line for _start, line in lines[begin:end]], paragraph, nodes))
     if origin_left is None:
-        return False
+        return None
     pieces.sort(key=lambda piece: (piece[0][0].top, piece[0][0].left))
     if any(b[0][0].top - a[0][0].top < _SAME_ROW for a, b in pairwise(pieces)):
-        return False
+        return None
     paragraphs = [paragraph for paragraph, *_rest in located]
     anchor = paragraphs[0]
     bottom = origin_top
@@ -346,7 +348,7 @@ def _reorder_cell(tc, located: list[tuple[Any, Any, int, list[tuple[int, _Line]]
             for child in list(paragraph):
                 if child.tag != f"{_W}pPr":
                     paragraph.remove(child)
-    return True
+    return origin_left
 
 
 def _interleaved(located) -> bool:
@@ -471,7 +473,7 @@ def _full_alignment(page_text: str, word_text: str, starts: list[int] | None = N
     return mapping
 
 
-def _restore_page(group: list, page) -> int:
+def _restore_page(group: list, page, document=None, fitz=None) -> int:
     chars = _page_chars(page)
     page_text = "".join(char[0] for char in chars)
     paragraphs = [p for element in group
@@ -508,8 +510,23 @@ def _restore_page(group: list, page) -> int:
                 row = tc.getparent()
                 rows[row] = min(rows.get(row, top), top)
         for (tc, located), cell_cuts in zip(cells, cuts, strict=True):
-            if located and (any(cell_cuts) or _interleaved(located)) and tc.getparent() in rows:
-                changed += _reorder_cell(tc, located, cell_cuts, rows[tc.getparent()])
+            if not (located and (any(cell_cuts) or _interleaved(located)) and tc.getparent() in rows):
+                continue
+            # 格子里画线用的小表格（证明表的竖线、短横线）：只有边框的，重排后换成原文那几条线的图；
+            # 有字或图的，这一格不重排
+            bars = bare_tables(tc)
+            if bars is None:
+                continue
+            origin_left = _reorder_cell(tc, located, cell_cuts, rows[tc.getparent()])
+            if origin_left is None:
+                continue
+            changed += 1
+            if bars and document is not None and fitz is not None:
+                top = min(lines[0][1].top for _p, _w, _o, lines in located)
+                bottom = max(lines[-1][1].bottom for _p, _w, _o, lines in located)
+                drawn = replace_bars(document, page, tc, bars, origin_left, top, bottom, fitz)
+                logger.info(f"[PDF] 重排的格子里 {len(bars)} 张画线的小表格去掉，"
+                            f"{'换成原文那几条线的图' if drawn else '原文的线没画出来'}")
     return changed
 
 
@@ -536,7 +553,7 @@ def restore_line_order(docx_path: Path, pdf_path: Path) -> int:
         if len(groups) != len(pdf):
             return 0
         for page_index, group in enumerate(groups):
-            count = _restore_page(group, pdf[page_index])
+            count = _restore_page(group, pdf[page_index], doc, fitz)
             if count:
                 pages.append(str(page_index + 1))
                 changed += count

@@ -37,9 +37,14 @@ class RestoreLineOrderTests(unittest.TestCase):
         self.pdf = Path(tmp.name) / "in.pdf"
         self.docx = Path(tmp.name) / "out.docx"
 
-    def _make(self, cell: str) -> None:
+    def _make(self, cell: str, bar: bool = False) -> None:
         pdf = pymupdf.open()
         page = pdf.new_page(width=595, height=842)
+        if bar:
+            # 格子的底色（大块）和证明表左边的一条竖线、一条短横线（细线）
+            page.draw_rect(pymupdf.Rect(50, 60, 500, 200), color=None, fill=(1, 0.95, 0.95))
+            page.draw_line((110, 90), (110, 140), color=(0, 0, 0), width=0.4)
+            page.draw_line((110, 104), (119, 104), color=(0, 0, 0), width=0.4)
         for x, y, text in _STEPS:
             page.insert_text((x, y), text, fontname="helv", fontsize=11)
         pdf.save(str(self.pdf))
@@ -60,6 +65,48 @@ class RestoreLineOrderTests(unittest.TestCase):
         cell = self._cell()
         self.assertEqual([text.strip() for text, _left in cell], ["1. Alpha one", "2. Beta two", "3. Gamma three"])
         self.assertEqual([left for _text, left in cell], ["0", "400", "0"])
+
+    @staticmethod
+    def _bar_table(text: str = "") -> str:
+        # pdf2docx 画线用的小表格：左边框是竖线，第一行的下边框是短横线；缩进从格子文字左边量起
+        borders = '<w:tcBorders><w:start w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/></w:tcBorders>'
+        return (f'<w:tbl><w:tblPr><w:tblInd w:w="200" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="180"/>'
+                f'</w:tblGrid><w:tr><w:trPr><w:trHeight w:val="280" w:hRule="exact"/></w:trPr><w:tc><w:tcPr>{borders}'
+                f'</w:tcPr><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+
+    def test_bar_tables_become_a_picture_of_the_lines(self) -> None:
+        # 证明表的竖线、短横线是格子里只有边框的小表格：重排后去掉（不然挤到格子最下面把格子撑爆），
+        # 原文那几条线画成透明的图，浮在字上面（格子有底色，放在字下面会被盖住），左右跟着第一行的字走
+        self._make(_cell_paragraph("1. Alpha one 3. Gamma three", 0) + _cell_paragraph("2. Beta two", 400)
+                   + self._bar_table(), bar=True)
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 1)
+        doc = Document(str(self.docx))
+        tc = doc.tables[0].cell(0, 0)._tc
+        self.assertEqual(tc.findall(qn("w:tbl")), [])
+        self.assertEqual(tc[-1].tag, qn("w:p"))
+        anchors = tc.findall(f".//{qn('wp:anchor')}")
+        self.assertEqual(len(anchors), 1)
+        anchor = anchors[0]
+        self.assertEqual(anchor.get("behindDoc"), "0")
+        self.assertEqual(anchor.find(qn("wp:positionH")).get("relativeFrom"), "character")
+        emu = 12700
+        left = int(anchor.find(f"{qn('wp:positionH')}/{qn('wp:posOffset')}").text) / emu
+        top = int(anchor.find(f"{qn('wp:positionV')}/{qn('wp:posOffset')}").text) / emu
+        width = int(anchor.find(qn("wp:extent")).get("cx")) / emu
+        height = int(anchor.find(qn("wp:extent")).get("cy")) / emu
+        # 竖线在 x=110，第一行的字从 x=100 起；线 90–140 高、横线到 119：底色那一大块不算进来
+        self.assertAlmostEqual(left, 10 - 1.4, delta=0.5)
+        self.assertAlmostEqual(top, 90 - 1.4, delta=0.5)
+        self.assertAlmostEqual(width, 9 + 2.8, delta=0.5)
+        self.assertAlmostEqual(height, 50 + 2.8, delta=0.5)
+        self.assertEqual([p.text.strip() for p in doc.tables[0].cell(0, 0).paragraphs][:3],
+                         ["1. Alpha one", "2. Beta two", "3. Gamma three"])
+
+    def test_cell_with_a_nested_table_holding_text_is_left_alone(self) -> None:
+        self._make(_cell_paragraph("1. Alpha one 3. Gamma three", 0) + _cell_paragraph("2. Beta two", 400)
+                   + self._bar_table("x"), bar=True)
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
+        self.assertEqual(len(Document(str(self.docx)).tables[0].cell(0, 0)._tc.findall(qn("w:tbl"))), 1)
 
     def test_lines_already_in_order_are_left_alone(self) -> None:
         self._make(_cell_paragraph("1. Alpha one", 0) + _cell_paragraph("2. Beta two", 400)
