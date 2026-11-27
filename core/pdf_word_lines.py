@@ -19,6 +19,12 @@ pdf2docx 把同一缩进的几行拼成一段，靠很大的固定行距和自�
 切开的每一块按原文从上到下排，缩进、段前距、行高按原文这几行的位置定，同一行的几格从同一个
 上沿量起。字的格式（上下标、字体）不动。
 
+正文里的算法框（反馈 #28 讲义第 42、91 页）转出来不是表格，是正文段，毛病一样：几行拼成一段，
+循环体在行号后面空开的一截缩进只剩一个空格。一段里有一处换行，下一行的第一个词放得进这几行最宽的
+那一行（或者紧接在这样的段后面时，放得进那一串段最宽的那一行），这一段就是一行一行摆的：除了排满了
+这一栏的折行，每一行一段，缩进、段前距按原文；行里空开一整行高以上、Word 里只隔着空格的地方，换成
+制表符，制表位放在原文的位置。居中、靠右的段不动。
+
 拆不开（一行的分界落在超链接、公式这类不是普通字的地方）、同一格里有两行一样高（并排的字）、
 找不到对应的字、PDF 打不开、没有 PyMuPDF 时，这张表不动。
 """
@@ -303,12 +309,11 @@ def _origin_top(located) -> float | None:
 
 
 def _reorder_cell(tc, located: list[tuple[Any, Any, int, list[tuple[int, _Line]]]], cuts: list[set[int]],
-                  origin_top: float) -> float | None:
+                  origin_top: float, origin_left: float | None = None) -> float | None:
     """一格里的段在该切的行前面切开，按 PDF 上的位置从上到下重排。自动折行的几行留在一段里。
     origin_top 是这一行格子的上沿：同一行的几个格子用同一个，左右两列才对得齐。
     重排了返回格子文字左边在 PDF 上的位置，没重排返回 None。"""
     pieces: list[tuple[list[_Line], Any, list]] = []
-    origin_left = None
     for (paragraph, where, _offset, lines), cut in zip(located, cuts, strict=True):
         if not lines:
             return None
@@ -542,11 +547,194 @@ def _restore_page(group: list, page, document=None, fitz=None) -> int:
                 drawn = replace_bars(document, group, page, tc, bars, origin_left, top, bottom, fitz)
                 logger.info(f"[PDF] 重排的格子里 {len(bars)} 张画线的小表格去掉，"
                             f"{'换成原文那几条线的图' if drawn else '原文的线没画出来'}")
+    # 正文里一行一行摆的段（算法框、代码）：同样按原文一行一段。算法框里最宽的那一行后面紧跟着一行，
+    # 单看这一段像折行：紧接在一行一行摆的段后面的段（中间只隔着单独一行的段），看下一行的第一个词
+    # 放不放得进这一串段里最宽的那一行（「Input: …」那一行）
+    blocks = [tuple(block["bbox"]) for block in page.get_text("dict").get("blocks", []) if block.get("lines")]
+    region: float | None = None
+    for element in group:
+        if element.tag != f"{_W}p":
+            region = None
+            continue
+        done, state, right = _restore_body_paragraph(element, group, offsets, reverse, chars, blocks, region)
+        changed += done
+        if state is False:
+            region = None
+        elif state or region is not None:
+            region = max(region or 0.0, right)
     return changed
 
 
+def _gaps_to_tabs(paragraph, where: list, offset: int, reverse: dict[int, int], chars,
+                  lines: list[tuple[int, _Line]], column_left: float) -> None:
+    """一行里两个字在 PDF 上隔开一整行高以上（算法框行号后面的缩进「4:      if」），Word 里却只隔着
+    空格：在后一个字前面放一个制表符，按 PDF 上的位置加一个左对齐制表位。已经隔着制表符的不动。
+    切 run 以后 where 里落在后半截的字改指新的 run。"""
+    # 记着元素本身，不记 id()：lxml 的元素对象没人引用就会回收，id 会被别的元素重用
+    nodes = list(paragraph.iter(f"{_W}t", f"{_W}br", f"{_W}tab", f"{_W}cr"))
+    kinds = [node.tag for node in nodes]
+    starts = {start for start, _line in lines}
+    heights = {}
+    for (start, line), end in zip(lines, [start for start, _line in lines[1:]] + [len(where)], strict=True):
+        for number in range(start, end):
+            heights[number] = line.bottom - line.top
+    stops: list[float] = []
+    for number in range(len(where) - 1, 0, -1):
+        before, after = reverse.get(offset + number - 1), reverse.get(offset + number)
+        if number in starts or before is None or after is None:
+            continue
+        left = chars[after][1][0]
+        if left - chars[before][1][2] <= heights.get(number, 0.0):
+            continue
+        (node_a, _index_a), (node_b, index_b) = where[number - 1], where[number]
+        first = next((index for index, node in enumerate(nodes) if node is node_a), None)
+        last = next((index for index, node in enumerate(nodes) if node is node_b), None)
+        run = node_b.getparent()
+        if (first is None or last is None or f"{_W}tab" in kinds[first:last]
+                or not _plain_run(run, paragraph)):
+            continue
+        if index_b:
+            run = _split(run, index_b)
+            text = run.find(f"{_W}t")
+            for position, (node, index) in enumerate(where):
+                if node is node_b and index >= index_b:
+                    where[position] = (text, index - index_b)
+        tab = run.makeelement(f"{_W}r", {})
+        r_pr = run.find(f"{_W}rPr")
+        if r_pr is not None:
+            tab.append(copy.deepcopy(r_pr))
+        tab.append(tab.makeelement(f"{_W}tab", {}))
+        run.addprevious(tab)
+        stops.append(left - column_left)
+    if not stops:
+        return
+    p_pr = paragraph.find(f"{_W}pPr")
+    if p_pr is None:
+        p_pr = paragraph.makeelement(f"{_W}pPr", {})
+        paragraph.insert(0, p_pr)
+    tabs = p_pr.find(f"{_W}tabs")
+    if tabs is None:
+        tabs = p_pr.makeelement(f"{_W}tabs", {})
+        anchor = next((node for node in p_pr if node.tag not in (f"{_W}pStyle", f"{_W}keepNext", f"{_W}keepLines",
+                                                                f"{_W}pageBreakBefore", f"{_W}framePr",
+                                                                f"{_W}widowControl", f"{_W}numPr",
+                                                                f"{_W}suppressLineNumbers", f"{_W}pBdr",
+                                                                f"{_W}shd")), None)
+        if anchor is not None:
+            anchor.addprevious(tabs)
+        else:
+            p_pr.append(tabs)
+    have = [_number(tab.get(f"{_W}pos")) for tab in tabs.findall(f"{_W}tab")]
+    for stop in stops:
+        if all(abs(stop - position) > 1.0 for position in have):
+            tabs.append(tabs.makeelement(f"{_W}tab", {f"{_W}val": "left", f"{_W}pos": _twips(stop)}))
+            have.append(stop)
+    for node in sorted(tabs, key=lambda item: _number(item.get(f"{_W}pos"))):
+        tabs.append(node)
+
+
+def _section_of(paragraph, group: list):
+    """这一段所在分节的属性（w:sectPr）：后面第一个带分节的段，或者文档末尾的。"""
+    after = False
+    for element in group:
+        if element is paragraph:
+            after = True
+        if not after:
+            continue
+        if element.tag == f"{_W}sectPr":
+            return element
+        found = element.find(f"{_W}pPr/{_W}sectPr") if element.tag == f"{_W}p" else None
+        if found is not None:
+            return found
+    body = paragraph.getparent()
+    return body.find(f"{_W}sectPr") if body is not None else None
+
+
+def _column(section, left: float) -> tuple[float, float] | None:
+    """分节里装着这一行（左边在 left 磅）的那一栏的左右边（磅）。"""
+    if section is None:
+        return None
+    size = section.find(f"{_W}pgSz")
+    margin = section.find(f"{_W}pgMar")
+    page_width = _twips_of(size, "w")
+    margin_left, margin_right = _twips_of(margin, "left"), _twips_of(margin, "right")
+    if page_width is None or margin_left is None or margin_right is None:
+        return None
+    cols = section.find(f"{_W}cols")
+    width = page_width - margin_left - margin_right
+    edges: list[tuple[float, float]] = []
+    if cols is not None and cols.findall(f"{_W}col"):
+        x = margin_left
+        for col in cols.findall(f"{_W}col"):
+            col_width = _twips_of(col, "w") or 0.0
+            edges.append((x, x + col_width))
+            x += col_width + (_twips_of(col, "space") or 0.0)
+    else:
+        count = int(cols.get(f"{_W}num", "1")) if cols is not None and (cols.get(f"{_W}num") or "1").isdigit() else 1
+        space = (_twips_of(cols, "space") or 0.0) if count > 1 else 0.0
+        col_width = (width - space * (count - 1)) / max(count, 1)
+        edges = [(margin_left + index * (col_width + space), margin_left + index * (col_width + space) + col_width)
+                 for index in range(max(count, 1))]
+    for col_left, col_right in edges:
+        if col_left - _SAME_ROW <= left <= col_right:
+            return col_left, col_right
+    return None
+
+
+def _block_right(blocks, line: _Line) -> float:
+    """PDF 上装着这一行的那一块字（PyMuPDF 的 block）的右边：这几行实际排到多宽。"""
+    middle = (line.top + line.bottom) / 2
+    return max((box[2] for box in blocks if box[1] <= middle <= box[3] and box[0] - _SAME_ROW <= line.left <= box[2]),
+               default=line.right)
+
+
+def _restore_body_paragraph(paragraph, group: list, offsets: dict, reverse: dict[int, int], chars, blocks,
+                            region: float | None) -> tuple[bool, bool | None, float]:
+    """正文里的一段（不在表格里）在 PDF 上是一行一行摆的：有一处换行，下一行的第一个词放得进原文
+    这几行最宽的那一行（算法框、代码）；紧接在一行一行摆的段后面时，放得进那一串段最宽的那一行
+    （region，磅）。这样的段除了排满了这一栏的折行，每一行一段，缩进、段前距按原文。居中、靠右的段
+    不动（多行的标题本来就短，看着都像硬换行）。
+    返回（重排了没有，这一段是不是一行一行摆的（只有一行、对不上时 None），最宽那一行的右边）。"""
+    start, where = offsets.get(paragraph, (0, []))
+    if not where:
+        return False, None, 0.0
+    lines = _lines_of(paragraph, where, start, reverse, chars)
+    located = [(paragraph, where, start, lines)]
+    widest = _widest(located) or 0.0
+    if len(lines) < 2:
+        # 夹在一行一行摆的段中间的单独一行（「6: end if」）：不用切，行里的缩进照样补上
+        column = _column(_section_of(paragraph, group), lines[0][1].left) if lines and region is not None else None
+        if column is not None:
+            _gaps_to_tabs(paragraph, where, start, reverse, chars, lines, column[0])
+        return False, None, widest
+    if _interleaved(located):
+        return False, False, widest
+    laid = not all(
+        _wrapped(lines[number - 1][1], lines[number][1],
+                 max(widest, region or 0.0, _block_right(blocks, lines[number - 1][1])), number == 1)
+        for number in range(1, len(lines)))
+    jc = paragraph.find(f"{_W}pPr/{_W}jc")
+    if not laid or (jc is not None and jc.get(f"{_W}val") in ("center", "right", "end")):
+        return False, False, widest
+    column = _column(_section_of(paragraph, group), lines[0][1].left)
+    if column is None or any(line.right > column[1] + _SAME_ROW for _start, line in lines):
+        return False, False, widest
+    cut = {number for number in range(1, len(lines))
+           if not _wrapped(lines[number - 1][1], lines[number][1], column[1], number == 1)}
+    origin_top = _origin_top(located)
+    if not cut or origin_top is None or paragraph.getparent() is None:
+        return False, True, widest
+    _gaps_to_tabs(paragraph, where, start, reverse, chars, lines, column[0])
+    # 原来固定行高比字高的部分在字上面：行高改成字高以后，第一行往下挪回原来的位置
+    spacing = paragraph.find(f"{_W}pPr/{_W}spacing")
+    if spacing is not None and spacing.get(f"{_W}lineRule") == "exact":
+        first = lines[0][1]
+        origin_top -= max(0.0, _number(spacing.get(f"{_W}line")) - (first.bottom - first.top))
+    return _reorder_cell(paragraph.getparent(), located, [cut], origin_top, column[0]) is not None, True, widest
+
+
 def restore_line_order(docx_path: Path, pdf_path: Path) -> int:
-    """交错摆放的表格（证明表）按原文一行一段重排，返回重排了几格。"""
+    """交错摆放的表格（证明表）、一行一行摆的正文段（算法框）按原文一行一段重排，返回重排了几处。"""
     try:
         from core.pdf_component import require_fitz
 
@@ -574,5 +762,5 @@ def restore_line_order(docx_path: Path, pdf_path: Path) -> int:
                 changed += count
     if changed:
         doc.save(str(docx_path))
-        logger.info(f"[PDF] 第 {'、'.join(pages)} 页共 {changed} 个格子里交错摆放的行按原文一行一段重排")
+        logger.info(f"[PDF] 第 {'、'.join(pages)} 页共 {changed} 处一行一行摆的字按原文一行一段重排")
     return changed
