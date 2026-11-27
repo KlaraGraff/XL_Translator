@@ -505,6 +505,14 @@ def classify_and_translate(rows: list[dict], *, translate: TranslateFn | None, p
             if scene:
                 from core.document_profile import append_profile
                 prompt = append_profile(prompt, scene)
+        # 短文字单独送去时看不到旁边的字（「Xtra」被当普通词译成「额外」）：附上它在页面上
+        # 和相邻文字连起来的样子，只供理解
+        from core.prompt_cache import append_context_block
+
+        from .neighbours import neighbour_block
+        block = neighbour_block(rows, to_model)
+        if block:
+            prompt = append_context_block(prompt, block)
         inputs = sorted({r["model_input"] for r in to_model})
         if memory is not None:
             try:
