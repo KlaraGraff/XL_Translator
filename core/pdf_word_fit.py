@@ -172,21 +172,26 @@ def page_starts(anchors: list[list[str]], page_texts: list[str],
     # （不是空白页，空白页不会多出页来）、上一页的结尾也找得到，就从结尾那页的下一页开始：讲义
     # 第 67、68 页开头是图上的短标签，以前一律往后挤，第 68 页多出来的一页算到第 66 页头上，
     # 第 66 页缩到最小字号，还报「放不下」
+    latest: list[int] = [0] * len(anchors)  # 没定位的页最晚从哪一页开始（后面的页各占一页）
+    following_start, following_index = len(page_texts), len(anchors)
+    for index in range(len(anchors) - 1, -1, -1):
+        known = starts[index]
+        if known is None:
+            latest[index] = following_start - (following_index - index)
+        else:
+            following_start, following_index = known, index
     for index in range(len(anchors)):
         if starts[index] is not None:
             continue
-        following = next((number for number in range(index + 1, len(anchors)) if starts[number] is not None), None)
-        latest = (starts[following] if following is not None else len(page_texts)) - (
-            (following if following is not None else len(anchors)) - index)
-        starts[index] = latest
-        if index == 0 or not tails or not tails[index] or not tails[index - 1]:
+        starts[index] = latest[index]
+        begin = starts[index - 1] if index > 0 else None
+        if begin is None or not tails or not tails[index] or not tails[index - 1]:
             continue
-        begin = starts[index - 1]
         ends = [next((page for page in range(begin, len(page_texts)) if piece in page_texts[page]), None)
                 for piece in tails[index - 1]]
-        ends = [page for page in ends if page is not None]
-        if ends and begin < max(ends) + 1 <= latest:
-            starts[index] = max(ends) + 1
+        found = [page for page in ends if page is not None]
+        if found and begin < max(found) + 1 <= latest[index]:
+            starts[index] = max(found) + 1
     result = [int(start) for start in starts if start is not None]
     if any(later <= earlier for earlier, later in pairwise(result)) or result[-1] >= len(page_texts):
         return None
