@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -139,8 +140,8 @@ def _babeldoc() -> bool:
         print(f"[babeldoc] INSTALL FAILED: {exc}")
         return False
     print(f"[babeldoc] installed in {time.monotonic() - started:.0f}s: {info}")
-    # 再按 PDF 任务的调用方式翻两页：要译文的请求经 stdin/stdout 交回这边。整批的请求故意答不上，
-    # BabelDOC 改成一段一段问，每段加上「TR 」。
+    # 再按 PDF 任务的调用方式翻两页：要译文的请求经 stdin/stdout 交回这边，这里替模型按 BabelDOC
+    # 要的格式作答（每段译文 = 「TR 」+ 原文）。
     from core.pdf_component import forget_failures, require_fitz
 
     forget_failures()
@@ -160,9 +161,15 @@ def _babeldoc() -> bool:
 
     def translate(kind: str, text: str) -> str:
         asked[kind] = asked.get(kind, 0) + 1
-        if kind == "llm":
-            raise RuntimeError("batch answers are not used in this check")
-        return f"TR {text}"
+        if kind == "plain":
+            return f"TR {text}"
+        if asked["llm"] == 1:
+            print(f"[babeldoc] first batch request (tail): {text[-600:]!r}")
+        items = _babeldoc_batch(text)
+        if items is None:
+            return "[]"  # 术语提取等别的请求：没有可加的术语
+        return json.dumps([{"id": item["id"], "output": f"TR {item['input']}"} for item in items],
+                          ensure_ascii=False)
 
     started = time.monotonic()
     result = babeldoc_component.translate_pdf(source, work / "run", pages=[1, 2], lang_in="en", lang_out="zh",
@@ -183,6 +190,22 @@ def _babeldoc() -> bool:
     if own_pdf:
         pdf_installer.uninstall()
     return result.ok and pages == 2 and "TR " in text and "20120826" in text and installer.installed_dirs() is None
+
+
+def _babeldoc_batch(prompt: str) -> list[dict] | None:
+    """BabelDOC 整批翻译的提示词最后是一个 JSON 数组：[{"id": 0, "input": "...", ...}, ...]。"""
+    if '"output"' not in prompt:
+        return None
+    decoder = json.JSONDecoder()
+    found = None
+    for start in (index for index, char in enumerate(prompt) if char == "["):
+        try:
+            value, _end = decoder.raw_decode(prompt, start)
+        except ValueError:
+            continue
+        if isinstance(value, list) and value and all(isinstance(item, dict) and "input" in item for item in value):
+            found = value
+    return found
 
 
 def main(argv: list[str]) -> int:
