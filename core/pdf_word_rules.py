@@ -208,7 +208,7 @@ def _math_items(runs) -> list:
         kind = _script(run)
         base_run = items[-1] if items and items[-1].tag == f"{_M}r" else None
         stripped = (base_run.find(f"{_M}t").text or "").rstrip() if base_run is not None else ""
-        if kind is None or not stripped:
+        if kind is None or base_run is None or not stripped:
             if text:
                 items.append(_math_run(run, text))
             continue
@@ -253,9 +253,9 @@ def _space_beside(neighbour, at_end: bool, paragraph) -> None:
     if neighbour is None or neighbour.tag != f"{_W}r" or neighbour.getparent() is not paragraph:
         return
     node = neighbour.find(f"{_W}t")
-    text = node.text if node is not None else None
-    if not text:
+    if node is None or not node.text:
         return
+    text = node.text
     edge = text[-1] if at_end else text[0]
     if edge.isalnum():
         node.text = text + " " if at_end else " " + text
