@@ -212,6 +212,10 @@ class BadgeAndRunInTests(unittest.TestCase):
 
     def test_whole_page_keeps_the_disc_number_and_writes_the_sentence_where_it_began(self):
         from core.pdf_vector import translate_page_inplace
+        from core.pdf_vector.fonts import find_cjk_font
+
+        if not find_cjk_font():
+            self.skipTest("no CJK font on this machine: in place cannot write Chinese")
 
         T = {"step": "步骤", "commissioning": "调试",
              "You cannot commission the beam if the reflector can be seen": "如果能看到反射器，则无法调试光束"}
