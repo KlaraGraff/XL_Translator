@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - PyMuPDF is in requirements-test.txt
     pymupdf = None
 
-from core.pdf_word_lines import restore_line_order
+from core.pdf_word_lines import _fits, _Line, _prune, restore_line_order
 
 _STEPS = [(100, 100, "1. Alpha one"), (120, 118, "2. Beta two"), (100, 136, "3. Gamma three")]
 
@@ -156,6 +156,46 @@ class HardBreakTests(unittest.TestCase):
         lines = [(100, 100 + 14 * number, text) for number, text in enumerate(_PROSE)]
         self._make(lines, self._runs(*_PROSE))
         self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
+
+
+class AlignmentTests(unittest.TestCase):
+    def test_a_match_spilling_into_the_next_paragraph_is_dropped(self) -> None:
+        # 讲义第 33 页：Word 里「10. P₂」后面一段是「13. …」，PDF 上「10. P₂」后面紧跟「11.」，
+        # 先后顺序对齐时把「13.」的「1」连带对到了「11.」的「1」上，两段各有一个字落到别的行，整格放弃重排
+        word = "10.P2" + "13.(¬P1)"
+        mapping = {index: index for index in range(6)}  # 「10.P2」+ 下一段的「1」，一口气对上
+        mapping.update({20 + offset: 6 + offset for offset in range(7)})  # 「3.(¬P1)」对在别处
+        pruned = _prune(mapping, [0, 5], len(word))
+        self.assertNotIn(5, pruned, "跨到下一段的那一个字去掉")
+        self.assertEqual({key: value for key, value in pruned.items() if key != 5}, {
+            key: value for key, value in mapping.items() if key != 5}, "别的都留着")
+
+    def test_a_short_paragraph_matched_with_its_neighbour_stays(self) -> None:
+        mapping = {index: index for index in range(9)}  # 「Premise」「x2」两段连着对上，第二段只有两个字
+        self.assertEqual(_prune(mapping, [0, 7], 9), mapping)
+
+class FitsTests(unittest.TestCase):
+    """讲义第 26 页真值表：一格里只有 T、F，整页到处都是同样的字，对齐对到了别的列、别的表上，
+    这一格被当成一行一行摆的重排，打乱了。对出来的行放不进格子，就不信。"""
+
+    @staticmethod
+    def _cell(width: int, height: int):
+        return parse_xml(
+            f'<w:tr {nsdecls("w")}><w:trPr><w:trHeight w:val="{height}" w:hRule="exact"/></w:trPr>'
+            f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr><w:p/></w:tc></w:tr>').find(qn("w:tc"))
+
+    @staticmethod
+    def _located(*boxes):
+        return [(None, None, 0, [(number, _Line(box)) for number, box in enumerate(boxes)])]
+
+    def test_lines_inside_the_cell_fit(self) -> None:
+        tc = self._cell(600, 600)  # 30 × 30 磅
+        self.assertTrue(_fits(tc, self._located((100, 100, 106, 110), (100, 114, 106, 124))))
+
+    def test_lines_from_other_columns_or_tables_do_not_fit(self) -> None:
+        tc = self._cell(600, 600)
+        self.assertFalse(_fits(tc, self._located((100, 100, 106, 110), (220, 114, 226, 124))), "左右散到别的列")
+        self.assertFalse(_fits(tc, self._located((100, 100, 106, 110), (100, 240, 106, 250))), "上下跑到别的表")
 
 
 if __name__ == "__main__":

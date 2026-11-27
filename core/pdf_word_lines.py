@@ -77,9 +77,40 @@ class _Line:
             self.word = self.right - self.left
 
 
+def _spaced(paragraph, where) -> list[bool]:
+    """每个字（不算空白）前面紧挨着有没有空白（空格、换行符、制表符），包括隔着别的 run 的。"""
+    flat: list[str] = []
+    position: dict[tuple[int, int], int] = {}
+    nodes = []
+    for node in paragraph.iter(f"{_W}t", f"{_W}br", f"{_W}tab", f"{_W}cr"):
+        if node.tag == f"{_W}t":
+            nodes.append(node)  # 留着引用，下面按元素认
+            for index, char in enumerate(node.text or ""):
+                position[(len(nodes) - 1, index)] = len(flat)
+                flat.append(char)
+        else:
+            flat.append(" ")
+    found = []
+    previous = None
+    for node, index in where:
+        number = next((n for n, item in enumerate(nodes) if item is node), None)
+        here = position.get((number, index)) if number is not None else None
+        if here is None:
+            found.append(False)
+            continue
+        start = 0 if previous is None else previous + 1
+        found.append(any(char.isspace() for char in flat[start:here]))
+        previous = here
+    return found
+
+
 def _lines_of(paragraph, where, offset: int, reverse: dict[int, int], chars) -> list[tuple[int, _Line]]:
-    """这一段里每换一行 PDF 的位置：[(第几个字（不算空白）起, 那一行)]。上下标落在本行的上下沿之内。"""
+    """这一段里每换一行 PDF 的位置：[(第几个字（不算空白）起, 那一行)]。上下标落在本行的上下沿之内。
+    两行之间没和 PDF 对上的几个字（「13.」的「1」对错了地方、去掉了）归哪一行，看空白：从紧跟着
+    空白的那个字起算下一行；中间没有空白就从对上的那个字起。"""
     found: list[tuple[int, _Line]] = []
+    spaced: list[bool] | None = None
+    last = None
     for number in range(len(where)):
         pdf_index = reverse.get(offset + number)
         if pdf_index is None:
@@ -87,8 +118,14 @@ def _lines_of(paragraph, where, offset: int, reverse: dict[int, int], chars) -> 
         box = chars[pdf_index][1]
         if found and found[-1][1].holds(box):
             found[-1][1].add(box)
+            last = number
             continue
-        found.append((number, _Line(box)))
+        start = number
+        if last is not None and number - last > 1:
+            spaced = spaced if spaced is not None else _spaced(paragraph, where)
+            start = next((gap for gap in range(last + 1, number + 1) if spaced[gap]), number)
+        found.append((start, _Line(box)))
+        last = number
     return found
 
 
@@ -318,9 +355,63 @@ def _interleaved(located) -> bool:
     return False
 
 
-def _full_alignment(page_text: str, word_text: str) -> dict[int, int]:
-    """先按先后顺序对齐；顺序对不上的（交错拼成一段的行）再一块一块到 PDF 剩下的字里找。"""
-    mapping = _alignment(page_text, word_text)
+def _prune(mapping: dict[int, int], starts: list[int], length: int) -> dict[int, int]:
+    """对上的一截跨过了 Word 的段界，界那一边只有几个字（「…15. P₁」接着下一段「11.」的头一个「1」，
+    PDF 上「15. P₁」后面恰好也是个「1」）：那几个字是凑巧对上的，去掉，让后面再找。整段就这么几个字的不算。"""
+    bounds = sorted({0, *starts, length})
+    reverse = {value: key for key, value in mapping.items()}
+    pruned = dict(mapping)
+    numbers = sorted(reverse)
+    run: list[int] = []
+    for number in [*numbers, None]:
+        if run and number is not None and number == run[-1] + 1 and reverse[number] == reverse[run[-1]] + 1:
+            run.append(number)
+            continue
+        if run:
+            cuts = [bound for bound in bounds if run[0] < bound <= run[-1]]
+            if cuts:
+                edges = [run[0], *cuts, run[-1] + 1]
+                for begin, end in pairwise(edges):
+                    whole = begin in bounds and end in bounds
+                    if end - begin < _MIN_MATCH and not whole:
+                        for item in range(begin, end):
+                            pruned.pop(reverse[item], None)
+        run = [number] if number is not None else []
+    return pruned
+
+
+def _twips_of(node, name: str) -> float | None:
+    try:
+        return float(node.get(f"{_W}{name}")) / 20 if node is not None and node.get(f"{_W}{name}") else None
+    except ValueError:
+        return None
+
+
+def _fits(tc, located) -> bool:
+    """对出来的行放得进这一格：左右不比格子宽，上下不比这一行高（多留一行的余量）。
+    真值表这类一格里只有 T、F 的表，同样的几个字整页到处都是，对齐时会对到别的列、别的表上，
+    对出来的行散在格子外面：这种格子不当一行一行摆的看，也不重排（讲义第 26 页曾被打乱）。"""
+    lines = [line for *_rest, found in located for _start, line in found]
+    if not lines:
+        return False
+    tc_pr = tc.find(f"{_W}tcPr")
+    width_node = tc_pr.find(f"{_W}tcW") if tc_pr is not None else None
+    width = (_twips_of(width_node, "w")
+             if width_node is not None and width_node.get(f"{_W}type") in (None, "dxa") else None)
+    tallest = max(line.bottom - line.top for line in lines)
+    if width is not None and max(line.right for line in lines) - min(line.left for line in lines) > width + tallest:
+        return False
+    merged = tc_pr is not None and tc_pr.find(f"{_W}vMerge") is not None
+    height = _twips_of(tc.getparent().find(f"{_W}trPr/{_W}trHeight"), "val") if tc.getparent() is not None else None
+    return merged or height is None or (
+        max(line.bottom for line in lines) - min(line.top for line in lines) <= height + tallest)
+
+
+def _full_alignment(page_text: str, word_text: str, starts: list[int] | None = None) -> dict[int, int]:
+    """先按先后顺序对齐；顺序对不上的（交错拼成一段的行）再一块一块到 PDF 剩下的字里找。
+    starts 是 Word 里各段从第几个字起，用来去掉跨段凑巧对上的几个字。"""
+    bounds = starts or []
+    mapping = _prune(_alignment(page_text, word_text), bounds, len(word_text))
     taken = set(mapping)
     mapped = set(mapping.values())
     free = "".join("\0" if index in taken else char for index, char in enumerate(page_text))
@@ -352,6 +443,9 @@ def _full_alignment(page_text: str, word_text: str) -> dict[int, int]:
             free = free[:at] + "\0" * length + free[at + length:]
             number += length
         number = max(number, end)
+    mapping = _prune(mapping, bounds, len(word_text))
+    taken = set(mapping)
+    free = "".join("\0" if index in taken else char for index, char in enumerate(page_text))
     # 还剩下的短截（「¬¬ 7」这种不到 _MIN_MATCH 个字的一行）：PDF 剩下的字里只出现一次，就是它
     mapped = set(mapping.values())
     number = 0
@@ -382,7 +476,8 @@ def _restore_page(group: list, page) -> int:
     for paragraph, (text, where) in zip(paragraphs, texts, strict=True):
         offsets[paragraph] = (offset, where)
         offset += len(text)
-    mapping = _full_alignment(page_text, "".join(text for text, _where in texts))
+    starts = sorted(start for start, _where in offsets.values())
+    mapping = _full_alignment(page_text, "".join(text for text, _where in texts), starts)
     reverse = {value: key for key, value in mapping.items()}
     changed = 0
     tables = [table for element in group
@@ -395,7 +490,8 @@ def _restore_page(group: list, page) -> int:
                 start, where = offsets.get(paragraph, (0, []))
                 if where:
                     located.append((paragraph, where, start, _lines_of(paragraph, where, start, reverse, chars)))
-            cells.append((tc, located))
+            # 对出来的行放不进这一格的（对错了地方），这一格当没对上，不参与判断，也不重排
+            cells.append((tc, located if located and _fits(tc, located) else []))
         if not any(_interleaved(located) or _hard_break(located) for _tc, located in cells):
             continue
         cuts = _cuts([located for _tc, located in cells])

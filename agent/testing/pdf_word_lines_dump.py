@@ -44,7 +44,8 @@ def _cells(group: list, page) -> list[list[tuple]]:
     for paragraph, (text, where) in zip(paragraphs, texts, strict=True):
         offsets[paragraph] = (offset, where)
         offset += len(text)
-    mapping = lines_module._full_alignment(page_text, "".join(text for text, _where in texts))
+    starts = sorted(start for start, _where in offsets.values())
+    mapping = lines_module._full_alignment(page_text, "".join(text for text, _where in texts), starts)
     reverse = {value: key for key, value in mapping.items()}
     found = []
     for table in _tables(group):
