@@ -68,6 +68,17 @@ class InplaceHooks:
     # 最近一次请求失败的原因（一句人话，core.nothing_translated.failed_request_reason）：
     # 送去翻译的全部失败时，文件的失败提示写这个原因，与 Word、PPT 相同。
     last_failure_reason: Callable[[], str] | None = None
+    # 段落重排（BabelDOC，core/pdf_babeldoc_pages.py）用的：``chat(system, user)`` 向文本翻译模型
+    # 发一次请求；``chat_supported()`` 说引擎能不能这样问（机器翻译接口不能，可提取文字的页改走
+    # 转 Word；用到时才建引擎）；``chat_system_prompt`` 是内置规则 + 补充要求 + 目标语言说明；
+    # ``fixed_terms(source_path)`` 给出记忆库里对这份文件「始终采用」的词条 (原文, 译文)；
+    # 并发和重试取「翻译参数 → PDF → 文字翻译」。
+    chat: Callable[[str, str], str] | None = None
+    chat_supported: Callable[[], bool] | None = None
+    chat_system_prompt: str = ""
+    fixed_terms: Callable[[str], list[tuple[str, str]]] | None = None
+    chat_concurrency: int = 1
+    chat_retries: int = 2
 
 
 _STOPWORDS = {

@@ -64,6 +64,14 @@ LICENSE_FILES: tuple[tuple[str, str], ...] = (
     ("rapidocr-3.10.0.dist-info/licenses/MODEL_LICENSES.md", "MODEL_LICENSES.md"),
 )
 
+# ONNX Runtime 的 Windows 版要用 VC++ 运行库（msvcp140.dll、msvcp140_1.dll 等），wheel 和
+# 翻译引擎都没带齐：没装过「Visual C++ 可再发行程序包」的电脑上加载不了。取 conda-forge 的
+# 运行库包（整包已核对）放进 onnxruntime/capi，Windows 加载它时先在它自己的目录里找。
+# 「段落重排组件」里也有 ONNX Runtime，用同一个包（core/babeldoc_component_install.py）。
+WINDOWS_RUNTIME_PACKAGE = conda_file("win-64", "vc14_runtime-14.51.36247-habf1de7_41.conda",
+                                     767955, "4e4cb599cdc41bf2109d1464c127b5bcbddf548ce3e322e612afb691338b48f8")
+WINDOWS_RUNTIME = ("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+
 MANIFEST: dict[str, tuple[RemoteFile, ...]] = {
     "macos-arm64": (
         pypi_file(
@@ -78,8 +86,7 @@ MANIFEST: dict[str, tuple[RemoteFile, ...]] = {
             "1e/f5/9d995a685f97508b3254f17015b4a78641b0625e79480a7aed7a7a105d7c/onnxruntime-1.19.2-cp311-cp311-win_amd64.whl",
             11085695, "1c3e5d415b78337fa0b1b75291e9ea9fb2a4c1f148eb5811e7212fed02cfffa8"),
         _RAPIDOCR,
-        conda_file("win-64", "vc14_runtime-14.51.36247-habf1de7_41.conda",
-                   767955, "4e4cb599cdc41bf2109d1464c127b5bcbddf548ce3e322e612afb691338b48f8"),
+        WINDOWS_RUNTIME_PACKAGE,
     ),
     # 不发安装包，只给在 Linux 上开发、测试的人用。
     "linux-x64": (
@@ -91,10 +98,6 @@ MANIFEST: dict[str, tuple[RemoteFile, ...]] = {
     ),
 }
 
-# ONNX Runtime 的 Windows 版要用 VC++ 运行库（msvcp140.dll、msvcp140_1.dll 等），wheel 和
-# 翻译引擎都没带齐：没装过「Visual C++ 可再发行程序包」的电脑上加载不了。取 conda-forge 的
-# 运行库包（整包已核对）放进 onnxruntime/capi，Windows 加载它时先在它自己的目录里找。
-_WINDOWS_RUNTIME = ("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 
 ProgressFn = Callable[[str, int, int], None]  # (phase, done, total)
 
@@ -236,7 +239,7 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
                 progress("extract", 1, 2)
             _extract_models(paths[1], models)
             if len(paths) > 2:
-                extract_conda(paths[2], site_dir / "onnxruntime" / "capi", {name: name for name in _WINDOWS_RUNTIME})
+                extract_conda(paths[2], site_dir / "onnxruntime" / "capi", {name: name for name in WINDOWS_RUNTIME})
         except ComponentDownloadError as exc:
             raise ComponentInstallError(str(exc)) from exc
         if progress:

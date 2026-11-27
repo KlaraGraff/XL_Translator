@@ -161,6 +161,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
   const auto = input.route === "auto";
   const imagePrimary = !auto || input.scanRoute === "image" || input.textRoute === "image" || input.drawingRoute === "image";
   const imageFallback = auto && !imagePrimary && input.fallback === "image";
+  const babeldocUsed = auto && input.textRoute === "babeldoc";
   const wordUsed = auto && input.textRoute === "word";
   const inplaceUsed = auto && (input.textRoute === "inplace" || input.drawingRoute === "inplace");
 
@@ -174,7 +175,8 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
       : t("每页转成图片发送给图像模型，生成翻译后的页面；开启「逐页审核」时，未通过的页面附上审核意见重新生成。"));
     steps.push(t("单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。"));
   }
-  if (wordUsed) steps.push(t("转成 Word 的页：连续几页合成一份 Word，按 Word 的提示词设置和记忆库翻译，再转回 PDF。"));
+  if (babeldocUsed) steps.push(t("段落重排的页：由段落重排组件按段落整理文字，发送给文本翻译模型，译文排回原 PDF；没通过逐页检查的页改为转成 Word 翻译。"));
+  if (wordUsed || babeldocUsed) steps.push(t("转成 Word 的页：连续几页合成一份 Word，按 Word 的提示词设置和记忆库翻译，再转回 PDF。"));
   if (inplaceUsed) steps.push(t("原位替换的页：取出页面上的文字发送给文本翻译模型，译文按原字号和颜色写回原位置。"));
   if (auto) steps.push(t("全部完成后，按原页序合成一份 PDF。"));
 
@@ -198,9 +200,20 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
       ],
     },
     {
+      title: t("段落重排 · 发送给文本翻译模型"),
+      state: groupState(babeldocUsed),
+      used: babeldocUsed,
+      blocks: [
+        { title: t("内置规则"), state: t("每次发送"), sent: true, content: t("通用翻译要求、补充要求和目标语言说明，作为系统消息发送。") },
+        { title: t("段落重排的说明"), state: t("每次发送"), sent: true, content: t("段落重排组件写好的要求：公式占位符和格式标记原样保留；另加一条，数字、日期、代码和示例数据一律照抄。") },
+        { title: t("记忆库词条"), state: t("本批出现的"), sent: true, content: t("记忆库里设为「始终采用」、在本批文字中出现的词条。") },
+        { title: t("待翻译内容"), state: t("本批几段文字"), sent: true, mono: true, content: t("The value {v1} is computed from <style id='1'>Eq. 3</style> …") },
+      ],
+    },
+    {
       title: t("转成 Word · 发送给文本翻译模型"),
-      state: groupState(wordUsed),
-      used: wordUsed,
+      state: groupState(wordUsed, babeldocUsed),
+      used: wordUsed || babeldocUsed,
       blocks: [{
         title: t("与 Word 文档相同"),
         state: t("按「Word」页签的提示词设置"),

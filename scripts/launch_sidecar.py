@@ -12,6 +12,18 @@ if str(ROOT) not in sys.path:
 
 
 def _run() -> int:
+    # 段落重排组件（BabelDOC）写 PDF 时会另开进程（multiprocessing）。打包后的引擎里，那个
+    # 进程又是这个可执行文件：先交给 freeze_support 认出来、跑完就退出，不能当成翻译引擎启动。
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "--babeldoc-worker":
+        # 段落重排组件：BabelDOC 和它的依赖只进这个子进程，翻译请求经管道交回翻译引擎。
+        from core.babeldoc_component import worker_main as babeldoc_worker_main
+
+        return babeldoc_worker_main(sys.argv[2])
+
     if len(sys.argv) >= 4 and sys.argv[1] == "--adapter-host":
         # 用户安装的扩展在子进程里跑一次 scan / extract / write（见 core.adapter_subprocess_host）。
         from core.adapter_subprocess_host import host_main

@@ -1271,7 +1271,9 @@ class PdfSettings(BaseModel):
     # 校验）。没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
     translation_route: Literal["image", "inplace", "word", "auto"] = "image"
     auto_scan_route: Literal["image", "skip"] = "image"
-    auto_text_route: Literal["word", "inplace", "image"] = "word"
+    # babeldoc（段落重排，2026-11-27）：在原 PDF 上按段落重排译文（「段落重排组件」，BabelDOC），
+    # 每页过一遍检查，不过的页和没装组件时照旧转 Word（core/pdf_babeldoc_pages.py）。
+    auto_text_route: Literal["babeldoc", "word", "inplace", "image"] = "word"
     auto_drawing_route: Literal["inplace", "skip", "image"] = "inplace"
     auto_fallback: Literal["image", "skip"] = "image"
     # 自动组合：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
@@ -1344,7 +1346,7 @@ class PdfSettings(BaseModel):
 _PDF_ROUTE_CHOICES: dict[str, tuple[str, ...]] = {
     "translation_route": ("image", "auto"),
     "auto_scan_route": ("image", "skip"),
-    "auto_text_route": ("word", "inplace", "image"),
+    "auto_text_route": ("babeldoc", "word", "inplace", "image"),
     "auto_drawing_route": ("inplace", "skip", "image"),
     "auto_fallback": ("image", "skip"),
     "oversized_page_threshold": ("A3", "A2", "A1", "A0"),

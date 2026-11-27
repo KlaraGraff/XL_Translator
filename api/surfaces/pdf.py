@@ -416,6 +416,16 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
     # 记忆库与 Excel / Word 同一套规则（core.term_session）；语言对按每页识别的原文语种定。
     memory = service.term_memory(target_lang=target_lang, lang_pairs=())
 
+    # 段落重排（BabelDOC）：它拼好的提示词原样发给文本翻译模型，系统消息用内置规则 + 补充要求。
+    # 不支持单次对话的引擎（机器翻译接口）不能用它，可提取文字的页改走转 Word。
+    def chat(system: str, user: str) -> str:
+        return service.engine().chat(system, user)
+
+    def fixed_terms(source_path: str) -> list[tuple[str, str]]:
+        from core.pdf_babeldoc_pages import fixed_glossary
+
+        return fixed_glossary(target_lang, list(service.memory_pairs), source_path)
+
     exe = resolve_tesseract()
     return InplaceHooks(
         translate=translate,
@@ -428,7 +438,19 @@ def _inplace_hooks(settings: AppSettings, connection_ids: tuple[str, ...]):
         ocr_wanted=True,
         memory=memory,
         last_failure_reason=lambda: failure["reason"],
+        chat=chat,
+        chat_supported=lambda: engine_supports_chat(service.engine()),
+        chat_system_prompt=service.system_prompt(),
+        fixed_terms=fixed_terms,
+        chat_concurrency=max(1, int(service.rate.concurrency)),
+        chat_retries=max(0, int(service.rate.request_retry)),
     )
+
+    try:
+        return bool(engine_supports_chat(service.engine()))
+    except Exception as exc:  # noqa: BLE001 - no engine: the pages go to Word, which reports the error
+        logger.debug(f"[PDF] 段落重排：文本翻译引擎建不起来：{exc!r}")
+        return False
 
 
 def _document_profile_concurrency(settings: AppSettings) -> int:

@@ -20,6 +20,7 @@ import re
 import statistics
 import subprocess
 import threading
+from collections import Counter
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -28,7 +29,7 @@ from PIL import Image
 
 from core.ocr_engine import png_bytes, tesseract_options
 
-from .common import fitz, join_words, norm_text, sha256, write_json
+from .common import fitz, is_blank, join_words, norm_text, sha256, write_json
 
 Image.MAX_IMAGE_PIXELS = None
 TILE, STEP = 1800, 1560
@@ -59,23 +60,68 @@ def _graphic_between(a, b, drawings, band) -> bool:
     return any(lo <= r.x0 and r.x1 <= hi and r.y1 > band.y0 and r.y0 < band.y1 for r in drawings)
 
 
-def _line_pieces(ln, drawings) -> list[list[tuple]]:
+def _lum(rgb) -> float:
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _span_lum(span) -> float:
+    c = int(span.get("color") or 0)
+    return _lum((((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255))
+
+
+def _badge(box, span, fills):
+    """The filled shape a light character is printed on (a black disc under a white 「3」),
+    or None: a light glyph on a dark shape is part of a mark, not of the words around it.
+    The shape painted last under the character is the one it shows on (讲义的提示框是深色
+    外框上再铺一层浅色底，框里的蓝字在浅色底上)."""
+    cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+    for n in range(len(fills) - 1, -1, -1):
+        r, fill_lum = fills[n]
+        if r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1:
+            return n if _span_lum(span) - fill_lum >= 0.4 else None
+    return None
+
+
+def _line_pieces(ln, drawings, fills=()) -> list[list[tuple]]:
     """The line's characters, cut where a drawing sits between two words: 「Press → (right)」
-    on a device screen is two labels with an arrow between them, not one phrase."""
-    chars = [(c["c"], fitz.Rect(c["bbox"]), s) for s in ln["spans"] for c in s["chars"]]
+    on a device screen is two labels with an arrow between them, not one phrase.
+
+    Also cut around a light character printed on a dark shape that its neighbours are
+    not on: 说明书第 7 页「step ❸ commissioning」的 ❸ 是黑圆上一个白色「3」，整行擦掉重写
+    时译文统一用黑字，「3」写在黑圆上看不见，后面的字也压到黑圆上；拆开后黑圆和「3」
+    原样留着，两边各自翻译。"""
+    chars = [(" " if is_blank(c["c"]) else c["c"], fitz.Rect(c["bbox"]), s) for s in ln["spans"] for c in s["chars"]]
     horizontal = abs(ln["dir"][1]) < 0.01 and ln["dir"][0] > 0
     pieces: list[list] = [[]]
     last = None
+    last_badge = None
     band = fitz.Rect(ln["bbox"])
     for ch in chars:
         if not ch[0].isspace():
-            if (horizontal and last is not None and drawings
+            badge = _badge(ch[1], ch[2], fills) if fills else None
+            if last is not None and badge != last_badge:
+                pieces.append([])
+            elif (horizontal and last is not None and drawings
                     and ch[1].x0 - last[1].x1 > 0.3 * ch[2]["size"]
                     and _graphic_between(last[1], ch[1], drawings, band)):
                 pieces.append([])
-            last = ch
+            last, last_badge = ch, badge
         pieces[-1].append(ch)
     return [p for p in pieces if any(not c.isspace() for c, _b, _s in p)]
+
+
+def _body_size(inked) -> float:
+    """The size most of the line's characters are set in (a large 「*」 in the line does not count)."""
+    sizes = Counter(round(s["size"], 1) for _c, _b, s in inked)
+    return sizes.most_common(1)[0][0]
+
+
+def _union(boxes):
+    r = fitz.Rect(boxes[0])
+    for box in boxes[1:]:
+        r |= box
+    return r
 
 
 def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
@@ -89,33 +135,38 @@ def native_rows(page: fitz.Page, dpi: float) -> list[dict]:
     out = []
     d = page.get_text("rawdict")
     drawings = None
+    fills: list = []
     for b in d["blocks"]:
         if b.get("type") != 0:
             continue
         for ln in b["lines"]:
-            if not any(c["c"].strip() for s in ln["spans"] for c in s["chars"]):
+            if all(is_blank(c["c"]) for s in ln["spans"] for c in s["chars"]):
                 continue
             if drawings is None:
-                drawings = [fitz.Rect(dr["rect"]) for dr in page.get_drawings()]
+                paths = page.get_drawings()
+                drawings = [fitz.Rect(dr["rect"]) for dr in paths]
+                fills = [(fitz.Rect(dr["rect"]), _lum(dr["fill"])) for dr in paths
+                         if dr.get("fill") is not None and (dr.get("fill_opacity") is None or dr["fill_opacity"] >= 0.5)]
             dx, dy = ln["dir"]
             vx, vy = dx * rm.a + dy * rm.c, dx * rm.b + dy * rm.d
             rot = 0 if vx > 0.7 else 180 if vx < -0.7 else 90 if vy < -0.7 else 270 if vy > 0.7 else None
             if rot is None:
                 rot = 0  # oblique native text: written horizontal, flagged
-            for piece in _line_pieces(ln, drawings):
+            for piece in _line_pieces(ln, drawings, fills):
                 inked = [(c, box, s) for c, box, s in piece if not c.isspace()]
                 spans = list({id(s): s for _c, _b, s in inked}.values())
                 text = norm_text("".join(c for c, _b, _s in piece))
-                r = fitz.Rect(inked[0][1])
-                for _c, box, _s in inked[1:]:
-                    r |= box
-                r = r * rm
+                r = _union([box for _c, box, _s in inked]) * rm
+                body = _body_size(inked)
+                rb = _union([box for _c, box, sp in inked if round(sp["size"], 1) == body]) * rm
                 col = spans[0]["color"]
                 out.append({
                     "origin": "native", "source_text": text,
                     "display_box": [round(v * k, 1) for v in (r.x0, r.y0, r.x1, r.y1)],
                     "display_rotation": rot, "oblique": not any(abs(v) > 0.99 for v in (vx, vy)),
-                    "font_size_pt": max(s["size"] for s in spans), "font": spans[0]["font"],
+                    "font_size_pt": max(s["size"] for s in spans),
+                    "body_box": [round(v * k, 1) for v in (rb.x0, rb.y0, rb.x1, rb.y1)],
+                    "font": spans[0]["font"],
                     "font_families": sorted({font_family(s["font"]) for s in spans} - {""}),
                     "font_flags": int(spans[0].get("flags") or 0),
                     "color": [((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255],
@@ -665,12 +716,53 @@ def continues(prev: str, nxt: str) -> bool:
     return p.endswith(",") or hyphen or last in FUNCTION_TAIL
 
 
+def _overlaps(s1, l1, s2, l2) -> bool:
+    """Two lines share some stretch along the reading direction."""
+    return s1 < s2 + l2 and s2 < s1 + l1
+
+
+def _text_box(row):
+    """The box of the row's body-size characters (native text), else its whole box: a large
+    「*」 in a line does not make the line overlap the next one."""
+    return row.get("body_box") or row["display_box"]
+
+
+def _same_colour(a, b) -> bool:
+    ca, cb = a.get("color"), b.get("color")
+    return bool(ca) and bool(cb) and max(abs(x - y) for x, y in zip(ca, cb)) <= 0.08
+
+
+def _runs_in(rows, i, j, peers, rot, tol) -> int | None:
+    """Row ``i`` begins partway along a line whose start is where row ``j`` begins: a
+    sentence that starts mid-line and wraps back to the left edge.  说明书第 7 页第 1 段：
+    灰字「non-reflective black cloth or similar.」和图片后面，红字「You cannot commission the
+    beam if the reflector can be」从行中间开始，折回行首的是「seen」。
+
+    Returns the row that heads the line (left of ``i``), or None."""
+    if not _same_colour(rows[i], rows[j]):
+        return None
+    si, ci, ti, _li = _geo(rows[i]["display_box"], rot)
+    sj = _geo(rows[j]["display_box"], rot)[0]
+    for k in peers:
+        if k in (i, j):
+            continue
+        sk, ck, tk, lk = _geo(rows[k]["display_box"], rot)
+        if (abs((ck + tk / 2) - (ci + ti / 2)) <= 0.3 * ti and sk + lk <= si + 0.1 * ti
+                and abs(sk - sj) <= tol):
+            # the line's own head may go on into j: then j is its next line, not ours
+            if _same_colour(rows[k], rows[j]) and continues(rows[k]["source_text"], rows[j]["source_text"]):
+                return None
+            return k
+    return None
+
+
 def group_paragraphs(rows, V, Hs):
     """Join consecutive prose lines of one paragraph (same start, tight gap)."""
     by_rot: dict = {}
     for i, r in enumerate(rows):
         by_rot.setdefault(r["display_rotation"], []).append(i)
     parent = list(range(len(rows)))
+    run_in_heads: dict = {}  # first row of a sentence begun mid-line -> the row before it on that line
 
     def find(i):
         while parent[i] != i:
@@ -683,24 +775,46 @@ def group_paragraphs(rows, V, Hs):
         idx.sort(key=lambda i: _geo(rows[i]["display_box"], rot)[1])
         for n, i in enumerate(idx):
             si, ci, ti, li = _geo(rows[i]["display_box"], rot)
+            _bs, bci, bti, _bl = _geo(_text_box(rows[i]), rot)
+            passed: list[tuple] = []
+            run_in = None
+            joined = False
             for j in idx[n + 1:]:
                 sj, cj, tj, lj = _geo(rows[j]["display_box"], rot)
                 gap = cj - (ci + ti)
                 if gap > 1.0 * max(ti, tj):
                     break
+                # 不隔着另一行往下接：第 7 页「7. The next screen is」和「you are receiving…」
+                # 中间夹着一行红字「Pre-alignment sets up…」，后两行才是一段
+                between = any(ck > ci + 0.5 * ti and _overlaps(sk, lk, si, li) and _overlaps(sk, lk, sj, lj)
+                              for sk, ck, _tk, lk in passed)
+                passed.append((sj, cj, tj, lj))
+                if between:
+                    continue
                 nxt = rows[j]["source_text"]
                 lower_next = nxt.lstrip(" .")[:1].islower() and any(
                     len(w) >= 3 and _known(w) for w in re.findall(r"[^\W\d_]+", nxt))
                 lo_r, hi_r = (0.6, 1.7) if lower_next else (0.75, 1.33)  # glyph boxes include descenders
-                if gap < -0.3 * ti or not (lo_r <= tj / ti <= hi_r):
+                # 整行的框或只算正文字号那些字的框，有一种合得上就行：第 7 页第 6 段那行里一个
+                # 20 pt 的「*」把行框往下撑了 11 pt，和下一行「the enter key to continue.」
+                # 重叠太多，原来接不上
+                _bs, bcj, btj, _bl = _geo(_text_box(rows[j]), rot)
+                if not any(g >= -0.3 * t and lo_r <= tn / t <= hi_r
+                           for g, t, tn in ((gap, ti, tj), (bcj - (bci + bti), bti, btj))):
                     continue
                 # left-aligned or centred stacks ('Salle de' / 'repos')
                 # a line that plainly continues the sentence may sit a little off
                 tol = max((1.0 if lower_next else 0.6) * ti, 6)
                 same_start = abs(si - sj) <= tol
                 same_centre = abs((si + li / 2) - (sj + lj / 2)) <= tol
-                if not (same_start or same_centre) or rows[i]["origin"] != rows[j]["origin"]:
+                if rows[i]["origin"] != rows[j]["origin"]:
                     continue
+                aligned = same_start or same_centre
+                head = None
+                if not aligned:
+                    head = None if run_in is not None else _runs_in(rows, i, j, by_rot[rot], rot, tol)
+                    if head is None:
+                        continue
                 # 一段正文的各行用同一种字体：设备手册屏幕框里的按键名「Press」（打字机体）
                 # 不是下面那段正文（窄体）的第一行
                 fi, fj = set(rows[i].get("font_families") or ()), set(rows[j].get("font_families") or ())
@@ -713,10 +827,23 @@ def group_paragraphs(rows, V, Hs):
                     continue
                 if not continues(rows[i]["source_text"], rows[j]["source_text"]):
                     continue
+                if not aligned:
+                    run_in = (j, head)  # taken only if nothing lines up below the row itself
+                    continue
                 # only chain the line directly below (first match)
                 if find(j) == j and sum(find(k) == find(i) for k in idx) >= 1:
                     parent[j] = find(i)
+                    joined = True
                     break
+            # …and only if nothing on the next line sits under the row itself (a second
+            # column going on below it)
+            if run_in is not None and not joined and find(run_in[0]) == run_in[0] and not any(
+                    _overlaps(sm, lm, si, li) and abs(cm - rj[1]) <= 0.5 * rj[2]
+                    for rj in [_geo(rows[run_in[0]]["display_box"], rot)]
+                    for m in by_rot[rot] if m not in (i, run_in[0])
+                    for sm, cm, _tm, lm in [_geo(rows[m]["display_box"], rot)]):
+                parent[run_in[0]] = find(i)
+                run_in_heads[i] = run_in[1]
     groups: dict = {}
     for i in range(len(rows)):
         groups.setdefault(find(i), []).append(i)
@@ -735,9 +862,15 @@ def group_paragraphs(rows, V, Hs):
                     "display_box": [min(b[0] for b in boxes), min(b[1] for b in boxes),
                                     max(b[2] for b in boxes), max(b[3] for b in boxes)],
                     "line_boxes": boxes, "line_texts": [m["source_text"] for m in mem],
-                    "line_align": _stack_align([_geo(b, rot) for b in boxes]),
+                    # a sentence that began mid-line: its first line says nothing about the alignment
+                    "line_align": _stack_align([_geo(b, rot) for b in boxes][1 if g[0] in run_in_heads else 0:]),
+                    # the row it follows on its first line: once that row is translated (「Implication.」
+                    # → 「蕴含。」), this one may start right after it instead of leaving the gap
+                    **({"run_in_after": rows[run_in_heads[g[0]]]["display_box"]} if g[0] in run_in_heads else {}),
                     "ocr_score": (sum(scores) / len(scores)) if scores else None,
                     "words": [w for m in mem for w in (m.get("words") or [])] or None, "source_passes": sorted({p for m in mem for p in m["source_passes"]})})
+    for r in out:
+        r.pop("body_box", None)  # only for joining lines; the row's box is display_box
     return out
 
 

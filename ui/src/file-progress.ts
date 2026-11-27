@@ -101,6 +101,8 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
     }
     case "generated":
       if (unfinished) return [t("部分翻译"), needsReview ? t("需复核") : ""].filter(Boolean).join(" · ");
+      // 空表、只有数字的表：文件照样写出来了，但里面本来就没有要翻的字，得说一声。
+      if (!untranslated && !needsReview && result.source_text_count === 0) return t("已生成 · 没有需要翻译的文字");
       return [t("已生成"), untranslated ? t("整份未翻译") : "", needsReview ? t("需复核") : ""].filter(Boolean).join(" · ");
     case "failed": return t("未生成");
     case "unstarted": return t("未开始");

@@ -1,7 +1,9 @@
 """PDF 翻译方式（Beta 分支）：每一页走哪条路线。
 
-四种处理：
+五种处理：
 - image   —— 整页图像翻译（原来的做法）：整页交给图像模型重新生成。
+- babeldoc —— 段落重排（「段落重排组件」BabelDOC）：在原 PDF 上按段落排入译文，公式、图、
+             表格线原样保留；逐页检查不过的页改走 word。
 - inplace —— 原位替换（保留矢量）：在原 PDF 上删掉原文字形，按原位置写译文。
 - word    —— 转成 Word 再翻译：连续几页可提取文字的页转成 .docx，走 Word 翻译
              流程，再转回 PDF 拼回原位；输出始终是 PDF（可另存一份 Word）。
@@ -27,6 +29,9 @@ from loguru import logger
 ROUTE_IMAGE = "image"
 ROUTE_INPLACE = "inplace"
 ROUTE_WORD = "word"
+# 段落重排（BabelDOC，见 core/pdf_babeldoc_pages.py）：可提取文字的页在原 PDF 上按段落排入译文；
+# 没装组件或没通过逐页检查的页改走转 Word。
+ROUTE_BABELDOC = "babeldoc"
 ROUTE_SKIP = "skip"
 
 KIND_TEXT = "text"          # 文字文档

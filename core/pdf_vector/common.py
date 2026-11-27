@@ -41,8 +41,19 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# 控制字符不是字，什么也不画：有的 PDF 把编号列表「1.」后面的制表位写成 \x07，
+# 占一个空格宽。当成字留着，译文里也会带着，写回时字体里找不到它，整段被跳过。
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def is_blank(ch: str) -> bool:
+    """空白或控制字符：不算这一行上的字。"""
+    return ch.isspace() or _CONTROL.fullmatch(ch) is not None
+
+
 def norm_text(s: str) -> str:
     s = unicodedata.normalize("NFKC", str(s or "")).replace("’", "'")
+    s = _CONTROL.sub(" ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 

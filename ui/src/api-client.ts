@@ -132,6 +132,38 @@ export type Pdf2DocxPluginStatus = {
   pymupdf_version?: string;
 };
 
+/** 「段落重排组件」（BabelDOC）状态：只能一键安装。 */
+export type BabeldocPluginStatus = {
+  state: "connected" | "missing";
+  installed: boolean;
+  version?: string;
+  outdated?: boolean;
+  path?: string;
+  /** 装着，但它要用的「PDF 处理组件」没装（或被卸载了）。 */
+  needs_pdf_component?: boolean;
+  one_click_supported?: boolean;
+  one_click_reason?: string;
+  download_bytes?: number;
+  /** 缺少「PDF 处理组件」时一键安装要先补的大小。 */
+  dependency_bytes?: number;
+  /** PDF「可提取文字的页」现在的设置：装好后由 word 自动改成 babeldoc。 */
+  auto_text_route?: string;
+  install?: ComponentInstallProgress;
+};
+
+/** 「PDF 组件」大类「全部安装」的进度：phase 是「项:阶段」（如 babeldoc:download），done/total 按全部要下载的字节算。 */
+export type PdfComponentsItem = "pdf" | "babeldoc" | "ocr";
+export type PdfComponentsProgress = Omit<ComponentInstallProgress, "phase"> & {
+  phase: string;
+  items: Partial<Record<PdfComponentsItem, { status: "pending" | "running" | "done" | "failed" | "cancelled"; error: string }>>;
+};
+export type PdfComponentsStatus = {
+  missing: PdfComponentsItem[];
+  download_bytes: number;
+  one_click_supported: boolean;
+  unsupported: PdfComponentsItem[];
+  install: PdfComponentsProgress;
+};
 
 /** 三种界面语言的同一段文字（描述符里的标签、文件名词等）。 */
 export type LocalizedText = Partial<Record<"zh" | "en" | "fr", string>>;
@@ -313,6 +345,9 @@ export type PdfPage = {
   word_requested?: boolean;
   word_status?: string;
   word_message?: string;
+  /** 段落重排（BabelDOC）译好、通过了逐页检查的页："" | done；没通过的页改转 Word，写在 route_note。 */
+  babeldoc_status?: string;
+  babeldoc_message?: string;
   /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
    *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
   quality_flagged: boolean;
@@ -339,6 +374,10 @@ export type PdfRouteCapabilities = {
   inplace_target_ok: boolean;
   /** 原位替换写不了的目标语言（基础代码，如 ar、th）：这些文字要连写排版。 */
   inplace_unsupported_targets?: string[];
+  /** 「段落重排组件」（BabelDOC）装好了没有。 */
+  babeldoc_component?: boolean;
+  /** 「自动组合」里可提取文字的页用哪种方式：babeldoc / word / inplace / image。 */
+  auto_text_route?: string;
 };
 
 export type PdfPageFile = {
@@ -773,6 +812,46 @@ export class ApiClient {
 
   async uninstallPdf2DocxPlugin(target: "" | "managed" | "manual" = ""): Promise<Pdf2DocxPluginStatus> {
     return this.request<Pdf2DocxPluginStatus>("/api/plugins/pdf2docx/uninstall", { method: "POST", body: JSON.stringify({ target }) });
+  }
+
+  async getBabeldocCapability(): Promise<BabeldocPluginStatus> {
+    return this.request<BabeldocPluginStatus>("/api/plugins/babeldoc");
+  }
+
+  async startBabeldocInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/babeldoc/one-click-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async babeldocInstallProgress(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/babeldoc/install-progress");
+  }
+
+  async cancelBabeldocInstall(): Promise<ComponentInstallProgress> {
+    return this.request<ComponentInstallProgress>("/api/plugins/babeldoc/cancel-install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async uninstallBabeldocPlugin(): Promise<BabeldocPluginStatus> {
+    return this.request<BabeldocPluginStatus>("/api/plugins/babeldoc/uninstall", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async officialBabeldocDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/babeldoc/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async getPdfComponentsStatus(): Promise<PdfComponentsStatus> {
+    return this.request<PdfComponentsStatus>("/api/plugins/pdf-components");
+  }
+
+  async startPdfComponentsInstall(): Promise<PdfComponentsProgress> {
+    return this.request<PdfComponentsProgress>("/api/plugins/pdf-components/install-all", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async pdfComponentsInstallProgress(): Promise<PdfComponentsProgress> {
+    return this.request<PdfComponentsProgress>("/api/plugins/pdf-components/install-progress");
+  }
+
+  async cancelPdfComponentsInstall(): Promise<PdfComponentsProgress> {
+    return this.request<PdfComponentsProgress>("/api/plugins/pdf-components/cancel-install", { method: "POST", body: JSON.stringify({}) });
   }
 
   async startPdfComponentInstall(): Promise<PdfComponentInstallProgress> {

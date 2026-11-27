@@ -391,6 +391,8 @@ async function applyTmQueryChange(change: () => void): Promise<boolean> {
     confirmedSelectedIds = [];
   }
   renderTable();
+  // 筛选按钮上的条数跟着搜索词走：不重画的话，搜出来 0 条，按钮上还写着全部的数。
+  renderFilterRow();
   renderTopbarStatus();
   return ok;
 }
@@ -2367,11 +2369,18 @@ function renderTable(): void {
     return;
   }
   if (!entries.length) {
-    const empty = createEmptyState({
-      title: t("当前语言对没有记忆条目"),
-      description: t("Excel 和 Word 翻译中符合入库条件的内容将保存为记忆，也可通过上方「新增词条」或「导入」手动添加。"),
-      icon: "book",
-    });
+    // 搜不到和库里本来就是空的是两回事：前者说「没找到」，不说「没有记忆条目」。
+    const empty = keyword.trim() || entryFilter !== "all" || pinnedOnly
+      ? createEmptyState({
+        title: t("没有找到符合条件的词条"),
+        description: t("换一个关键词或筛选条件再试；清空搜索框可查看全部词条。"),
+        icon: "book",
+      })
+      : createEmptyState({
+        title: t("当前语言对没有记忆条目"),
+        description: t("Excel 和 Word 翻译中符合入库条件的内容将保存为记忆，也可通过上方「新增词条」或「导入」手动添加。"),
+        icon: "book",
+      });
     tableScrollEl.append(empty);
   } else {
     const table = document.createElement("table");

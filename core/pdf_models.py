@@ -255,6 +255,11 @@ class PdfPageRecord:
     word_segment: int = 0
     word_status: str = ""
     word_message: str = ""
+    # 自动组合里段落重排（BabelDOC）译好、通过了逐页检查的页：babeldoc_status 为 "done"，
+    # babeldoc_pdf_path 是这一页的单页 PDF，装订时导入；没通过的页改走转 Word，这里为空。
+    babeldoc_status: str = ""
+    babeldoc_pdf_path: str = ""
+    babeldoc_message: str = ""
     # 自动组合：首选方式在这一页用不了、改用保底方式时写原因（如「转成 Word 失败，
     # 改用整页图像翻译」）。保留原样的另写在 kept_reason。
     route_note: str = ""

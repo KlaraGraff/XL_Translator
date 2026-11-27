@@ -30,3 +30,16 @@
 @media (prefers-reduced-motion: reduce) {
   .plugins-column .card.plugins-focus { animation: none; box-shadow: 0 0 0 2px var(--accent); }
 }
+
+/* 「PDF 组件」大类：收起时一行三项的状态，展开后每项一行（序号代替大图标）。 */
+.plugins-group-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.plugins-group-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 7px 11px; font-size: 13px; }
+.plugins-group-chip b { font-weight: var(--fw-600); }
+.plugins-items { margin-top: 16px; border-top: 1px solid var(--line-2); }
+.plugins-item { padding: 14px 0 14px 60px; border-bottom: 1px solid var(--line-2); }
+.plugins-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.plugins-item .plugins-title-row { position: relative; }
+.plugins-item-num { position: absolute; left: -40px; top: 2px; width: 24px; height: 24px; border-radius: 99px; background: var(--tint); color: var(--tint-ink); font-size: 12px; font-weight: var(--fw-600); display: grid; place-items: center; }
+.plugins-copy h3 { margin: 0; font-size: 14.5px; display: flex; align-items: center; gap: 7px; }
+.plugins-copy h3 .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: var(--fw-600); }
+@media (max-width: 720px) { .plugins-item { padding-left: 36px; } .plugins-item-num { left: -32px; } }

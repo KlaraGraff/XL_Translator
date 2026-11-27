@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import unquote
 
 
 # A copied path is often wrapped by a shell, Markdown, or a Chinese text editor.
@@ -38,7 +40,35 @@ def normalize_user_path(value: Any) -> Any:
         if closing is None or normalized[-1] != closing:
             break
         normalized = normalized[1:-1].strip()
-    return normalized
+    return _unescape_shell_path(_from_file_url(normalized))
+
+
+def _from_file_url(value: str) -> str:
+    """``file:///Users/a/b%20c.xlsx`` (copied from a browser or Finder) -> a plain path."""
+
+    if value[:7].lower() != "file://":
+        return value
+    rest = unquote(value[7:])
+    if rest.lower().startswith("localhost/"):
+        rest = rest[len("localhost"):]
+    if re.match(r"^/[A-Za-z]:[\\/]", rest):
+        return rest[1:]
+    if rest.startswith("/"):
+        return rest
+    # file://server/share/x -> \\server\share\x
+    return "\\\\" + rest.replace("/", "\\") if rest else value
+
+
+def _unescape_shell_path(value: str) -> str:
+    """A path dragged into a terminal comes out as ``/Users/a/my\\ file.xlsx``.
+
+    Only POSIX-looking paths are touched (``/`` or ``~`` first), so Windows
+    separators stay. A backslash before a letter or digit is left alone.
+    """
+
+    if not value.startswith(("/", "~")) or "\\" not in value:
+        return value
+    return re.sub(r"\\([^A-Za-z0-9])", r"\1", value)
 
 
 def normalize_user_paths(values: Any) -> Any:

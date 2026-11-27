@@ -18,6 +18,7 @@ from loguru import logger
 
 from core.pdf_routes import (
     KIND_BLANK,
+    ROUTE_BABELDOC,
     ROUTE_IMAGE,
     ROUTE_INPLACE,
     ROUTE_WORD,
@@ -28,7 +29,8 @@ from core.pdf_routes import (
     page_route,
 )
 
-ROUTE_NEEDS_COMPONENT = (ROUTE_INPLACE, ROUTE_WORD)
+# 段落重排要用组件里的 NumPy、PyMuPDF，用不了时改走的转 Word 也要用组件。
+ROUTE_NEEDS_COMPONENT = (ROUTE_INPLACE, ROUTE_WORD, ROUTE_BABELDOC)
 
 
 @dataclass
