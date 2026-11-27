@@ -13,7 +13,8 @@ Translator 自己的代码按 [LICENSE](LICENSE)（MIT）发布。下面这些�
 ## 不随程序分发的可选组件
 
 下面这些组件不在安装包里。用户需要时在「插件」页安装：「一键安装」从原发布渠道（PDF 处理组件
-来自 PyPI，文字识别组件来自 PyPI、conda-forge 和 tessdata_fast，官方源连不上时用国内镜像；图纸转换工具
+来自 PyPI，文字识别组件来自 PyPI、conda-forge 和 tessdata_fast，段落重排组件来自 PyPI、BabelDOC-Assets、
+Hugging Face 和 OpenAI 的公开下载地址，官方源连不上时用国内镜像；图纸转换工具
 来自 ODA 官网）下载原版文件，核对文件大小和 SHA-256（图纸转换工具核对 ODA 的数字签名）后解压到
 本机的应用数据目录；也可以自行安装，再用「选择安装位置」连接。它们各自沿用原来的许可，MIT 不覆盖它们。
 
@@ -29,6 +30,11 @@ Translator 自己的代码按 [LICENSE](LICENSE)（MIT）发布。下面这些�
 | PP-OCRv6 识别模型（检测、识别各一个，PaddleOCR 训练，取自 RapidOCR 3.10.0 的发布包） | 文字识别组件 | 识别图纸里画成线条的中文、日文和西文 | Apache-2.0 | https://github.com/PaddlePaddle/PaddleOCR 、https://github.com/RapidAI/RapidOCR |
 | ONNX Runtime | 文字识别组件 | 运行识别模型 | MIT | https://github.com/microsoft/onnxruntime |
 | Microsoft Visual C++ 运行库（conda-forge 的 vc14_runtime，仅 Windows） | 文字识别组件 | ONNX Runtime 和 Tesseract 运行时要用 | Microsoft Visual C++ 可再发行组件许可 | https://github.com/conda-forge/vc-feedstock |
+| BabelDOC 0.7.1 | 段落重排组件 | 在原 PDF 上按段落重排译文，公式、图和表格线原样保留 | AGPL-3.0 | https://github.com/funstory-ai/BabelDOC |
+| BabelDOC 的依赖（PyPI 上发布的原版 wheel，约 80 个，逐个列在 core/babeldoc_component_manifest.py） | 段落重排组件 | BabelDOC 运行时要用 | 各自的许可（多为 MIT、BSD、Apache-2.0） | https://pypi.org |
+| BabelDOC-Assets 的字体（思源黑体、思源宋体、霞鹜文楷、Go Noto 等 34 个）和 CMap 表 | 段落重排组件 | 排译文用的字体；读 PDF 里的字形编码 | 各字体自己的许可（多为 SIL OFL-1.1）；CMap 表来自 Adobe cmap-resources（BSD-3-Clause） | https://github.com/funstory-ai/BabelDOC-Assets |
+| DocLayout-YOLO 版面识别模型（DocStructBench，ONNX 版） | 段落重排组件 | 找出页面上正文、公式、图和表格的位置 | AGPL-3.0 | https://github.com/opendatalab/DocLayout-YOLO 、https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx |
+| tiktoken o200k_base 词表 | 段落重排组件 | BabelDOC 估算每批文字的长度 | MIT | https://github.com/openai/tiktoken |
 | ODA File Converter | 图纸转换工具 | DWG 和 DXF 互转 | Open Design Alliance 的专有许可（免费提供，不是开源软件；一键安装前由用户确认 ODA 的使用条款） | https://www.opendesign.com/guestfiles/oda_file_converter |
 | Tesseract 用到的库（conda-forge 编译版） | 文字识别组件 | Leptonica、libarchive、libcurl、OpenSSL、ICU、libxml2、libtiff、libpng、libjpeg-turbo、libwebp、OpenJPEG、giflib、zlib、zstd、lz4、xz、bzip2、LZO、libiconv、Kerberos 等 | 各自的许可（多为 BSD、MIT、Apache-2.0；LZO 为 GPL-2.0，libiconv 为 LGPL） | https://conda-forge.org |
 
@@ -39,3 +45,7 @@ conda-forge 发布的原样文件，没有修改。识别模型和 ONNX Runtime 
 PyPI 上发布的原版文件，模型从 RapidOCR 的包里原样取出，没有修改；core/ppocr_engine.py 里模型前后的
 图像处理按 PaddleOCR / RapidOCR 公开的做法实现。ODA File Converter 不随本程序分发：一键安装由用户确认
 ODA 的使用条款后，从 ODA 官网的公开下载地址直接下载到用户自己的电脑，不经过第三方，不做修改。
+
+BabelDOC 和 DocLayout-YOLO 模型按 AGPL-3.0 使用：本程序没有修改它们，一键安装下载的是原发布渠道的原版
+文件（BabelDOC 来自 PyPI），完整源码见上面的链接。BabelDOC 只在单独的进程里运行，它要译文时由
+Translator 转给用户自己设置的文本翻译模型；组件不装也能翻译 PDF，可提取文字的页照旧转成 Word。
