@@ -31,6 +31,7 @@ from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_figures import uncover_pictures
 from core.pdf_word_lines import restore_line_order
+from core.pdf_word_section_marks import split_justified_section_marks
 from core.pdf_word_rules import restore_rules_from_pdf
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
@@ -215,6 +216,13 @@ def _runs_after_number(paragraph) -> list:
     return runs
 
 
+def _hyphen_broken(first, second) -> bool:
+    """前一行以断词的连字符结尾（「For ex-」），后一行接小写字母（「ample, …」）：一个词被拆在两行，
+    一定是同一段。讲义第 48 页这两行之间隔着公式的斜体字母，字体不全一样，以前不并，两半各译一次，
+    译文出现两个「例如」。"""
+    return bool(re.search(r"[^\W\d_]-$", first.text.rstrip())) and second.text.strip()[:1].islower()
+
+
 def _continues(first, second) -> bool:
     a, b = first.text.rstrip(), second.text.strip()
     if not a or not b or a.endswith(_SENTENCE_END) or _LIST_START.match(b):
@@ -224,7 +232,13 @@ def _continues(first, second) -> bool:
     looks_a = {_run_look(r) for r in _runs_after_number(first) if r.text.strip()}
     looks_b = {_run_look(r) for r in second.runs if r.text.strip()}
     if len(looks_a) != 1 or looks_a != looks_b:
-        return False
+        # 断词的两半：接口处前后两个字字体一样就行（行里别处可以有公式的斜体字母）
+        texts_a = [r for r in first.runs if r.text.strip()]
+        texts_b = [r for r in second.runs if r.text.strip()]
+        if not (_hyphen_broken(first, second) and texts_a and texts_b
+                and _run_look(texts_a[-1]) == _run_look(texts_b[0])):
+            return False
+        looks_a = {_run_look(texts_a[-1])}
     # 后一行离前一行太远（隔了一段空白）就是另一段
     gap = second.paragraph_format.space_before
     size = next(iter(looks_a))[2]
@@ -240,7 +254,9 @@ def _merge_paragraph_pairs(paragraphs) -> int:
         if first._p.getnext() is not second._p or not _continues(first, second):
             i += 1
             continue
-        joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) else " "
+        # 中文行尾、断词的连字符后面不加空格（「ex-」「ample」接成「ex-ample」，连字符留着：分不清是断词
+        # 还是本来就带连字符的词，如 well-known）
+        joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) or _hyphen_broken(first, second) else " "
         if first.runs:
             first.runs[-1].text = first.runs[-1].text.rstrip() + joiner
         for run in list(second.runs):
@@ -1018,6 +1034,8 @@ def convert_pdf_to_docx(
     move_running_footers(docx_path)
     # 页眉那种左右分栏改成无边框表格：WPS 会把分栏上下叠起来（core.pdf_word_columns）
     columns_to_tables(docx_path)
+    # 两端对齐的每页最后一段：分节符挪到自己的空段，Word 不再把最后一行拉满（core.pdf_word_section_marks）
+    split_justified_section_marks(docx_path)
 
 
 def translate_pdf_via_word(
