@@ -6,7 +6,8 @@ wheel 都核对大小和 SHA-256），再按 BabelDOC 自己写死的清单下�
 词表（同样核对），装完在子进程里真排一页 PDF，通过了才算装好。
 
 NumPy、OpenCV、PyMuPDF 用「PDF 处理组件」里的那份（版本对得上），不再下载一份；没装它时插件页
-先自动装它（api/babeldoc_plugin.py）。
+先自动装它（api/babeldoc_plugin.py）。Windows 上另取 VC++ 运行库放进 ``onnxruntime/capi``（版面
+模型靠 ONNX Runtime 跑，和「文字识别组件」同一个包、同一个做法）。
 
 装好的目录（``plugins/babeldoc-component/<MANIFEST_VERSION>-<随机>/``）：
 - ``site-packages/``：BabelDOC 和依赖；
@@ -37,9 +38,11 @@ from core.component_download import (
     ComponentDownloadError,
     RemoteFile,
     download_files,
+    extract_conda,
     extract_wheel,
     replace_file,
 )
+from core.ppocr_component_install import WINDOWS_RUNTIME, WINDOWS_RUNTIME_PACKAGE
 
 COMPONENT_NAME = "段落重排组件"
 MANIFEST_VERSION = "1"
@@ -71,6 +74,11 @@ def wheel_files() -> tuple[RemoteFile, ...]:
     return WHEELS.get(platform_key(), ())
 
 
+def runtime_files() -> tuple[RemoteFile, ...]:
+    """Windows 上 ONNX Runtime 要的 VC++ 运行库包；别的系统不需要。"""
+    return (WINDOWS_RUNTIME_PACKAGE,) if platform_key() == "windows-x64" else ()
+
+
 def asset_files() -> list[tuple[str, RemoteFile]]:
     """(缓存里的子目录, 文件)。资源不分平台。"""
     return [(folder, RemoteFile(name, tuple(urls), size, sha256))
@@ -80,7 +88,7 @@ def asset_files() -> list[tuple[str, RemoteFile]]:
 def manifest_files() -> tuple[RemoteFile, ...]:
     """本机一键安装要下载的全部文件；当前系统不支持时为空。"""
     wheels = wheel_files()
-    return (*wheels, *(item for _folder, item in asset_files())) if wheels else ()
+    return (*wheels, *runtime_files(), *(item for _folder, item in asset_files())) if wheels else ()
 
 
 def download_size() -> int:
@@ -175,6 +183,7 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
     from core.babeldoc_component import numpy_site_dir, probe_in_subprocess
 
     wheels = wheel_files()
+    runtime = runtime_files()
     if not wheels:
         raise ComponentInstallError("当前系统不支持一键安装。")
     numpy_site = numpy_site_dir()
@@ -200,8 +209,10 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
 
         site_dir, home = final_dir / "site-packages", final_dir / "home"
         try:
-            paths = download_files(wheels, downloads, progress=on_bytes, cancel=cancel, client=_http_client())
-            base[0] = sum(item.size for item in wheels)
+            paths = download_files((*wheels, *runtime), downloads, progress=on_bytes, cancel=cancel,
+                                   client=_http_client())
+            paths, runtime_paths = paths[:len(wheels)], paths[len(wheels):]
+            base[0] = sum(item.size for item in (*wheels, *runtime))
             # 资源先下到 .downloads 里（装到一半断了，下次接着用已核对好的），装的时候挪进
             # BabelDOC 的缓存目录：它按文件名找，下载时已逐个核对过。
             groups: dict[str, list[RemoteFile]] = {}
@@ -217,6 +228,8 @@ def install(*, progress: ProgressFn | None = None, cancel: threading.Event | Non
                 if progress:
                     progress("extract", index, len(paths) + 1)
                 extract_wheel(wheel, site_dir)
+            for package in runtime_paths:
+                extract_conda(package, site_dir / "onnxruntime" / "capi", {name: name for name in WINDOWS_RUNTIME})
             if progress:
                 progress("extract", len(paths), len(paths) + 1)
             for source, target in staged:

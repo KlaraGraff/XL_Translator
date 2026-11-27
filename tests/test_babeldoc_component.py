@@ -81,7 +81,7 @@ def _remote(name: str, data: bytes, sha256: str | None = None) -> RemoteFile:
                       len(data), sha256 or hashlib.sha256(data).hexdigest())
 
 
-def _fake_sources(monkeypatch, *, model_hash: str | None = None) -> list[str]:
+def _fake_sources(monkeypatch, *, model_hash: str | None = None, runtime: bytes | None = None) -> list[str]:
     """假的 PyPI 和资源下载源；返回收到的请求地址。"""
     wheels = {
         "babeldoc-test.whl": _wheel({"babeldoc/__init__.py": b"__version__ = '0.7.1'\n",
@@ -90,9 +90,16 @@ def _fake_sources(monkeypatch, *, model_hash: str | None = None) -> list[str]:
     }
     font, model = b"font bytes", b"layout model bytes"
     wheel_files = tuple(_remote(name, data) for name, data in wheels.items())
+    runtime_files: tuple[RemoteFile, ...] = ()
+    if runtime is not None:
+        from tests.test_ocr_component import _conda
+
+        wheels["vc14_runtime-test.conda"] = _conda({name: runtime + name.encode() for name in installer.WINDOWS_RUNTIME})
+        runtime_files = (_remote("vc14_runtime-test.conda", wheels["vc14_runtime-test.conda"]),)
     assets = [("fonts", _remote("SourceHanSans.ttf", font)),
               ("models", _remote("doclayout.onnx", model, model_hash))]
     monkeypatch.setattr(installer, "wheel_files", lambda: wheel_files)
+    monkeypatch.setattr(installer, "runtime_files", lambda: runtime_files)
     monkeypatch.setattr(installer, "asset_files", lambda: assets)
     routes = {f"https://primary.test/{name}": data for name, data in wheels.items()}
     routes["https://primary.test/SourceHanSans.ttf"] = font
@@ -158,6 +165,25 @@ def test_a_file_that_does_not_match_leaves_nothing_behind(hermetic, monkeypatch)
         installer.install()
     assert installer.installed_dirs() is None
     assert not list(installer.component_root().glob(f"{installer.MANIFEST_VERSION}-*"))
+
+
+def test_windows_gets_the_vc_runtime_next_to_onnxruntime(hermetic, monkeypatch):
+    # 版面模型靠 ONNX Runtime 跑；Windows 上它要的 VC++ 运行库和文字识别组件一样放进 onnxruntime/capi。
+    _fake_sources(monkeypatch, runtime=b"runtime:")
+    monkeypatch.setattr(component, "probe_in_subprocess", lambda *args: (True, "0.7.1", ""))
+    installer.install()
+    site_dir, _home = installer.installed_dirs()
+    for name in installer.WINDOWS_RUNTIME:
+        assert (site_dir / "onnxruntime" / "capi" / name).read_bytes() == b"runtime:" + name.encode()
+
+
+def test_only_windows_downloads_the_vc_runtime(monkeypatch):
+    monkeypatch.setattr(installer, "platform_key", lambda: "windows-x64")
+    assert installer.runtime_files() == (installer.WINDOWS_RUNTIME_PACKAGE,)
+    assert installer.WINDOWS_RUNTIME_PACKAGE in installer.manifest_files()
+    for key in ("macos-arm64", "linux-x64"):
+        monkeypatch.setattr(installer, "platform_key", lambda key=key: key)
+        assert installer.runtime_files() == ()
 
 
 def test_install_needs_the_pdf_component(hermetic, monkeypatch):

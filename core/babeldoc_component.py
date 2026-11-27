@@ -355,6 +355,10 @@ def worker_main(job_path: str) -> int:
         home = str(job["home"])
         os.environ["HOME"] = home
         os.environ["USERPROFILE"] = home
+        # 先于 PyMuPDF、OpenCV 载入：Windows 上让随组件带的 VC++ 运行库先进进程，不用 PDF 处理组件
+        # 里那份旧的 msvcp140.dll（同名的库进程里只有一份，先进来的算数）。
+        import onnxruntime  # noqa: F401  # pyright: ignore[reportMissingImports]  # only in the component
+
         done = _run_babeldoc(protocol, job)
     except BaseException as exc:  # noqa: BLE001 - report every failure to the parent
         import traceback
