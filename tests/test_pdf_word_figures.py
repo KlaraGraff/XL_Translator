@@ -58,6 +58,20 @@ class UncoverPicturesTests(unittest.TestCase):
         self.assertEqual(len(list(tables[0]._tbl.iter(qn("w:shd")))), 0, "图上的标签表：灰格子、白格子都去掉底色")
         self.assertEqual(len(list(tables[1]._tbl.iter(qn("w:shd")))), 2, "有一格的字不在图里：正文表格不动")
 
+    def test_label_rows_lose_fills_but_the_caption_row_keeps_them(self) -> None:
+        # 讲义图 14、15：标签和图注拼在同一张表里；标签那几行在图上，图注那一行不在
+        rows = (f"<w:tr>{_cell('A', 'FFFFFF')}{_cell('B', 'FFFFFF')}</w:tr>"
+                f"<w:tr>{_cell('', 'BFBFBF')}{_cell('', 'BFBFBF')}</w:tr>"
+                f"<w:tr>{_cell('A', 'FFFFFF')}{_cell('B', 'FFFFFF')}</w:tr>"
+                f"<w:tr>{_cell('Name', 'DDDDDD')}{_cell('', 'DDDDDD')}</w:tr>")
+        doc = Document(str(self.docx))
+        doc.element.body[-1].addprevious(parse_xml(f'<w:tbl {nsdecls("w")}><w:tblGrid/>{rows}</w:tbl>'))
+        doc.save(str(self.docx))
+        uncover_pictures(self.docx, self.pdf)
+        table = Document(str(self.docx)).tables[2]._tbl
+        left = [len(list(row.iter(qn("w:shd")))) for row in table.findall(qn("w:tr"))]
+        self.assertEqual(left, [0, 0, 0, 2], "标签行和夹在中间的空行去掉底色，图注那一行不动")
+
 
 if __name__ == "__main__":
     unittest.main()

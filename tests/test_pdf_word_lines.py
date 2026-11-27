@@ -67,5 +67,96 @@ class RestoreLineOrderTests(unittest.TestCase):
         self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
 
 
+_COLUMN = [(100, 100, "1. Alpha one"), (100, 118, "7 x"), (120, 136, "2. Beta"), (120, 154, "3. Gamma three")]
+_PROSE = ("The quick brown fox jumps over the lazy dog and keeps", "running far away from the old farm while the tired",
+          "extraordinarily sleepy farmer rests.")
+
+
+@unittest.skipIf(pymupdf is None, "PyMuPDF not installed")
+class HardBreakTests(unittest.TestCase):
+    """pdf2docx 把一行一行摆的字（证明的步骤、一列依据）拼成一段，行间是换行符、靠右缩进逼它折行。"""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.pdf = Path(tmp.name) / "in.pdf"
+        self.docx = Path(tmp.name) / "out.docx"
+
+    def _make(self, lines, cell: str) -> None:
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        for x, y, text in lines:
+            page.insert_text((x, y), text, fontname="helv", fontsize=11)
+        pdf.save(str(self.pdf))
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:tbl {nsdecls("w")}><w:tblGrid><w:gridCol w:w="8000"/></w:tblGrid><w:tr>'
+            f'<w:trPr><w:trHeight w:val="1400" w:hRule="exact"/></w:trPr><w:tc>{cell}</w:tc></w:tr></w:tbl>'))
+        doc.save(str(self.docx))
+
+    @staticmethod
+    def _runs(*lines: str) -> str:
+        # 每个词一个 run（上下标、字体不同时 pdf2docx 就是这样切的）；行与行之间一个只装换行符的 run，
+        # 下一行开头再用一个制表符缩进（讲义里的代码就是这样）
+        runs = []
+        for number, line in enumerate(lines):
+            if number:
+                runs += ["<w:r><w:br/></w:r>", "<w:r><w:tab/></w:r>"]
+            runs += [f'<w:r><w:t xml:space="preserve">{word} </w:t></w:r>' for word in line.split()]
+        return ('<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="360" w:lineRule="exact"/>'
+                f'<w:ind w:left="0" w:right="3000"/></w:pPr>{"".join(runs)}</w:p>')
+
+    def test_lines_in_one_paragraph_become_one_paragraph_each(self) -> None:
+        self._make(_COLUMN, self._runs(*(text for _x, _y, text in _COLUMN)))
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 1)
+        cell = Document(str(self.docx)).tables[0].cell(0, 0)
+        # 「7 x」只有两个字：整页对齐时太短对不上，按「PDF 剩下的字里只出现一次」补上
+        self.assertEqual([p.text.strip() for p in cell.paragraphs], ["1. Alpha one", "7 x", "2. Beta", "3. Gamma three"])
+        self.assertEqual([p._p.find(f"{qn('w:pPr')}/{qn('w:ind')}").get(qn("w:left")) for p in cell.paragraphs],
+                         ["0", "0", "400", "400"])
+        for tag in ("w:br", "w:tab"):
+            self.assertEqual(sum(len(p._p.findall(f".//{qn(tag)}")) for p in cell.paragraphs), 0,
+                             "行间的换行符、缩进用的制表符去掉")
+
+    def test_column_beside_the_steps_is_split_row_by_row(self) -> None:
+        # 证明右边那一列依据：「Premise」后面放不下下一个「Premise」，单看像折行，可每一行都对着左边的一步
+        steps = [(100, 100, "1. A"), (120, 118, "2. Beta gamma delta"), (100, 136, "3. C")]
+        reasons = [(300, 100, "Premise"), (300, 118, "Premise"), (300, 136, "Assumption")]
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        for x, y, text in steps + reasons:
+            page.insert_text((x, y), text, fontname="helv", fontsize=11)
+        pdf.save(str(self.pdf))
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:tbl {nsdecls("w")}><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>'
+            f'<w:tc>{self._runs(*(text for _x, _y, text in steps))}</w:tc>'
+            f'<w:tc>{self._runs(*(text for _x, _y, text in reasons))}</w:tc></w:tr></w:tbl>'))
+        doc.save(str(self.docx))
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 2)
+        table = Document(str(self.docx)).tables[0]
+        self.assertEqual([p.text.strip() for p in table.cell(0, 1).paragraphs], ["Premise", "Premise", "Assumption"])
+        befores = [[p._p.find(f"{qn('w:pPr')}/{qn('w:spacing')}").get(qn("w:before")) for p in table.cell(0, n).paragraphs]
+                   for n in (0, 1)]
+        self.assertEqual(befores[0][0], befores[1][0], "同一行的两格从同一个上沿量起，左右对齐")
+
+    def test_justified_prose_beside_code_lines_keeps_its_wraps(self) -> None:
+        # 一格里先是两端对齐的一段话（每行排满），下面是一行一行的代码：只拆代码，话不拆成半句
+        prose = [(100, 100, "The quick brown fox jumps over"), (100, 114, "the lazy dog.")]
+        code = [(100, 140, "x = 1"), (120, 154, "y = 2")]
+        self._make(prose + code, self._runs(*(text for _x, _y, text in prose))
+                   + self._runs(*(text for _x, _y, text in code)))
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 1)
+        cell = Document(str(self.docx)).tables[0].cell(0, 0)
+        self.assertEqual([" ".join(p.text.split()) for p in cell.paragraphs],
+                         ["The quick brown fox jumps over the lazy dog.", "x = 1", "y = 2"])
+
+    def test_wrapped_prose_is_left_alone(self) -> None:
+        # 自动折行：上一行后面放不下下一行的第一个词
+        lines = [(100, 100 + 14 * number, text) for number, text in enumerate(_PROSE)]
+        self._make(lines, self._runs(*_PROSE))
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

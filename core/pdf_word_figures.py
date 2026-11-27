@@ -6,8 +6,10 @@
 （图 13）；白格子在标签下面盖出一小块白底（图 14、15）。图片里本来就有这些颜色。
 
 做法：找出这一页在文字下方、按页面定位的图片占的地方，以及原 PDF 上落在图里的那几个字。
-一张表里每个有字的格子，字都在图里那几个字里，这张表就是摆在图上的标签：整张表的格子底色
-都去掉，让下面的图露出来。表里有一格的字不在图里（正文表格）就不动。
+一张表里按行看：一行里每个有字的格子，字都在图里那几个字里，这一行就是摆在图上的标签：
+这一行格子的底色都去掉，让下面的图露出来；夹在两行标签中间、一个字也没有的行也在图上，一样去掉。
+图注那一行（字不在图里）、正文表格（有一格的字不在图里）不动。讲义第 48 页图 14、15 的标签和
+图注在同一张表里，以前按整张表看，有图注就整张不动，白底留着。
 PDF 打不开、没有 PyMuPDF 时什么都不改。
 """
 from __future__ import annotations
@@ -74,11 +76,40 @@ def _text_inside(page, pictures) -> list[str]:
     return found
 
 
+def _rows_on_pictures(table, inside: list[str]) -> list:
+    """这张表里摆在图上的那几行：有字的格子都是图里的字（图上的标签）的行，以及夹在这样两行
+    中间、一个字也没有的行（标签上下之间，也在图上）。图下面的图注那一行（字不在图里）不算。
+    只看这张表自己的行，套在里面的表单独算。"""
+    rows = table.findall(f"{_W}tr")
+    kinds = []
+    for row in rows:
+        texts = [_compact(_cell_text(tc)) for tc in row.findall(f"{_W}tc")]
+        texts = [text for text in texts if text]
+        if not texts:
+            kinds.append(None)
+        else:
+            kinds.append(all(any(text in words for words in inside) for text in texts))
+    labels = [number for number, kind in enumerate(kinds) if kind]
+    if not labels:
+        return []
+    return [row for number, row in enumerate(rows)
+            if kinds[number] or (kinds[number] is None and labels[0] < number < labels[-1])]
+
+
+def _table_of(node):
+    parent = node.getparent()
+    while parent is not None and parent.tag != f"{_W}tbl":
+        parent = parent.getparent()
+    return parent
+
+
 def _clear_fills(table) -> int:
+    """去掉这张表（或这一行）里格子的底色，套在里面的表不算。"""
     cleared = 0
+    owner = table if table.tag == f"{_W}tbl" else table.getparent()
     for shd in list(table.iter(f"{_W}shd")):
         parent = shd.getparent()
-        if parent is None or parent.tag != f"{_W}tcPr":
+        if parent is None or parent.tag != f"{_W}tcPr" or _table_of(parent) is not owner:
             continue
         fill = (shd.get(f"{_W}fill") or "auto").lower()
         if fill in ("auto", "none") and shd.get(f"{_W}val") in (None, "clear", "nil"):
@@ -117,11 +148,7 @@ def uncover_pictures(docx_path: Path, pdf_path: Path) -> int:
             tables = [table for element in group
                       for table in ([element] if element.tag == f"{_W}tbl" else element.iter(f"{_W}tbl"))]
             for table in tables:
-                texts = [_compact(_cell_text(tc)) for tc in table.iter(f"{_W}tc")]
-                texts = [text for text in texts if text]
-                # 整张表只有图上的标签：每个有字的格子，字都能在图里那几个字里找到
-                if texts and all(any(text in words for words in inside) for text in texts):
-                    cleared += _clear_fills(table)
+                cleared += sum(_clear_fills(row) for row in _rows_on_pictures(table, inside))
     if cleared:
         doc.save(str(docx_path))
         logger.info(f"[PDF] 摆在图上的标签表格去掉了 {cleared} 个格子的底色，下面的图露出来")

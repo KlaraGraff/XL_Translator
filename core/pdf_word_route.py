@@ -970,6 +970,13 @@ def _tex_glyphs(docx_path: Path, _pdf_path: Path) -> int:
     return tex_glyphs_to_unicode(docx_path)
 
 
+def _try_fix(fix: Callable[[Path, Path], int], docx_path: Path, pdf_path: Path) -> None:
+    try:
+        fix(docx_path, pdf_path)
+    except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
+        logger.opt(exception=exc).warning(f"[PDF] {fix.__name__} 没做成，按转出的样子继续：{exc!r}")
+
+
 def convert_pdf_to_docx(
     pdf_path: Path,
     docx_path: Path,
@@ -998,14 +1005,14 @@ def convert_pdf_to_docx(
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
     # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
     for fix in (recolor_cells_from_pdf, uncover_pictures, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
-                restore_rules_from_pdf, restore_line_order):
-        try:
-            fix(docx_path, pdf_path)
-        except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
-            logger.opt(exception=exc).warning(f"[PDF] {fix.__name__} 没做成，按转出的样子继续：{exc!r}")
+                restore_rules_from_pdf):
+        _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
+    # 一行一行摆的表格按原文一行一段重排：放在合并折行之后，不然拆开的一行一段又被并回去
+    # （「Premise」「Premise」「Assumption」字体一样、没有句末标点，看着像一句话折了行）
+    _try_fix(restore_line_order, docx_path, pdf_path)
     split_glued_bullets(docx_path)
     sync_table_grids(docx_path)
     move_running_footers(docx_path)
