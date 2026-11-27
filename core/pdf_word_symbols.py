@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import re
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -66,10 +67,11 @@ def _has_math_font(r_pr) -> bool:
 
 
 def _pieces(text: str) -> list[tuple[str, bool]]:
-    """按「是不是数学符号」切开；空格跟着前面那一截。"""
+    """按「是不是数学符号」切开；空格、组合符（补回的上划线 U+0305）跟着前面那一截。"""
     pieces: list[tuple[str, bool]] = []
     for char in text:
-        math = is_math_symbol(char) if not char.isspace() else (pieces[-1][1] if pieces else False)
+        follows = char.isspace() or unicodedata.combining(char)
+        math = is_math_symbol(char) if not follows else (pieces[-1][1] if pieces else False)
         if pieces and pieces[-1][1] == math:
             pieces[-1] = (pieces[-1][0] + char, math)
         else:
@@ -236,10 +238,11 @@ def _display_scale(char: str) -> float:
 
 
 def _scale_pieces(text: str) -> list[tuple[str, float]]:
-    """按放大倍数切开；空格跟着前面那一截。"""
+    """按放大倍数切开；空格、组合符跟着前面那一截。"""
     pieces: list[tuple[str, float]] = []
     for char in text:
-        scale = pieces[-1][1] if char.isspace() and pieces else _display_scale(char)
+        follows = char.isspace() or unicodedata.combining(char)
+        scale = pieces[-1][1] if follows and pieces else _display_scale(char)
         if pieces and pieces[-1][1] == scale:
             pieces[-1] = (pieces[-1][0] + char, scale)
         else:
