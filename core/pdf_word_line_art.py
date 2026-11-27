@@ -129,23 +129,23 @@ def _next_id(body) -> int:
     return max(ids) + 1
 
 
-def place(document, paragraph, png: bytes, where: tuple, start: float) -> None:
-    """把图放在 paragraph 最前面，浮在字上面：上下按页面定位到 where（x0, y0, x1, y1，PDF 坐标，磅），
-    左右从这一段第一个字量起（start 是这个字在 PDF 上的位置）。左右不按页面定位：pdf2docx 的表格在
-    Word 里整体偏几磅（表格缩进量到格子文字还是格子边框，各版本 Word 算法不同），线要跟着字走。"""
+def place(document, paragraph, png: bytes, where: tuple) -> None:
+    """把图放进 paragraph：浮在字上面，按页面定位到 where（x0, y0, x1, y1，PDF 坐标，磅）。
+    和 pdf2docx 自己放的图一样，挂在表格外面的正文段上、上下左右都按页面定位：挂在格子里时，
+    Word 和新版 LibreOffice 会从格子量起，整张图往下错开一大截（讲义第 33 页错了七行）。"""
     from docx.oxml import parse_xml
 
     r_id, _image = document.part.get_or_add_image(io.BytesIO(png))
     number = _next_id(document.element.body)
-    left, top = round((where[0] - start) * _EMU_PER_POINT), round(where[1] * _EMU_PER_POINT)
+    left, top = round(where[0] * _EMU_PER_POINT), round(where[1] * _EMU_PER_POINT)
     width = round((where[2] - where[0]) * _EMU_PER_POINT)
     height = round((where[3] - where[1]) * _EMU_PER_POINT)
     run = parse_xml(
         f'<w:r xmlns:w="{_W[1:-1]}" xmlns:wp="{_WP_NS}" xmlns:a="{_A_NS}" xmlns:pic="{_PIC_NS}" '
         f'xmlns:r="{_R_NS}"><w:drawing>'
         f'<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{251659264 + number}" '
-        f'behindDoc="0" locked="0" layoutInCell="0" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
-        f'<wp:positionH relativeFrom="character"><wp:posOffset>{left}</wp:posOffset></wp:positionH>'
+        f'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+        f'<wp:positionH relativeFrom="page"><wp:posOffset>{left}</wp:posOffset></wp:positionH>'
         f'<wp:positionV relativeFrom="page"><wp:posOffset>{top}</wp:posOffset></wp:positionV>'
         f'<wp:extent cx="{width}" cy="{height}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>'
         f'<wp:docPr id="{number}" name="Lines {number}"/>'
@@ -156,14 +156,25 @@ def place(document, paragraph, png: bytes, where: tuple, start: float) -> None:
         f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm>'
         f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>'
         f'</wp:anchor></w:drawing></w:r>')
-    p_pr = paragraph.find(f"{_W}pPr")
-    if p_pr is not None:
-        p_pr.addnext(run)
-    else:
-        paragraph.insert(0, run)
+    paragraph.append(run)
 
 
-def replace_bars(document, page, tc, tables: list, origin_left: float, top: float, bottom: float, fitz) -> bool:
+def anchor_paragraph(group: list, tc):
+    """图挂在哪一段：这一页上、这张表前面最近的正文段（不在表格里），没有就后面最近的；
+    这一页都没有正文段时挂在格子第一段。"""
+    top = tc
+    while top.getparent() is not None and not any(top is element for element in group):
+        top = top.getparent()
+    index = next((number for number, element in enumerate(group) if element is top), None)
+    if index is not None:
+        for element in [*reversed(group[:index]), *group[index + 1:]]:
+            if element.tag == f"{_W}p":
+                return element
+    return tc.find(f"{_W}p")
+
+
+def replace_bars(document, group: list, page, tc, tables: list, origin_left: float,
+                 top: float, bottom: float, fitz) -> bool:
     """去掉格子里画线用的小表格，换成原文那一带的细线图。返回画上了没有（小表格总是去掉）。
     origin_left 是格子文字左边在 PDF 上的位置，top、bottom 是格子里的字在 PDF 上的上下范围。"""
     ranges = spans(tables)
@@ -178,9 +189,5 @@ def replace_bars(document, page, tc, tables: list, origin_left: float, top: floa
     drawn = render(thin_paths(page, left, right, top, bottom), page.rect.width, page.rect.height, fitz)
     if drawn is None:
         return False
-    # 挂在格子第一段（重排后的第一行）：缩进、首行缩进按原文定过，第一个字在 PDF 上的位置算得出
-    paragraph = tc.find(f"{_W}p")
-    ind = paragraph.find(f"{_W}pPr/{_W}ind")
-    start = origin_left + _twips(ind, "left") + _twips(ind, "firstLine") - _twips(ind, "hanging")
-    place(document, paragraph, *drawn, start)
+    place(document, anchor_paragraph(group, tc), *drawn)
     return True

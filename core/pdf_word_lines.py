@@ -53,6 +53,9 @@ _SPACE = 0.4
 #: 两个字隔开超过行高的这么几成，算词与词之间（空格约占三成，字母之间几乎不留空）。
 _WORD_GAP = 0.15
 
+#: 字高不到旁边的字的这么几成，算上标、下标（小一号的字）。
+_SCRIPT = 0.85
+
 #: 两格里的两行上沿差不到行高的这么几成，算同一行（字体不同，字框的上沿差一两磅）。
 _ROW_MATCH = 0.3
 
@@ -67,12 +70,24 @@ class _Line:
 
     def holds(self, box: tuple) -> bool:
         middle = (box[1] + box[3]) / 2
-        return self.top <= middle <= self.bottom
+        if self.top <= middle <= self.bottom:
+            return True
+        # 公式里的上标、下标（x 的 2ᵗ 次方、上标里再套上标）字小一号，比本行高出或低下去一截，中线可能
+        # 落在本行外面：字比本行小（或本行是上标起头、这个字大），紧接着往右写、上下离本行不到半行，
+        # 还是这一行。同样大的字另起一行，哪怕缩进比上一行的末尾还靠右，也是新的一行
+        height = max(self.bottom - self.top, box[3] - box[1])
+        if min(self.bottom - self.top, box[3] - box[1]) > _SCRIPT * height:
+            return False
+        return (self.right - _SAME_ROW <= box[0] <= self.right + height
+                and box[1] <= self.bottom + height / 2 and box[3] >= self.top - height / 2)
 
     def add(self, box: tuple) -> None:
         # 和前一个字隔开了（字母之间几乎不留空，词与词之间隔一个空格），第一个词就到头了
         if self._in_word and box[0] - self.right > _WORD_GAP * (self.bottom - self.top):
             self._in_word = False
+        # 行的上下沿按本行正文的字（最高的那个字）定，不按上标、下标
+        if box[3] - box[1] > self.bottom - self.top:
+            self.top, self.bottom = box[1], box[3]
         self.left, self.right = min(self.left, box[0]), max(self.right, box[2])
         if self._in_word:
             self.word = self.right - self.left
@@ -524,7 +539,7 @@ def _restore_page(group: list, page, document=None, fitz=None) -> int:
             if bars and document is not None and fitz is not None:
                 top = min(lines[0][1].top for _p, _w, _o, lines in located)
                 bottom = max(lines[-1][1].bottom for _p, _w, _o, lines in located)
-                drawn = replace_bars(document, page, tc, bars, origin_left, top, bottom, fitz)
+                drawn = replace_bars(document, group, page, tc, bars, origin_left, top, bottom, fitz)
                 logger.info(f"[PDF] 重排的格子里 {len(bars)} 张画线的小表格去掉，"
                             f"{'换成原文那几条线的图' if drawn else '原文的线没画出来'}")
     return changed

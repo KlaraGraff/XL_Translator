@@ -49,6 +49,8 @@ class RestoreLineOrderTests(unittest.TestCase):
             page.insert_text((x, y), text, fontname="helv", fontsize=11)
         pdf.save(str(self.pdf))
         doc = Document()
+        if bar:
+            doc.add_paragraph()  # 表格前面的正文段（空段），线条图挂在这里
         doc.element.body[-1].addprevious(parse_xml(
             f'<w:tbl {nsdecls("w")}><w:tblGrid><w:gridCol w:w="6000"/></w:tblGrid><w:tr>'
             f'<w:trPr><w:trHeight w:val="1400" w:hRule="exact"/></w:trPr><w:tc>{cell}</w:tc></w:tr></w:tbl>'))
@@ -76,7 +78,7 @@ class RestoreLineOrderTests(unittest.TestCase):
 
     def test_bar_tables_become_a_picture_of_the_lines(self) -> None:
         # 证明表的竖线、短横线是格子里只有边框的小表格：重排后去掉（不然挤到格子最下面把格子撑爆），
-        # 原文那几条线画成透明的图，浮在字上面（格子有底色，放在字下面会被盖住），左右跟着第一行的字走
+        # 原文那几条线画成透明的图，浮在字上面（格子有底色，放在字下面会被盖住），按页面定位
         self._make(_cell_paragraph("1. Alpha one 3. Gamma three", 0) + _cell_paragraph("2. Beta two", 400)
                    + self._bar_table(), bar=True)
         self.assertEqual(restore_line_order(self.docx, self.pdf), 1)
@@ -84,18 +86,20 @@ class RestoreLineOrderTests(unittest.TestCase):
         tc = doc.tables[0].cell(0, 0)._tc
         self.assertEqual(tc.findall(qn("w:tbl")), [])
         self.assertEqual(tc[-1].tag, qn("w:p"))
-        anchors = tc.findall(f".//{qn('wp:anchor')}")
+        # 和 pdf2docx 自己的图一样挂在表格外面的正文段上（挂在格子里，Word 会从格子量起）
+        self.assertEqual(tc.findall(f".//{qn('wp:anchor')}"), [])
+        anchors = doc.element.body.findall(f".//{qn('wp:anchor')}")
         self.assertEqual(len(anchors), 1)
         anchor = anchors[0]
         self.assertEqual(anchor.get("behindDoc"), "0")
-        self.assertEqual(anchor.find(qn("wp:positionH")).get("relativeFrom"), "character")
+        self.assertEqual(anchor.find(qn("wp:positionH")).get("relativeFrom"), "page")
         emu = 12700
         left = int(anchor.find(f"{qn('wp:positionH')}/{qn('wp:posOffset')}").text) / emu
         top = int(anchor.find(f"{qn('wp:positionV')}/{qn('wp:posOffset')}").text) / emu
         width = int(anchor.find(qn("wp:extent")).get("cx")) / emu
         height = int(anchor.find(qn("wp:extent")).get("cy")) / emu
-        # 竖线在 x=110，第一行的字从 x=100 起；线 90–140 高、横线到 119：底色那一大块不算进来
-        self.assertAlmostEqual(left, 10 - 1.4, delta=0.5)
+        # 竖线在 x=110，线 90–140 高、横线到 119：底色那一大块不算进来
+        self.assertAlmostEqual(left, 110 - 1.4, delta=0.5)
         self.assertAlmostEqual(top, 90 - 1.4, delta=0.5)
         self.assertAlmostEqual(width, 9 + 2.8, delta=0.5)
         self.assertAlmostEqual(height, 50 + 2.8, delta=0.5)
@@ -164,6 +168,25 @@ class HardBreakTests(unittest.TestCase):
         for tag in ("w:br", "w:tab"):
             self.assertEqual(sum(len(p._p.findall(f".//{qn(tag)}")) for p in cell.paragraphs), 0,
                              "行间的换行符、缩进用的制表符去掉")
+
+    def test_superscripts_in_a_formula_stay_on_their_line(self) -> None:
+        # 讲义第 91 页 x^(y_t 2^t)：pdf2docx 把它放进一个格子；上标里的上标小一号、高出本行一截，中线落在
+        # 本行外面，以前当成另起一行（还在上一行上面），整格当一行一行摆的切开重排，「t」跑到最上面、公式散了
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        x = 100.0
+        parts = (("x", 11, 0), ("yt", 7, 5), ("2", 5, 9), ("t", 4, 12))
+        for text, size, rise in parts:
+            page.insert_text((x, 120 - rise), text, fontname="helv", fontsize=size)
+            x += pymupdf.get_text_length(text, fontname="helv", fontsize=size) + (2 if size == 11 else 0)
+        pdf.save(str(self.pdf))
+        doc = Document()
+        runs = "".join(f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>' for text, _size, _rise in parts)
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:tbl {nsdecls("w")}><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr>'
+            f'<w:tc><w:p>{runs}</w:p></w:tc></w:tr></w:tbl>'))
+        doc.save(str(self.docx))
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
 
     def test_column_beside_the_steps_is_split_row_by_row(self) -> None:
         # 证明右边那一列依据：「Premise」后面放不下下一个「Premise」，单看像折行，可每一行都对着左边的一步
