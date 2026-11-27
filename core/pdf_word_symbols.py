@@ -213,25 +213,115 @@ def _tex_char_map(r_pr) -> Callable[[str], str] | None:
     return None
 
 
+# 独立公式（\displaystyle）里的大号运算符用 CMEX 里另一套更大的字形，换成 Unicode 以后
+# 却和正文一样大（反馈 #28：∑ 只有正文字号）。按字形实际画出来的高度放大到和原文一样：
+# Latin Modern 独立公式的 ∑ 高 1.39em、∫ 高 1.63em；Cambria Math 的 ∑ 高 0.90em、∫ 高 0.95em
+# （本机 Word 转出的 PDF 里量的）。∑ ∏ ⋃ ⋂ ⨄ ⋀ ⋁ ⨆ ⨀ ⨁ ⨂ ∐ 照 ∑ 放大 1.5 倍，∫ ∮ 放大 1.7 倍。
+_TEX_DISPLAY_SCALE = {code: 1.5 for code in (71, 75, 77, 79, 88, 89, 91, 92, 93, 94, 95, 97)}
+_TEX_DISPLAY_SCALE.update({73: 1.7, 90: 1.7})
+#: 数学字体的「数学轴」（运算符上下居中的那条线）在基线上方约 0.25em。放大的字绕着基线长高，
+#: 往下挪（放大的部分 × 0.25em），中心才留在原来的数学轴上，不顶到上限、不压到上一行。
+_MATH_AXIS_EM = 0.25
+# w:rPr 里 w:position 后面可以出现的元素（顺序按 OOXML 的定义，Word 读到乱序的会报文件损坏）
+_AFTER_POSITION = tuple(
+    f"{_W}{tag}" for tag in (
+        "sz", "szCs", "highlight", "u", "effect", "bdr", "shd", "fitText", "vertAlign", "rtl", "cs",
+        "em", "lang", "eastAsianLayout", "specVanish", "oMath",
+    )
+)
+
+
+def _display_scale(char: str) -> float:
+    return _TEX_DISPLAY_SCALE.get(ord(char), 1.0) if len(char) == 1 else 1.0
+
+
+def _scale_pieces(text: str) -> list[tuple[str, float]]:
+    """按放大倍数切开；空格跟着前面那一截。"""
+    pieces: list[tuple[str, float]] = []
+    for char in text:
+        scale = pieces[-1][1] if char.isspace() and pieces else _display_scale(char)
+        if pieces and pieces[-1][1] == scale:
+            pieces[-1] = (pieces[-1][0] + char, scale)
+        else:
+            pieces.append((char, scale))
+    return pieces
+
+
+def _enlarge(r_pr, scale: float) -> None:
+    """字号放大 scale 倍，再往下挪，让字的中心留在数学轴上。没写字号的段不动。"""
+    size_node = r_pr.find(f"{_W}sz")
+    if size_node is None:
+        return
+    size = int(size_node.get(f"{_W}val") or 0)  # 半磅
+    if size <= 0:
+        return
+    for tag in ("sz", "szCs"):
+        node = r_pr.find(f"{_W}{tag}")
+        if node is not None:
+            node.set(f"{_W}val", str(round(size * scale)))
+    lower = round(_MATH_AXIS_EM * size * (scale - 1))
+    if lower <= 0:
+        return
+    position = r_pr.find(f"{_W}position")
+    if position is None:
+        position = r_pr.makeelement(f"{_W}position", {})
+        later = next((child for child in r_pr if child.tag in _AFTER_POSITION), None)
+        if later is not None:
+            later.addprevious(position)
+        else:
+            r_pr.append(position)
+    position.set(f"{_W}val", str(int(position.get(f"{_W}val") or 0) - lower))
+
+
+def _split_display_glyphs(run) -> list:
+    """一段 TeX 大号运算符字体的字，独立公式里的大号字形拆出来单独成一段并放大。返回拆完的各段。"""
+    texts = [child for child in run if child.tag == f"{_W}t"]
+    if len(texts) != 1 or len(run) != 2:  # 只有 rPr 和一个 w:t 才拆；别的样子保持原样
+        return [run]
+    pieces = _scale_pieces(texts[0].text or "")
+    if all(scale == 1.0 for _, scale in pieces):
+        return [run]
+    parts = []
+    anchor = run
+    for text, scale in pieces:
+        part = copy.deepcopy(run)
+        part_text = part.find(f"{_W}t")
+        part_text.text = text
+        if text != text.strip():
+            part_text.set(_XML_SPACE, "preserve")
+        if scale != 1.0:
+            _enlarge(part.find(f"{_W}rPr"), scale)
+        anchor.addnext(part)
+        anchor = part
+        parts.append(part)
+    run.getparent().remove(run)
+    return parts
+
+
 def tex_glyphs_to_unicode(docx_path: Path) -> int:
     """PDF 转出的 Word 里，TeX 大号运算符字体、黑板粗体字体的字符换成对应的 Unicode
-    （P → ∑、Z → ∫、R → ℝ），字体改成 Cambria Math。要在字体名还没统一改掉之前做。返回改了几段。"""
+    （P → ∑、Z → ∫、R → ℝ），字体改成 Cambria Math；独立公式里的大号字形按原来的大小放大。
+    要在字体名还没统一改掉之前做。返回改了几段（按原来的段数）。"""
     from docx import Document
 
     doc = Document(str(docx_path))
     changed = 0
-    for run in doc.element.body.iter(f"{_W}r"):
+    for run in list(doc.element.body.iter(f"{_W}r")):
         r_pr = run.find(f"{_W}rPr")
         char_map = _tex_char_map(r_pr)
         if char_map is None:
             continue
-        for node in run.findall(f"{_W}t"):
-            text = node.text or ""
-            new = "".join(char if char.isspace() else char_map(char) for char in text)
-            if new != text:
-                node.text = new
-                changed += 1
-        _set_math_font(r_pr)
+        parts = _split_display_glyphs(run) if char_map is _extension_char else [run]
+        run_changed = False
+        for part in parts:
+            for node in part.findall(f"{_W}t"):
+                text = node.text or ""
+                new = "".join(char if char.isspace() else char_map(char) for char in text)
+                if new != text:
+                    node.text = new
+                    run_changed = True
+            _set_math_font(part.find(f"{_W}rPr"))
+        changed += run_changed
     if changed:
         doc.save(str(docx_path))
         logger.info(f"[PDF] {changed} 段 TeX 数学字体的字符换成 Unicode")

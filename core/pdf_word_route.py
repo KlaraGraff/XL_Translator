@@ -26,6 +26,7 @@ from typing import TypedDict
 
 from loguru import logger
 
+from core.pdf_word_bars import trim_bar_padding
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_scripts import restore_scripts_from_pdf
@@ -620,6 +621,21 @@ def _shrink_paragraph(paragraph) -> None:
             del spacing.attrib[qn(name)]
 
 
+def _drop_space_before(paragraph) -> None:
+    """挪进页脚的那段去掉段前距。pdf2docx 用段前距把页码垫到页底（反馈 #28 的讲义一页
+    垫了 140 磅）；进了页脚，这段空白算在页脚的高度里，Word 把页脚区往上撑，正文能用的
+    地方就少了，每页最后几行挤到下一页（本机 Word 实测：数学样本 6 页变 7 页，代码样本
+    5 页变 7 页）。页脚的底边由页脚距离定，不用再垫。"""
+    from docx.oxml.ns import qn
+
+    spacing = paragraph.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
+    if spacing is None:
+        return
+    for name in ("w:before", "w:beforeLines", "w:beforeAutospacing"):
+        if spacing.get(qn(name)) is not None:
+            del spacing.attrib[qn(name)]
+
+
 def _trim_section_tail(children: list, body) -> None:
     """页脚挪走以后，这一节末尾只剩几个空段（pdf2docx 用来占位、或带着分节符）。页面
     排满时它们会单独挤到下一页（本机实测第 2 页多出一张只有页脚的空白页）。带分节符的
@@ -696,6 +712,8 @@ def move_running_footers(path: Path) -> int:
         ftr.append(element)
         if element.tag == qn("w:tbl"):
             ftr.append(_tiny_paragraph(ftr))
+        else:
+            _drop_space_before(element)
         if spacer is not None and spacer.getparent() is body:
             body.remove(spacer)
         _trim_section_tail([child for child in children if child.getparent() is body], body)
@@ -975,7 +993,7 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、丢了的上下标
-    for fix in (recolor_cells_from_pdf, restore_scripts_from_pdf, _tex_glyphs):
+    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs):
         try:
             fix(docx_path, pdf_path)
         except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion

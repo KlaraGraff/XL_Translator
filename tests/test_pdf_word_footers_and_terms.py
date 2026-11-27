@@ -94,6 +94,33 @@ class RunningFooterTests(unittest.TestCase):
         self.assertEqual(carried, [True, True, False], "分节符交给每页最后一段正文")
         self.assertEqual(len(doc.sections), 3)
 
+    def test_page_number_padding_does_not_go_into_the_footer(self) -> None:
+        """pdf2docx 用段前距把页码垫到页底；进了页脚还留着，Word 就把页脚区往上撑，
+        正文每页少几行、挤出多余的页（本机 Word 实测反馈 #28 的样本）。"""
+        doc = Document()
+        body = doc.element.body
+        for child in list(body):
+            body.remove(child)
+        ns = nsdecls("w")
+        for page in (1, 2):
+            body.append(parse_xml(f'<w:p {ns}><w:r><w:t>Body text of page {page}.</w:t></w:r></w:p>'))
+            body.append(parse_xml(
+                f'<w:p {ns}><w:pPr><w:spacing w:before="2806" w:after="0" w:line="218" w:lineRule="exact"/>'
+                f'</w:pPr><w:r><w:t>{page}</w:t></w:r></w:p>'
+            ))
+            body.append(parse_xml(TINY.format(ns=ns, sect="" if page == 2 else SECT.format(ns=""))))
+        body.append(parse_xml(SECT.format(ns=ns)))
+        doc.save(str(self.path))
+        self.assertEqual(move_running_footers(self.path), 2)
+        doc = Document(str(self.path))
+        self.assertEqual([p.text for p in doc.paragraphs], ["Body text of page 1.", "Body text of page 2."])
+        for number, section in enumerate(doc.sections, start=1):
+            paragraph = section.footer.paragraphs[0]
+            self.assertEqual(paragraph.text, str(number))
+            spacing = paragraph._p.pPr.find(qn("w:spacing"))
+            self.assertIsNone(spacing.get(qn("w:before")), "页脚里不留垫高的段前距")
+            self.assertEqual(spacing.get(qn("w:line")), "218", "行高照旧")
+
     def test_single_page_is_left_alone(self) -> None:
         _page_docx(self.path, 1)
         self.assertEqual(move_running_footers(self.path), 0)
