@@ -29,6 +29,7 @@ from loguru import logger
 from core.pdf_word_bars import trim_bar_padding
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
+from core.pdf_word_rules import restore_rules_from_pdf
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
 from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font, tex_glyphs_to_unicode
@@ -992,8 +993,10 @@ def convert_pdf_to_docx(
     broken = broken_docx_pages(docx_path, _pdf_page_count(pdf_path))
     if broken:
         raise BrokenPagesError(broken)
-    # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、丢了的上下标
-    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs):
+    # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
+    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
+    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
+                restore_rules_from_pdf):
         try:
             fix(docx_path, pdf_path)
         except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion

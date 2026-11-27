@@ -118,6 +118,28 @@ class PdfWordFitTests(unittest.TestCase):
         spacing = body.find(f".//{qn('w:pPr')}/{qn('w:spacing')}")
         self.assertEqual((spacing.get(qn("w:before")), spacing.get(qn("w:line"))), ("90", "198"))
 
+    def test_exact_rows_shrink_with_their_text_but_not_with_pictures(self):
+        # 没翻译的公式、真值表是固定行高：字缩了行不缩，缩出来的地方空着，整页还是放不下
+        doc = Document()
+        table = doc.add_table(rows=2, cols=1)
+        table.cell(0, 0).paragraphs[0].add_run("x + y = z")
+        table.cell(1, 0).paragraphs[0]._p.append(parse_xml(
+            f'<w:r {nsdecls("w")}><w:drawing/></w:r>'))
+        for row in table.rows:
+            row._tr.get_or_add_trPr().append(
+                parse_xml(f'<w:trHeight {nsdecls("w")} w:hRule="exact" w:val="400"/>'))
+        body = doc.element.body
+        shrink_group(list(body)[:-1], 0.9, default_size=22)
+        heights = [row._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")) for row in table.rows]
+        # 有图片的表（图 28 这类：图片加格子里的标签）：图片不跟着缩，整张表的固定行高都不动
+        self.assertEqual(heights, ["400", "400"])
+        text_only = doc.add_table(rows=1, cols=1)
+        text_only.cell(0, 0).paragraphs[0].add_run("x + y = z")
+        text_only.rows[0]._tr.get_or_add_trPr().append(
+            parse_xml(f'<w:trHeight {nsdecls("w")} w:hRule="exact" w:val="400"/>'))
+        shrink_group([text_only._tbl], 0.9, default_size=22)
+        self.assertEqual(text_only.rows[0]._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")), "360")
+
     def test_fit_shrinks_only_the_overflowing_page(self):
         doc = self._doc([["第一页开头独有的一句话"], ["第二页开头独有的一句话"]])
         path = self._save(doc)

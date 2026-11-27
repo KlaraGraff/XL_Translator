@@ -3,8 +3,9 @@
 用法（仓库根目录，用软件自己的 Python）：
 
     python agent/testing/pdf_word_page_budget.py 原文.pdf 页码 [页码 ...]
+    python agent/testing/pdf_word_page_budget.py 原文.pdf 页码 [页码 ...] --docx 译文.docx
 
-只转换、不翻译，再用本机 Word 转回 PDF。对每个给的原文页码列出：
+只转换、不翻译，再用本机 Word 转回 PDF（给了 --docx 时不转换，直接量这份 Word，比如软件翻好的译文）。对每个给的原文页码列出：
 - 这一节的页面高度、上下边距、页脚距离和页脚那段的行高、段前段后；
 - 这一页在 Word 里按段前、行高、段后、表格行高加起来一共多高，正文区能放多高；
 - 最高的几块（段落或表格）和它们的开头几个字；
@@ -14,6 +15,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -89,11 +91,19 @@ def main(argv: list[str]) -> int:
         return 2
     import pymupdf
 
+    given = None
+    if "--docx" in argv:
+        index = argv.index("--docx")
+        given = Path(argv[index + 1])
+        argv = argv[:index] + argv[index + 2:]
     pdf = Path(argv[0])
     pages = [int(arg) for arg in argv[1:]]
     with tempfile.TemporaryDirectory(prefix="page_budget_") as tmp:
         docx = Path(tmp) / f"{pdf.stem}.docx"
-        route.convert_pdf_to_docx(pdf, docx, target_lang="zh")
+        if given is not None:
+            shutil.copy2(given, docx)
+        else:
+            route.convert_pdf_to_docx(pdf, docx, target_lang="zh")
         rendered = Path(tmp) / f"{pdf.stem}_word.pdf"
         engine = route.docx_to_pdf(docx, rendered)
         doc = Document(str(docx))
@@ -176,7 +186,7 @@ def _structure(group) -> None:
         for kind in ("inline", "anchor"):
             for drawing in element.iter(wp + kind):
                 extent = drawing.find(wp + "extent")
-                height = _int(extent, "cy") // 635 if extent is not None else 0  # EMU → 1/20 磅
+                height = int(extent.get("cy") or 0) // 635 if extent is not None else 0  # EMU → 1/20 磅
                 where = "表格里" if element.tag == qn("w:tbl") else "段落里"
                 paragraph = drawing
                 while paragraph is not None and paragraph.tag != qn("w:p"):
