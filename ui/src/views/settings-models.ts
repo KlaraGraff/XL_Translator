@@ -609,9 +609,9 @@ export function renderModelsPage(host: HTMLElement): void {
   const rateNote = document.createElement("p");
   rateNote.className = "sec-note rate-pointer";
   if (role === "cleaner") {
-    rateNote.textContent = t("修改后自动保存。");
+    rateNote.textContent = t("离开输入框后自动保存，也可点「保存配置」立即保存。");
   } else {
-    rateNote.append(document.createTextNode(t("修改后自动保存。速率与重试在「翻译参数」中按文件类型设置。")));
+    rateNote.append(document.createTextNode(t("离开输入框后自动保存，也可点「保存配置」立即保存。速率与重试在「翻译参数」中按文件类型设置。")));
     const goto = document.createElement("button");
     goto.type = "button";
     goto.className = "resume-link";
