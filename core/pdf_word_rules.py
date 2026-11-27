@@ -7,9 +7,13 @@ LaTeX 的 \\overline{A ∪ B}（补集）、\\frac{1}{1 − r} 的分数线在 P
 做法：在原 PDF 里找短的细横线，看它和上下的字怎么挨着：
 - 上划线：线紧贴在一段字的上沿（不到 1 磅），线的左右两头和这段字对齐；
 - 分数线：线上面紧挨着分子、下面紧挨着分母，线和分子、分母合起来一样宽。
-在 Word 里找到同一段字（连同它前后几个字，好认出是哪一处），把这段字做成一个 Word 公式：
-上划线、分数线的分母用「上横线」，分子比分母宽时给分子用「下横线」。一条线整条盖住
-它下面的整段字（A ∪ B 上面是一条，不是 A、B 各一截）。上下标跟着做成公式里的上下标。
+在 Word 里认出同一段字：把这一页 PDF 的字和 Word 的字整页逐个对齐（连着好几个字都一样才算
+对上），线盖住的那几个 PDF 字对到哪几个 Word 字，就是哪几个；不按「前后几个字一样」去搜，
+免得落到别处同样的字母上（讲义第 48 页「A 和 B 的交集」里的 A 被错加了横线）。
+把这段字做成一个 Word 公式：上划线用「上横线」，一条线整条盖住它下面的整段字（A ∪ B 上面
+是一条，不是 A、B 各一截）。分数的分子、分母在 Word 里连在同一段时（pdf2docx 靠换行、折行把
+它们排成上下两行，行距常常只有半行，叠成一团），整个做成一个 Word 分数；分在两段时，给分母
+加上横线（分子比分母宽时给分子加下横线）。上下标跟着做成公式里的上下标。
 翻译时 Word 公式整个原样保留（core.word_inline_marks 当占位符发给模型）。
 
 框线、表格线不算：它们比上下的字宽得多，或者同时挨着好几行字。
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -41,9 +46,8 @@ _OVERLINE_GAP = 0.6
 _FRACTION_GAP = 3.0
 #: 线的两头和字的两头差不超过这么多磅才算对齐。
 _ALIGN = 1.5
-#: 在 Word 里认出同一处时，带上前面这么多个字、后面这么多个字。
-_TAIL_CHARS = 8
-_HEAD_CHARS = 3
+#: PDF 和 Word 两边连着至少这么多个字一样，才算对上了同一处（单个字母到处都有，对不准）。
+_MIN_MATCH = 4
 #: 分数线比分子、分母宽出来的最多这么多磅（分子带上标时上标不挨着线，量出来的字窄一截）。
 _FRACTION_SLACK = 12.0
 
@@ -66,8 +70,8 @@ def _strokes(page) -> list[tuple[float, float, float]]:
     return found
 
 
-def _page_chars(page) -> list[tuple[str, tuple, int]]:
-    """这一页有形的字：[(字, 框, 第几行)]，按行、行内从左到右排。"""
+def _page_chars(page) -> list[tuple[str, tuple, int, int]]:
+    """这一页有形的字：[(字, 框, 第几行, 第几个字)]，按 PDF 里的先后排。"""
     chars = []
     line_index = 0
     for block in page.get_text("rawdict").get("blocks", []):
@@ -75,7 +79,7 @@ def _page_chars(page) -> list[tuple[str, tuple, int]]:
             for span in line.get("spans", []):
                 for char in span.get("chars", []):
                     if char.get("c", "").strip():
-                        chars.append((char["c"], tuple(char["bbox"]), line_index))
+                        chars.append((char["c"], tuple(char["bbox"]), line_index, len(chars)))
             line_index += 1
     return chars
 
@@ -106,21 +110,15 @@ def _aligned(chars, x0: float, x1: float) -> bool:
     return abs(left - x0) <= _ALIGN and abs(right - x1) <= _ALIGN
 
 
-def _context(all_chars, chars) -> tuple[str, str]:
-    """同一行里紧挨在前面的几个字、紧跟在后面的几个字。"""
-    line = chars[0][2]
-    left, right = _extent(chars)
-    same = [char for char in all_chars if char[2] == line and char not in chars]
-    before = "".join(char[0] for char in same if char[1][2] <= left + 0.5)[-_TAIL_CHARS:]
-    after = "".join(char[0] for char in same if char[1][0] >= right - 0.5)[:_HEAD_CHARS]
-    return before, after
+def pdf_rules(page) -> tuple[str, list[tuple[list[int], str, tuple[list[int], list[int], int] | None]]]:
+    """这一页的字（不含空白，按 PDF 里的先后连成一串）和要补的线：
+    [(线下面或上面那段字是第几个字, 横线在上还是在下, 分数)]。
 
-
-def pdf_rules(page) -> list[tuple[str, str, str, str]]:
-    """这一页要补的线：[(前文末尾, 线下面或上面的那段字, 后文开头, 横线在上还是在下)]。"""
+    分数是（分子是第几个字, 分母是第几个字, 分子上沿到分母下沿多高，1/20 磅）；上划线是 None。"""
     chars = _page_chars(page)
     found = []
     for x0, x1, y in _strokes(page):
+        fraction = None
         below = _covered(chars, x0, x1, lambda box, y=y: -1 < box[1] - y <= _FRACTION_GAP)
         above = _covered(chars, x0, x1, lambda box, y=y: -1 < y - box[3] <= _FRACTION_GAP)
         if not _one_line(below) or (above and not _one_line(above)):
@@ -140,12 +138,16 @@ def pdf_rules(page) -> list[tuple[str, str, str, str]]:
             right = max(_extent(below)[1], _extent(above)[1])
             if abs(left - x0) > _FRACTION_SLACK or abs(right - x1) > _FRACTION_SLACK:
                 continue  # 比分子分母都宽得多：框线
+            height = max(char[1][3] for char in below) - min(char[1][1] for char in above)
+            fraction = (_indices(above), _indices(below), round(height * 20))
         else:
             continue
-        target = sorted(target, key=lambda char: char[1][0])
-        before, after = _context(chars, target)
-        found.append((before, "".join(char[0] for char in target), after, mark))
-    return found
+        found.append((_indices(target), mark, fraction))
+    return "".join(char[0] for char in chars), found
+
+
+def _indices(chars) -> list[int]:
+    return sorted(char[3] for char in chars)
 
 
 def _positions(paragraph) -> tuple[str, list[tuple[object, int]]]:
@@ -206,6 +208,12 @@ def _math_items(runs) -> list:
     for run in runs:
         text = run.find(f"{_W}t").text or ""
         kind = _script(run)
+        name, part_name = ("sSup", "sup") if kind == "superscript" else ("sSub", "sub")
+        if kind is not None and items and items[-1].tag == f"{_M}{name}":
+            # 上标拆成了几个 run（rⁿ⁺¹ 的 n 和 +1 字体不同）：接在同一个上标里
+            if text:
+                items[-1].find(f"{_M}{part_name}").append(_math_run(run, text))
+            continue
         base_run = items[-1] if items and items[-1].tag == f"{_M}r" else None
         stripped = (base_run.find(f"{_M}t").text or "").rstrip() if base_run is not None else ""
         if kind is None or base_run is None or not stripped:
@@ -219,7 +227,6 @@ def _math_items(runs) -> list:
             base_run.find(f"{_M}t").text = stripped[:-1]
         else:
             items.pop()
-        name, part_name = ("sSup", "sup") if kind == "superscript" else ("sSub", "sub")
         script = run.makeelement(f"{_M}{name}", {})
         base_holder = script.makeelement(f"{_M}e", {})
         base_holder.append(base)
@@ -262,22 +269,28 @@ def _space_beside(neighbour, at_end: bool, paragraph) -> None:
         node.set(_XML_SPACE, "preserve")
 
 
-def _apply(paragraph, where, start: int, length: int, position: str) -> bool:
-    """段落里第 start 个字起的 length 个字（不算空白）做成带横线的公式。动不了时返回 False。"""
-    first_node, first_index = where[start]
-    last_node, last_index = where[start + length - 1]
-    first_run, last_run = first_node.getparent(), last_node.getparent()
+def _runs_between(paragraph, first_run, last_run, allowed) -> list | None:
+    """first_run 到 last_run 这一串兄弟节点；有一个不是 allowed 的就返回 None。"""
     runs = []
     run = first_run
     while run is not None:
-        if not _plain_run(run, paragraph):
-            return False
+        if not allowed(run, paragraph):
+            return None
         runs.append(run)
         if run is last_run:
-            break
+            return runs
         run = run.getnext()
-    if not runs or runs[-1] is not last_run:
-        return False
+    return None
+
+
+def _cut(paragraph, where, start: int, length: int) -> list | None:
+    """段落里第 start 个字起的 length 个字（不算空白）所在的 run，头尾多出的字切出去。"""
+    first_node, first_index = where[start]
+    last_node, last_index = where[start + length - 1]
+    first_run, last_run = first_node.getparent(), last_node.getparent()
+    runs = _runs_between(paragraph, first_run, last_run, _plain_run)
+    if not runs:
+        return None
     if (last_node.text or "")[last_index + 1:]:
         _split(last_run, last_index + 1)
     if first_index:
@@ -285,10 +298,81 @@ def _apply(paragraph, where, start: int, length: int, position: str) -> bool:
         if runs[-1] is first_run:
             runs[-1] = piece
         runs[0] = piece
+    return runs
+
+
+def _apply(paragraph, where, start: int, length: int, position: str) -> bool:
+    """段落里第 start 个字起的 length 个字（不算空白）做成带横线的公式。动不了时返回 False。"""
+    runs = _cut(paragraph, where, start, length)
+    if runs is None:
+        return False
     before, after = runs[0].getprevious(), runs[-1].getnext()
     _bar(paragraph, runs, position)
     _space_beside(before, True, paragraph)
     _space_beside(after, False, paragraph)
+    return True
+
+
+def _separator(run, paragraph) -> bool:
+    """分子和分母中间只隔着空白、制表符、换行。"""
+    return (run.tag == f"{_W}r" and run.getparent() is paragraph
+            and all(child.tag in (f"{_W}rPr", f"{_W}tab", f"{_W}br")
+                    or (child.tag == f"{_W}t" and not (child.text or "").strip()) for child in run))
+
+
+def _line_spacing(paragraph) -> tuple[Any, int]:
+    spacing = paragraph.find(f"{_W}pPr/{_W}spacing")
+    if spacing is None or spacing.get(f"{_W}lineRule") not in ("exact", "atLeast"):
+        return spacing, 0
+    try:
+        return spacing, int(spacing.get(f"{_W}line") or 0)
+    except ValueError:
+        return spacing, 0
+
+
+def _fit_fraction_line(paragraph, height: int) -> None:
+    """分子、分母原来各占一行（固定行距），现在合成一行分数：行距改成「至少」原文分数那么高，
+    段前距减掉多出来的一半，分数的中线还在原来两行的中线上，下面的版面不往下推。"""
+    spacing, line = _line_spacing(paragraph)
+    if spacing is None or not line:
+        return
+    new_line = max(line, height)
+    try:
+        before = int(spacing.get(f"{_W}before") or 0)
+    except ValueError:
+        before = 0
+    spacing.set(f"{_W}before", str(max(0, before - (new_line - 2 * line) // 2)))
+    spacing.set(f"{_W}line", str(new_line))
+    spacing.set(f"{_W}lineRule", "atLeast")
+
+
+def _apply_fraction(paragraph, where, start: int, numerator: int, denominator: int, height: int) -> bool:
+    """分子、分母在同一段里（pdf2docx 把它们排成上下两行）：合成一个 Word 分数。"""
+    den_runs = _cut(paragraph, where, start + numerator, denominator)
+    if den_runs is None:
+        return False
+    num_runs = _cut(paragraph, where, start, numerator)
+    if num_runs is None:
+        return False
+    between = _runs_between(paragraph, num_runs[-1].getnext(), den_runs[0].getprevious(), _separator) \
+        if num_runs[-1].getnext() is not den_runs[0] else []
+    if between is None:
+        return False
+    before, after = num_runs[0].getprevious(), den_runs[-1].getnext()
+    math = paragraph.makeelement(f"{_M}oMath", {})
+    fraction = math.makeelement(f"{_M}f", {})
+    for name, runs in (("num", num_runs), ("den", den_runs)):
+        part = fraction.makeelement(f"{_M}{name}", {})
+        for item in _math_items(runs):
+            part.append(item)
+        fraction.append(part)
+    math.append(fraction)
+    num_runs[0].addprevious(math)
+    for run in (*num_runs, *between, *den_runs):
+        paragraph.remove(run)
+    _space_beside(before, True, paragraph)
+    _space_beside(after, False, paragraph)
+    _fit_fraction_line(paragraph, height)
     return True
 
 
@@ -314,51 +398,76 @@ def restore_rules_from_pdf(docx_path: Path, pdf_path: Path) -> int:
         if len(groups) != len(pdf):
             return 0
         for page_index, group in enumerate(groups):
-            rules = pdf_rules(pdf[page_index])
-            if not rules:
-                continue
-            paragraphs = [p for element in group
-                          for p in ([element] if element.tag == f"{_W}p" else element.iter(f"{_W}p"))]
-            texts = [(p, *_positions(p)) for p in paragraphs]
-            hits: dict = {}
-            for before, covered, after, position in rules:
-                hit = _locate(texts, before, covered, after, hits)
-                if hit is not None:
-                    paragraph, where, start = hit
-                    hits.setdefault(id(paragraph), (paragraph, where, []))[2].append((start, len(covered), position))
-            # 同一段里从后往前改：前面的字在哪个 w:t、第几个不会因为后面切开 run 而变
-            for paragraph, where, spans in hits.values():
-                for start, length, position in sorted(spans, reverse=True):
-                    marked += _apply(paragraph, where, start, length, position)
+            page_text, rules = pdf_rules(pdf[page_index])
+            if rules:
+                marked += _restore_page(group, page_text, rules)
     if marked:
         doc.save(str(docx_path))
         logger.info(f"[PDF] 按原文补回了 {marked} 处上划线、分数线（Word 公式）")
     return marked
 
 
-def _patterns(before: str, covered: str, after: str):
-    """在 Word 里找这段字的几种写法，先用前后文都带上的，认得最准；分数的分子、分母在
-    Word 里常自成一段，前后文对不上，再逐步少带一点。单独一个字母不带前后文认不出来。"""
-    yield before, after
-    yield before, ""
-    yield "", after
-    for length in range(len(before) - 1, 0, -1):
-        yield before[len(before) - length:], ""
-    if len(covered) >= 2:
-        yield "", ""
+def _alignment(page_text: str, word_text: str) -> dict[int, int]:
+    """PDF 这一页的字和 Word 这一页的字逐个对上：第几个 PDF 字 → 第几个 Word 字。
+    只认两边连着好几个字都一样的地方，对不上的字不在里面。"""
+    from difflib import SequenceMatcher
+
+    mapping: dict[int, int] = {}
+    matcher = SequenceMatcher(None, page_text, word_text, autojunk=False)
+    for block in matcher.get_matching_blocks():
+        if block.size < _MIN_MATCH:
+            continue
+        for offset in range(block.size):
+            mapping[block.a + offset] = block.b + offset
+    return mapping
 
 
-def _locate(texts, before: str, covered: str, after: str, hits: dict):
-    """covered 在哪一段、从第几个字起。同一处不用两次，也不和已经找到的重叠。"""
-    for head, tail in _patterns(before, covered, after):
-        pattern = head + covered + tail
-        for paragraph, text, where in texts:
-            taken = hits.get(id(paragraph), (None, None, []))[2]
-            start = text.find(pattern)
-            while start != -1:
-                position = start + len(head)
-                end = position + len(covered)
-                if not any(position < other + length and other < end for other, length, _pos in taken):
-                    return paragraph, where, position
-                start = text.find(pattern, start + 1)
+def _span(mapping: dict[int, int], indices: list[int], spans) -> tuple[int, int, int] | None:
+    """PDF 里这几个字在 Word 里是哪一段、从第几个字起、几个字。必须一个不落、连在一起、在同一段。"""
+    if not indices or any(index not in mapping for index in indices):
+        return None
+    targets = sorted(mapping[index] for index in indices)
+    if targets[-1] - targets[0] + 1 != len(targets):
+        return None
+    for number, (offset, length) in enumerate(spans):
+        if offset <= targets[0] and targets[-1] < offset + length:
+            return number, targets[0] - offset, len(targets)
     return None
+
+
+def _restore_page(group: list, page_text: str, rules) -> int:
+    paragraphs = [p for element in group
+                  for p in ([element] if element.tag == f"{_W}p" else element.iter(f"{_W}p"))]
+    texts = [_positions(p) for p in paragraphs]
+    spans, offset = [], 0
+    for text, _where in texts:
+        spans.append((offset, len(text)))
+        offset += len(text)
+    mapping = _alignment(page_text, "".join(text for text, _where in texts))
+    hits: dict[int, list] = {}
+    for indices, position, fraction in rules:
+        if fraction is not None:
+            numerator, denominator, height = fraction
+            top, bottom = _span(mapping, numerator, spans), _span(mapping, denominator, spans)
+            if top is not None and bottom is not None and top[0] == bottom[0] and top[1] + top[2] == bottom[1]:
+                # 分子、分母连在同一段里（pdf2docx 排成上下两行）：整个做成 Word 分数
+                hits.setdefault(top[0], []).append((top[1], top[2] + bottom[2], (top[2], height)))
+                continue
+        found = _span(mapping, indices, spans)
+        if found is not None:
+            hits.setdefault(found[0], []).append((found[1], found[2], position))
+    marked = 0
+    for number, items in hits.items():
+        paragraph, (_text, where) = paragraphs[number], texts[number]
+        taken: list[tuple[int, int]] = []
+        # 同一段里从后往前改：前面的字在哪个 w:t、第几个不会因为后面切开 run 而变
+        for start, length, how in sorted(items, key=lambda item: item[0], reverse=True):
+            if any(start < other + size and other < start + length for other, size in taken):
+                continue
+            taken.append((start, length))
+            if isinstance(how, tuple):
+                numerator, height = how
+                marked += _apply_fraction(paragraph, where, start, numerator, length - numerator, height)
+            else:
+                marked += _apply(paragraph, where, start, length, how)
+    return marked

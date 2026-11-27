@@ -73,8 +73,8 @@ class RestoreRulesTests(unittest.TestCase):
         _make_docx(self.docx)
 
     def test_overline_and_fraction_bar_are_found_but_not_box_borders(self) -> None:
-        rules = pdf_rules(pymupdf.open(str(self.pdf))[0])
-        self.assertEqual(sorted((covered, mark) for _before, covered, _after, mark in rules),
+        text, rules = pdf_rules(pymupdf.open(str(self.pdf))[0])
+        self.assertEqual(sorted(("".join(text[i] for i in indices), mark) for indices, mark, _fraction in rules),
                          sorted([("AB", OVERLINE), ("1-r", OVERLINE)]))
 
     def test_covered_text_becomes_one_barred_formula(self) -> None:
@@ -114,5 +114,60 @@ class RestoreRulesTests(unittest.TestCase):
         num, den = _text_box(page, "1 - r + s"), _text_box(page, "2")
         bar_y = (num.y1 + den.y0) / 2
         page.draw_line((num.x0, bar_y), (num.x1, bar_y), width=0.4)
-        rules = pdf_rules(page)
-        self.assertEqual([(covered, mark) for _b, covered, _a, mark in rules], [("1-r+s", UNDERLINE)])
+        text, rules = pdf_rules(page)
+        self.assertEqual([("".join(text[i] for i in indices), mark) for indices, mark, _f in rules],
+                         [("1-r+s", UNDERLINE)])
+        self.assertEqual([("".join(text[i] for i in f[0]), "".join(text[i] for i in f[1])) for _i, _m, f in rules],
+                         [("1-r+s", "2")])
+
+    def test_fraction_in_one_paragraph_becomes_a_word_fraction(self) -> None:
+        # pdf2docx 常把分子、分母放进同一段，靠换行或自动折行排成上下两行，行距只有半行时叠成一团
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")}><w:pPr><w:spacing w:before="338" w:line="150" w:lineRule="exact"/></w:pPr>'
+            '<w:r><w:t xml:space="preserve">we have 1</w:t></w:r><w:r><w:tab/></w:r>'
+            '<w:r><w:t xml:space="preserve">1 - r here</w:t></w:r></w:p>'
+        ))
+        doc.save(str(self.docx))
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        page.insert_text((70, 169), "we have", fontname="helv", fontsize=11)
+        page.insert_text((130, 160), "1", fontname="helv", fontsize=11)
+        page.insert_text((120, 178), "1 - r", fontname="helv", fontsize=11)
+        page.insert_text((160, 169), "here", fontname="helv", fontsize=11)
+        num, den = _text_box(page, "1"), _text_box(page, "1 - r")
+        bar_y = (num.y1 + den.y0) / 2
+        page.draw_line((den.x0, bar_y), (den.x1, bar_y), width=0.4)
+        pdf.save(str(self.pdf))
+        self.assertEqual(restore_rules_from_pdf(self.docx, self.pdf), 1)
+        paragraph = Document(str(self.docx)).paragraphs[0]._p
+        m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+        fraction = paragraph.find(f"{m}oMath/{m}f")
+        self.assertIsNotNone(fraction)
+        self.assertEqual("".join(t.text for t in fraction.find(f"{m}num").iter(f"{m}t")), "1")
+        self.assertEqual("".join(t.text for t in fraction.find(f"{m}den").iter(f"{m}t")), "1 - r")
+        self.assertIsNone(paragraph.find(f".//{qn('w:tab')}"), "分子分母中间的制表符去掉")
+        spacing = paragraph.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
+        # 合成一行：行距「至少」原文分数那么高，段前距减掉多出来的一半，不往下推
+        line = int(spacing.get(qn("w:line")))
+        self.assertEqual(spacing.get(qn("w:lineRule")), "atLeast")
+        self.assertGreater(line, 300)
+        self.assertEqual(int(spacing.get(qn("w:before"))), 338 - (line - 300) // 2)
+
+    def test_bar_goes_on_the_same_letter_not_on_another_one_with_the_same_neighbours(self) -> None:
+        # 讲义第 48 页：「A 和 B 的交集」里的 A 本来没有横线，横线在后面「Ā, the complement of A」那个 A 上
+        sentence = "the region of A and B. Shaded: of A, the complement of A."
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        page.insert_text((40, 100), sentence, fontname="helv", fontsize=11)
+        line_top = page.get_text("dict")["blocks"][0]["lines"][0]["bbox"][1]
+        a = next(box for box in page.search_for("A") if box.x0 > _text_box(page, "Shaded").x1)
+        page.draw_line((a.x0, line_top - 0.3), (a.x1, line_top - 0.3), width=0.4)
+        pdf.save(str(self.pdf))
+        doc = Document()
+        doc.element.body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")}><w:r><w:t xml:space="preserve">{sentence}</w:t></w:r></w:p>'))
+        doc.save(str(self.docx))
+        self.assertEqual(restore_rules_from_pdf(self.docx, self.pdf), 1)
+        paragraph = Document(str(self.docx)).paragraphs[0]
+        self.assertEqual(paragraph.text, "the region of A and B. Shaded: of , the complement of A.")
