@@ -97,3 +97,43 @@ class LegendAndArrowTests(unittest.TestCase):
 
         self.assertFalse(continues("Grey zone -", "Green earth (screen)"))
         self.assertTrue(continues("the exam-", "Ple of the beam"))
+
+
+class NumberedListPageTests(unittest.TestCase):
+    """说明书第 7 页（2026-11-27）：编号第 6 段、小标题「stage two」、第 7 段和下面的红字。"""
+
+    def _groups(self) -> list[str]:
+        from core.pdf_vector.extract import group_paragraphs, native_rows, rules
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        tw = fitz.TextWriter(page.rect)
+        body, bold = fitz.Font("helv"), fitz.Font("hebo")
+        y = 520
+        x = tw.append((75, y), "6. Use the left and right keys to toggle, the ", font=body, fontsize=12)[1].x
+        # 一个 20 pt、往下沉的「*」：行框往下多出 8 pt，压到下一行上
+        x = tw.append((x, y + 8), "*", font=body, fontsize=20)[1].x
+        tw.append((x, y), " indicates which mode is selected. Press", font=body, fontsize=12)
+        tw.append((86, y + 14.7), "the enter key to continue.", font=body, fontsize=12)
+        tw.append((75, y + 40), "stage two, pre-alignment", font=bold, fontsize=15)
+        y = 590
+        tw.append((75, y), "7. The next screen is", font=body, fontsize=12)
+        tw.append((87, y + 15), "Pre-alignment sets up the amount of power you need for the distance and can indicate if",
+                  font=body, fontsize=12)
+        tw.append((87, y + 29), "you are receiving unwanted reflections from anything else in the beam path.",
+                  font=body, fontsize=12)
+        tw.write_text(page)
+        V, Hs = rules(page, 72)
+        return [r["source_text"] for r in group_paragraphs(native_rows(page, 72), V, Hs)]
+
+    def test_a_large_glyph_in_a_line_does_not_cut_the_paragraph(self):
+        groups = self._groups()
+        self.assertIn("6. Use the left and right keys to toggle, the * indicates which mode is selected. "
+                      "Press the enter key to continue.", groups)
+        self.assertIn("stage two, pre-alignment", groups)  # the heading stays a heading
+
+    def test_a_line_does_not_join_across_another_line(self):
+        groups = self._groups()
+        self.assertIn("7. The next screen is", groups)
+        self.assertIn("Pre-alignment sets up the amount of power you need for the distance and can indicate if "
+                      "you are receiving unwanted reflections from anything else in the beam path.", groups)
