@@ -132,6 +132,7 @@ from core.pdf_routes import (
     KIND_SCAN,
     KIND_TEXT,
     INPLACE_TARGET_UNSUPPORTED,
+    ROUTE_BABELDOC,
     ROUTE_IMAGE,
     ROUTE_INPLACE,
     ROUTE_SKIP,
@@ -190,6 +191,7 @@ from core.pdf_word_segments import PdfWordSegmentsMixin, _extract_pdf_pages  # n
 from core.nothing_translated import nothing_translated_message
 from core.pdf_image_generation import PdfImageGenerationMixin
 from core.pdf_inplace_pages import PdfInplacePagesMixin
+from core.pdf_babeldoc_pages import PdfBabelDocPagesMixin
 from core.pdf_page_actions import PdfPageActionsMixin
 from core.pdf_task_report import (  # noqa: F401
     _record_is_fully_skipped_oversize,
@@ -1571,6 +1573,8 @@ def pdf_page_snapshot_entry(
         "word_requested": bool(page.word_requested) if page is not None else False,
         "word_status": page.word_status if page is not None else "",
         "word_message": page.word_message if page is not None else "",
+        "babeldoc_status": page.babeldoc_status if page is not None else "",
+        "babeldoc_message": page.babeldoc_message if page is not None else "",
         "route_note": page.route_note if page is not None else "",
         "error": _short_review_text(page.error if page is not None else ""),
         # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
@@ -1616,6 +1620,7 @@ class PdfImageTranslationRunner(
     PdfImageGenerationMixin,
     PdfPageActionsMixin,
     PdfWordSegmentsMixin,
+    PdfBabelDocPagesMixin,
     BaseTaskRunner,
 ):
     """Background runner for PDF image-layout translation."""
@@ -1769,6 +1774,13 @@ class PdfImageTranslationRunner(
         # 转不成 Word、改走原位替换的页：(源文件路径, 页码) → 原位替换失败的原因（还没失败为 ""）。
         # 原位替换也失败的页重新排队，按保底方式处理（见 _requeue_failed_word_inplace_pages）。
         self._word_inplace_pages: dict[tuple[str, int], str] = {}
+        # 自动组合里段落重排的文字页：(源文件路径, 页码) → {status, message, note, pdf_path}。
+        # 在转 Word 之前做（见 _run_babeldoc_pages），没 done 的页随后转 Word。
+        self._babeldoc_pages: dict[tuple[str, int], dict[str, Any]] = {}
+        # 段落重排用不了的原因；None 表示还没查。
+        self._babeldoc_reason: str | None = None
+        # 页面翻译开始前已经译好的页数（段落重排通过检查的），转 Word 的进度接着它算。
+        self._pretranslated_pages = 0
 
     @property
     def task_id(self) -> str:
@@ -2567,8 +2579,9 @@ class PdfImageTranslationRunner(
                 ProgressMsg(1, 4, "读取文件", len(prepared_files), max(1, len(self._files)))
             )
             self._queue.put(StatusMsg(f"状态：已准备 {len(prepared_files)} 个文件，共 {total_pages} 页。"))
-            # 自动组合：混合文件里的正文段先转 Word 翻好，转不成的页随后按保底方式翻译。
-            # 它已经是在翻译了，进度记在「翻译」阶段（上面先把「读取文件」报完）。
+            # 自动组合：混合文件里的正文段先用段落重排（选了它时）、再转 Word 翻好，都没成的页
+            # 随后按保底方式翻译。它已经是在翻译了，进度记在「翻译」阶段（上面先把「读取文件」报完）。
+            self._run_babeldoc_pages(prepared_files, total_pages=total_pages)
             self._run_word_segments(prepared_files, total_pages=total_pages)
             self._emit_page_status()
             for prepared in prepared_files:
@@ -3347,7 +3360,9 @@ class PdfImageTranslationRunner(
                             total=prepared.record.page_count,
                         )
                         prepared.record.pages.append(page_record)
-                        if page_record.route_note:
+                        # 转 Word 的页带说明只有一种情况：段落重排没用上。那一步已按原因把这些页合成一行记过，
+                        # 这里不再逐页重复（没装组件时整份文件每页一行）。
+                        if page_record.route_note and not page_record.word_requested:
                             self._log(
                                 "WARN",
                                 f"[{prepared.record.name}] 第 {page_record.page_number} 页：{page_record.route_note}。",
@@ -3366,8 +3381,8 @@ class PdfImageTranslationRunner(
                                     "WARN",
                                     f"[{prepared.record.name}] 第 {page_record.page_number} 页：{page_record.kept_reason}。",
                                 )
-                            elif page_record.word_requested:
-                                pass  # 正文段已经转好，开工前那一行日志说过了
+                            elif page_record.word_requested or page_record.babeldoc_status == "done":
+                                pass  # 转 Word、段落重排都已译好，开工前那一行日志说过了
                             elif page_record.inplace_requested:
                                 self._log(
                                     "INFO",
@@ -4049,7 +4064,7 @@ class PdfImageTranslationRunner(
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages
             if page.skipped_oversize and page.inplace_status != "done" and not page.kept_reason
-            and not page.word_requested and not page.blank_page
+            and not page.word_requested and not page.blank_page and page.babeldoc_status != "done"
             and (not page.inplace_requested
                  or (not page.inplace_status
                      and is_oversized_page(page.page_width_pt, page.page_height_pt)))
@@ -4285,6 +4300,8 @@ class PdfImageTranslationRunner(
                     kept_reason = f"{fallback_reason}，这一页保留原样"
                 elif route == ROUTE_INPLACE:
                     route_note = f"{fallback_reason}，改用原位替换"
+                elif route == ROUTE_WORD:
+                    route_note = f"{fallback_reason}，改为转成 Word 翻译"
                 else:
                     route_note = f"{fallback_reason}，改用整页图像翻译"
             if route == ROUTE_IMAGE and self._image_model_missing:
@@ -4295,7 +4312,9 @@ class PdfImageTranslationRunner(
                     else "没有设置图像翻译模型，这一页需要整页图像翻译，已保留原样"
                 )
             word_entry = self._word_pages.get((source_path_key, page_index + 1), {}) if route == ROUTE_WORD else {}
-            if route in {ROUTE_SKIP, ROUTE_INPLACE, ROUTE_WORD}:
+            babeldoc_entry = ((self._babeldoc_done_entry(source_path_key, page_index + 1) or {})
+                              if route == ROUTE_BABELDOC else {})
+            if route in {ROUTE_SKIP, ROUTE_INPLACE, ROUTE_WORD, ROUTE_BABELDOC}:
                 # 不送图像模型的页（原样保留、原位替换）不渲染栅格化预览（A3 在
                 # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
                 # 从源 PDF 把这一页矢量导入，栅格化只会拖慢流程、拉低质量。
@@ -4310,6 +4329,9 @@ class PdfImageTranslationRunner(
                     word_segment=int(word_entry.get("segment", 0)),
                     word_status="done" if route == ROUTE_WORD else "",
                     word_message=str(word_entry.get("note", "")),
+                    babeldoc_status="done" if babeldoc_entry else "",
+                    babeldoc_pdf_path=str(babeldoc_entry.get("pdf_path", "")),
+                    babeldoc_message=str(babeldoc_entry.get("note", "")),
                     kept_reason=kept_reason,
                     route_note=route_note,
                     blank_page=(route == ROUTE_SKIP and not kept_reason
@@ -4380,13 +4402,22 @@ class PdfImageTranslationRunner(
         )
         if not auto:
             return route, ""
+        babeldoc_reason = ""
+        if route == ROUTE_BABELDOC:
+            if self._babeldoc_done_entry(source_path, page_index + 1) is not None:
+                return ROUTE_BABELDOC, ""
+            # 没装组件、没通过逐页检查……：这一页照旧转 Word，页面说明里先写段落重排为什么没用上。
+            babeldoc_reason = self._babeldoc_miss_reason(source_path, page_index + 1)
+            route = ROUTE_WORD
         if page_kind == KIND_BLANK:
             entry = self._word_pages.get((source_path, page_index + 1))
             # 夹在转 Word 段里的空白页随段拼入；段没转成就照旧原样保留，不送图像模型。
             return (ROUTE_WORD if entry is not None and entry.get("status") == "done" else route), ""
         reason = self._route_unusable_reason(route, source_path, page_index + 1)
         if not reason:
-            return route, ""
+            return route, babeldoc_reason
+        if babeldoc_reason:
+            reason = f"{babeldoc_reason}；{reason}"
         kind_info = self._page_kind_info(source_path, page_index)
         key = (source_path, page_index + 1)
         if (route == ROUTE_WORD and page_kind == KIND_TEXT and not (kind_info and kind_info.image_grid)
@@ -4546,6 +4577,7 @@ class PdfImageTranslationRunner(
                     if page.skipped_oversize and not page.blank_page
                     and not (page.inplace_requested and page.inplace_status in {"", "done"})
                     and not (page.word_requested and page.word_status == "done")
+                    and page.babeldoc_status != "done"
                 ),
             )
         )
@@ -4697,6 +4729,14 @@ class PdfImageTranslationRunner(
                                 out_doc.import_pages(seg_doc)
                             finally:
                                 seg_doc.close()
+                        continue
+                    if page.babeldoc_status == "done" and page.babeldoc_pdf_path and Path(page.babeldoc_pdf_path).exists():
+                        # 段落重排译好、通过检查的单页：和原位替换一样矢量导入，压缩版也不做有损处理。
+                        babeldoc_doc = _open_pdf_document(Path(page.babeldoc_pdf_path))
+                        try:
+                            out_doc.import_pages(babeldoc_doc, pages=[0])
+                        finally:
+                            babeldoc_doc.close()
                         continue
                     if page.skipped_oversize:
                         # 装订顺序靠的是这个循环本身按页码顺序、逐页 append——

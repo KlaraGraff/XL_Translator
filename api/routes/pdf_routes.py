@@ -45,7 +45,17 @@ def route_capabilities() -> dict[str, Any]:
         "inplace_target_ok": inplace_target_supported(settings.pdf.target_lang),
         # 原位替换写不了的目标语言（界面按当前选的目标语言提示，不必等设置存好再查）。
         "inplace_unsupported_targets": sorted(COMPLEX_SCRIPT_TARGETS),
+        # 段落重排（BabelDOC）装好了没有：没装时选了它的文字页照旧转 Word。
+        "babeldoc_component": _babeldoc_installed(),
+        # 「自动组合」里可提取文字的页用哪种方式（使用说明里的示意按它画）。
+        "auto_text_route": str(settings.pdf.auto_text_route),
     }
+
+
+def _babeldoc_installed() -> bool:
+    from core.babeldoc_component import component_paths
+
+    return component_paths() is not None
 
 
 def register(app: FastAPI) -> None:
