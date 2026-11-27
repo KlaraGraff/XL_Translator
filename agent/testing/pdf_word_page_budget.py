@@ -148,11 +148,50 @@ def main(argv: list[str]) -> int:
                 print(f"  行高不固定的块 {len(notes)} 个（Word 实际排出来可能更高）：")
                 for height, kind, note, text in notes[:8]:
                     print(f"    {kind}{note}「{text}」")
+            _structure(group)
+            footer_pages = sorted({page for page, y, out in out_lines if out.strip() == str(number) and y > 700})
+            for page in footer_pages:
+                texts = [out.strip()[:30] for p, _y, out in out_lines if p == page and out.strip()]
+                print(f"  Word 转回的第 {page} 页（页脚是 {number}）{len(texts)} 行：开头 {texts[:3]} … 结尾 {texts[-4:]}")
             tail = [line for line in _lines_of_page(src, number) if _key(line)][-3:]
             for text in tail:
                 hits = [(page, round(y, 1)) for page, y, out in out_lines if _key(out) and _key(out) == _key(text)]
                 print(f"  原文末行「{text[:30]}」→ Word 转回的 PDF：{hits[:3] or '没对上'}")
     return 0
+
+
+def _structure(group) -> None:
+    """这一页里的分节符、图片（嵌入的、浮动的）和它们的高度。"""
+    wp = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+    sects = [element.find(f"{qn('w:pPr')}/{qn('w:sectPr')}") for element in group if element.tag == qn("w:p")]
+    sects = [sect for sect in sects if sect is not None]
+    for sect in sects:
+        kind = sect.find(qn("w:type"))
+        cols = sect.find(qn("w:cols"))
+        margins = sect.find(qn("w:pgMar"))
+        print(f"  分节符：{kind.get(qn('w:val')) if kind is not None else 'nextPage'}"
+              f" 栏数 {_int(cols, 'num', 1)} 上 {_int(margins, 'top')} 下 {_int(margins, 'bottom')}"
+              f" 左 {_int(margins, 'left')} 右 {_int(margins, 'right')}")
+    for element in group:
+        for kind in ("inline", "anchor"):
+            for drawing in element.iter(wp + kind):
+                extent = drawing.find(wp + "extent")
+                height = _int(extent, "cy") // 635 if extent is not None else 0  # EMU → 1/20 磅
+                where = "表格里" if element.tag == qn("w:tbl") else "段落里"
+                paragraph = drawing
+                while paragraph is not None and paragraph.tag != qn("w:p"):
+                    paragraph = paragraph.getparent()
+                spacing = paragraph.find(f"{qn('w:pPr')}/{qn('w:spacing')}") if paragraph is not None else None
+                rule = f"段落行距 {_int(spacing, 'line')} {spacing.get(qn('w:lineRule')) if spacing is not None else '-'}"
+                print(f"  图片（{'浮动' if kind == 'anchor' else '嵌入'}，{where}）高 {height}，{rule}")
+    for element in group:
+        if element.tag != qn("w:tbl"):
+            continue
+        for tr in element.iter(qn("w:tr")):
+            height = tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}")
+            if height is None or height.get(qn("w:hRule")) != "exact":
+                print(f"  表格行高不固定：{height.get(qn('w:hRule')) if height is not None else '无'}"
+                      f" {_int(height, 'val')}「{_text(tr)[:30]}」")
 
 
 def _lines_of_page(src, number: int) -> list[str]:
