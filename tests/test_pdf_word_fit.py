@@ -131,8 +131,14 @@ class PdfWordFitTests(unittest.TestCase):
         body = doc.element.body
         shrink_group(list(body)[:-1], 0.9, default_size=22)
         heights = [row._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")) for row in table.rows]
-        # 有图片的行：图片大小不变，行矮了会切掉图
-        self.assertEqual(heights, ["360", "400"])
+        # 有图片的表（图 28 这类：图片加格子里的标签）：图片不跟着缩，整张表的固定行高都不动
+        self.assertEqual(heights, ["400", "400"])
+        text_only = doc.add_table(rows=1, cols=1)
+        text_only.cell(0, 0).paragraphs[0].add_run("x + y = z")
+        text_only.rows[0]._tr.get_or_add_trPr().append(
+            parse_xml(f'<w:trHeight {nsdecls("w")} w:hRule="exact" w:val="400"/>'))
+        shrink_group([text_only._tbl], 0.9, default_size=22)
+        self.assertEqual(text_only.rows[0]._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")), "360")
 
     def test_fit_shrinks_only_the_overflowing_page(self):
         doc = self._doc([["第一页开头独有的一句话"], ["第二页开头独有的一句话"]])

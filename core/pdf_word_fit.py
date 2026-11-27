@@ -241,15 +241,17 @@ def shrink_group(group: list, ratio: float, default_size: int = 22) -> None:
                 _scale_value(spacing, f"{_W}line", ratio, minimum=1)
         for height in element.iter(f"{_W}trHeight"):
             row = height.getparent().getparent() if height.getparent() is not None else None
+            table = row.getparent() if row is not None else None
             # 固定行高的行里只有字时，字缩了行也跟着缩，不然缩出来的地方还空着占位；
-            # 有图片的行不缩：图片大小不变，行矮了会把图切掉
-            if height.get(f"{_W}hRule") == "exact" and (row is None or _has_picture(row)):
+            # 表格里有图片时整张表的固定行高都不缩：图片大小、浮动图片的位置都不跟着缩，
+            # 行矮了会把图切掉，或者图和格子里的标签对不上
+            if height.get(f"{_W}hRule") == "exact" and (table is None or _has_picture(table)):
                 continue
             _scale_value(height, f"{_W}val", ratio)
 
 
-def _has_picture(row) -> bool:
-    return any(next(row.iter(tag), None) is not None
+def _has_picture(table) -> bool:
+    return any(next(table.iter(tag), None) is not None
                for tag in (f"{_W}drawing", f"{_W}pict", f"{_W}object"))
 
 
