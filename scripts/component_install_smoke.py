@@ -163,13 +163,15 @@ def _babeldoc() -> bool:
         asked[kind] = asked.get(kind, 0) + 1
         if kind == "plain":
             return f"TR {text}"
-        if asked["llm"] == 1:
-            print(f"[babeldoc] first batch request (tail): {text[-600:]!r}")
+        print(f"[babeldoc] request {asked['llm']} (tail): {text[-300:]!r}")
         items = _babeldoc_batch(text)
-        if items is None:
-            return "[]"  # 术语提取等别的请求：没有可加的术语
-        return json.dumps([{"id": item["id"], "output": f"TR {item['input']}"} for item in items],
-                          ensure_ascii=False)
+        if items is not None:
+            return json.dumps([{"id": item["id"], "output": f"TR {item['input']}"} for item in items],
+                              ensure_ascii=False)
+        marker = "Now translate the following text:"
+        if marker in text:  # 一次一段：提示词最后就是原文，回的是译文本身
+            return "TR " + text.rsplit(marker, 1)[1].strip()
+        return "[]"  # 术语提取：没有要加的术语
 
     started = time.monotonic()
     result = babeldoc_component.translate_pdf(source, work / "run", pages=[1, 2], lang_in="en", lang_out="zh",

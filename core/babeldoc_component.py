@@ -25,7 +25,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from loguru import logger
 
@@ -387,9 +387,16 @@ def worker_main(job_path: str) -> int:
 
         traceback.print_exc(file=sys.stderr)
         protocol.send({"error": f"{type(exc).__name__}: {exc}"[:600]})
-        return 1
+        _exit(1)
     protocol.send({"done": done})
-    return 0
+    _exit(0)
+
+
+def _exit(code: int) -> NoReturn:
+    """说完就退出，不走解释器收尾：读回话的线程还卡在管道上，收尾时碰到它会以「Fatal Python
+    error」中止（macOS 真装时出现过，打包后的应用还会弹「意外退出」）。BabelDOC 另开的进程这时都已结束。"""
+    sys.stderr.flush()
+    os._exit(code)
 
 
 # ---------------------------------------------------------------------------
