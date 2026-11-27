@@ -240,6 +240,43 @@ def test_download_size_is_about_five_hundred_megabytes(monkeypatch):
 
 # ── 翻译子进程 ─────────────────────────────────────────────────────────────
 
+
+def test_worker_stops_reading_babeldoc_events_at_finish():
+    # BabelDOC 发出 finish 后，事件流要过一会儿才结束；这时再要下一个事件会一直等下去
+    # （GitHub 上 macOS、Windows 真装时试排就卡在这里，十分钟超时）。
+    import asyncio
+
+    class Sent:
+        def __init__(self):
+            self.messages = []
+
+        def send(self, message):
+            self.messages.append(message)
+
+    async def events():
+        yield {"type": "progress_update", "stage": "Parse", "overall_progress": 10.0}
+        yield {"type": "progress_end", "stage": "Typesetting", "overall_progress": 100.0}
+        yield {"type": "finish", "translate_result": "result"}
+        await asyncio.Event().wait()  # 不会再有事件，也不结束
+
+    async def run(sent):
+        return await asyncio.wait_for(component._consume(events(), sent), timeout=5)
+
+    sent = Sent()
+    assert asyncio.run(run(sent)) == "result"
+    assert [message["progress"] for message in sent.messages] == [10.0, 100.0]
+
+
+def test_worker_reports_babeldoc_errors():
+    import asyncio
+
+    async def events():
+        yield {"type": "error", "error": "layout model failed"}
+
+    with pytest.raises(RuntimeError, match="layout model failed"):
+        asyncio.run(component._consume(events(), type("P", (), {"send": lambda self, message: None})()))
+
+
 # 与 core.babeldoc_component.worker_main 同一套协议的假 BabelDOC。custom_prompt 决定它怎么表现：
 # crash（报完版本就退出）、error（报错）、hang（不回话，等着被停）。
 _FAKE_WORKER = textwrap.dedent('''

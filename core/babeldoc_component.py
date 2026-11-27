@@ -261,6 +261,27 @@ def _probe_pdf(path: Path) -> None:
     doc.close()
 
 
+async def _consume(events: Any, protocol: _Protocol) -> Any:
+    """把 BabelDOC 的进度转给翻译引擎，拿到 finish 就停，返回它的结果。
+
+    BabelDOC 发出 finish 后，事件流要再过约 10 毫秒才标成结束；这期间再要下一个事件会一直等下去
+    （它自己的命令行也是拿到 finish 就停）。
+    """
+    last = -1.0
+    async for event in events:
+        kind = event.get("type")
+        if kind in ("progress_update", "progress_end"):
+            overall = float(event.get("overall_progress") or 0.0)
+            if overall - last >= 0.5 or kind == "progress_end":
+                last = overall
+                protocol.send({"progress": round(overall, 2), "stage": str(event.get("stage") or "")})
+        elif kind == "finish":
+            return event.get("translate_result")
+        elif kind == "error":
+            raise RuntimeError(str(event.get("error") or "BabelDOC failed"))
+    return None
+
+
 def _run_babeldoc(protocol: _Protocol, job: dict[str, Any]) -> dict[str, Any]:
     import asyncio
     import logging
@@ -312,23 +333,7 @@ def _run_babeldoc(protocol: _Protocol, job: dict[str, Any]) -> dict[str, Any]:
         auto_extract_glossary=not probe,
     )
 
-    async def run() -> Any:
-        result = None
-        last = -1.0
-        async for event in high_level.async_translate(config):
-            kind = event.get("type")
-            if kind in ("progress_update", "progress_end"):
-                overall = float(event.get("overall_progress") or 0.0)
-                if overall - last >= 0.5 or kind == "progress_end":
-                    last = overall
-                    protocol.send({"progress": round(overall, 2), "stage": str(event.get("stage") or "")})
-            elif kind == "finish":
-                result = event.get("translate_result")
-            elif kind == "error":
-                raise RuntimeError(str(event.get("error") or "BabelDOC failed"))
-        return result
-
-    result = asyncio.run(run())
+    result = asyncio.run(_consume(high_level.async_translate(config), protocol))
     mono = getattr(result, "mono_pdf_path", None) or getattr(result, "no_watermark_mono_pdf_path", None)
     if not mono or not Path(str(mono)).is_file():
         raise RuntimeError("BabelDOC did not write a translated PDF")
@@ -597,6 +602,7 @@ def probe_in_subprocess(site_dir: Path, home: Path, numpy_site: Path) -> tuple[b
         except BabelDocError as exc:
             return False, "", str(exc)
         version = ""
+        stage = ""
         deadline = time.monotonic() + _PROBE_TIMEOUT
         try:
             while time.monotonic() < deadline:
@@ -606,12 +612,14 @@ def probe_in_subprocess(site_dir: Path, home: Path, numpy_site: Path) -> tuple[b
                     continue
                 if message is None:
                     return False, version, f"probe exited: {worker.stderr_tail()}"
-                if "ready" in message:
+                if "progress" in message:
+                    stage = f"{message.get('stage') or ''} {message.get('progress')}%"
+                elif "ready" in message:
                     version = str(message.get("version") or "")
                 elif "error" in message:
                     return False, version, f"{message['error']}\n{worker.stderr_tail()}"
                 elif "done" in message:
                     return True, str((message.get("done") or {}).get("version") or version), ""
-            return False, version, f"probe timed out: {worker.stderr_tail()}"
+            return False, version, f"probe timed out (last progress: {stage or 'none'}): {worker.stderr_tail()}"
         finally:
             worker.kill()
