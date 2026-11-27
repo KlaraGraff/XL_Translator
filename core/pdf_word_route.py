@@ -31,6 +31,7 @@ from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_figures import uncover_pictures
 from core.pdf_word_lines import restore_line_order
+from core.pdf_word_paragraph_breaks import split_at_indented_breaks
 from core.pdf_word_section_marks import split_justified_section_marks
 from core.pdf_word_rules import restore_rules_from_pdf
 from core.pdf_word_scripts import restore_scripts_from_pdf
@@ -851,11 +852,14 @@ def merge_wrapped_lines(path: Path) -> int:
     from docx import Document
 
     doc = Document(str(path))
-    count = _merge_paragraph_pairs(doc.paragraphs)
+    # 换行后缩进另起的段先拆开，免得下面把换行当成折行、两段并成一句（core.pdf_word_paragraph_breaks）
+    count = sum(split_at_indented_breaks(p._p) for p in list(doc.paragraphs))
+    count += _merge_paragraph_pairs(doc.paragraphs)
     count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in doc.paragraphs)
     for table in _all_tables(doc.tables):
         for row in table.rows:
             for cell in row.cells:
+                count += sum(split_at_indented_breaks(p._p) for p in list(cell.paragraphs))
                 count += _merge_paragraph_pairs(cell.paragraphs)
                 count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in cell.paragraphs)
     if count:
