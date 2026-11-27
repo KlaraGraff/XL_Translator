@@ -732,13 +732,15 @@ def _same_colour(a, b) -> bool:
     return bool(ca) and bool(cb) and max(abs(x - y) for x, y in zip(ca, cb)) <= 0.08
 
 
-def _runs_in(rows, i, j, peers, rot, tol) -> bool:
+def _runs_in(rows, i, j, peers, rot, tol) -> int | None:
     """Row ``i`` begins partway along a line whose start is where row ``j`` begins: a
     sentence that starts mid-line and wraps back to the left edge.  说明书第 7 页第 1 段：
     灰字「non-reflective black cloth or similar.」和图片后面，红字「You cannot commission the
-    beam if the reflector can be」从行中间开始，折回行首的是「seen」。"""
+    beam if the reflector can be」从行中间开始，折回行首的是「seen」。
+
+    Returns the row that heads the line (left of ``i``), or None."""
     if not _same_colour(rows[i], rows[j]):
-        return False
+        return None
     si, ci, ti, _li = _geo(rows[i]["display_box"], rot)
     sj = _geo(rows[j]["display_box"], rot)[0]
     for k in peers:
@@ -748,9 +750,10 @@ def _runs_in(rows, i, j, peers, rot, tol) -> bool:
         if (abs((ck + tk / 2) - (ci + ti / 2)) <= 0.3 * ti and sk + lk <= si + 0.1 * ti
                 and abs(sk - sj) <= tol):
             # the line's own head may go on into j: then j is its next line, not ours
-            return not (_same_colour(rows[k], rows[j])
-                        and continues(rows[k]["source_text"], rows[j]["source_text"]))
-    return False
+            if _same_colour(rows[k], rows[j]) and continues(rows[k]["source_text"], rows[j]["source_text"]):
+                return None
+            return k
+    return None
 
 
 def group_paragraphs(rows, V, Hs):
@@ -759,7 +762,7 @@ def group_paragraphs(rows, V, Hs):
     for i, r in enumerate(rows):
         by_rot.setdefault(r["display_rotation"], []).append(i)
     parent = list(range(len(rows)))
-    run_in_heads: set = set()
+    run_in_heads: dict = {}  # first row of a sentence begun mid-line -> the row before it on that line
 
     def find(i):
         while parent[i] != i:
@@ -807,8 +810,11 @@ def group_paragraphs(rows, V, Hs):
                 if rows[i]["origin"] != rows[j]["origin"]:
                     continue
                 aligned = same_start or same_centre
-                if not aligned and (run_in is not None or not _runs_in(rows, i, j, by_rot[rot], rot, tol)):
-                    continue
+                head = None
+                if not aligned:
+                    head = None if run_in is not None else _runs_in(rows, i, j, by_rot[rot], rot, tol)
+                    if head is None:
+                        continue
                 # 一段正文的各行用同一种字体：设备手册屏幕框里的按键名「Press」（打字机体）
                 # 不是下面那段正文（窄体）的第一行
                 fi, fj = set(rows[i].get("font_families") or ()), set(rows[j].get("font_families") or ())
@@ -822,7 +828,7 @@ def group_paragraphs(rows, V, Hs):
                 if not continues(rows[i]["source_text"], rows[j]["source_text"]):
                     continue
                 if not aligned:
-                    run_in = j  # taken only if nothing lines up below the row itself
+                    run_in = (j, head)  # taken only if nothing lines up below the row itself
                     continue
                 # only chain the line directly below (first match)
                 if find(j) == j and sum(find(k) == find(i) for k in idx) >= 1:
@@ -831,13 +837,13 @@ def group_paragraphs(rows, V, Hs):
                     break
             # …and only if nothing on the next line sits under the row itself (a second
             # column going on below it)
-            if run_in is not None and not joined and find(run_in) == run_in and not any(
+            if run_in is not None and not joined and find(run_in[0]) == run_in[0] and not any(
                     _overlaps(sm, lm, si, li) and abs(cm - rj[1]) <= 0.5 * rj[2]
-                    for rj in [_geo(rows[run_in]["display_box"], rot)]
-                    for m in by_rot[rot] if m not in (i, run_in)
+                    for rj in [_geo(rows[run_in[0]]["display_box"], rot)]
+                    for m in by_rot[rot] if m not in (i, run_in[0])
                     for sm, cm, _tm, lm in [_geo(rows[m]["display_box"], rot)]):
-                parent[run_in] = find(i)
-                run_in_heads.add(i)
+                parent[run_in[0]] = find(i)
+                run_in_heads[i] = run_in[1]
     groups: dict = {}
     for i in range(len(rows)):
         groups.setdefault(find(i), []).append(i)
@@ -858,6 +864,9 @@ def group_paragraphs(rows, V, Hs):
                     "line_boxes": boxes, "line_texts": [m["source_text"] for m in mem],
                     # a sentence that began mid-line: its first line says nothing about the alignment
                     "line_align": _stack_align([_geo(b, rot) for b in boxes][1 if g[0] in run_in_heads else 0:]),
+                    # the row it follows on its first line: once that row is translated (「Implication.」
+                    # → 「蕴含。」), this one may start right after it instead of leaving the gap
+                    **({"run_in_after": rows[run_in_heads[g[0]]]["display_box"]} if g[0] in run_in_heads else {}),
                     "ocr_score": (sum(scores) / len(scores)) if scores else None,
                     "words": [w for m in mem for w in (m.get("words") or [])] or None, "source_passes": sorted({p for m in mem for p in m["source_passes"]})})
     for r in out:

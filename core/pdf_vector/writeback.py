@@ -241,6 +241,8 @@ class Layout:
         # 地方（手册第 8 页三行红字写成一长行，占了右边「Sufficient power for distance」的位置）
         self.reserved: list[tuple[str, tuple[float, float, float, float]]] = []
         self.owner = ""
+        # each written row's source line boxes -> the rects its translation took
+        self.written_at: dict[tuple, list] = {}
 
     def blank(self, box) -> bool:
         if self.bounds is not None:
@@ -280,6 +282,54 @@ class Layout:
                 break
             grown = d1
         return grown
+
+
+def _overlap(a, b) -> bool:
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+def close_run_in_gap(row, lines, layout):
+    """A sentence that began mid-line after another row (讲义「Implication.  Our next
+    operation…」) starts right after that row's translation, once it is written, instead
+    of where the longer source began: 「蕴含。」和正文之间不再空一大截。Only over blank
+    page, and never into a third row's area."""
+    head = layout.written_at.get(tuple(row["run_in_after"]))
+    if not head:
+        return lines
+    x0, y0, x1, y1 = lines[0]
+    thick = y1 - y0
+    ends = [r[2] for r in head
+            if min(r[3], y1) - max(r[1], y0) > 0.5 * min(r[3] - r[1], thick) and r[2] <= x0 + 1]
+    if not ends:
+        return lines
+    start = max(ends) + 0.3 * thick
+    if start >= x0 - 1:
+        return lines
+    probe = (start, y0, x0, y1)
+    ink, area = ink_count(layout.gray, probe)
+    if area == 0 or ink > max(2, area * 0.0015):
+        return lines
+    mine = {tuple(b) for b in (row.get("line_boxes") or [row["display_box"]])} | {tuple(row["run_in_after"])}
+    if any(tuple(b) not in mine and _overlap(probe, b) for _rid, b in layout.reserved):
+        return lines
+    if any(_overlap(probe, o) for o in layout.occupied):
+        return lines
+    return [(start, y0, x1, y1), *lines[1:]]
+
+
+def after_heads(order: list) -> list:
+    """``order`` with each sentence begun mid-line moved just after the row it follows
+    on that line, so close_run_in_gap knows where that row's translation ends."""
+    out = [r for r in order if not r.get("run_in_after")]
+    for r in (r for r in order if r.get("run_in_after")):
+        head = tuple(r["run_in_after"])
+        at = next((n for n, q in enumerate(out)
+                   if head in {tuple(b) for b in (q.get("line_boxes") or [q["display_box"]])}), None)
+        if at is None:
+            out.insert(min(order.index(r), len(out)), r)
+        else:
+            out.insert(at + 1, r)
+    return out
 
 
 def slot_geometry(box_px, rot):
@@ -737,6 +787,8 @@ def layout_row(
     font = row["_font"].font
     rot = int(row.get("display_rotation", 0))
     lines = row.get("line_boxes") or [row["display_box"]]
+    if rot == 0 and row.get("run_in_after") and len(lines) > 1:
+        lines = close_run_in_gap(row, lines, layout)
     geo = [slot_geometry(b, rot) for b in lines]
     thick_px = statistics.median(g[3] for g in geo)
     k = dpi / 72.0
@@ -991,8 +1043,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
     inserted: set[str] = set()
     placed, failed = [], []
     # big text first so titles keep their size when space is contested
-    for r in sorted(ok, key=lambda r: -max(slot_geometry(b, int(r.get("display_rotation", 0)))[3]
-                                           for b in (r.get("line_boxes") or [r["display_box"]]))):
+    for r in after_heads(sorted(ok, key=lambda r: -max(slot_geometry(b, int(r.get("display_rotation", 0)))[3]
+                                                       for b in (r.get("line_boxes") or [r["display_box"]])))):
         plan, why = layout_row(r, layout, page, dpi, cand, fit, overflow_policy=overflow_policy)
         if plan is None:
             failed.append(r)
@@ -1008,6 +1060,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
             rects.append(place_line(page, choice.font, line, plan["fontsize"], rot, start, centre, dpi, r["_color"],
                                     fontname=choice.name, squeeze=plan["squeeze"]))
         layout.occupied.extend(rects)
+        for b in (r.get("line_boxes") or [r["display_box"]]):
+            layout.written_at[tuple(b)] = rects
         r["_plan"] = plan
         r["_rects"] = rects
         placed.append(r)
@@ -1049,7 +1103,8 @@ def run(source: Path, manifest: Path, output: Path, preview: Path, report: Path,
         },
         "page": out_info,
         "written": [{"id": r["id"], "source_text": r["source_text"], "translation": r["translation"],
-                     "translation_source": r.get("translation_source"), "fontsize": round(r["_plan"]["fontsize"], 2),
+                     "translation_source": r.get("translation_source"), "decision_reason": r.get("decision_reason"),
+                     "fontsize": round(r["_plan"]["fontsize"], 2),
                      "target_fontsize": round(r["_plan"]["target"], 2), "fit": r["_plan"]["how"],
                      "scale": r["_plan"]["scale"], "width_factor": round(r["_plan"]["squeeze"], 3),
                      "font": r["_font"].path.name,

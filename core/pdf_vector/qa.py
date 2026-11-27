@@ -231,9 +231,12 @@ def run(source: Path, output: Path, manifest: Path, report: Path, out: Path, led
                            "removed_without_visible_change": n_unseen,
                            "examples": unexpected[:20]}
 
-    # numbers
+    # numbers -- except where the rule already failed before writing and the model's review
+    # judged the translation right (「01.01.23 Rev. 11」→「2023年1月1日 修订版次 11」): the rule
+    # only passes, a failure goes to that review, and its answer stands (说明书封面整页退回过)
     num_fail = [w["id"] for w in written
-                if any(n not in numbers(w["translation"], dates=True) for n in numbers(w["source_text"], dates=True))]
+                if w.get("decision_reason") != "model_review_accepted"
+                and any(n not in numbers(w["translation"], dates=True) for n in numbers(w["source_text"], dates=True))]
     res["numbers"] = {"checked": len(written), "failures": num_fail}
 
     # pixels

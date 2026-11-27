@@ -277,3 +277,40 @@ class RunInHeadingTests(unittest.TestCase):
         self.assertTrue(para["source_text"].endswith("the opposite one."), para["source_text"])
         self.assertEqual(para["line_align"], "start")
         self.assertIn("Negation.", [r["source_text"] for r in rows])
+
+
+class RunInGapTests(unittest.TestCase):
+    """讲义第 18 页（2026-11-27 Mac 复查）：小标题「Implication.」译成「蕴含。」后，后面的正文
+    原来从英文正文的起点开始写，中间空一大截；现在接在「蕴含。」后面。"""
+
+    def test_the_sentence_starts_right_after_the_translated_heading(self):
+        from core.pdf_vector import translate_page_inplace
+        from core.pdf_vector.fonts import find_cjk_font
+
+        if not find_cjk_font():
+            self.skipTest("no CJK font on this machine: in place cannot write Chinese")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = fitz.open()
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((57, 552), "Implication.", fontsize=11, fontname="hebo")
+            page.insert_text((131, 552), "Our next operation is called implication. Implication roughly corresponds to",
+                             fontsize=11, fontname="helv")
+            page.insert_text((57, 565.5), "statements in English of the form if A is true then B is true, and we write it",
+                             fontsize=11, fontname="helv")
+            page.insert_text((57, 579), "as an arrow between the two statements.", fontsize=11, fontname="helv")
+            doc.save(root / "source.pdf")
+
+            def translate(texts, prompt, **_extra):
+                return {t: "蕴含。" if t == "Implication." else "我们的下一个运算叫做蕴含" * 3 for t in texts}
+
+            res = translate_page_inplace(root / "source.pdf", 0, root / "work", translate=translate,
+                                         source_lang="en", target_lang="zh")
+            self.assertTrue(res.ok, res.error)
+            chars = [(c["c"], fitz.Rect(c["bbox"]))
+                     for b in fitz.open(res.output_pdf)[0].get_text("rawdict")["blocks"]
+                     for ln in b.get("lines", []) for sp in ln["spans"] for c in sp["chars"]]
+            stop = next(box for c, box in chars if c == "。")  # end of 「蕴含。」
+            first = min((box for c, box in chars if c == "我" and abs(box.y0 - stop.y0) < 4), key=lambda r: r.x0)
+            self.assertLess(first.x0 - stop.x1, 12)  # was 131 - (57 + 3 字) ≈ 40 pt of blank
+            self.assertGreater(first.x0, stop.x1 - 0.5)  # and never on top of the heading
