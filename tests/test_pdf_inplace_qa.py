@@ -114,3 +114,38 @@ class ImageListTests(unittest.TestCase):
         res = self._check(self._page("out", hidden=True, visible=False))
         self.assertFalse(res["images"]["identical"])
         self.assertEqual(res["status"], "review")
+
+
+class ReviewedNumberTests(unittest.TestCase):
+    """说明书封面（2026-11-27 Mac 复查）：「01.01.23 Rev. 11」译成「2023年1月1日 修订版次 11」，
+    数字规则没过、模型复查判意思一致后写进页面，自检又按同一条规则整页退回英文。复查的结论
+    算数：自检不再因为这一行整页退回。"""
+
+    def test_a_number_change_the_review_accepted_does_not_fail_the_page(self):
+        from core.pdf_vector import translate_page_inplace
+        from core.pdf_vector.fonts import find_cjk_font
+
+        if not find_cjk_font():
+            self.skipTest("no CJK font on this machine: in place cannot write Chinese")
+
+        class Results(dict):
+            review_accepted: dict = {}
+
+        def translate(texts, prompt, extra_check=None, **_extra):
+            out = Results({t: "用户手册 2023年1月1日 修订版次 11" if "Rev" in t else "说明" for t in texts})
+            out.review_accepted = {t: "日期写法不同，意思一致" for t in texts
+                                   if extra_check and extra_check(t, out[t])}
+            return out
+
+        translate.takes_extra_check = True
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = fitz.open()
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((60, 200), "User manual 01.01.23 Rev. 11", fontsize=14, fontname="helv")
+            page.insert_text((60, 240), "Installation and commissioning guide", fontsize=12, fontname="helv")
+            doc.save(root / "source.pdf")
+            res = translate_page_inplace(root / "source.pdf", 0, root / "work", translate=translate,
+                                         source_lang="en", target_lang="zh")
+            self.assertTrue(res.ok, res.error)
+            self.assertIn("2023年1月1日", fitz.open(res.output_pdf)[0].get_text())
