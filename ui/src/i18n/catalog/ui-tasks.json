@@ -40,6 +40,7 @@
   "记忆库命中": {"en": "Memory matches", "fr": "Trouvés en mémoire"},
   "交由模型翻译": {"en": "Sent to model", "fr": "Envoyés au modèle"},
   "未翻译段": {"en": "Untranslated segments", "fr": "Segments non traduits"},
+  "未翻译单元格": {"en": "Untranslated cells", "fr": "Cellules non traduites"},
   "重译后补全": {"en": "Fixed on retry", "fr": "Récupérés à la relance"},
   "复查后采用": {"en": "Accepted on recheck", "fr": "Acceptés après contrôle"},
   "页 / 图片": {"en": "Pages / images", "fr": "Pages / images"},

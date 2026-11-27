@@ -3639,6 +3639,9 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                 "source_path": str(file_item.path),
                 "output": str(final_path),
                 "success": True,
+                # 这份文件读到的待译文字条数；0 条时界面写「没有需要翻译的文字」，不只写「已生成」。
+                # 补译时这里只剩没译的部分，0 条不代表本来没字，不带。
+                **({} if self._untranslated_only else {"source_text_count": len(this_file_texts)}),
                 "preprocess": (
                     preprocess_summaries[index]
                     if index < len(preprocess_summaries)
@@ -3848,6 +3851,11 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                     "format": original_format,
                     "status": status,
                     "success": success,
+                    **(
+                        {"source_text_count": raw["source_text_count"]}
+                        if raw.get("source_text_count") is not None
+                        else {}
+                    ),
                     "output": str(raw.get("output") or ""),
                     "conversion": {
                         "required": conversion_required,

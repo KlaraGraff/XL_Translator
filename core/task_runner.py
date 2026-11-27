@@ -2929,6 +2929,9 @@ class TaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                     write_stats.get("truncated_positions") or []
                 ),
                 "success": True,
+                # 这份文件读到的待译文字条数；0 条（空表、只有数字）时界面写「没有需要翻译的文字」，
+                # 不只写「已生成」。补译时这里只剩没译的部分，0 条不代表本来没字，不带。
+                **({} if self._untranslated_only else {"source_text_count": len(this_file_texts)}),
             })
             self._file_progress.emit(
                 file_item.path,

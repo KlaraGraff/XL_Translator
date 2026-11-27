@@ -2040,7 +2040,8 @@ export interface ToastOptions {
  * 位置略偏但不会把提示吞掉。这里用 DOM 查找而不是 import shell.ts —— shell.ts 反过来
  * 依赖本模块，互相 import 会成环。
  */
-export function showToast(options: ToastOptions): void {
+/** 返回弹出的提示元素：调用方需要时可以提前收掉它（例如离开页面时收掉这一页自己的提示）。 */
+export function showToast(options: ToastOptions): HTMLElement {
   const toast = el("div", { className: options.error ? "toast error" : "toast" });
   if (options.action) {
     toast.classList.add("with-act");
@@ -2059,4 +2060,5 @@ export function showToast(options: ToastOptions): void {
   window.setTimeout(() => {
     toast.remove();
   }, options.duration ?? (options.action ? 6000 : 3200));
+  return toast;
 }

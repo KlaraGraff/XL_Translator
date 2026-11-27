@@ -24,6 +24,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
 from core.prompt_cache import append_context_block
+from core.user_facing_errors import humanize_error
 
 # 送去概括的样本：出现次数最多的短标签 + 最长的几段说明，合计不超过这么多字。
 _SAMPLE_CHAR_BUDGET = 6000
@@ -160,7 +161,8 @@ def request_document_profile(
         profile = _clean_profile(chat(system, user))
     except Exception as exc:  # noqa: BLE001 - the profile is optional, translation goes on
         if log:
-            log("WARN", f"自动识别场景：文档说明没有生成（{exc.__class__.__name__}），按普通方式继续翻译")
+            reason = humanize_error(exc, fallback="模型服务返回了错误")
+            log("WARN", f"自动识别场景：文档说明没有生成（{reason}），按普通方式继续翻译")
         return ""
     if log:
         if profile:

@@ -63,6 +63,7 @@ import { markMorphBoundary, morphNode } from "../morph";
 import { createTaskControlFoot, createTaskListPanel, createTaskLogLines, createTaskResultCard, createTaskRunBox, type TaskPipeStep } from "../task-panels";
 import { createTaskFeedbackButton } from "../task-feedback";
 import { normalizeUserPath, showPathWithMiddleEllipsis } from "../path-input";
+import { dispatchPaths, ownerSurfaceOf } from "../drop-dispatch";
 
 import {
   buildPdfRecoveryCard,
@@ -107,6 +108,7 @@ export type FileItem = JsonObject & {
   sheets?: string[];
   text_cell_count?: number;
   paragraph_count?: number;
+  translatable_count?: number;
   table_count?: number;
   page_count?: number;
   /** PDF「大幅面页」计数（两个方向都超过 A4 约 15%）。null 是后端明确表达的「这个文件数不出来」
@@ -1205,6 +1207,10 @@ function cadConverterReady(st: SurfaceState): boolean {
 
 export function unmountWorkspace(surface: Surface): void {
   nextToken(mountTokens, surface);
+  // 「已扫描到 N 个文件」只说这一页：人切到别的页面后不再挂着（别的提示不动，
+  // 有些是故意「做完再跳页」时弹给下一页看的）。
+  scanToasts.get(surface)?.remove();
+  scanToasts.delete(surface);
   setGuideEntry(null);
   stateOf(surface).renderer = null;
   // 离开这一屏后没人看那句「已等待 N 秒」，计时器再走就是白转（rerender 也已经是空操作）。
@@ -1717,13 +1723,14 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
     variant: "ghost",
     size: "mini",
     disabled: scanning || active,
-    onClick: () => void runScan(surface),
+    onClick: () => submitSourcePath(surface),
   });
   rescanBtn.hidden = !st.sourcePath.trim();
   input.addEventListener("input", () => {
     const value = input.value;
     const normalized = normalizeUserPath(value);
-    if (normalized !== value) input.value = normalized;
+    // 正在手打、末尾刚敲了一个空格时不改输入框，不然带空格的文件名打不出来。
+    if (normalized !== value && normalized !== value.trimEnd()) input.value = normalized;
     if (normalized === st.sourcePath && !st.sourcePaths.length) return;
     const needsRender = !!st.task || !!st.files.length || st.showBanner || scanBusy.has(surface);
     const caret = input.selectionStart;
@@ -1747,7 +1754,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState, active: boolean): HTMLE
   input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing || scanBusy.has(surface) || !st.sourcePath.trim()) return;
     event.preventDefault();
-    void runScan(surface);
+    submitSourcePath(surface);
   });
   // 「选择」和下拉键盘提示（↑↓ 选择）共用一条词条，英法那里是小写；按钮上的首字母大写由 createButton 统一处理。
   const pickBtn = createButton({
@@ -1900,6 +1907,20 @@ async function pickSource(surface: Surface, st: SurfaceState, directory: boolean
   );
   if (!pickedList.length) return;
   await applySourcePaths(surface, pickedList);
+}
+
+/**
+ * 路径栏回车或点「重新读取」：路径是另一种类型的文件（在 Excel 页贴了 .docx）时交给它自己的
+ * 类型页去读，不在这一页报「不支持」；其余照常在这一页读取。
+ */
+function submitSourcePath(surface: Surface): void {
+  const path = normalizeUserPath(stateOf(surface).sourcePath);
+  const owner = path ? ownerSurfaceOf(path) : null;
+  if (owner && owner !== surface) {
+    void dispatchPaths([path]);
+    return;
+  }
+  void runScan(surface);
 }
 
 /**
@@ -2123,7 +2144,7 @@ function batchRow(surface: Surface, batch: DispatchBatch): BatchRow {
     phase: "ready",
     count: selection.length,
     label: t("待开始"),
-    tone: "ok",
+    tone: "tint",
     note: blocked ? t("{0} 个 DWG 需先连接图纸转换工具，本次只翻译 DXF。", blocked) : "",
     noteWarn: blocked > 0,
   };
@@ -2304,7 +2325,8 @@ function buildReadyNote(surface: Surface, st: SurfaceState): HTMLElement | null 
       if (!counted.length) return null;
       count = counted.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
     } else {
-      count = files.reduce((sum, f) => sum + num(surface === "excel" ? f.text_cell_count : f.paragraph_count), 0);
+      // Word 报真正要翻的条数（含表格里的字、不含空段落和纯数字段落）；老的 .doc 转换前数不出来，退回段落数。
+      count = files.reduce((sum, f) => sum + num(surface === "excel" ? f.text_cell_count : (f.translatable_count ?? f.paragraph_count)), 0);
     }
     // 「自动识别场景」关着时不说开始后会识别场景；源语言选定了就不说识别原文语言。
     const smart = (isExtSurface(surface) ? extSettingsRecord(surface).smart_context : settings[`${surface}_smart_context`]) !== false;
@@ -4137,6 +4159,8 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
 const scanTokens = new Map<Surface, number>();
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
 const scanBusy = new Set<Surface>();
+/** 这一页最近弹的「已扫描到」提示；离开这一页时收掉（unmountWorkspace）。 */
+const scanToasts = new Map<Surface, HTMLElement>();
 
 // 改这里填的字段时，同步改后端的 Surface.saved_scan_defaults（api/surfaces/*.py）：命令行和 MCP
 // 没有这个页面，靠它补出同样的值（tests/test_saved_request_defaults.py 钉着两边）。
@@ -4223,9 +4247,9 @@ export async function runScan(surface: Surface, preferredResumeDir?: string, bac
           ? t("已扫描到 {0} 个 {1} 文件，跳过 {2} 个。", items.length, surfaceLabel(surface), skipCount)
           : t("已扫描到 {0} 个 {1} 文件。", items.length, surfaceLabel(surface)));
     // 后台读取（人在别的页面）：读到多少由那一页上的分配提示说，不另弹提示；续译弹窗等人进来。
-    // 读取期间人已经切到这一页的，照常弹。
+    // 读取期间人已经切到这一页的，照常弹；在这一页点了读取、读完前已经走开的，不追到别的页面去弹。
     const here = st.renderer !== null;
-    if (!background || here) showToast({ message: toastMessage });
+    if (here) scanToasts.set(surface, showToast({ message: toastMessage }));
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
     if (st.resumeInfo) {
       if (here || !background) void showResumeModal(surface, st);
@@ -4992,6 +5016,8 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       // 停止后写出的文件只翻了一部分（后端按续译检测同一口径数的格/段数）。绿色「已生成」
       // 会让人以为翻完了。
       const unfinished = ok && !untranslated ? num(item.unfinished_text_count) : 0;
+      // 空表、只有数字的表：文件照样写出来了，但里面本来就没有要翻的字，得说一声。
+      const nothingToTranslate = ok && !untranslated && item.source_text_count === 0;
       const label = notReached
         ? t("停止前未处理")
         : !ok
@@ -5002,7 +5028,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
             ? (surface === "excel" ? t("部分翻译 · 剩余 {0} 个单元格", fmtNum(unfinished)) : t("部分翻译 · 剩余 {0} 段", fmtNum(unfinished)))
             : pending > 0
               ? t("已生成 · {0} 处需复核", pending)
-              : t("已生成");
+              : nothingToTranslate
+                ? t("已生成 · 没有需要翻译的文字")
+                : t("已生成");
       st.fileOutcomes.set(key, {
         produced: ok,
         label,

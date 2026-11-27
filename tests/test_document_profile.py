@@ -97,7 +97,8 @@ class RequestProfileTests(unittest.TestCase):
             request_document_profile(chat, ["甲"], target_language="英文", log=lambda *args: logs.append(args)),
             "",
         )
-        self.assertEqual(logs, [("WARN", "自动识别场景：文档说明没有生成（TimeoutError），按普通方式继续翻译")])
+        # 原因写给人看：不带程序内部的类名（以前这里是「（TimeoutError）」）。
+        self.assertEqual(logs, [("WARN", "自动识别场景：文档说明没有生成（模型服务返回了错误），按普通方式继续翻译")])
 
     def test_nothing_to_read_makes_no_request(self) -> None:
         def chat(_system: str, _user: str) -> str:

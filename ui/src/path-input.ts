@@ -19,7 +19,28 @@ export function normalizeUserPath(value: string): string {
     if (!closing || normalized[normalized.length - 1] !== closing) break;
     normalized = normalized.slice(1, -1).trim();
   }
-  return normalized;
+  return unescapeShellPath(fromFileUrl(normalized));
+}
+
+/** `file:///Users/a/b%20c.xlsx`（从浏览器或访达复制的地址）还原成普通路径。 */
+function fromFileUrl(value: string): string {
+  if (value.slice(0, 7).toLowerCase() !== "file://") return value;
+  let rest = value.slice(7);
+  try {
+    rest = decodeURIComponent(rest);
+  } catch {
+    // 不是合法的转义就按原样用。
+  }
+  if (rest.toLowerCase().startsWith("localhost/")) rest = rest.slice("localhost".length);
+  if (/^\/[A-Za-z]:[\\/]/.test(rest)) return rest.slice(1);
+  if (rest.startsWith("/")) return rest;
+  return rest ? `\\\\${rest.replace(/\//g, "\\")}` : value;
+}
+
+/** 把文件拖进终端得到的是 `/Users/a/my\ file.xlsx`：只动 / 或 ~ 开头的路径，Windows 的分隔符不碰。 */
+function unescapeShellPath(value: string): string {
+  if (!/^[/~]/.test(value) || !value.includes("\\")) return value;
+  return value.replace(/\\([^A-Za-z0-9])/g, "$1");
 }
 
 const ELLIPSIS = "…";

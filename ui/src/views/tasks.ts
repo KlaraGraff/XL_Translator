@@ -503,7 +503,10 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         [t("未开始"), ["unstarted_count", "not_started_count", "unstarted_file_count"]],
         [t("需复核"), ["review_count", "review_items_count", "review_total", "review_text_count"]],
         [t("记忆库命中"), ["tm_hit_count", "tm_hits"]],
-        [t("交由模型翻译"), ["model_translation_text_count", "model_text_count", "translated_text_count"]],
+        // 后端这个数是开始时计划交给模型的条数；中途停止或失败的任务没翻完，照写会被读成「已经翻了这么多」。
+        ...(!["stopped", "error", "interrupted"].includes(task.state)
+          ? [[t("交由模型翻译"), ["model_translation_text_count", "model_text_count", "translated_text_count"]] as [string, string[]]]
+          : [[t("未翻译单元格"), ["unstarted_text_count"]] as [string, string[]]]),
       ],
       reviewSource,
     );

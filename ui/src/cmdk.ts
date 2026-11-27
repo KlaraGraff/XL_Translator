@@ -17,6 +17,7 @@ import { isModKey } from "./platform";
 import { currentView, hasView, navigate, onNavigate, type ViewId } from "./router";
 import { builtinTranslateSideItem } from "./shell";
 import { dispatchPaths } from "./drop-dispatch";
+import { normalizeUserPath } from "./path-input";
 import { surfaceDescriptors } from "./surface-descriptors";
 import { getClient, surfaceIcon, surfaceLabel, type Surface } from "./views/workspace";
 import { taskRowSummary } from "./views/tasks";
@@ -313,9 +314,7 @@ function matches(words: string[], ...fields: (string | undefined)[]): boolean {
 
 /** 去掉首尾空白和成对引号（Windows「复制文件地址」带引号）；看起来是路径才返回。 */
 function pathFromQuery(query: string): string | null {
-  let value = query.trim();
-  const quoted = /^(["'])(.*)\1$/.exec(value);
-  if (quoted) value = quoted[2].trim();
+  const value = normalizeUserPath(query);
   if (!value) return null;
   // 与 app.ts 拖放路径识别同一条：/ 开头、盘符、~ 开头；或者干脆含路径分隔符。
   if (/[\\/]/.test(value) || /^(\/|[A-Za-z]:[\\/]|~)/.test(value)) return value;
