@@ -171,26 +171,49 @@ _CJK_CHARS = "\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef"
 TOKEN_RE = re.compile(rf"[{_CJK_CHARS}]|[^\s{_CJK_CHARS}]+|\s+", re.S)
 
 
+# 不放在行首的标点（中日文禁则）：句号、逗号、顿号、右括号、右引号……
+NO_LINE_START = set("。，、；：！？）」』】》〕〉…—’”・,.;:!?)]}%")
+
+
 def wrap(text: str, font: fitz.Font, fs: float, widths: list[float], squeeze: float = 1.0) -> list[str] | None:
     """Greedy wrap into len(widths) lines; words, numbers and codes never split.
-    ``squeeze`` narrows the glyphs (width factor), as written by place_line."""
+    ``squeeze`` narrows the glyphs (width factor), as written by place_line.
+
+    A closing mark never starts a line (讲义第 18 页页尾的「。」单独掉到下一行): a single mark
+    hangs past the end of the line (its advance is at most one em, the ink of 「。」「，」 sits in
+    its left half), a longer run of marks takes the line's last character down with it."""
     toks = TOKEN_RE.findall(text)
-    lines, cur, i = [], "", 0
+
+    def width(s: str) -> float:
+        return font.text_length(s.rstrip(), fontsize=fs) * squeeze
+
+    lines, cur, i = [], [], 0
     for t in toks:
         w_lim = widths[min(i, len(widths) - 1)]
-        cand = cur + t
-        if font.text_length(cand.rstrip(), fontsize=fs) * squeeze <= w_lim or not cur.strip():
-            if font.text_length(cand.rstrip(), fontsize=fs) * squeeze > w_lim and not cur.strip():
+        cand = "".join(cur) + t
+        if width(cand) <= w_lim or not "".join(cur).strip():
+            if width(cand) > w_lim and not "".join(cur).strip():
                 return None  # single token wider than the line
-            cur = cand
+            cur.append(t)
             continue
-        lines.append(cur.rstrip())
+        carry: list[str] = []
+        if t.strip() and t.strip()[0] in NO_LINE_START:
+            if len(t) == 1 and width(cand) <= w_lim + fs:
+                cur.append(t)  # hangs
+                continue
+            ink = [n for n, x in enumerate(cur) if x.strip()]
+            if len(ink) > 1:
+                carry = cur[ink[-1]:]
+                cur = cur[:ink[-1]]
+        lines.append("".join(cur).rstrip())
         i += 1
         if i >= len(widths):
             return None
-        cur = t.lstrip()
-    if cur.strip():
-        lines.append(cur.rstrip())
+        cur = [x for x in carry] + [t]
+        if not carry:
+            cur = [t.lstrip()]
+    if "".join(cur).strip():
+        lines.append("".join(cur).rstrip())
     return lines if len(lines) <= len(widths) else None
 
 

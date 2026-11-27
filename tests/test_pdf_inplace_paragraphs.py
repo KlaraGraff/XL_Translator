@@ -346,3 +346,33 @@ class NeighbourContextTests(unittest.TestCase):
             self.assertIn("the Firebeam / 「Xtra」", prompts[0])
             # 长句不算短文字，不附
             self.assertNotIn("「Power up", prompts[0])
+
+
+class LineStartPunctuationTests(unittest.TestCase):
+    """讲义第 18 页（2026-11-27 Mac 复查）：页尾最后一句的「。」单独掉到下一行。"""
+
+    def setUp(self):
+        from core.pdf_vector.fonts import find_cjk_font
+
+        path = find_cjk_font()
+        if not path:
+            self.skipTest("no CJK font on this machine")
+        self.font = fitz.Font(fontfile=str(path))
+
+    def test_a_full_stop_hangs_at_the_end_of_a_full_line(self):
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四五。", self.font, 10, [51, 50]), ["一二三四五。"])
+        self.assertEqual(wrap("一二三四五。六", self.font, 10, [51, 50]), ["一二三四五。", "六"])
+
+    def test_a_run_of_marks_takes_the_last_character_down_with_it(self):
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四五……", self.font, 10, [51, 50]), ["一二三四", "五……"])
+
+    def test_ordinary_wrapping_is_unchanged(self):
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四五六七", self.font, 10, [40, 40]), ["一二三四", "五六七"])
+        self.assertEqual(wrap("one two three four", self.font, 10, [45, 80]), ["one two", "three four"])
+        self.assertIsNone(wrap("一二三四五六", self.font, 10, [51]))
