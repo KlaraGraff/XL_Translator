@@ -314,3 +314,35 @@ class RunInGapTests(unittest.TestCase):
             first = min((box for c, box in chars if c == "我" and abs(box.y0 - stop.y0) < 4), key=lambda r: r.x0)
             self.assertLess(first.x0 - stop.x1, 12)  # was 131 - (57 + 3 字) ≈ 40 pt of blank
             self.assertGreater(first.x0, stop.x1 - 0.5)  # and never on top of the heading
+
+
+class NeighbourContextTests(unittest.TestCase):
+    """说明书封面和第 7 页的屏幕框「the Firebeam / Xtra」（2026-11-27 Mac 复查）：「Xtra」单独送去，
+    模型看不到上一行，把产品名译成「额外」。现在这一页的翻译要求后面附上短文字和相邻文字
+    连起来的样子。"""
+
+    def test_a_short_label_is_sent_with_the_lines_next_to_it(self):
+        from core.pdf_vector import translate_page_inplace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = fitz.open()
+            page = doc.new_page(width=595, height=842)
+            page.draw_rect(fitz.Rect(258, 236, 336, 268), color=(0, 0, 0), width=1)
+            page.insert_text((262, 250), "the Firebeam", fontsize=10, fontname="cour")
+            page.insert_text((278, 262), "Xtra", fontsize=10, fontname="cour")
+            page.insert_text((60, 400), "Power up the unit and wait for the display to settle.", fontsize=12,
+                             fontname="helv")
+            doc.save(root / "source.pdf")
+            prompts: list[str] = []
+
+            def translate(texts, prompt, **_extra):
+                prompts.append(prompt)
+                return {t: "译文" for t in texts}
+
+            translate_page_inplace(root / "source.pdf", 0, root / "work", translate=translate,
+                                   source_lang="en", target_lang="zh")
+            self.assertTrue(prompts)
+            self.assertIn("the Firebeam / 「Xtra」", prompts[0])
+            # 长句不算短文字，不附
+            self.assertNotIn("「Power up", prompts[0])
