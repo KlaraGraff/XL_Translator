@@ -142,5 +142,17 @@
   "需先设置": {
     "en": "Needs attention",
     "fr": "À régler"
+  },
+  "有 {0} 个文件不是可翻译的类型，没有放入：{1} 等。": {
+    "en": "{0} {0|file is|files are} not a translatable type and {0|was|were} left out: {1}, …",
+    "fr": "{0} {0|fichier n'est pas d'un type traduisible et n'a pas été ajouté|fichiers ne sont pas d'un type traduisible et n'ont pas été ajoutés} : {1}…"
+  },
+  "有 {0} 个文件不是可翻译的类型，没有放入：{1}。": {
+    "en": "{0} {0|file is|files are} not a translatable type and {0|was|were} left out: {1}.",
+    "fr": "{0} {0|fichier n'est pas d'un type traduisible et n'a pas été ajouté|fichiers ne sont pas d'un type traduisible et n'ont pas été ajoutés} : {1}."
+  },
+  "已生成 · 没有需要翻译的文字": {
+    "en": "Generated · nothing to translate",
+    "fr": "Généré · rien à traduire"
   }
 }

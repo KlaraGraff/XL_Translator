@@ -258,5 +258,7 @@
   "其中 {0} 条是固定的词条（{1}）。": {"en": "{0} of them {0|is a locked entry|are locked entries} ({1}).", "fr": "{0} d'entre elles {0|est verrouillée|sont verrouillées} ({1})."},
   "固定的词条也一起删除": {"en": "Delete the locked entries too", "fr": "Supprimer aussi les entrées verrouillées"},
   "不勾选时只删 {0} 条，固定的 {1} 条保留。": {"en": "Left unticked, only {0} {0|entry is|entries are} deleted; the {1} locked {1|one stays|ones stay}.", "fr": "Sans cocher, seules {0} {0|entrée est supprimée|entrées sont supprimées} ; les {1} verrouillées restent."},
-  "删除 {0} 条": {"en": "Delete {0}", "fr": "Supprimer {0}"}
+  "删除 {0} 条": {"en": "Delete {0}", "fr": "Supprimer {0}"},
+  "没有找到符合条件的词条": {"en": "No entries match", "fr": "Aucune entrée ne correspond"},
+  "换一个关键词或筛选条件再试；清空搜索框可查看全部词条。": {"en": "Try another keyword or filter. Clear the search box to see all entries.", "fr": "Essayez un autre mot-clé ou un autre filtre. Videz le champ de recherche pour voir toutes les entrées."}
 }

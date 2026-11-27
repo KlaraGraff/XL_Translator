@@ -69,11 +69,30 @@ async function classify(paths: string[]): Promise<ClassifiedPath[]> {
   }
 }
 
-function bucketize(items: ClassifiedPath[]): Map<Surface, Bucket> {
+function extensionOwners(): Map<string, Surface> {
   const owners = new Map<string, Surface>();
   for (const surface of candidateSurfaces()) {
     for (const ext of surfaceFileExtensions(surface)) if (!owners.has(ext)) owners.set(ext, surface);
   }
+  return owners;
+}
+
+/** 这个路径按扩展名归哪个类型页；文件夹、没有扩展名或没人认的扩展名返回 null。 */
+export function ownerSurfaceOf(path: string): Surface | null {
+  const suffix = suffixOf(path);
+  return suffix ? extensionOwners().get(suffix) ?? null : null;
+}
+
+/** 单独选中的文件里没有任何类型认的那些（文件夹里的杂文件不算）。 */
+function unrecognizedFiles(items: ClassifiedPath[]): string[] {
+  const owners = extensionOwners();
+  return items
+    .filter((item) => item.kind === "file" && !Object.keys(item.suffixes).some((suffix) => owners.has(suffix.toLowerCase())))
+    .map((item) => item.path.split(/[\\/]/).pop() ?? item.path);
+}
+
+function bucketize(items: ClassifiedPath[]): Map<Surface, Bucket> {
+  const owners = extensionOwners();
   const buckets = new Map<Surface, Bucket>();
   for (const item of items) {
     const perSurface = new Map<Surface, number>();
@@ -169,8 +188,20 @@ export async function dispatchPaths(paths: string[], options: { append?: boolean
   if (!list.length) return;
   // 在任务、设置这类页面上松手：先回到入口页，没有可翻译的文件时就停在那里。
   if (!isSurfaceView(currentView()?.id) && currentView()?.id !== "home") navigate("home");
-  const buckets = bucketize(await classify(list));
+  const classified = await classify(list);
+  const buckets = bucketize(classified);
   const found = buckets.size;
+  // 一起放进来的文件里有不认识的类型：说一句哪几个没放入，不让它们悄悄消失。
+  const left = unrecognizedFiles(classified);
+  if (left.length && found) {
+    const names = left.slice(0, 3).join("、");
+    showToast({
+      message: left.length > 3
+        ? t("有 {0} 个文件不是可翻译的类型，没有放入：{1} 等。", left.length, names)
+        : t("有 {0} 个文件不是可翻译的类型，没有放入：{1}。", left.length, names),
+      duration: 6000,
+    });
+  }
   await admitHiddenTypes(buckets);
   // 全都选了「这次不用」：什么也不放，也不再提示没有可翻译的文件。
   if (found && !buckets.size) return;
