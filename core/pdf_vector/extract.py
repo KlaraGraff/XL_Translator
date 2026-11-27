@@ -85,7 +85,7 @@ def _body_size(inked) -> float:
     return sizes.most_common(1)[0][0]
 
 
-def _union(boxes) -> fitz.Rect:
+def _union(boxes):
     r = fitz.Rect(boxes[0])
     for box in boxes[1:]:
         r |= box
