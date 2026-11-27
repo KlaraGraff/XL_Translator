@@ -2758,8 +2758,8 @@ function oversizedPageStat(stats: OversizedPageStats): StatCell | null {
       value: fmtNum(stats.pages),
       attn: true,
       // 「图纸没翻译、以为程序出错」最直接的原因在这里：直接给出切换到自动组合的入口。
-      sub: unknownNote || t("这些页面默认原样保留。如需翻译图纸，请改用「自动组合」。"),
-      link: unknownNote ? undefined : { label: t("改用自动组合"), onClick: () => void handlePdfRouteChange(stateOf("pdf"), "pdfRoute", "pdf.translation_route", "auto") },
+      sub: unknownNote || t("这些页面默认原样保留。如需翻译图纸，请把翻译方式改为「其他」。"),
+      link: unknownNote ? undefined : { label: t("改为「其他」"), onClick: () => void handlePdfRouteChange(stateOf("pdf"), "pdfRoute", "pdf.translation_route", "auto") },
     };
   }
   // 一页都没数出来时不能写 0——那是「确认没有」的说法。
@@ -3520,7 +3520,7 @@ function recipeParts(surface: Surface, st: SurfaceState): { lead: string; parts:
   const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
   const lead = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
   const parts: string[] = [];
-  if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("自动组合") : t("整页图像翻译"));
+  if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("其他") : t("图像还原"));
   if (surfaceToggles(surface).some((toggle) => toggle.key === "translationOnly")) {
     parts.push(st.toggles.get("translationOnly") ? t("仅译文") : t("双语对照"));
   }
@@ -3853,9 +3853,9 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], fallback:
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-/** 自动组合里有一类页选了原位替换。 */
+/** 「其他」里图纸和大幅面页由程序用原位替换（core/pdf_routes.py page_route）。 */
 function pdfUsesInplace(st: SurfaceState): boolean {
-  return st.pdfRoute === "auto" && (st.pdfAutoTextRoute === "inplace" || st.pdfAutoDrawingRoute === "inplace");
+  return st.pdfRoute === "auto";
 }
 
 /** 翻译方式几个下拉共用的落盘：先改界面，PUT 失败再改回去（和其它开关同一套规矩，

@@ -1,6 +1,6 @@
 // PDF / CAD 首次使用图文指引（maple 2026-10-27 拍板，方案见项目文档「PDF 与 CAD 首次使用指引：推荐方案」）。
 //
-// 一屏看完的居中弹窗：PDF 讲三种翻译方式和「自动组合」，CAD 讲三项最常被误解的设置、
+// 一屏看完的居中弹窗：PDF 讲三种处理方式和「其他」怎样逐页选用它们，CAD 讲三项最常被误解的设置、
 // DWG 需要的转换工具和译后改译文。卡片底部的本机状态是实时查的（和页面里的缺组件提示
 // 同一个接口），缺什么当场给入口。弹窗只讲解、给入口，不改任何设置。
 //
@@ -375,7 +375,7 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   const eff = t("效果");
   const wordName = t("转成 Word");
   const inplaceName = t("原位替换");
-  const imageName = t("整页图像翻译");
+  const imageName = t("图像还原");
 
   // 本机状态先空着，查到后再填；查不到就一直空着，不猜。
   const wordStats = el("div", "g-stats");
@@ -427,8 +427,8 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   const band = el("div", "g-band");
   const bandText = el("div");
   bandText.append(
-    el("h4", undefined, t("混有多种页面时，选择「自动组合」")),
-    el("p", undefined, t("程序逐页判断页面类型，分别使用对应方式翻译，最后按原页序合成一份 PDF。某种方式在本机不可用时，该页改用「保底方式」，完成后单独列出。")),
+    el("h4", undefined, t("选择「其他」时，程序逐页选方式")),
+    el("p", undefined, t("程序逐页判断页面类型：文字页和表格页用段落重排（没装组件或排得不好的页转成 Word），图纸用原位替换，扫描件用图像还原，最后按原页序合成一份 PDF。某种方式在本机不可用时，该页改用「保底方式」，完成后单独列出。")),
   );
   const flow = el("div", "g-flow");
   const pages = el("div", "g-pages");
@@ -463,14 +463,9 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   void fillPdfStats({ wordStats, inplaceStats, imageStats, textChips }, go);
 }
 
-/** 「自动组合」条里文字页、表格页的方式按本机设置写：装了段落重排且选着它时写「段落重排」。 */
-function textRouteName(caps: { babeldoc_component?: boolean; auto_text_route?: string }): string {
-  switch (caps.auto_text_route) {
-    case "babeldoc": return caps.babeldoc_component ? t("段落重排") : t("转成 Word");
-    case "inplace": return t("原位替换");
-    case "image": return t("整页图像翻译");
-    default: return t("转成 Word");
-  }
+/** 「其他」条里文字页、表格页的方式按本机条件写：装了段落重排组件写「段落重排」，没装写「转成 Word」。 */
+function textRouteName(caps: { babeldoc_component?: boolean }): string {
+  return caps.babeldoc_component ? t("段落重排") : t("转成 Word");
 }
 
 async function fillPdfStats(
@@ -501,10 +496,8 @@ async function fillPdfStats(
     if (!caps.babeldoc_component) {
       hosts.wordStats.append(stat("idle", t("另装「段落重排组件」可先在原 PDF 上排版"),
         { label: t("安装"), onClick: go(() => navigate("plugins", { focus: "babeldoc" })) }));
-    } else if (caps.auto_text_route === "babeldoc") {
-      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」，这类页面先用段落重排")));
     } else {
-      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」")));
+      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」，这类页面先用段落重排")));
     }
     const textRoute = textRouteName(caps);
     for (const chip of hosts.textChips) chip.textContent = textRoute;
