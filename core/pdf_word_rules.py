@@ -57,7 +57,10 @@ def _strokes(page) -> list[tuple[float, float, float]]:
     """这一页的短细横线：[(左, 右, y)]。"""
     found = []
     for drawing in page.get_drawings():
-        for item in drawing.get("items", []):
+        items = drawing.get("items", [])
+        if len(items) != 1:
+            continue  # TeX 的横线是单独画的一笔；图里的圆、框是好多段连成的，其中平的一小段不算
+        for item in items:
             if item[0] == "l":
                 a, b = item[1], item[2]
                 if abs(a.y - b.y) > 0.3 or abs(a.x - b.x) < _MIN_LENGTH:
@@ -351,10 +354,14 @@ _WORD = re.compile(r"[^\W\d_]{2,}")
 
 
 def _display(paragraph, math) -> None:
-    """这一段除了分数只有算式（rᵏ =、逗号、句点，没有成词的字）时，整段做成一个独立公式：
-    分数按独立公式的大小排（行内公式里的分数 Word 会缩小），等号对准分数中间。
-    段首的制表符换成同样宽的缩进。有别的东西（超链接、图片、成词的字）时不动。"""
+    """这一段只有这个分数（前面最多几个制表符，后面最多一个逗号、句点）时，整段做成一个独立
+    公式：分数按独立公式的大小排（行内公式里的分数 Word 会缩小）。段首的制表符换成同样宽的缩进。
+
+    分数前面还有算式（rᵏ =）时不做：Word 的 Cambria Math 比原文的字宽，独立公式在格子里放不下
+    就会在等号处折成两行，分母被格子切掉（本机 math 第 2 页）。行内公式不折行。"""
     others = [child for child in paragraph if child.tag != f"{_W}pPr" and child is not math]
+    if any(_plain_run(child, paragraph) for child in math.itersiblings(preceding=True)):
+        return
     if any(not (_plain_run(child, paragraph) or _separator(child, paragraph)) for child in others):
         return
     if any(_WORD.search(child.find(f"{_W}t").text or "") for child in others if _plain_run(child, paragraph)):

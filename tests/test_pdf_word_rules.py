@@ -153,28 +153,56 @@ class RestoreRulesTests(unittest.TestCase):
         self.assertLess(int(spacing.get(qn("w:before"))), 338)
         self.assertIsNone(paragraph.find(f"{m}oMathPara"), "有成词的字（we have、here）：分数留在行内")
 
-    def test_display_fraction_paragraph_becomes_a_display_equation(self) -> None:
-        # math 第 2 页「rᵏ = (1 − rⁿ⁺¹)/(1 − r)」：整段只有算式，做成独立公式，分数不被 Word 缩小
+    def _fraction_paragraph(self, lead: str):
         doc = Document()
         doc.element.body[-1].addprevious(parse_xml(
             f'<w:p {nsdecls("w")}><w:pPr><w:tabs><w:tab w:val="left" w:pos="240"/></w:tabs>'
             '<w:spacing w:before="42" w:line="298" w:lineRule="exact"/><w:ind w:left="54"/></w:pPr>'
-            '<w:r><w:t>r</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>k</w:t></w:r>'
-            '<w:r><w:t xml:space="preserve"> = </w:t></w:r><w:r><w:tab/></w:r>'
-            '<w:r><w:t xml:space="preserve">1 </w:t></w:r><w:r><w:br/></w:r>'
+            f'{lead}<w:r><w:t xml:space="preserve">1 </w:t></w:r><w:r><w:br/></w:r>'
             '<w:r><w:t xml:space="preserve">1 - r</w:t></w:r><w:r><w:t>,</w:t></w:r></w:p>'
         ))
         paragraph = doc.paragraphs[0]._p
         from core.pdf_word_rules import _apply_fraction, _positions
 
-        _text, where = _positions(paragraph)
-        self.assertTrue(_apply_fraction(paragraph, where, 3, 1, 3, 520))
+        text, where = _positions(paragraph)
+        start = text.index("11-r")
+        self.assertTrue(_apply_fraction(paragraph, where, start, 1, 3, 520))
+        return paragraph
+
+    def test_fraction_alone_in_its_paragraph_becomes_a_display_equation(self) -> None:
+        # math 第 2 页「1/(1 − r),」：整段只有这个分数，做成独立公式，分数不被 Word 缩小
+        paragraph = self._fraction_paragraph('<w:r><w:tab/></w:r>')
         m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
         math = paragraph.find(f"{m}oMathPara/{m}oMath")
         self.assertIsNotNone(math)
-        self.assertEqual([child.tag.split("}")[1] for child in math], ["sSup", "r", "f", "r"])
+        self.assertEqual([child.tag.split("}")[1] for child in math], ["f", "r"])
         self.assertEqual(paragraph.find(f"{m}oMathPara/{m}oMathParaPr/{m}jc").get(f"{m}val"), "left")
         self.assertEqual([child.tag.split("}")[1] for child in paragraph], ["pPr", "oMathPara"])
+        self.assertEqual(paragraph.find(f"{qn('w:pPr')}/{qn('w:ind')}").get(qn("w:left")), "294", "段首制表符换成缩进")
+
+    def test_fraction_after_an_equals_sign_stays_inline(self) -> None:
+        # 「rᵏ = (1 − rⁿ⁺¹)/(1 − r)」做成独立公式会在等号处折行、分母被格子切掉：留在行内
+        paragraph = self._fraction_paragraph(
+            '<w:r><w:t>r</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>k</w:t></w:r>'
+            '<w:r><w:t xml:space="preserve"> = </w:t></w:r>')
+        m = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+        self.assertIsNone(paragraph.find(f"{m}oMathPara"))
+        self.assertIsNotNone(paragraph.find(f"{m}oMath/{m}f"))
+
+    def test_flat_piece_of_a_drawn_circle_is_not_an_overline(self) -> None:
+        # 讲义第 48 页维恩图：圆是好多段连成的一笔，顶上平的一小段正好压在标签 B 上
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=595, height=842)
+        page.insert_text((100, 200), "B", fontname="helv", fontsize=11)
+        line_top = page.get_text("dict")["blocks"][0]["lines"][0]["bbox"][1]
+        b = _text_box(page, "B")
+        shape = page.new_shape()
+        shape.draw_polyline([(b.x0 - 20, line_top + 20), (b.x0, line_top - 0.3), (b.x1, line_top - 0.3),
+                             (b.x1 + 20, line_top + 20)])
+        shape.finish(width=0.4, closePath=False)
+        shape.commit()
+        _text, rules = pdf_rules(page)
+        self.assertEqual(rules, [])
 
     def test_bar_goes_on_the_same_letter_not_on_another_one_with_the_same_neighbours(self) -> None:
         # 讲义第 48 页：「A 和 B 的交集」里的 A 本来没有横线，横线在后面「Ā, the complement of A」那个 A 上
