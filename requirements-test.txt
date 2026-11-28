@@ -6,3 +6,9 @@ pytest-xdist==3.8.0
 pyright==1.1.414
 # 「PDF 处理组件」里的 PyMuPDF：测试要跑原位替换。它不进安装包（spec 里排除了）。
 PyMuPDF>=1.24,<2
+# 「PDF 处理组件」里的 pdf2docx 和它的依赖，版本和一键安装的组件一致（core/pdf_component_install.py）：
+# 测试要真转一次 Word（tests/test_pdf2docx_curves.py）。它们不进安装包。
+pdf2docx==0.5.13
+opencv-python-headless==4.10.0.84
+numpy==2.2.6
+fonttools==4.66.1
