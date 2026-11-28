@@ -23,7 +23,11 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
 from difflib import SequenceMatcher
+
+from loguru import logger
+from lxml import etree  # pyright: ignore[reportAttributeAccessIssue] lxml 没带类型存根
 
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -156,15 +160,35 @@ def _in_embedded_story(element, root) -> bool:
     )
 
 
-def iter_tracked_revisions(body, *, excluded=()) -> list:
+def _is_toc_paragraph(paragraph, parent) -> bool:
+    """自动目录的条目、页码之类不翻译的域段落：和常规写回同一条判定。"""
+    from core.word_document import _is_toc_or_field_paragraph
+
+    return _is_toc_or_field_paragraph(Paragraph(paragraph, parent))
+
+
+def iter_tracked_revisions(body, *, excluded=(), parent=None) -> list:
     """正文里未接受的修订元素（最外层 ``w:ins`` / ``w:del``），只留有可见文字的。
 
-    ``excluded`` 是不参与处理的容器（调用方传自动目录控件）。
+    ``excluded`` 是不参与处理的容器（调用方传自动目录控件）。目录条目这类不翻译的域
+    段落（:func:`_is_toc_paragraph`）里的修订也不算：Word 开着修订更新目录时，条目
+    文字会记成一删一增，它们和不带修订的目录一样原样保留（#285）。``parent`` 是段落的
+    父对象（``doc._body``），按样式名认目录要靠它找到样式表；不传只按域认。
 
     ``w:ins`` 也用来标记「这个段落标记是新插入的」（``w:pPr/w:rPr/w:ins``），那种
     节点一个 ``w:t`` 都没有，不算一处修订；``w:del`` 里的文字在 ``w:delText`` 里。
     文本框在 ``mc:Fallback`` 里的旧版备份不算，否则同一处修订数两遍。
     """
+    toc_paragraphs: dict = {}
+
+    def in_toc_paragraph(element) -> bool:
+        paragraph = paragraph_of(element)
+        if paragraph is None:
+            return False
+        if paragraph not in toc_paragraphs:
+            toc_paragraphs[paragraph] = _is_toc_paragraph(paragraph, parent)
+        return toc_paragraphs[paragraph]
+
     found: list = []
     for tag, text_tags in (
         ("w:ins", ("w:t",)),
@@ -177,13 +201,15 @@ def iter_tracked_revisions(body, *, excluded=()) -> list:
                 continue
             if excluded and _inside(element, excluded):
                 continue
+            if in_toc_paragraph(element):
+                continue
             found.append(element)
     return found
 
 
-def count_tracked_changes(body, *, excluded=()) -> int:
+def count_tracked_changes(body, *, excluded=(), parent=None) -> int:
     """正文里未接受的修订处数（扫描期的 ``tracked_change_count``）。"""
-    return len(iter_tracked_revisions(body, excluded=excluded))
+    return len(iter_tracked_revisions(body, excluded=excluded, parent=parent))
 
 
 def paragraph_of(element):
@@ -350,7 +376,7 @@ def revision_layout(doc, *, front_matter=None) -> RevisionLayout:
     """找出「修订一起翻译」要单独处理的段落。没有修订时返回空布局。"""
     body = doc.element.body
     excluded = toc_controls(body)
-    elements = iter_tracked_revisions(body, excluded=excluded)
+    elements = iter_tracked_revisions(body, excluded=excluded, parent=doc._body)
     if not elements:
         return EMPTY_REVISION_LAYOUT
     counts: dict = {}
@@ -369,7 +395,12 @@ def revision_layout(doc, *, front_matter=None) -> RevisionLayout:
         kind, cell = _container_of(paragraph, body)
         if kind == "cell":
             cells.add(cell)
-            paragraphs.update(cell.iterchildren(qn("w:p")))
+            # 同一格里的目录条目不归这里：常规写回跳过整格，这里也不碰，原样留着。
+            paragraphs.update(
+                child
+                for child in cell.iterchildren(qn("w:p"))
+                if not _is_toc_paragraph(child, doc._body)
+            )
         else:
             paragraphs.add(paragraph)
 
@@ -534,18 +565,42 @@ def _absorb_whitespace(pieces: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return result
 
 
+def _package_roots(doc) -> list[tuple[Any, Any]]:
+    """(根节点, 要写回的部件)：正文 body 在前，接着是其余各部件的根节点。
+
+    页眉页脚、脚注尾注、批注里的修订和正文共用一套 w:id 编号。python-docx 只把一部分
+    部件解析成 XML（页眉页脚），脚注、尾注、批注只是一段字节：这些从字节解析出一份，
+    第二项是那个部件，改了编号要把字节写回去（:func:`_write_back`）。
+    """
+    roots: list[tuple[Any, Any]] = [(doc.element.body, None)]
+    for part in doc.part.package.iter_parts():
+        if part is doc.part:
+            continue
+        element = getattr(part, "_element", None)
+        if element is not None:
+            roots.append((element, None))
+            continue
+        if not (
+            str(part.partname).startswith("/word/") and str(part.content_type).endswith("+xml")
+        ):
+            continue
+        try:
+            roots.append((etree.fromstring(part.blob), part))
+        except etree.XMLSyntaxError as exc:
+            logger.debug(f"[修订编号] 部件读不出来，跳过：{part.partname}（{exc}）")
+    return roots
+
+
+def _write_back(root, part) -> None:
+    part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
 class _RevisionIds:
     """新写出来的 w:ins / w:del 要有自己的 w:id：从文档里现有的最大编号往上数。"""
 
     def __init__(self, doc) -> None:
-        # 页眉、脚注、批注里的修订和正文共用一套编号，都要算进去。
-        roots = [doc.element.body]
-        for part in doc.part.package.iter_parts():
-            element = getattr(part, "_element", None)
-            if element is not None and element is not doc.element:
-                roots.append(element)
         highest = 0
-        for root in roots:
+        for root, _part in _package_roots(doc):
             for element in root.iter():
                 value = element.get(qn("w:id"))
                 if value is not None and value.lstrip("-").isdigit():
@@ -582,27 +637,35 @@ _REVISION_ID_TAGS = tuple(
 
 
 def renumber_duplicate_revision_ids(doc) -> int:
-    """正文里编号重复的修订换成新编号，返回改了几处。
+    """整份文件里编号重复的修订换成新编号，返回改了几处。
 
     双语版式插译文段时会把原段落的段落格式整份复制过去；原段落要是带着「新插入
     的段落」这类段落标记修订，两段的修订编号就一样了。Word 对重复编号的处理没有
     保证：「接受 / 拒绝」可能作用到另一段，个别版本打开时提示文件有问题。写完以后
     统一查一遍，第一次出现的保留，后面重复的换成没用过的编号（#285 遗留）。
+
+    查的是整个文件，不只是正文：脚注、尾注、页眉页脚里的段落一样会被复制出译文段，
+    而且这些部件和正文共用一套编号。
     """
     ids = None  # 扫全部部件找最大编号要花时间，真有重复才建
     seen: set[str] = set()
     changed = 0
-    for element in doc.element.body.iter(*_REVISION_ID_TAGS):
-        value = element.get(qn("w:id"))
-        if value is None:
-            continue
-        if value in seen:
-            if ids is None:
-                ids = _RevisionIds(doc)
-            element.set(qn("w:id"), ids.take())
-            changed += 1
-        else:
-            seen.add(value)
+    for root, part in _package_roots(doc):
+        changed_here = 0
+        for element in root.iter(*_REVISION_ID_TAGS):
+            value = element.get(qn("w:id"))
+            if value is None:
+                continue
+            if value in seen:
+                if ids is None:
+                    ids = _RevisionIds(doc)
+                element.set(qn("w:id"), ids.take())
+                changed_here += 1
+            else:
+                seen.add(value)
+        if changed_here and part is not None:
+            _write_back(root, part)
+        changed += changed_here
     return changed
 
 
@@ -719,7 +782,7 @@ def apply_revision_translations(
     from core.word_layout_fixes import loosen_row_height
 
     body = doc.element.body
-    elements = iter_tracked_revisions(body, excluded=toc_controls(body))
+    elements = iter_tracked_revisions(body, excluded=toc_controls(body), parent=doc._body)
     stats = RevisionWriteStats(
         mode=normalize_revision_mode(mode), tracked_change_count=len(elements)
     )

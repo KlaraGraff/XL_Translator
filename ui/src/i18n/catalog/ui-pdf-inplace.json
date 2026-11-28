@@ -100,5 +100,8 @@
   "原位替换 · {0} 处超出原位，已写入": {"en": "Replaced in place · {0} {0|label|labels} overflowed but was written", "fr": "Remplacé sur place · {0} {0|étiquette|étiquettes} dépassant l'emplacement ont été écrites"},
   "已写入但超出原位的地方：{0}{1}": {"en": "Written but outside the original space at: {0}{1}", "fr": "Écrit hors de l'emplacement d'origine : {0}{1}"},
   "空白页": {"en": "Blank page", "fr": "Page vierge"},
-  "空白页，没有要翻译的内容，原页已放入输出文件。": {"en": "Blank page with nothing to translate; the original page is in the output.", "fr": "Page vierge, rien à traduire ; la page d'origine figure dans le fichier de sortie."}
+  "空白页，没有要翻译的内容，原页已放入输出文件。": {"en": "Blank page with nothing to translate; the original page is in the output.", "fr": "Page vierge, rien à traduire ; la page d'origine figure dans le fichier de sortie."},
+  "按设置保留原样": {"en": "Kept by setting", "fr": "Conservée (réglage)"},
+  "这一页{0}，原页已放入输出文件。": {"en": "This page {0}; the original page is in the output.", "fr": "Cette page {0} ; la page d'origine figure dans le fichier de sortie."},
+  "这一页{0}；没有页图。": {"en": "This page {0}; there is no page image.", "fr": "Cette page {0} ; aucune image de page."}
 }

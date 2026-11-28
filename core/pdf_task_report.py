@@ -46,6 +46,16 @@ def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
 
 
 def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
+    # 自动组合里「图纸和大图」「扫描页」选了原样保留的页也记在这里；它们不是因为幅面，
+    # 照实写原因（反馈 #34）。只有整页图像翻译开了「跳过 A3 及更大的页面」才是幅面。
+    reasons = {page.kept_by_setting for page in record.pages
+               if getattr(page, "kept_by_setting", "") and not page.kept_by_setting.startswith("为大幅面")}
+    if reasons:
+        reason = f"原因：{next(iter(reasons))}" if len(reasons) == 1 else "各页原因见任务报告"
+        return (
+            f"本文件全部 {record.page_count} 页都按设置原样保留，未翻译任何内容，"
+            f"输出 PDF 与源文件一致。{reason}。如需翻译，请在「翻译方式」里改选后重新翻译。"
+        )
     return (
         f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
         "输出 PDF 与源文件一致。如需翻译这些页面，"
@@ -263,6 +273,13 @@ _PDF_REVIEW_STATUS_LABELS = {
 }
 
 
+def _page_status_text(page: Any) -> str:
+    """逐页表格的状态：按设置原样保留的页写「按设置原样保留」，不再一律写成大幅面（反馈 #34）。"""
+    if getattr(page, "kept_by_setting", "") and page.status == PDF_PAGE_STATUS_SKIPPED_OVERSIZE:
+        return "按设置原样保留"
+    return _pdf_page_status_label(page.status)
+
+
 def _pdf_page_status_label(status: str) -> str:
     return _PDF_PAGE_STATUS_LABELS.get(str(status or ""), str(status or "未知"))
 
@@ -462,6 +479,17 @@ def _page_progress_label(record: PdfFileRecord) -> str:
     return f"{finished}/{page_count}" if page_count else str(finished)
 
 
+def _kept_by_setting_lines(record: PdfFileRecord) -> list[str]:
+    """按设置原样保留的页各是什么原因：同一原因的页合成一行。"""
+    groups: dict[str, list[int]] = {}
+    for page in sorted(record.pages, key=lambda item: item.page_number):
+        reason = getattr(page, "kept_by_setting", "")
+        if reason and _page_copied_from_source(page):
+            groups.setdefault(reason, []).append(page.page_number)
+    return [f"  - 第 {'、'.join(str(number) for number in numbers)} 页：{reason}"
+            for reason, numbers in groups.items()]
+
+
 def _real_generated_page_count(record: PdfFileRecord) -> int:
     """真正生成了译图的页数。
 
@@ -553,7 +581,7 @@ def _summary_to_report(summary: PdfTaskSummary, material_root: str | Path | None
         *([f"- 已转成 Word 翻译（Beta）：{summary.generated_docx_count}"] if summary.generated_docx_count else []),
         f"- 压缩输出：{'开启' if summary.compressed_pdf_enabled else '关闭'}",
         f"- 失败占位页：{summary.placeholder_page_count}",
-        f"- 大幅面页（未翻译，原样保留）：{summary.skipped_oversize_page_count}",
+        f"- 按设置原样保留的页（未翻译）：{summary.skipped_oversize_page_count}",
         f"- 自动修正比例的页：{summary.emergency_ratio_normalized_count}",
         f"- 重试次数：{summary.retry_count}",
         f"- 逐页审核：{'开启' if summary.review_enabled else '关闭'}",
@@ -596,9 +624,9 @@ def _summary_to_report(summary: PdfTaskSummary, material_root: str | Path | None
                 f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['source_pages']}",
                 f"- 译后{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['translated_pages']}",
                 f"- 失败占位页：{file_record.placeholder_page_count}",
-                f"- 大幅面页处理：本文件 {file_record.skipped_oversize_page_count} 页判定为大幅面，"
-                f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
-                "页参与翻译",
+                f"- 按设置原样保留：本文件 {file_record.skipped_oversize_page_count} 页未翻译、原样保留；"
+                f"{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} 页参与翻译",
+                *_kept_by_setting_lines(file_record),
                 *_inplace_report_lines(file_record),
                 *_route_report_lines(file_record),
                 f"- 自动修正比例的页：{file_record.emergency_ratio_normalized_count}",
@@ -639,7 +667,7 @@ def _summary_to_report(summary: PdfTaskSummary, material_root: str | Path | None
                     + " | ".join(
                         [
                             str(page.page_number),
-                            _pdf_page_status_label(page.status),
+                            _page_status_text(page),
                             _escape_table(review_note),
                             page.failure_ordinal,
                             _escape_table(
@@ -874,7 +902,7 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         page.error
                         or page.quality_message
                         or _page_review_issue_text(page)
-                        or _pdf_page_status_label(page.status)
+                        or _page_status_text(page)
                     ),
                     "status": (
                         "审核未通过，占位待人工复核"
@@ -885,7 +913,7 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         if page.emergency_ratio_normalized
                         else "自动检查发现问题，待复核"
                         if page.quality_flags
-                        else _pdf_page_status_label(page.status)
+                        else _page_status_text(page)
                     ),
                     "source_image_path": page.source_image_path,
                     "translated_image_path": page.translated_image_path,

@@ -270,3 +270,104 @@ class FitsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# 算法框（反馈 #28 讲义第 91 页 Algorithm 4）：一行一条，行号顶格，循环体在行号后面空开一截缩进
+_ALGORITHM = [((90, 100), "Algorithm 4 Repeated squaring"),
+              ((90, 114), "Input: Base-2 representations of x and y in binary."),
+              ((90, 128), "1: z := 1"), ((90, 142), "2: for i = 0 to t do"),
+              ((90, 156), "3:", (128, "z := z * p")), ((90, 170), "4: end for")]
+
+
+def _body_paragraph(text: str, line: int = 280) -> str:
+    return (f'<w:p {nsdecls("w")}><w:pPr><w:spacing w:before="0" w:after="0" w:line="{line}" w:lineRule="exact"/>'
+            f'<w:ind w:left="0" w:right="0"/><w:jc w:val="left"/></w:pPr>'
+            f'<w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r></w:p>')
+
+
+@unittest.skipIf(pymupdf is None, "PyMuPDF not installed")
+class BodyParagraphTests(unittest.TestCase):
+    """算法框转出来是正文段：pdf2docx 把几行拼成一段（换行符后来又换成空格），翻译后挤成一团。"""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.pdf = Path(tmp.name) / "in.pdf"
+        self.docx = Path(tmp.name) / "out.docx"
+
+    def _make(self, lines, paragraphs: list[str]) -> None:
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=612, height=792)
+        for (x, y), text, *rest in lines:
+            page.insert_text((x, y), text, fontname="helv", fontsize=11)
+            for x_more, more in rest:
+                page.insert_text((x_more, y), more, fontname="helv", fontsize=11)
+        pdf.save(str(self.pdf))
+        doc = Document()  # Letter 纸，左右页边距 90 磅：正文这一栏从 90 到 522
+        body = doc.element.body
+        for paragraph in paragraphs:
+            body[-1].addprevious(parse_xml(paragraph))
+        doc.save(str(self.docx))
+
+    def _paragraphs(self):
+        return [p for p in Document(str(self.docx)).paragraphs if p.text.strip()]
+
+    def test_algorithm_box_gets_one_paragraph_per_line(self) -> None:
+        # 第 1 段：标题和 Input 拼在一起；第 2 段：4 行代码拼在一起，第 3 行的缩进只剩一个空格
+        self._make(_ALGORITHM, [
+            _body_paragraph("Algorithm 4 Repeated squaring Input: Base-2 representations of x and y in binary."),
+            _body_paragraph("1: z := 1 2: for i = 0 to t do 3: z := z * p 4: end for")])
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 2)
+        paragraphs = self._paragraphs()
+        self.assertEqual([p.text.strip() for p in paragraphs],
+                         ["Algorithm 4 Repeated squaring", "Input: Base-2 representations of x and y in binary.",
+                          "1: z := 1", "2: for i = 0 to t do", "3: \tz := z * p", "4: end for"])
+        # 「3:」后面空开的一截换成制表符，制表位在原文「z」的位置（从这一栏左边量起 128 - 90 = 38 磅）
+        stops = [int(tab.get(qn("w:pos"))) for tab in paragraphs[4]._p.findall(f".//{qn('w:tabs')}/{qn('w:tab')}")]
+        self.assertEqual(len(stops), 1)
+        self.assertAlmostEqual(stops[0] / 20, 38, delta=1)
+        # 各行段前距照原文的行距（14 磅一行），不是原来那么大的固定行高
+        spacing = paragraphs[3]._p.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
+        self.assertEqual(spacing.get(qn("w:lineRule")), "exact")
+        self.assertLess(int(spacing.get(qn("w:before"))) + int(spacing.get(qn("w:line"))), 14 * 20 + 40)
+
+    def test_widest_line_followed_by_a_short_one_is_cut_after_a_laid_out_paragraph(self) -> None:
+        # 「4: if … then」是这一段最宽的一行，单看「5:」放不进去，像折行；它紧跟在一行一行摆的标题段
+        # 后面，按那一串段最宽的一行（Input 那一行）量就放得进。中间单独一行的「6: end if」也补上缩进
+        lines = [((90, 100), "Algorithm 4 Repeated squaring"),
+                 ((90, 114), "Input: Base-2 representations of x and y in binary."),
+                 ((90, 128), "4:", (118, "if y is odd then")), ((90, 142), "5:", (136, "z := z * p")),
+                 ((90, 156), "6:", (118, "end if"))]
+        self._make(lines, [
+            _body_paragraph("Algorithm 4 Repeated squaring Input: Base-2 representations of x and y in binary."),
+            _body_paragraph("4: if y is odd then 5: z := z * p"), _body_paragraph("6: end if")])
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 2)
+        self.assertEqual([p.text.strip() for p in self._paragraphs()][2:],
+                         ["4: \tif y is odd then", "5: \tz := z * p", "6: \tend if"])
+
+    def test_wrapped_prose_stays_one_paragraph(self) -> None:
+        # 正文折行：下一行的第一个词放不进这几行里最宽的那一行，不切
+        lines = [((90, 100), "The quick brown fox jumps over the lazy dog and keeps running far away from"),
+                 ((90, 114), "the farm.")]
+        text = "The quick brown fox jumps over the lazy dog and keeps running far away from the farm."
+        self._make(lines, [_body_paragraph(text)])
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 0)
+        self.assertEqual([p.text for p in self._paragraphs()], [text])
+
+    def test_wrapped_item_after_a_laid_out_paragraph_stays_whole(self) -> None:
+        # 方框里的列表（讲义第 51 页 Summary）：标题一行一段，后面的列表项在方框里折行，折行的那一行和
+        # 方框里最宽的一行一样宽（方框比这一栏窄，按这一栏量，下一个词放得进）：不切
+        lines = [((108, 100), "Summary"), ((108, 114), "Important ideas from Section 5."),
+                 ((108, 128), "- Every set is a subset of itself, and the empty set is a subset of every"),
+                 ((118, 142), "set."),
+                 ((108, 156), "- The power set of A is the set of all subsets of A, for every set A at all"),
+                 ((118, 170), "here.")]
+        self._make(lines, [
+            _body_paragraph("Summary Important ideas from Section 5."),
+            _body_paragraph("- Every set is a subset of itself, and the empty set is a subset of every set."),
+            _body_paragraph("- The power set of A is the set of all subsets of A, for every set A at all here.")])
+        self.assertEqual(restore_line_order(self.docx, self.pdf), 1)
+        self.assertEqual([p.text.strip() for p in self._paragraphs()],
+                         ["Summary", "Important ideas from Section 5.",
+                          "- Every set is a subset of itself, and the empty set is a subset of every set.",
+                          "- The power set of A is the set of all subsets of A, for every set A at all here."])

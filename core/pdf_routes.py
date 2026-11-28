@@ -16,7 +16,8 @@
 
 页面类型只看 PDF 本身（可见文字、矢量密度、页面尺寸），不调用模型。先看内容再看尺寸
 （maple 2026-10-21）：扫描页不论多大都是扫描页；可提取文字的页放得进 Word 就按文字页
-处理；线条密集的图纸页，以及大到放不进 Word 的文字页，才算「图纸和大图」。
+处理；线条密集、字都是零散标注的图纸页，以及大到放不进 Word 的文字页，才算「图纸和
+大图」。成段正文配一张插图的页线条再密也是文字页（_PROSE_MIN_SHARE，反馈 #34）。
 """
 from __future__ import annotations
 
@@ -45,6 +46,16 @@ KIND_BLANK = "blank"
 _DRAWING_SLANTED_ITEMS = 1000
 _DRAWING_ITEMS = 8000
 _VISIBLE_MIN_CHARS = 20
+# 一页正文配一张插图（流程图、函数曲线）：插图自己就有上千段曲线，只数线条会把整页判成
+# 图纸，选了「图纸和大图：原样保留」时整页正文都不翻（反馈 #34，每页约 300 词正文配一张
+# 1000 来段曲线的流程图）。图纸上的字是零散的短标注，说明栏那几行长字在整张图上只占一小块；
+# 正文页的正文成段成行，占掉页面一大块。所以线条再密，正文行占到页面 15% 的页仍是文字页。
+# 正文行：一行至少 20 个字母或汉字（「FIRE DOOR FD-1」「LEVEL +3.500」这类标注都不够）；
+# 面积按行长 × 字号算。自造样例实测：165×242 mm 页配流程图，正文 300 词 25%、200 词约 16%、
+# 150 词 12%；整页流程图配三行图注 2%；A4、A3 图纸带 15–30 行总说明 4–5%，说明写满整个
+# 右栏（40 行）10–12%（pypdfium2 会把同一行上的几个标注连成一段，量得略多）。
+_PROSE_LINE_MIN_LETTERS = 20
+_PROSE_MIN_SHARE = 0.15
 # 整页大图上叠着表格线的页（地勘报告的钻孔柱状图：一张位图铺满大半页，表头和分栏线
 # 画在图上）：pdf2docx 把这张图往表格的每个格子里各复制一遍，一页转出几十页
 # （maple 2026-10-31，322 页的报告转回 2581 页）。图上的字都在位图里，转 Word 也翻
@@ -83,6 +94,8 @@ class PageKind:
     slanted_items: int = 0
     # 文字页里「整页大图上叠着表格线」的页：不转 Word（见 _IMAGE_GRID_MIN_AREA）。
     image_grid: bool = False
+    # 正文行占页面的比例（见 _PROSE_MIN_SHARE）；只在线条密到够判图纸、又放得进 Word 的页上算。
+    prose_share: float = 0.0
 
 
 @dataclass
@@ -102,17 +115,59 @@ class DocumentKind:
         return asdict(self)
 
 
+def _dense_lines(items: int, slanted: int) -> bool:
+    """线条密到像图纸（还要看正文占多少，见 _PROSE_MIN_SHARE）。"""
+    return slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
+
+
+def prose_share_of(lines, page_area: float) -> float:
+    """正文行占页面的比例。lines: (这一行的字母和汉字数, 这一行的面积)。"""
+    if page_area <= 0:
+        return 0.0
+    area = sum(line_area for letters, line_area in lines if letters >= _PROSE_LINE_MIN_LETTERS)
+    return min(1.0, max(0.0, area / page_area))
+
+
 def _kind_from_counts(page_number: int, *, oversized: bool, visible: int, has_ink: bool,
-                     words: int, items: int, slanted: int) -> PageKind:
+                     words: int, items: int, slanted: int, prose_share: float = 0.0) -> PageKind:
     """Content first, size second: see the module docstring."""
-    drawing = slanted >= _DRAWING_SLANTED_ITEMS or items >= _DRAWING_ITEMS
+    dense = _dense_lines(items, slanted)
     if visible < _VISIBLE_MIN_CHARS:
         # 没有看得见的文字：字画成线条的图纸（矢量密）还是图纸，其余是扫描件或空白页。
-        if drawing:
+        if dense:
             return PageKind(page_number, KIND_DRAWING, oversized, words, items, slanted)
         return PageKind(page_number, KIND_SCAN if has_ink else KIND_BLANK, oversized, words, items, slanted)
+    # 线条密、正文又少的才是图纸；成段正文配一张插图的页还是文字页（见 _PROSE_MIN_SHARE）。
+    drawing = dense and prose_share < _PROSE_MIN_SHARE
     kind = KIND_DRAWING if drawing or oversized else KIND_TEXT
-    return PageKind(page_number, kind, oversized, words, items, slanted)
+    return PageKind(page_number, kind, oversized, words, items, slanted, prose_share=prose_share)
+
+
+def drawing_cause(page: PageKind | None) -> str:
+    """这一页为什么算「图纸和大图」，给日志和逐页说明用；不是图纸返回空。"""
+    if page is None or page.kind != KIND_DRAWING:
+        return ""
+    if page.oversized and not _dense_lines(page.vector_items, page.slanted_items):
+        return "页面大到放不进 Word"
+    if page.words <= 0:
+        return "线条密集、没有可提取的文字"
+    return "线条密集、字都是零散的标注"
+
+
+def kept_by_setting_reason(pdf_settings, page: PageKind | None, *, page_kind: str,
+                           short_mm: float, long_mm: float) -> str:
+    """按设置原样保留的页（不是出了问题）：写真实原因。
+
+    以前这些页一律写成「为大幅面，不予翻译」：自动组合里「图纸和大图」或「扫描页」选了
+    原样保留的页，尺寸再小也被说成大幅面（反馈 #34，165×242 mm 的正文页）。"""
+    if getattr(pdf_settings, "translation_route", ROUTE_IMAGE) != "auto":
+        return f"为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），已开启「跳过 A3 及更大的页面」"
+    if page_kind == KIND_SCAN:
+        return "提取不到文字，按「扫描页」处理，这类页设为原样保留"
+    cause = drawing_cause(page)
+    if cause:
+        return f"按「图纸和大图」处理（{cause}），这类页设为原样保留"
+    return "按「图纸和大图」处理，这类页设为原样保留"
 
 
 def needs_ocr(page: PageKind) -> bool:
@@ -124,7 +179,7 @@ def needs_ocr(page: PageKind) -> bool:
     """
     if page.kind == KIND_TEXT:
         return False
-    dense = page.slanted_items >= _DRAWING_SLANTED_ITEMS or page.vector_items >= _DRAWING_ITEMS
+    dense = _dense_lines(page.vector_items, page.slanted_items)
     return not (page.kind == KIND_DRAWING and page.words > 0 and not dense)
 
 
@@ -163,10 +218,30 @@ def classify_page(page, page_number: int, *, oversized: bool) -> PageKind:
             has_ink = False
     words = (sum(1 for word in page.get_text("words") if any(ch.isalpha() for ch in word[4]))
              if visible >= _VISIBLE_MIN_CHARS else 0)
+    prose_share = 0.0
+    if words and not oversized and _dense_lines(items, slanted):
+        prose_share = prose_share_of(_text_lines(page), abs(page.rect))
     kind = _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
-                             words=words, items=items, slanted=slanted)
+                             words=words, items=items, slanted=slanted, prose_share=prose_share)
     kind.image_grid = image_grid and kind.kind == KIND_TEXT
     return kind
+
+
+def _text_lines(page) -> list[tuple[int, float]]:
+    """PyMuPDF 这一页每行文字：(字母和汉字数, 行宽 × 字号)。面积按字号算，不按字体自带的
+    行高：各家字体的行高差得多，pdfium 那边量出来的也不一样（见 classify_page_pdfium）。"""
+    lines: list[tuple[int, float]] = []
+    for block in page.get_text("dict").get("blocks", ()):
+        for line in block.get("lines", ()):
+            spans = line.get("spans", ())
+            letters = sum(1 for span in spans for ch in str(span.get("text", "")) if ch.isalpha())
+            size = max((float(span.get("size", 0) or 0) for span in spans), default=0.0)
+            x0, y0, x1, y1 = line.get("bbox", (0, 0, 0, 0))
+            dir_x, dir_y = line.get("dir", (1, 0))
+            # 竖排的行（dir 朝下）取高当行长
+            length = abs(x1 - x0) if abs(dir_x) >= abs(dir_y) else abs(y1 - y0)
+            lines.append((letters, length * size))
+    return lines
 
 
 def _lines_over_big_image(page, drawings: list) -> int:
@@ -241,11 +316,27 @@ def classify_page_pdfium(page, page_number: int, *, oversized: bool) -> PageKind
                         slanted += 1
                 last = point
         text = textpage.get_text_bounded() if visible >= _VISIBLE_MIN_CHARS else ""
+        prose_share = 0.0
+        if text and not oversized and _dense_lines(items, slanted):
+            # 一行文字一个矩形；高按这行中间那个字的字号算（loose box 的高就是字号），与 PyMuPDF 同口径。
+            lines = []
+            box = pdfium_c.FS_RECTF()
+            for index in range(textpage.count_rects()):
+                left, bottom, right, top = textpage.get_rect(index)
+                letters = sum(1 for ch in textpage.get_text_bounded(left, bottom, right, top) if ch.isalpha())
+                char = pdfium_c.FPDFText_GetCharIndexAtPos(textpage.raw, (left + right) / 2, (bottom + top) / 2,
+                                                           abs(right - left) / 2 + 1, abs(top - bottom) / 2 + 1)
+                size = abs(top - bottom)
+                if char >= 0 and pdfium_c.FPDFText_GetLooseCharBox(textpage.raw, char, ctypes.byref(box)):
+                    size = abs(box.top - box.bottom) or size
+                lines.append((letters, max(0.0, right - left) * size))
+            width, height = page.get_size()
+            prose_share = prose_share_of(lines, float(width) * float(height))
     finally:
         textpage.close()
     words = sum(1 for token in (text or "").split() if any(ch.isalpha() for ch in token))
     return _kind_from_counts(page_number, oversized=oversized, visible=visible, has_ink=has_ink,
-                             words=words, items=items, slanted=slanted)
+                             words=words, items=items, slanted=slanted, prose_share=prose_share)
 
 
 def _classify_with_pdfium(path: str | Path, *, is_oversized) -> list[PageKind]:
