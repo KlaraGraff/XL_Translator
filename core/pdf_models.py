@@ -246,6 +246,10 @@ class PdfPageRecord:
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
     # 照样能跑）：原页放进输出，这里写原因。
     kept_reason: str = ""
+    # 按设置原样保留的页（大幅面开了「跳过 A3 及更大的页面」，自动组合里「图纸和大图」
+    # 「扫描页」选了原样保留）：真实原因，日志、逐页说明和报告都用它（core.pdf_routes.
+    # kept_by_setting_reason）。这不是出了问题，不算进 kept_reason 的需复核。旧记录为空。
+    kept_by_setting: str = ""
     # 自动识别里判断为空白页、按原页放进输出的页（也记 skipped_oversize，不送图像模型）。
     # 说法和计数要靠它和大幅面页分开，否则空白的 Letter 页会被写成「为大幅面」。
     blank_page: bool = False
