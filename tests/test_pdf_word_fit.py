@@ -140,6 +140,23 @@ class PdfWordFitTests(unittest.TestCase):
         shrink_group([text_only._tbl], 0.9, default_size=22)
         self.assertEqual(text_only.rows[0]._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")), "360")
 
+    def test_floating_pictures_move_up_with_the_text(self):
+        # 讲义图 28：图摆在离页顶固定的位置、在文字下方；字缩了图不动，下面带底色的例题框
+        # 往上挪，盖住了图。图的竖直位置跟着字一起收（上边距以下的部分乘比例），横向不动。
+        doc = Document()
+        body = doc.element.body
+        body[-1].find(qn("w:pgMar")).set(qn("w:top"), "1000")
+        wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+        body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")} xmlns:wp="{wp}"><w:r><w:drawing><wp:anchor behindDoc="1">'
+            '<wp:positionH relativeFrom="page"><wp:posOffset>2000000</wp:posOffset></wp:positionH>'
+            f'<wp:positionV relativeFrom="page"><wp:posOffset>{635 * 7000}</wp:posOffset></wp:positionV>'
+            '</wp:anchor></w:drawing></w:r></w:p>'))
+        shrink_group(list(body)[:-1], 0.9, default_size=22)
+        anchor = body.find(f".//{{{wp}}}anchor")
+        self.assertEqual(anchor.find(f"{{{wp}}}positionV/{{{wp}}}posOffset").text, str(635 * (1000 + 5400)))
+        self.assertEqual(anchor.find(f"{{{wp}}}positionH/{{{wp}}}posOffset").text, "2000000")
+
     def test_fit_shrinks_only_the_overflowing_page(self):
         doc = self._doc([["第一页开头独有的一句话"], ["第二页开头独有的一句话"]])
         path = self._save(doc)

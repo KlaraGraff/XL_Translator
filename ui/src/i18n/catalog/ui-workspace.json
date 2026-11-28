@@ -2042,5 +2042,13 @@
   "翻译了 {0} 处修订（保留修订标记）": {
     "en": "Translated {0} {0|tracked change|tracked changes} (marks kept)",
     "fr": "{0} {0|modification suivie traduite|modifications suivies traduites} (marques conservées)"
+  },
+  "{0} 页按设置原样保留": {
+    "en": "{0} {0|page|pages} kept as is by setting",
+    "fr": "{0} {0|page conservée|pages conservées} telle(s) quelle(s) selon les réglages"
+  },
+  "其中 {0} 个文件每页都按设置原样保留，未翻译任何内容": {
+    "en": "{0} of them {0|was|were} kept as is on every page by setting, with nothing translated",
+    "fr": "dont {0} entièrement {0|conservé|conservés} tel(s) quel(s) selon les réglages, sans rien de traduit"
   }
 }

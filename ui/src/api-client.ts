@@ -337,6 +337,8 @@ export type PdfPage = {
   inplace_message?: string;
   /** 首选方式用不了、保底也用不了而保留原样的原因（比如没有设置图像翻译模型）。 */
   kept_reason?: string;
+  /** 按设置原样保留的真实原因（大幅面开了跳过开关、图纸或扫描页选了原样保留）；旧记录为空。 */
+  kept_by_setting?: string;
   /** 自动识别里判断为空白页、按原页放进输出的页（同时也是 skipped_oversize）。 */
   blank_page?: boolean;
   /** 首选方式用不了、改用整页图像翻译的原因。 */

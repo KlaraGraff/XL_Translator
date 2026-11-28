@@ -288,6 +288,35 @@ class WordConversionCleanupTests(unittest.TestCase):
         self.assertEqual(texts[0], "Early-Age Strength of Mortars Prepared with Washed River Sand")
         self.assertEqual(texts[1:], ["1. Introduction", "Mortars use cement.", "- first item"])
 
+    def test_word_broken_by_a_hyphen_joins_even_with_math_letters(self) -> None:
+        # 讲义第 48 页：「…set operations. For ex-」「ample, A ∩ B, the complement …」，后一行有公式的
+        # 斜体字母，字体不全一样，以前不并，两半各译一次，译文出现两个「例如」
+        from docx import Document
+        from docx.shared import Pt
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "hyphen.docx"
+        doc = Document()
+        doc.add_paragraph().add_run("We can discover facts about set operations. For ex-").font.size = Pt(11)
+        second = doc.add_paragraph()
+        for text, italic in (("ample, ", False), ("A", True), (" is shown in Figure 14.", False)):
+            run = second.add_run(text)
+            run.font.size, run.italic = Pt(11), italic
+        doc.add_paragraph().add_run("Next we look at the other figure and").font.size = Pt(11)
+        italic_start = doc.add_paragraph()
+        for text, italic in (("A", True), (" starts this one.", False)):
+            run = italic_start.add_run(text)
+            run.font.size, run.italic = Pt(11), italic
+        doc.save(path)
+        self.assertEqual(merge_wrapped_lines(path), 1)
+        texts = [p.text for p in Document(str(path)).paragraphs]
+        self.assertEqual(texts[0], "We can discover facts about set operations. For ex-ample, A is shown in Figure 14.")
+        # 没有断词的两行，字体不全一样，照旧不并
+        self.assertEqual(texts[1:], ["Next we look at the other figure and", "A starts this one."])
+
     def test_dropped_word_spaces_are_restored(self) -> None:
         from docx import Document
         from docx.enum.text import WD_BREAK

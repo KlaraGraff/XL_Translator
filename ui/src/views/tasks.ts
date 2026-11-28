@@ -556,7 +556,8 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         // 跟「失败占位」并列的必须是与它互斥的那个数。「审核未通过」里有一半是直接退回
         // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。
         [t("有疑点仍采用"), ["suspect_adopted_page_count"]],
-        [t("跳过 A3+"), ["skipped_oversize_page_count"]],
+        // 按设置原样保留的页（大幅面、或图纸和扫描页选了原样保留），不一定是 A3+（反馈 #34）。
+        [t("原样保留页"), ["skipped_oversize_page_count"]],
       ],
       source,
     );

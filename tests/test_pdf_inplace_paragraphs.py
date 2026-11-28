@@ -346,3 +346,42 @@ class NeighbourContextTests(unittest.TestCase):
             self.assertIn("the Firebeam / 「Xtra」", prompts[0])
             # 长句不算短文字，不附
             self.assertNotIn("「Power up", prompts[0])
+
+
+class LineStartPunctuationTests(unittest.TestCase):
+    """讲义第 18 页（2026-11-27 Mac 复查）：页尾最后一句的「。」单独掉到下一行。"""
+
+    def setUp(self):
+        from core.pdf_vector.fonts import find_cjk_font
+
+        path = find_cjk_font()
+        if not path:
+            self.skipTest("no CJK font on this machine")
+        self.font = fitz.Font(fontfile=str(path))
+
+    def test_a_full_stop_takes_the_character_before_it_down(self):
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四五。", self.font, 10, [51, 50]), ["一二三四", "五。"])
+        self.assertEqual(wrap("一二三四五。六", self.font, 10, [51, 50]), ["一二三四", "五。六"])
+        self.assertEqual(wrap("一二三四五……", self.font, 10, [51, 50]), ["一二三四", "五……"])
+
+    def test_nothing_hangs_past_the_end_of_the_line(self):
+        """讲义第 18 页「示例」框（2026-11-27 Mac 复查 #353）：挂在行尾的「。）」伸出框线 3.5 pt。"""
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四真。）", self.font, 10, [51, 50]), ["一二三四", "真。）"])
+        for text, widths in (("一二三四真。）", [51, 50]), ("一二三。）四五", [31, 50]), ("一二三四五，六七。", [51, 50])):
+            lines = wrap(text, self.font, 10, widths)
+            self.assertEqual("".join(lines), text)
+            for line, limit in zip(lines, widths):
+                self.assertLessEqual(self.font.text_length(line, fontsize=10), limit + 0.01, (text, lines))
+                self.assertNotIn(line[0], "。，）")
+        self.assertIsNone(wrap("一二三四五。", self.font, 10, [51]))  # no room: a smaller size, not an overrun
+
+    def test_ordinary_wrapping_is_unchanged(self):
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四五六七", self.font, 10, [40, 40]), ["一二三四", "五六七"])
+        self.assertEqual(wrap("one two three four", self.font, 10, [45, 80]), ["one two", "three four"])
+        self.assertIsNone(wrap("一二三四五六", self.font, 10, [51]))
