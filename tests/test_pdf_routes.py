@@ -305,7 +305,8 @@ class WordConversionCleanupTests(unittest.TestCase):
         for text, italic in (("ample, ", False), ("A", True), (" is shown in Figure 14.", False)):
             run = second.add_run(text)
             run.font.size, run.italic = Pt(11), italic
-        doc.add_paragraph().add_run("Next we look at the other figure and").font.size = Pt(11)
+        heading = doc.add_paragraph().add_run("Transitive relations")
+        heading.font.size, heading.bold = Pt(11), True
         italic_start = doc.add_paragraph()
         for text, italic in (("A", True), (" starts this one.", False)):
             run = italic_start.add_run(text)
@@ -314,8 +315,88 @@ class WordConversionCleanupTests(unittest.TestCase):
         self.assertEqual(merge_wrapped_lines(path), 1)
         texts = [p.text for p in Document(str(path)).paragraphs]
         self.assertEqual(texts[0], "We can discover facts about set operations. For ex-ample, A is shown in Figure 14.")
-        # 没有断词的两行，字体不全一样，照旧不并
-        self.assertEqual(texts[1:], ["Next we look at the other figure and", "A starts this one."])
+        # 整行粗体的小标题没有句号，下一行是正文：不并
+        self.assertEqual(texts[1:], ["Transitive relations", "A starts this one."])
+
+    def test_lines_with_math_letters_and_terms_join_into_one_justified_paragraph(self) -> None:
+        # 讲义第 59 页定义 6.6：粗体的「Definition 6.6.」开头，行里夹着斜体的术语和公式字母，
+        # 以前字体不全一样就不并，五行五段、一行一行地译；排满的行 pdf2docx 标成居中，译文每行居中
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "definition.docx"
+        doc = Document()
+        lines = [
+            [("Definition 6.6.", True, False), (" A function ", False, False), ("f", False, True),
+             (" is a ", False, False), ("bijective function", False, True), (", if it is both injective and", False, False)],
+            [("surjective. A function is injective if for every ", False, False), ("b", False, True),
+             (" in the codomain there", False, False)],
+            [("is at most one element ", False, False), ("a", False, True), (".", False, False)],
+        ]
+        for number, parts in enumerate(lines):
+            paragraph = doc.add_paragraph()
+            # 前两行原文排满（core.pdf_word_full_lines 已改成两端对齐），最后一行靠左
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY if number < 2 else WD_ALIGN_PARAGRAPH.LEFT
+            for text, bold, italic in parts:
+                run = paragraph.add_run(text)
+                run.font.size, run.bold, run.italic = Pt(11), bold, italic
+        doc.save(path)
+        self.assertEqual(merge_wrapped_lines(path), 2)
+        paragraphs = Document(str(path)).paragraphs
+        self.assertEqual([p.text for p in paragraphs], [(
+            "Definition 6.6. A function f is a bijective function, if it is both injective and surjective. "
+            "A function is injective if for every b in the codomain there is at most one element a.")])
+        # 粗体开头不算标题：不改成居中，仍两端对齐
+        self.assertEqual(paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+
+    def test_joined_lines_keep_the_line_pitch_of_the_pdf(self) -> None:
+        # pdf2docx 每行一段：行距是固定的字高 10.9 磅，行与行的空当 2.6 磅记在下一段的段前距里。
+        # 并成一段后行距改成 13.5 磅（原文的行距），第一行多出的高度从段前距里扣掉
+        from docx import Document
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls, qn
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "pitch.docx"
+        doc = Document()
+        body = doc.element.body
+        for before, text in ((180, "A function is injective if for every element in the codomain there"),
+                             (52, "is at most one element in the domain that is mapped to it.")):
+            body[-1].addprevious(parse_xml(
+                f'<w:p {nsdecls("w")}><w:pPr><w:spacing w:before="{before}" w:after="0" w:line="218" '
+                f'w:lineRule="exact"/><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:sz w:val="22"/></w:rPr>'
+                f'<w:t>{text}</w:t></w:r></w:p>'))
+        doc.save(path)
+        self.assertEqual(merge_wrapped_lines(path), 1)
+        spacing = Document(str(path)).paragraphs[0]._p.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
+        self.assertEqual((spacing.get(qn("w:line")), spacing.get(qn("w:before"))), ("270", "128"))
+
+    def test_short_lines_with_math_letters_stay_apart(self) -> None:
+        # 讲义第 33 页规则表一格里「j. A」「k. B」两行：没排满（不是两端对齐），字体不全一样，不并
+        from docx import Document
+        from docx.shared import Pt
+
+        from core.pdf_word_route import merge_wrapped_lines
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "rules.docx"
+        doc = Document()
+        for parts in ((("j", True), (". ", False), ("A", True)), (("k", True), (". ", False), ("B", True))):
+            paragraph = doc.add_paragraph()
+            for text, italic in parts:
+                run = paragraph.add_run(text)
+                run.font.size, run.italic = Pt(11), italic
+        doc.save(path)
+        self.assertEqual(merge_wrapped_lines(path), 0)
 
     def test_dropped_word_spaces_are_restored(self) -> None:
         from docx import Document

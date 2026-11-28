@@ -27,9 +27,11 @@ from typing import TypedDict
 from loguru import logger
 
 from core.pdf_word_bars import trim_bar_padding
+from core.pdf_word_box_lines import join_box_lines
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_figures import uncover_pictures
+from core.pdf_word_full_lines import justify_full_lines
 from core.pdf_word_grid import refine_tables_from_pdf
 from core.pdf_word_lines import restore_line_order
 from core.pdf_word_paragraph_breaks import split_at_indented_breaks
@@ -189,6 +191,30 @@ def _run_look(run) -> tuple:
     return (bool(run.bold), bool(run.italic), font.size, font.name)
 
 
+#: 一行里大多数字（按字数）用的字体、字号占到这么多，才算这一行的正文字体。
+_MAIN_SHARE = 0.6
+
+
+def _main_look(runs) -> tuple | None:
+    """一行正文的字体：(字号, 字体, 整行粗体, 整行斜体)。字号、字体按字数取最多的那种，占到 _MAIN_SHARE 以上才算；
+    行里夹着的粗体「定义 6.6.」、斜体的术语和公式字母不算，整行都是粗体（标题）、整行斜体的另算。"""
+    counts: Counter = Counter()
+    bold = italic = True
+    for run in runs:
+        letters = len(run.text.strip())
+        if not letters:
+            continue
+        look = _run_look(run)
+        counts[(look[2], look[3])] += letters
+        bold, italic = bold and look[0], italic and look[1]
+    if not counts:
+        return None
+    (size, name), letters = counts.most_common(1)[0]
+    if letters < _MAIN_SHARE * sum(counts.values()):
+        return None
+    return (bold, italic, size, name)
+
+
 def _plain_line(paragraph, *, numbered_ok: bool = False) -> bool:
     """A paragraph that is one wrapped line of text: no tabs, breaks, fields, pictures.
 
@@ -226,6 +252,11 @@ def _hyphen_broken(first, second) -> bool:
     return bool(re.search(r"[^\W\d_]-$", first.text.rstrip())) and second.text.strip()[:1].islower()
 
 
+def paragraph_continues(first, second) -> bool:
+    """后一段是不是前一段折下来的（core.pdf_word_box_lines 也用）。"""
+    return _continues(first, second)
+
+
 def _continues(first, second) -> bool:
     a, b = first.text.rstrip(), second.text.strip()
     if not a or not b or a.endswith(_SENTENCE_END) or _LIST_START.match(b):
@@ -234,7 +265,13 @@ def _continues(first, second) -> bool:
         return False
     looks_a = {_run_look(r) for r in _runs_after_number(first) if r.text.strip()}
     looks_b = {_run_look(r) for r in second.runs if r.text.strip()}
-    if len(looks_a) != 1 or looks_a != looks_b:
+    main_a, main_b = _main_look(_runs_after_number(first)), _main_look(second.runs)
+    if first.alignment == 3 and main_a is not None and main_a == main_b:
+        # 原文排满的正文行（两端对齐，core.pdf_word_full_lines 对照原 PDF 认的）夹着公式斜体字母、斜体术语：
+        # 按大多数字的字体比（讲义第 59 页定义 6.6 五行以前是五段，逐行翻译）。没排满的短行（表格里一行
+        # 一条的「j. A」「k. B」）照旧要整行字体一样
+        looks_a = {main_a}
+    elif len(looks_a) != 1 or looks_a != looks_b:
         # 断词的两半：接口处前后两个字字体一样就行（行里别处可以有公式的斜体字母）
         texts_a = [r for r in first.runs if r.text.strip()]
         texts_b = [r for r in second.runs if r.text.strip()]
@@ -248,8 +285,30 @@ def _continues(first, second) -> bool:
     return gap is None or size is None or gap <= size * 1.2
 
 
+def _keep_line_pitch(first, second) -> None:
+    """并成一段后行距照原文：pdf2docx 每行一段时，行距是固定的字高、行与行的空当记在下一段的段前距里；
+    并起来只剩前一段的行距，几行字挤在一起（讲义第 59 页定义 6.6）。行距改成「下一行的行距 + 段前距」，
+    第一行多出来的高度从段前距里扣掉，第一行的位置不变。"""
+    from docx.oxml.ns import qn
+
+    spacings = [p._p.find(f"{qn('w:pPr')}/{qn('w:spacing')}") for p in (first, second)]
+    if any(s is None or s.get(qn("w:lineRule")) != "exact" for s in spacings):
+        return
+    try:
+        line = float(spacings[0].get(qn("w:line")) or 0)
+        before = float(spacings[0].get(qn("w:before")) or 0)
+        pitch = float(spacings[1].get(qn("w:line")) or 0) + float(spacings[1].get(qn("w:before")) or 0)
+    except ValueError:
+        return
+    if line <= 0 or pitch <= line:
+        return
+    spacings[0].set(qn("w:line"), str(round(pitch)))
+    spacings[0].set(qn("w:before"), str(round(max(0.0, before - (pitch - line)))))
+
+
 def _merge_paragraph_pairs(paragraphs) -> int:
     merged = 0
+    pitched: list = []
     items = list(paragraphs)
     i = 0
     while i < len(items) - 1:
@@ -262,14 +321,23 @@ def _merge_paragraph_pairs(paragraphs) -> int:
         joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) or _hyphen_broken(first, second) else " "
         if first.runs:
             first.runs[-1].text = first.runs[-1].text.rstrip() + joiner
+        if all(first._p is not done for done in pitched):
+            # 只按头两行定一次：后面几行的段前距里可能带着框底的留白
+            _keep_line_pitch(first, second)
+            pitched.append(first._p)
         for run in list(second.runs):
             first._p.append(run._r)
-        look = _run_look(first.runs[0]) if first.runs else (False, False, None, None)
+        # 标题：整段粗体或字大。看整段大多数字的字体，粗体开头的「定义 6.6.」不算标题
+        look = _main_look(first.runs) or (_run_look(first.runs[0]) if first.runs else (False, False, None, None))
         heading = look[0] or (look[2] is not None and look[2].pt >= 12)
         if heading and second.alignment != first.alignment and 1 in (first.alignment, second.alignment):
             first.alignment = 1  # 标题：pdf2docx 用缩进模拟的居中，合并后改成真正居中
             first.paragraph_format.left_indent = None
             first.paragraph_format.first_line_indent = None
+        elif not heading and first.alignment == 1 and second.alignment not in (None, 1):
+            # 两端对齐的正文：排满的行 pdf2docx 标成居中，只有最后一行靠左。并成一段后照原文两端对齐，
+            # 不然译文每段居中、左边参差（讲义第 59、60、66 页的框）。每行都居中的（真居中的图注）不动
+            first.alignment = 3
         second._p.getparent().remove(second._p)
         items.pop(i + 1)
         merged += 1
@@ -1026,9 +1094,10 @@ def convert_pdf_to_docx(
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
     # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）。
-    # 框里一行一张表、行高从框顶累加的，先改回每行自己的高度，再按原文收标题条的空白（core.pdf_word_stacked_rows）
-    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, unstack_rows, trim_bar_padding,
-                restore_scripts_from_pdf, _tex_glyphs, restore_rules_from_pdf):
+    # 框里一行一张表、行高从框顶累加的，先改回每行自己的高度，再按原文收标题条的空白（core.pdf_word_stacked_rows）；
+    # 原文排满的正文行不再标成居中（core.pdf_word_full_lines），框里同一段折下来的几行并进同一格（core.pdf_word_box_lines）
+    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, justify_full_lines, unstack_rows,
+                trim_bar_padding, join_box_lines, restore_scripts_from_pdf, _tex_glyphs, restore_rules_from_pdf):
         _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
