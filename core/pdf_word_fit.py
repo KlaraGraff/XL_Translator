@@ -92,25 +92,35 @@ def _paragraph_texts(group: list) -> list[str]:
     return texts
 
 
-def _anchors(groups: list[list]) -> list[list[str]]:
-    """每页原文开头几段里、在别的页都没出现过的句子开头（页眉框里的护照号这类每页都有，
-    不能用）。只看开头几段：页尾的句子溢出时会落到下一页，拿它找页就找错了页。"""
+def _unique_pieces(groups: list[list], *, tail: bool) -> list[list[str]]:
     texts = [_paragraph_texts(group) for group in groups]
     joined = ["".join(items) for items in texts]
     result = []
     for index, items in enumerate(texts):
         others = [text for other, text in enumerate(joined) if other != index]
-        anchors = []
-        for text in items[:_TOP_PARAGRAPHS]:
+        found = []
+        for text in (list(reversed(items)) if tail else items)[:_TOP_PARAGRAPHS]:
             for length in (*_ANCHOR_LENGTHS, len(text)):
-                anchor = text[:length]
-                if len(anchor) >= _MIN_ANCHOR_CHARS and not any(anchor in other for other in others):
-                    anchors.append(anchor)
+                piece = text[-length:] if tail else text[:length]
+                if len(piece) >= _MIN_ANCHOR_CHARS and not any(piece in other for other in others):
+                    found.append(piece)
                     break
-            if len(anchors) == 3:
+            if len(found) == 3:
                 break
-        result.append(anchors)
+        result.append(found)
     return result
+
+
+def _anchors(groups: list[list]) -> list[list[str]]:
+    """每页原文开头几段里、在别的页都没出现过的句子开头（页眉框里的护照号这类每页都有，
+    不能用）。只看开头几段：页尾的句子溢出时会落到下一页，拿它找页就找错了页。"""
+    return _unique_pieces(groups, tail=False)
+
+
+def _tails(groups: list[list]) -> list[list[str]]:
+    """每页原文最后几段里、别的页都没有的句子结尾：开头几段找不到定位句的页（开头是图上的
+    x、y、(i) 这类短标签），从上一页的结尾落在哪一页推出它从哪一页开始。"""
+    return _unique_pieces(groups, tail=True)
 
 
 def pdf_page_texts(pdf_path: Path) -> list[str]:
@@ -132,12 +142,14 @@ def pdf_page_texts(pdf_path: Path) -> list[str]:
         doc.close()
 
 
-def page_starts(anchors: list[list[str]], page_texts: list[str]) -> list[int] | None:
+def page_starts(anchors: list[list[str]], page_texts: list[str],
+                tails: list[list[str]] | None = None) -> list[int] | None:
     """每页原文在译文 PDF 里从第几页开始（从 0 数）；位置对不上就返回 None（不猜）。
 
     没有定位句的页（空白页，或只有页眉页脚、每页都一样的页）不用找：按占一页算，排在
     下一个找得到的页前面。#30 的 ICAO 9303 一段夹着三页空白，以前一页找不到就整段
-    不缩字号，129 页转回成了 220 页。"""
+    不缩字号，129 页转回成了 220 页。tails（_tails）给了的话，没定位的页先看上一页的结尾
+    落在哪一页，从它的下一页开始。"""
     starts: list[int | None] = [None] * len(anchors)
     located = [index for index, group in enumerate(anchors) if group]
     if not located:
@@ -156,24 +168,40 @@ def page_starts(anchors: list[list[str]], page_texts: list[str]) -> list[int] | 
         previous_index, previous_start = index, start
     if starts[located[0]] != located[0]:
         return None  # 开头几页（含没定位的页）各占一页，第一个找得到的页应正好排在它们后面
-    # 没定位的页：紧挨在下一个找得到的页前面，各占一页；最后几页就排在 PDF 末尾
-    following = len(page_texts)
+    # 没定位的页：紧挨在下一个找得到的页前面，各占一页，最后几页排在 PDF 末尾。这一页自己有字
+    # （不是空白页，空白页不会多出页来）、上一页的结尾也找得到，就从结尾那页的下一页开始：讲义
+    # 第 67、68 页开头是图上的短标签，以前一律往后挤，第 68 页多出来的一页算到第 66 页头上，
+    # 第 66 页缩到最小字号，还报「放不下」
+    latest: list[int] = [0] * len(anchors)  # 没定位的页最晚从哪一页开始（后面的页各占一页）
+    following_start, following_index = len(page_texts), len(anchors)
     for index in range(len(anchors) - 1, -1, -1):
         known = starts[index]
         if known is None:
-            following -= 1
-            starts[index] = following
+            latest[index] = following_start - (following_index - index)
         else:
-            following = known
+            following_start, following_index = known, index
+    for index in range(len(anchors)):
+        if starts[index] is not None:
+            continue
+        starts[index] = latest[index]
+        begin = starts[index - 1] if index > 0 else None
+        if begin is None or not tails or not tails[index] or not tails[index - 1]:
+            continue
+        ends = [next((page for page in range(begin, len(page_texts)) if piece in page_texts[page]), None)
+                for piece in tails[index - 1]]
+        found = [page for page in ends if page is not None]
+        if found and begin < max(found) + 1 <= latest[index]:
+            starts[index] = max(found) + 1
     result = [int(start) for start in starts if start is not None]
     if any(later <= earlier for earlier, later in pairwise(result)) or result[-1] >= len(page_texts):
         return None
     return result
 
 
-def pages_per_group(anchors: list[list[str]], page_texts: list[str]) -> list[int] | None:
+def pages_per_group(anchors: list[list[str]], page_texts: list[str],
+                    tails: list[list[str]] | None = None) -> list[int] | None:
     """每页原文在译文 PDF 里占了几页；位置对不上就返回 None（不猜）。"""
-    starts = page_starts(anchors, page_texts)
+    starts = page_starts(anchors, page_texts, tails)
     if starts is None:
         return None
     ends = starts[1:] + [len(page_texts)]
@@ -315,12 +343,12 @@ def fit_pages(docx_path: Path, pdf_path: Path, source_pages: int,
     if len(groups) != source_pages:
         logger.info(f"[PDF] 译文 Word 有 {len(groups)} 个分页节，原文 {source_pages} 页，不逐页缩字")
         return FitResult(pages=len(page_texts), located=False)
-    anchors = _anchors(groups)
+    anchors, tails = _anchors(groups), _tails(groups)
     default_size = _default_size(doc)
     scale = [1.0] * source_pages
     over: list[int] = []
     while True:
-        used = pages_per_group(anchors, page_texts)
+        used = pages_per_group(anchors, page_texts, tails)
         if used is None:
             logger.info("[PDF] 译文 PDF 里找不到某一页原文的位置，不逐页缩字")
             return FitResult(
@@ -345,5 +373,5 @@ def fit_pages(docx_path: Path, pdf_path: Path, source_pages: int,
         pages=len(page_texts),
         scaled={index + 1: round(value, 2) for index, value in enumerate(scale) if value < 1.0},
         still_over=[index + 1 for index in over],
-        starts=page_starts(anchors, page_texts),
+        starts=page_starts(anchors, page_texts, tails),
     )

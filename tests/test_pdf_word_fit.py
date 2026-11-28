@@ -15,7 +15,15 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 
 from core import pdf_word_fit
-from core.pdf_word_fit import _anchors, fit_pages, page_groups, page_starts, pages_per_group, shrink_group
+from core.pdf_word_fit import (
+    _anchors,
+    _tails,
+    fit_pages,
+    page_groups,
+    page_starts,
+    pages_per_group,
+    shrink_group,
+)
 
 _PAGE_BREAK = '<w:p {ns}><w:pPr><w:sectPr/></w:pPr></w:p>'
 _COLUMN_BREAK = '<w:p {ns}><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p>'
@@ -88,6 +96,40 @@ class PdfWordFitTests(unittest.TestCase):
         # 空白页挤不下：位置对不上，不猜
         self.assertIsNone(pages_per_group([["第一页开头"], [], ["第三页开头"]], ["第一页开头", "第三页开头"]))
         self.assertIsNone(pages_per_group([["第一页开头"], []], ["第一页开头"]))
+
+    def test_page_opening_with_figure_labels_starts_after_the_previous_page_end(self):
+        # 讲义第 66–69 页：第 67、68 页开头是图上的 x、y、(i)，找不到定位句；第 68 页放不下。
+        # 以前没定位的页一律往后挤，多出来的一页算到第 66 页头上
+        anchors = [["六十六页开头"], [], [], ["六十九页开头"]]
+        tails = [["六十六页结尾"], ["六十七页结尾"], ["六十八页结尾"], ["六十九页结尾"]]
+        texts = ["六十六页开头六十六页结尾", "xy六十七页结尾", "x(i)六十八页中间", "六十八页结尾", "六十九页开头"]
+        self.assertEqual(page_starts(anchors, texts), [0, 2, 3, 4])
+        self.assertEqual(page_starts(anchors, texts, tails), [0, 1, 2, 4])
+        self.assertEqual(pages_per_group(anchors, texts, tails), [1, 1, 2, 1])
+        # 上一页的结尾找不到：照旧往后挤
+        self.assertEqual(page_starts(anchors, texts, [[], [], ["六十八页结尾"], []]), [0, 2, 3, 4])
+        # 空白页（自己没有字）不会多出页来：多出的页仍算给前一页
+        self.assertEqual(page_starts([["第一页开头"], [], ["第三页开头"]], ["第一页开头", "溢出", "", "第三页开头"],
+                                     [["第一页开头"], [], ["第三页开头"]]), [0, 2, 3])
+
+    def test_tails_come_from_the_end_of_each_page(self):
+        tail = [f"filler line {n} that repeats" for n in range(3)]
+        doc = self._doc([["x", *tail, "Last line of page one"], ["y", *tail, "Last line of page two"]])
+        self.assertEqual(_tails(page_groups(doc.element.body)), [["ineofpageone"], ["ineofpagetwo"]])
+
+    def test_fit_shrinks_the_page_that_opens_with_figure_labels(self):
+        labels = ["x", "y", "(i)", "(ii)", "z", "w"]
+        doc = self._doc([["第一页开头独有的一句话", "第一页结尾独有的一句话"],
+                         [*labels, "第二页正文独有的一句话", "第二页结尾独有的一句话"],
+                         ["第三页开头独有的一句话"]])
+        path = self._save(doc)
+        rounds = [["第一页开头独有的一句话第一页结尾独有的一句话", "xy(i)(ii)zw第二页正文独有的一句话",
+                   "第二页结尾独有的一句话", "第三页开头独有的一句话"],
+                  ["第一页开头独有的一句话第一页结尾独有的一句话", "xy(i)(ii)zw第二页正文独有的一句话第二页结尾独有的一句话",
+                   "第三页开头独有的一句话"]]
+        with mock.patch.object(pdf_word_fit, "pdf_page_texts", side_effect=rounds):
+            result = fit_pages(path, path.with_suffix(".pdf"), 3, lambda _docx, _pdf: None)
+        self.assertEqual((result.pages, result.scaled, result.still_over), (3, {2: 0.9}, []))
 
     def test_fit_shrinks_pages_next_to_a_blank_page(self):
         doc = self._doc([["第一页开头独有的一句话"], [" "], ["第三页开头独有的一句话"]])

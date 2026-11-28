@@ -37,6 +37,7 @@ from core.pdf_word_section_marks import split_justified_section_marks
 from core.pdf_word_rules import restore_rules_from_pdf
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
+from core.pdf_word_stacked_rows import unstack_rows
 from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font, tex_glyphs_to_unicode
 
 LogFn = Callable[[str, str], None]
@@ -1024,9 +1025,10 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
-    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
-    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
-                restore_rules_from_pdf):
+    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）。
+    # 框里一行一张表、行高从框顶累加的，先改回每行自己的高度，再按原文收标题条的空白（core.pdf_word_stacked_rows）
+    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, unstack_rows, trim_bar_padding,
+                restore_scripts_from_pdf, _tex_glyphs, restore_rules_from_pdf):
         _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
