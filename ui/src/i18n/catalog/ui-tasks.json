@@ -265,5 +265,6 @@
   "今天 {0} 个任务": {"en": "{0} {0|task|tasks} today", "fr": "{0} {0|tâche|tâches} aujourd'hui"},
   "全部完成": {"en": "All completed", "fr": "Toutes terminées"},
   "{0} 个需复核": {"en": "{0} to review", "fr": "{0} à vérifier"},
-  "{0} 个失败": {"en": "{0} failed", "fr": "{0} en échec"}
+  "{0} 个失败": {"en": "{0} failed", "fr": "{0} en échec"},
+  "原样保留页": {"en": "Kept as is", "fr": "Conservées telles quelles"}
 }

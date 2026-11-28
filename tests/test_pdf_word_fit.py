@@ -15,7 +15,15 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 
 from core import pdf_word_fit
-from core.pdf_word_fit import _anchors, fit_pages, page_groups, page_starts, pages_per_group, shrink_group
+from core.pdf_word_fit import (
+    _anchors,
+    _tails,
+    fit_pages,
+    page_groups,
+    page_starts,
+    pages_per_group,
+    shrink_group,
+)
 
 _PAGE_BREAK = '<w:p {ns}><w:pPr><w:sectPr/></w:pPr></w:p>'
 _COLUMN_BREAK = '<w:p {ns}><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p>'
@@ -89,6 +97,40 @@ class PdfWordFitTests(unittest.TestCase):
         self.assertIsNone(pages_per_group([["第一页开头"], [], ["第三页开头"]], ["第一页开头", "第三页开头"]))
         self.assertIsNone(pages_per_group([["第一页开头"], []], ["第一页开头"]))
 
+    def test_page_opening_with_figure_labels_starts_after_the_previous_page_end(self):
+        # 讲义第 66–69 页：第 67、68 页开头是图上的 x、y、(i)，找不到定位句；第 68 页放不下。
+        # 以前没定位的页一律往后挤，多出来的一页算到第 66 页头上
+        anchors = [["六十六页开头"], [], [], ["六十九页开头"]]
+        tails = [["六十六页结尾"], ["六十七页结尾"], ["六十八页结尾"], ["六十九页结尾"]]
+        texts = ["六十六页开头六十六页结尾", "xy六十七页结尾", "x(i)六十八页中间", "六十八页结尾", "六十九页开头"]
+        self.assertEqual(page_starts(anchors, texts), [0, 2, 3, 4])
+        self.assertEqual(page_starts(anchors, texts, tails), [0, 1, 2, 4])
+        self.assertEqual(pages_per_group(anchors, texts, tails), [1, 1, 2, 1])
+        # 上一页的结尾找不到：照旧往后挤
+        self.assertEqual(page_starts(anchors, texts, [[], [], ["六十八页结尾"], []]), [0, 2, 3, 4])
+        # 空白页（自己没有字）不会多出页来：多出的页仍算给前一页
+        self.assertEqual(page_starts([["第一页开头"], [], ["第三页开头"]], ["第一页开头", "溢出", "", "第三页开头"],
+                                     [["第一页开头"], [], ["第三页开头"]]), [0, 2, 3])
+
+    def test_tails_come_from_the_end_of_each_page(self):
+        tail = [f"filler line {n} that repeats" for n in range(3)]
+        doc = self._doc([["x", *tail, "Last line of page one"], ["y", *tail, "Last line of page two"]])
+        self.assertEqual(_tails(page_groups(doc.element.body)), [["ineofpageone"], ["ineofpagetwo"]])
+
+    def test_fit_shrinks_the_page_that_opens_with_figure_labels(self):
+        labels = ["x", "y", "(i)", "(ii)", "z", "w"]
+        doc = self._doc([["第一页开头独有的一句话", "第一页结尾独有的一句话"],
+                         [*labels, "第二页正文独有的一句话", "第二页结尾独有的一句话"],
+                         ["第三页开头独有的一句话"]])
+        path = self._save(doc)
+        rounds = [["第一页开头独有的一句话第一页结尾独有的一句话", "xy(i)(ii)zw第二页正文独有的一句话",
+                   "第二页结尾独有的一句话", "第三页开头独有的一句话"],
+                  ["第一页开头独有的一句话第一页结尾独有的一句话", "xy(i)(ii)zw第二页正文独有的一句话第二页结尾独有的一句话",
+                   "第三页开头独有的一句话"]]
+        with mock.patch.object(pdf_word_fit, "pdf_page_texts", side_effect=rounds):
+            result = fit_pages(path, path.with_suffix(".pdf"), 3, lambda _docx, _pdf: None)
+        self.assertEqual((result.pages, result.scaled, result.still_over), (3, {2: 0.9}, []))
+
     def test_fit_shrinks_pages_next_to_a_blank_page(self):
         doc = self._doc([["第一页开头独有的一句话"], [" "], ["第三页开头独有的一句话"]])
         path = self._save(doc)
@@ -139,6 +181,23 @@ class PdfWordFitTests(unittest.TestCase):
             parse_xml(f'<w:trHeight {nsdecls("w")} w:hRule="exact" w:val="400"/>'))
         shrink_group([text_only._tbl], 0.9, default_size=22)
         self.assertEqual(text_only.rows[0]._tr.find(f"{qn('w:trPr')}/{qn('w:trHeight')}").get(qn("w:val")), "360")
+
+    def test_floating_pictures_move_up_with_the_text(self):
+        # 讲义图 28：图摆在离页顶固定的位置、在文字下方；字缩了图不动，下面带底色的例题框
+        # 往上挪，盖住了图。图的竖直位置跟着字一起收（上边距以下的部分乘比例），横向不动。
+        doc = Document()
+        body = doc.element.body
+        body[-1].find(qn("w:pgMar")).set(qn("w:top"), "1000")
+        wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+        body[-1].addprevious(parse_xml(
+            f'<w:p {nsdecls("w")} xmlns:wp="{wp}"><w:r><w:drawing><wp:anchor behindDoc="1">'
+            '<wp:positionH relativeFrom="page"><wp:posOffset>2000000</wp:posOffset></wp:positionH>'
+            f'<wp:positionV relativeFrom="page"><wp:posOffset>{635 * 7000}</wp:posOffset></wp:positionV>'
+            '</wp:anchor></w:drawing></w:r></w:p>'))
+        shrink_group(list(body)[:-1], 0.9, default_size=22)
+        anchor = body.find(f".//{{{wp}}}anchor")
+        self.assertEqual(anchor.find(f"{{{wp}}}positionV/{{{wp}}}posOffset").text, str(635 * (1000 + 5400)))
+        self.assertEqual(anchor.find(f"{{{wp}}}positionH/{{{wp}}}posOffset").text, "2000000")
 
     def test_fit_shrinks_only_the_overflowing_page(self):
         doc = self._doc([["第一页开头独有的一句话"], ["第二页开头独有的一句话"]])

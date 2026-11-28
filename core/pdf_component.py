@@ -399,9 +399,12 @@ def _convert_in_process(site_dir: Path, pdf: Path, docx: Path) -> None:
         sys.path.append(str(site_dir))
     from pdf2docx import Converter
 
+    from core.pdf2docx_curves import curves_measured_on_the_curve
+
     converter = Converter(str(pdf))
     try:
-        converter.convert(str(docx))
+        with curves_measured_on_the_curve():
+            converter.convert(str(docx))
     finally:
         converter.close()
 

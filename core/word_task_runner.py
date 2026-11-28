@@ -550,8 +550,9 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
         判定与模型接线都在 :mod:`core.coverage_review`，Excel 走同一份；这里只负责
         把结论翻译成 Word 报告里的条目和底色。
         """
+        # 归修订那一路的位置（「修订一起翻译」）不复核：判错了常规补译也不会去补它。
         outcome = arbitrate_coverage_units(
-            coverage_plan.units,
+            coverage_plan.ordinary_units,
             engine=engine,
             api_scheduler=api_scheduler,
             target_lang=target_lang,
@@ -2598,6 +2599,7 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                         target_lang=target_lang,
                         source_lang=resume_source_lang,
                         protect_front_matter=self._protect_front_matter,
+                        revision_mode=self._revision_mode,
                     )
                 except Exception as exc:
                     # 底稿建不出补译计划（结构对不上、已损坏之类）——退回按源
@@ -2780,6 +2782,7 @@ class WordTaskRunner(TextRunnerSharedMixin, BaseTaskRunner):
                         target_lang=target_lang,
                         source_lang=resume_source_lang,
                         protect_front_matter=self._protect_front_matter,
+                        revision_mode=self._revision_mode,
                     )
                 )
                 self._arbitrate_coverage_pairs(

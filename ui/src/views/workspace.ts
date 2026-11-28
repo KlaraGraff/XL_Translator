@@ -3348,7 +3348,8 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
   }
 
   const oversized = num(item.skipped_oversize_page_count);
-  if (oversized > 0) chips.push(createChip({ label: t("跳过 {0} 页 A3+", oversized), tone: "tint" }));
+  // 按设置原样保留的页：大幅面开了跳过开关，或图纸、扫描页选了原样保留，不一定是 A3+（反馈 #34）。
+  if (oversized > 0) chips.push(createChip({ label: t("原样保留 {0} 页", oversized), tone: "tint" }));
 
   // Word 修订的处理结果（状态⑤）：跑完之后这一行要说清这份文件当时是跳过还是连修订
   // 一起翻的——运行日志会滚走，任务记录里留一句才查得到。
@@ -5134,7 +5135,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
   if (placeholderPages > 0) clauses.push(t("{0} 页未能生成译文，已插入占位页", placeholderPages));
   if (suspectPages > 0) clauses.push(t("{0} 页译文有疑点，已采用但建议复核", suspectPages));
-  if (skippedOversizePages > 0) clauses.push(t("跳过 {0} 页 A3+，原样保留", skippedOversizePages));
+  if (skippedOversizePages > 0) clauses.push(t("{0} 页按设置原样保留", skippedOversizePages));
   // 整份都被跳过的文件必须单独点名：它的输出文档跟源文件逐字节一样，一个字都没翻。
   // 后端为此把这种文件的 success 判成 false（见 _file_record_to_result），也在
   // _record_needs_review 里把它算作需复核；界面只说「跳过 N 页」的话，用户会以为
@@ -5145,7 +5146,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     (entry) => fileResultProduced(entry) && fileResultAllOversize(entry),
   ).length;
   if (oversizeOnlyFiles > 0) {
-    clauses.push(t("其中 {0} 个文件全部为 A3+ 页面，未翻译任何内容", oversizeOnlyFiles));
+    clauses.push(t("其中 {0} 个文件每页都按设置原样保留，未翻译任何内容", oversizeOnlyFiles));
   }
   if (untranslatedFiles > oversizeOnlyFiles) {
     clauses.push(t("其中 {0} 个文件未翻译任何内容", untranslatedFiles - oversizeOnlyFiles));

@@ -45,7 +45,7 @@ from core.translation_coverage import (
     looks_like_foreign_acronym,
     looks_like_target_text,
 )
-from core.word_coverage import build_word_coverage_plan, write_untranslated_docx
+from core.word_coverage import WordCoveragePlan, build_word_coverage_plan, write_untranslated_docx
 
 # 一段真实长度的中文，和一条明显只翻了个开头的"译文"——长度比 0.2，可疑。
 LONG_SOURCE = (
@@ -545,7 +545,7 @@ class RunnerGlueTests(unittest.TestCase):
         """复核挂了只能退回原判——外层会把异常当成"文件打不开"，那样连译文都不出。"""
         logs: list[tuple[str, str]] = []
         unit = _pair(LONG_SOURCE, PARTIAL_TARGET)
-        plan = SimpleNamespace(units=[unit])
+        plan = WordCoveragePlan(path=Path("fake.docx"), units=[unit])
         issues: list[dict] = []
 
         def boom(*args, **kwargs):
@@ -576,7 +576,7 @@ class RunnerGlueTests(unittest.TestCase):
     def test_a_clean_document_still_says_the_check_ran(self) -> None:
         """结论是"全都没问题"也要吭声，否则分不清是查过了还是压根没跑。"""
         logs: list[tuple[str, str]] = []
-        plan = SimpleNamespace(units=[_pair("序号", "N°")])
+        plan = WordCoveragePlan(path=Path("fake.docx"), units=[_pair("序号", "N°")])
 
         self._runner(logs)._arbitrate_coverage_pairs(
             plan,
@@ -600,7 +600,7 @@ class RunnerGlueTests(unittest.TestCase):
         """判否的那一段旁边留着一条可疑译文，必须上底色——报告里躺一条灰记录没人看。"""
         logs: list[tuple[str, str]] = []
         unit = _pair(LONG_SOURCE, MISMATCHED_TARGET)
-        plan = SimpleNamespace(units=[unit])
+        plan = WordCoveragePlan(path=Path("fake.docx"), units=[unit])
         issues: list[dict] = []
         review_marks: dict[str, str] = {}
 
@@ -641,7 +641,7 @@ class RunnerGlueTests(unittest.TestCase):
         """接口抖一下就是整整一批落到 uncertain——给它们全涂红，底色就废了。"""
         logs: list[tuple[str, str]] = []
         units = [_pair(LONG_SOURCE, FULL_TARGET, index=i) for i in range(3)]
-        plan = SimpleNamespace(units=units)
+        plan = WordCoveragePlan(path=Path("fake.docx"), units=units)
         issues: list[dict] = []
         review_marks: dict[str, str] = {}
 
@@ -680,7 +680,7 @@ class RunnerGlueTests(unittest.TestCase):
     def test_the_batch_log_says_how_many_pairs_and_how_many_batches(self) -> None:
         logs: list[tuple[str, str]] = []
         units = [_pair(LONG_SOURCE, MISMATCHED_TARGET, index=i) for i in range(3)]
-        plan = SimpleNamespace(units=units)
+        plan = WordCoveragePlan(path=Path("fake.docx"), units=units)
 
         def fake_review(*args, **kwargs):
             kwargs["notify_model_checks"](3, 2)

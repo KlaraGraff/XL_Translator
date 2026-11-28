@@ -29,9 +29,15 @@ from loguru import logger
 from core.pdf_word_bars import trim_bar_padding
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
+from core.pdf_word_figures import uncover_pictures
+from core.pdf_word_grid import refine_tables_from_pdf
+from core.pdf_word_lines import restore_line_order
+from core.pdf_word_paragraph_breaks import split_at_indented_breaks
+from core.pdf_word_section_marks import split_justified_section_marks
 from core.pdf_word_rules import restore_rules_from_pdf
 from core.pdf_word_scripts import restore_scripts_from_pdf
 from core.pdf_word_shading import recolor_cells_from_pdf
+from core.pdf_word_stacked_rows import unstack_rows
 from core.pdf_word_symbols import MATH_FONT, math_symbols_in_math_font, tex_glyphs_to_unicode
 
 LogFn = Callable[[str, str], None]
@@ -213,6 +219,13 @@ def _runs_after_number(paragraph) -> list:
     return runs
 
 
+def _hyphen_broken(first, second) -> bool:
+    """前一行以断词的连字符结尾（「For ex-」），后一行接小写字母（「ample, …」）：一个词被拆在两行，
+    一定是同一段。讲义第 48 页这两行之间隔着公式的斜体字母，字体不全一样，以前不并，两半各译一次，
+    译文出现两个「例如」。"""
+    return bool(re.search(r"[^\W\d_]-$", first.text.rstrip())) and second.text.strip()[:1].islower()
+
+
 def _continues(first, second) -> bool:
     a, b = first.text.rstrip(), second.text.strip()
     if not a or not b or a.endswith(_SENTENCE_END) or _LIST_START.match(b):
@@ -222,7 +235,13 @@ def _continues(first, second) -> bool:
     looks_a = {_run_look(r) for r in _runs_after_number(first) if r.text.strip()}
     looks_b = {_run_look(r) for r in second.runs if r.text.strip()}
     if len(looks_a) != 1 or looks_a != looks_b:
-        return False
+        # 断词的两半：接口处前后两个字字体一样就行（行里别处可以有公式的斜体字母）
+        texts_a = [r for r in first.runs if r.text.strip()]
+        texts_b = [r for r in second.runs if r.text.strip()]
+        if not (_hyphen_broken(first, second) and texts_a and texts_b
+                and _run_look(texts_a[-1]) == _run_look(texts_b[0])):
+            return False
+        looks_a = {_run_look(texts_a[-1])}
     # 后一行离前一行太远（隔了一段空白）就是另一段
     gap = second.paragraph_format.space_before
     size = next(iter(looks_a))[2]
@@ -238,7 +257,9 @@ def _merge_paragraph_pairs(paragraphs) -> int:
         if first._p.getnext() is not second._p or not _continues(first, second):
             i += 1
             continue
-        joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) else " "
+        # 中文行尾、断词的连字符后面不加空格（「ex-」「ample」接成「ex-ample」，连字符留着：分不清是断词
+        # 还是本来就带连字符的词，如 well-known）
+        joiner = "" if re.search(r"[\u3000-\u9fff]$", first.text.rstrip()) or _hyphen_broken(first, second) else " "
         if first.runs:
             first.runs[-1].text = first.runs[-1].text.rstrip() + joiner
         for run in list(second.runs):
@@ -833,11 +854,14 @@ def merge_wrapped_lines(path: Path) -> int:
     from docx import Document
 
     doc = Document(str(path))
-    count = _merge_paragraph_pairs(doc.paragraphs)
+    # 换行后缩进另起的段先拆开，免得下面把换行当成折行、两段并成一句（core.pdf_word_paragraph_breaks）
+    count = sum(split_at_indented_breaks(p._p) for p in list(doc.paragraphs))
+    count += _merge_paragraph_pairs(doc.paragraphs)
     count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in doc.paragraphs)
     for table in _all_tables(doc.tables):
         for row in table.rows:
             for cell in row.cells:
+                count += sum(split_at_indented_breaks(p._p) for p in list(cell.paragraphs))
                 count += _merge_paragraph_pairs(cell.paragraphs)
                 count += sum(_join_soft_breaks(p) + _join_wrapped_tabs(p) for p in cell.paragraphs)
     if count:
@@ -968,6 +992,13 @@ def _tex_glyphs(docx_path: Path, _pdf_path: Path) -> int:
     return tex_glyphs_to_unicode(docx_path)
 
 
+def _try_fix(fix: Callable[[Path, Path], int], docx_path: Path, pdf_path: Path) -> None:
+    try:
+        fix(docx_path, pdf_path)
+    except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
+        logger.opt(exception=exc).warning(f"[PDF] {fix.__name__} 没做成，按转出的样子继续：{exc!r}")
+
+
 def convert_pdf_to_docx(
     pdf_path: Path,
     docx_path: Path,
@@ -994,21 +1025,24 @@ def convert_pdf_to_docx(
     if broken:
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
-    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
-    for fix in (recolor_cells_from_pdf, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
-                restore_rules_from_pdf):
-        try:
-            fix(docx_path, pdf_path)
-        except Exception as exc:  # noqa: BLE001 - a cosmetic fix must never fail the conversion
-            logger.opt(exception=exc).warning(f"[PDF] {fix.__name__} 没做成，按转出的样子继续：{exc!r}")
+    # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）。
+    # 框里一行一张表、行高从框顶累加的，先改回每行自己的高度，再按原文收标题条的空白（core.pdf_word_stacked_rows）
+    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, unstack_rows, trim_bar_padding,
+                restore_scripts_from_pdf, _tex_glyphs, restore_rules_from_pdf):
+        _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
     merge_wrapped_lines(docx_path)
+    # 一行一行摆的表格按原文一行一段重排：放在合并折行之后，不然拆开的一行一段又被并回去
+    # （「Premise」「Premise」「Assumption」字体一样、没有句末标点，看着像一句话折了行）
+    _try_fix(restore_line_order, docx_path, pdf_path)
     split_glued_bullets(docx_path)
     sync_table_grids(docx_path)
     move_running_footers(docx_path)
     # 页眉那种左右分栏改成无边框表格：WPS 会把分栏上下叠起来（core.pdf_word_columns）
     columns_to_tables(docx_path)
+    # 两端对齐的每页最后一段：分节符挪到自己的空段，Word 不再把最后一行拉满（core.pdf_word_section_marks）
+    split_justified_section_marks(docx_path)
 
 
 def translate_pdf_via_word(
