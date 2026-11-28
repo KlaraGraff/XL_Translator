@@ -30,6 +30,7 @@ from core.pdf_word_bars import trim_bar_padding
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_figures import uncover_pictures
+from core.pdf_word_grid import refine_tables_from_pdf
 from core.pdf_word_lines import restore_line_order
 from core.pdf_word_paragraph_breaks import split_at_indented_breaks
 from core.pdf_word_section_marks import split_justified_section_marks
@@ -1024,7 +1025,7 @@ def convert_pdf_to_docx(
         raise BrokenPagesError(broken)
     # 先对照原 PDF（这时转出的文字还和 PDF 一字不差）：彩色框的底色、标题条高度、丢了的上下标、
     # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）
-    for fix in (recolor_cells_from_pdf, uncover_pictures, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
+    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, trim_bar_padding, restore_scripts_from_pdf, _tex_glyphs,
                 restore_rules_from_pdf):
         _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
