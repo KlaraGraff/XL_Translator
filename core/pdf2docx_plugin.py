@@ -1,7 +1,7 @@
 """PDF 处理组件（开源 pdf2docx 命令行工具，装它时会一并装上 PyMuPDF）的发现、配置和调用。
 
 Translator 不再自带 pdf2docx：用户自己装好（例如 ``pip install pdf2docx``），
-在「插件」页连接它，PDF「智能混合」里能提取文字的页才会先转成 Word 再翻译。
+在「插件」页连接它，PDF「按页自动选择」里能提取文字的页才会先转成 Word 再翻译。
 没有连接时 ``core.pdf_word_route.word_route_available()`` 返回 False，这些页改用
 保底方式。
 

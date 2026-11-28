@@ -46,7 +46,7 @@
 .guide .g-out { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: none; }
 .guide .g-out svg { width: 34px; height: 44px; }
 .guide .g-out small { font-size: 11px; color: var(--ink-2); font-weight: var(--fw-600); text-align: center; line-height: 1.3; max-width: 84px; }
-/* 智能混合的流程图：文字在上，① 按页分类 → ② 每页选方式 → ③ 拼回一份 PDF 在下，占满一整行。 */
+/* 按页自动选择的流程图：文字在上，① 按页分类 → ② 每页选方式 → ③ 拼回一份 PDF 在下，占满一整行。 */
 .guide .g-band.mixed { grid-template-columns: minmax(0, 36%) minmax(0, 1fr); }
 .guide .g-band.mixed h4 { display: flex; align-items: center; gap: 8px; }
 .guide .g-tag.rec { background: var(--ok-t); color: var(--ok); }

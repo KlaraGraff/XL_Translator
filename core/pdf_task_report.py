@@ -46,11 +46,11 @@ def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
 
 
 def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
-    # 只有整页图像翻译开着「跳过 A3 及更大的页面」才会整份按设置保留（智能混合没有这种设置）。
+    # 只有整页图像翻译开着「跳过 A3 及更大的页面」才会整份按设置保留（按页自动选择没有这种设置）。
     return (
         f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
         "输出 PDF 与源文件一致。如需翻译这些页面，"
-        "请关闭「跳过 A3 及更大的页面」，或把「翻译方式」改为「智能混合」后重新翻译。"
+        "请关闭「跳过 A3 及更大的页面」，或把「翻译方式」改为「按页自动选择」后重新翻译。"
     )
 
 
@@ -352,7 +352,7 @@ def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
     first_error = next((error for error in page_errors if error), "")
     if record.pages and all(getattr(page, "kept_reason", "") for page in record.pages):
         if all(page.kept_reason.startswith("没有设置图像翻译模型") for page in record.pages):
-            return "这份文件取不到文字，需要整页图像翻译，但还没有设置图像翻译模型，没有生成译文。"
+            return "这份文件取不到文字，需要图像翻译，但还没有设置图像翻译模型，没有生成译文。"
         return f"没有一页能按所选方式翻译，没有生成译文。第 1 页：{record.pages[0].kept_reason}。"
     if record.source_type == SOURCE_TYPE_IMAGE:
         message = "图片翻译失败，未生成译图；已保留源图、页面素材和报告。"
@@ -717,7 +717,7 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     if to_inplace:
         detail_parts.append(f"{to_inplace} 页改用原位替换，原因见任务报告")
     if len(rerouted) - to_inplace - to_word:
-        detail_parts.append(f"{len(rerouted) - to_inplace - to_word} 页改用整页图像翻译，原因见任务报告")
+        detail_parts.append(f"{len(rerouted) - to_inplace - to_word} 页改用图像翻译，原因见任务报告")
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     elif untranslated:

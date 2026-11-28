@@ -1,6 +1,6 @@
 """开始前检查「PDF 处理组件」（反馈 #33）。
 
-智能混合里图纸首选原位替换、文字页首选转 Word，都要用组件。没装时：
+按页自动选择里图纸首选原位替换、文字页首选转 Word，都要用组件。没装时：
 * A3 图纸不改用图像翻译，会保留原样 → 开始前拦下，说「会保留原样」；
 * A4 文字页能改用图像翻译 → 也拦下，说「改用整页图像翻译」；
 * 扫描页、整页图像翻译方式、装了组件 → 不拦；
@@ -129,11 +129,11 @@ class PreflightTests(unittest.TestCase):
         item = _pdf(self.root / "mix.pdf", [_text_page, lambda d: _drawing_page(d, A3)])
         with self.assertRaises(TaskInputError) as caught:
             self._preflight([item])
-        self.assertIn("其中 1 页会保留原样，其余改用整页图像翻译。", str(caught.exception))
+        self.assertIn("其中 1 页会保留原样，其余改用图像翻译。", str(caught.exception))
         a4 = _pdf(self.root / "a4.pdf", [_text_page])
         with self.assertRaises(TaskInputError) as caught:
             self._preflight([a4])
-        self.assertIn("这些页会改用整页图像翻译", str(caught.exception))
+        self.assertIn("这些页会改用图像翻译", str(caught.exception))
 
     def test_continue_anyway_installed_or_image_route_passes(self) -> None:
         item = _pdf(self.root / "plan.pdf", [lambda d: _drawing_page(d, A3)])

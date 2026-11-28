@@ -139,7 +139,7 @@ class ProsePageWithFigureTests(unittest.TestCase):
 
 class KeptBySettingReasonTests(unittest.TestCase):
     def test_only_the_size_switch_keeps_pages_by_setting(self):
-        # 智能混合没有「这类页原样保留」的选项（2026-11-28），按设置保留只剩整页图像翻译的幅面开关。
+        # 按页自动选择没有「这类页原样保留」的选项（2026-11-28），按设置保留只剩整页图像翻译的幅面开关。
         self.assertEqual(kept_by_setting_reason(short_mm=297, long_mm=420),
                          "为大幅面（297×420 mm），已开启「跳过 A3 及更大的页面」")
 

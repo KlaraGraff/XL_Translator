@@ -27,9 +27,9 @@
     "en": "The image translation review model cannot read images, so later pages are no longer checked; translated pages already made are kept. Please choose a model that reads images for image translation review in Settings.",
     "fr": "Le modèle de vérification des images ne lit pas les images : les pages suivantes ne sont plus contrôlées et les pages déjà traduites sont conservées. Dans les paramètres, choisissez pour la vérification des images un modèle qui lit les images."
   },
-  "图像翻译模型无法生成图片，这一页需要整页图像翻译，已保留原样": {
-    "en": "The image translation model cannot generate images; this page needs full-page image translation and was kept as is",
-    "fr": "Le modèle de traduction d'image ne peut pas générer d'images ; cette page nécessite une traduction de page en image et a été conservée telle quelle"
+  "图像翻译模型无法生成图片，这一页需要图像翻译，已保留原样": {
+    "en": "The image translation model cannot generate images; this page needs image translation and was kept as is",
+    "fr": "Le modèle de traduction d'image ne peut pas générer d'images ; cette page nécessite la traduction d'image et a été conservée telle quelle"
   },
   "图像翻译模型无法生成图片": {
     "en": "the image translation model cannot generate images",
@@ -43,9 +43,9 @@
     "en": "The image translation model failed to produce an image for two pages in a row and may not be an image generation model.",
     "fr": "Le modèle de traduction d'image n'a produit aucune image pour deux pages de suite ; ce n'est peut-être pas un modèle de génération d'images."
   },
-  "其余需要整页图像翻译的页面将保留原样。": {
-    "en": "The remaining pages that need full-page image translation will be kept as they are.",
-    "fr": "Les autres pages qui nécessitent une traduction de page en image seront conservées telles quelles."
+  "其余需要图像翻译的页面将保留原样。": {
+    "en": "The remaining pages that need image translation will be kept as they are.",
+    "fr": "Les autres pages qui nécessitent une traduction d'image seront conservées telles quelles."
   },
   "图像翻译模型连接测试失败：{0}": {
     "en": "Image translation model connection test failed: {0}",

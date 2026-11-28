@@ -66,7 +66,7 @@ def _write_pdf(path: Path) -> None:
 
 def _settings(root: Path) -> AppSettings:
     settings = AppSettings()
-    # 这些测试讲整页图像翻译；新建设置默认是智能混合（2026-11-28）。
+    # 这些测试讲整页图像翻译；新建设置默认是按页自动选择（2026-11-28）。
     settings.pdf.translation_route = "image"
     settings.pdf.target_lang = "en"
     settings.pdf.review_enabled = True

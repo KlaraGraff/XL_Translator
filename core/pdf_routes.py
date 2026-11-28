@@ -9,7 +9,7 @@
              流程，再转回 PDF 拼回原位；输出始终是 PDF（可另存一份 Word）。
 - skip    —— 原样保留，不翻译。
 
-设置只有两种（maple 2026-11-28）：「整页图像翻译」，或「智能混合」——程序逐页按类型选方式，
+设置只有两种（maple 2026-11-28）：「整页图像翻译」，或「按页自动选择」——程序逐页按类型选方式，
 用户不再挑：可提取文字的页段落重排（没装组件、没通过检查的页转 Word），图纸和大幅面页原位
 替换，扫描页整页图像翻译。首选在这一页用不了时（没有图像模型、原位替换不支持目标语言、转
 Word 失败、本机没有 Word……）程序自己选保底：能用整页图像翻译就用，否则原样保留。
@@ -146,7 +146,7 @@ def _kind_from_counts(page_number: int, *, oversized: bool, visible: int, has_in
 def kept_by_setting_reason(*, short_mm: float, long_mm: float) -> str:
     """按设置原样保留的页（不是出了问题）：只剩整页图像翻译开着「跳过 A3 及更大的页面」这一种。
 
-    智能混合没有「这类页原样保留」的选项（2026-11-28）：它保留的页都是用不了的（kept_reason）
+    按页自动选择没有「这类页原样保留」的选项（2026-11-28）：它保留的页都是用不了的（kept_reason）
     或空白页（blank_page），各有说明。"""
     return f"为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），已开启「跳过 A3 及更大的页面」"
 
@@ -404,7 +404,7 @@ def fallback_route(*, oversized: bool, image_available: bool) -> str:
 
 @dataclass(frozen=True)
 class PageKindCounts:
-    """智能混合会怎样处理一份 PDF：各类页几页（空白页不算）。图纸含放不进 Word 的大页，
+    """按页自动选择会怎样处理一份 PDF：各类页几页（空白页不算）。图纸含放不进 Word 的大页，
     与 page_route 同一口径。"""
 
     text: int = 0

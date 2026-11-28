@@ -374,11 +374,11 @@ export type PdfRouteCapabilities = {
   inplace_target_ok: boolean;
   /** 原位替换写不了的目标语言（基础代码，如 ar、th）：这些文字要连写排版。 */
   inplace_unsupported_targets?: string[];
-  /** 「段落重排组件」（BabelDOC）装好了没有：装了时智能混合的文字页先用它。 */
+  /** 「段落重排组件」（BabelDOC）装好了没有：装了时按页自动选择的文字页先用它。 */
   babeldoc_component?: boolean;
 };
 
-/** 一份 PDF 里智能混合会怎样处理的各类页（空白页不算；图纸含放不进 Word 的大页）。 */
+/** 一份 PDF 里按页自动选择会怎样处理的各类页（空白页不算；图纸含放不进 Word 的大页）。 */
 export type PdfPageKindCounts = { text: number; drawing: number; scan: number };
 
 export type PdfPageFile = {

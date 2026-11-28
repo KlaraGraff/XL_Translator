@@ -1,5 +1,5 @@
 /**
- * 工作台：PDF 页的「翻译方式」区（智能混合 / 整页图像翻译）和本机条件、所选文件页面类型的查询。
+ * 工作台：PDF 页的「翻译方式」区（按页自动选择 / 整页图像翻译）和本机条件、所选文件页面类型的查询。
  */
 import { type PdfPageKindCounts, type PdfRouteCapabilities } from "../api-client";
 import { createDropdown, createHintBadge, createSwitchRow, type SelectFieldOption } from "../components";
@@ -131,17 +131,17 @@ const installComponents = (label: string) => ({ label, onClick: () => navigate("
 
 export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLElement {
   // 紧接在上面的开关后面，不另起小标题：小标题和下面这一行的名称都会是「翻译方式」。
-  // 只让用户选两种（maple 2026-11-28）：智能混合由程序逐页选方式、用不了时自己选保底，
+  // 只让用户选两种（maple 2026-11-28）：按页自动选择由程序逐页选方式、用不了时自己选保底，
   // 没有子选项（core/pdf_routes.py page_route / fallback_route）；整页图像翻译每页交给图像模型。
   const wrap = el("div", "route-block");
   wrap.append(buildRouteRow({
     label: t("翻译方式"),
     // 细节交给图文指引（guide.ts），问号里只留一句话。
-    hint: t("智能混合由程序逐页选方式，最后拼回一份 PDF；整页图像翻译把每页交给图像模型重新生成。"),
+    hint: t("按页自动选择：程序看每一页是什么、选合适的方式，最后拼回一份 PDF。全部用图像翻译：每页交给图像模型重新生成。"),
     hintAction: { label: t("查看图文说明"), onClick: () => openGuide("pdf") },
     options: [
-      { value: "auto", label: t("智能混合"), tag: t("推荐"), description: t("程序逐页选方式：文字页排版，图纸只换文字，扫描页交给图像模型，拼回一份 PDF") },
-      { value: "image", label: t("整页图像翻译"), description: t("每页由图像模型重新生成，适合整份扫描件和照片；费用较高") },
+      { value: "auto", label: t("按页自动选择"), tag: t("推荐"), description: t("文字和表格重新排版，图纸只换文字，扫描页用图像翻译，最后拼回一份 PDF") },
+      { value: "image", label: t("全部用图像翻译"), description: t("每一页都交给图像模型重新生成，适合整份扫描件和照片；费用较高") },
     ],
     value: st.pdfRoute,
     disabled: active,
@@ -156,7 +156,7 @@ export function buildPdfRouteSection(st: SurfaceState, active: boolean): HTMLEle
 
   const sw = createSwitchRow({
     label: t("同时输出 Word"),
-    hint: t("整份文件都转成 Word 翻译时，除了 PDF 再给一份可以修改的 Word。夹有扫描页、图纸或在原 PDF 上排版的页时不另出 Word。"),
+    hint: t("除了 PDF 再给一份可以修改的 Word。文件里有扫描页、图纸，或文字页直接在原 PDF 上排版（装了「段落重排组件」）时不另出 Word。"),
     checked: st.pdfAlsoSaveWord,
     disabled: active,
     onChange: (checked) => void handlePdfRouteChange(st, "pdfAlsoSaveWord", "pdf.also_save_word", checked),
@@ -184,16 +184,16 @@ function buildPagePlan(st: SurfaceState, files: FileItem[]): HTMLElement {
   // 大幅面页和没有图像模型时原样保留），橙色标出；下面的提示再说为什么、怎么补。
   const component = caps?.word_component !== false;
   const inplaceOk = component && caps?.inplace_component !== false && !complexTarget;
-  const fallback = { route: imageReady ? t("整页图像翻译") : t("原样保留"), warn: true };
-  const drawingFallback = { route: imageReady ? t("整页图像翻译，大幅面原样保留") : t("原样保留"), warn: true };
+  const fallback = { route: imageReady ? t("图像翻译") : t("原样保留"), warn: true };
+  const drawingFallback = { route: imageReady ? t("图像翻译，大幅面原样保留") : t("原样保留"), warn: true };
   const text = !component ? fallback
-    : caps?.babeldoc_component && !complexTarget ? { route: t("段落重排"), warn: false }
-      : caps?.office_engine !== "" ? { route: t("转成 Word"), warn: false }
+    : caps?.babeldoc_component && !complexTarget ? { route: t("重新排版"), warn: false }
+      : caps?.office_engine !== "" ? { route: t("重新排版"), warn: false }
         : inplaceOk ? { route: t("原位替换"), warn: true } : fallback;
   const rows: { kind: keyof PdfPageKindCounts; name: string; route: string; warn: boolean }[] = [
-    { kind: "text", name: t("文字页"), ...text },
+    { kind: "text", name: t("文字和表格页"), ...text },
     { kind: "drawing", name: t("图纸和大图"), ...(inplaceOk ? { route: t("原位替换"), warn: false } : drawingFallback) },
-    { kind: "scan", name: t("扫描页"), route: imageReady ? t("整页图像翻译") : t("原样保留"), warn: !imageReady },
+    { kind: "scan", name: t("扫描页"), route: imageReady ? t("图像翻译") : t("原样保留"), warn: !imageReady },
   ];
   for (const row of rows) {
     if (known && counts[row.kind] === 0) continue;
@@ -221,21 +221,21 @@ function buildPagePlan(st: SurfaceState, files: FileItem[]): HTMLElement {
     { label: t("去设置 ↗"), onClick: () => navigate("settings", { page: "models", role: "image" }) }));
   }
   if (caps && !caps.word_component) {
-    notes.push(note(t("还没有安装「PDF 处理组件」：文字页和图纸改用整页图像翻译，没有图像模型或页面太大时原样保留。"), true, installComponents(t("安装 ↗ 组件"))));
+    notes.push(note(t("还没有安装「PDF 处理组件」：文字页和图纸改用图像翻译，没有图像模型或页面太大时原样保留。"), true, installComponents(t("安装 ↗ 组件"))));
   } else if (caps) {
     if (caps.inplace_component === false) {
-      notes.push(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：图纸改用整页图像翻译，大幅面图纸原样保留。"), true, installComponents(t("重新安装 ↗ 组件"))));
+      notes.push(note(t("「PDF 处理组件」里的 PyMuPDF 无法加载：图纸改用图像翻译，大幅面图纸原样保留。"), true, installComponents(t("重新安装 ↗ 组件"))));
     }
     if (!caps.office_engine && !(caps.babeldoc_component && !complexTarget)) {
       notes.push(note(t("电脑上没有 Microsoft Word 或 LibreOffice：文字页改用原位替换。"), true));
     }
     if (caps.babeldoc_component === false && !complexTarget) {
-      notes.push(note(t("装上「段落重排组件」后，文字页先在原 PDF 上排版，公式、图和表格线原样保留。"), false,
+      notes.push(note(t("装上「段落重排组件」后，文字页直接在原 PDF 上排版，更接近原文。"), false,
         { label: t("安装 ↗ 组件"), onClick: () => navigate("plugins", { focus: "babeldoc" }) }));
     }
   }
   if (complexTarget) {
-    notes.push(note(t("当前的目标语言需要连写排版（如阿拉伯文、泰文、印地文）：文字页转成 Word，图纸改用整页图像翻译。"), true));
+    notes.push(note(t("当前的目标语言需要连写排版（如阿拉伯文、泰文、印地文）：图纸改用图像翻译。"), true));
   }
   if (known && unknown === 0 && counts.scan === 0) notes.push(note(t("这批文件不会用到图像模型。")));
   const block = el("div");

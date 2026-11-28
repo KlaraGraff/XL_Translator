@@ -53,7 +53,7 @@ export interface DocAnatomyInput {
 export interface PdfAnatomyInput {
   smartContext: boolean;
   reviewEnabled: boolean;
-  /** auto 智能混合（程序逐页选方式）/ image 整页图像翻译。 */
+  /** auto 按页自动选择（程序逐页选方式）/ image 整页图像翻译。 */
   route: "image" | "auto";
 }
 
@@ -158,10 +158,10 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
   const auto = input.route === "auto";
   const steps = [t("开启「自动识别场景」时，先读取 PDF 中的文字，由文本翻译模型写一段文档说明；扫描件没有可读文字时跳过。")];
   if (auto) {
-    steps.push(t("程序按页面类型选方式：可提取文字的页段落重排（没装组件或没通过检查的页转成 Word），图纸和大图原位替换，扫描页整页图像翻译；某页用不了时程序自动换一种。"));
+    steps.push(t("程序按页面类型选方式：文字和表格页重新排版，图纸和大图原位替换，扫描页用图像翻译；某页用不了时程序自动换一种。"));
   }
   steps.push(auto
-    ? t("整页图像翻译的页：每页转成图片发送给图像模型；开启「逐页审核」时，未通过的页面附上审核意见重新生成。")
+    ? t("图像翻译的页：每页转成图片发送给图像模型；开启「逐页审核」时，未通过的页面附上审核意见重新生成。")
     : t("每页转成图片发送给图像模型，生成翻译后的页面；开启「逐页审核」时，未通过的页面附上审核意见重新生成。"));
   steps.push(t("单页生成失败或审核未通过时，最多按「单页重试次数」重新生成。"));
   if (auto) {
@@ -174,7 +174,7 @@ export function pdfPromptAnatomy(input: PdfAnatomyInput): PromptAnatomy {
   const textState = auto ? t("当前使用") : t("当前未使用");
   const groups: AnatomyGroup[] = [
     {
-      title: t("整页图像翻译 · 发送给图像模型"),
+      title: t("图像翻译 · 发送给图像模型"),
       state: auto ? t("扫描页和换方式的页使用") : t("当前使用"),
       used: true,
       blocks: [

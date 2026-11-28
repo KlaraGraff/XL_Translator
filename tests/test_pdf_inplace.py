@@ -45,7 +45,7 @@ def _write_pdf(path: Path, sizes, *, with_text: list[bool], blank=(), scan=()) -
         if index in blank:
             continue  # nothing on it at all: a blank page
         if index in scan:
-            # a scanned page: one picture over the whole page. 智能混合 sends it to the image model.
+            # a scanned page: one picture over the whole page. 按页自动选择 sends it to the image model.
             pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 80), 0)
             pix.clear_with(200)
             page.insert_image(page.rect, pixmap=pix)
@@ -421,12 +421,12 @@ class InplaceTaskTests(unittest.TestCase):
 
         _runner, record, _client = self._run(target="ar", sizes=(A4, A2), text=(True, True))
         lines = "\n".join(_route_report_lines(record))
-        self.assertIn("第 1 页：电脑上没有 Microsoft Word 或 LibreOffice，译好的正文转不回 PDF，改用整页图像翻译", lines)
+        self.assertIn("第 1 页：电脑上没有 Microsoft Word 或 LibreOffice，译好的正文转不回 PDF，改用图像翻译", lines)
         self.assertIn("第 2 页：原位替换暂不支持该目标语言（文字需连写排版），这一页保留原样", lines)
         detail = _file_record_to_result(record)
         text = str(detail)
         self.assertNotIn("没有设置图像翻译模型", text)
-        self.assertIn("改用整页图像翻译", text)
+        self.assertIn("改用图像翻译", text)
 
     def test_failed_word_segment_tries_in_place_first(self):
         # maple 2026-11-26：转不成 Word 的文字页先原位替换（数字、编号照原样），不先交给图像翻译。
@@ -458,7 +458,7 @@ class InplaceTaskTests(unittest.TestCase):
         _runner, record, client = self._run(target="ar", sizes=(A4,), text=(True,))
         first = record.pages[0]
         self.assertFalse(first.inplace_requested)
-        self.assertIn("改用整页图像翻译", first.route_note)
+        self.assertIn("改用图像翻译", first.route_note)
         self.assertEqual(len(client.calls), 1)
 
     def test_without_an_image_model_the_safety_net_keeps_the_page(self):
@@ -699,7 +699,7 @@ class WordRouteTaskTests(unittest.TestCase):
         page = sorted(runner._prepared_files[0].record.pages, key=lambda item: item.page_number)[1]
         self.assertIn(REASON_IMAGE_GRID, page.route_note)
         self.assertFalse(page.inplace_requested)   # the words are in the picture: in place cannot reach them
-        self.assertIn("改用整页图像翻译", page.route_note)
+        self.assertIn("改用图像翻译", page.route_note)
 
     @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine: in place cannot write Chinese")
     def test_segment_that_comes_back_far_longer_is_not_assembled(self):
@@ -737,7 +737,7 @@ class WordRouteTaskTests(unittest.TestCase):
         for page in pages:
             self.assertFalse(page.inplace_requested)
             self.assertTrue(page.source_image_path)     # rendered for the image model this time
-            self.assertEqual(page.route_note, f"{REASON_PAGE_GROWTH}；原位替换也没成功，改用整页图像翻译")
+            self.assertEqual(page.route_note, f"{REASON_PAGE_GROWTH}；原位替换也没成功，改用图像翻译")
         with fitz.open(record.translated_pdf_path) as out:
             self.assertEqual(len(out), 2)
 
@@ -791,8 +791,8 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 0)
         page = runner._prepared_files[0].record.pages[0]
         self.assertIn(REASON_PAGE_GROWTH, page.kept_reason)
-        self.assertIn("整页图像翻译也用不了（图像翻译模型的名称不能为空）", page.kept_reason)
-        self.assertTrue(any("整页图像翻译也用不了（图像翻译模型的名称不能为空），这几页保留原文" in line
+        self.assertIn("图像翻译也用不了（图像翻译模型的名称不能为空）", page.kept_reason)
+        self.assertTrue(any("图像翻译也用不了（图像翻译模型的名称不能为空），这几页保留原文" in line
                             for line in logs), logs)
 
     def test_large_scans_are_scanned_pages(self):

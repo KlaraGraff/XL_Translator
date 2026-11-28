@@ -1,4 +1,4 @@
-"""段落重排（BabelDOC）：一键安装、翻译子进程、逐页检查、接进 PDF「智能混合」、扩展页「PDF 组件」大类。
+"""段落重排（BabelDOC）：一键安装、翻译子进程、逐页检查、接进 PDF「按页自动选择」、扩展页「PDF 组件」大类。
 
 BabelDOC 和它几百兆的字体、版面模型不在测试环境里：子进程换成一个按同样协议回话的假程序，
 安装换成假的下载源。真下载、真排版由 scripts/component_install_smoke.py 在 macOS / Windows 上跑，
@@ -521,7 +521,7 @@ def test_reasons_have_english_and_french_entries():
         assert catalog.get(text, {}).get("en") and catalog[text].get("fr"), text
 
 
-# ── 接进 PDF「智能混合」 ──────────────────────────────────────────────────
+# ── 接进 PDF「按页自动选择」 ──────────────────────────────────────────────────
 
 A4 = (595.276, 841.89)
 SENTENCE = "The applicant must present a valid passport and proof of travel insurance before departure."
@@ -678,7 +678,7 @@ def test_text_pages_use_paragraph_reflow_and_failing_pages_go_to_word(tmp_path):
 
 
 def test_without_the_component_text_pages_go_straight_to_word(tmp_path):
-    # 智能混合没有子选项：没装组件时文字页本来就转 Word，不算「换了方式」，不另提示（2026-11-28）。
+    # 按页自动选择没有子选项：没装组件时文字页本来就转 Word，不算「换了方式」，不另提示（2026-11-28）。
     fake = _Runs(good_pages={1, 2})
     _runner, record, client, logs, _chats, word = _run_task(tmp_path, fake_babeldoc=fake, installed=False)
     assert fake.calls == [] and len(client.calls) == 0 and word == [2]
@@ -710,7 +710,7 @@ def test_all_pages_passing_means_no_word_conversion(tmp_path):
 
 
 def test_installing_the_component_needs_no_setting(monkeypatch):
-    """装好就用：智能混合的文字页先用段落重排，不用再改设置（原来装好后要把「文字页」改成它）。"""
+    """装好就用：按页自动选择的文字页先用段落重排，不用再改设置（原来装好后要把「文字页」改成它）。"""
     import api.babeldoc_plugin as plugin
     from core.pdf_babeldoc_pages import PdfBabelDocPagesMixin
     from settings import PdfSettings

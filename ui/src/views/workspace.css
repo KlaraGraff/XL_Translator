@@ -1119,7 +1119,7 @@ tr.hid {
   padding: 5px 8px;
 }
 
-/* 智能混合：所选文件每类页一行（有几页 → 用什么），程序逐页选的结果。 */
+/* 按页自动选择：所选文件每类页一行（有几页 → 用什么），程序逐页选的结果。 */
 .route-plan {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

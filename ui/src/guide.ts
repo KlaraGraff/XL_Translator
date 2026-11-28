@@ -1,6 +1,6 @@
 // PDF / CAD 首次使用图文指引（maple 2026-10-27 拍板，方案见项目文档「PDF 与 CAD 首次使用指引：推荐方案」）。
 //
-// 一屏看完的居中弹窗：PDF 先讲「智能混合」怎样逐页选方式、拼回一份 PDF，再讲它用到的三种方式，CAD 讲三项最常被误解的设置、
+// 一屏看完的居中弹窗：PDF 先讲「按页自动选择」怎样逐页选方式、拼回一份 PDF，再讲它用到的三种方式，CAD 讲三项最常被误解的设置、
 // DWG 需要的转换工具和译后改译文。卡片底部的本机状态是实时查的（和页面里的缺组件提示
 // 同一个接口），缺什么当场给入口。弹窗只讲解、给入口，不改任何设置。
 //
@@ -134,7 +134,7 @@ export function openGuide(kind: GuideKind): void {
   if (kind === "pdf") {
     label.textContent = t("PDF 与图片翻译");
     title.textContent = t("PDF 翻译方式一览");
-    lead.textContent = t("PDF 有两种翻译方式：默认的「智能混合」由程序逐页选方式，最后拼回一份 PDF；整份都是扫描件或照片时，也可以选「整页图像翻译」。");
+    lead.textContent = t("PDF 有两种翻译方式。默认的「按页自动选择」先看每一页是什么，再选合适的方式，最后拼回一份 PDF；整份都是扫描件或照片时，可以选「全部用图像翻译」。");
     buildPdfBody(body, go);
   } else {
     label.textContent = t("CAD 图纸翻译");
@@ -304,11 +304,11 @@ const illWord = (): string =>
 const illInplace = (): string =>
   svg(t("示意图：图纸原位替换前后"), `${plan(6, 17, "办公室", "会议室", "gi-tb", false)}${arrow(123, 59, 137)}${plan(140, 17, "Bureau", "Salle de réunion", "gi-a", true)}`); // i18n-ignore 示意图里的示例文字固定为中文 → 法文
 const illImage = (): string =>
-  svg(t("示意图：扫描件整页图像翻译前后"), `
+  svg(t("示意图：扫描件图像翻译前后"), `
     ${scanPage(20, SCAN_SOURCE, "gi-tb", -3)}${arrow(112, 59, 148)}${scanPage(156, "Avis : approuvé", "gi-a", 0)}
     <g transform="translate(225 99)"><rect class="gi-chip" x="0" y="0" width="22" height="16" rx="4"/><rect class="gi-thin" x="4" y="3.5" width="14" height="9" rx="1.5" style="stroke:var(--ink-3)"/><path class="gi-l" d="M5 11.5l4 -4l3 3l2 -2l3 3" stroke-width=".9"/></g>`);
 
-/** 智能混合流程图里的四张小页面。 */
+/** 按页自动选择流程图里的四张小页面。 */
 function thumb(kind: "text" | "table" | "draw" | "scan"): string {
   const paper = kind === "scan" ? "gi-scan" : "gi-paper";
   let body = "";
@@ -373,9 +373,9 @@ type Go = (action: () => void) => () => void;
 function buildPdfBody(body: HTMLElement, go: Go): void {
   const fit = t("适合");
   const eff = t("效果");
-  const textName = t("段落重排 · 转成 Word");
+  const textName = t("重新排版");
   const inplaceName = t("原位替换");
-  const imageName = t("整页图像翻译");
+  const imageName = t("图像翻译");
 
   // 本机状态先空着，查到后再填；查不到就一直空着，不猜。
   const wordStats = el("div", "g-stats");
@@ -388,25 +388,25 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   noteText.append(withNowrapModels(t("已测试多种图像模型，目前效果最好的是 ChatGPT 的 Images 2.6，模型名为 gpt-image-2.6-sunburst；其次是 gpt-image-2.6-flare。")));
   note.append(noteText);
 
-  // 上面一条是智能混合的流程图：① 按页分类 → ② 每页选方式 → ③ 拼回一份 PDF（maple 2026-11-28）。
+  // 上面一条是按页自动选择的流程图：① 按页分类 → ② 每页选方式 → ③ 拼回一份 PDF（maple 2026-11-28）。
   const band = el("div", "g-band mixed");
   const bandText = el("div");
-  const title = el("h4", undefined, t("智能混合"));
+  const title = el("h4", undefined, t("按页自动选择"));
   title.append(el("span", "g-tag rec", t("推荐")));
   bandText.append(
     title,
-    el("p", undefined, t("新建的 PDF 任务默认用它。程序看每一页是什么、选合适的方式；某一页用不了这种方式时自动换一种，没有图像模型时扫描页原样保留，完成后单独列出。")),
+    el("p", undefined, t("新建的 PDF 任务默认用它。程序先看每一页是文字、表格、图纸还是扫描件，再给它选合适的方式；某一页用不了时自动换一种，没有图像模型时扫描页原样保留，完成后单独列出。")),
   );
   const flow = el("div", "g-flow");
   const steps = el("div", "g-steps");
-  for (const label of [t("① 按页分类"), t("② 每页选方式"), t("③ 拼回一份 PDF")]) steps.append(el("span", "g-step", label));
+  for (const label of [t("① 看每一页是什么"), t("② 选合适的方式"), t("③ 拼回一份 PDF")]) steps.append(el("span", "g-step", label));
   const pages = el("div", "g-pages");
-  const textChips: HTMLElement[] = [];
+  // 每张小页面下面写的就是下面三张卡片的名字（文字页、表格页都是「重新排版」，表格还是表格）。
   const pageSpecs: ["text" | "table" | "draw" | "scan", string, string][] = [
-    ["text", t("文字页"), t("转成 Word")],
-    ["table", t("表格页"), t("转成 Word")],
+    ["text", t("文字页"), textName],
+    ["table", t("表格页"), textName],
     ["draw", t("图纸"), inplaceName],
-    ["scan", t("扫描件"), t("整页图像")],
+    ["scan", t("扫描件"), imageName],
   ];
   for (const [kind, name, route] of pageSpecs) {
     const pg = el("div", "g-pg");
@@ -414,7 +414,6 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
     pic.style.display = "contents";
     pic.innerHTML = thumb(kind);
     const chip = el("span", "g-chip", route);
-    if (kind === "text" || kind === "table") textChips.push(chip);
     const down = el("span", "g-down", "↓");
     down.setAttribute("aria-hidden", "true");
     pg.append(pic, el("small", undefined, name), down, chip);
@@ -432,15 +431,16 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   chart.append(steps, flow);
   band.append(bandText, chart);
 
-  const cardsHead = el("div", "g-sub", t("智能混合用到下面三种方式；「整页图像翻译」也可以在「翻译方式」里单独选，整份文件每页都这样翻。"));
+  const cardsHead = el("div", "g-sub", t("「按页自动选择」会用到下面三种方式。选「全部用图像翻译」时，每一页都用第三种。"));
   const cards = el("div", "g-cards");
   cards.append(
     card({
       ill: illWord(),
       name: textName,
       rows: [
-        [fit, t("可以选中文字的页面，如由 Word 导出的报告、合同、说明书。")],
-        [eff, t("装了「段落重排组件」时先在原 PDF 上按段落排入译文，公式、图和表格线不动；没装或排得不好的页转成 Word 翻译再转回，可另存一份 Word。费用较低。")],
+        [fit, t("能选中文字的页面，如由 Word 导出的报告、合同、说明书。")],
+        [eff, t("译文按原来的版式排回页面：段落还是段落，表格还是表格，公式和图片不动。费用较低。")],
+        [t("说明"), t("装了「段落重排组件」时直接在原 PDF 上排版，效果最好；没装也能用，还可以另存一份 Word。")],
       ],
       stats: wordStats,
     }),
@@ -470,16 +470,11 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   );
 
   body.append(band, cardsHead, cards);
-  void fillPdfStats({ wordStats, inplaceStats, imageStats, textChips }, go);
-}
-
-/** 流程图里文字页、表格页的方式按本机条件写：装了段落重排组件写「段落重排」，没装写「转成 Word」。 */
-function textRouteName(caps: { babeldoc_component?: boolean }): string {
-  return caps.babeldoc_component ? t("段落重排") : t("转成 Word");
+  void fillPdfStats({ wordStats, inplaceStats, imageStats }, go);
 }
 
 async function fillPdfStats(
-  hosts: { wordStats: HTMLElement; inplaceStats: HTMLElement; imageStats: HTMLElement; textChips: HTMLElement[] },
+  hosts: { wordStats: HTMLElement; inplaceStats: HTMLElement; imageStats: HTMLElement },
   go: Go,
 ): Promise<void> {
   let client;
@@ -498,19 +493,16 @@ async function fillPdfStats(
     const component = caps.word_component
       ? null
       : stat("warn", t("需先安装「PDF 处理组件」"), installPdf);
-    // 转成 Word：组件 + 把译文转回 PDF 的 Word / LibreOffice。
+    // 重新排版：装了段落重排组件时直接在原 PDF 上排；没装时要 Word / LibreOffice 把译文转回 PDF。
     if (component) hosts.wordStats.append(component);
-    else if (!caps.office_engine) hosts.wordStats.append(stat("warn", t("需要电脑上安装 Microsoft Word 或 LibreOffice")));
-    else hosts.wordStats.append(stat("ok", t("本机可以使用")));
-    // 段落重排：装好且选着它时这类页面先用它（排得不好的页仍转 Word），卡片里不另写一段，免得一屏放不下。
-    if (!caps.babeldoc_component) {
-      hosts.wordStats.append(stat("idle", t("另装「段落重排组件」可先在原 PDF 上排版"),
+    else if (caps.babeldoc_component) hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」，直接在原 PDF 上排版")));
+    else {
+      hosts.wordStats.append(caps.office_engine
+        ? stat("ok", t("本机可以使用"))
+        : stat("warn", t("没有「段落重排组件」时，需要电脑上有 Microsoft Word 或 LibreOffice")));
+      hosts.wordStats.append(stat("idle", t("另装「段落重排组件」，排版更接近原文"),
         { label: t("安装"), onClick: go(() => navigate("plugins", { focus: "babeldoc" })) }));
-    } else {
-      hosts.wordStats.append(stat("ok", t("已安装「段落重排组件」，这类页面先用段落重排")));
     }
-    const textRoute = textRouteName(caps);
-    for (const chip of hosts.textChips) chip.textContent = textRoute;
     // 原位替换：组件里的 PyMuPDF 要能加载。
     if (!caps.word_component) hosts.inplaceStats.append(stat("warn", t("需先安装「PDF 处理组件」"), installPdf));
     else if (caps.inplace_component === false) {

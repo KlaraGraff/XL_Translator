@@ -913,9 +913,9 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = t
     if (page.inplace_active) return createChip({ label: t("原位替换中"), tone: "tint" });
     return taskStopped ? createChip({ label: t("已停止"), tone: "warn" }) : createChip({ label: t("等待原位替换"), tone: "mute" });
   }
-  if (page.babeldoc_status === "done") return createChip({ label: t("段落重排"), tone: "ok" });
-  if (page.word_status === "done") return createChip({ label: t("转 Word"), tone: "ok" });
-  if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("转 Word 未成功"), tone: "warn" });
+  if (page.babeldoc_status === "done") return createChip({ label: t("重新排版"), tone: "ok" });
+  if (page.word_status === "done") return createChip({ label: t("重新排版"), tone: "ok" });
+  if (page.word_requested && page.word_status && !page.inplace_requested) return createChip({ label: t("重新排版未成功"), tone: "warn" });
   if (page.inplace_requested && page.inplace_status) return createChip({ label: t("原位替换未成功"), tone: "warn" });
   if (page.kept_reason) return createChip({ label: t("保留原样"), tone: "warn" });
   if (page.blank_page) return createChip({ label: t("空白页"), tone: "mute" });
@@ -1083,9 +1083,9 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
   const oversizeSkipped = page.skipped_oversize;
   const oversizeReason = page.babeldoc_status === "done"
-    ? t("这一页用段落重排在原 PDF 上排入译文，没有单独的页图；如需重做，请对整份文件重新翻译。")
+    ? t("这一页直接在原 PDF 上重新排版，没有单独的页图；如需重做，请对整份文件重新翻译。")
     : page.word_requested
-    ? t("这一页的文字可以提取，和相邻几页一起转成 Word 翻译后拼回 PDF，没有单独的页图。")
+    ? t("这一页和相邻几页一起重新排版后拼回 PDF，没有单独的页图。")
     : page.inplace_requested
     ? t("该页走原位替换，没有页图；如需重做，请对整份文件重新翻译。")
     : page.kept_reason
@@ -1094,7 +1094,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
       ? t("{0}；没有页图。", t("空白页"))
       : page.kept_by_setting
       ? t("这一页{0}；没有页图。", tx(page.kept_by_setting))
-      : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或把「翻译方式」改为「智能混合」后重新翻译。");
+      : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或把「翻译方式」改为「按页自动选择」后重新翻译。");
 
   actionsCell.append(
     buildActionLink(

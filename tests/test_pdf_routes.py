@@ -35,7 +35,7 @@ def _route(pdf: PdfSettings, *, a3=False, big=False, kind=KIND_TEXT) -> str:
 
 
 class SettingsTests(unittest.TestCase):
-    """只剩两种方式（2026-11-28）：智能混合（新建设置的默认）和整页图像翻译，没有子选项。"""
+    """只剩两种方式（2026-11-28）：按页自动选择（新建设置的默认）和整页图像翻译，没有子选项。"""
 
     def test_new_settings_default_to_smart_mix(self) -> None:
         pdf = PdfSettings()

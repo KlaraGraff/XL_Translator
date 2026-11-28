@@ -48,7 +48,7 @@ def route_capabilities() -> dict[str, Any]:
         "inplace_target_ok": inplace_target_supported(settings.pdf.target_lang),
         # 原位替换写不了的目标语言（界面按当前选的目标语言提示，不必等设置存好再查）。
         "inplace_unsupported_targets": sorted(COMPLEX_SCRIPT_TARGETS),
-        # 段落重排（BabelDOC）装好了没有：没装时智能混合的文字页转 Word。
+        # 段落重排（BabelDOC）装好了没有：没装时按页自动选择的文字页转 Word。
         "babeldoc_component": _babeldoc_installed(),
     }
 

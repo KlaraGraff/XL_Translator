@@ -1264,7 +1264,7 @@ class PdfSettings(BaseModel):
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
     # 翻译方式（见 core.pdf_routes）只有两种（maple 2026-11-28）：
-    #   auto  —— 智能混合（新用户默认）：程序逐页选方式再拼回一份 PDF。可提取文字的页
+    #   auto  —— 按页自动选择（新用户默认）：程序逐页选方式再拼回一份 PDF。可提取文字的页
     #            段落重排（没装组件或没过检查的页转 Word），图纸和大幅面页原位替换，扫描
     #            页整页图像翻译；首选用不了时程序自己选保底，用户不再挑。
     #   image —— 整页图像翻译：每页交给图像模型重新生成（大幅面页按上面的开关跳过或翻译）。
@@ -1272,7 +1272,7 @@ class PdfSettings(BaseModel):
     # 设置（auto_scan_route / auto_text_route / auto_drawing_route / auto_fallback），升级
     # 时去掉，见 settings_migrations._migrate_pdf_two_routes。
     translation_route: Literal["image", "auto"] = "auto"
-    # 智能混合：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
+    # 按页自动选择：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
     also_save_word: bool = False
     # 以前的「大幅面起点」（A3 / A2 / A1 / A0）。2026-10-21 起自动组合先看内容再看尺寸
     # （见 core.pdf_routes），不再读这一项；字段留着，旧设置文件照常读写。
@@ -1322,7 +1322,7 @@ class PdfSettings(BaseModel):
         for key in ("page_generation_concurrency", "review_concurrency"):
             if migrated.get(key) in ("", None):
                 migrated[key] = None
-        # 早先的单一路线（原位替换、转 Word）并入智能混合
+        # 早先的单一路线（原位替换、转 Word）并入按页自动选择
         if migrated.get("translation_route") in ("inplace", "word"):
             migrated["translation_route"] = "auto"
         # 认不出的取值（比如更新版本写下的新选项）退回默认，不能让整份设置读不进来。

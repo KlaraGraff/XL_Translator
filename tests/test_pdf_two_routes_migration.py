@@ -2,10 +2,10 @@
 
 改前：「翻译方式」有图像还原 / 原位替换 / 转 Word / 自动组合，自动组合下还有「扫描页」「文字页」
 「图纸和大图」「保底方式」四个子选项。
-改后：只有「智能混合」（新用户默认）和「整页图像翻译」；智能混合逐页怎么选、用不了时怎么办都由
+改后：只有「按页自动选择」（新用户默认）和「整页图像翻译」；按页自动选择逐页怎么选、用不了时怎么办都由
 程序定，没有子选项。
 
-老用户：选着图像的照旧是整页图像翻译；原位替换、转 Word、自动组合都改为智能混合。改过子选项的人
+老用户：选着图像的照旧是整页图像翻译；原位替换、转 Word、自动组合都改为按页自动选择。改过子选项的人
 升级时先备份旧文件（子选项会被去掉），没改过的不备份。
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ class PdfTwoRoutesMigrationTests(IsolatedAppDataTestCase):
         self.assertEqual(self._stored_pdf()["translation_route"], "auto")
 
     def test_a_single_route_that_is_merged_is_backed_up(self) -> None:
-        # 选着「原位替换」或「转 Word」的人换成了智能混合：留一份旧文件。
+        # 选着「原位替换」或「转 Word」的人换成了按页自动选择：留一份旧文件。
         self._write({"translation_route": "word"})
         settings_module.save_settings(settings_module.load_settings())
         self.assertEqual(len(self._backups()), 1)

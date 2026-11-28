@@ -255,7 +255,7 @@ const PDF_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
   // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
   // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
-  // 翻译方式选「智能混合」时大幅面页另有处理，这个开关不显示（见 buildColRight）。
+  // 翻译方式选「按页自动选择」时大幅面页另有处理，这个开关不显示（见 buildColRight）。
   { key: "skipOversizedPages", label: t("跳过 A3 及更大的页面"), hint: t("长、宽均超出 A4 约 15% 以上的页面（A3 及更大，横向、纵向均适用）不翻译，按原样写入输出文件，清晰度不变。工程图纸常用此类幅面。略大于 A4 的页面（如带扫描白边）不受影响。"), default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ]));
 
@@ -582,7 +582,7 @@ export interface SurfaceState {
   /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
    *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
   cadResumeDir: string;
-  /** PDF 翻译方式：auto 智能混合（默认，程序逐页选方式）/ image 整页图像翻译。
+  /** PDF 翻译方式：auto 按页自动选择（默认，程序逐页选方式）/ image 整页图像翻译。
    *  只有 pdf surface 用，见 settings.py PdfSettings 与 core/pdf_routes.py。 */
   pdfRoute: PdfRoute;
   /** 整份文件都转 Word 翻译时，除了 PDF 另存一份 Word。 */
@@ -916,11 +916,11 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
 }
 
 function applyPdfRouteSettings(st: SurfaceState, pdf: JsonObject): void {
-  // 早先的原位替换、转 Word 由后端并入智能混合，这里只认两种；没写时同后端默认，智能混合。
+  // 早先的原位替换、转 Word 由后端并入按页自动选择，这里只认两种；没写时同后端默认，按页自动选择。
   st.pdfRoute = text(pdf.translation_route) === "image" ? "image" : "auto";
 }
 
-// 设置页「PDF 改用智能混合」改了 PDF 翻译方式：这里缓存的设置跟着换，回到 PDF 页
+// 设置页「PDF 改用按页自动选择」改了 PDF 翻译方式：这里缓存的设置跟着换，回到 PDF 页
 // 看到的就是新方式（事件名见 settings-models.ts PDF_ROUTES_CHANGED_EVENT）。
 window.addEventListener("xlt:pdf-routes-changed", (event) => {
   const pdf = record((event as CustomEvent<unknown>).detail);
@@ -2419,7 +2419,7 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   const images = files.filter((f) => f.source_type === "image").length;
   // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，过滤掉即可。
   // 跳过项不占格：文件列表下面那一行「读取时跳过 N 项」已经说了。
-  // 「大幅面页」只对整页图像翻译有意义（那里有「跳过 A3 及更大的页面」开关）；智能混合先看
+  // 「大幅面页」只对整页图像翻译有意义（那里有「跳过 A3 及更大的页面」开关）；按页自动选择先看
   // 内容再看尺寸，大页面照常原位替换，这一格会让人以为它们不翻（maple 2026-10-21）。
   const pdfStats: (StatCell | null)[] = [
     { label: t("文件"), value: String(files.length) },
@@ -2744,9 +2744,9 @@ function oversizedPageStat(stats: OversizedPageStats): StatCell | null {
       label,
       value: fmtNum(stats.pages),
       attn: true,
-      // 「图纸没翻译、以为程序出错」最直接的原因在这里：直接给出切换到智能混合的入口。
-      sub: unknownNote || t("这些页面默认原样保留。如需翻译图纸，请把翻译方式改为「智能混合」。"),
-      link: unknownNote ? undefined : { label: t("改为「智能混合」"), onClick: () => void handlePdfRouteChange(stateOf("pdf"), "pdfRoute", "pdf.translation_route", "auto") },
+      // 「图纸没翻译、以为程序出错」最直接的原因在这里：直接给出切换到按页自动选择的入口。
+      sub: unknownNote || t("这些页面默认原样保留。如需翻译图纸，请把翻译方式改为「按页自动选择」。"),
+      link: unknownNote ? undefined : { label: t("改为「按页自动选择」"), onClick: () => void handlePdfRouteChange(stateOf("pdf"), "pdfRoute", "pdf.translation_route", "auto") },
     };
   }
   // 一页都没数出来时不能写 0——那是「确认没有」的说法。
@@ -3508,7 +3508,7 @@ function recipeParts(surface: Surface, st: SurfaceState): { lead: string; parts:
   const from = st.sourceLang === "auto" ? t("自动识别") : sourceLabel(st);
   const lead = surface === "pdf" ? t("译成{0}", targetLabel(st)) : `${from} → ${targetLabel(st)}`;
   const parts: string[] = [];
-  if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("智能混合") : t("整页图像翻译"));
+  if (surface === "pdf") parts.push(st.pdfRoute === "auto" ? t("按页自动选择") : t("全部用图像翻译"));
   if (surfaceToggles(surface).some((toggle) => toggle.key === "translationOnly")) {
     parts.push(st.toggles.get("translationOnly") ? t("仅译文") : t("双语对照"));
   }
@@ -3688,7 +3688,7 @@ function buildAdvancedFold(surface: Surface, st: SurfaceState, active: boolean):
     if (toggle.key === "translationOnly") continue;
     // 缩小字号的开关和它的两档比例放在一起，挪到下面「译文写回」里画。
     if (surface === "cad" && toggle.key === "cadFitLayout") continue;
-    // 智能混合有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
+    // 按页自动选择有自己的大幅面处理，「跳过 A3 及更大的页面」对它们不起作用。
     if (toggle.key === "skipOversizedPages" && st.pdfRoute === "auto") continue;
     if (!extOptionShown(surface, st, toggle.key)) continue;
     // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
@@ -3829,8 +3829,8 @@ function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): st
 }
 
 // ---------------------------------------------------------------------------
-// PDF 翻译方式只有两种（maple 2026-11-28）：智能混合（默认，程序逐页选方式、拼回一份 PDF）
-// 或整页图像翻译。智能混合下没有子选项，「翻译方式」下面一行写这批文件会怎样处理，本机
+// PDF 翻译方式只有两种（maple 2026-11-28）：按页自动选择（默认，程序逐页选方式、拼回一份 PDF）
+// 或整页图像翻译。按页自动选择下没有子选项，「翻译方式」下面一行写这批文件会怎样处理，本机
 // 条件不够（没配图像模型、没装组件、没有 Word）时用琥珀色字说明后果。落盘见 settings.py PdfSettings。
 // ---------------------------------------------------------------------------
 
@@ -3840,7 +3840,7 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], fallback:
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-/** 智能混合里图纸和大幅面页由程序用原位替换（core/pdf_routes.py page_route）。 */
+/** 按页自动选择里图纸和大幅面页由程序用原位替换（core/pdf_routes.py page_route）。 */
 function pdfUsesInplace(st: SurfaceState): boolean {
   return st.pdfRoute === "auto";
 }

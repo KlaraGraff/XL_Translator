@@ -775,7 +775,7 @@ class PdfImageGenerationMixin:
                 return
             self._image_model_rejected = message
             self._image_model_missing = message
-        self._log("WARN", f"{message}其余需要整页图像翻译的页面将保留原样。")
+        self._log("WARN", f"{message}其余需要图像翻译的页面将保留原样。")
 
     def _stopping_page_attempts(self: PdfImageTranslationRunner) -> bool:
         """这一页别再发新的生成请求：用户停止了，或者图像模型已确认生成不了图、整个

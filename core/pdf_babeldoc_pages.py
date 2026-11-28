@@ -1,4 +1,4 @@
-"""PDF「智能混合」里段落重排（BabelDOC）的部分：哪些页交给它、译完逐页检查、不过的页改走转 Word。
+"""PDF「按页自动选择」里段落重排（BabelDOC）的部分：哪些页交给它、译完逐页检查、不过的页改走转 Word。
 
 装了「段落重排组件」时，可提取文字的页在转 Word 之前先把这些页一次交给 BabelDOC（子进程，见
 core/babeldoc_component.py），它在原 PDF 上按段落排入译文。每一页再拿原文页比一遍
@@ -49,7 +49,7 @@ class PdfBabelDocPagesMixin:
     # ── 哪些页 ───────────────────────────────────────────────────────────
 
     def _babeldoc_route_chosen(self) -> bool:
-        """智能混合、且装了「段落重排组件」：文字页先交给它。没装时文字页直接转 Word，
+        """按页自动选择、且装了「段落重排组件」：文字页先交给它。没装时文字页直接转 Word，
         页面说明里不写「段落重排没用上」——不是用户选的，装不装由用户在扩展页决定。"""
         from core.babeldoc_component import component_paths
 
@@ -153,7 +153,7 @@ class PdfBabelDocPagesMixin:
             return _FALLBACK_SOURCE
 
     def _run_babeldoc_pages(self, prepared_files: list[_PreparedPdfFile], *, total_pages: int = 0) -> None:
-        """智能混合、装了段落重排组件时：在转 Word 之前，每份文件的文字页一次交给 BabelDOC，逐页检查。
+        """按页自动选择、装了段落重排组件时：在转 Word 之前，每份文件的文字页一次交给 BabelDOC，逐页检查。
 
         结果记在 ``_babeldoc_pages``：(源文件路径, 页码) → {status: done|failed|stopped, message,
         pdf_path}。转 Word 只转没 done 的页（PdfWordSegmentsMixin._planned_word_pages）。"""

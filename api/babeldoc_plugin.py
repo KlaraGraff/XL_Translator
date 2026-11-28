@@ -5,7 +5,7 @@
 和翻译引擎版本对得上的程序库，再加几百兆字体和版面模型，自己装几乎对不上；装不上时重试即可，
 可提取文字的页照旧转 Word。
 
-装好后，PDF「智能混合」里可提取文字的页就先用它（core/pdf_babeldoc_pages.py），不用另改设置。
+装好后，PDF「按页自动选择」里可提取文字的页就先用它（core/pdf_babeldoc_pages.py），不用另改设置。
 """
 from __future__ import annotations
 

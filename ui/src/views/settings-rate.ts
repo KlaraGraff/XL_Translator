@@ -219,16 +219,16 @@ export function renderRateSection(tab: "excel" | "word" | "pdf" | "cad"): { acti
   const parts: HTMLElement[] = [];
   const actions: HTMLElement[] = [];
   if (tab === "pdf") {
-    parts.push(secNote(t("翻译方式为「整页图像翻译」时仅使用第一组设置；为「智能混合」时，各页按程序选的方式使用对应的一组。")));
+    parts.push(secNote(t("翻译方式为「全部用图像翻译」时仅使用第一组设置；为「按页自动选择」时，各页按程序选的方式使用对应的一组。")));
     parts.push(groupTitle(
-      t("整页图像翻译"),
-      t("翻译方式为「整页图像翻译」，或智能混合中按整页图像处理的页面"),
+      t("图像翻译"),
+      t("翻译方式为「全部用图像翻译」，或「按页自动选择」中用图像翻译的页面"),
       resetButton({ pdf: { page_generation_concurrency: null, page_retry_attempts: FALLBACK_PDF.page_retry_attempts, review_concurrency: null } }),
     ));
     parts.push(rateGrid(pdfImageFields(), "pdf_image", FALLBACK_PDF, (key) => `pdf.${key}`));
     parts.push(groupTitle(
       t("文字翻译"),
-      t("智能混合中按「段落重排」「转 Word」或「原位替换」（含文字识别）处理的页面"),
+      t("「按页自动选择」中重新排版或原位替换（含文字识别）的页面"),
       resetButton(textResetPatch("pdf_text")),
     ));
     parts.push(textRateGrid("pdf_text"));

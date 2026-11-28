@@ -72,7 +72,7 @@ class PdfAvailabilitySavedTests(unittest.TestCase):
         self.assertIn("密钥", stored.availability_message)
 
     def test_running_out_of_quota_is_not_saved_as_unavailable(self) -> None:
-        """额度用完只算这一次：充值后配置不变，存下的「不可用」会一直挡着智能混合。
+        """额度用完只算这一次：充值后配置不变，存下的「不可用」会一直挡着按页自动选择。
 
         真实报文常带 429 / 403：通用规则会把它们说成「请求过于频繁」「没有访问权限」，
         额度字样在换成人话时丢掉，所以三种写法都要认出来。

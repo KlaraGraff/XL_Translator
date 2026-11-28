@@ -1531,12 +1531,12 @@
     "en": "Numbers, codes and other text that needs no translation are not sent.",
     "fr": "Les chiffres, repères et autres textes sans traduction ne sont pas envoyés."
   },
-  "整页图像翻译 · 发送给图像模型": {
-    "en": "Full-page image translation · sent to the image model",
+  "图像翻译 · 发送给图像模型": {
+    "en": "Image translation · sent to the image model",
     "fr": "Traduction d'image pleine page · envoyé au modèle d'image"
   },
-  "整页图像翻译的页：每页转成图片发送给图像模型；开启「逐页审核」时，未通过的页面附上审核意见重新生成。": {
-    "en": "Full-page image pages: each page is converted to an image and sent to the image model; with Page review on, pages that fail review are regenerated with the review comments.",
+  "图像翻译的页：每页转成图片发送给图像模型；开启「逐页审核」时，未通过的页面附上审核意见重新生成。": {
+    "en": "Image translation pages: each page is converted to an image and sent to the image model; with Page review on, pages that fail review are regenerated with the review comments.",
     "fr": "Pages en traduction d'image : chaque page est convertie en image et envoyée au modèle d'image ; avec le contrôle des pages activé, une page refusée est régénérée avec les remarques du contrôle."
   },
   "每页转成图片发送给图像模型，生成翻译后的页面；开启「逐页审核」时，未通过的页面附上审核意见重新生成。": {
