@@ -179,9 +179,9 @@ def wrap(text: str, font: fitz.Font, fs: float, widths: list[float], squeeze: fl
     """Greedy wrap into len(widths) lines; words, numbers and codes never split.
     ``squeeze`` narrows the glyphs (width factor), as written by place_line.
 
-    A closing mark never starts a line (讲义第 18 页页尾的「。」单独掉到下一行): a single mark
-    hangs past the end of the line (its advance is at most one em, the ink of 「。」「，」 sits in
-    its left half), a longer run of marks takes the line's last character down with it."""
+    A closing mark never starts a line (讲义第 18 页页尾的「。」单独掉到下一行): when it does not
+    fit, the character before it goes down with it (and any marks in between, 「真。）」).
+    Nothing hangs past the end of the line: 「示例」框里挂在行尾的「。）」压到了框线上."""
     toks = TOKEN_RE.findall(text)
 
     def width(s: str) -> float:
@@ -198,13 +198,14 @@ def wrap(text: str, font: fitz.Font, fs: float, widths: list[float], squeeze: fl
             continue
         carry: list[str] = []
         if t.strip() and t.strip()[0] in NO_LINE_START:
-            if len(t) == 1 and width(cand) <= w_lim + fs:
-                cur.append(t)  # hangs
-                continue
             ink = [n for n, x in enumerate(cur) if x.strip()]
-            if len(ink) > 1:
-                carry = cur[ink[-1]:]
-                cur = cur[:ink[-1]]
+            # back over the marks already at the end of the line to the character they follow
+            k = len(ink) - 1
+            while k >= 0 and cur[ink[k]].strip()[0] in NO_LINE_START:
+                k -= 1
+            if k > 0:
+                carry = cur[ink[k]:]
+                cur = cur[:ink[k]]
         lines.append("".join(cur).rstrip())
         i += 1
         if i >= len(widths):
