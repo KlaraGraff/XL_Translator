@@ -359,16 +359,25 @@ class LineStartPunctuationTests(unittest.TestCase):
             self.skipTest("no CJK font on this machine")
         self.font = fitz.Font(fontfile=str(path))
 
-    def test_a_full_stop_hangs_at_the_end_of_a_full_line(self):
+    def test_a_full_stop_takes_the_character_before_it_down(self):
         from core.pdf_vector.writeback import wrap
 
-        self.assertEqual(wrap("一二三四五。", self.font, 10, [51, 50]), ["一二三四五。"])
-        self.assertEqual(wrap("一二三四五。六", self.font, 10, [51, 50]), ["一二三四五。", "六"])
-
-    def test_a_run_of_marks_takes_the_last_character_down_with_it(self):
-        from core.pdf_vector.writeback import wrap
-
+        self.assertEqual(wrap("一二三四五。", self.font, 10, [51, 50]), ["一二三四", "五。"])
+        self.assertEqual(wrap("一二三四五。六", self.font, 10, [51, 50]), ["一二三四", "五。六"])
         self.assertEqual(wrap("一二三四五……", self.font, 10, [51, 50]), ["一二三四", "五……"])
+
+    def test_nothing_hangs_past_the_end_of_the_line(self):
+        """讲义第 18 页「示例」框（2026-11-27 Mac 复查 #353）：挂在行尾的「。）」伸出框线 3.5 pt。"""
+        from core.pdf_vector.writeback import wrap
+
+        self.assertEqual(wrap("一二三四真。）", self.font, 10, [51, 50]), ["一二三四", "真。）"])
+        for text, widths in (("一二三四真。）", [51, 50]), ("一二三。）四五", [31, 50]), ("一二三四五，六七。", [51, 50])):
+            lines = wrap(text, self.font, 10, widths)
+            self.assertEqual("".join(lines), text)
+            for line, limit in zip(lines, widths):
+                self.assertLessEqual(self.font.text_length(line, fontsize=10), limit + 0.01, (text, lines))
+                self.assertNotIn(line[0], "。，）")
+        self.assertIsNone(wrap("一二三四五。", self.font, 10, [51]))  # no room: a smaller size, not an overrun
 
     def test_ordinary_wrapping_is_unchanged(self):
         from core.pdf_vector.writeback import wrap

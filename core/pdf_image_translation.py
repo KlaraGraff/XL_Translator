@@ -142,6 +142,7 @@ from core.pdf_routes import (
     exceeds_word_page,
     fallback_route,
     inplace_target_supported,
+    kept_by_setting_reason,
     needs_ocr,  # noqa: F401
     page_route,
 )
@@ -1569,6 +1570,7 @@ def pdf_page_snapshot_entry(
         "inplace_review_items": list(page.inplace_review_items[:50]) if page is not None else [],
         "inplace_message": page.inplace_message if page is not None else "",
         "kept_reason": page.kept_reason if page is not None else "",
+        "kept_by_setting": page.kept_by_setting if page is not None else "",
         "blank_page": bool(page.blank_page) if page is not None else False,
         "word_requested": bool(page.word_requested) if page is not None else False,
         "word_status": page.word_status if page is not None else "",
@@ -3396,9 +3398,12 @@ class PdfImageTranslationRunner(
                                     "原页将直接放入输出 PDF。",
                                 )
                             else:
+                                # 按设置原样保留：写真实原因（图纸、扫描页、大幅面），不再一律说成大幅面（反馈 #34）。
+                                reason = (page_record.kept_by_setting
+                                          or f"为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），不予翻译")
                                 self._log(
                                     "INFO",
-                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），不予翻译，"
+                                    f"[{prepared.record.name}] 第 {page_record.page_number} 页{reason}，"
                                     "原页将直接放入输出 PDF。",
                                 )
                             self._record_page_submitted()
@@ -4314,6 +4319,17 @@ class PdfImageTranslationRunner(
             word_entry = self._word_pages.get((source_path_key, page_index + 1), {}) if route == ROUTE_WORD else {}
             babeldoc_entry = ((self._babeldoc_done_entry(source_path_key, page_index + 1) or {})
                               if route == ROUTE_BABELDOC else {})
+            blank_page = (route == ROUTE_SKIP and not kept_reason
+                          and self._page_kind(source_path_key, page_index) == KIND_BLANK)
+            kept_by_setting = ""
+            if route == ROUTE_SKIP and not kept_reason and not blank_page:
+                kept_by_setting = kept_by_setting_reason(
+                    self._settings.pdf,
+                    self._page_kind_info(source_path_key, page_index),
+                    page_kind=self._page_kind(source_path_key, page_index) or KIND_SCAN,
+                    short_mm=_pt_to_mm(min(page_width_pt, page_height_pt)),
+                    long_mm=_pt_to_mm(max(page_width_pt, page_height_pt)),
+                )
             if route in {ROUTE_SKIP, ROUTE_INPLACE, ROUTE_WORD, ROUTE_BABELDOC}:
                 # 不送图像模型的页（原样保留、原位替换）不渲染栅格化预览（A3 在
                 # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
@@ -4333,9 +4349,9 @@ class PdfImageTranslationRunner(
                     babeldoc_pdf_path=str(babeldoc_entry.get("pdf_path", "")),
                     babeldoc_message=str(babeldoc_entry.get("note", "")),
                     kept_reason=kept_reason,
+                    kept_by_setting=kept_by_setting,
                     route_note=route_note,
-                    blank_page=(route == ROUTE_SKIP and not kept_reason
-                                and self._page_kind(source_path_key, page_index) == KIND_BLANK),
+                    blank_page=blank_page,
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
                 )
