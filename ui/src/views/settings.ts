@@ -1734,11 +1734,7 @@ function buildPromptAnatomy(surface: ParamsSurface): PromptAnatomy {
     return pdfPromptAnatomy({
       smartContext: pdf.smart_context !== false,
       reviewEnabled: pdf.review_enabled === true,
-      route: text(pdf.translation_route) === "auto" ? "auto" : "image",
-      scanRoute: text(pdf.auto_scan_route, "image"),
-      textRoute: text(pdf.auto_text_route, "word"),
-      drawingRoute: text(pdf.auto_drawing_route, "inplace"),
-      fallback: text(pdf.auto_fallback, "image"),
+      route: text(pdf.translation_route) === "image" ? "image" : "auto",
     });
   }
   const domain = domainSettingsFor(surface);

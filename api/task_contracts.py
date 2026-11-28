@@ -68,7 +68,7 @@ REASON_PDF_REVIEW_MODEL_MISSING = "pdf_review_model_missing"
 # 测试图里的字）。界面认这两个开「本次不审核，直接开始」的弹窗（core/image_input_check.py）。
 REASON_PDF_REVIEW_NO_IMAGE_INPUT = "pdf_review_no_image_input"
 REASON_PDF_REVIEW_IMAGE_UNSEEN = "pdf_review_image_unseen"
-# 自动组合里有页要用「PDF 处理组件」（原位替换、转 Word），本机没装。界面认它开带「去安装」的弹窗。
+# 按页自动选择里有页要用「PDF 处理组件」（原位替换、转 Word），本机没装。界面认它开带「去安装」的弹窗。
 REASON_PDF_COMPONENT_MISSING = "pdf_component_missing"
 
 

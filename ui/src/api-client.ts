@@ -146,8 +146,6 @@ export type BabeldocPluginStatus = {
   download_bytes?: number;
   /** 缺少「PDF 处理组件」时一键安装要先补的大小。 */
   dependency_bytes?: number;
-  /** PDF「可提取文字的页」现在的设置：装好后由 word 自动改成 babeldoc。 */
-  auto_text_route?: string;
   install?: ComponentInstallProgress;
 };
 
@@ -376,11 +374,12 @@ export type PdfRouteCapabilities = {
   inplace_target_ok: boolean;
   /** 原位替换写不了的目标语言（基础代码，如 ar、th）：这些文字要连写排版。 */
   inplace_unsupported_targets?: string[];
-  /** 「段落重排组件」（BabelDOC）装好了没有。 */
+  /** 「段落重排组件」（BabelDOC）装好了没有：装了时按页自动选择的文字页先用它。 */
   babeldoc_component?: boolean;
-  /** 「自动组合」里可提取文字的页用哪种方式：babeldoc / word / inplace / image。 */
-  auto_text_route?: string;
 };
+
+/** 一份 PDF 里按页自动选择会怎样处理的各类页（空白页不算；图纸含放不进 Word 的大页）。 */
+export type PdfPageKindCounts = { text: number; drawing: number; scan: number };
 
 export type PdfPageFile = {
   name: string;
@@ -768,6 +767,15 @@ export class ApiClient {
 
   pdfRouteCapabilities(): Promise<PdfRouteCapabilities> {
     return this.request<PdfRouteCapabilities>("/api/pdf/route-capabilities");
+  }
+
+  /** 所选 PDF 各有几页文字页、图纸、扫描页；读不了的文件为 null。 */
+  async pdfPageKinds(paths: string[]): Promise<Record<string, PdfPageKindCounts | null>> {
+    const result = await this.request<{ counts?: Record<string, PdfPageKindCounts | null> }>("/api/pdf/page-kinds", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    });
+    return result.counts ?? {};
   }
 
   async getOcrCapability(): Promise<OcrPluginStatus> {

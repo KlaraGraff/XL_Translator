@@ -5,40 +5,17 @@
 和翻译引擎版本对得上的程序库，再加几百兆字体和版面模型，自己装几乎对不上；装不上时重试即可，
 可提取文字的页照旧转 Word。
 
-装好后，PDF「自动组合」里「可提取文字的页」原来选的转 Word 自动改成段落重排（maple 2026-11-27
-「装好就自动用」）；用户选的是原位替换或图像翻译时不动。
+装好后，PDF「按页自动选择」里可提取文字的页就先用它（core/pdf_babeldoc_pages.py），不用另改设置。
 """
 from __future__ import annotations
 
 from typing import Any
-
-from loguru import logger
 
 from api.component_install_job import InstallJob
 from core import babeldoc_component_install as installer
 from core import pdf_component_install as pdf_installer
 
 OFFICIAL_BABELDOC_URL = "https://github.com/funstory-ai/BabelDOC"
-
-
-def enable_babeldoc_route() -> bool:
-    """装好了就用：「可提取文字的页」还是默认的转 Word 时改成段落重排。改了返回 True。"""
-    from settings import update_settings_atomically
-
-    def update(settings) -> bool:
-        if settings.pdf.auto_text_route != "word":
-            return False
-        settings.pdf.auto_text_route = "babeldoc"
-        return True
-
-    try:
-        changed = update_settings_atomically(update)
-    except Exception as exc:  # noqa: BLE001 - the component is installed either way; the user can pick it
-        logger.warning(f"[段落重排组件] 装好后没能把文字页改成段落重排：{exc!r}")
-        return False
-    if changed:
-        logger.info("[段落重排组件] 已装好：PDF「可提取文字的页」由转 Word 改为段落重排。")
-    return changed
 
 
 def _pdf_component_missing() -> bool:
@@ -88,12 +65,7 @@ def _install_with_dependency(*, progress=None, cancel=None) -> dict[str, Any]:
     return installer.install(progress=own_progress, cancel=cancel)
 
 
-def _installed() -> None:
-    enable_babeldoc_route()
-
-
-_JOB = InstallJob("段落重排组件", lambda: _install_with_dependency, lambda: installer.ComponentInstallError,
-                  _installed)
+_JOB = InstallJob("段落重排组件", lambda: _install_with_dependency, lambda: installer.ComponentInstallError)
 
 
 def install_progress() -> dict[str, Any]:
@@ -115,18 +87,11 @@ def _unsupported_reason() -> str:
 
 
 def probe_status() -> dict[str, Any]:
-    from settings import load_settings
-
     info = installer.installed_info()
     needs_pdf = _pdf_component_missing()
     reason = _unsupported_reason()
     if not reason and needs_pdf and not pdf_installer.manifest_files():
         reason = "当前系统不能自动安装 PDF 处理组件，段落重排组件要用它里面的程序库。"
-    try:
-        text_route = str(load_settings().pdf.auto_text_route)
-    except Exception as exc:  # noqa: BLE001 - the status still shows; only the route hint is missing
-        logger.debug(f"[段落重排组件] 读取设置失败：{exc!r}")
-        text_route = ""
     return {
         "state": "connected" if info["installed"] else "missing",
         "installed": bool(info["installed"]),
@@ -139,7 +104,6 @@ def probe_status() -> dict[str, Any]:
         "one_click_reason": reason,
         "download_bytes": installer.download_size(),
         "dependency_bytes": pdf_installer.download_size() if needs_pdf else 0,
-        "auto_text_route": text_route,
         "install": install_progress(),
     }
 

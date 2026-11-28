@@ -65,6 +65,8 @@ def _write_three_page_pdf(path: Path) -> None:
 
 def _pdf_settings(root: Path, *, review_enabled: bool = False) -> AppSettings:
     settings = AppSettings()
+    # 这些测试讲整页图像翻译；新建设置默认是按页自动选择（2026-11-28）。
+    settings.pdf.translation_route = "image"
     settings.pdf.target_lang = "en"
     settings.pdf.review_enabled = review_enabled
     settings.pdf_output.use_custom_output_dir = True

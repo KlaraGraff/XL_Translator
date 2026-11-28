@@ -314,3 +314,58 @@ def _migrate_translation_types(payload: dict, stored_version: int) -> dict:
     migrated = dict(payload)
     migrated["translation_types"] = {"order": order, "visible": {}}
     return migrated
+
+
+# v42 去掉的「逐类页的首选和保底」四项和它们 v41 的默认值（maple 2026-11-28：PDF 只让用户选
+# 「按页自动选择」和「整页图像翻译」，混合里每页用什么、用不了时换什么都由程序定）。
+_PRE_V42_PDF_ROUTE_DEFAULTS = {
+    "auto_scan_route": "image",
+    "auto_text_route": "word",
+    "auto_drawing_route": "inplace",
+    "auto_fallback": "image",
+}
+
+
+def _pre_v42_pdf_route(pdf: dict) -> str:
+    """v41 文件里存的翻译方式：没写的是当时的默认值整页图像翻译。"""
+    return str(pdf.get("translation_route") or "image")
+
+
+def pre_v42_pdf_route_choices(payload: dict) -> dict[str, str]:
+    """v42 升级会丢掉的 PDF 翻译方式选择：用户选的单一路线，或按页自动选择里改过默认值的细项。
+
+    空字典表示没什么可丢（整页图像翻译，或按页自动选择全用默认值），升级不用备份；装好段落
+    重排组件时自动改成的 auto_text_route=babeldoc 也算在内，多备份一次不丢东西。"""
+    pdf = payload.get("pdf")
+    if not isinstance(pdf, dict):
+        return {}
+    route = _pre_v42_pdf_route(pdf)
+    if route == "image":
+        return {}
+    choices = {key: str(pdf[key]) for key, default in _PRE_V42_PDF_ROUTE_DEFAULTS.items()
+               if key in pdf and str(pdf[key]) != default}
+    if route != "auto" or choices:
+        choices["translation_route"] = route
+    return choices
+
+
+def _migrate_pdf_two_routes(payload: dict, stored_version: int) -> dict:
+    """v42: PDF 翻译方式只剩「按页自动选择」（auto）和「整页图像翻译」（image）。
+
+    * 整页图像翻译照旧：文件里写的 image，以及没写这一项的旧文件（当时默认就是它）。
+      v42 起新用户默认按页自动选择，只对没有设置文件的新安装生效。
+    * 原位替换、转 Word 和自动组合都并入按页自动选择；逐类页的首选和保底四项去掉，改由程序
+      定（core.pdf_routes.page_route / fallback_route）。用户改过的只留在备份里：第一次
+      写回前 save_settings 按 pre_v42_pdf_route_choices 先备份旧文件。
+    """
+    if stored_version >= 42:
+        return payload
+    pdf = payload.get("pdf")
+    pdf = dict(pdf) if isinstance(pdf, dict) else {}
+    route = _pre_v42_pdf_route(pdf)
+    pdf["translation_route"] = "auto" if route in ("auto", "inplace", "word") else "image"
+    for key in _PRE_V42_PDF_ROUTE_DEFAULTS:
+        pdf.pop(key, None)
+    migrated = dict(payload)
+    migrated["pdf"] = pdf
+    return migrated

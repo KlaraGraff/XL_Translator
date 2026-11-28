@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import FastAPI
+from loguru import logger
+from pydantic import BaseModel
 
 from settings import load_settings
 
@@ -45,10 +48,8 @@ def route_capabilities() -> dict[str, Any]:
         "inplace_target_ok": inplace_target_supported(settings.pdf.target_lang),
         # 原位替换写不了的目标语言（界面按当前选的目标语言提示，不必等设置存好再查）。
         "inplace_unsupported_targets": sorted(COMPLEX_SCRIPT_TARGETS),
-        # 段落重排（BabelDOC）装好了没有：没装时选了它的文字页照旧转 Word。
+        # 段落重排（BabelDOC）装好了没有：没装时按页自动选择的文字页转 Word。
         "babeldoc_component": _babeldoc_installed(),
-        # 「自动组合」里可提取文字的页用哪种方式（使用说明里的示意按它画）。
-        "auto_text_route": str(settings.pdf.auto_text_route),
     }
 
 
@@ -58,7 +59,34 @@ def _babeldoc_installed() -> bool:
     return component_paths() is not None
 
 
+def page_kinds(paths: list[str]) -> dict[str, Any]:
+    """所选 PDF 各有几页文字页、图纸、扫描页：PDF 页「翻译方式」下面那行「这批文件会怎样处理」
+    按它写。读不了的文件记 None（界面不猜），任务里照常报错。"""
+    from core.pdf_routes import count_page_kinds
+
+    counts: dict[str, Any] = {}
+    for path in paths[:_PAGE_KINDS_MAX_FILES]:
+        try:
+            counts[path] = asdict(count_page_kinds(path))
+        except Exception as exc:  # noqa: BLE001 - unreadable here; the task reports the real error
+            logger.debug(f"[PDF] 数不出页面类型：{path}：{exc!r}")
+            counts[path] = None
+    return {"counts": counts}
+
+
+# 一次最多数这么多份；更多时界面只按已数出的写。
+_PAGE_KINDS_MAX_FILES = 200
+
+
+class PageKindsRequest(BaseModel):
+    paths: list[str] = []
+
+
 def register(app: FastAPI) -> None:
     @app.get("/api/pdf/route-capabilities")
     def pdf_route_capabilities() -> dict[str, Any]:
         return route_capabilities()
+
+    @app.post("/api/pdf/page-kinds")
+    def pdf_page_kinds(request: PageKindsRequest) -> dict[str, Any]:
+        return page_kinds(list(request.paths))

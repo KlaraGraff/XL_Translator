@@ -109,6 +109,7 @@ from settings_migrations import (  # noqa: F401  moved, re-exported
     _changed_int,
     _extract_settings_version,
     _has_legacy_prompt_data,
+    _migrate_pdf_two_routes,
     _migrate_prompt_layers,
     _migrate_rate_settings,
     _migrate_smart_domain_default,
@@ -117,6 +118,7 @@ from settings_migrations import (  # noqa: F401  moved, re-exported
     _prompt_text,
     _unique_extra_name,
     migrate_prompt_layers,
+    pre_v42_pdf_route_choices,
 )
 
 _KEY_OVERRIDE_LOCAL = threading.local()
@@ -1261,22 +1263,16 @@ class PdfSettings(BaseModel):
     # 翻译模型，直接从源 PDF 矢量原样导入输出——这类页经不起栅格化，且大多数
     # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
     skip_oversized_pages: bool = True
-    # 翻译方式（Beta 分支新增，见 core.pdf_routes）：
-    #   image —— 整页图像翻译（默认，和以前一样；大幅面页按上面的开关跳过或翻译）
-    #   auto  —— 自动组合：逐页按类型处理，扫描页按 auto_scan_route，可提取文字的页
-    #            按 auto_text_route（转 Word 时连续几页合成一段转 Word 翻译，再转回
-    #            PDF 拼回原位；输出始终是 PDF，also_save_word 可另存 Word），图纸和
-    #            大幅面页按 auto_drawing_route；首选用不了时按 auto_fallback 保底。
-    # 分支早先还有 inplace / word 两个单一路线，读到时换算成等价的自动组合（见下面的
-    # 校验）。没有版本号升级：都是加法字段，旧版本读到会忽略；分支若合入主线再升版。
-    translation_route: Literal["image", "inplace", "word", "auto"] = "image"
-    auto_scan_route: Literal["image", "skip"] = "image"
-    # babeldoc（段落重排，2026-11-27）：在原 PDF 上按段落重排译文（「段落重排组件」，BabelDOC），
-    # 每页过一遍检查，不过的页和没装组件时照旧转 Word（core/pdf_babeldoc_pages.py）。
-    auto_text_route: Literal["babeldoc", "word", "inplace", "image"] = "word"
-    auto_drawing_route: Literal["inplace", "skip", "image"] = "inplace"
-    auto_fallback: Literal["image", "skip"] = "image"
-    # 自动组合：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
+    # 翻译方式（见 core.pdf_routes）只有两种（maple 2026-11-28）：
+    #   auto  —— 按页自动选择（新用户默认）：程序逐页选方式再拼回一份 PDF。可提取文字的页
+    #            段落重排（没装组件或没过检查的页转 Word），图纸和大幅面页原位替换，扫描
+    #            页整页图像翻译；首选用不了时程序自己选保底，用户不再挑。
+    #   image —— 整页图像翻译：每页交给图像模型重新生成（大幅面页按上面的开关跳过或翻译）。
+    # 早先的 inplace / word 两个单一路线读到时换算成 auto。v42 起逐类页的首选和保底不再是
+    # 设置（auto_scan_route / auto_text_route / auto_drawing_route / auto_fallback），升级
+    # 时去掉，见 settings_migrations._migrate_pdf_two_routes。
+    translation_route: Literal["image", "auto"] = "auto"
+    # 按页自动选择：整份文件都能提取文字、整份转 Word 翻译时，除了 PDF 另存一份 Word。默认关。
     also_save_word: bool = False
     # 以前的「大幅面起点」（A3 / A2 / A1 / A0）。2026-10-21 起自动组合先看内容再看尺寸
     # （见 core.pdf_routes），不再读这一项；字段留着，旧设置文件照常读写。
@@ -1326,16 +1322,9 @@ class PdfSettings(BaseModel):
         for key in ("page_generation_concurrency", "review_concurrency"):
             if migrated.get(key) in ("", None):
                 migrated[key] = None
-        # 分支早先的单一路线换算成等价的自动组合
-        route = migrated.get("translation_route")
-        if route == "inplace":
-            migrated.update(translation_route="auto", auto_text_route="inplace", auto_drawing_route="inplace")
-        elif route == "word":
-            migrated.update(
-                translation_route="auto",
-                auto_text_route="word",
-                auto_drawing_route="image" if migrated.get("skip_oversized_pages") is False else "skip",
-            )
+        # 早先的单一路线（原位替换、转 Word）并入按页自动选择
+        if migrated.get("translation_route") in ("inplace", "word"):
+            migrated["translation_route"] = "auto"
         # 认不出的取值（比如更新版本写下的新选项）退回默认，不能让整份设置读不进来。
         for key, allowed in _PDF_ROUTE_CHOICES.items():
             if key in migrated and migrated[key] not in allowed:
@@ -1345,10 +1334,6 @@ class PdfSettings(BaseModel):
 
 _PDF_ROUTE_CHOICES: dict[str, tuple[str, ...]] = {
     "translation_route": ("image", "auto"),
-    "auto_scan_route": ("image", "skip"),
-    "auto_text_route": ("babeldoc", "word", "inplace", "image"),
-    "auto_drawing_route": ("inplace", "skip", "image"),
-    "auto_fallback": ("image", "skip"),
     "oversized_page_threshold": ("A3", "A2", "A1", "A0"),
     "inplace_font": ("sans", "original"),
     "inplace_overflow_policy": ("write_translation", "preserve_original"),
@@ -2266,6 +2251,16 @@ def _has_legacy_rate_data(stored_version: int) -> bool:
     return raw is not None and bool(_pre_v38_tuned_rate(raw))
 
 
+def _has_legacy_pdf_route_data(stored_version: int | None) -> bool:
+    """Whether the v42 upgrade drops a PDF route choice the user had made (see
+    settings_migrations.pre_v42_pdf_route_choices); like the v38 rate migration,
+    only then is the old file backed up. ``None``: no adopted file, nothing to drop."""
+    if stored_version is None or stored_version >= 42:
+        return False
+    raw = _raw_settings_payload()
+    return raw is not None and bool(pre_v42_pdf_route_choices(raw))
+
+
 class SettingsSchemaError(ValueError):
     """The settings file could not be read *and* could not be backed up.
 
@@ -2464,7 +2459,7 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, _migrate_translation_types(_migrate_rate_settings(
+        return "adopted", stored_version, _migrate_pdf_two_routes(_migrate_translation_types(_migrate_rate_settings(
             _migrate_prompt_layers(
                 _migrate_smart_domain_default(
                     _migrate_palette_default(_migrate_theme_default(payload, stored_version), stored_version),
@@ -2473,7 +2468,7 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
                 stored_version,
             ),
             stored_version,
-        ), stored_version)
+        ), stored_version), stored_version)
     return "current", stored_version, payload
 
 
@@ -2936,8 +2931,10 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # 旧字段清空），第一次写回前同样留一份原文件。
             # v38 的速率与重试一律改用新默认值，旧的 word_batch / request_retry
             # 两节随之移除；用户改过速率的，同样先留一份。
+            # v42 的 PDF 翻译方式只剩两种，改过的细项随之去掉；同样先留一份。
             if (
                 _has_legacy_rate_data(stored_version)
+                or _has_legacy_pdf_route_data(stored_version)
                 or AppSettings._migrate_legacy_image_model(_payload) != _payload
                 or (stored_version < 35 and _has_legacy_prompt_data(_raw_prompt_choices(stored_version)))
             ):
@@ -2972,7 +2969,9 @@ def update_settings_atomically(update: Callable[[AppSettings], bool]) -> bool:
         current = AppSettings.model_validate(payload) if payload is not None else AppSettings()
         if not update(current):
             return False
-        if state == "adopted" and payload is not None and _has_legacy_rate_data(stored_version):
+        if state == "adopted" and payload is not None and (
+            _has_legacy_rate_data(stored_version) or _has_legacy_pdf_route_data(stored_version)
+        ):
             # 后台写入也可能是升级后的第一次写：先留一份旧文件（见 save_settings）。
             _backup_settings_file(f"settings_v{stored_version}_before_upgrade")
         current.settings_version = SETTINGS_SCHEMA_VERSION

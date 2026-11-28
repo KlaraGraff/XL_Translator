@@ -257,6 +257,7 @@ class PdfFileProgressTests(unittest.TestCase):
                     for path in (first, second)
                 ]
                 settings = AppSettings(target_lang="en")
+                settings.pdf.translation_route = "image"
                 super().__init__(items, settings, source_root=root, task_logger_enabled=False)
                 self.unfinished_checks = 0
                 self.outputs_missing_on_second_pass: list[bool] = []
@@ -374,6 +375,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_image = root / "source.png"
             source_image.write_bytes(_png_bytes(1200, 1600))
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             runner = PdfImageTranslationRunner(
                 [],
                 settings,
@@ -458,6 +460,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             (source_dir / "note.txt").write_text("not copied", encoding="utf-8")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
@@ -537,6 +540,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 resolution=144.0,
             )
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
             settings.image_model_role.cloud_model = "image-model"
@@ -577,6 +581,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_image.write_bytes(_png_bytes(1200, 1600))
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
@@ -652,6 +657,7 @@ class PdfImageTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             base = target_dir / "source_英文.pdf"
             base.write_text("old", encoding="utf-8")
 
@@ -681,6 +687,7 @@ class PdfImageTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             base = target_dir / "source_英文.pdf"
             base.write_text("old", encoding="utf-8")
 
@@ -699,6 +706,7 @@ class PdfImageTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             (target_dir / "source_英文_高清.pdf").write_text("old", encoding="utf-8")
 
             high, compressed = resolve_translated_pdf_variant_paths(
@@ -715,6 +723,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
     def test_translated_artifact_names_sanitize_windows_invalid_fragments(self) -> None:
         settings = AppSettings(target_lang="en")
+        settings.pdf.translation_route = "image"
 
         self.assertEqual(
             translated_pdf_base_name('site:plan?"A".pdf', "en", settings),
@@ -734,6 +743,7 @@ class PdfImageTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             (target_dir / "[source]_英文_R1.pdf").write_text("old", encoding="utf-8")
 
             next_path = resolve_translated_pdf_path(
@@ -1232,6 +1242,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             page_png.parent.mkdir(parents=True)
             page_png.write_bytes(_png_bytes(1200, 1600))
             settings = AppSettings()
+            settings.pdf.translation_route = "image"
             done = DoneMsg(
                 output_dir=str(root),
                 file_results=[
@@ -1362,6 +1373,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf.write_bytes(b"%PDF-1.4\n")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
             settings.image_model_role.cloud_model = "image-model"
@@ -1413,6 +1425,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf.write_bytes(b"%PDF-1.4\n")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.pdf.review_enabled = True
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
@@ -1581,6 +1594,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf.write_bytes(b"%PDF-1.4\n")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.review_enabled = True
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
@@ -1631,6 +1645,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_retry_attempts = 0
@@ -1686,6 +1701,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_retry_attempts = 0
@@ -1737,6 +1753,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf.write_bytes(b"%PDF-1.4\n")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.review_enabled = True
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
@@ -1791,6 +1808,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
@@ -1825,6 +1843,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
     def test_runner_uses_direct_mode_pdf_concurrency_default(self) -> None:
         settings = AppSettings(target_lang="en")
+        settings.pdf.translation_route = "image"
         settings.engine.concurrency = 20
         settings.pdf.page_generation_concurrency = None
         runner = PdfImageTranslationRunner(
@@ -1843,6 +1862,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
@@ -1905,6 +1925,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 1
@@ -1952,6 +1973,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 1
@@ -2007,6 +2029,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 1
@@ -2066,6 +2089,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 1
@@ -2121,6 +2145,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
@@ -2156,6 +2181,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_retry_attempts = 3
@@ -2193,6 +2219,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.review_enabled = True
@@ -2810,6 +2837,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.translation_route = "image"
             settings.pdf.target_lang = "en"
             settings.pdf.skip_oversized_pages = True
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
@@ -3238,6 +3266,7 @@ class _StopOnCallsImageClient(_FakeImageClient):
 def _page_review_settings(root: Path) -> AppSettings:
     """Minimal single-model PDF settings writing into a temporary output root."""
     settings = AppSettings(target_lang="en")
+    settings.pdf.translation_route = "image"
     settings.output.use_custom_output_dir = True
     settings.output.custom_output_dir = str(root / "out")
     settings.pdf.page_generation_concurrency = 1
@@ -3488,6 +3517,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
 
     def _pdf_settings(self, root: Path, *, model: str = "image-model") -> AppSettings:
         settings = AppSettings(target_lang="en")
+        settings.pdf.translation_route = "image"
         settings.pdf.target_lang = "en"
         settings.output.use_custom_output_dir = True
         settings.output.custom_output_dir = str(root / "out")
@@ -3812,6 +3842,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
 
     def test_explicit_page_concurrency_setting_beats_the_auto_recommendation(self) -> None:
         settings = AppSettings(target_lang="en")
+        settings.pdf.translation_route = "image"
         settings.pdf.page_generation_concurrency = 5
         runner = PdfImageTranslationRunner([], settings, task_logger_enabled=False)
         self.assertEqual(runner._resolve_pdf_concurrency(2), 5)

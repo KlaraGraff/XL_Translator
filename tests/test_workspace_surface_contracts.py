@@ -121,5 +121,5 @@ def test_prompt_settings_explain_composition_in_a_dialog():
     anatomy = (VIEWS / "prompt-anatomy.ts").read_text(encoding="utf-8")
     assert 'el("div", "modal prompt-anatomy-modal")' in anatomy
     assert 't("本批涉及的词条")' in anatomy
-    for route in ("整页图像翻译", "转成 Word", "原位替换"):
+    for route in ("图像翻译", "转成 Word", "原位替换"):
         assert f't("{route} · 发送给' in anatomy

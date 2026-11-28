@@ -4,6 +4,7 @@ import json
 import unittest
 
 from settings import AppSettings
+import config
 import settings as settings_module
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -147,7 +148,7 @@ class PaletteDefaultMigrationTests(IsolatedAppDataTestCase):
         settings_module.save_settings(loaded)
 
         persisted = self._read_settings()
-        self.assertEqual(persisted["settings_version"], 41)
+        self.assertEqual(persisted["settings_version"], config.SETTINGS_SCHEMA_VERSION)
         self.assertEqual(persisted["appearance"]["palette_light"], "liuguang")
         self.assertEqual(persisted["appearance"]["palette_dark"], "celadon")
         reloaded = settings_module.load_settings().appearance

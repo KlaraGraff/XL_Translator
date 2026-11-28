@@ -246,25 +246,25 @@ class PdfPageRecord:
     # 这一页要整页图像翻译，但没有设置图像翻译模型（翻译方式不是整页图像翻译时任务
     # 照样能跑）：原页放进输出，这里写原因。
     kept_reason: str = ""
-    # 按设置原样保留的页（大幅面开了「跳过 A3 及更大的页面」，自动组合里「图纸和大图」
+    # 按设置原样保留的页（大幅面开了「跳过 A3 及更大的页面」，按页自动选择里「图纸和大图」
     # 「扫描页」选了原样保留）：真实原因，日志、逐页说明和报告都用它（core.pdf_routes.
     # kept_by_setting_reason）。这不是出了问题，不算进 kept_reason 的需复核。旧记录为空。
     kept_by_setting: str = ""
     # 自动识别里判断为空白页、按原页放进输出的页（也记 skipped_oversize，不送图像模型）。
     # 说法和计数要靠它和大幅面页分开，否则空白的 Letter 页会被写成「为大幅面」。
     blank_page: bool = False
-    # 自动组合里转 Word 翻译的页（Beta）：连续几页合成一段，word_segment 是段号
+    # 按页自动选择里转 Word 翻译的页（Beta）：连续几页合成一段，word_segment 是段号
     # （从 1 起），word_status 为 "" | done | failed | stopped。
     word_requested: bool = False
     word_segment: int = 0
     word_status: str = ""
     word_message: str = ""
-    # 自动组合里段落重排（BabelDOC）译好、通过了逐页检查的页：babeldoc_status 为 "done"，
+    # 按页自动选择里段落重排（BabelDOC）译好、通过了逐页检查的页：babeldoc_status 为 "done"，
     # babeldoc_pdf_path 是这一页的单页 PDF，装订时导入；没通过的页改走转 Word，这里为空。
     babeldoc_status: str = ""
     babeldoc_pdf_path: str = ""
     babeldoc_message: str = ""
-    # 自动组合：首选方式在这一页用不了、改用保底方式时写原因（如「转成 Word 失败，
+    # 按页自动选择：首选方式在这一页用不了、改用保底方式时写原因（如「转成 Word 失败，
     # 改用整页图像翻译」）。保留原样的另写在 kept_reason。
     route_note: str = ""
     review_enabled: bool = False

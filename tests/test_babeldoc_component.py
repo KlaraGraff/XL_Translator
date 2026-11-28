@@ -1,4 +1,4 @@
-"""段落重排（BabelDOC）：一键安装、翻译子进程、逐页检查、接进 PDF「自动组合」、扩展页「PDF 组件」大类。
+"""段落重排（BabelDOC）：一键安装、翻译子进程、逐页检查、接进 PDF「按页自动选择」、扩展页「PDF 组件」大类。
 
 BabelDOC 和它几百兆的字体、版面模型不在测试环境里：子进程换成一个按同样协议回话的假程序，
 安装换成假的下载源。真下载、真排版由 scripts/component_install_smoke.py 在 macOS / Windows 上跑，
@@ -521,7 +521,7 @@ def test_reasons_have_english_and_french_entries():
         assert catalog.get(text, {}).get("en") and catalog[text].get("fr"), text
 
 
-# ── 接进 PDF「自动组合」 ──────────────────────────────────────────────────
+# ── 接进 PDF「按页自动选择」 ──────────────────────────────────────────────────
 
 A4 = (595.276, 841.89)
 SENTENCE = "The applicant must present a valid passport and proof of travel insurance before departure."
@@ -586,8 +586,7 @@ def _run_task(tmp_path: Path, *, fake_babeldoc, installed=True, chat=True, pages
     source_pdf = tmp_path / "source.pdf"
     _text_source(source_pdf, pages)
     settings = AppSettings(target_lang=target)
-    settings.pdf = PdfSettings.model_validate({"target_lang": target, "translation_route": "auto",
-                                               "auto_text_route": "babeldoc"})
+    settings.pdf = PdfSettings.model_validate({"target_lang": target, "translation_route": "auto"})
     settings.image_model_role.source_role = SOURCE_INDEPENDENT
     settings.image_model_role.cloud_provider = "custom_openai"
     settings.image_model_role.cloud_model = "image-model"
@@ -678,13 +677,14 @@ def test_text_pages_use_paragraph_reflow_and_failing_pages_go_to_word(tmp_path):
     assert record.skipped_oversize_page_count == 0
 
 
-def test_without_the_component_text_pages_go_to_word_and_say_why(tmp_path):
+def test_without_the_component_text_pages_go_straight_to_word(tmp_path):
+    # 按页自动选择没有子选项：没装组件时文字页本来就转 Word，不算「换了方式」，不另提示（2026-11-28）。
     fake = _Runs(good_pages={1, 2})
     _runner, record, client, logs, _chats, word = _run_task(tmp_path, fake_babeldoc=fake, installed=False)
     assert fake.calls == [] and len(client.calls) == 0 and word == [2]
     assert all(page.babeldoc_status != "done" for page in record.pages)
-    assert any(level == "WARN" and "未安装「段落重排组件」：2 页可提取文字的页改为转成 Word 翻译。" in text
-               for level, text in logs)
+    assert all(not page.route_note for page in record.pages)
+    assert not [text for level, text in logs if level == "WARN" and "段落重排" in text]
     with fitz.open(record.translated_pdf_path) as out:
         assert "SEGMENT-TRANSLATED" in out[0].get_text()
 
@@ -709,34 +709,25 @@ def test_all_pages_passing_means_no_word_conversion(tmp_path):
 # ── 设置与扩展页 ──────────────────────────────────────────────────────────
 
 
-def test_settings_accept_the_new_route_and_old_files_keep_word():
+def test_installing_the_component_needs_no_setting(monkeypatch):
+    """装好就用：按页自动选择的文字页先用段落重排，不用再改设置（原来装好后要把「文字页」改成它）。"""
+    import api.babeldoc_plugin as plugin
+    from core.pdf_babeldoc_pages import PdfBabelDocPagesMixin
     from settings import PdfSettings
 
-    assert PdfSettings().auto_text_route == "word"
-    assert PdfSettings.model_validate({"auto_text_route": "babeldoc"}).auto_text_route == "babeldoc"
+    assert "auto_text_route" not in PdfSettings.model_fields
+    assert not hasattr(plugin, "enable_babeldoc_route")
 
+    class _Owner(PdfBabelDocPagesMixin):
+        def __init__(self, route: str) -> None:
+            self._settings = type("S", (), {"pdf": PdfSettings(translation_route=route)})()
 
-def test_installing_switches_word_to_babeldoc_but_not_other_choices(hermetic, monkeypatch):
-    import settings as settings_module
-    from api.babeldoc_plugin import enable_babeldoc_route
-    from settings import load_settings, update_settings_atomically
-
-    root = hermetic / "settings"
-    monkeypatch.setattr(settings_module, "APP_DATA_DIR", root)
-    monkeypatch.setattr(settings_module, "SETTINGS_PATH", root / "settings.json")
-    monkeypatch.setattr(settings_module, "BACKUPS_DIR", root / "backups")
-    assert load_settings().pdf.auto_text_route == "word"
-    assert enable_babeldoc_route() is True
-    assert load_settings().pdf.auto_text_route == "babeldoc"
-    assert enable_babeldoc_route() is False
-
-    def choose_inplace(settings) -> bool:
-        settings.pdf.auto_text_route = "inplace"
-        return True
-
-    update_settings_atomically(choose_inplace)
-    assert enable_babeldoc_route() is False
-    assert load_settings().pdf.auto_text_route == "inplace"
+    site = Path("bd")
+    monkeypatch.setattr(component, "component_paths", lambda: (site, site, site))
+    assert _Owner("auto")._babeldoc_route_chosen() is True
+    assert _Owner("image")._babeldoc_route_chosen() is False
+    monkeypatch.setattr(component, "component_paths", lambda: None)
+    assert _Owner("auto")._babeldoc_route_chosen() is False
 
 
 def test_fixed_glossary_takes_only_unambiguous_always_entries(monkeypatch):

@@ -52,6 +52,7 @@ class StartBlockedModelReasonTests(IsolatedAppDataTestCase):
 
     def test_pdf_tags_missing_image_and_review_models(self) -> None:
         settings = AppSettings()
+        settings.pdf.translation_route = "image"
         settings.pdf.target_lang = "en"
         with self.assertRaises(TaskInputError) as caught:
             get_surface("pdf").validate_preflight(

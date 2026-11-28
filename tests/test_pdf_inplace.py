@@ -38,12 +38,18 @@ LABELS = {
 }
 
 
-def _write_pdf(path: Path, sizes, *, with_text: list[bool], blank=()) -> None:
+def _write_pdf(path: Path, sizes, *, with_text: list[bool], blank=(), scan=()) -> None:
     doc = fitz.open()
     for index, ((w, h), text) in enumerate(zip(sizes, with_text)):
         page = doc.new_page(width=w, height=h)
         if index in blank:
             continue  # nothing on it at all: a blank page
+        if index in scan:
+            # a scanned page: one picture over the whole page. 按页自动选择 sends it to the image model.
+            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 80), 0)
+            pix.clear_with(200)
+            page.insert_image(page.rect, pixmap=pix)
+            continue
         page.draw_line((40, 200), (w - 40, 200), color=(1, 0, 0), width=1)  # a drawing line that must survive
         if text:
             y = 120
@@ -64,12 +70,12 @@ def _hooks(translate=None) -> InplaceHooks:
 @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine")
 class InplaceTaskTests(unittest.TestCase):
     def _run(self, *, route="auto", target="zh", hooks=None, sizes=(A4, A2), text=(True, True),
-             image_model_missing="", extra=None, office=None, blank=(), prefill=None):
+             image_model_missing="", extra=None, office=None, blank=(), scan=(), prefill=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         source_pdf = root / "source.pdf"
-        _write_pdf(source_pdf, list(sizes), with_text=list(text), blank=blank)
+        _write_pdf(source_pdf, list(sizes), with_text=list(text), blank=blank, scan=scan)
         settings = AppSettings(target_lang=target)
         settings.pdf = PdfSettings.model_validate({"target_lang": target, "translation_route": route,
                                                    **(extra or {})})
@@ -103,8 +109,8 @@ class InplaceTaskTests(unittest.TestCase):
         return runner, prepared.record, client
 
     def test_oversized_page_is_translated_in_place_and_keeps_vectors(self):
-        runner, record, client = self._run(extra={"auto_text_route": "image"})
-        self.assertEqual(len(client.calls), 1)  # only the A4 page went to the image model
+        runner, record, client = self._run(text=(False, True), scan=(0,))
+        self.assertEqual(len(client.calls), 1)  # only the A4 scan went to the image model
         self.assertTrue(record.translated_pdf_path)  # page 1 is a blank fake image, so the file may be flagged
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
         self.assertEqual(page.inplace_status, "done")
@@ -124,7 +130,7 @@ class InplaceTaskTests(unittest.TestCase):
         # 没装「PDF 处理组件」：页面类型照常判断（pypdfium2），原位替换的页改用保底方式，
         # 大幅面图纸保留原样，A4 文字页照常走图像翻译。
         with patch("core.pdf_component.is_available", return_value=False):
-            runner, record, client = self._run(extra={"auto_text_route": "image"})
+            runner, record, client = self._run(text=(False, True), scan=(0,))
         self.assertEqual(len(client.calls), 1)
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
         self.assertFalse(page.inplace_status)
@@ -137,7 +143,7 @@ class InplaceTaskTests(unittest.TestCase):
         def broken(_texts, _prompt):
             raise RuntimeError("service down")
 
-        _runner, record, _client = self._run(hooks=_hooks(broken), extra={"auto_text_route": "image"})
+        _runner, record, _client = self._run(hooks=_hooks(broken), text=(False, True), scan=(0,))
         page = sorted(record.pages, key=lambda p: p.page_number)[1]
         self.assertEqual(page.inplace_status, "kept_original")
         # 试过没换成，不是「因幅面过大被跳过」
@@ -220,7 +226,7 @@ class InplaceTaskTests(unittest.TestCase):
             calls.append(len(texts))
             raise RuntimeError("service down")
 
-        runner, record, _client = self._run(hooks=_hooks(broken), extra={"auto_text_route": "image"})
+        runner, record, _client = self._run(hooks=_hooks(broken), text=(False, True), scan=(0,))
         self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
         before = len(calls)
         # a later single-page rerun finalizes the file again: the failed in-place
@@ -413,15 +419,14 @@ class InplaceTaskTests(unittest.TestCase):
     def test_rerouted_and_kept_pages_are_explained_in_the_report(self):
         from core.pdf_task_report import _file_record_to_result, _route_report_lines
 
-        _runner, record, _client = self._run(target="ar", sizes=(A4, A2), text=(True, True),
-                                             extra={"auto_text_route": "inplace"})
+        _runner, record, _client = self._run(target="ar", sizes=(A4, A2), text=(True, True))
         lines = "\n".join(_route_report_lines(record))
-        self.assertIn("第 1 页：原位替换暂不支持该目标语言（文字需连写排版），改用整页图像翻译", lines)
+        self.assertIn("第 1 页：电脑上没有 Microsoft Word 或 LibreOffice，译好的正文转不回 PDF，改用图像翻译", lines)
         self.assertIn("第 2 页：原位替换暂不支持该目标语言（文字需连写排版），这一页保留原样", lines)
         detail = _file_record_to_result(record)
         text = str(detail)
         self.assertNotIn("没有设置图像翻译模型", text)
-        self.assertIn("改用整页图像翻译", text)
+        self.assertIn("改用图像翻译", text)
 
     def test_failed_word_segment_tries_in_place_first(self):
         # maple 2026-11-26：转不成 Word 的文字页先原位替换（数字、编号照原样），不先交给图像翻译。
@@ -453,20 +458,21 @@ class InplaceTaskTests(unittest.TestCase):
         _runner, record, client = self._run(target="ar", sizes=(A4,), text=(True,))
         first = record.pages[0]
         self.assertFalse(first.inplace_requested)
-        self.assertIn("改用整页图像翻译", first.route_note)
+        self.assertIn("改用图像翻译", first.route_note)
         self.assertEqual(len(client.calls), 1)
 
-    def test_safety_net_keep_original(self):
+    def test_without_an_image_model_the_safety_net_keeps_the_page(self):
+        # 保底由程序选：没有图像模型时保留原样（以前要在「保底方式」里选）。
         _runner, record, client = self._run(target="ar", sizes=(A4, A2), text=(True, True),
-                                            extra={"auto_fallback": "skip"})
+                                            image_model_missing="没有设置图像翻译模型")
         first = sorted(record.pages, key=lambda p: p.page_number)[0]
         self.assertTrue(first.kept_reason)
         self.assertEqual(len(client.calls), 0)
 
-    def test_keep_original_safety_net_still_tries_in_place_after_word(self):
-        # 保底选「保留原样」也先试原位替换：它不送图像模型，也不会画错数字。
+    def test_without_an_image_model_word_failures_still_try_in_place(self):
+        # 没有图像模型（保底为保留原样）也先试原位替换：它不送图像模型，也不会画错数字。
         _runner, record, client = self._run(sizes=(A4, A2), text=(True, True),
-                                            extra={"auto_fallback": "skip"})
+                                            image_model_missing="没有设置图像翻译模型")
         first = sorted(record.pages, key=lambda p: p.page_number)[0]
         self.assertEqual(first.inplace_status, "done")
         self.assertFalse(first.kept_reason)
@@ -520,8 +526,7 @@ class WordRouteTaskTests(unittest.TestCase):
     """The whole task (``_run``) with a word-route file: stop and review status."""
 
     def _run_task(self, fake_word, *, route="auto", sizes=(A4, A4), threshold="A3", text=(True, True), kinds=None,
-                  out_pages=1, image_model="image-model", fit=None, hooks=None, inplace=True,
-                  fallback="image"):
+                  out_pages=1, image_model="image-model", fit=None, hooks=None, inplace=True):
         from core.pdf_routes import DocumentKind, PageKind
         from core.task_runner import DoneMsg, ErrorMsg, StoppedMsg
 
@@ -532,8 +537,7 @@ class WordRouteTaskTests(unittest.TestCase):
         _write_pdf(src, list(sizes), with_text=list(text))
         settings = AppSettings(target_lang="zh")
         settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": route,
-                                                   "oversized_page_threshold": threshold,
-                                                   "auto_fallback": fallback})
+                                                   "oversized_page_threshold": threshold})
         settings.image_model_role.source_role = SOURCE_INDEPENDENT
         settings.image_model_role.cloud_provider = "custom_openai"
         settings.image_model_role.cloud_model = image_model
@@ -695,7 +699,7 @@ class WordRouteTaskTests(unittest.TestCase):
         page = sorted(runner._prepared_files[0].record.pages, key=lambda item: item.page_number)[1]
         self.assertIn(REASON_IMAGE_GRID, page.route_note)
         self.assertFalse(page.inplace_requested)   # the words are in the picture: in place cannot reach them
-        self.assertIn("改用整页图像翻译", page.route_note)
+        self.assertIn("改用图像翻译", page.route_note)
 
     @unittest.skipUnless(find_cjk_font(), "no CJK font on this machine: in place cannot write Chinese")
     def test_segment_that_comes_back_far_longer_is_not_assembled(self):
@@ -733,17 +737,17 @@ class WordRouteTaskTests(unittest.TestCase):
         for page in pages:
             self.assertFalse(page.inplace_requested)
             self.assertTrue(page.source_image_path)     # rendered for the image model this time
-            self.assertEqual(page.route_note, f"{REASON_PAGE_GROWTH}；原位替换也没成功，改用整页图像翻译")
+            self.assertEqual(page.route_note, f"{REASON_PAGE_GROWTH}；原位替换也没成功，改用图像翻译")
         with fitz.open(record.translated_pdf_path) as out:
             self.assertEqual(len(out), 2)
 
-    def test_pages_in_place_could_not_do_are_kept_when_the_safety_net_keeps(self):
+    def test_pages_in_place_could_not_do_are_kept_without_an_image_model(self):
         def broken(_texts, _prompt):
             raise RuntimeError("service down")
 
         calls: list[tuple[int, int]] = []
         runner, final, client = self._run_task(self._ok_word(calls), out_pages=9, hooks=_hooks(broken),
-                                               fallback="skip")
+                                               image_model="")
         self.assertIsNotNone(final)
         self.assertEqual(len(client.calls), 0)
         pages = runner._prepared_files[0].record.pages
@@ -787,8 +791,8 @@ class WordRouteTaskTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 0)
         page = runner._prepared_files[0].record.pages[0]
         self.assertIn(REASON_PAGE_GROWTH, page.kept_reason)
-        self.assertIn("整页图像翻译也用不了（图像翻译模型的名称不能为空）", page.kept_reason)
-        self.assertTrue(any("整页图像翻译也用不了（图像翻译模型的名称不能为空），这几页保留原文" in line
+        self.assertIn("图像翻译也用不了（图像翻译模型的名称不能为空）", page.kept_reason)
+        self.assertTrue(any("图像翻译也用不了（图像翻译模型的名称不能为空），这几页保留原文" in line
                             for line in logs), logs)
 
     def test_large_scans_are_scanned_pages(self):
@@ -986,8 +990,7 @@ class InplaceProgressTests(unittest.TestCase):
         source_pdf = root / "notice.pdf"
         _write_pdf(source_pdf, [A4, A4, A4], with_text=[True, True, True])
         settings = AppSettings(target_lang="zh")
-        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto",
-                                                   "auto_fallback": "skip"})
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto"})
         settings.output.use_custom_output_dir = True
         settings.output.custom_output_dir = str(root / "out")
         settings.rate.pdf_text.request_retry = 0
@@ -1030,10 +1033,9 @@ class InplaceProgressTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         source_pdf = root / "drawing.pdf"
-        _write_pdf(source_pdf, [A4, A1], with_text=[True, True])
+        _write_pdf(source_pdf, [A4, A1], with_text=[False, True], scan=(0,))
         settings = AppSettings(target_lang="zh")
-        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto",
-                                                   "auto_text_route": "image"})
+        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto"})
         settings.output.use_custom_output_dir = True
         settings.output.custom_output_dir = str(root / "out")
         settings.image_model_role.source_role = SOURCE_INDEPENDENT
