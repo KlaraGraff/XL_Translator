@@ -27,7 +27,8 @@ from typing import TypedDict
 from loguru import logger
 
 from core.pdf_word_bars import trim_bar_padding
-from core.pdf_word_box_lines import join_box_lines
+from core.pdf_word_box_lines import join_box_lines, join_split_lines
+from core.pdf_word_cjk_room import make_room_above_tables
 from core.pdf_word_columns import columns_to_tables
 from core.pdf_word_guard import REASON_BROKEN_PAGE, BrokenPagesError, broken_docx_pages
 from core.pdf_word_figures import uncover_pictures
@@ -1096,8 +1097,9 @@ def convert_pdf_to_docx(
     # 上划线和分数线（做成 Word 公式，放在 TeX 字符换 Unicode 之后，公式里的字也是换好的）。
     # 框里一行一张表、行高从框顶累加的，先改回每行自己的高度，再按原文收标题条的空白（core.pdf_word_stacked_rows）；
     # 原文排满的正文行不再标成居中（core.pdf_word_full_lines），框里同一段折下来的几行并进同一格（core.pdf_word_box_lines）
-    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, justify_full_lines, unstack_rows,
-                trim_bar_padding, join_box_lines, restore_scripts_from_pdf, _tex_glyphs, restore_rules_from_pdf):
+    for fix in (refine_tables_from_pdf, recolor_cells_from_pdf, uncover_pictures, join_split_lines, justify_full_lines,
+                unstack_rows, trim_bar_padding, join_box_lines, restore_scripts_from_pdf, _tex_glyphs,
+                restore_rules_from_pdf):
         _try_fix(fix, docx_path, pdf_path)
     normalize_docx_fonts(docx_path, east_asian_locale(target_lang))
     restore_word_spaces(docx_path, pdf_words(pdf_path))
@@ -1112,6 +1114,9 @@ def convert_pdf_to_docx(
     columns_to_tables(docx_path)
     # 两端对齐的每页最后一段：分节符挪到自己的空段，Word 不再把最后一行拉满（core.pdf_word_section_marks）
     split_justified_section_marks(docx_path)
+    if east_asian_locale(target_lang):
+        # 译成中日韩文：紧挨着表格的段落下面留出中文字多出来的高度，表格边框不压字（core.pdf_word_cjk_room）
+        make_room_above_tables(docx_path)
 
 
 def translate_pdf_via_word(

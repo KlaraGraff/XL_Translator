@@ -31,22 +31,52 @@ def _normalize(text: str) -> str:
     return _SPACE.sub("", text)
 
 
+#: 同一块里上沿相差这么多磅以内的几段算同一行（PyMuPDF 把中间空得宽的一行拆成两段，讲义第 66 页）。
+_SAME_LINE = 1.0
+
+
+def visual_lines(page) -> list[list[tuple[str, tuple[float, float, float, float]]]]:
+    """原 PDF 这一页每一块字的每一行：(去掉空白的文字, (x0, y0, x1, y1))。PyMuPDF 把两端对齐、中间空得
+    很宽的一行拆成左右两段时，按上沿接回一行（从左到右）。"""
+    blocks = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        rows: list[list] = []
+        for line in block.get("lines") or []:
+            text = _normalize("".join(span.get("text", "") for span in line.get("spans", [])))
+            if not text:
+                continue
+            box = tuple(line["bbox"])
+            if rows and abs(rows[-1][0][1][1] - box[1]) <= _SAME_LINE:
+                rows[-1].append((text, box))
+            else:
+                rows.append([(text, box)])
+        joined = []
+        for row in rows:
+            row.sort(key=lambda item: item[1][0])
+            boxes = [box for _text, box in row]
+            joined.append(("".join(text for text, _box in row), (
+                min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))))
+        if joined:
+            blocks.append(joined)
+    return blocks
+
+
 def full_lines(page) -> dict[str, float]:
     """原 PDF 这一页两端对齐排满的行：去掉空白的文字 → 行宽（磅）。"""
     found: dict[str, float] = {}
-    for block in page.get_text("dict").get("blocks", []):
-        lines = block.get("lines") or []
-        if block.get("type") != 0 or len(lines) < 2:
+    for lines in visual_lines(page):
+        if len(lines) < 2:
             continue
-        x0, _y0, x1, _y1 = block["bbox"]
-        left = [line for line in lines if abs(line["bbox"][0] - x0) <= _EDGE]
-        for line in lines:
-            if (abs(line["bbox"][2] - x1) > _EDGE or line["bbox"][2] - line["bbox"][0] < _FULL * (x1 - x0)
-                    or not any(other is not line for other in left)):
+        x0 = min(box[0] for _text, box in lines)
+        x1 = max(box[2] for _text, box in lines)
+        left = [number for number, (_text, box) in enumerate(lines) if abs(box[0] - x0) <= _EDGE]
+        for number, (text, box) in enumerate(lines):
+            if (abs(box[2] - x1) > _EDGE or box[2] - box[0] < _FULL * (x1 - x0)
+                    or not any(other != number for other in left)):
                 continue
-            text = _normalize("".join(span.get("text", "") for span in line.get("spans", [])))
-            if text:
-                found[text] = line["bbox"][2] - line["bbox"][0]
+            found[text] = box[2] - box[0]
     return found
 
 
