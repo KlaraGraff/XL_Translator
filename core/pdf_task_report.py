@@ -46,20 +46,11 @@ def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
 
 
 def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
-    # 自动组合里「图纸和大图」「扫描页」选了原样保留的页也记在这里；它们不是因为幅面，
-    # 照实写原因（反馈 #34）。只有整页图像翻译开了「跳过 A3 及更大的页面」才是幅面。
-    reasons = {page.kept_by_setting for page in record.pages
-               if getattr(page, "kept_by_setting", "") and not page.kept_by_setting.startswith("为大幅面")}
-    if reasons:
-        reason = f"原因：{next(iter(reasons))}" if len(reasons) == 1 else "各页原因见任务报告"
-        return (
-            f"本文件全部 {record.page_count} 页都按设置原样保留，未翻译任何内容，"
-            f"输出 PDF 与源文件一致。{reason}。如需翻译，请在「翻译方式」里改选后重新翻译。"
-        )
+    # 只有整页图像翻译开着「跳过 A3 及更大的页面」才会整份按设置保留（智能混合没有这种设置）。
     return (
         f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
         "输出 PDF 与源文件一致。如需翻译这些页面，"
-        "请关闭「跳过 A3 及更大的页面」，或在「翻译方式」里改选原位替换后重新翻译。"
+        "请关闭「跳过 A3 及更大的页面」，或把「翻译方式」改为「智能混合」后重新翻译。"
     )
 
 

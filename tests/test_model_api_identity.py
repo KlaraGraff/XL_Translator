@@ -82,6 +82,7 @@ class ModelApiIdentityTests(unittest.TestCase):
 
     def test_pdf_context_includes_review_api_when_enabled(self) -> None:
         settings = AppSettings()
+        settings.pdf.translation_route = "image"
         settings.pdf.review_enabled = True
         settings.image_model_role.source_role = "independent"
         settings.image_model_role.cloud_provider = "custom_openai"

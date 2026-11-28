@@ -310,7 +310,7 @@ def _save_pdf_review_model_availability(settings: AppSettings, **verdict: Any) -
 
 def _save_role_availability(settings: AppSettings, role: str, **verdict: Any) -> None:
     # 额度、余额不足只记在这次任务里，不存进设置：充值后配置没变，存下的「不可用」
-    # 会一直挂着，自动组合模式又因此不再调用这个模型，结论永远等不到被成功冲掉。
+    # 会一直挂着，智能混合模式又因此不再调用这个模型，结论永远等不到被成功冲掉。
     if not verdict.get("ok") and is_quota_problem(verdict.get("message")):
         record_model_role_availability(settings, role, **verdict)
         return
@@ -1770,13 +1770,13 @@ class PdfImageTranslationRunner(
         # 本机把 Word 转回 PDF 用的程序（"word" / "libreoffice" / ""）；None 表示还没查。
         self._office_pdf_engine: str | None = None
         self._office_pdf_message = ""
-        # 自动组合里转 Word 的正文页：(源文件路径, 页码) → {segment, status, message}。
+        # 智能混合里转 Word 的正文页：(源文件路径, 页码) → {segment, status, message}。
         # 在页面翻译开始前就转好（见 _run_word_segments），失败的页随后按保底方式处理。
         self._word_pages: dict[tuple[str, int], dict[str, Any]] = {}
         # 转不成 Word、改走原位替换的页：(源文件路径, 页码) → 原位替换失败的原因（还没失败为 ""）。
         # 原位替换也失败的页重新排队，按保底方式处理（见 _requeue_failed_word_inplace_pages）。
         self._word_inplace_pages: dict[tuple[str, int], str] = {}
-        # 自动组合里段落重排的文字页：(源文件路径, 页码) → {status, message, note, pdf_path}。
+        # 智能混合里段落重排的文字页：(源文件路径, 页码) → {status, message, note, pdf_path}。
         # 在转 Word 之前做（见 _run_babeldoc_pages），没 done 的页随后转 Word。
         self._babeldoc_pages: dict[tuple[str, int], dict[str, Any]] = {}
         # 段落重排用不了的原因；None 表示还没查。
@@ -2402,7 +2402,7 @@ class PdfImageTranslationRunner(
                 raise ImageModelUnavailableError("图像翻译模型的名称不能为空")
             if image_optional and model_config.mode == "cloud" and not model_config.api_key:
                 raise ImageModelUnavailableError("图像翻译模型还没有填写 API 密钥")
-            # 自动组合时图像模型只是扫描页和保底用的：这套配置测过、没通过，就当没有，
+            # 智能混合时图像模型只是扫描页和保底用的：这套配置测过、没通过，就当没有，
             # 那些页保留原样，不让每一页都去试一遍再报错（也省掉白花的请求费）。
             if image_optional and model_config.availability_status == "unavailable":
                 raise ImageModelUnavailableError("图像翻译模型的连接测试未通过")
@@ -2581,7 +2581,7 @@ class PdfImageTranslationRunner(
                 ProgressMsg(1, 4, "读取文件", len(prepared_files), max(1, len(self._files)))
             )
             self._queue.put(StatusMsg(f"状态：已准备 {len(prepared_files)} 个文件，共 {total_pages} 页。"))
-            # 自动组合：混合文件里的正文段先用段落重排（选了它时）、再转 Word 翻好，都没成的页
+            # 智能混合：混合文件里的正文段先用段落重排（选了它时）、再转 Word 翻好，都没成的页
             # 随后按保底方式翻译。它已经是在翻译了，进度记在「翻译」阶段（上面先把「读取文件」报完）。
             self._run_babeldoc_pages(prepared_files, total_pages=total_pages)
             self._run_word_segments(prepared_files, total_pages=total_pages)
@@ -4062,7 +4062,7 @@ class PdfImageTranslationRunner(
             for page in record.pages
             if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
-        # 按设定原样保留的页（大幅面，或自动组合里选了原样保留的图纸页）。没有图像
+        # 按设定原样保留的页（大幅面，或智能混合里选了原样保留的图纸页）。没有图像
         # 模型而保留的页、原位替换试过但没换成的页（大幅面页也一样）另有说法，不算
         # 在这里——那一页是试过了没换成，说成「因幅面过大被跳过」会让用户去关一个
         # 跟它无关的开关。空白页也不算：它本来就没有要翻的内容。
@@ -4324,9 +4324,6 @@ class PdfImageTranslationRunner(
             kept_by_setting = ""
             if route == ROUTE_SKIP and not kept_reason and not blank_page:
                 kept_by_setting = kept_by_setting_reason(
-                    self._settings.pdf,
-                    self._page_kind_info(source_path_key, page_index),
-                    page_kind=self._page_kind(source_path_key, page_index) or KIND_SCAN,
                     short_mm=_pt_to_mm(min(page_width_pt, page_height_pt)),
                     long_mm=_pt_to_mm(max(page_width_pt, page_height_pt)),
                 )
@@ -4447,9 +4444,9 @@ class PdfImageTranslationRunner(
                 return ROUTE_INPLACE, reason
             if inplace_failed:
                 reason = f"{reason}；原位替换也没成功"
-        fallback = fallback_route(pdf_settings, oversized=oversized_a3, image_available=not self._image_model_missing)
+        fallback = fallback_route(oversized=oversized_a3, image_available=not self._image_model_missing)
         if (fallback != ROUTE_IMAGE and route != ROUTE_IMAGE and self._image_model_missing
-                and fallback_route(pdf_settings, oversized=oversized_a3, image_available=True) == ROUTE_IMAGE):
+                and fallback_route(oversized=oversized_a3, image_available=True) == ROUTE_IMAGE):
             # 本该改用整页图像翻译、图像模型却用不了：两个原因都写上，不然用户只看到
             # 「转回的 PDF 页数比原文多出太多」，不知道为什么没有改用图像翻译（#30）。
             reason = f"{reason}；整页图像翻译也用不了（{self._image_model_missing}）"

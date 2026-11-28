@@ -1094,7 +1094,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
       ? t("{0}；没有页图。", t("空白页"))
       : page.kept_by_setting
       ? t("这一页{0}；没有页图。", tx(page.kept_by_setting))
-      : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或在「翻译方式」里改选原位替换后重新翻译。");
+      : t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」或把「翻译方式」改为「智能混合」后重新翻译。");
 
   actionsCell.append(
     buildActionLink(

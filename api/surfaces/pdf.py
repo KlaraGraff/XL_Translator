@@ -123,7 +123,7 @@ class PdfSurface(Surface):
         try:
             _validate_image_model(settings)
         except TaskInputError:
-            # 原位替换、转 Word、自动组合不一定用到图像模型：没设置也能开始，
+            # 智能混合不一定用到图像模型：没设置也能开始，
             # 需要整页图像翻译的页保留原样，完成后列出来。
             if not _inplace_enabled(settings):
                 raise
@@ -286,7 +286,7 @@ def _check_review_image_input(settings: AppSettings, review_model: Any) -> str:
 
 
 def _check_pdf_component(files: list[Any], settings: AppSettings, *, image_available: bool) -> None:
-    """自动组合里要用「PDF 处理组件」的页（图纸原位替换、文字页转 Word），本机没装时开始前就说。
+    """智能混合里要用「PDF 处理组件」的页（图纸原位替换、文字页转 Word），本机没装时开始前就说。
 
     反馈 #33：A3 图纸要原位替换，没装组件；大幅面页又不改用图像翻译，一页没翻，任务跑完
     才失败。现在开始前拦一下，给「去安装」和「仍然开始」（allow_missing_pdf_component）。
@@ -325,8 +325,8 @@ def _check_pdf_component(files: list[Any], settings: AppSettings, *, image_avail
 
 
 def _inplace_enabled(settings: AppSettings) -> bool:
-    """翻译方式不是整页图像翻译（原位替换、转 Word、自动组合都要用文本翻译模型）。"""
-    return getattr(settings.pdf, "translation_route", "image") != "image"
+    """翻译方式是智能混合（要用文本翻译模型）。"""
+    return getattr(settings.pdf, "translation_route", "auto") != "image"
 
 
 def _validate_image_model(settings: AppSettings) -> None:

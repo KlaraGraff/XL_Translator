@@ -1,4 +1,4 @@
-"""PDF「自动组合」里转 Word 翻译的部分：哪些页转 Word、连续的页合成一段转 Word 翻译
+"""PDF「智能混合」里转 Word 翻译的部分：哪些页转 Word、连续的页合成一段转 Word 翻译
 再转回 PDF、「同时输出 Word」。
 
 PdfImageTranslationRunner 继承 PdfWordSegmentsMixin；这里用到的 self 上的状态
@@ -83,7 +83,7 @@ class PdfWordSegmentsMixin:
         return route == ROUTE_WORD
 
     def _planned_word_pages(self, prepared: _PreparedPdfFile) -> list[int]:
-        """自动组合里首选转 Word 的页（可提取文字的页，且设置成转 Word；选了段落重排时是它没译成的页）。"""
+        """智能混合里首选转 Word 的页（可提取文字的页，且设置成转 Word；选了段落重排时是它没译成的页）。"""
         record = prepared.record
         kind = self._document_kinds.get(str(prepared.item.path))
         if kind is None or not self._planned_word_pages_possible(prepared):
@@ -147,7 +147,7 @@ class PdfWordSegmentsMixin:
         self._word_terms.append(terms)
 
     def _run_word_segments(self, prepared_files: list[_PreparedPdfFile], *, total_pages: int = 0) -> None:
-        """自动组合（Beta）：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
+        """智能混合：在页面翻译开始前，把每份文件里连续的正文页合成一段，转 Word
         翻译，再转回 PDF。转好的段在装配时按原页序拼进来；转不成的页随后按保底方式
         处理（见 _decide_page_route）。转出来的 Word 只留在过程文件夹里。
 
@@ -337,11 +337,9 @@ class PdfWordSegmentsMixin:
         missing = getattr(self, "_image_model_missing", "")
         if not self._route_unusable_reason(ROUTE_INPLACE, "", 0):  # pyright: ignore[reportAttributeAccessIssue]
             return "这几页改用原位替换。"
-        if fallback_route(self._settings.pdf, oversized=False, image_available=not missing) == ROUTE_IMAGE:
+        if fallback_route(oversized=False, image_available=not missing) == ROUTE_IMAGE:
             return "这几页改用整页图像翻译。"
-        if missing:
-            return f"整页图像翻译也用不了（{missing}），这几页保留原文。"
-        return "按设置，这几页保留原文。"
+        return f"整页图像翻译也用不了（{missing}），这几页保留原文。"
 
     def _fit_word_segment(self, record: PdfFileRecord, seg: list[int], docx_path: Path,
                           pdf_path: Path, output_pages: int) -> tuple[int, list[int] | None]:

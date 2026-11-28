@@ -1,6 +1,6 @@
 // PDF / CAD 首次使用图文指引（maple 2026-10-27 拍板，方案见项目文档「PDF 与 CAD 首次使用指引：推荐方案」）。
 //
-// 一屏看完的居中弹窗：PDF 讲三种处理方式和「其他」怎样逐页选用它们，CAD 讲三项最常被误解的设置、
+// 一屏看完的居中弹窗：PDF 先讲「智能混合」怎样逐页选方式、拼回一份 PDF，再讲它用到的三种方式，CAD 讲三项最常被误解的设置、
 // DWG 需要的转换工具和译后改译文。卡片底部的本机状态是实时查的（和页面里的缺组件提示
 // 同一个接口），缺什么当场给入口。弹窗只讲解、给入口，不改任何设置。
 //
@@ -134,7 +134,7 @@ export function openGuide(kind: GuideKind): void {
   if (kind === "pdf") {
     label.textContent = t("PDF 与图片翻译");
     title.textContent = t("PDF 翻译方式一览");
-    lead.textContent = t("PDF 中常见三类页面：可以选中文字的页面、工程图纸和扫描件。三类页面适合的翻译方式不同，效果和费用也不同。");
+    lead.textContent = t("PDF 有两种翻译方式：默认的「智能混合」由程序逐页选方式，最后拼回一份 PDF；整份都是扫描件或照片时，也可以选「整页图像翻译」。");
     buildPdfBody(body, go);
   } else {
     label.textContent = t("CAD 图纸翻译");
@@ -308,7 +308,7 @@ const illImage = (): string =>
     ${scanPage(20, SCAN_SOURCE, "gi-tb", -3)}${arrow(112, 59, 148)}${scanPage(156, "Avis : approuvé", "gi-a", 0)}
     <g transform="translate(225 99)"><rect class="gi-chip" x="0" y="0" width="22" height="16" rx="4"/><rect class="gi-thin" x="4" y="3.5" width="14" height="9" rx="1.5" style="stroke:var(--ink-3)"/><path class="gi-l" d="M5 11.5l4 -4l3 3l2 -2l3 3" stroke-width=".9"/></g>`);
 
-/** 自动组合条里的四张小页面。 */
+/** 智能混合流程图里的四张小页面。 */
 function thumb(kind: "text" | "table" | "draw" | "scan"): string {
   const paper = kind === "scan" ? "gi-scan" : "gi-paper";
   let body = "";
@@ -373,9 +373,9 @@ type Go = (action: () => void) => () => void;
 function buildPdfBody(body: HTMLElement, go: Go): void {
   const fit = t("适合");
   const eff = t("效果");
-  const wordName = t("转成 Word");
+  const textName = t("段落重排 · 转成 Word");
   const inplaceName = t("原位替换");
-  const imageName = t("图像还原");
+  const imageName = t("整页图像翻译");
 
   // 本机状态先空着，查到后再填；查不到就一直空着，不猜。
   const wordStats = el("div", "g-stats");
@@ -388,14 +388,59 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
   noteText.append(withNowrapModels(t("已测试多种图像模型，目前效果最好的是 ChatGPT 的 Images 2.6，模型名为 gpt-image-2.6-sunburst；其次是 gpt-image-2.6-flare。")));
   note.append(noteText);
 
+  // 上面一条是智能混合的流程图：① 按页分类 → ② 每页选方式 → ③ 拼回一份 PDF（maple 2026-11-28）。
+  const band = el("div", "g-band mixed");
+  const bandText = el("div");
+  const title = el("h4", undefined, t("智能混合"));
+  title.append(el("span", "g-tag rec", t("推荐")));
+  bandText.append(
+    title,
+    el("p", undefined, t("新建的 PDF 任务默认用它。程序看每一页是什么、选合适的方式；某一页用不了这种方式时自动换一种，没有图像模型时扫描页原样保留，完成后单独列出。")),
+  );
+  const flow = el("div", "g-flow");
+  const steps = el("div", "g-steps");
+  for (const label of [t("① 按页分类"), t("② 每页选方式"), t("③ 拼回一份 PDF")]) steps.append(el("span", "g-step", label));
+  const pages = el("div", "g-pages");
+  const textChips: HTMLElement[] = [];
+  const pageSpecs: ["text" | "table" | "draw" | "scan", string, string][] = [
+    ["text", t("文字页"), t("转成 Word")],
+    ["table", t("表格页"), t("转成 Word")],
+    ["draw", t("图纸"), inplaceName],
+    ["scan", t("扫描件"), t("整页图像")],
+  ];
+  for (const [kind, name, route] of pageSpecs) {
+    const pg = el("div", "g-pg");
+    const pic = el("div");
+    pic.style.display = "contents";
+    pic.innerHTML = thumb(kind);
+    const chip = el("span", "g-chip", route);
+    if (kind === "text" || kind === "table") textChips.push(chip);
+    const down = el("span", "g-down", "↓");
+    down.setAttribute("aria-hidden", "true");
+    pg.append(pic, el("small", undefined, name), down, chip);
+    pages.append(pg);
+  }
+  const out = el("div", "g-out");
+  const outPic = el("div");
+  outPic.style.display = "contents";
+  outPic.innerHTML = `<svg viewBox="0 0 40 52" aria-hidden="true"><rect class="gi-paper" x="6" y="1" width="33" height="44" rx="2.5"/><rect class="gi-paper" x="3" y="4" width="33" height="44" rx="2.5"/><rect class="gi-paper" x="0" y="7" width="33" height="44" rx="2.5"/><text class="gi-a" x="16.5" y="33" font-size="8" text-anchor="middle">PDF</text></svg>`;
+  out.append(outPic, el("small", undefined, t("按原页序合成一份 PDF")));
+  const arrowEl = el("span", "g-arrow", "→");
+  arrowEl.setAttribute("aria-hidden", "true");
+  flow.append(pages, arrowEl, out);
+  const chart = el("div", "g-chart");
+  chart.append(steps, flow);
+  band.append(bandText, chart);
+
+  const cardsHead = el("div", "g-sub", t("智能混合用到下面三种方式；「整页图像翻译」也可以在「翻译方式」里单独选，整份文件每页都这样翻。"));
   const cards = el("div", "g-cards");
   cards.append(
     card({
       ill: illWord(),
-      name: wordName,
+      name: textName,
       rows: [
         [fit, t("可以选中文字的页面，如由 Word 导出的报告、合同、说明书。")],
-        [eff, t("保留大部分排版，可另存一份 Word；费用较低。由于各语言篇幅不同，译文的页数可能多于或少于原文。")],
+        [eff, t("装了「段落重排组件」时先在原 PDF 上按段落排入译文，公式、图和表格线不动；没装或排得不好的页转成 Word 翻译再转回，可另存一份 Word。费用较低。")],
       ],
       stats: wordStats,
     }),
@@ -424,46 +469,11 @@ function buildPdfBody(body: HTMLElement, go: Go): void {
     }),
   );
 
-  const band = el("div", "g-band");
-  const bandText = el("div");
-  bandText.append(
-    el("h4", undefined, t("选择「其他」时，程序逐页选方式")),
-    el("p", undefined, t("程序逐页判断页面类型：文字页和表格页用段落重排（没装组件或排得不好的页转成 Word），图纸用原位替换，扫描件用图像还原，最后按原页序合成一份 PDF。某种方式在本机不可用时，该页改用「保底方式」，完成后单独列出。")),
-  );
-  const flow = el("div", "g-flow");
-  const pages = el("div", "g-pages");
-  const textChips: HTMLElement[] = [];
-  const pageSpecs: ["text" | "table" | "draw" | "scan", string, string][] = [
-    ["text", t("文字页"), wordName],
-    ["table", t("表格页"), wordName],
-    ["draw", t("图纸"), inplaceName],
-    ["scan", t("扫描件"), imageName],
-  ];
-  for (const [kind, name, route] of pageSpecs) {
-    const pg = el("div", "g-pg");
-    const pic = el("div");
-    pic.style.display = "contents";
-    pic.innerHTML = thumb(kind);
-    const chip = el("span", "g-chip", route);
-    if (kind === "text" || kind === "table") textChips.push(chip);
-    pg.append(pic, el("small", undefined, name), chip);
-    pages.append(pg);
-  }
-  const out = el("div", "g-out");
-  const outPic = el("div");
-  outPic.style.display = "contents";
-  outPic.innerHTML = `<svg viewBox="0 0 40 52" aria-hidden="true"><rect class="gi-paper" x="6" y="1" width="33" height="44" rx="2.5"/><rect class="gi-paper" x="3" y="4" width="33" height="44" rx="2.5"/><rect class="gi-paper" x="0" y="7" width="33" height="44" rx="2.5"/><text class="gi-a" x="16.5" y="33" font-size="8" text-anchor="middle">PDF</text></svg>`;
-  out.append(outPic, el("small", undefined, t("合成一份 PDF")));
-  const arrowEl = el("span", "g-arrow", "→");
-  arrowEl.setAttribute("aria-hidden", "true");
-  flow.append(pages, arrowEl, out);
-  band.append(bandText, flow);
-
-  body.append(cards, band);
+  body.append(band, cardsHead, cards);
   void fillPdfStats({ wordStats, inplaceStats, imageStats, textChips }, go);
 }
 
-/** 「其他」条里文字页、表格页的方式按本机条件写：装了段落重排组件写「段落重排」，没装写「转成 Word」。 */
+/** 流程图里文字页、表格页的方式按本机条件写：装了段落重排组件写「段落重排」，没装写「转成 Word」。 */
 function textRouteName(caps: { babeldoc_component?: boolean }): string {
   return caps.babeldoc_component ? t("段落重排") : t("转成 Word");
 }

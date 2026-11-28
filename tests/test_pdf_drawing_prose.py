@@ -1,7 +1,7 @@
-"""正文页配一张矢量插图不判成图纸；按设置原样保留的页写真实原因，不说成大幅面（反馈 #34）。
+"""正文页配一张矢量插图不判成图纸（反馈 #34）。
 
 样例都是自造的：用户文件不进仓库。反馈里的页：165×242 mm，约 300 词正文配一张 1000 来段
-曲线的流程图，「图纸和大图」设为原样保留，整页正文没翻，日志还写成「为大幅面」。
+曲线的流程图，被判成图纸，整页正文没翻，日志还写成「为大幅面」。
 """
 from __future__ import annotations
 
@@ -15,12 +15,10 @@ import pytest
 from core.pdf_routes import (
     KIND_DRAWING,
     KIND_TEXT,
-    PageKind,
     classify_document,
     exceeds_word_page,
     kept_by_setting_reason,
 )
-from settings import PdfSettings
 
 fitz = pytest.importorskip("fitz")
 
@@ -140,78 +138,10 @@ class ProsePageWithFigureTests(unittest.TestCase):
 
 
 class KeptBySettingReasonTests(unittest.TestCase):
-    def test_reason_names_the_real_cause(self):
-        auto = PdfSettings.model_validate({"translation_route": "auto", "auto_drawing_route": "skip",
-                                           "auto_scan_route": "skip"})
-        drawing = PageKind(9, KIND_DRAWING, False, words=40, vector_items=1300, slanted_items=1300)
-        self.assertEqual(kept_by_setting_reason(auto, drawing, page_kind=KIND_DRAWING, short_mm=165, long_mm=242),
-                         "按「图纸和大图」处理（线条密集、字都是零散的标注），这类页设为原样保留")
-        big_text = PageKind(2, KIND_DRAWING, True, words=400, vector_items=10, slanted_items=0)
-        self.assertIn("页面大到放不进 Word",
-                      kept_by_setting_reason(auto, big_text, page_kind=KIND_DRAWING, short_mm=594, long_mm=841))
-        self.assertEqual(kept_by_setting_reason(auto, None, page_kind="scan", short_mm=210, long_mm=297),
-                         "提取不到文字，按「扫描页」处理，这类页设为原样保留")
-        image = PdfSettings.model_validate({"translation_route": "image"})
-        self.assertEqual(kept_by_setting_reason(image, None, page_kind="", short_mm=297, long_mm=420),
+    def test_only_the_size_switch_keeps_pages_by_setting(self):
+        # 智能混合没有「这类页原样保留」的选项（2026-11-28），按设置保留只剩整页图像翻译的幅面开关。
+        self.assertEqual(kept_by_setting_reason(short_mm=297, long_mm=420),
                          "为大幅面（297×420 mm），已开启「跳过 A3 及更大的页面」")
-        for reason in (kept_by_setting_reason(auto, drawing, page_kind=KIND_DRAWING, short_mm=165, long_mm=242),
-                       kept_by_setting_reason(auto, None, page_kind="scan", short_mm=165, long_mm=242)):
-            self.assertNotIn("大幅面", reason)
-
-
-class RunnerLogsTheRealReasonTests(unittest.TestCase):
-    """整个 PDF 任务：正文配流程图的页照常翻译；图纸页按设置保留，日志和报告写真实原因。"""
-
-    def test_auto_route_with_drawings_kept(self):
-        from core.api_scheduler import WeightedApiScheduler
-        from core.model_roles import ROLE_IMAGE, SOURCE_INDEPENDENT, resolve_effective_model_config
-        from core.pdf_image_translation import PdfFileItem, PdfImageTranslationRunner, max_page_generation_attempts
-        from core.pdf_task_report import _kept_by_setting_lines, _page_status_text, fully_skipped_oversize_message
-        from settings import AppSettings
-        from tests.test_pdf_image_translation import _png_bytes, _RecordingImageClient
-
-        source_pdf = _save([_paper_page, _cad_page])
-        root = source_pdf.parent
-        settings = AppSettings(target_lang="zh")
-        # 正文页走图像翻译（测试里用假图像模型），图纸页原样保留：用户的设置。
-        settings.pdf = PdfSettings.model_validate({"target_lang": "zh", "translation_route": "auto",
-                                                   "auto_text_route": "image", "auto_drawing_route": "skip"})
-        settings.image_model_role.source_role = SOURCE_INDEPENDENT
-        settings.image_model_role.cloud_provider = "custom_openai"
-        settings.image_model_role.cloud_model = "image-model"
-        settings.image_model_role.cloud_base_url = "https://images.example/v1"
-        client = _RecordingImageClient(_png_bytes(1949, 2858))
-        runner = PdfImageTranslationRunner(
-            [PdfFileItem(path=source_pdf, name="paper", size_kb=1.0, page_count=2)],
-            settings, source_root=root, image_client=client, task_logger_enabled=False,
-        )
-        with patch("core.model_roles.get_key", return_value="secret"):
-            prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
-            runner._total_page_count = 2
-            runner._process_prepared_pages(
-                [prepared], max_attempts=max_page_generation_attempts(0), scheduler=WeightedApiScheduler(1),
-                review_scheduler=WeightedApiScheduler(1),
-                model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
-                review_model_config=None, concurrency=1, total_pages=2,
-            )
-            runner._finalize_file_record(prepared, should_assemble=True)
-        record = prepared.record
-        pages = sorted(record.pages, key=lambda p: p.page_number)
-        self.assertEqual(len(client.calls), 1)                 # the paper page was translated
-        self.assertFalse(pages[0].skipped_oversize)
-        self.assertEqual(pages[1].kept_by_setting,
-                         "按「图纸和大图」处理（线条密集、字都是零散的标注），这类页设为原样保留")
-        self.assertEqual(pages[1].kept_reason, "")             # by setting: not a problem to review
-        self.assertEqual(record.skipped_oversize_page_count, 1)
-        logs = "\n".join(str(getattr(msg, "message", "")) for msg in list(runner._queue.queue))
-        self.assertIn("第 2 页按「图纸和大图」处理（线条密集、字都是零散的标注），这类页设为原样保留，"
-                      "原页将直接放入输出 PDF。", logs)
-        self.assertNotIn("大幅面", logs)
-        self.assertEqual(_page_status_text(pages[1]), "按设置原样保留")
-        self.assertEqual(_kept_by_setting_lines(record),
-                         ["  - 第 2 页：按「图纸和大图」处理（线条密集、字都是零散的标注），这类页设为原样保留"])
-        self.assertIn("都按设置原样保留", fully_skipped_oversize_message(record))
-        self.assertNotIn("幅面", fully_skipped_oversize_message(record))
 
 
 if __name__ == "__main__":

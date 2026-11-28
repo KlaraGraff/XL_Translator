@@ -111,8 +111,8 @@ const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
   pdf_review: "图像翻译审核", // i18n-ignore 存进设置的值
 };
 
-// 「PDF 改用「其他」」：PDF 翻译方式改成「其他」，能提取文字的页由程序用段落重排或转成 Word，
-// 不用图像模型；扫描页和保底方式仍交给图像模型——没有可用的图像模型时这些页保留原样，完成后列出来。
+// 「PDF 改用智能混合」：PDF 翻译方式改成智能混合，能提取文字的页和图纸由程序用段落重排、转成
+// Word 或原位替换，不用图像模型；扫描页仍交给图像模型——没有可用的图像模型时保留原样，完成后列出来。
 const TEXT_ROUTE_PDF_PATCH = { translation_route: "auto" };
 // 工作区缓存着一份 PDF 设置，改完发这个事件让它跟着换（见 workspace.ts）。
 const PDF_ROUTES_CHANGED_EVENT = "xlt:pdf-routes-changed";
@@ -125,12 +125,12 @@ function buildUseTextRoutesButton(): HTMLElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "resume-link";
-  button.textContent = t("PDF 改用「其他」");
-  button.title = t("PDF 翻译方式改为「其他」：可提取文字的页由程序用段落重排或转成 Word 翻译，不使用图像模型。");
+  button.textContent = t("PDF 改用智能混合");
+  button.title = t("PDF 翻译方式改为「智能混合」：文字页和图纸由程序用段落重排、转成 Word 或原位替换翻译，不使用图像模型。");
   button.addEventListener("click", () => void reRenderAfter(async () => {
     await persistSettings({ pdf: TEXT_ROUTE_PDF_PATCH });
     window.dispatchEvent(new CustomEvent(PDF_ROUTES_CHANGED_EVENT, { detail: record(settings?.pdf) }));
-    showToast({ message: t("PDF 翻译方式已改为「其他」：可提取文字的页由程序用段落重排或转成 Word 翻译。") });
+    showToast({ message: t("PDF 翻译方式已改为「智能混合」：文字页和图纸不再使用图像模型。") });
   }));
   return button;
 }
@@ -168,7 +168,7 @@ const MODEL_ROLE_SHORT_LABELS: Record<string, string> = localized(() => ({
 const MODEL_ROLE_SCOPES: Record<string, string> = localized(() => ({
   translation: "Excel / Word / CAD",
   cleaner: t("记忆库词条"),
-  image: t("图像还原"),
+  image: t("整页图像"),
   pdf_review: t("逐页审核"),
 }));
 
@@ -177,7 +177,7 @@ const MODEL_ROLE_SCOPES: Record<string, string> = localized(() => ({
 const MODEL_ROLE_PURPOSES: Record<string, string> = localized(() => ({
   translation: t("用于翻译文字内容，包括 Excel、Word、PPT、CAD 及 PDF 的「段落重排」「转成 Word」「原位替换」；使用文字模型即可，无需识别图片。"),
   cleaner: t("用于整理记忆库中的译文，以及为文中反复出现的词确定统一译法；建议选用能力较强的模型。"),
-  image: t("用于 PDF「图像还原」和图片文件，需使用能生成图片的模型。PDF 翻译方式为「其他」时，只有扫描页和保底的页会用到它。"),
+  image: t("用于 PDF「整页图像翻译」和图片文件，需使用能生成图片的模型。PDF 翻译方式为「智能混合」时，只有扫描页和换方式的页会用到它。"),
   pdf_review: t("用于逐页核对重新生成的译文图片与原页内容是否一致，需使用能识别图片的模型。"),
 }));
 

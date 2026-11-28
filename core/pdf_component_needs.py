@@ -1,6 +1,6 @@
 """开始翻译前：所选 PDF 里有多少页要用「PDF 处理组件」，本机没装时这些页会怎样。
 
-自动组合里，图纸和大幅面页首选原位替换，可提取文字的页首选转 Word，两者都要用「PDF
+智能混合里，图纸和大幅面页首选原位替换，可提取文字的页首选转 Word，两者都要用「PDF
 处理组件」。没装时这些页改用保底方式；A3 及以上的大幅面页不改用整页图像翻译，直接保留
 原样（core.pdf_routes.fallback_route）。反馈 #33：一张 A3 总平面图因此一页也没翻，任务
 跑完才说没有结果。这里在开始前按任务里同样的规则逐页算一遍，让开始按钮先把话说清楚。
@@ -105,7 +105,7 @@ def _file_need(path: Path, pdf_settings: Any, *, inplace_ok: bool, image_availab
                 # 目标语言原位替换写不了：装了组件也一样改用保底方式，不算在组件头上。
                 continue
             pages += 1
-            if fallback_route(pdf_settings, oversized=oversized_a3, image_available=image_available) != ROUTE_IMAGE:
+            if fallback_route(oversized=oversized_a3, image_available=image_available) != ROUTE_IMAGE:
                 kept += 1
     finally:
         doc.close()

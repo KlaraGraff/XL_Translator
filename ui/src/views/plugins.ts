@@ -3,7 +3,7 @@
 //    使用条款，核对 ODA 的数字签名）；
 // 2. 「PDF 组件」大类（maple 2026-11-27）：「全部安装」按顺序装上缺的几项，展开后每项单独
 //    安装、重试、卸载（一键装不上时的手动保底）：
-//    ① PDF 处理组件（PyMuPDF + pdf2docx，PDF「自动组合」的原位替换、页面判断和转 Word）：
+//    ① PDF 处理组件（PyMuPDF + pdf2docx，PDF「智能混合」的原位替换、页面判断和转 Word）：
 //       一键安装取 PyPI 的固定版本；另外两项要用它里面的程序库；
 //    ② 段落重排组件（BabelDOC，可提取文字的页在原 PDF 上按段落重排）：只能一键安装，
 //       装好后「可提取文字的页」自动改用它；
@@ -926,7 +926,7 @@ function renderWordItem(index: number): HTMLElement {
   const { body, titleRow, copy, title } = itemShell(index, "pdf-processing");
   title.textContent = t("PDF 处理组件");
   const sizeMb = megabytes(wordCapability?.download_bytes ?? 0);
-  title.append(createHintBadge(t("包含开源软件 PyMuPDF（AGPL-3.0）和 pdf2docx（MIT）。一键安装：从 PyPI 下载固定版本（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。也可以自行安装 pdf2docx（会一并装上 PyMuPDF），再选择它的安装位置。未安装时：整页图像翻译不受影响；「自动组合」照常按页分类，原位替换和转成 Word 的页改用保底方式。项目主页：{1}", sizeMb, OFFICIAL_PDF2DOCX_URL)));
+  title.append(createHintBadge(t("包含开源软件 PyMuPDF（AGPL-3.0）和 pdf2docx（MIT）。一键安装：从 PyPI 下载固定版本（约 {0} MB），核对文件后安装到本软件的数据目录；官方源无法连接时改用国内镜像。也可以自行安装 pdf2docx（会一并装上 PyMuPDF），再选择它的安装位置。未安装时：整页图像翻译不受影响；「智能混合」照常按页分类，原位替换和转成 Word 的页改用整页图像翻译（没有图像模型时原样保留）。项目主页：{1}", sizeMb, OFFICIAL_PDF2DOCX_URL)));
   const desc = document.createElement("p");
   desc.textContent = t("判断图纸页、原位替换文字，把可提取文字的页转成 Word 翻译。另外两项也要用它。不安装也能翻译，这些页会改用保底方式。");
   copy.append(title, desc);
@@ -1064,12 +1064,6 @@ function stopBabeldocPolling(): void {
   }
 }
 
-/** 装好后 PDF「可提取文字的页」由转 Word 改成了段落重排：工作台里缓存的设置跟着换。 */
-function announceTextRoute(): void {
-  const route = babeldocCapability?.auto_text_route;
-  if (route) window.dispatchEvent(new CustomEvent("xlt:pdf-routes-changed", { detail: { auto_text_route: route } }));
-}
-
 function pollBabeldocInstall(): void {
   stopBabeldocPolling();
   babeldocPollTimer = window.setTimeout(async () => {
@@ -1090,8 +1084,7 @@ function pollBabeldocInstall(): void {
       ]);
       babeldocErrorText = "";
       if (progress.phase === "done") {
-        showToast({ message: t("段落重排组件已安装。PDF 可提取文字的页会自动改用段落重排。") });
-        announceTextRoute();
+        showToast({ message: t("段落重排组件已安装。PDF 智能混合的文字页会先用段落重排。") });
       } else if (progress.error) {
         showToast({ message: tx(progress.error), error: !progress.cancelled });
       }
@@ -1211,9 +1204,9 @@ function renderBabeldocItem(index: number): HTMLElement {
   betaTag.textContent = t("Beta");
   title.append(betaTag);
   const sizeMb = megabytes(babeldocCapability?.download_bytes ?? 0);
-  title.append(createHintBadge(t("在原 PDF 上按段落重排译文，由开源软件 BabelDOC（AGPL-3.0，未改动源码）在本机运行：公式、图和表格线原样保留，页数不变。每页译完会核对数字、字号、列表，看有没有漏翻、文字叠在一起，没通过的页改为转成 Word。译文由你设置的文本翻译模型给出，记忆库里「始终采用」的词条照样生效。一键安装：从 PyPI 下载固定版本的程序库，再下载它用的字体和版面识别模型（共约 {0} MB），逐个核对后安装到本软件的数据目录；缺少「PDF 处理组件」时先自动安装它。装好后 PDF「可提取文字的页」自动改用段落重排。项目主页：{1}", sizeMb, OFFICIAL_BABELDOC_URL)));
+  title.append(createHintBadge(t("在原 PDF 上按段落重排译文，由开源软件 BabelDOC（AGPL-3.0，未改动源码）在本机运行：公式、图和表格线原样保留，页数不变。每页译完会核对数字、字号、列表，看有没有漏翻、文字叠在一起，没通过的页改为转成 Word。译文由你设置的文本翻译模型给出，记忆库里「始终采用」的词条照样生效。一键安装：从 PyPI 下载固定版本的程序库，再下载它用的字体和版面识别模型（共约 {0} MB），逐个核对后安装到本软件的数据目录；缺少「PDF 处理组件」时先自动安装它。装好后 PDF「智能混合」的文字页先用它。项目主页：{1}", sizeMb, OFFICIAL_BABELDOC_URL)));
   const desc = document.createElement("p");
-  desc.textContent = t("在原 PDF 上按段落重排译文，公式、图和表格线原样保留。装好后「可提取文字的页」自动改用它，排得不好的页改为转成 Word。");
+  desc.textContent = t("在原 PDF 上按段落重排译文，公式、图和表格线原样保留。装好后智能混合的文字页先用它，排得不好的页改为转成 Word。");
   copy.append(title, desc);
   const groupItem = groupItemState("babeldoc");
   if (groupItem) titleRow.append(createStatus(groupItem));
@@ -1297,7 +1290,6 @@ function pollGroupInstall(): void {
         client.getPdfComponentsStatus(), client.getPdf2DocxCapability(), client.getBabeldocCapability(),
         client.getOcrCapability(),
       ]);
-      if (progress.items?.babeldoc?.status === "done") announceTextRoute();
       if (progress.phase === "done") {
         showToast({ message: t("PDF 组件已全部安装。") });
       } else if (progress.error) {
@@ -1428,9 +1420,9 @@ function renderPdfGroupCard(): HTMLElement {
   copy.className = "plugins-copy";
   const title = document.createElement("h2");
   title.textContent = t("PDF 组件");
-  title.append(createHintBadge(t("PDF 翻译「自动组合」用到的三项组件，都只在本机运行，不上传文件。「全部安装」按顺序装上缺的几项：先装 PDF 处理组件（另外两项要用它里面的程序库），再装段落重排组件和文字识别组件；某一项没装好不影响其它项，展开后可以单独重试。每一项也可以展开后单独安装或卸载。")));
+  title.append(createHintBadge(t("PDF 翻译「智能混合」用到的三项组件，都只在本机运行，不上传文件。「全部安装」按顺序装上缺的几项：先装 PDF 处理组件（另外两项要用它里面的程序库），再装段落重排组件和文字识别组件；某一项没装好不影响其它项，展开后可以单独重试。每一项也可以展开后单独安装或卸载。")));
   const desc = document.createElement("p");
-  desc.textContent = t("PDF 翻译「自动组合」用到的三项组件。不安装也能翻译，用不了的页改用保底方式。只在本机运行，不上传文件。");
+  desc.textContent = t("PDF 翻译「智能混合」用到的三项组件。不安装也能翻译，用不了的页由程序换一种方式。只在本机运行，不上传文件。");
   copy.append(title, desc);
   titleRow.append(iconBox, copy);
   const chip = groupStatusChip();

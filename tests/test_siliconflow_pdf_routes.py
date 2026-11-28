@@ -264,7 +264,7 @@ class SiliconFlowPdfRouteTests(unittest.TestCase):
         self.assertEqual([check.result for check in settings.image_input_checks.values()], ["no"])
 
     def test_route_panel_treats_a_failed_image_model_as_missing(self) -> None:
-        # 自动组合：图像模型测过、没通过，就和没设置一样，扫描页与保底页保留原样。
+        # 智能混合：图像模型测过、没通过，就和没设置一样，扫描页与保底页保留原样。
         from api.routes.pdf_routes import route_capabilities
 
         settings = self._image_settings("Qwen/Qwen2.5-7B-Instruct")

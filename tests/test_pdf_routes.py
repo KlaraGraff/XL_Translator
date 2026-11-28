@@ -35,17 +35,20 @@ def _route(pdf: PdfSettings, *, a3=False, big=False, kind=KIND_TEXT) -> str:
 
 
 class SettingsTests(unittest.TestCase):
-    def test_defaults_keep_the_original_behaviour(self) -> None:
+    """只剩两种方式（2026-11-28）：智能混合（新建设置的默认）和整页图像翻译，没有子选项。"""
+
+    def test_new_settings_default_to_smart_mix(self) -> None:
         pdf = PdfSettings()
-        self.assertEqual(pdf.translation_route, "image")
+        self.assertEqual(pdf.translation_route, "auto")
         self.assertTrue(pdf.skip_oversized_pages)
-        self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_DRAWING), "skip")
-        self.assertEqual(_route(pdf, kind=KIND_TEXT), "image")
+        for gone in ("auto_scan_route", "auto_text_route", "auto_drawing_route", "auto_fallback"):
+            self.assertNotIn(gone, PdfSettings.model_fields)
 
     def test_old_settings_file_still_loads(self) -> None:
-        # 主线版本存的设置没有这几个字段；分支早期版本存过的旧字段要被忽略
-        pdf = PdfSettings.model_validate({"skip_oversized_pages": False, "oversized_page_mode": "inplace"})
-        self.assertEqual(pdf.translation_route, "image")
+        # 分支早期版本存过的旧字段要被忽略
+        pdf = PdfSettings.model_validate({"skip_oversized_pages": False, "oversized_page_mode": "inplace",
+                                          "auto_text_route": "inplace", "auto_fallback": "skip"})
+        self.assertEqual(pdf.translation_route, "auto")
         self.assertFalse(pdf.skip_oversized_pages)
 
     def test_saved_through_the_settings_api(self) -> None:
@@ -53,62 +56,45 @@ class SettingsTests(unittest.TestCase):
 
         base = AppSettings().model_dump(mode="json")
         for route in ("image", "auto"):
-            merged = _deep_merge(base, {"pdf": {"translation_route": route, "auto_text_route": "inplace",
-                                                "auto_scan_route": "skip", "auto_fallback": "skip"}})
-            pdf = AppSettings.model_validate(merged).pdf
-            self.assertEqual(pdf.translation_route, route)
-            self.assertEqual((pdf.auto_text_route, pdf.auto_scan_route, pdf.auto_fallback), ("inplace", "skip", "skip"))
+            merged = _deep_merge(base, {"pdf": {"translation_route": route}})
+            self.assertEqual(AppSettings.model_validate(merged).pdf.translation_route, route)
 
 
 class PageRouteTests(unittest.TestCase):
     def test_image_route_honours_the_skip_switch(self) -> None:
-        pdf = PdfSettings(skip_oversized_pages=False)
+        self.assertEqual(_route(PdfSettings(translation_route="image"), a3=True, big=True, kind=KIND_DRAWING), "skip")
+        pdf = PdfSettings(translation_route="image", skip_oversized_pages=False)
         self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_DRAWING), "image")
+        self.assertEqual(_route(pdf, kind=KIND_TEXT), "image")
 
-    def test_auto_route_prefers_one_method_per_page_type(self) -> None:
+    def test_smart_mix_picks_one_method_per_page_type(self) -> None:
         pdf = PdfSettings(translation_route="auto")
         self.assertEqual(_route(pdf, kind=KIND_SCAN), "image")
-        self.assertEqual(_route(pdf, kind=KIND_TEXT), "word")
+        self.assertEqual(_route(pdf, kind=KIND_TEXT), "babeldoc")  # 没装组件时 runner 改走转 Word
         self.assertEqual(_route(pdf, kind=KIND_DRAWING), "inplace")
         self.assertEqual(_route(pdf, big=True, kind=KIND_DRAWING), "inplace")
         self.assertEqual(_route(pdf, kind=KIND_BLANK), "skip")
         # 先看内容再看尺寸：扫描页不论多大都按扫描页，文字页放不进 Word 才按图纸
         self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_SCAN), "image")
-        self.assertEqual(_route(pdf, a3=True, kind=KIND_TEXT), "word")
+        self.assertEqual(_route(pdf, a3=True, kind=KIND_TEXT), "babeldoc")
         self.assertEqual(_route(pdf, a3=True, big=True, kind=KIND_TEXT), "inplace")
-        custom = PdfSettings(translation_route="auto", auto_scan_route="skip", auto_text_route="inplace",
-                             auto_drawing_route="skip")
-        self.assertEqual(_route(custom, kind=KIND_SCAN), "skip")
-        self.assertEqual(_route(custom, kind=KIND_TEXT), "inplace")
-        self.assertEqual(_route(custom, big=True, kind=KIND_DRAWING), "skip")
 
-    def test_safety_net(self) -> None:
+    def test_safety_net_is_chosen_by_the_program(self) -> None:
         from core.pdf_routes import fallback_route
 
-        pdf = PdfSettings(translation_route="auto")
-        self.assertEqual(fallback_route(pdf, oversized=False, image_available=True), "image")
-        self.assertEqual(fallback_route(pdf, oversized=True, image_available=True), "skip")   # no blurry drawings
-        self.assertEqual(fallback_route(pdf, oversized=False, image_available=False), "skip")
-        keep = PdfSettings(translation_route="auto", auto_fallback="skip")
-        self.assertEqual(fallback_route(keep, oversized=False, image_available=True), "skip")
+        self.assertEqual(fallback_route(oversized=False, image_available=True), "image")
+        self.assertEqual(fallback_route(oversized=True, image_available=True), "skip")   # no blurry drawings
+        self.assertEqual(fallback_route(oversized=False, image_available=False), "skip")
 
-    def test_earlier_single_routes_become_the_same_combination(self) -> None:
-        inplace = PdfSettings(translation_route="inplace")
-        self.assertEqual((inplace.translation_route, inplace.auto_text_route, inplace.auto_drawing_route),
-                         ("auto", "inplace", "inplace"))
-        word = PdfSettings(translation_route="word")
-        self.assertEqual((word.translation_route, word.auto_text_route, word.auto_drawing_route),
-                         ("auto", "word", "skip"))
-        word_no_skip = PdfSettings(translation_route="word", skip_oversized_pages=False)
-        self.assertEqual(word_no_skip.auto_drawing_route, "image")
+    def test_earlier_single_routes_become_smart_mix(self) -> None:
+        for old in ("inplace", "word", "auto"):
+            self.assertEqual(PdfSettings(translation_route=old).translation_route, "auto")
+        self.assertEqual(PdfSettings(translation_route="image").translation_route, "image")
 
     def test_unknown_route_values_fall_back_to_defaults(self) -> None:
         # a newer build may write options this one does not know: never refuse the file
-        pdf = PdfSettings.model_validate({"translation_route": "auto", "auto_text_route": "ocr",
-                                          "oversized_page_threshold": "A5", "auto_fallback": "skip"})
-        self.assertEqual((pdf.translation_route, pdf.auto_text_route, pdf.oversized_page_threshold,
-                          pdf.auto_fallback), ("auto", "word", "A3", "skip"))
-
+        pdf = PdfSettings.model_validate({"translation_route": "ocr", "oversized_page_threshold": "A5"})
+        self.assertEqual((pdf.translation_route, pdf.oversized_page_threshold), ("auto", "A3"))
 
 
 def _text_page(doc, size=A4) -> None:
@@ -186,6 +172,31 @@ class ClassifyTests(unittest.TestCase):
 
         self.assertEqual(self._classify([outlined]).kind, KIND_DRAWING)
 
+
+
+class PageKindCountTests(unittest.TestCase):
+    """「翻译方式」下面那行「所选文件逐页这样处理」按它写：与 page_route 同一口径。"""
+
+    def test_counts_follow_the_page_route_rules(self) -> None:
+        from api.routes.pdf_routes import page_kinds
+        from core.pdf_routes import count_page_kinds
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "mixed.pdf"
+        doc = fitz.open()
+        for build in (_text_page, _text_page, _drawing_page, _scan_page,
+                      lambda d: _text_page(d, A1), lambda d: d.new_page()):
+            build(doc)
+        doc.save(path)
+
+        counts = count_page_kinds(path)
+        # 放不进 Word 的大文字页按图纸算（原位替换），空白页不算
+        self.assertEqual((counts.text, counts.drawing, counts.scan), (2, 2, 1))
+        missing = str(Path(tmp.name) / "gone.pdf")
+        result = page_kinds([str(path), missing])["counts"]
+        self.assertEqual(result[str(path)], {"text": 2, "drawing": 2, "scan": 1})
+        self.assertIsNone(result[missing])
 
 class FontNormalizationTests(unittest.TestCase):
     def test_subset_and_cid_fonts_get_real_names_and_an_east_asian_font(self) -> None:
@@ -587,7 +598,7 @@ class OfficePdfTests(unittest.TestCase):
         self.assertEqual(set(caps), {"image_model_ready", "image_model_message", "word_component",
                                      "inplace_component", "inplace_component_message",
                                      "office_engine", "office_message", "inplace_target_ok",
-                                     "inplace_unsupported_targets", "babeldoc_component", "auto_text_route"})
+                                     "inplace_unsupported_targets", "babeldoc_component"})
         self.assertEqual(caps["office_engine"], "")
         self.assertIn("ar", caps["inplace_unsupported_targets"])
         self.assertNotIn("fr", caps["inplace_unsupported_targets"])

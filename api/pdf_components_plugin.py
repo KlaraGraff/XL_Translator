@@ -74,10 +74,7 @@ def _install_item(item: str, *, progress, cancel) -> None:
         prefer_managed()
         forget_failures()
     elif item == ITEM_BABELDOC:
-        from api.babeldoc_plugin import enable_babeldoc_route
-
         babeldoc_installer.install(progress=progress, cancel=cancel)
-        enable_babeldoc_route()
     else:
         from api.ocr_plugin import _remove_old_tesseract
 

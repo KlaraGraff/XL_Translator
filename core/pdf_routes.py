@@ -9,10 +9,10 @@
              流程，再转回 PDF 拼回原位；输出始终是 PDF（可另存一份 Word）。
 - skip    —— 原样保留，不翻译。
 
-设置只有两种：整页图像翻译（原来的做法），或「自动组合」——逐页按类型处理：
-扫描页、可提取文字的页、图纸和大幅面页各有一个首选方式；首选在这一页用不了时（没有
-图像模型、原位替换不支持目标语言、转 Word 失败、本机没有 Word……）改用「保底
-方式」。
+设置只有两种（maple 2026-11-28）：「整页图像翻译」，或「智能混合」——程序逐页按类型选方式，
+用户不再挑：可提取文字的页段落重排（没装组件、没通过检查的页转 Word），图纸和大幅面页原位
+替换，扫描页整页图像翻译。首选在这一页用不了时（没有图像模型、原位替换不支持目标语言、转
+Word 失败、本机没有 Word……）程序自己选保底：能用整页图像翻译就用，否则原样保留。
 
 页面类型只看 PDF 本身（可见文字、矢量密度、页面尺寸），不调用模型。先看内容再看尺寸
 （maple 2026-10-21）：扫描页不论多大都是扫描页；可提取文字的页放得进 Word 就按文字页
@@ -143,31 +143,12 @@ def _kind_from_counts(page_number: int, *, oversized: bool, visible: int, has_in
     return PageKind(page_number, kind, oversized, words, items, slanted, prose_share=prose_share)
 
 
-def drawing_cause(page: PageKind | None) -> str:
-    """这一页为什么算「图纸和大图」，给日志和逐页说明用；不是图纸返回空。"""
-    if page is None or page.kind != KIND_DRAWING:
-        return ""
-    if page.oversized and not _dense_lines(page.vector_items, page.slanted_items):
-        return "页面大到放不进 Word"
-    if page.words <= 0:
-        return "线条密集、没有可提取的文字"
-    return "线条密集、字都是零散的标注"
+def kept_by_setting_reason(*, short_mm: float, long_mm: float) -> str:
+    """按设置原样保留的页（不是出了问题）：只剩整页图像翻译开着「跳过 A3 及更大的页面」这一种。
 
-
-def kept_by_setting_reason(pdf_settings, page: PageKind | None, *, page_kind: str,
-                           short_mm: float, long_mm: float) -> str:
-    """按设置原样保留的页（不是出了问题）：写真实原因。
-
-    以前这些页一律写成「为大幅面，不予翻译」：自动组合里「图纸和大图」或「扫描页」选了
-    原样保留的页，尺寸再小也被说成大幅面（反馈 #34，165×242 mm 的正文页）。"""
-    if getattr(pdf_settings, "translation_route", ROUTE_IMAGE) != "auto":
-        return f"为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），已开启「跳过 A3 及更大的页面」"
-    if page_kind == KIND_SCAN:
-        return "提取不到文字，按「扫描页」处理，这类页设为原样保留"
-    cause = drawing_cause(page)
-    if cause:
-        return f"按「图纸和大图」处理（{cause}），这类页设为原样保留"
-    return "按「图纸和大图」处理，这类页设为原样保留"
+    智能混合没有「这类页原样保留」的选项（2026-11-28）：它保留的页都是用不了的（kept_reason）
+    或空白页（blank_page），各有说明。"""
+    return f"为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），已开启「跳过 A3 及更大的页面」"
 
 
 def needs_ocr(page: PageKind) -> bool:
@@ -401,11 +382,12 @@ def page_route(pdf_settings, *, oversized_a3: bool, oversized: bool, page_kind: 
     if route == "auto":
         # 先看内容再看尺寸：扫描页不论多大都按扫描页；文字页放不进 Word 才按图纸。
         if page_kind == KIND_DRAWING or (page_kind == KIND_TEXT and oversized):
-            return getattr(pdf_settings, "auto_drawing_route", ROUTE_INPLACE)
+            return ROUTE_INPLACE
         if page_kind == KIND_TEXT:
-            return getattr(pdf_settings, "auto_text_route", ROUTE_WORD)
+            # 没装段落重排组件、没通过逐页检查的页由 runner 改走转 Word（core/pdf_babeldoc_pages.py）。
+            return ROUTE_BABELDOC
         if page_kind == KIND_SCAN:
-            return getattr(pdf_settings, "auto_scan_route", ROUTE_IMAGE)
+            return ROUTE_IMAGE
         return ROUTE_SKIP  # 空白页：原样放进去，不花钱
     # image: the original behaviour
     if oversized_a3 and bool(getattr(pdf_settings, "skip_oversized_pages", True)):
@@ -413,9 +395,60 @@ def page_route(pdf_settings, *, oversized_a3: bool, oversized: bool, page_kind: 
     return ROUTE_IMAGE
 
 
-def fallback_route(pdf_settings, *, oversized: bool, image_available: bool) -> str:
-    """「保底方式」：首选用不了时。大幅面页不改用整页图像翻译（会画糊），保留原样。"""
-    if (getattr(pdf_settings, "auto_fallback", ROUTE_IMAGE) == ROUTE_IMAGE
-            and image_available and not oversized):
+def fallback_route(*, oversized: bool, image_available: bool) -> str:
+    """保底：首选用不了时，能用整页图像翻译就用；没有图像模型，或是大幅面页（会画糊），保留原样。"""
+    if image_available and not oversized:
         return ROUTE_IMAGE
     return ROUTE_SKIP
+
+
+@dataclass(frozen=True)
+class PageKindCounts:
+    """智能混合会怎样处理一份 PDF：各类页几页（空白页不算）。图纸含放不进 Word 的大页，
+    与 page_route 同一口径。"""
+
+    text: int = 0
+    drawing: int = 0
+    scan: int = 0
+
+
+_PAGE_KIND_CACHE: dict[tuple[str, int, int], PageKindCounts] = {}
+_PAGE_KIND_CACHE_MAX = 256
+
+
+def count_page_kinds(path: str | Path) -> PageKindCounts:
+    """逐页分类，数出文字页、图纸、扫描页。用随安装包分发的 pypdfium2（没装组件时任务里也是
+    这样判断的），不渲染、不调用模型。同一份文件（路径、大小、修改时间都没变）只算一次。
+    读不了时抛异常，由调用方决定怎么说。"""
+    import pypdfium2 as pdfium
+
+    file = Path(path)
+    stat = file.stat()
+    key = (str(file), stat.st_size, stat.st_mtime_ns)
+    cached = _PAGE_KIND_CACHE.get(key)
+    if cached is not None:
+        return cached
+    text = drawing = scan = 0
+    doc = pdfium.PdfDocument(str(file))
+    try:
+        for index in range(len(doc)):
+            page = doc[index]
+            try:
+                width, height = page.get_size()
+                oversized = exceeds_word_page(width, height)
+                kind = classify_page_pdfium(page, index + 1, oversized=oversized).kind
+            finally:
+                page.close()
+            if kind == KIND_DRAWING or (kind == KIND_TEXT and oversized):
+                drawing += 1
+            elif kind == KIND_TEXT:
+                text += 1
+            elif kind == KIND_SCAN:
+                scan += 1
+    finally:
+        doc.close()
+    counts = PageKindCounts(text=text, drawing=drawing, scan=scan)
+    if len(_PAGE_KIND_CACHE) >= _PAGE_KIND_CACHE_MAX:
+        _PAGE_KIND_CACHE.pop(next(iter(_PAGE_KIND_CACHE)))
+    _PAGE_KIND_CACHE[key] = counts
+    return counts
